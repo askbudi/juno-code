@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/403</span>
+                <span class='fraction'>0/373</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/403</span>
+                <span class='fraction'>0/373</span>
             </div>
         
             
@@ -435,67 +435,7 @@
 <a name='L370'></a><a href='#L370'>370</a>
 <a name='L371'></a><a href='#L371'>371</a>
 <a name='L372'></a><a href='#L372'>372</a>
-<a name='L373'></a><a href='#L373'>373</a>
-<a name='L374'></a><a href='#L374'>374</a>
-<a name='L375'></a><a href='#L375'>375</a>
-<a name='L376'></a><a href='#L376'>376</a>
-<a name='L377'></a><a href='#L377'>377</a>
-<a name='L378'></a><a href='#L378'>378</a>
-<a name='L379'></a><a href='#L379'>379</a>
-<a name='L380'></a><a href='#L380'>380</a>
-<a name='L381'></a><a href='#L381'>381</a>
-<a name='L382'></a><a href='#L382'>382</a>
-<a name='L383'></a><a href='#L383'>383</a>
-<a name='L384'></a><a href='#L384'>384</a>
-<a name='L385'></a><a href='#L385'>385</a>
-<a name='L386'></a><a href='#L386'>386</a>
-<a name='L387'></a><a href='#L387'>387</a>
-<a name='L388'></a><a href='#L388'>388</a>
-<a name='L389'></a><a href='#L389'>389</a>
-<a name='L390'></a><a href='#L390'>390</a>
-<a name='L391'></a><a href='#L391'>391</a>
-<a name='L392'></a><a href='#L392'>392</a>
-<a name='L393'></a><a href='#L393'>393</a>
-<a name='L394'></a><a href='#L394'>394</a>
-<a name='L395'></a><a href='#L395'>395</a>
-<a name='L396'></a><a href='#L396'>396</a>
-<a name='L397'></a><a href='#L397'>397</a>
-<a name='L398'></a><a href='#L398'>398</a>
-<a name='L399'></a><a href='#L399'>399</a>
-<a name='L400'></a><a href='#L400'>400</a>
-<a name='L401'></a><a href='#L401'>401</a>
-<a name='L402'></a><a href='#L402'>402</a>
-<a name='L403'></a><a href='#L403'>403</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<a name='L373'></a><a href='#L373'>373</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -994,11 +934,11 @@
 <span class="cstat-no" title="statement not covered" >  title?: string;</span>
 <span class="cstat-no" title="statement not covered" >  maxLength?: number;</span>
 <span class="cstat-no" title="statement not covered" >}): Promise&lt;string | null&gt; {</span>
-<span class="cstat-no" title="statement not covered" >  const { isTUISupported } = await import('./utils/renderer.js');</span>
+<span class="cstat-no" title="statement not covered" >  const { isTUIAvailable } = await import('./utils/renderer.js');</span>
 <span class="cstat-no" title="statement not covered" >  const { headlessPromptEditor } = await import('./utils/headless.js');</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >  // Use headless fallback if TUI is not supported</span>
-<span class="cstat-no" title="statement not covered" >  if (!isTUISupported()) {</span>
+<span class="cstat-no" title="statement not covered" >  if (!isTUIAvailable()) {</span>
 <span class="cstat-no" title="statement not covered" >    return headlessPromptEditor(options);</span>
 <span class="cstat-no" title="statement not covered" >  }</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -1210,7 +1150,7 @@
 <span class="cstat-no" title="statement not covered" >export function isTUISupported(): boolean {</span>
 <span class="cstat-no" title="statement not covered" >  return typeof process !== 'undefined' &amp;&amp;</span>
 <span class="cstat-no" title="statement not covered" >         process.stdout &amp;&amp;</span>
-<span class="cstat-no" title="statement not covered" >         process.stdout.isTTY &amp;&amp;</span>
+<span class="cstat-no" title="statement not covered" >         Boolean(process.stdout.isTTY) &amp;&amp;</span>
 <span class="cstat-no" title="statement not covered" >         !process.env.CI &amp;&amp;</span>
 <span class="cstat-no" title="statement not covered" >         process.env.TERM !== 'dumb';</span>
 <span class="cstat-no" title="statement not covered" >}</span>
@@ -1238,45 +1178,15 @@
 <span class="cstat-no" title="statement not covered" >// Default Export</span>
 <span class="cstat-no" title="statement not covered" >// ============================================================================</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >export default {</span>
-<span class="cstat-no" title="statement not covered" >  // Apps</span>
-<span class="cstat-no" title="statement not covered" >  TUIApp,</span>
-<span class="cstat-no" title="statement not covered" >  PromptEditor,</span>
-<span class="cstat-no" title="statement not covered" >  SimplePromptEditor,</span>
-<span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  // Components</span>
-<span class="cstat-no" title="statement not covered" >  Input,</span>
-<span class="cstat-no" title="statement not covered" >  Spinner,</span>
-<span class="cstat-no" title="statement not covered" >  ProgressBar,</span>
-<span class="cstat-no" title="statement not covered" >  Dialog,</span>
-<span class="cstat-no" title="statement not covered" >  Select,</span>
-<span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  // Hooks</span>
-<span class="cstat-no" title="statement not covered" >  useTUIContext,</span>
-<span class="cstat-no" title="statement not covered" >  useKeyboard,</span>
-<span class="cstat-no" title="statement not covered" >  useTUIState,</span>
-<span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  // High-level functions</span>
-<span class="cstat-no" title="statement not covered" >  launchPromptEditor,</span>
-<span class="cstat-no" title="statement not covered" >  launchSimplePrompt,</span>
-<span class="cstat-no" title="statement not covered" >  showConfirmation,</span>
-<span class="cstat-no" title="statement not covered" >  showAlert,</span>
-<span class="cstat-no" title="statement not covered" >  showSelection,</span>
-<span class="cstat-no" title="statement not covered" >  isTUISupported,</span>
-<span class="cstat-no" title="statement not covered" >  safeTUIExecution,</span>
-<span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  // Utilities</span>
-<span class="cstat-no" title="statement not covered" >  tuiRenderer,</span>
-<span class="cstat-no" title="statement not covered" >  renderTUI,</span>
-<span class="cstat-no" title="statement not covered" >  renderAndWait</span>
-<span class="cstat-no" title="statement not covered" >};</span></pre></td></tr></table></pre>
+<span class="cstat-no" title="statement not covered" >// Note: Default export removed to fix module loading issues</span>
+<span class="cstat-no" title="statement not covered" >// All exports are available as named exports</span></pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->
             </div><!-- /wrapper -->
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-06T17:25:26.040Z
+                at 2025-10-06T22:44:23.775Z
             </div>
         <script src="../prettify.js"></script>
         <script>
