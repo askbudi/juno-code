@@ -523,6 +523,7 @@ export class ExecutionEngine extends EventEmitter {
     return {
       isRateLimited: false,
       remaining: 100,
+      resetTime: new Date(Date.now() + 60000), // 1 minute from now
       waitTimeMs: 0,
     };
   }

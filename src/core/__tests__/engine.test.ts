@@ -238,7 +238,7 @@ describe('ExecutionEngine', () => {
       expect(mockMCPClient.callTool).toHaveBeenCalledTimes(2);
     });
 
-    it.skip('should handle execution cancellation via AbortSignal', async () => {
+    it('should handle execution cancellation via AbortSignal', async () => {
       const abortController = new AbortController();
 
       // Mock slow tool call
@@ -381,9 +381,9 @@ describe('ExecutionEngine', () => {
       expect(completeSpy).toHaveBeenCalledOnce();
     });
 
-    it.skip('should process progress events from MCP client', async () => {
+    it('should process progress events from MCP client', async () => {
       const progressSpy = vi.fn();
-      engine.on('progress', progressSpy);
+      engine.on('progress:event', progressSpy);
 
       const request: ExecutionRequest = {
         requestId: 'test-request-123',
@@ -411,7 +411,7 @@ describe('ExecutionEngine', () => {
   });
 
   describe('rate limit handling', () => {
-    it.skip('should provide rate limit information', async () => {
+    it('should provide rate limit information', async () => {
       const rateLimitInfo = await engine.getRateLimitInfo();
 
       expect(rateLimitInfo).toBeDefined();
