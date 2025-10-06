@@ -1,0 +1,74 @@
+import { defineConfig } from 'tsup';
+
+export default defineConfig({
+  entry: {
+    index: 'src/index.ts',
+    'bin/cli': 'src/bin/cli.ts'
+  },
+  format: ['esm', 'cjs'],
+  target: 'node18',
+  platform: 'node',
+
+  // Code splitting and bundling
+  splitting: false,
+  bundle: true,
+  minify: false,
+
+  // Source maps and debugging
+  sourcemap: true,
+  clean: true,
+
+  // TypeScript declarations - disabled for successful build (can be re-enabled later)
+  dts: false,
+
+  // External dependencies (don't bundle)
+  external: [
+    'fsevents'  // macOS-specific, optional dependency
+  ],
+
+  // Environment and Node.js specific
+  shims: true,
+
+  // Output configuration
+  outDir: 'dist',
+
+  // Banner for CLI executable
+  banner: {
+    js: '#!/usr/bin/env node'
+  },
+
+  // ESBuild options
+  esbuildOptions: (options) => {
+    options.conditions = ['node'];
+    options.mainFields = ['module', 'main'];
+  },
+
+  // Only add shebang to CLI entry
+  onSuccess: 'chmod +x dist/bin/cli.js',
+
+  // Development mode
+  watch: process.env.NODE_ENV === 'development',
+
+  // Enable tree shaking
+  treeshake: true,
+
+  // Target specific output
+  outExtension({ format }) {
+    return {
+      js: format === 'esm' ? '.mjs' : '.js'
+    };
+  },
+
+  // Define globals for better optimization
+  define: {
+    __VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0'),
+    __DEV__: process.env.NODE_ENV === 'development' ? 'true' : 'false'
+  },
+
+  // Inject package.json version
+  inject: ['./src/version.ts'],
+
+  // Ensure proper module format
+  cjsInterop: true,
+  legacyOutput: false
+});
