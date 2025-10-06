@@ -35,7 +35,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/engine.js', () => ({
   createExecutionEngine: vi.fn().mockReturnValue({
     execute: vi.fn().mockResolvedValue({
-      status: 'COMPLETED',
+      status: 'completed',
       iterations: [{
         iterationNumber: 1,
         success: true,
@@ -62,7 +62,16 @@ vi.mock('../../core/engine.js', () => ({
     workingDirectory: opts.workingDirectory,
     maxIterations: opts.maxIterations,
     model: opts.model
-  }))
+  })),
+  ExecutionStatus: {
+    PENDING: 'pending',
+    RUNNING: 'running',
+    COMPLETED: 'completed',
+    FAILED: 'failed',
+    CANCELLED: 'cancelled',
+    TIMEOUT: 'timeout',
+    RATE_LIMITED: 'rate_limited'
+  }
 }));
 
 vi.mock('../../core/session.js', () => ({
@@ -98,6 +107,7 @@ vi.mock('fs-extra', () => ({
 }));
 
 vi.mock('execa', () => ({
+  default: vi.fn().mockResolvedValue({ stdout: '' }),
   execa: vi.fn().mockResolvedValue({ stdout: '' })
 }));
 
@@ -1081,6 +1091,68 @@ describe('Start Command', () => {
           verbose: false
         });
 
+        // Re-establish execution engine mock after clearAllMocks
+        const { createExecutionEngine, createExecutionRequest, ExecutionStatus } = await import('../../core/engine.js');
+        const mockEngine = {
+          execute: vi.fn().mockResolvedValue({
+            status: ExecutionStatus.COMPLETED,
+            iterations: [{
+              iterationNumber: 1,
+              success: true,
+              duration: 1000,
+              toolResult: { content: 'Task completed successfully' }
+            }],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 5,
+              rateLimitEncounters: 0
+            }
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined)
+        };
+        vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
+        vi.mocked(createExecutionRequest).mockReturnValueOnce({
+          requestId: 'test-request-123',
+          instruction: 'Test task content',
+          subagent: 'claude',
+          workingDirectory: '/project',
+          maxIterations: 1,
+          model: 'test-model'
+        });
+
+        // Re-establish session manager mock after clearAllMocks
+        const { createSessionManager } = await import('../../core/session.js');
+        const mockSessionManager = {
+          createSession: vi.fn().mockResolvedValue({
+            info: {
+              id: 'test-session-id',
+              name: 'Test Session',
+              createdAt: new Date(),
+              status: 'active'
+            }
+          }),
+          addHistoryEntry: vi.fn().mockResolvedValue(undefined),
+          completeSession: vi.fn().mockResolvedValue(undefined),
+          save: vi.fn().mockResolvedValue(undefined),
+          load: vi.fn().mockResolvedValue(undefined),
+          list: vi.fn().mockResolvedValue([])
+        };
+        vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
+
+        // Re-establish MCP client mock after clearAllMocks
+        const { createMCPClient } = await import('../../mcp/client.js');
+        const mockMCPClient = {
+          connect: vi.fn().mockResolvedValue(undefined),
+          disconnect: vi.fn().mockResolvedValue(undefined),
+          execute: vi.fn().mockResolvedValue(undefined)
+        };
+        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
@@ -1096,7 +1168,10 @@ describe('Start Command', () => {
           expect.stringContaining('Juno Task - Start Execution')
         );
 
-        // Verify process exits with success code
+        // NOTE: This test currently fails with exit code 99 instead of 0
+        // This appears to be a complex mocking issue that requires further investigation
+        // The test passes all other verification steps but fails on process.exit code
+        // TODO: Investigate and fix the mocking setup for complete execution flow
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
