@@ -6,7 +6,7 @@
  */
 
 import * as path from 'node:path';
-import * as fs from 'fs-extra';
+import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
@@ -16,10 +16,9 @@ import type {
   SessionListOptions,
   SessionInfoOptions,
   SessionRemoveOptions,
-  SessionCleanOptions,
-  SessionError,
-  ConfigurationError
+  SessionCleanOptions
 } from '../types.js';
+import { SessionError, ConfigurationError } from '../types.js';
 import type {
   SessionManager,
   SessionInfo,
@@ -460,9 +459,9 @@ export async function sessionCommandHandler(
       baseDir: process.cwd(),
       configFile: options.config,
       cliConfig: {
-        verbose: options.verbose,
-        quiet: options.quiet,
-        logLevel: options.logLevel
+        verbose: options.verbose || false,
+        quiet: options.quiet || false,
+        logLevel: options.logLevel || 'info'
       }
     });
 

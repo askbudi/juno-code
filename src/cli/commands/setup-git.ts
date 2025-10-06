@@ -9,282 +9,78 @@ import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
-import { z } from 'zod';
+import * as readline from 'node:readline';
 
+import { GitManager, GitUrlUtils, type GitRepositoryInfo } from '../../core/git.js';
 import type { SetupGitOptions, ValidationError, FileSystemError } from '../types.js';
 
-// Validation schemas
-const GitUrlSchema = z.string().url('Must be a valid URL').refine(
-  (url) => url.includes('github.com') || url.includes('gitlab.com') || url.includes('bitbucket.org') || url.includes('.git'),
-  'Must be a valid Git repository URL'
-);
+// Import environment detector for headless mode checks
+import { EnvironmentDetector } from '../utils/environment.js';
 
 /**
- * Git configuration and repository information
+ * Interactive confirmation prompt
  */
-interface GitConfig {
-  remotes: Record<string, string>;
-  branch: string;
-  upstreamUrl?: string;
-  isRepository: boolean;
-  hasRemote: boolean;
-  isDirty: boolean;
-  lastCommit?: {
-    hash: string;
-    message: string;
-    author: string;
-    date: Date;
-  };
+interface ConfirmationPrompt {
+  question: string;
+  defaultAnswer?: boolean;
 }
 
 /**
- * Git utility for repository operations
+ * Interactive prompt utilities
  */
-class GitUtils {
-  constructor(private workingDirectory: string) {}
-
+class InteractivePrompts {
   /**
-   * Check if directory is a Git repository
+   * Ask user for confirmation
    */
-  async isGitRepository(): Promise<boolean> {
-    try {
-      const { execa } = await import('execa');
-      await execa('git', ['rev-parse', '--git-dir'], { cwd: this.workingDirectory });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Initialize Git repository
-   */
-  async initRepository(): Promise<void> {
-    try {
-      const { execa } = await import('execa');
-      await execa('git', ['init'], { cwd: this.workingDirectory });
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to initialize Git repository: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Get current Git configuration
-   */
-  async getConfig(): Promise<GitConfig> {
-    const isRepo = await this.isGitRepository();
-
-    if (!isRepo) {
-      return {
-        remotes: {},
-        branch: '',
-        isRepository: false,
-        hasRemote: false,
-        isDirty: false
-      };
+  static async confirm(prompt: ConfirmationPrompt): Promise<boolean> {
+    if (EnvironmentDetector.isHeadless()) {
+      return prompt.defaultAnswer ?? false;
     }
 
-    try {
-      const { execa } = await import('execa');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
 
-      // Get remotes
-      const remotesResult = await execa('git', ['remote', '-v'], { cwd: this.workingDirectory });
-      const remotes = this.parseRemotes(remotesResult.stdout);
+    return new Promise((resolve) => {
+      const defaultText = prompt.defaultAnswer !== undefined
+        ? ` (${prompt.defaultAnswer ? 'Y/n' : 'y/N'})`
+        : ' (y/n)';
 
-      // Get current branch
-      const branchResult = await execa('git', ['branch', '--show-current'], { cwd: this.workingDirectory });
-      const branch = branchResult.stdout.trim();
+      rl.question(`${prompt.question}${defaultText}: `, (answer) => {
+        rl.close();
 
-      // Check if working directory is dirty
-      const statusResult = await execa('git', ['status', '--porcelain'], { cwd: this.workingDirectory });
-      const isDirty = statusResult.stdout.trim().length > 0;
-
-      // Get last commit info
-      let lastCommit;
-      try {
-        const commitResult = await execa('git', ['log', '-1', '--pretty=format:%H|%s|%an|%ad'], { cwd: this.workingDirectory });
-        const [hash, message, author, date] = commitResult.stdout.split('|');
-        lastCommit = {
-          hash: hash.substring(0, 8),
-          message,
-          author,
-          date: new Date(date)
-        };
-      } catch {
-        // No commits yet
-      }
-
-      return {
-        remotes,
-        branch,
-        upstreamUrl: remotes.origin,
-        isRepository: true,
-        hasRemote: Object.keys(remotes).length > 0,
-        isDirty,
-        lastCommit
-      };
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to get Git configuration: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Set upstream URL
-   */
-  async setUpstreamUrl(url: string): Promise<void> {
-    try {
-      const { execa } = await import('execa');
-
-      // Validate URL
-      const urlResult = GitUrlSchema.safeParse(url);
-      if (!urlResult.success) {
-        throw new ValidationError(
-          `Invalid Git URL: ${url}`,
-          [
-            'Provide a valid HTTPS Git repository URL',
-            'Example: https://github.com/owner/repo.git',
-            'Supported platforms: GitHub, GitLab, Bitbucket'
-          ]
-        );
-      }
-
-      // Check if origin remote exists
-      try {
-        await execa('git', ['remote', 'get-url', 'origin'], { cwd: this.workingDirectory });
-        // Remote exists, update it
-        await execa('git', ['remote', 'set-url', 'origin', url], { cwd: this.workingDirectory });
-      } catch {
-        // Remote doesn't exist, add it
-        await execa('git', ['remote', 'add', 'origin', url], { cwd: this.workingDirectory });
-      }
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        throw error;
-      }
-
-      throw new FileSystemError(
-        `Failed to set upstream URL: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Remove upstream URL
-   */
-  async removeUpstreamUrl(): Promise<void> {
-    try {
-      const { execa } = await import('execa');
-      await execa('git', ['remote', 'remove', 'origin'], { cwd: this.workingDirectory });
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to remove upstream URL: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Create initial commit if none exists
-   */
-  async createInitialCommit(): Promise<void> {
-    try {
-      const { execa } = await import('execa');
-
-      // Add all files
-      await execa('git', ['add', '.'], { cwd: this.workingDirectory });
-
-      // Create initial commit
-      await execa('git', ['commit', '-m', 'Initial commit - juno-task project setup'], { cwd: this.workingDirectory });
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to create initial commit: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Set up default branch
-   */
-  async setupDefaultBranch(branchName: string = 'main'): Promise<void> {
-    try {
-      const { execa } = await import('execa');
-
-      // Check if we're already on the desired branch
-      const currentBranchResult = await execa('git', ['branch', '--show-current'], { cwd: this.workingDirectory });
-      const currentBranch = currentBranchResult.stdout.trim();
-
-      if (currentBranch === branchName) {
-        return; // Already on the correct branch
-      }
-
-      // Create and switch to the new branch
-      if (currentBranch) {
-        await execa('git', ['branch', '-m', branchName], { cwd: this.workingDirectory });
-      } else {
-        await execa('git', ['checkout', '-b', branchName], { cwd: this.workingDirectory });
-      }
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to setup default branch: ${error}`,
-        this.workingDirectory
-      );
-    }
-  }
-
-  /**
-   * Update .juno_task configuration with Git info
-   */
-  async updateJunoTaskConfig(gitUrl: string): Promise<void> {
-    const configPath = path.join(this.workingDirectory, '.juno_task', 'init.md');
-
-    if (!(await fs.pathExists(configPath))) {
-      return; // No juno-task configuration to update
-    }
-
-    try {
-      let content = await fs.readFile(configPath, 'utf-8');
-
-      // Update or add git URL in the configuration
-      if (content.includes('GIT_URL:')) {
-        content = content.replace(/GIT_URL:.*$/m, `GIT_URL: ${gitUrl}`);
-      } else {
-        // Add git URL to the configuration
-        const lines = content.split('\n');
-        const insertIndex = lines.findIndex(line => line.trim().startsWith('---')) + 1;
-        if (insertIndex > 0) {
-          lines.splice(insertIndex, 0, `GIT_URL: ${gitUrl}`);
-          content = lines.join('\n');
+        if (!answer.trim()) {
+          resolve(prompt.defaultAnswer ?? false);
+          return;
         }
-      }
 
-      await fs.writeFile(configPath, content, 'utf-8');
-    } catch (error) {
-      console.warn(chalk.yellow(`Warning: Failed to update juno-task configuration: ${error}`));
-    }
+        const normalizedAnswer = answer.toLowerCase().trim();
+        resolve(normalizedAnswer === 'y' || normalizedAnswer === 'yes');
+      });
+    });
   }
 
   /**
-   * Parse Git remotes output
+   * Ask user for text input
    */
-  private parseRemotes(output: string): Record<string, string> {
-    const remotes: Record<string, string> = {};
-
-    for (const line of output.split('\n')) {
-      const match = line.match(/^(\w+)\s+(.+?)\s+\(fetch\)$/);
-      if (match) {
-        remotes[match[1]] = match[2];
-      }
+  static async input(question: string, defaultValue?: string): Promise<string> {
+    if (EnvironmentDetector.isHeadless()) {
+      return defaultValue || '';
     }
 
-    return remotes;
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    return new Promise((resolve) => {
+      const defaultText = defaultValue ? ` (${defaultValue})` : '';
+      rl.question(`${question}${defaultText}: `, (answer) => {
+        rl.close();
+        resolve(answer.trim() || defaultValue || '');
+      });
+    });
   }
 }
 
@@ -292,52 +88,64 @@ class GitUtils {
  * Git configuration display formatter
  */
 class GitDisplayFormatter {
-  formatConfig(config: GitConfig): void {
-    if (!config.isRepository) {
+  formatRepositoryInfo(info: GitRepositoryInfo): void {
+    if (!info.isRepository) {
       console.log(chalk.yellow('📁 Not a Git repository'));
       return;
     }
 
-    console.log(chalk.blue.bold('\n📋 Git Configuration\n'));
+    console.log(chalk.blue.bold('\n📋 Git Repository Information\n'));
 
     // Repository status
     console.log(chalk.white.bold('Repository Status:'));
     console.log(`   Initialized: ${chalk.green('Yes')}`);
-    console.log(`   Current Branch: ${config.branch ? chalk.cyan(config.branch) : chalk.gray('(no branch)')}`);
-    console.log(`   Working Directory: ${config.isDirty ? chalk.red('Dirty') : chalk.green('Clean')}`);
+    console.log(`   Current Branch: ${info.currentBranch ? chalk.cyan(info.currentBranch) : chalk.gray('(no branch)')}`);
+    console.log(`   Status: ${this.formatStatus(info.status)}`);
+    console.log(`   Commits: ${chalk.cyan(info.commitCount.toString())}`);
 
     // Remotes
     console.log(chalk.white.bold('\nRemotes:'));
-    if (Object.keys(config.remotes).length === 0) {
+    if (Object.keys(info.remotes).length === 0) {
       console.log(chalk.gray('   No remotes configured'));
     } else {
-      Object.entries(config.remotes).forEach(([name, url]) => {
-        console.log(`   ${chalk.cyan(name)}: ${chalk.white(url)}`);
+      Object.entries(info.remotes).forEach(([name, url]) => {
+        const validation = GitUrlUtils.parseRepositoryUrl(url);
+        const provider = validation ? ` (${validation.provider})` : '';
+        console.log(`   ${chalk.cyan(name)}: ${chalk.white(url)}${chalk.gray(provider)}`);
       });
     }
 
     // Last commit
-    if (config.lastCommit) {
+    if (info.lastCommit) {
       console.log(chalk.white.bold('\nLast Commit:'));
-      console.log(`   Hash: ${chalk.gray(config.lastCommit.hash)}`);
-      console.log(`   Message: ${chalk.white(config.lastCommit.message)}`);
-      console.log(`   Author: ${chalk.gray(config.lastCommit.author)}`);
-      console.log(`   Date: ${chalk.gray(config.lastCommit.date.toLocaleString())}`);
+      console.log(`   Hash: ${chalk.gray(info.lastCommit.hash)}`);
+      console.log(`   Message: ${chalk.white(info.lastCommit.message)}`);
+      console.log(`   Author: ${chalk.gray(info.lastCommit.author)} <${chalk.gray(info.lastCommit.email)}>`);
+      console.log(`   Date: ${chalk.gray(info.lastCommit.date.toLocaleString())}`);
+      console.log(`   Files Changed: ${chalk.cyan(info.lastCommit.filesChanged.toString())}`);
     } else {
       console.log(chalk.white.bold('\nCommits:'));
       console.log(chalk.gray('   No commits yet'));
     }
   }
 
-  formatSetupResult(config: GitConfig, url?: string): void {
+  formatSetupResult(info: GitRepositoryInfo, url?: string): void {
     console.log(chalk.green.bold('\n✅ Git Setup Complete!\n'));
 
     console.log(chalk.blue('📋 Configuration Summary:'));
     console.log(`   Repository: ${chalk.green('Initialized')}`);
-    console.log(`   Branch: ${chalk.cyan(config.branch || 'main')}`);
+    console.log(`   Branch: ${chalk.cyan(info.currentBranch || 'main')}`);
+    console.log(`   Status: ${this.formatStatus(info.status)}`);
 
     if (url) {
-      console.log(`   Remote URL: ${chalk.white(url)}`);
+      const validation = GitUrlUtils.parseRepositoryUrl(url);
+      const provider = validation ? ` (${validation.provider})` : '';
+      console.log(`   Remote URL: ${chalk.white(url)}${chalk.gray(provider)}`);
+
+      if (validation) {
+        const webUrl = GitUrlUtils.getWebUrl(url);
+        console.log(`   Web URL: ${chalk.blue(webUrl)}`);
+      }
     }
 
     console.log(chalk.blue('\n💡 Next Steps:'));
@@ -347,11 +155,24 @@ class GitDisplayFormatter {
 
     if (url) {
       console.log('   2. Push to remote repository:');
-      console.log(chalk.gray('      git push -u origin main'));
+      console.log(chalk.gray(`      git push -u origin ${info.currentBranch || 'main'}`));
     }
 
     console.log('   3. Start working on your project:');
     console.log(chalk.gray('      juno-task start'));
+  }
+
+  private formatStatus(status: GitRepositoryInfo['status']): string {
+    const statusColors = {
+      'clean': chalk.green('Clean'),
+      'dirty': chalk.yellow('Uncommitted changes'),
+      'untracked': chalk.blue('Untracked files'),
+      'mixed': chalk.red('Mixed changes'),
+      'empty': chalk.gray('No commits'),
+      'not-repository': chalk.red('Not a Git repository')
+    };
+
+    return statusColors[status] || chalk.gray(status);
   }
 }
 
@@ -359,59 +180,111 @@ class GitDisplayFormatter {
  * Interactive Git setup
  */
 class GitSetupInteractive {
-  constructor(private gitUtils: GitUtils, private formatter: GitDisplayFormatter) {}
+  constructor(private gitManager: GitManager, private formatter: GitDisplayFormatter) {}
 
   async setup(): Promise<void> {
     console.log(chalk.blue.bold('\n🔧 Git Repository Setup\n'));
 
-    const config = await this.gitUtils.getConfig();
+    const info = await this.gitManager.getRepositoryInfo();
 
-    if (!config.isRepository) {
+    if (!info.isRepository) {
       console.log(chalk.yellow('No Git repository found. Initializing...'));
-      await this.gitUtils.initRepository();
+      await this.gitManager.initRepository();
       console.log(chalk.green('✅ Git repository initialized'));
     }
 
+    // Get current upstream configuration
+    const upstreamConfig = await this.gitManager.getUpstreamConfig();
+
     // Prompt for upstream URL
-    const url = await this.promptForUrl(config.upstreamUrl);
+    const url = await this.promptForUrl(upstreamConfig.url);
 
     if (url) {
-      await this.gitUtils.setUpstreamUrl(url);
-      await this.gitUtils.updateJunoTaskConfig(url);
-      console.log(chalk.green(`✅ Upstream URL set: ${url}`));
+      console.log(chalk.blue(`Setting up upstream: ${url}`));
+      await this.gitManager.setupUpstream(url);
+      await this.gitManager.updateJunoTaskConfig(url);
+      console.log(chalk.green(`✅ Upstream URL configured: ${url}`));
+
+      // Get updated info
+      const updatedInfo = await this.gitManager.getRepositoryInfo();
+
+      // Create initial commit if needed
+      if (updatedInfo.commitCount === 0) {
+        const shouldCommit = await InteractivePrompts.confirm({
+          question: 'Create initial commit with current files?',
+          defaultAnswer: true
+        });
+
+        if (shouldCommit) {
+          console.log(chalk.blue('Creating initial commit...'));
+          await this.gitManager.createInitialCommit();
+          console.log(chalk.green('✅ Initial commit created'));
+        }
+      }
+
+      // Offer to push to upstream
+      const shouldPush = await InteractivePrompts.confirm({
+        question: 'Push to upstream repository now?',
+        defaultAnswer: false
+      });
+
+      if (shouldPush) {
+        try {
+          console.log(chalk.blue('Pushing to upstream...'));
+          await this.gitManager.performInitialPush();
+          console.log(chalk.green('✅ Successfully pushed to upstream'));
+        } catch (error) {
+          console.warn(chalk.yellow(`⚠️  Push failed: ${error}`));
+          console.log(chalk.gray('You can push manually later with: git push -u origin main'));
+        }
+      }
     }
 
-    // Setup default branch
-    await this.gitUtils.setupDefaultBranch('main');
-
-    // Get updated config
-    const updatedConfig = await this.gitUtils.getConfig();
-
-    // Create initial commit if needed
-    if (!updatedConfig.lastCommit) {
-      console.log(chalk.blue('Creating initial commit...'));
-      await this.gitUtils.createInitialCommit();
-      console.log(chalk.green('✅ Initial commit created'));
-    }
-
-    // Display results
-    const finalConfig = await this.gitUtils.getConfig();
-    this.formatter.formatSetupResult(finalConfig, url);
+    // Display final results
+    const finalInfo = await this.gitManager.getRepositoryInfo();
+    this.formatter.formatSetupResult(finalInfo, url);
   }
 
   private async promptForUrl(currentUrl?: string): Promise<string | undefined> {
-    console.log(chalk.yellow('🔗 Repository URL:'));
+    console.log(chalk.yellow('🔗 Repository URL Setup:'));
+
     if (currentUrl) {
       console.log(`   Current: ${chalk.white(currentUrl)}`);
-      console.log('   Press Enter to keep current URL, or enter new URL:');
-    } else {
-      console.log('   Enter the Git repository URL (optional):');
-      console.log('   Example: https://github.com/owner/repo.git');
+      const keepCurrent = await InteractivePrompts.confirm({
+        question: 'Keep current URL?',
+        defaultAnswer: true
+      });
+
+      if (keepCurrent) {
+        return currentUrl;
+      }
     }
 
-    // In real implementation, would prompt for user input
-    // For demonstration, return current URL or undefined
-    return currentUrl;
+    console.log('   Enter Git repository URL (or press Enter to skip):');
+    console.log(chalk.gray('   Examples:'));
+    console.log(chalk.gray('     https://github.com/owner/repo.git'));
+    console.log(chalk.gray('     git@github.com:owner/repo.git'));
+    console.log();
+
+    const newUrl = await InteractivePrompts.input('Git URL', '');
+
+    if (!newUrl.trim()) {
+      return undefined;
+    }
+
+    // Validate the URL
+    const validation = GitManager.validateGitUrl(newUrl);
+    if (!validation.valid) {
+      console.log(chalk.red(`❌ Invalid URL: ${validation.error}`));
+      console.log(chalk.yellow('Please use a valid Git repository URL'));
+      return this.promptForUrl(); // Retry
+    }
+
+    if (validation.provider) {
+      console.log(chalk.green(`✅ Valid ${validation.provider} repository URL`));
+    }
+
+    return newUrl;
   }
 }
 
@@ -425,32 +298,64 @@ export async function setupGitCommandHandler(
 ): Promise<void> {
   try {
     const workingDirectory = process.cwd();
-    const gitUtils = new GitUtils(workingDirectory);
+    const gitManager = new GitManager(workingDirectory);
     const formatter = new GitDisplayFormatter();
 
     if (options.show) {
       // Show current configuration
-      const config = await gitUtils.getConfig();
-      formatter.formatConfig(config);
+      const info = await gitManager.getRepositoryInfo();
+      const upstreamConfig = await gitManager.getUpstreamConfig();
+
+      formatter.formatRepositoryInfo(info);
+
+      if (upstreamConfig.isConfigured) {
+        console.log(chalk.blue('\n🔗 Upstream Configuration:'));
+        console.log(`   Remote: ${chalk.cyan(upstreamConfig.remote)}`);
+        console.log(`   URL: ${chalk.white(upstreamConfig.url)}`);
+        console.log(`   Branch: ${chalk.cyan(upstreamConfig.branch)}`);
+
+        const webUrl = GitUrlUtils.getWebUrl(upstreamConfig.url!);
+        console.log(`   Web URL: ${chalk.blue(webUrl)}`);
+      } else {
+        console.log(chalk.yellow('\n🔗 No upstream repository configured'));
+        console.log(chalk.gray('   Use: juno-task setup-git <url> to configure'));
+      }
+
       return;
     }
 
     if (options.remove) {
       // Remove upstream URL
-      const config = await gitUtils.getConfig();
+      const info = await gitManager.getRepositoryInfo();
 
-      if (!config.isRepository) {
-        console.log(chalk.yellow('Not a Git repository'));
+      if (!info.isRepository) {
+        console.log(chalk.yellow('❌ Not a Git repository'));
+        console.log(chalk.gray('   Initialize with: juno-task setup-git --init'));
         return;
       }
 
-      if (!config.hasRemote) {
-        console.log(chalk.yellow('No remote configured'));
+      const upstreamConfig = await gitManager.getUpstreamConfig();
+      if (!upstreamConfig.isConfigured) {
+        console.log(chalk.yellow('❌ No upstream remote configured'));
         return;
       }
 
-      await gitUtils.removeUpstreamUrl();
-      console.log(chalk.green('✅ Upstream URL removed'));
+      const confirmRemoval = await InteractivePrompts.confirm({
+        question: `Remove upstream remote '${upstreamConfig.remote}' (${upstreamConfig.url})?`,
+        defaultAnswer: false
+      });
+
+      if (confirmRemoval) {
+        const removed = await gitManager.removeUpstream();
+        if (removed) {
+          console.log(chalk.green('✅ Upstream remote removed'));
+        } else {
+          console.log(chalk.yellow('⚠️  No upstream remote to remove'));
+        }
+      } else {
+        console.log(chalk.gray('Operation cancelled'));
+      }
+
       return;
     }
 
@@ -459,36 +364,84 @@ export async function setupGitCommandHandler(
 
     if (url) {
       // Direct URL setup
-      const config = await gitUtils.getConfig();
-
-      if (!config.isRepository) {
-        console.log(chalk.blue('Initializing Git repository...'));
-        await gitUtils.initRepository();
+      const validation = GitManager.validateGitUrl(url);
+      if (!validation.valid) {
+        const { ValidationError } = await import('../types.js');
+        throw new ValidationError(
+          `Invalid Git URL: ${validation.error}`,
+          [
+            'Use HTTPS format: https://github.com/owner/repo.git',
+            'Use SSH format: git@github.com:owner/repo.git',
+            'Supported providers: GitHub, GitLab, Bitbucket'
+          ]
+        );
       }
 
-      await gitUtils.setUpstreamUrl(url);
-      await gitUtils.updateJunoTaskConfig(url);
+      const info = await gitManager.getRepositoryInfo();
 
-      console.log(chalk.green(`✅ Upstream URL set: ${url}`));
+      if (!info.isRepository) {
+        console.log(chalk.blue('🔧 Initializing Git repository...'));
+        await gitManager.initRepository();
+        console.log(chalk.green('✅ Git repository initialized'));
+      }
 
-      // Display updated configuration
-      const updatedConfig = await gitUtils.getConfig();
-      formatter.formatConfig(updatedConfig);
+      console.log(chalk.blue(`🔗 Setting up upstream: ${url}`));
+      if (validation.provider) {
+        console.log(chalk.gray(`   Provider: ${validation.provider}`));
+      }
+
+      await gitManager.setupUpstream(url);
+      await gitManager.updateJunoTaskConfig(url);
+
+      console.log(chalk.green(`✅ Upstream URL configured: ${url}`));
+
+      // Get updated info
+      const updatedInfo = await gitManager.getRepositoryInfo();
+
+      // Create initial commit if repository is empty
+      if (updatedInfo.commitCount === 0) {
+        console.log(chalk.blue('📝 Creating initial commit...'));
+        await gitManager.createInitialCommit();
+        console.log(chalk.green('✅ Initial commit created'));
+      }
+
+      // Ask about initial push
+      const shouldPush = await InteractivePrompts.confirm({
+        question: 'Push to upstream repository now?',
+        defaultAnswer: true
+      });
+
+      if (shouldPush) {
+        try {
+          console.log(chalk.blue('📤 Pushing to upstream...'));
+          await gitManager.performInitialPush();
+          console.log(chalk.green('✅ Successfully pushed to upstream'));
+        } catch (error) {
+          console.warn(chalk.yellow(`⚠️  Push failed: ${error}`));
+          console.log(chalk.gray('You can push manually later with: git push -u origin main'));
+        }
+      }
+
+      // Display final configuration
+      const finalInfo = await gitManager.getRepositoryInfo();
+      formatter.formatSetupResult(finalInfo, url);
 
     } else {
       // Interactive setup
-      const interactive = new GitSetupInteractive(gitUtils, formatter);
+      const interactive = new GitSetupInteractive(gitManager, formatter);
       await interactive.setup();
     }
 
   } catch (error) {
+    const { ValidationError, FileSystemError } = await import('../types.js');
+
     if (error instanceof ValidationError || error instanceof FileSystemError) {
       console.error(chalk.red.bold('\n❌ Git Setup Failed'));
       console.error(chalk.red(`   ${error.message}`));
 
-      if (error.suggestions?.length) {
+      if ((error as any).suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        (error as any).suggestions.forEach((suggestion: string) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -498,11 +451,11 @@ export async function setupGitCommandHandler(
 
     // Unexpected error
     console.error(chalk.red.bold('\n❌ Unexpected Error'));
-    console.error(chalk.red(`   ${error}`));
+    console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
 
-    if (options.verbose) {
+    if (options.verbose && error instanceof Error) {
       console.error('\n📍 Stack Trace:');
-      console.error(error);
+      console.error(error.stack);
     }
 
     process.exit(99);

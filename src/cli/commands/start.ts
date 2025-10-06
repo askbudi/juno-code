@@ -14,7 +14,8 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClient } from '../../mcp/client.js';
-import type { StartCommandOptions, ConfigurationError, MCPError, FileSystemError } from '../types.js';
+import type { StartCommandOptions } from '../types.js';
+import { ConfigurationError, MCPError, FileSystemError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
 import type {
   ExecutionRequest,
@@ -383,9 +384,9 @@ export async function startCommandHandler(
       baseDir: options.directory || process.cwd(),
       configFile: options.config,
       cliConfig: {
-        verbose: options.verbose,
-        quiet: options.quiet,
-        logLevel: options.logLevel,
+        verbose: options.verbose || false,
+        quiet: options.quiet || false,
+        logLevel: options.logLevel || 'info',
         workingDirectory: options.directory || process.cwd()
       }
     });

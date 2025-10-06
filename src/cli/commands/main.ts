@@ -18,18 +18,21 @@ import { Command } from 'commander';
 import { render } from 'ink';
 import React from 'react';
 
-import { loadCLIConfig, createCommand, createOption } from '../framework.js';
+import { loadConfig } from '../../core/config.js';
+import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClient } from '../../mcp/client.js';
-import { isHeadless } from '../../utils/environment.js';
+import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
 import type {
   MainCommandOptions,
+  CLICommand
+} from '../types.js';
+import {
   ValidationError,
   ConfigurationError,
   MCPError,
-  FileSystemError,
-  CLICommand
+  FileSystemError
 } from '../types.js';
 import type { SubagentType, JunoTaskConfig } from '../../types/index.js';
 import type {
@@ -371,9 +374,9 @@ export async function mainCommandHandler(
       baseDir: options.cwd || process.cwd(),
       configFile: options.config,
       cliConfig: {
-        verbose: options.verbose,
-        quiet: options.quiet,
-        logLevel: options.logLevel,
+        verbose: options.verbose || false,
+        quiet: options.quiet || false,
+        logLevel: options.logLevel || 'info',
         workingDirectory: options.cwd || process.cwd()
       }
     });
