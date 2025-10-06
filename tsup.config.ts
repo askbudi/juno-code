@@ -27,7 +27,7 @@ export default defineConfig({
   ],
 
   // Environment and Node.js specific
-  shims: true,
+  shims: false,
 
   // Output configuration
   outDir: 'dist',
@@ -41,6 +41,12 @@ export default defineConfig({
   esbuildOptions: (options) => {
     options.conditions = ['node'];
     options.mainFields = ['module', 'main'];
+    // Suppress unused import warnings for bundled dependencies
+    options.ignoreAnnotations = false;
+    options.treeShaking = true;
+    // Suppress warnings about unused imports from bundled modules
+    options.logLevel = 'warning';
+    options.logLimit = 0;
   },
 
   // Only add shebang to CLI entry

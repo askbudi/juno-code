@@ -49,7 +49,12 @@ class PromptProcessor {
   constructor(private options: MainCommandOptions) {}
 
   async processPrompt(): Promise<string> {
-    const { prompt } = this.options;
+    const { prompt, interactivePrompt } = this.options;
+
+    // Handle --interactive-prompt (TUI editor)
+    if (interactivePrompt) {
+      return await this.launchTUIPromptEditor(prompt);
+    }
 
     if (!prompt) {
       if (this.options.interactive) {
@@ -60,7 +65,8 @@ class PromptProcessor {
           [
             'Provide prompt text: juno-task claude "your prompt here"',
             'Use file input: juno-task claude prompt.txt',
-            'Use interactive mode: juno-task claude --interactive'
+            'Use interactive mode: juno-task claude --interactive',
+            'Use TUI editor: juno-task claude --interactive-prompt'
           ]
         );
       }
@@ -111,6 +117,54 @@ class PromptProcessor {
       throw new FileSystemError(
         `Failed to read prompt file: ${error}`,
         filePath
+      );
+    }
+  }
+
+  private async launchTUIPromptEditor(initialValue?: string): Promise<string> {
+    try {
+      // Dynamic import to avoid loading TUI in headless environments
+      const { launchPromptEditor, isTUISupported, safeTUIExecution } = await import('../../tui/index.js');
+
+      console.log(chalk.blue.bold('\n🎨 Launching TUI Prompt Editor...\n'));
+
+      return await safeTUIExecution(
+        // TUI function
+        async () => {
+          const result = await launchPromptEditor({
+            initialValue: initialValue || '',
+            title: `Prompt Editor - ${this.options.subagent}`,
+            maxLength: 10000
+          });
+
+          if (!result) {
+            throw new ValidationError(
+              'Prompt editor was cancelled',
+              ['Try again with --interactive-prompt', 'Use --interactive for simple input']
+            );
+          }
+
+          return result;
+        },
+        // Fallback function
+        async () => {
+          console.log(chalk.yellow('TUI not available, falling back to interactive mode...'));
+          return await this.collectInteractivePrompt();
+        }
+      );
+
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        throw error;
+      }
+
+      throw new ValidationError(
+        `Failed to launch TUI prompt editor: ${error}`,
+        [
+          'Try using --interactive for simple input',
+          'Ensure terminal supports TUI',
+          'Check that dependencies are installed'
+        ]
       );
     }
   }

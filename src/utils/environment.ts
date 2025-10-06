@@ -13,7 +13,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import { promises as fs } from 'node:fs';
-import { execSync } from 'node:child_process';
+// Conditional import for execSync to improve tree shaking
+// import { execSync } from 'node:child_process';
 
 // ============================================================================
 // Types and Interfaces
@@ -704,6 +705,8 @@ export function isRunningAsRoot(): boolean {
   if (platform === 'win32') {
     // On Windows, check if user is in Administrators group
     try {
+      // Dynamic import to improve tree shaking
+      const { execSync } = require('node:child_process');
       execSync('net session', { stdio: 'ignore' });
       return true;
     } catch {

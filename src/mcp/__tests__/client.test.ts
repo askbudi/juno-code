@@ -54,6 +54,7 @@ import { Transport } from '@modelcontextprotocol/sdk/shared';
 
 import {
   MCPClient,
+  StubMCPClient,
   ProgressEventParser,
   ServerPathDiscovery,
   ConnectionRetryManager,
@@ -437,14 +438,19 @@ Backend #3: tool_result => Analysis complete`;
     it('should calculate exponential backoff delay correctly', async () => {
       const operation = vi.fn().mockRejectedValue(new MCPConnectionError('Always fails'));
 
+      // Start the operation and immediately set up error handling
       const promise = retryManager.executeWithRetry(operation, 'test-op');
+
+      // Set up the expectation first to prevent unhandled rejection
+      const expectationPromise = expect(promise).rejects.toThrow();
 
       // Fast forward through delays
       await vi.advanceTimersByTimeAsync(1000); // First retry
       await vi.advanceTimersByTimeAsync(2000); // Second retry
       await vi.advanceTimersByTimeAsync(4000); // Third retry
 
-      await expect(promise).rejects.toThrow();
+      // Now await the expectation
+      await expectationPromise;
     });
 
     it('should use custom retry condition if provided', async () => {
@@ -1038,15 +1044,25 @@ Backend #3: tool_result => Analysis complete`;
       });
 
       it('should handle MCP client connection timeout', async () => {
-        mockMCPClient.connect.mockImplementation(() =>
-          new Promise(resolve => setTimeout(resolve, testConfig.timeout + 1000))
+        // Use real timers for this test to avoid fake timer complexity
+        vi.useRealTimers();
+
+        // Create a client with a very short timeout for testing
+        const shortTimeoutClient = new MCPClient({
+          ...testConfig,
+          timeout: 100 // 100ms timeout
+        });
+
+        // Spy on the parent class connect method to simulate a delay longer than timeout
+        vi.spyOn(StubMCPClient.prototype, 'connect').mockImplementation(() =>
+          new Promise(resolve => setTimeout(resolve, 200)) // 200ms delay
         );
 
-        const connectPromise = client.connect();
-        vi.advanceTimersByTime(1000); // Process startup
-        vi.advanceTimersByTime(testConfig.timeout);
+        // Test should timeout before the mock resolves
+        await expect(shortTimeoutClient.connect()).rejects.toThrow(MCPTimeoutError);
 
-        await expect(connectPromise).rejects.toThrow(MCPTimeoutError);
+        // Restore fake timers for other tests
+        vi.useFakeTimers();
       });
 
       it('should disconnect successfully', async () => {

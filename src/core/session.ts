@@ -1125,6 +1125,9 @@ export async function createSessionManager(config: JunoTaskConfig): Promise<Sess
 /**
  * Session utilities for common operations
  */
+// Simple counter for ID uniqueness
+let sessionIdCounter = 0;
+
 export const SessionUtils = {
   /**
    * Generate session ID compatible with Python implementation
@@ -1134,7 +1137,12 @@ export const SessionUtils = {
    */
   generateTimestampId(): string {
     const now = new Date();
-    return now.toISOString().replace(/[-:.]/g, '').slice(0, 15);
+    // Use timestamp without milliseconds to ensure we have room for counter
+    const timestamp = now.toISOString().replace(/[-:.TZ]/g, '').slice(0, 12); // YYYYMMDDHHMM
+    // Add a simple incrementing counter for uniqueness
+    sessionIdCounter = (sessionIdCounter + 1) % 1000;
+    const suffix = sessionIdCounter.toString().padStart(3, '0');
+    return timestamp + suffix; // 12 + 3 = 15 digits
   },
 
   /**
