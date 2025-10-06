@@ -11,7 +11,7 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClient } from '../../mcp/client.js';
 import type { StartCommandOptions } from '../types.js';
@@ -21,8 +21,7 @@ import type {
   ExecutionRequest,
   ExecutionResult,
   ProgressEvent,
-  IterationResult,
-  ExecutionStatus
+  IterationResult
 } from '../../core/engine.js';
 import type { SessionManager, Session } from '../../core/session.js';
 
