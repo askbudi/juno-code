@@ -213,13 +213,13 @@ describe('FileSessionStorage', () => {
   describe('saveSession', () => {
     it('should save session to file with proper serialization', async () => {
       const session = createMockSession();
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.writeFile.mockResolvedValue(undefined);
 
       await storage.saveSession(session);
 
-      expect(mockFsPromises.mkdir).toHaveBeenCalled();
-      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
+      expect(mockFs.promises.mkdir).toHaveBeenCalled();
+      expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', `${session.info.id}.json`),
         expect.stringContaining('"createdAt":"2024-01-01T10:00:00.000Z"'),
         'utf-8'
@@ -232,12 +232,12 @@ describe('FileSessionStorage', () => {
           completedAt: new Date('2024-01-01T11:00:00.000Z'),
         }),
       });
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.writeFile.mockResolvedValue(undefined);
 
       await storage.saveSession(session);
 
-      const writeCall = mockFsPromises.writeFile.mock.calls[0];
+      const writeCall = mockFs.promises.writeFile.mock.calls[0];
       const serializedData = writeCall[1] as string;
       const parsed = JSON.parse(serializedData);
 
@@ -265,7 +265,7 @@ describe('FileSessionStorage', () => {
         })),
       });
 
-      mockFsPromises.readFile.mockResolvedValue(serializedSession);
+      mockFs.promises.readFile.mockResolvedValue(serializedSession);
 
       const result = await storage.loadSession('test-session-123');
 
@@ -279,7 +279,7 @@ describe('FileSessionStorage', () => {
     it('should return null when session file not found', async () => {
       const error = new Error('File not found') as NodeJS.ErrnoException;
       error.code = 'ENOENT';
-      mockFsPromises.readFile.mockRejectedValue(error);
+      mockFs.promises.readFile.mockRejectedValue(error);
 
       const result = await storage.loadSession('nonexistent-session');
 
@@ -288,7 +288,7 @@ describe('FileSessionStorage', () => {
 
     it('should throw error for other file system errors', async () => {
       const error = new Error('Permission denied');
-      mockFsPromises.readFile.mockRejectedValue(error);
+      mockFs.promises.readFile.mockRejectedValue(error);
 
       await expect(storage.loadSession('test-session-123')).rejects.toThrow(
         'Failed to load session test-session-123: Error: Permission denied'
@@ -311,7 +311,7 @@ describe('FileSessionStorage', () => {
         })),
       });
 
-      mockFsPromises.readFile.mockResolvedValue(serializedSession);
+      mockFs.promises.readFile.mockResolvedValue(serializedSession);
 
       const result = await storage.loadSession('test-session-123');
 
@@ -326,10 +326,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', status: 'completed' } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -354,10 +354,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', status: 'completed' } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -383,10 +383,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', subagent: 'cursor' } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -422,10 +422,10 @@ describe('FileSessionStorage', () => {
         }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -455,10 +455,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', tags: ['production', 'deploy'] } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -495,10 +495,10 @@ describe('FileSessionStorage', () => {
         }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -527,10 +527,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-3' } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json', 'session-3.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json', 'session-3.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -557,11 +557,11 @@ describe('FileSessionStorage', () => {
     });
 
     it('should handle corrupted session files gracefully', async () => {
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'corrupted.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'corrupted.json']);
 
       const validSession = createMockSession({ info: { id: 'session-1' } });
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...validSession,
           info: { ...validSession.info, createdAt: validSession.info.createdAt.toISOString(), updatedAt: validSession.info.updatedAt.toISOString() },
@@ -585,8 +585,8 @@ describe('FileSessionStorage', () => {
     it('should return empty array when sessions directory does not exist', async () => {
       const error = new Error('Directory not found') as NodeJS.ErrnoException;
       error.code = 'ENOENT';
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockRejectedValue(error);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockRejectedValue(error);
 
       const result = await storage.listSessions();
 
@@ -599,10 +599,10 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', name: 'Named Session' } }),
       ];
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
-      mockFsPromises.readFile
+      mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],
           info: { ...sessions[0].info, createdAt: sessions[0].info.createdAt.toISOString(), updatedAt: sessions[0].info.updatedAt.toISOString() },
@@ -626,11 +626,11 @@ describe('FileSessionStorage', () => {
 
   describe('removeSession', () => {
     it('should remove session file', async () => {
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       await storage.removeSession('test-session-123');
 
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
     });
@@ -638,14 +638,14 @@ describe('FileSessionStorage', () => {
     it('should handle file not found error gracefully', async () => {
       const error = new Error('File not found') as NodeJS.ErrnoException;
       error.code = 'ENOENT';
-      mockFsPromises.unlink.mockRejectedValue(error);
+      mockFs.promises.unlink.mockRejectedValue(error);
 
       await expect(storage.removeSession('nonexistent-session')).resolves.not.toThrow();
     });
 
     it('should throw error for other file system errors', async () => {
       const error = new Error('Permission denied');
-      mockFsPromises.unlink.mockRejectedValue(error);
+      mockFs.promises.unlink.mockRejectedValue(error);
 
       await expect(storage.removeSession('test-session-123')).rejects.toThrow(
         'Failed to remove session test-session-123: Error: Permission denied'
@@ -655,19 +655,19 @@ describe('FileSessionStorage', () => {
 
   describe('sessionExists', () => {
     it('should return true when session exists', async () => {
-      mockFsPromises.access.mockResolvedValue(undefined);
+      mockFs.promises.access.mockResolvedValue(undefined);
 
       const exists = await storage.sessionExists('test-session-123');
 
       expect(exists).toBe(true);
-      expect(mockFsPromises.access).toHaveBeenCalledWith(
+      expect(mockFs.promises.access).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json'),
         fs.constants.F_OK
       );
     });
 
     it('should return false when session does not exist', async () => {
-      mockFsPromises.access.mockRejectedValue(new Error('File not found'));
+      mockFs.promises.access.mockRejectedValue(new Error('File not found'));
 
       const exists = await storage.sessionExists('nonexistent-session');
 
@@ -683,15 +683,15 @@ describe('FileSessionStorage', () => {
         }),
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
       }));
-      mockFsPromises.writeFile.mockResolvedValue(undefined);
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.writeFile.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       // Mock current date to be much later
       const mockDate = new Date('2024-12-01T10:00:00.000Z');
@@ -705,12 +705,12 @@ describe('FileSessionStorage', () => {
       const archivedIds = await storage.archiveSessions(options);
 
       expect(archivedIds).toEqual(['test-session-123']);
-      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
+      expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
         path.join(tempDir, 'archive', 'test-session-123_2024-01-01.json'),
         expect.any(String),
         'utf-8'
       );
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
 
@@ -722,15 +722,15 @@ describe('FileSessionStorage', () => {
         info: createMockSessionInfo({ status: 'completed' }),
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
       }));
-      mockFsPromises.writeFile.mockResolvedValue(undefined);
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.writeFile.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: ArchiveOptions = {
         status: ['completed'],
@@ -742,7 +742,7 @@ describe('FileSessionStorage', () => {
       expect(archivedIds).toEqual(['test-session-123']);
 
       // Verify only metadata was archived (not full data)
-      const writeCall = mockFsPromises.writeFile.mock.calls[0];
+      const writeCall = mockFs.promises.writeFile.mock.calls[0];
       const archivedData = JSON.parse(writeCall[1] as string);
       expect(archivedData.info).toBeDefined();
       expect(archivedData.context).toBeDefined();
@@ -753,14 +753,14 @@ describe('FileSessionStorage', () => {
     it('should handle archiving errors gracefully', async () => {
       const session = createMockSession();
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
       }));
-      mockFsPromises.writeFile.mockRejectedValue(new Error('Write failed'));
+      mockFs.promises.writeFile.mockRejectedValue(new Error('Write failed'));
 
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -784,14 +784,14 @@ describe('FileSessionStorage', () => {
         }),
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
       }));
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       // Mock current date to be much later
       const mockDate = new Date('2024-12-01T10:00:00.000Z');
@@ -804,7 +804,7 @@ describe('FileSessionStorage', () => {
 
       await storage.cleanup(options);
 
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
 
@@ -816,14 +816,14 @@ describe('FileSessionStorage', () => {
         info: createMockSessionInfo({ status: 'failed' }),
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
       }));
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: CleanupOptions = {
         removeStatus: ['failed'],
@@ -832,7 +832,7 @@ describe('FileSessionStorage', () => {
 
       await storage.cleanup(options);
 
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
     });
@@ -843,14 +843,14 @@ describe('FileSessionStorage', () => {
         result: undefined,
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: [],
       }));
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: CleanupOptions = {
         removeEmpty: true,
@@ -859,7 +859,7 @@ describe('FileSessionStorage', () => {
 
       await storage.cleanup(options);
 
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
     });
@@ -869,9 +869,9 @@ describe('FileSessionStorage', () => {
         info: createMockSessionInfo({ status: 'failed' }),
       });
 
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
         ...session,
         info: { ...session.info, createdAt: session.info.createdAt.toISOString(), updatedAt: session.info.updatedAt.toISOString() },
         history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
@@ -884,14 +884,14 @@ describe('FileSessionStorage', () => {
 
       await storage.cleanup(options);
 
-      expect(mockFsPromises.unlink).not.toHaveBeenCalled();
+      expect(mockFs.promises.unlink).not.toHaveBeenCalled();
     });
 
     it('should handle corrupted sessions during cleanup', async () => {
-      mockFsPromises.mkdir.mockResolvedValue(undefined);
-      mockFsPromises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFsPromises.readFile.mockRejectedValue(new Error('Corrupted file'));
-      mockFsPromises.unlink.mockResolvedValue(undefined);
+      mockFs.promises.mkdir.mockResolvedValue(undefined);
+      mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
+      mockFs.promises.readFile.mockRejectedValue(new Error('Corrupted file'));
+      mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: CleanupOptions = {
         removeEmpty: true,
@@ -900,7 +900,7 @@ describe('FileSessionStorage', () => {
 
       await storage.cleanup(options);
 
-      expect(mockFsPromises.unlink).toHaveBeenCalledWith(
+      expect(mockFs.promises.unlink).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json')
       );
     });
@@ -1938,16 +1938,16 @@ describe('SessionUtils', () => {
 describe('createSessionManager', () => {
   it('should create SessionManager with FileSessionStorage', async () => {
     const config = createMockConfig();
-    mockFsPromises.mkdir.mockResolvedValue(undefined);
+    mockFs.promises.mkdir.mockResolvedValue(undefined);
 
     const sessionManager = await createSessionManager(config);
 
     expect(sessionManager).toBeInstanceOf(SessionManager);
-    expect(mockFsPromises.mkdir).toHaveBeenCalledWith(
+    expect(mockFs.promises.mkdir).toHaveBeenCalledWith(
       path.join(config.sessionDirectory, 'sessions'),
       { recursive: true }
     );
-    expect(mockFsPromises.mkdir).toHaveBeenCalledWith(
+    expect(mockFs.promises.mkdir).toHaveBeenCalledWith(
       path.join(config.sessionDirectory, 'archive'),
       { recursive: true }
     );

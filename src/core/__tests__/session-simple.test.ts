@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import {
   SessionManager,
   SessionUtils,
+  createSessionManager,
   type Session,
   type SessionInfo,
   type SessionContext,
