@@ -9,6 +9,14 @@
 import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from '../core/config.js';
+import {
+  CLIError,
+  ValidationError,
+  ConfigurationError,
+  EXIT_CODES,
+  ENVIRONMENT_MAPPINGS,
+  SUBAGENT_ALIASES
+} from './types.js';
 import type {
   CLICommand,
   CommandOption,
@@ -16,12 +24,6 @@ import type {
   CommandExample,
   GlobalCLIOptions,
   AllCommandOptions,
-  CLIError,
-  ValidationError,
-  ConfigurationError,
-  EXIT_CODES,
-  ENVIRONMENT_MAPPINGS,
-  SUBAGENT_ALIASES,
   HelpContent
 } from './types.js';
 import type { SubagentType, JunoTaskConfig } from '../types/index.js';
@@ -83,6 +85,11 @@ export class CLIFramework {
         defaultValue: 'info',
         choices: ['error', 'warn', 'info', 'debug', 'trace'],
         env: 'JUNO_TASK_LOG_LEVEL'
+      },
+      {
+        flags: '-s, --subagent <type>',
+        description: 'Subagent to use',
+        env: 'JUNO_TASK_SUBAGENT'
       }
     ];
 
@@ -399,7 +406,7 @@ export class CLIFramework {
 
       // Handle unexpected errors
       console.error(chalk.red.bold('\n❌ Unexpected Error'));
-      console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
+      console.error(chalk.red.bold(`   ${error instanceof Error ? error.message : String(error)}`));
 
       if (verbose && error instanceof Error) {
         console.error(chalk.gray('\n📍 Stack Trace:'));

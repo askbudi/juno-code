@@ -344,9 +344,14 @@ describe('FileSessionStorage', () => {
         createMockSession({ info: { id: 'session-2', status: 'completed' } }),
       ];
 
-      // Configure mocks for this specific test
+      // Configure mocks for this specific test - need to re-mock after beforeEach clearAllMocks
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
+      // Mock the access check (used by initialize)
+      mockFs.promises.access.mockResolvedValue(undefined);
+
+      // Reset readFile mock and set up chained responses
+      mockFs.promises.readFile.mockReset();
       mockFs.promises.readFile
         .mockResolvedValueOnce(JSON.stringify({
           ...sessions[0],

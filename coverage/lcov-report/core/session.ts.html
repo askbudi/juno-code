@@ -23,16 +23,16 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">44.1% </span>
+                <span class="strong">44.06% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>535/1213</span>
+                <span class='fraction'>538/1221</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/0</span>
+                <span class='fraction'>0/2</span>
             </div>
         
             
@@ -44,9 +44,9 @@
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">44.1% </span>
+                <span class="strong">44.06% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>535/1213</span>
+                <span class='fraction'>538/1221</span>
             </div>
         
             
@@ -1275,7 +1275,15 @@
 <a name='L1210'></a><a href='#L1210'>1210</a>
 <a name='L1211'></a><a href='#L1211'>1211</a>
 <a name='L1212'></a><a href='#L1212'>1212</a>
-<a name='L1213'></a><a href='#L1213'>1213</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<a name='L1213'></a><a href='#L1213'>1213</a>
+<a name='L1214'></a><a href='#L1214'>1214</a>
+<a name='L1215'></a><a href='#L1215'>1215</a>
+<a name='L1216'></a><a href='#L1216'>1216</a>
+<a name='L1217'></a><a href='#L1217'>1217</a>
+<a name='L1218'></a><a href='#L1218'>1218</a>
+<a name='L1219'></a><a href='#L1219'>1219</a>
+<a name='L1220'></a><a href='#L1220'>1220</a>
+<a name='L1221'></a><a href='#L1221'>1221</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -2410,6 +2418,14 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -2788,7 +2804,7 @@ export interface SessionEvent {
  * Stores sessions as JSON files in a directory structure
  */
 export class FileSessionStorage implements SessionStorage {
-  private readonly <span class="fstat-no" title="function not covered" >baseDir: string;</span>
+  private readonly <span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >baseDir: string;</span></span>
 <span class="cstat-no" title="statement not covered" >  private readonly sessionsDir: string;</span>
 <span class="cstat-no" title="statement not covered" >  private readonly archiveDir: string;</span>
 &nbsp;
@@ -3099,7 +3115,7 @@ export class FileSessionStorage implements SessionStorage {
  * Provides high-level API for session operations with event emission
  */
 export class SessionManager extends EventEmitter {
-  private <span class="fstat-no" title="function not covered" >storage: SessionStorage;</span>
+  private <span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >storage: SessionStorage;</span></span>
 <span class="cstat-no" title="statement not covered" >  private activeSessions: Map&lt;string, Session&gt; = new Map();</span>
 &nbsp;
   /**
@@ -3614,6 +3630,9 @@ export class SessionManager extends EventEmitter {
 /**
  * Session utilities for common operations
  */
+// Simple counter for ID uniqueness
+let sessionIdCounter = 0;
+&nbsp;
 export const SessionUtils = {
   /**
    * Generate session ID compatible with Python implementation
@@ -3623,7 +3642,12 @@ export const SessionUtils = {
    */
 <span class="fstat-no" title="function not covered" >  generateTimestampId(): string {</span>
 <span class="cstat-no" title="statement not covered" >    const now = new Date();</span>
-<span class="cstat-no" title="statement not covered" >    return now.toISOString().replace(/[-:.]/g, '').slice(0, 15);</span>
+<span class="cstat-no" title="statement not covered" >    // Use timestamp without milliseconds to ensure we have room for counter</span>
+<span class="cstat-no" title="statement not covered" >    const timestamp = now.toISOString().replace(/[-:.TZ]/g, '').slice(0, 12); // YYYYMMDDHHMM</span>
+<span class="cstat-no" title="statement not covered" >    // Add a simple incrementing counter for uniqueness</span>
+<span class="cstat-no" title="statement not covered" >    sessionIdCounter = (sessionIdCounter + 1) % 1000;</span>
+<span class="cstat-no" title="statement not covered" >    const suffix = sessionIdCounter.toString().padStart(3, '0');</span>
+<span class="cstat-no" title="statement not covered" >    return timestamp + suffix; // 12 + 3 = 15 digits</span>
 <span class="cstat-no" title="statement not covered" >  },</span>
 &nbsp;
   /**
@@ -3706,7 +3730,7 @@ export const SessionUtils = {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-06T07:48:33.984Z
+                at 2025-10-06T17:25:26.040Z
             </div>
         <script src="../prettify.js"></script>
         <script>
