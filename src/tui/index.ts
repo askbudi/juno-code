@@ -125,11 +125,11 @@ export async function launchPromptEditor(options: {
   title?: string;
   maxLength?: number;
 }): Promise<string | null> {
-  const { isTUISupported } = await import('./utils/renderer.js');
+  const { isTUIAvailable } = await import('./utils/renderer.js');
   const { headlessPromptEditor } = await import('./utils/headless.js');
 
   // Use headless fallback if TUI is not supported
-  if (!isTUISupported()) {
+  if (!isTUIAvailable()) {
     return headlessPromptEditor(options);
   }
 
@@ -341,7 +341,7 @@ export async function showSelection<T = string>(options: {
 export function isTUISupported(): boolean {
   return typeof process !== 'undefined' &&
          process.stdout &&
-         process.stdout.isTTY &&
+         Boolean(process.stdout.isTTY) &&
          !process.env.CI &&
          process.env.TERM !== 'dumb';
 }
@@ -369,35 +369,5 @@ export async function safeTUIExecution<T>(
 // Default Export
 // ============================================================================
 
-export default {
-  // Apps
-  TUIApp,
-  PromptEditor,
-  SimplePromptEditor,
-
-  // Components
-  Input,
-  Spinner,
-  ProgressBar,
-  Dialog,
-  Select,
-
-  // Hooks
-  useTUIContext,
-  useKeyboard,
-  useTUIState,
-
-  // High-level functions
-  launchPromptEditor,
-  launchSimplePrompt,
-  showConfirmation,
-  showAlert,
-  showSelection,
-  isTUISupported,
-  safeTUIExecution,
-
-  // Utilities
-  tuiRenderer,
-  renderTUI,
-  renderAndWait
-};
+// Note: Default export removed to fix module loading issues
+// All exports are available as named exports

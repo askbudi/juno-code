@@ -5,20 +5,23 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
-import { PromptEditor, SimplePromptEditor } from '../PromptEditor.js';
+import { PromptEditor, SimplePromptEditor } from '../PromptEditor';
+import { TUIApp } from '../TUIApp';
+import * as useKeyboardModule from '../../hooks/useKeyboard';
+import * as useTUIStateModule from '../../hooks/useTUIState';
 
 // Mock the environment detection and hooks
-vi.mock('../../../utils/environment.js', () => ({
+vi.mock('../../../utils/environment', () => ({
   isHeadlessEnvironment: vi.fn().mockReturnValue(false)
 }));
 
 // Mock the hooks
-vi.mock('../../hooks/useKeyboard.js', () => ({
+vi.mock('../../hooks/useKeyboard', () => ({
   useKeyboard: vi.fn(),
   useNavigationKeys: vi.fn()
 }));
 
-vi.mock('../../hooks/useTUIState.js', () => ({
+vi.mock('../../hooks/useTUIState', () => ({
   useTUIState: vi.fn((initialValue, options) => ({
     value: initialValue,
     setValue: vi.fn(),
@@ -28,16 +31,20 @@ vi.mock('../../hooks/useTUIState.js', () => ({
   }))
 }));
 
+// Test helper to wrap components with TUI context
+const TUITestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <TUIApp title="Test">
+    {children}
+  </TUIApp>
+);
+
 describe('PromptEditor Component', () => {
   const mockUseKeyboard = vi.fn();
   const mockUseTUIState = vi.fn();
 
   beforeEach(() => {
-    const useKeyboard = require('../../hooks/useKeyboard.js').useKeyboard;
-    const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
-
-    useKeyboard.mockImplementation(mockUseKeyboard);
-    useTUIState.mockImplementation((initialValue, options) => ({
+    vi.mocked(useKeyboardModule.useKeyboard).mockImplementation(mockUseKeyboard);
+    vi.mocked(useTUIStateModule.useTUIState).mockImplementation((initialValue, options) => ({
       value: initialValue,
       setValue: vi.fn(),
       isDirty: false,
@@ -57,11 +64,13 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
 
       const { lastFrame } = render(
-        <PromptEditor
-          onSubmit={onSubmit}
-          onCancel={onCancel}
-          testId="prompt-editor"
-        />
+        <TUITestWrapper>
+          <PromptEditor
+            onSubmit={onSubmit}
+            onCancel={onCancel}
+            testId="prompt-editor"
+          />
+        </TUITestWrapper>
       );
 
       expect(lastFrame()).toContain('Prompt Editor');
@@ -116,7 +125,7 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
 
       // Mock dirty state
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: 'modified text',
         setValue: vi.fn(),
@@ -172,7 +181,7 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
       const initialText = 'Initial prompt text';
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: initialText,
         setValue: vi.fn(),
@@ -197,7 +206,7 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
       const initialText = 'Hello world';
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: initialText,
         setValue: vi.fn(),
@@ -225,7 +234,7 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
       const multilineText = 'Line 1\nLine 2\nLine 3';
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: multilineText,
         setValue: vi.fn(),
@@ -255,7 +264,7 @@ describe('PromptEditor Component', () => {
       const onCancel = vi.fn();
       const multilineText = 'Line 1\nLine 2';
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: multilineText,
         setValue: vi.fn(),
@@ -316,7 +325,7 @@ describe('PromptEditor Component', () => {
       const onSubmit = vi.fn();
       const onCancel = vi.fn();
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       let validationFn: any;
 
       useTUIState.mockImplementation((initialValue, options) => {
@@ -537,7 +546,7 @@ describe('Helper Functions', () => {
       const onCancel = vi.fn();
 
       // Test with multiline content
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: 'Line 1\nLine 2\nLine 3',
         setValue: vi.fn(),
@@ -565,7 +574,7 @@ describe('Helper Functions', () => {
       const onSubmit = vi.fn();
       const onCancel = vi.fn();
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: 'Check out https://example.com and /path/to/file',
         setValue: vi.fn(),
@@ -593,7 +602,7 @@ describe('Helper Functions', () => {
       const onSubmit = vi.fn();
       const onCancel = vi.fn();
 
-      const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+      const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
       useTUIState.mockReturnValueOnce({
         value: 'Here is some `code` in backticks',
         setValue: vi.fn(),
@@ -642,7 +651,7 @@ describe('Edge Cases', () => {
     const onCancel = vi.fn();
     const longText = 'A'.repeat(1000);
 
-    const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+    const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
     useTUIState.mockReturnValueOnce({
       value: longText,
       setValue: vi.fn(),
@@ -667,7 +676,7 @@ describe('Edge Cases', () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();
 
-    const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+    const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
     let validationFn: any;
 
     useTUIState.mockImplementation((initialValue, options) => {
@@ -697,7 +706,7 @@ describe('Edge Cases', () => {
     const onSubmit = vi.fn();
     const onCancel = vi.fn();
 
-    const useTUIState = require('../../hooks/useTUIState.js').useTUIState;
+    const useTUIState = vi.mocked(useTUIStateModule.useTUIState);
     useTUIState.mockReturnValueOnce({
       value: 'A',
       setValue: vi.fn(),
