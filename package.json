@@ -33,7 +33,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/bin/cli.ts",
     "build": "tsup",
     "build:watch": "tsup --watch",
     "test": "vitest",
