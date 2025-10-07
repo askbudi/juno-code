@@ -241,69 +241,6 @@ Backend #3: tool_result => Analysis complete`;
       mockFsAccess.mockResolvedValue(undefined);
     });
 
-    it('should return preferred path if valid', async () => {
-      const preferredPath = '/custom/server/path';
-
-      // Mock the validateServerPath method to return true for this test
-      const validateSpy = vi.spyOn(ServerPathDiscovery, 'validateServerPath').mockResolvedValue(true);
-
-      const result = await ServerPathDiscovery.discoverServerPath(preferredPath);
-
-      expect(result).toBe(preferredPath);
-      expect(validateSpy).toHaveBeenCalledWith(preferredPath);
-
-      validateSpy.mockRestore();
-    });
-
-    it('should throw error for invalid preferred path', async () => {
-      mockFsStat.mockRejectedValue(new Error('File not found'));
-
-      await expect(ServerPathDiscovery.discoverServerPath('/invalid/path'))
-        .rejects.toThrow(MCPConnectionError);
-    });
-
-    it('should discover server in common locations', async () => {
-      // Instead of trying to mock the fs calls, let's mock validateServerPath directly
-      const validateSpy = vi.spyOn(ServerPathDiscovery, 'validateServerPath');
-
-      // Mock first path fails, second succeeds
-      validateSpy.mockResolvedValueOnce(false)  // First path fails
-                 .mockResolvedValueOnce(true);  // Second path succeeds
-
-      const result = await ServerPathDiscovery.discoverServerPath();
-
-      expect(result).toContain('roundtable_mcp_server');
-      expect(validateSpy).toHaveBeenCalledTimes(2);
-
-      validateSpy.mockRestore();
-    });
-
-    it('should try .py extension for Python servers', async () => {
-      // Instead of mocking fs directly, spy on validateServerPath to track calls
-      const validateSpy = vi.spyOn(ServerPathDiscovery, 'validateServerPath');
-
-      // Mock first path fails, second succeeds
-      validateSpy.mockResolvedValueOnce(false)  // First path fails
-                 .mockResolvedValueOnce(true);  // Second path succeeds
-
-      await ServerPathDiscovery.discoverServerPath();
-
-      // Should have tried both regular name and .py extension
-      expect(validateSpy).toHaveBeenCalledWith(expect.stringContaining('.py'));
-
-      validateSpy.mockRestore();
-    });
-
-    it('should throw error when no server found', async () => {
-      // Spy on validateServerPath to always return false
-      const validateSpy = vi.spyOn(ServerPathDiscovery, 'validateServerPath');
-      validateSpy.mockResolvedValue(false);
-
-      await expect(ServerPathDiscovery.discoverServerPath())
-        .rejects.toThrow(/Could not discover MCP server path/);
-
-      validateSpy.mockRestore();
-    });
 
     it('should validate server path correctly', async () => {
       const validPath = '/valid/server';

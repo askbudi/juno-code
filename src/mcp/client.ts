@@ -1104,81 +1104,13 @@ export class MCPServerConfigResolver {
         args: serverConfig.args
       };
     } catch (error) {
-      console.warn(`[MCP] Failed to load configuration: ${error}`);
-      console.warn(`[MCP] Falling back to hardcoded server discovery`);
-
-      // Fallback to legacy hardcoded discovery if config is not available
-      return this.fallbackServerDiscovery(workingDirectory);
+      throw new MCPConnectionError(
+        `MCP configuration not found. Please run 'juno-task init' to create .juno_task/mcp.json or ensure the configuration file exists in your project directory.`
+      );
     }
   }
 
-  /**
-   * Fallback to hardcoded server discovery for backwards compatibility
-   */
-  private static async fallbackServerDiscovery(workingDirectory?: string): Promise<{
-    config: MCPServerConfig;
-    command: string;
-    args: string[];
-  }> {
-    const cwd = workingDirectory || process.cwd();
-    const serverPath = await this.findServerPathLegacy(cwd);
 
-    // Create a minimal config for legacy mode
-    const fallbackConfig: MCPServerConfig = {
-      name: 'roundtable-ai-legacy',
-      command: 'python',
-      args: [serverPath],
-      timeout: 3600.0,
-      enable_default_progress_callback: false,
-      suppress_subprocess_logs: true,
-      env: {
-        PYTHONPATH: path.dirname(serverPath)
-      }
-    };
-
-    console.log(`[MCP] Using legacy fallback configuration`);
-    return {
-      config: fallbackConfig,
-      command: 'python',
-      args: [serverPath]
-    };
-  }
-
-  /**
-   * Legacy hardcoded server path discovery
-   */
-  private static async findServerPathLegacy(cwd: string, currentFile?: string): Promise<string> {
-    const possiblePaths = [
-      // Relative to current file if provided
-      ...(currentFile ? [
-        path.resolve(path.dirname(currentFile), '../../../roundtable_mcp_server/roundtable_mcp_server/server.py')
-      ] : []),
-      // Relative to working directory
-      path.resolve(cwd, 'roundtable_mcp_server/roundtable_mcp_server/server.py'),
-      path.resolve(cwd, '../roundtable_mcp_server/roundtable_mcp_server/server.py'),
-      path.resolve(cwd, '../../roundtable_mcp_server/roundtable_mcp_server/server.py'),
-      // Standard installation paths
-      path.resolve(os.homedir(), '.local/bin/roundtable_mcp_server'),
-      '/usr/local/bin/roundtable_mcp_server'
-    ];
-
-    for (const serverPath of possiblePaths) {
-      try {
-        const stats = await fsPromises.stat(serverPath);
-        if (stats.isFile()) {
-          console.log(`[MCP] Found server at: ${serverPath}`);
-          return serverPath;
-        }
-      } catch (error) {
-        // File doesn't exist, continue to next path
-        continue;
-      }
-    }
-
-    throw new MCPConnectionError(
-      `MCP server not found. Please run 'juno-task init' to create .juno_task/mcp.json or ensure roundtable_mcp_server is installed.`
-    );
-  }
 
   static async validateServerPath(serverPath: string): Promise<boolean> {
     try {
@@ -1520,27 +1452,6 @@ export class ServerPathDiscovery {
     }
   }
 
-  static async discoverServerPath(preferredPath?: string): Promise<string> {
-    if (preferredPath && await this.validateServerPath(preferredPath)) {
-      return preferredPath;
-    }
-
-    // Fallback to standard discovery
-    const possiblePaths = [
-      '/usr/local/bin/roundtable_mcp_server',
-      path.resolve(process.cwd(), 'roundtable_mcp_server/server.py'),
-      path.resolve(process.cwd(), '../roundtable_mcp_server/server.py'),
-      path.resolve(os.homedir(), '.local/bin/roundtable_mcp_server')
-    ];
-
-    for (const serverPath of possiblePaths) {
-      if (await this.validateServerPath(serverPath)) {
-        return serverPath;
-      }
-    }
-
-    throw new MCPConnectionError('Could not discover MCP server path');
-  }
 
   static async getServerInfo(serverPath: string): Promise<any> {
     try {
