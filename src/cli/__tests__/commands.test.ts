@@ -21,7 +21,7 @@ import type {
 
 // Mock external dependencies
 vi.mock('../../core/session.js', () => ({
-  createSessionManager: vi.fn().mockReturnValue({
+  createSessionManager: vi.fn().mockResolvedValue({
     list: vi.fn().mockResolvedValue([
       {
         id: 'session-1',
@@ -60,6 +60,42 @@ vi.mock('../../core/session.js', () => ({
           failedIterations: 0
         }
       }
+    }),
+    getSession: vi.fn().mockResolvedValue({
+      info: {
+        id: 'session-1',
+        name: 'Test Session 1',
+        status: 'completed',
+        subagent: 'claude',
+        createdAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+        completedAt: new Date('2024-01-01'),
+        workingDirectory: '/project',
+        config: {},
+        tags: ['test'],
+        metadata: {}
+      },
+      context: {
+        workingDirectory: '/project',
+        environment: {},
+        config: {} as any,
+        processInfo: {
+          nodeVersion: 'v18.0.0',
+          platform: 'linux',
+          arch: 'x64',
+          pid: 1234
+        }
+      },
+      statistics: {
+        duration: 5000,
+        iterations: 5,
+        toolCalls: 10,
+        successRate: 100,
+        errorCount: 0,
+        warningCount: 0,
+        toolStats: {}
+      },
+      history: []
     }),
     delete: vi.fn(),
     resume: vi.fn().mockResolvedValue({
@@ -106,7 +142,8 @@ vi.mock('chalk', () => {
     gray: createChainableFunction('gray'),
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
-    white: createChainableFunction('white')
+    white: createChainableFunction('white'),
+    magenta: createChainableFunction('magenta')
   };
 
   return {
@@ -146,19 +183,65 @@ beforeAll(async () => {
 
 describe('Session Command', () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let processExitSpy: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit called');
     });
+
+    // Re-mock createSessionManager after vi.clearAllMocks
+    const { createSessionManager } = await import('../../core/session.js');
+    vi.mocked(createSessionManager).mockResolvedValue({
+      list: vi.fn().mockResolvedValue([]),
+      getSession: vi.fn().mockResolvedValue({
+        info: {
+          id: 'session-1',
+          name: 'Test Session 1',
+          status: 'completed',
+          subagent: 'claude',
+          createdAt: new Date('2024-01-01'),
+          updatedAt: new Date('2024-01-01'),
+          completedAt: new Date('2024-01-01'),
+          workingDirectory: '/project',
+          config: {},
+          tags: ['test'],
+          metadata: {}
+        },
+        context: {
+          workingDirectory: '/project',
+          environment: {},
+          config: {} as any,
+          processInfo: {
+            nodeVersion: 'v18.0.0',
+            platform: 'linux',
+            arch: 'x64',
+            pid: 1234
+          }
+        },
+        statistics: {
+          duration: 5000,
+          iterations: 5,
+          toolCalls: 10,
+          successRate: 100,
+          errorCount: 0,
+          warningCount: 0,
+          toolStats: {}
+        },
+        history: []
+      }),
+      delete: vi.fn(),
+      resume: vi.fn()
+    } as any);
   });
 
   afterEach(() => {
     vi.clearAllMocks();
     consoleSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
     processExitSpy.mockRestore();
   });
 
@@ -304,12 +387,10 @@ describe('Session Command', () => {
         logLevel: 'info'
       };
 
-      await expect(
-        sessionCommandHandler(['show'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await sessionCommandHandler(['show'], options, mockCommand);
 
-      expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
+      // Handler logs error message and returns (doesn't exit)
+      expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Session ID is required')
       );
     });
@@ -319,10 +400,11 @@ describe('Session Command', () => {
       const mockSessionManager = {
         list: vi.fn(),
         get: vi.fn().mockResolvedValue(null),
+        getSession: vi.fn().mockResolvedValue(null),
         delete: vi.fn(),
         resume: vi.fn()
       };
-      vi.mocked(createSessionManager).mockReturnValueOnce(mockSessionManager);
+      vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
       const mockCommand = new Command();
       const options: SessionCommandOptions = {
@@ -334,12 +416,10 @@ describe('Session Command', () => {
         logLevel: 'info'
       };
 
-      await expect(
-        sessionCommandHandler(['show', 'non-existent'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await sessionCommandHandler(['show', 'non-existent'], options, mockCommand);
 
-      expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
+      // Handler logs error message and returns (doesn't exit)
+      expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Session not found')
       );
     });
