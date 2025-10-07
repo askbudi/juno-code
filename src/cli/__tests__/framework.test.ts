@@ -83,10 +83,10 @@ describe('CLIFramework', () => {
     framework = new CLIFramework();
     consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code: string | number | null | undefined = 1) => {
-      // For validation test specifically, throw error for non-zero codes
+      // For validation tests specifically, throw error for non-zero codes
       // For other tests, just mock the call
       const testName = expect.getState().currentTestName;
-      if (testName?.includes('should validate subagent choices') && code !== 0) {
+      if ((testName?.includes('should validate') || testName?.includes('should reject')) && code !== 0) {
         throw new Error('process.exit called');
       }
       return undefined as never;

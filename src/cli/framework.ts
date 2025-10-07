@@ -90,6 +90,12 @@ export class CLIFramework {
         flags: '-s, --subagent <type>',
         description: 'Subagent to use',
         env: 'JUNO_TASK_SUBAGENT'
+      },
+      {
+        flags: '--max-iterations <number>',
+        description: 'Maximum iterations (-1 for unlimited)',
+        defaultValue: undefined,
+        env: 'JUNO_TASK_MAX_ITERATIONS'
       }
     ];
 
@@ -236,6 +242,17 @@ export class CLIFramework {
       for (const implies of option.implies) {
         opt.implies({ [implies]: true });
       }
+    }
+
+    // Add parser for numeric options
+    if (option.flags.includes('--max-iterations') || option.flags.includes('--mcp-timeout') || option.flags.includes('--mcp-retries')) {
+      opt.argParser((value: string) => {
+        const num = parseInt(value, 10);
+        if (isNaN(num)) {
+          throw new Error(`Invalid number: ${value}`);
+        }
+        return num;
+      });
     }
 
     return opt;
