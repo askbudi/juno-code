@@ -276,9 +276,14 @@ export class CLIFramework {
     const options = args[args.length - 2] || {};
     const commandObj = args[args.length - 1];
 
+    // Get global options from parent program
+    const parentOptions = commandObj?.parent?.opts() || {};
+
     // Process environment variables
     const envOptions = this.processEnvironmentVariables();
-    const mergedOptions = { ...envOptions, ...options };
+
+    // Merge all option sources: env < command < parent
+    const mergedOptions = { ...envOptions, ...options, ...parentOptions };
 
     // Validate options
     await this.validateOptions(mergedOptions, command);

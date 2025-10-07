@@ -359,7 +359,7 @@ async function handleSessionRemove(
   if (sessionIds.length === 0) {
     console.log(chalk.red('At least one session ID is required'));
     console.log(chalk.gray('Usage: juno-task session remove <session-id> [session-id...]'));
-    return;
+    process.exit(1);
   }
 
   let successCount = 0;
