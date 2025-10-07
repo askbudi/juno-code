@@ -18,6 +18,8 @@ import type { TemplateVariables, Template } from '../../templates/types.js';
 import type { InitCommandOptions } from '../types.js';
 import { ValidationError, TemplateError } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
+import { headlessSelection, headlessConfirmation } from '../../tui/utils/headless.js';
+import * as readline from 'readline';
 
 // Validation schemas
 const SubagentSchema = z.enum(['claude', 'cursor', 'codex', 'gemini']);
@@ -38,6 +40,25 @@ interface InitializationContext {
  */
 class InitTUI {
   private context: Partial<InitializationContext> = {};
+
+  /**
+   * Helper method to prompt for text input using readline
+   */
+  private async promptForInput(prompt: string, defaultValue: string = ''): Promise<string> {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      const question = `${prompt}${defaultValue ? ` (default: ${defaultValue})` : ''}: `;
+
+      rl.question(question, (answer: string) => {
+        rl.close();
+        resolve(answer.trim() || defaultValue);
+      });
+    });
+  }
 
   async gather(): Promise<InitializationContext> {
     console.log(chalk.blue.bold('\n🚀 Juno Task Project Initialization\n'));
@@ -69,45 +90,66 @@ class InitTUI {
   }
 
   private async promptForDirectory(): Promise<string> {
-    // In a real implementation, this would use a proper TUI library like ink
-    // For now, we'll use simple prompts
     console.log(chalk.yellow('📁 Project Directory:'));
     console.log('   Enter the target directory for your project (default: current directory)');
 
-    // For demonstration, return current directory
-    // In real implementation, would prompt user for input
-    return process.cwd();
+    const answer = await this.promptForInput('Directory path', process.cwd());
+    return path.resolve(answer || process.cwd());
   }
 
   private async promptForTask(): Promise<string> {
     console.log(chalk.yellow('\n📝 Main Task:'));
     console.log('   Describe the main objective of your project');
 
-    // Default task for demonstration
-    return 'Implement comprehensive CLI commands for juno-task-ts TypeScript project';
+    const task = await this.promptForInput('Main task description', 'Define your main task objective here');
+
+    if (!task || task.trim().length < 10) {
+      throw new ValidationError(
+        'Task description must be at least 10 characters',
+        ['Provide a descriptive task objective', 'Example: "Build a TypeScript CLI tool for AI orchestration"']
+      );
+    }
+
+    return task.trim();
   }
 
   private async promptForSubagent(): Promise<SubagentType> {
-    console.log(chalk.yellow('\n🤖 Preferred Subagent:'));
-    console.log('   Choose your preferred AI coding agent:');
-    console.log('   1. Claude (recommended for complex reasoning)');
-    console.log('   2. Cursor (great for real-time collaboration)');
-    console.log('   3. Codex (excellent for code generation)');
-    console.log('   4. Gemini (strong for multimodal tasks)');
+    const choices = [
+      { label: 'Claude', value: 'claude' as SubagentType, description: 'Recommended for complex reasoning and code quality' },
+      { label: 'Cursor', value: 'cursor' as SubagentType, description: 'Great for real-time collaboration' },
+      { label: 'Codex', value: 'codex' as SubagentType, description: 'Excellent for code generation' },
+      { label: 'Gemini', value: 'gemini' as SubagentType, description: 'Strong for multimodal tasks' }
+    ];
 
-    // Default for demonstration
-    return 'claude';
+    const selected = await headlessSelection({
+      message: '🤖 Choose your preferred AI coding agent',
+      choices
+    });
+
+    return selected || 'claude';
   }
 
   private async promptForGitUrl(): Promise<string | undefined> {
     console.log(chalk.yellow('\n🔗 Git Repository (Optional):'));
-    console.log('   Enter the Git repository URL for this project');
+    console.log('   Enter the Git repository URL for this project (press Enter to skip)');
 
-    // Optional, return undefined for demonstration
+    const gitUrl = await this.promptForInput('Git URL (optional)', '');
+
+    if (gitUrl && gitUrl.trim()) {
+      // Validate URL format
+      if (!/^https?:\/\/.+/.test(gitUrl.trim())) {
+        throw new ValidationError(
+          'Invalid Git URL format',
+          ['Provide a valid HTTPS Git repository URL', 'Example: https://github.com/owner/repo']
+        );
+      }
+      return gitUrl.trim();
+    }
+
     return undefined;
   }
 
-  private createVariables(
+  public createVariables(
     targetDirectory: string,
     task: string,
     subagent: SubagentType,
@@ -142,6 +184,90 @@ class InitTUI {
       LICENSE: 'MIT',
       DESCRIPTION: task,
       VERSION: '1.0.0',
+
+      // Agent status variables (computed based on selected subagent)
+      CLAUDE_STATUS: subagent === 'claude' ? '✅ SELECTED' : '⭕ Available',
+      CURSOR_STATUS: subagent === 'cursor' ? '✅ SELECTED' : '⭕ Available',
+      CODEX_STATUS: subagent === 'codex' ? '✅ SELECTED' : '⭕ Available',
+      GEMINI_STATUS: subagent === 'gemini' ? '✅ SELECTED' : '⭕ Available',
+
+      // Requirements template variables with defaults
+      FEATURE_1_DESCRIPTION: 'Core feature description to be defined',
+      FEATURE_2_DESCRIPTION: 'Core feature description to be defined',
+      FEATURE_3_DESCRIPTION: 'Core feature description to be defined',
+      USER_TYPE: 'user',
+      ACTION: 'perform an action',
+      BENEFIT: 'achieve a benefit',
+      BUSINESS_RULE_1: 'Business rule to be defined',
+      BUSINESS_RULE_2: 'Business rule to be defined',
+      BUSINESS_RULE_3: 'Business rule to be defined',
+      RESPONSE_TIME: '200',
+      THROUGHPUT: '1000',
+      SCALE_TARGET: '10000 users',
+      AUTH_METHOD: 'JWT tokens',
+      AVAILABILITY_TARGET: '99.9',
+      TARGET_PLATFORM: 'Node.js',
+      PROGRAMMING_LANGUAGE: 'TypeScript',
+      DATABASE_TYPE: 'PostgreSQL',
+      DEPENDENCIES: 'Node.js, npm',
+      BUDGET_CONSTRAINT: 'To be determined',
+      TIMELINE_CONSTRAINT: 'To be determined',
+      RESOURCE_CONSTRAINT: 'To be determined',
+      METRIC_1: 'Performance metric',
+      TARGET_VALUE: 'Target value',
+      METRIC_2: 'Quality metric',
+      METRIC_3: 'User satisfaction metric',
+
+      // Architecture template variables with defaults
+      SYSTEM_PURPOSE: 'System purpose to be defined',
+      SYSTEM_SCOPE: 'System scope to be defined',
+      STAKEHOLDER_1: 'Development Team',
+      ROLE_DESCRIPTION: 'Role description to be defined',
+      STAKEHOLDER_2: 'Product Owner',
+      STAKEHOLDER_3: 'End Users',
+      ARCHITECTURE_PATTERN: 'Modular architecture',
+      ARCHITECTURE_RATIONALE: 'Architecture rationale to be defined',
+      FRONTEND_TECH: 'TypeScript CLI',
+      BACKEND_TECH: 'Node.js',
+      DATABASE_TECH: 'File-based storage',
+      INFRASTRUCTURE_TECH: 'Local development',
+      FRONTEND_DESCRIPTION: 'Command-line interface',
+      BACKEND_DESCRIPTION: 'Core application logic',
+      DATABASE_DESCRIPTION: 'Configuration and data storage',
+      DATA_MODEL_DESCRIPTION: 'Data model to be defined',
+      PERSISTENCE_STRATEGY: 'File-based persistence',
+      DATA_FLOW_DESCRIPTION: 'Data flow to be defined',
+      API_STYLE: 'Internal APIs',
+      API_AUTH_METHOD: 'Local authentication',
+      RATE_LIMITING_STRATEGY: 'No rate limiting required',
+      AUTH_FLOW: 'Local authentication flow',
+      AUTHZ_MODEL: 'Simple authorization model',
+      DATA_PROTECTION: 'Local data protection',
+      DEPLOYMENT_STRATEGY: 'Local deployment',
+      CONTAINER_STRATEGY: 'No containerization initially',
+      ORCHESTRATION_PLATFORM: 'Local orchestration',
+      MONITORING_SOLUTION: 'Console logging',
+      LOGGING_SOLUTION: 'File-based logging',
+      ALERTING_STRATEGY: 'Console alerts',
+      BACKUP_STRATEGY: 'Version control backup',
+      RTO: '1 hour',
+      RPO: '1 hour',
+      RESPONSE_TIME_TARGETS: 'Sub-second response',
+      THROUGHPUT_REQUIREMENTS: 'Single user initially',
+      SCALABILITY_STRATEGY: 'Horizontal scaling future',
+      FAULT_TOLERANCE_STRATEGY: 'Graceful error handling',
+      DISASTER_RECOVERY_PLAN: 'Version control recovery',
+      THREAT_MODEL: 'Local threat model',
+      SECURITY_CONTROLS: 'Input validation',
+      COMPLIANCE_REQUIREMENTS: 'No specific compliance initially',
+      CODING_STANDARDS: 'TypeScript strict mode',
+      TESTING_STRATEGY: 'Unit and integration tests',
+      DOCUMENTATION_REQUIREMENTS: 'Comprehensive documentation',
+      DATA_MIGRATION_PLAN: 'No migration initially',
+      SYSTEM_MIGRATION_PLAN: 'No migration initially',
+      ROLLBACK_STRATEGY: 'Version control rollback',
+      RISK_DESCRIPTION: 'Risk to be identified',
+      MITIGATION_STRATEGY: 'Mitigation strategy to be defined'
     };
   }
 }
@@ -216,7 +342,9 @@ class HeadlessInit {
     subagent: SubagentType,
     gitUrl?: string
   ): TemplateVariables {
-    return TemplateUtils.createDefaultVariables(targetDirectory, path.basename(targetDirectory));
+    // Use the comprehensive variable creation from InitTUI
+    const tui = new InitTUI();
+    return tui.createVariables(targetDirectory, task, subagent, gitUrl);
   }
 }
 
@@ -251,9 +379,17 @@ class ProjectGenerator {
       { includeGitInfo: true, includeEnvironment: true }
     );
 
-    // Generate all template files
-    const results = await defaultTemplateEngine.generateFiles(
-      templates,
+    // Separate templates for different locations
+    const junoTaskTemplates = templates.filter(t =>
+      !['CLAUDE.md', 'AGENTS.md'].includes(t.id)
+    );
+    const rootTemplates = templates.filter(t =>
+      ['CLAUDE.md', 'AGENTS.md'].includes(t.id)
+    );
+
+    // Generate .juno_task templates
+    const junoResults = await defaultTemplateEngine.generateFiles(
+      junoTaskTemplates,
       path.join(targetDirectory, '.juno_task'),
       templateContext,
       {
@@ -263,6 +399,31 @@ class ProjectGenerator {
         onConflict: force ? 'overwrite' : 'skip'
       }
     );
+
+    // Generate root directory templates (CLAUDE.md, AGENTS.md)
+    const rootResults = await defaultTemplateEngine.generateFiles(
+      rootTemplates,
+      targetDirectory, // Put in current working directory
+      templateContext,
+      {
+        force,
+        createBackup: !force,
+        dryRun: false,
+        onConflict: force ? 'overwrite' : 'skip'
+      }
+    );
+
+    // Combine results
+    const results = {
+      success: junoResults.success && rootResults.success,
+      files: [...junoResults.files, ...rootResults.files],
+      context: templateContext,
+      duration: junoResults.duration + rootResults.duration,
+      timestamp: new Date(),
+      ...((!junoResults.success || !rootResults.success) && {
+        error: junoResults.error || rootResults.error
+      })
+    };
 
     // Report results
     this.reportResults(results);

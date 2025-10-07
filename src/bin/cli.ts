@@ -390,11 +390,10 @@ process.on('SIGTERM', () => {
 // Export for testing
 export { main, handleCLIError };
 
-// Run the CLI if this is the main module
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    console.error(chalk.red.bold('\n💥 Fatal Error'));
-    console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(EXIT_CODES.UNEXPECTED_ERROR);
-  });
-}
+// Always run main() when this file is executed as a CLI
+// The shebang ensures this is only executed when run as a command
+main().catch((error) => {
+  console.error(chalk.red.bold('\n💥 Fatal Error'));
+  console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
+  process.exit(EXIT_CODES.UNEXPECTED_ERROR);
+});

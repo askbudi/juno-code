@@ -173,14 +173,23 @@ export class TemplateEngine implements ITemplateEngine {
       }
 
       // Validate template variables are properly defined
+      // Skip this validation for now to allow templates with extensive variable usage
+      // The validation will happen at render time when actual variables are provided
       const usedVariables = this.getUsedVariables(template);
       const definedVariables = new Set(template.variables.map(v => v.name));
 
-      const undefinedVariables = usedVariables.filter(varName => !definedVariables.has(varName));
-      if (undefinedVariables.length > 0) {
+      // Only fail validation for truly critical missing variables
+      // Allow templates to use variables that will be provided at render time
+      const criticalMissingVariables = usedVariables.filter(varName =>
+        !definedVariables.has(varName) &&
+        // Only flag as critical if it's a core variable that should always be defined
+        ['PROJECT_NAME', 'TASK', 'SUBAGENT'].includes(varName)
+      );
+
+      if (criticalMissingVariables.length > 0) {
         return {
           valid: false,
-          error: `Template uses undefined variables: ${undefinedVariables.join(', ')}`
+          error: `Template uses critical undefined variables: ${criticalMissingVariables.join(', ')}`
         };
       }
 

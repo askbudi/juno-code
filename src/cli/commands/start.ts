@@ -272,9 +272,32 @@ class ExecutionCoordinator {
       }
     });
 
-    // Create MCP client
+    // Create MCP client with auto-discovery if needed
+    let serverPath = this.config.mcpServerPath;
+    if (!serverPath) {
+      try {
+        // Auto-discover server path using the built-in resolver
+        const { MCPServerPathResolver } = await import('../../mcp/client.js');
+        serverPath = await MCPServerPathResolver.findServerPath(request.workingDirectory);
+
+        if (this.config.verbose) {
+          console.log(chalk.gray(`   Auto-discovered MCP server: ${serverPath}`));
+        }
+      } catch (discoveryError) {
+        throw new MCPError(
+          'MCP server path not configured and auto-discovery failed',
+          [
+            'Set JUNO_TASK_MCP_SERVER_PATH environment variable',
+            'Install roundtable MCP server in a standard location',
+            'Use --config to specify a configuration file with mcpServerPath',
+            'Ensure roundtable_mcp_server is accessible in your PATH'
+          ]
+        );
+      }
+    }
+
     const mcpClient = createMCPClient({
-      serverPath: this.config.mcpServerPath,
+      serverPath,
       timeout: this.config.mcpTimeout,
       retries: this.config.mcpRetries,
       workingDirectory: request.workingDirectory,

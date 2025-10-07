@@ -104,7 +104,7 @@ export const JunoTaskConfigSchema = z.object({
 
   mcpServerPath: z.string()
     .optional()
-    .describe('Path to MCP server executable'),
+    .describe('Path to MCP server executable (auto-discovered if not specified)'),
 
   // TUI settings
   interactive: z.boolean()
