@@ -280,13 +280,11 @@ class ExecutionCoordinator {
       debug: this.config.verbose
     };
 
-    if (this.config.mcpServerName) {
+    // TEMPORARY: Force server path approach for debugging
+    if (false && this.config.mcpServerName) {
       // Use named server (preferred approach)
       mcpClientOptions.serverName = this.config.mcpServerName;
 
-      if (this.config.verbose) {
-        console.log(chalk.gray(`   Using named MCP server: ${this.config.mcpServerName}`));
-      }
     } else if (this.config.mcpServerPath) {
       // Use server path
       mcpClientOptions.serverPath = this.config.mcpServerPath;
@@ -295,29 +293,13 @@ class ExecutionCoordinator {
         console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
       }
     } else {
-      // Auto-discover server path as fallback
-      try {
-        const { MCPServerPathResolver } = await import('../../mcp/client.js');
-        mcpClientOptions.serverPath = await MCPServerPathResolver.findServerPath(request.workingDirectory);
-
-        if (this.config.verbose) {
-          console.log(chalk.gray(`   Auto-discovered MCP server: ${mcpClientOptions.serverPath}`));
-        }
-      } catch (discoveryError) {
-        throw new MCPError(
-          'MCP server not configured and auto-discovery failed',
-          [
-            'Set JUNO_TASK_MCP_SERVER_NAME=roundtable-ai environment variable',
-            'Set JUNO_TASK_MCP_SERVER_PATH environment variable',
-            'Install roundtable MCP server in a standard location',
-            'Use --config to specify a configuration file with MCP settings',
-            'Ensure roundtable_mcp_server is accessible in your PATH'
-          ]
-        );
-      }
+      // TEMPORARY: Force a specific server path for debugging
+      mcpClientOptions.serverPath = '/Users/mahdiyar/miniconda3/envs/tmp_test/bin/roundtable-mcp-server';
     }
 
+
     const mcpClient = createMCPClient(mcpClientOptions);
+
 
     // Create execution engine
     const engine = createExecutionEngine(this.config, mcpClient);

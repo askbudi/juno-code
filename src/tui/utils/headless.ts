@@ -5,6 +5,7 @@
  * functionality when TUI is not available.
  */
 
+import * as readline from 'node:readline';
 import { isHeadlessEnvironment } from '../../utils/environment.js';
 
 /**
@@ -66,7 +67,6 @@ export async function headlessConfirmation(options: {
   console.log(`Enter 'y' for yes, 'n' for no (default: ${defaultValue ? 'y' : 'n'}):`);
 
   return new Promise((resolve) => {
-    const readline = require('readline');
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
@@ -112,7 +112,6 @@ export async function headlessSelection<T>(options: {
   }
 
   return new Promise((resolve) => {
-    const readline = require('readline');
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout

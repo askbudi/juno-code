@@ -557,7 +557,7 @@ export async function feedbackCommandHandler(
 ): Promise<void> {
   try {
     // Determine feedback file path
-    const feedbackFile = options.file || path.join(process.cwd(), 'USER_FEEDBACK.md');
+    const feedbackFile = options.file || path.join(process.cwd(), '.juno_task', 'USER_FEEDBACK.md');
     const manager = new FeedbackFileManager(feedbackFile);
 
     // Ensure feedback file exists

@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ProgressEventType, SessionState, ProgressEvent, ProgressCallback } from './types.js';
 import { MCPConnectionError, MCPValidationError, MCPTimeoutError, MCPToolError } from './errors.js';
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -70,7 +70,6 @@ export class JunoMCPClient {
   private transport: StdioClientTransport | null = null;
   private progressTracker: MCPProgressTracker;
   private connectionStatus: 'connected' | 'disconnected' | 'connecting' | 'error' = 'disconnected';
-  private serverProcess: ChildProcess | null = null;
   private sessionManager = new SessionContextManager();
   private subagentMapper = new SubagentMapperImpl();
   private rateLimitMonitor: RateLimitMonitor;
@@ -112,13 +111,12 @@ export class JunoMCPClient {
         // Connect to named MCP server (e.g., "roundtable-ai")
         await this.connectToNamedServer();
       } else {
-        // Start the MCP server process from path
-        await this.startServerProcess();
-
-        // Create transport
+        // Create transport using command approach (let transport manage the process)
+        const serverPath = this.options.serverPath!;
+        const isPython = serverPath.endsWith('.py');
         this.transport = new StdioClientTransport({
-          readable: this.serverProcess!.stdout!,
-          writable: this.serverProcess!.stdin!
+          command: isPython ? 'python' : serverPath,
+          args: isPython ? [serverPath] : []
         });
       }
 
@@ -383,44 +381,6 @@ export class JunoMCPClient {
     }
   }
 
-  private async startServerProcess(): Promise<void> {
-    const serverPath = this.options.serverPath!;
-    const isPython = serverPath.endsWith('.py');
-    const command = isPython ? 'python' : serverPath;
-    const args = isPython ? [serverPath] : [];
-
-    this.serverProcess = spawn(command, args, {
-      cwd: this.options.workingDirectory,
-      env: {
-        ...process.env,
-        ...this.options.environment
-      },
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    // Handle process errors
-    return new Promise<void>((resolve, reject) => {
-      const timeout = this.options.timeout || 5000;
-
-      const timeoutId = setTimeout(() => {
-        reject(new MCPTimeoutError(`Server startup timeout after ${timeout}ms`));
-      }, timeout);
-
-      const onError = (error: Error) => {
-        clearTimeout(timeoutId);
-        reject(new MCPConnectionError(`Failed to start server process: ${error.message}`, error));
-      };
-
-      const onSpawn = () => {
-        clearTimeout(timeoutId);
-        this.serverProcess!.removeListener('error', onError);
-        resolve();
-      };
-
-      this.serverProcess!.once('error', onError);
-      this.serverProcess!.once('spawn', onSpawn);
-    });
-  }
 
   private async connectToNamedServer(): Promise<void> {
     const serverName = this.options.serverName!;
@@ -434,20 +394,15 @@ export class JunoMCPClient {
     const serverConfig = await this.resolveNamedServer(serverName);
 
     if (serverConfig.type === 'executable') {
-      // Named server points to an executable
-      this.serverProcess = spawn(serverConfig.command, serverConfig.args || [], {
-        cwd: this.options.workingDirectory,
-        env: {
-          ...process.env,
-          ...this.options.environment
-        },
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+      // Named server points to an executable - let transport manage the process
+      if (this.options.debug) {
+        console.log(`[MCP] Creating transport for server command: ${serverConfig.command}`, serverConfig.args);
+      }
 
-      // Create transport for executable-based named server
+      // Create transport for executable-based named server using correct constructor
       this.transport = new StdioClientTransport({
-        readable: this.serverProcess.stdout!,
-        writable: this.serverProcess.stdin!
+        command: serverConfig.command,
+        args: serverConfig.args || []
       });
     } else if (serverConfig.type === 'url') {
       // Named server is available at a URL (WebSocket, HTTP, etc.)
@@ -468,7 +423,27 @@ export class JunoMCPClient {
     };
 
     if (knownServers[serverName]) {
-      return knownServers[serverName];
+      const config = knownServers[serverName];
+      // Verify the command exists before returning it
+      if (config.type === 'executable') {
+        const commandExists = await this.checkCommandExists(config.command);
+        if (!commandExists) {
+          throw new MCPConnectionError(
+            `MCP server "${config.command}" not found in PATH`,
+            undefined,
+            undefined,
+            {
+              recoverySuggestions: [
+                'Install the roundtable MCP server: pip install roundtable-mcp-server',
+                'Ensure roundtable-mcp-server is in your PATH',
+                'Set JUNO_TASK_MCP_SERVER_PATH to point to the server executable',
+                'Check if the server is properly installed'
+              ]
+            }
+          );
+        }
+      }
+      return config;
     }
 
     // Try to find in common locations
@@ -499,6 +474,23 @@ export class JunoMCPClient {
     );
   }
 
+  private async checkCommandExists(command: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const checkProcess = spawn('which', [command], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      checkProcess.on('close', (code) => {
+        resolve(code === 0);
+      });
+
+      checkProcess.on('error', () => {
+        resolve(false);
+      });
+    });
+  }
+
+
   private async cleanup(): Promise<void> {
     if (this.transport) {
       try {
@@ -507,15 +499,6 @@ export class JunoMCPClient {
         // Ignore cleanup errors
       }
       this.transport = null;
-    }
-
-    if (this.serverProcess) {
-      try {
-        this.serverProcess.kill();
-      } catch {
-        // Ignore cleanup errors
-      }
-      this.serverProcess = null;
     }
   }
 
