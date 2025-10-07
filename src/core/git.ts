@@ -6,7 +6,7 @@
  */
 
 import * as path from 'node:path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import { z } from 'zod';
 import type { ValidationError, FileSystemError } from '../cli/types.js';
 

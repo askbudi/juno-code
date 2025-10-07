@@ -10,20 +10,29 @@ import * as fs from 'fs-extra';
 import { tmpdir } from 'node:os';
 
 // Mock fs-extra
-vi.mock('fs-extra', () => ({
-  default: {
-    pathExists: vi.fn(),
-    readFile: vi.fn(),
-    writeFile: vi.fn(),
-    mkdtemp: vi.fn(),
-    remove: vi.fn(),
-  },
-  pathExists: vi.fn(),
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  mkdtemp: vi.fn(),
-  remove: vi.fn(),
-}));
+vi.mock('fs-extra', () => {
+  // Create shared mock functions
+  const pathExists = vi.fn();
+  const readFile = vi.fn();
+  const writeFile = vi.fn();
+  const mkdtemp = vi.fn();
+  const remove = vi.fn();
+
+  return {
+    default: {
+      pathExists,
+      readFile,
+      writeFile,
+      mkdtemp,
+      remove
+    },
+    pathExists,
+    readFile,
+    writeFile,
+    mkdtemp,
+    remove
+  };
+});
 
 // Mock execa
 vi.mock('execa', () => ({

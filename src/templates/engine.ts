@@ -10,7 +10,7 @@
  * @author juno-task-ts
  */
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import Handlebars from 'handlebars';
 import { v4 as uuidv4 } from 'uuid';

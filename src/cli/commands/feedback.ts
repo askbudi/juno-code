@@ -683,13 +683,19 @@ export async function feedbackCommandHandler(
  */
 export function configureFeedbackCommand(program: Command): void {
   program
-    .command('feedback')
+    .command('feedback [text...]')
     .description('Collect and manage user feedback')
-    .argument('[text...]', 'Quick feedback text')
     .option('-f, --file <path>', 'Custom USER_FEEDBACK.md file path')
     .option('-i, --interactive', 'Launch interactive feedback collection')
-    .action(async (text, options, command) => {
-      await feedbackCommandHandler(text, options, command);
+    .action(async function(text, options, command) {
+      // Get options from the command (local) and merge with parent (global) options
+      const localOpts = command?.opts() || {};
+      const parentOpts = command?.parent?.opts() || {};
+      const mergedOptions = { ...parentOpts, ...localOpts, ...options };
+
+      // Convert text to array if needed
+      const textArray = text ? (Array.isArray(text) ? text : [text]) : [];
+      await feedbackCommandHandler(textArray, mergedOptions as FeedbackCommandOptions, command);
     })
     .addHelpText('after', `
 Subcommands:

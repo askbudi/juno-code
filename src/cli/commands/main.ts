@@ -11,7 +11,7 @@
  */
 
 import * as path from 'node:path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as readline from 'node:readline';
 import chalk from 'chalk';
 import { Command } from 'commander';

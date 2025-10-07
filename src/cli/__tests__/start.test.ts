@@ -102,11 +102,23 @@ vi.mock('../../mcp/client.js', () => ({
   })
 }));
 
-vi.mock('fs-extra', () => ({
-  pathExists: vi.fn(),
-  readFile: vi.fn(),
-  ensureDir: vi.fn()
-}));
+vi.mock('fs-extra', () => {
+  // Create shared mock functions
+  const pathExists = vi.fn();
+  const readFile = vi.fn();
+  const ensureDir = vi.fn();
+
+  return {
+    default: {
+      pathExists,
+      readFile,
+      ensureDir
+    },
+    pathExists,
+    readFile,
+    ensureDir
+  };
+});
 
 vi.mock('execa', () => ({
   default: vi.fn().mockResolvedValue({ stdout: '' }),

@@ -7,7 +7,7 @@
  */
 
 import * as path from 'node:path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
 import { z } from 'zod';
@@ -15,7 +15,8 @@ import { z } from 'zod';
 import { loadConfig } from '../../core/config.js';
 import { defaultTemplateEngine, TemplateUtils } from '../../templates/engine.js';
 import type { TemplateVariables, Template } from '../../templates/types.js';
-import type { InitCommandOptions, ValidationError, TemplateError } from '../types.js';
+import type { InitCommandOptions } from '../types.js';
+import { ValidationError, TemplateError } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
 
 // Validation schemas
@@ -317,6 +318,11 @@ class ProjectGenerator {
         : '✗';
 
       console.log(statusColor(`   ${statusIcon} ${result.path} (${result.status})`));
+
+      // Show error message if present
+      if (result.error) {
+        console.log(chalk.red(`      Error: ${result.error}`));
+      }
     }
   }
 
