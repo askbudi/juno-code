@@ -32,7 +32,7 @@ export interface MCPClientOptions {
 
 export interface ToolCallRequest {
   toolName: string;
-  parameters?: Record<string, any>;
+  arguments?: Record<string, any>;
 }
 
 export interface ToolCallResponse {
@@ -139,19 +139,19 @@ export class JunoMCPClient {
     const { transport, client } = await this.createConnection();
 
     try {
-      this.emit('tool:start', { toolName: request.toolName, toolId, parameters: request.parameters });
+      this.emit('tool:start', { toolName: request.toolName, toolId, arguments: request.arguments });
 
       // Record tool start in progress stream
       if (this.progressStreamManager && this.currentSessionId) {
         this.progressStreamManager.recordToolStart(
           this.currentSessionId,
           request.toolName,
-          { parameters: request.parameters, toolId }
+          { arguments: request.arguments, toolId }
         );
       }
 
       if (this.options.debug) {
-        console.log(`[MCP] Calling tool: ${request.toolName}`, request.parameters);
+        console.log(`[MCP] Calling tool: ${request.toolName}`, request.arguments);
       }
 
       // Record the request for rate limiting
@@ -161,7 +161,7 @@ export class JunoMCPClient {
       await client.connect(transport);
       const result = await client.callTool({
         name: request.toolName,
-        arguments: request.parameters || {}
+        arguments: request.arguments || {}
       });
 
       const duration = Date.now() - startTime;
@@ -229,7 +229,7 @@ export class JunoMCPClient {
         {
           code: MCPErrorCode.TOOL_EXECUTION_FAILED,
           cause: error as Error,
-          metadata: { parameters: request.parameters }
+          metadata: { arguments: request.arguments }
         }
       );
     } finally {
@@ -954,14 +954,14 @@ export class SubagentMapper {
         name: 'claude',
         description: 'Claude by Anthropic - Advanced reasoning and coding',
         capabilities: ['coding', 'analysis', 'reasoning', 'writing'],
-        models: ['sonnet-4'],
+        models: ['sonnet-4', 'opus-4.1', 'haiku-4'],
         aliases: ['claude-code', 'claude_code']
       },
       {
         name: 'cursor',
         description: 'Cursor AI - Specialized code editing and refactoring',
         capabilities: ['code-editing', 'refactoring', 'debugging'],
-        models: ['cursor-default'],
+        models: ['gpt-5', 'sonnet-4', 'sonnet-4-thinking'],
         aliases: ['cursor-agent']
       },
       {
@@ -1257,8 +1257,8 @@ export class SubagentMapperImpl {
 
   validateModel(subagentType: string, model: string): boolean {
     const validModels: Record<string, string[]> = {
-      'claude': ['sonnet-4', 'sonnet-3.5', 'haiku-3', 'opus-3'],
-      'cursor': ['gpt-4', 'gpt-3.5-turbo'],
+      'claude': ['sonnet-4', 'opus-4.1', 'haiku-4'],
+      'cursor': ['gpt-5', 'sonnet-4', 'sonnet-4-thinking'],
       'codex': ['gpt-5'],
       'gemini': ['gemini-pro', 'gemini-ultra'],
     };
@@ -1270,7 +1270,7 @@ export class SubagentMapperImpl {
   getDefaultModel(subagentType: string): string {
     const defaults: Record<string, string> = {
       'claude': 'sonnet-4',
-      'cursor': 'gpt-4',
+      'cursor': 'gpt-5',
       'codex': 'gpt-5',
       'gemini': 'gemini-pro',
     };

@@ -568,10 +568,13 @@ Backend #3: tool_result => Analysis complete`;
 
     it('should validate models correctly', () => {
       expect(mapper.validateModel('claude', 'sonnet-4')).toBe(true);
-      expect(mapper.validateModel('claude', 'haiku-3')).toBe(true);
+      expect(mapper.validateModel('claude', 'haiku-4')).toBe(true);
+      expect(mapper.validateModel('claude', 'opus-4.1')).toBe(true);
       expect(mapper.validateModel('claude', 'invalid-model')).toBe(false);
 
-      expect(mapper.validateModel('cursor', 'gpt-4')).toBe(true);
+      expect(mapper.validateModel('cursor', 'gpt-5')).toBe(true);
+      expect(mapper.validateModel('cursor', 'sonnet-4')).toBe(true);
+      expect(mapper.validateModel('cursor', 'sonnet-4-thinking')).toBe(true);
       expect(mapper.validateModel('cursor', 'invalid-model')).toBe(false);
     });
 
@@ -581,7 +584,7 @@ Backend #3: tool_result => Analysis complete`;
 
     it('should get default models', () => {
       expect(mapper.getDefaultModel('claude')).toBe('sonnet-4');
-      expect(mapper.getDefaultModel('cursor')).toBe('gpt-4');
+      expect(mapper.getDefaultModel('cursor')).toBe('gpt-5');
       expect(mapper.getDefaultModel('codex')).toBe('gpt-5');
       expect(mapper.getDefaultModel('gemini')).toBe('gemini-pro');
     });

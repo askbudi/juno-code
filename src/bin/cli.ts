@@ -105,10 +105,10 @@ function setupMainCommand(program: Command): void {
   program
     .argument('[subagent]', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('-p, --prompt <text>', 'Prompt input (file path or inline text)')
-    .option('--cwd <path>', 'Working directory')
-    .option('-m, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
-    .option('--model <name>', 'Model to use (subagent-specific)')
-    .option('--interactive-input', 'Interactive mode for typing prompts')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
+    .option('-m, --model <name>', 'Model to use (subagent-specific)')
+    .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('--interactive-prompt', 'Launch TUI prompt editor')
     .action(async (subagent, options, command) => {
       try {
@@ -169,9 +169,9 @@ function setupAliases(program: Command): void {
       .command(subagent, { hidden: true })
       .description(`Execute with ${subagent} subagent`)
       .argument('[prompt...]', 'Prompt text or file path')
-      .option('-m, --max-iterations <number>', 'Maximum iterations', parseInt)
-      .option('--model <name>', 'Model to use')
-      .option('--cwd <path>', 'Working directory')
+      .option('-i, --max-iterations <number>', 'Maximum iterations', parseInt)
+      .option('-m, --model <name>', 'Model to use')
+      .option('-w, --cwd <path>', 'Working directory')
       .action(async (prompt, options, command) => {
         try {
           const { mainCommandHandler } = await import('../cli/commands/main.js');

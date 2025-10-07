@@ -100,17 +100,72 @@ class InitTUI {
   private async promptForTask(): Promise<string> {
     console.log(chalk.yellow('\n📝 Main Task:'));
     console.log('   Describe the main objective of your project');
+    console.log('   You can enter multiple lines. Press Ctrl+D when finished.');
 
-    const task = await this.promptForInput('Main task description', 'Define your main task objective here');
+    try {
+      // Use the TUI prompt editor for multiline input
+      const { launchPromptEditor, isTUISupported } = await import('../../tui/index.js');
 
-    if (!task || task.trim().length < 10) {
-      throw new ValidationError(
-        'Task description must be at least 10 characters',
-        ['Provide a descriptive task objective', 'Example: "Build a TypeScript CLI tool for AI orchestration"']
-      );
+      if (isTUISupported()) {
+        console.log(chalk.blue('\n🎨 Launching TUI editor for task description...'));
+
+        const task = await launchPromptEditor({
+          initialValue: '',
+          title: 'Project Task Description',
+          maxLength: 1000
+        });
+
+        if (!task || task.trim().length < 10) {
+          throw new ValidationError(
+            'Task description must be at least 10 characters',
+            ['Provide a descriptive task objective', 'Example: "Build a TypeScript CLI tool for AI orchestration"']
+          );
+        }
+
+        return task.trim();
+      } else {
+        // Fallback to multiline input
+        return await this.collectMultilineInput('Main task description');
+      }
+    } catch (error) {
+      console.log(chalk.yellow('TUI not available, using text input...'));
+      return await this.collectMultilineInput('Main task description');
     }
+  }
 
-    return task.trim();
+  private async collectMultilineInput(prompt: string): Promise<string> {
+    console.log(chalk.blue(`\n${prompt}:`));
+    console.log(chalk.gray('Enter your text (press Ctrl+D when finished):'));
+
+    return new Promise((resolve, reject) => {
+      let input = '';
+
+      process.stdin.setEncoding('utf8');
+      process.stdin.resume();
+
+      process.stdin.on('data', (chunk) => {
+        input += chunk;
+      });
+
+      process.stdin.on('end', () => {
+        const trimmed = input.trim();
+        if (!trimmed || trimmed.length < 10) {
+          reject(new ValidationError(
+            'Task description must be at least 10 characters',
+            ['Provide a descriptive task objective', 'Example: "Build a TypeScript CLI tool for AI orchestration"']
+          ));
+        } else {
+          resolve(trimmed);
+        }
+      });
+
+      process.stdin.on('error', (error) => {
+        reject(new ValidationError(
+          `Failed to read input: ${error}`,
+          ['Try again with valid input']
+        ));
+      });
+    });
   }
 
   private async promptForSubagent(): Promise<SubagentType> {
@@ -539,7 +594,10 @@ export async function initCommandHandler(
 
     let context: InitializationContext;
 
-    if (options.interactive) {
+    // Default to interactive mode if no task is provided
+    const shouldUseInteractive = options.interactive || (!options.task && !process.env.CI);
+
+    if (shouldUseInteractive) {
       // Interactive mode with TUI
       console.log(chalk.yellow('🚀 Starting interactive mode...'));
       const tui = new InitTUI();

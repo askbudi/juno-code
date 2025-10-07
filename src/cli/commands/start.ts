@@ -612,8 +612,8 @@ export function configureStartCommand(program: Command): void {
   program
     .command('start')
     .description('Start execution using .juno_task/init.md as prompt')
-    .option('-m, --max-iterations <number>', 'Maximum number of iterations', parseInt)
-    .option('--model <name>', 'Model to use for execution')
+    .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
+    .option('-m, --model <name>', 'Model to use for execution')
     .option('-d, --directory <path>', 'Project directory (default: current)')
     .option('--show-metrics', 'Display performance metrics summary after execution')
     .option('--show-dashboard', 'Show interactive performance dashboard after execution')

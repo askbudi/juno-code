@@ -548,7 +548,95 @@ class FeedbackTUI {
 }
 
 /**
- * Main feedback command handler
+ * Simple function to append issue to USER_FEEDBACK.md
+ */
+async function appendIssueToFeedback(feedbackFile: string, issueText: string): Promise<void> {
+  try {
+    let content = '';
+
+    // Try to read existing file
+    try {
+      content = await fs.readFile(feedbackFile, 'utf-8');
+    } catch (error) {
+      // File doesn't exist, create basic structure
+      content = `# USER_FEEDBACK
+
+## OPEN_ISSUES
+
+## RESOLVED_ISSUES
+
+## NOTES
+`;
+    }
+
+    // Find OPEN_ISSUES section and append the new issue
+    const openIssuesMatch = content.match(/(## OPEN_ISSUES\s*\n)(.*?)(?=\n## |$)/s);
+
+    if (openIssuesMatch) {
+      const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const newIssue = `<ISSUE>\n${issueText}\n[Added: ${timestamp}]\n</ISSUE>\n\n`;
+
+      const beforeSection = content.slice(0, openIssuesMatch.index! + openIssuesMatch[1].length);
+      const afterSection = content.slice(openIssuesMatch.index! + openIssuesMatch[0].length);
+
+      content = beforeSection + newIssue + afterSection;
+    } else {
+      // No OPEN_ISSUES section found, append at end
+      const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const newIssue = `\n## OPEN_ISSUES\n\n<ISSUE>\n${issueText}\n[Added: ${timestamp}]\n</ISSUE>\n`;
+      content += newIssue;
+    }
+
+    // Write back to file
+    await fs.writeFile(feedbackFile, content, 'utf-8');
+  } catch (error) {
+    throw new FileSystemError(
+      `Failed to update feedback file: ${error}`,
+      feedbackFile
+    );
+  }
+}
+
+/**
+ * Collect multiline feedback from user
+ */
+async function collectMultilineFeedback(): Promise<string> {
+  console.log(chalk.blue('\n💬 Enter your feedback (press Ctrl+D when finished):'));
+  console.log(chalk.gray('You can type multiple lines. Describe any issues, bugs, or improvements.'));
+
+  return new Promise((resolve, reject) => {
+    let input = '';
+
+    process.stdin.setEncoding('utf8');
+    process.stdin.resume();
+
+    process.stdin.on('data', (chunk) => {
+      input += chunk;
+    });
+
+    process.stdin.on('end', () => {
+      const trimmed = input.trim();
+      if (!trimmed) {
+        reject(new ValidationError(
+          'No feedback provided',
+          ['Provide some feedback text', 'Use --help for usage examples']
+        ));
+      } else {
+        resolve(trimmed);
+      }
+    });
+
+    process.stdin.on('error', (error) => {
+      reject(new ValidationError(
+        `Failed to read feedback: ${error}`,
+        ['Try again with valid input']
+      ));
+    });
+  });
+}
+
+/**
+ * Main feedback command handler (simplified)
  */
 export async function feedbackCommandHandler(
   args: string[],
@@ -558,25 +646,46 @@ export async function feedbackCommandHandler(
   try {
     // Determine feedback file path
     const feedbackFile = options.file || path.join(process.cwd(), '.juno_task', 'USER_FEEDBACK.md');
-    const manager = new FeedbackFileManager(feedbackFile);
 
-    // Ensure feedback file exists
-    await manager.ensureExists();
+    // Ensure directory exists
+    const feedbackDir = path.dirname(feedbackFile);
+    await fs.mkdir(feedbackDir, { recursive: true });
 
     // Check if first argument is a known subcommand
-    const knownSubcommands = ['list', 'ls', 'resolve', 'remove', 'rm'];
+    const knownSubcommands = ['list', 'ls'];
     const isSubcommand = args.length > 0 && knownSubcommands.includes(args[0]);
 
     if (!isSubcommand) {
-      // Not a subcommand - add new feedback
-      if (options.interactive) {
-        const tui = new FeedbackTUI(manager);
-        const entry = await tui.collectFeedback();
-        await manager.addEntry(entry);
+      // Add new feedback issue
+      let issueText: string;
 
-        console.log(chalk.green.bold('\n✅ Feedback added successfully!'));
-        console.log(chalk.gray(`   ID: ${entry.id}`));
-        console.log(chalk.gray(`   File: ${feedbackFile}`));
+      if (options.interactive) {
+        try {
+          // Use TUI prompt editor for multiline input
+          const { launchPromptEditor, isTUISupported } = await import('../../tui/index.js');
+
+          if (isTUISupported()) {
+            console.log(chalk.blue('\n🎨 Launching TUI editor for feedback...'));
+
+            const result = await launchPromptEditor({
+              initialValue: '',
+              title: 'Feedback - Describe your issue',
+              maxLength: 2000
+            });
+
+            if (!result || !result.trim()) {
+              console.log(chalk.yellow('No feedback provided, cancelled.'));
+              return;
+            }
+
+            issueText = result.trim();
+          } else {
+            issueText = await collectMultilineFeedback();
+          }
+        } catch (error) {
+          console.log(chalk.yellow('TUI not available, using text input...'));
+          issueText = await collectMultilineFeedback();
+        }
       } else {
         // Quick feedback mode
         if (args.length === 0) {
@@ -586,67 +695,38 @@ export async function feedbackCommandHandler(
           return;
         }
 
-        const feedbackText = Array.isArray(args) ? args.join(' ') : args;
-        const entry: FeedbackEntry = {
-          id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
-          type: 'other',
-          title: feedbackText.substring(0, 50) + (feedbackText.length > 50 ? '...' : ''),
-          description: feedbackText,
-          priority: 'medium',
-          tags: ['cli'],
-          timestamp: new Date(),
-          status: 'new'
-        };
-
-        await manager.addEntry(entry);
-        console.log(chalk.green.bold('✅ Feedback added!'));
-        console.log(chalk.gray(`   ID: ${entry.id}`));
-        console.log(chalk.gray(`   File: ${feedbackFile}`));
+        issueText = args.join(' ').trim();
       }
+
+      if (!issueText) {
+        console.log(chalk.yellow('No feedback provided.'));
+        return;
+      }
+
+      // Append issue to USER_FEEDBACK.md
+      await appendIssueToFeedback(feedbackFile, issueText);
+
+      console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+      console.log(chalk.gray(`   File: ${feedbackFile}`));
+
     } else {
       // Handle subcommands
       const subcommand = args[0];
       switch (subcommand) {
         case 'list':
         case 'ls':
-          const tui = new FeedbackTUI(manager);
-          await tui.showFeedbackList();
-          break;
-
-        case 'resolve':
-          if (!args[1]) {
-            console.log(chalk.red('Please provide feedback ID to resolve'));
-            console.log(chalk.gray('Usage: juno-task feedback resolve <id>'));
-            return;
-          }
-
-          const resolved = await manager.updateEntry(args[1], { status: 'resolved' });
-          if (resolved) {
-            console.log(chalk.green(`✅ Feedback ${args[1]} marked as resolved`));
-          } else {
-            console.log(chalk.red(`❌ Feedback ${args[1]} not found`));
-          }
-          break;
-
-        case 'remove':
-        case 'rm':
-          if (!args[1]) {
-            console.log(chalk.red('Please provide feedback ID to remove'));
-            console.log(chalk.gray('Usage: juno-task feedback remove <id>'));
-            return;
-          }
-
-          const removed = await manager.removeEntry(args[1]);
-          if (removed) {
-            console.log(chalk.green(`✅ Feedback ${args[1]} removed`));
-          } else {
-            console.log(chalk.red(`❌ Feedback ${args[1]} not found`));
+          try {
+            const content = await fs.readFile(feedbackFile, 'utf-8');
+            console.log(chalk.blue.bold('\n📝 Current USER_FEEDBACK.md content:\n'));
+            console.log(content);
+          } catch (error) {
+            console.log(chalk.yellow('No USER_FEEDBACK.md file found.'));
           }
           break;
 
         default:
           console.log(chalk.red(`Unknown subcommand: ${subcommand}`));
-          console.log(chalk.gray('Available subcommands: list, resolve, remove'));
+          console.log(chalk.gray('Available subcommands: list'));
       }
     }
 

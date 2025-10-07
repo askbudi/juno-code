@@ -1,0 +1,72 @@
+{
+  "timestamp": "2025-10-07T21:18:38.816Z",
+  "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+  "serverConfig": {
+    "name": "roundtable-ai",
+    "command": "python",
+    "args": [
+      "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/roundtable_mcp_server/roundtable_mcp_server/server.py"
+    ]
+  },
+  "connectionTest": {
+    "status": "success",
+    "responseTime": 400
+  },
+  "toolsList": {
+    "status": "success",
+    "responseTime": 258,
+    "totalTools": 9
+  },
+  "subagentTests": [
+    {
+      "name": "claude_subagent",
+      "status": "working",
+      "responseTime": 2515,
+      "response": "{\"type\":\"text\",\"text\":\"API Error: 400 {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"max_tokens: 8192 > 4096, which is the maximum allowed number of output tokens for "
+    },
+    {
+      "name": "cursor_subagent",
+      "status": "working",
+      "responseTime": 1251,
+      "response": "{\"type\":\"text\",\"text\":\">>\"}"
+    },
+    {
+      "name": "codex_subagent",
+      "status": "working",
+      "responseTime": 5845,
+      "response": "{\"type\":\"text\",\"text\":\"4\"}"
+    },
+    {
+      "name": "gemini_subagent",
+      "status": "working",
+      "responseTime": 4977,
+      "response": "{\"type\":\"text\",\"text\":\"4\"}"
+    }
+  ],
+  "availabilityTests": [
+    {
+      "name": "check_claude_availability",
+      "status": "working",
+      "responseTime": 1727,
+      "response": "{\"type\":\"text\",\"text\":\"✅ **Claude Code CLI Available**\\n📋 **Default Models:** claude-sonnet-4-20250514, claude-opus-4-1-20250805\\n🔧 **All Models:** 24 available\"}"
+    },
+    {
+      "name": "check_cursor_availability",
+      "status": "working",
+      "responseTime": 1286,
+      "response": "{\"type\":\"text\",\"text\":\"✅ **Cursor Agent CLI Available**\\n📋 **Default Models:** gpt-5, sonnet-4\\n🔧 **All Models:** 16 available\"}"
+    },
+    {
+      "name": "check_codex_availability",
+      "status": "working",
+      "responseTime": 1074,
+      "response": "{\"type\":\"text\",\"text\":\"✅ **Codex CLI Available**\\n📋 **Default Models:** gpt-5, gpt-4o, claude-3.5-sonnet\\n🔧 **All Models:** 22 available\"}"
+    },
+    {
+      "name": "check_gemini_availability",
+      "status": "working",
+      "responseTime": 1583,
+      "response": "{\"type\":\"text\",\"text\":\"✅ **Gemini CLI Available**\\n🔧 **All Models:** 4 available\"}"
+    }
+  ]
+}
