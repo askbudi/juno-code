@@ -57,7 +57,7 @@ class PromptProcessor {
     }
 
     if (!prompt) {
-      if (this.options.interactive) {
+      if (this.options.interactiveInput) {
         return await this.collectInteractivePrompt();
       } else {
         throw new ValidationError(

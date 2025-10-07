@@ -36,6 +36,7 @@ export const ENV_VAR_MAPPING = {
   JUNO_TASK_MCP_TIMEOUT: 'mcpTimeout',
   JUNO_TASK_MCP_RETRIES: 'mcpRetries',
   JUNO_TASK_MCP_SERVER_PATH: 'mcpServerPath',
+  JUNO_TASK_MCP_SERVER_NAME: 'mcpServerName',
 
   // TUI settings
   JUNO_TASK_INTERACTIVE: 'interactive',
@@ -106,6 +107,10 @@ export const JunoTaskConfigSchema = z.object({
     .optional()
     .describe('Path to MCP server executable (auto-discovered if not specified)'),
 
+  mcpServerName: z.string()
+    .optional()
+    .describe('Named MCP server to connect to (e.g., "roundtable-ai")'),
+
   // TUI settings
   interactive: z.boolean()
     .describe('Enable interactive mode'),
@@ -138,6 +143,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   // MCP settings
   mcpTimeout: 30000, // 30 seconds
   mcpRetries: 3,
+  mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
 
   // TUI settings
   interactive: true,

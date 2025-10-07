@@ -105,7 +105,7 @@ function setupMainCommand(program: Command): void {
     .option('--cwd <path>', 'Working directory')
     .option('-m, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('--model <name>', 'Model to use (subagent-specific)')
-    .option('-i, --interactive', 'Interactive mode for typing prompts')
+    .option('--interactive-input', 'Interactive mode for typing prompts')
     .option('--interactive-prompt', 'Launch TUI prompt editor')
     .action(async (subagent, options, command) => {
       try {

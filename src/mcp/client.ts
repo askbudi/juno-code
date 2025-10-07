@@ -17,6 +17,7 @@ import os from 'node:os';
 // Core interfaces
 export interface MCPClientOptions {
   serverPath?: string;
+  serverName?: string;
   timeout?: number;
   retries?: number;
   workingDirectory?: string;
@@ -98,22 +99,28 @@ export class JunoMCPClient {
       throw new MCPConnectionError('Connection already in progress');
     }
 
-    if (!this.options.serverPath) {
-      throw new MCPConnectionError('Server path is required for connection');
+    if (!this.options.serverPath && !this.options.serverName) {
+      throw new MCPConnectionError('Server path or server name is required for connection');
     }
 
     try {
       this.connectionStatus = 'connecting';
       this.emit('connection:state', 'CONNECTING');
 
-      // Start the MCP server process
-      await this.startServerProcess();
+      // Handle server connection based on options
+      if (this.options.serverName) {
+        // Connect to named MCP server (e.g., "roundtable-ai")
+        await this.connectToNamedServer();
+      } else {
+        // Start the MCP server process from path
+        await this.startServerProcess();
 
-      // Create transport
-      this.transport = new StdioClientTransport({
-        command: this.serverProcess!.stdout!,
-        stdin: this.serverProcess!.stdin!
-      });
+        // Create transport
+        this.transport = new StdioClientTransport({
+          readable: this.serverProcess!.stdout!,
+          writable: this.serverProcess!.stdin!
+        });
+      }
 
       // Create MCP client
       this.client = new Client({
@@ -413,6 +420,83 @@ export class JunoMCPClient {
       this.serverProcess!.once('error', onError);
       this.serverProcess!.once('spawn', onSpawn);
     });
+  }
+
+  private async connectToNamedServer(): Promise<void> {
+    const serverName = this.options.serverName!;
+
+    if (this.options.debug) {
+      console.log(`[MCP] Connecting to named server: ${serverName}`);
+    }
+
+    // For named servers like "roundtable-ai", we need to check if it's available
+    // This could be through a registry, known endpoints, or environment configuration
+    const serverConfig = await this.resolveNamedServer(serverName);
+
+    if (serverConfig.type === 'executable') {
+      // Named server points to an executable
+      this.serverProcess = spawn(serverConfig.command, serverConfig.args || [], {
+        cwd: this.options.workingDirectory,
+        env: {
+          ...process.env,
+          ...this.options.environment
+        },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      // Create transport for executable-based named server
+      this.transport = new StdioClientTransport({
+        readable: this.serverProcess.stdout!,
+        writable: this.serverProcess.stdin!
+      });
+    } else if (serverConfig.type === 'url') {
+      // Named server is available at a URL (WebSocket, HTTP, etc.)
+      throw new MCPConnectionError(`URL-based servers not yet supported for ${serverName}`);
+    } else {
+      throw new MCPConnectionError(`Unknown server type for ${serverName}`);
+    }
+  }
+
+  private async resolveNamedServer(serverName: string): Promise<{ type: string; command?: string; args?: string[]; url?: string }> {
+    // Known server configurations
+    const knownServers: Record<string, any> = {
+      'roundtable-ai': {
+        type: 'executable',
+        command: 'roundtable-mcp-server',  // Assumes it's in PATH
+        args: []
+      }
+    };
+
+    if (knownServers[serverName]) {
+      return knownServers[serverName];
+    }
+
+    // Try to find in common locations
+    const possiblePaths = [
+      `${serverName}`,  // Assume it's in PATH
+      `/usr/local/bin/${serverName}`,
+      path.resolve(os.homedir(), `.local/bin/${serverName}`),
+      path.resolve(this.options.workingDirectory || process.cwd(), `${serverName}`),
+    ];
+
+    for (const serverPath of possiblePaths) {
+      try {
+        const stats = await fsPromises.stat(serverPath);
+        if (stats.isFile()) {
+          return {
+            type: 'executable',
+            command: serverPath,
+            args: []
+          };
+        }
+      } catch {
+        // Continue to next path
+      }
+    }
+
+    throw new MCPConnectionError(
+      `Named server "${serverName}" not found. Please ensure it's installed and available in PATH or configure the server path directly.`
+    );
   }
 
   private async cleanup(): Promise<void> {

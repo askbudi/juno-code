@@ -272,37 +272,52 @@ class ExecutionCoordinator {
       }
     });
 
-    // Create MCP client with auto-discovery if needed
-    let serverPath = this.config.mcpServerPath;
-    if (!serverPath) {
+    // Create MCP client - prioritize server name over server path
+    let mcpClientOptions: any = {
+      timeout: this.config.mcpTimeout,
+      retries: this.config.mcpRetries,
+      workingDirectory: request.workingDirectory,
+      debug: this.config.verbose
+    };
+
+    if (this.config.mcpServerName) {
+      // Use named server (preferred approach)
+      mcpClientOptions.serverName = this.config.mcpServerName;
+
+      if (this.config.verbose) {
+        console.log(chalk.gray(`   Using named MCP server: ${this.config.mcpServerName}`));
+      }
+    } else if (this.config.mcpServerPath) {
+      // Use server path
+      mcpClientOptions.serverPath = this.config.mcpServerPath;
+
+      if (this.config.verbose) {
+        console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
+      }
+    } else {
+      // Auto-discover server path as fallback
       try {
-        // Auto-discover server path using the built-in resolver
         const { MCPServerPathResolver } = await import('../../mcp/client.js');
-        serverPath = await MCPServerPathResolver.findServerPath(request.workingDirectory);
+        mcpClientOptions.serverPath = await MCPServerPathResolver.findServerPath(request.workingDirectory);
 
         if (this.config.verbose) {
-          console.log(chalk.gray(`   Auto-discovered MCP server: ${serverPath}`));
+          console.log(chalk.gray(`   Auto-discovered MCP server: ${mcpClientOptions.serverPath}`));
         }
       } catch (discoveryError) {
         throw new MCPError(
-          'MCP server path not configured and auto-discovery failed',
+          'MCP server not configured and auto-discovery failed',
           [
+            'Set JUNO_TASK_MCP_SERVER_NAME=roundtable-ai environment variable',
             'Set JUNO_TASK_MCP_SERVER_PATH environment variable',
             'Install roundtable MCP server in a standard location',
-            'Use --config to specify a configuration file with mcpServerPath',
+            'Use --config to specify a configuration file with MCP settings',
             'Ensure roundtable_mcp_server is accessible in your PATH'
           ]
         );
       }
     }
 
-    const mcpClient = createMCPClient({
-      serverPath,
-      timeout: this.config.mcpTimeout,
-      retries: this.config.mcpRetries,
-      workingDirectory: request.workingDirectory,
-      debug: this.config.verbose
-    });
+    const mcpClient = createMCPClient(mcpClientOptions);
 
     // Create execution engine
     const engine = createExecutionEngine(this.config, mcpClient);

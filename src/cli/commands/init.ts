@@ -536,10 +536,12 @@ export async function initCommandHandler(
   try {
     console.log(chalk.blue.bold('🎯 Juno Task - TypeScript CLI Initialization'));
 
+
     let context: InitializationContext;
 
     if (options.interactive) {
       // Interactive mode with TUI
+      console.log(chalk.yellow('🚀 Starting interactive mode...'));
       const tui = new InitTUI();
       context = await tui.gather();
     } else {
@@ -601,8 +603,19 @@ export function configureInitCommand(program: Command): void {
     .action(async (directory, options, command) => {
       const initOptions: InitCommandOptions = {
         directory,
-        ...options,
-        variables: options.var
+        force: options.force,
+        task: options.task,
+        subagent: options.subagent,
+        gitUrl: options.gitUrl,
+        interactive: options.interactive,
+        template: options.template,
+        variables: options.var,
+        // Global options
+        verbose: options.verbose,
+        quiet: options.quiet,
+        config: options.config,
+        logFile: options.logFile,
+        logLevel: options.logLevel
       };
 
       await initCommandHandler([], initOptions, command);
