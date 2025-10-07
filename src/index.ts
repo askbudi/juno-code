@@ -58,7 +58,8 @@ export * from './tui';
 // Version information
 export { version } from './version';
 
-// Selective re-exports to avoid conflicts (using type-only exports)
-export type { MCPClient } from './mcp/client';
-export type { MCPError, MCPConnectionError, MCPTimeoutError } from './mcp/errors';
+// MCP exports (full implementation exports)
+export * from './mcp';
+
+// Template exports
 export type { TemplateEngine } from './templates/engine';

@@ -10,6 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ProgressEventType, SessionState, ProgressEvent, ProgressCallback } from './types.js';
 import { MCPConnectionError, MCPValidationError, MCPTimeoutError, MCPToolError, MCPErrorCode } from './errors.js';
 import { ProgressStreamManager } from './advanced/progress-stream.js';
+import { MCPConfigLoader, type MCPServerConfig } from './config.js';
 import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
@@ -506,65 +507,84 @@ export class JunoMCPClient {
   }
 
   private async resolveNamedServer(serverName: string): Promise<{ type: string; command?: string; args?: string[]; url?: string }> {
-    // Known server configurations
-    const knownServers: Record<string, any> = {
-      'roundtable-ai': {
+    try {
+      // Try to load configuration from .juno_task/mcp.json first
+      const { config, command, args } = await MCPServerConfigResolver.getServerConfig(
+        serverName,
+        this.options.workingDirectory
+      );
+
+      console.log(`[MCP] Resolved server '${serverName}' from configuration`);
+      return {
         type: 'executable',
-        command: 'roundtable-mcp-server',  // Assumes it's in PATH
-        args: []
-      }
-    };
+        command,
+        args
+      };
+    } catch (error) {
+      console.warn(`[MCP] Failed to resolve server from config: ${error}`);
+      console.warn(`[MCP] Falling back to hardcoded server definitions`);
 
-    if (knownServers[serverName]) {
-      const config = knownServers[serverName];
-      // Verify the command exists before returning it
-      if (config.type === 'executable') {
-        const commandExists = await this.checkCommandExists(config.command);
-        if (!commandExists) {
-          throw new MCPConnectionError(
-            `MCP server "${config.command}" not found in PATH`,
-            undefined,
-            undefined,
-            {
-              recoverySuggestions: [
-                'Install the roundtable MCP server: pip install roundtable-mcp-server',
-                'Ensure roundtable-mcp-server is in your PATH',
-                'Set JUNO_TASK_MCP_SERVER_PATH to point to the server executable',
-                'Check if the server is properly installed'
-              ]
-            }
-          );
+      // Fallback to known server configurations
+      const knownServers: Record<string, any> = {
+        'roundtable-ai': {
+          type: 'executable',
+          command: 'roundtable-mcp-server',  // Assumes it's in PATH
+          args: []
+        }
+      };
+
+      if (knownServers[serverName]) {
+        const config = knownServers[serverName];
+        // Verify the command exists before returning it
+        if (config.type === 'executable') {
+          const commandExists = await this.checkCommandExists(config.command);
+          if (!commandExists) {
+            throw new MCPConnectionError(
+              `MCP server "${config.command}" not found in PATH. Please run 'juno-task init' to create .juno_task/mcp.json`,
+              undefined,
+              undefined,
+              {
+                recoverySuggestions: [
+                  'Run "juno-task init" to create .juno_task/mcp.json configuration',
+                  'Install the roundtable MCP server: pip install roundtable-mcp-server',
+                  'Ensure roundtable-mcp-server is in your PATH',
+                  'Set JUNO_TASK_MCP_SERVER_PATH to point to the server executable',
+                  'Check if the server is properly installed'
+                ]
+              }
+            );
+          }
+        }
+        return config;
+      }
+
+      // Try to find in common locations as final fallback
+      const possiblePaths = [
+        `${serverName}`,  // Assume it's in PATH
+        `/usr/local/bin/${serverName}`,
+        path.resolve(os.homedir(), `.local/bin/${serverName}`),
+        path.resolve(this.options.workingDirectory || process.cwd(), `${serverName}`),
+      ];
+
+      for (const serverPath of possiblePaths) {
+        try {
+          const stats = await fsPromises.stat(serverPath);
+          if (stats.isFile()) {
+            return {
+              type: 'executable',
+              command: serverPath,
+              args: []
+            };
+          }
+        } catch {
+          // Continue to next path
         }
       }
-      return config;
+
+      throw new MCPConnectionError(
+        `Named server "${serverName}" not found. Please run 'juno-task init' to create .juno_task/mcp.json configuration.`
+      );
     }
-
-    // Try to find in common locations
-    const possiblePaths = [
-      `${serverName}`,  // Assume it's in PATH
-      `/usr/local/bin/${serverName}`,
-      path.resolve(os.homedir(), `.local/bin/${serverName}`),
-      path.resolve(this.options.workingDirectory || process.cwd(), `${serverName}`),
-    ];
-
-    for (const serverPath of possiblePaths) {
-      try {
-        const stats = await fsPromises.stat(serverPath);
-        if (stats.isFile()) {
-          return {
-            type: 'executable',
-            command: serverPath,
-            args: []
-          };
-        }
-      } catch {
-        // Continue to next path
-      }
-    }
-
-    throw new MCPConnectionError(
-      `Named server "${serverName}" not found. Please ensure it's installed and available in PATH or configure the server path directly.`
-    );
   }
 
   private async checkCommandExists(command: string): Promise<boolean> {
@@ -934,7 +954,7 @@ export class SubagentMapper {
         name: 'claude',
         description: 'Claude by Anthropic - Advanced reasoning and coding',
         capabilities: ['coding', 'analysis', 'reasoning', 'writing'],
-        models: ['sonnet-3.5', 'sonnet-3', 'haiku-3'],
+        models: ['sonnet-4'],
         aliases: ['claude-code', 'claude_code']
       },
       {
@@ -948,7 +968,7 @@ export class SubagentMapper {
         name: 'codex',
         description: 'OpenAI Codex - Code generation and completion',
         capabilities: ['code-generation', 'completion', 'documentation'],
-        models: ['code-davinci', 'code-cushman'],
+        models: ['gpt-5'],
         aliases: []
       },
       {
@@ -1055,21 +1075,88 @@ export class MCPConnectionManager {
 }
 
 /**
- * Server Path Resolution
+ * Server Configuration Resolution
  */
-export class MCPServerPathResolver {
-  static async findServerPath(cwd: string, currentFile?: string): Promise<string> {
+export class MCPServerConfigResolver {
+  /**
+   * Get server configuration from .juno_task/mcp.json
+   */
+  static async getServerConfig(
+    serverName?: string,
+    workingDirectory?: string
+  ): Promise<{ config: MCPServerConfig; command: string; args: string[] }> {
+    try {
+      const serverConfig = await MCPConfigLoader.getServerConfig(serverName, workingDirectory);
+
+      // Validate that the server script exists
+      if (serverConfig.args.length > 0) {
+        const serverScript = serverConfig.args[0];
+        await this.validateServerPath(serverScript);
+      }
+
+      console.log(`[MCP] Using server config: ${serverConfig.name}`);
+      console.log(`[MCP] Command: ${serverConfig.command}`);
+      console.log(`[MCP] Args: ${serverConfig.args.join(' ')}`);
+
+      return {
+        config: serverConfig,
+        command: serverConfig.command,
+        args: serverConfig.args
+      };
+    } catch (error) {
+      console.warn(`[MCP] Failed to load configuration: ${error}`);
+      console.warn(`[MCP] Falling back to hardcoded server discovery`);
+
+      // Fallback to legacy hardcoded discovery if config is not available
+      return this.fallbackServerDiscovery(workingDirectory);
+    }
+  }
+
+  /**
+   * Fallback to hardcoded server discovery for backwards compatibility
+   */
+  private static async fallbackServerDiscovery(workingDirectory?: string): Promise<{
+    config: MCPServerConfig;
+    command: string;
+    args: string[];
+  }> {
+    const cwd = workingDirectory || process.cwd();
+    const serverPath = await this.findServerPathLegacy(cwd);
+
+    // Create a minimal config for legacy mode
+    const fallbackConfig: MCPServerConfig = {
+      name: 'roundtable-ai-legacy',
+      command: 'python',
+      args: [serverPath],
+      timeout: 3600.0,
+      enable_default_progress_callback: false,
+      suppress_subprocess_logs: true,
+      env: {
+        PYTHONPATH: path.dirname(serverPath)
+      }
+    };
+
+    console.log(`[MCP] Using legacy fallback configuration`);
+    return {
+      config: fallbackConfig,
+      command: 'python',
+      args: [serverPath]
+    };
+  }
+
+  /**
+   * Legacy hardcoded server path discovery
+   */
+  private static async findServerPathLegacy(cwd: string, currentFile?: string): Promise<string> {
     const possiblePaths = [
       // Relative to current file if provided
       ...(currentFile ? [
         path.resolve(path.dirname(currentFile), '../../../roundtable_mcp_server/roundtable_mcp_server/server.py')
       ] : []),
-
       // Relative to working directory
       path.resolve(cwd, 'roundtable_mcp_server/roundtable_mcp_server/server.py'),
       path.resolve(cwd, '../roundtable_mcp_server/roundtable_mcp_server/server.py'),
       path.resolve(cwd, '../../roundtable_mcp_server/roundtable_mcp_server/server.py'),
-
       // Standard installation paths
       path.resolve(os.homedir(), '.local/bin/roundtable_mcp_server'),
       '/usr/local/bin/roundtable_mcp_server'
@@ -1079,26 +1166,50 @@ export class MCPServerPathResolver {
       try {
         const stats = await fsPromises.stat(serverPath);
         if (stats.isFile()) {
+          console.log(`[MCP] Found server at: ${serverPath}`);
           return serverPath;
         }
-      } catch {
-        // Continue to next path
+      } catch (error) {
+        // File doesn't exist, continue to next path
+        continue;
       }
     }
 
     throw new MCPConnectionError(
-      `MCP server not found in any expected location: ${possiblePaths.join(', ')}`
+      `MCP server not found. Please run 'juno-task init' to create .juno_task/mcp.json or ensure roundtable_mcp_server is installed.`
     );
   }
 
+  static async validateServerPath(serverPath: string): Promise<boolean> {
+    try {
+      const stats = await fsPromises.stat(serverPath);
+      const isValid = stats.isFile();
+      if (!isValid) {
+        throw new MCPConnectionError(`MCP server script not found: ${serverPath}`);
+      }
+      return true;
+    } catch (error) {
+      throw new MCPConnectionError(`MCP server validation failed: ${serverPath} - ${error}`);
+    }
+  }
+
+  /**
+   * Check if MCP configuration is available
+   */
+  static async hasConfig(workingDirectory?: string): Promise<boolean> {
+    return MCPConfigLoader.hasConfig(workingDirectory);
+  }
+
   static createServerConfig(
-    serverPath: string,
+    serverConfig: MCPServerConfig,
     options: Partial<MCPClientOptions> = {}
   ): MCPClientOptions {
     return {
-      serverPath,
-      timeout: 30000, // 30 seconds
+      serverPath: serverConfig.args[0], // For backwards compatibility
+      serverName: serverConfig.name,
+      timeout: (serverConfig.timeout * 1000) || 30000, // Convert to milliseconds
       retries: 3,
+      environment: serverConfig.env,
       ...options
     };
   }
@@ -1108,10 +1219,39 @@ export class MCPServerPathResolver {
 export type MCPClient = JunoMCPClient;
 
 /**
- * Create an MCP client instance
+ * Create an MCP client instance with automatic configuration loading
  */
-export function createMCPClient(options: MCPClientOptions): JunoMCPClient {
+export function createMCPClient(options: MCPClientOptions = {}): JunoMCPClient {
   return new JunoMCPClient(options);
+}
+
+/**
+ * Create an MCP client instance using configuration from .juno_task/mcp.json
+ */
+export async function createMCPClientFromConfig(
+  serverName?: string,
+  workingDirectory?: string,
+  additionalOptions: Partial<MCPClientOptions> = {}
+): Promise<JunoMCPClient> {
+  try {
+    const { config } = await MCPServerConfigResolver.getServerConfig(serverName, workingDirectory);
+    const clientOptions = MCPServerConfigResolver.createServerConfig(config, {
+      workingDirectory,
+      ...additionalOptions
+    });
+
+    console.log(`[MCP] Creating client with configuration: ${config.name}`);
+    return new JunoMCPClient(clientOptions);
+  } catch (error) {
+    console.warn(`[MCP] Failed to create client from config: ${error}`);
+    console.warn(`[MCP] Creating client with provided options or defaults`);
+
+    // Fallback to basic client creation
+    return new JunoMCPClient({
+      workingDirectory,
+      ...additionalOptions
+    });
+  }
 }
 
 // Keep compatibility with existing stub classes but mark as deprecated
@@ -1187,7 +1327,7 @@ export class SubagentMapperImpl {
     const validModels: Record<string, string[]> = {
       'claude': ['sonnet-4', 'sonnet-3.5', 'haiku-3', 'opus-3'],
       'cursor': ['gpt-4', 'gpt-3.5-turbo'],
-      'codex': ['code-davinci-002'],
+      'codex': ['gpt-5'],
       'gemini': ['gemini-pro', 'gemini-ultra'],
     };
 
@@ -1199,7 +1339,7 @@ export class SubagentMapperImpl {
     const defaults: Record<string, string> = {
       'claude': 'sonnet-4',
       'cursor': 'gpt-4',
-      'codex': 'code-davinci-002',
+      'codex': 'gpt-5',
       'gemini': 'gemini-pro',
     };
     return defaults[subagentType] || 'default-model';

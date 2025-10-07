@@ -1194,6 +1194,96 @@ This directory contains specification documents for your project.
         version: '1.0.0',
         fileExtension: '.md',
         multiFile: true
+      }],
+
+      ['mcp.json', {
+        id: 'mcp.json',
+        name: 'MCP Server Configuration',
+        description: 'Model Context Protocol server configuration for AI subagents',
+        category: TemplateCategory.CONFIG,
+        content: `{
+  "mcpServers": {
+    "roundtable-ai": {
+      "name": "roundtable-ai",
+      "command": "python",
+      "args": [
+        "{{PROJECT_ROOT}}/roundtable_mcp_server/roundtable_mcp_server/server.py"
+      ],
+      "timeout": 3600.0,
+      "enable_default_progress_callback": false,
+      "suppress_subprocess_logs": true,
+      "env": {
+        "PYTHONPATH": "{{PROJECT_ROOT}}",
+        "ROUNDTABLE_DEBUG": "false"
+      },
+      "_metadata": {
+        "description": "Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents",
+        "capabilities": [
+          "claude_subagent - Advanced reasoning and code quality",
+          "cursor_subagent - Real-time collaboration and editing",
+          "codex_subagent - Code generation and completion",
+          "gemini_subagent - Multimodal analysis and generation"
+        ],
+        "working_directory": "{{PROJECT_ROOT}}",
+        "verbose": false,
+        "created_at": "{{TIMESTAMP}}",
+        "project_name": "{{PROJECT_NAME}}",
+        "main_task": "{{TASK}}"
+      }
+    }
+  },
+  "default_server": "roundtable-ai",
+  "global_settings": {
+    "connection_timeout": 30.0,
+    "default_retries": 3,
+    "enable_progress_streaming": true,
+    "log_level": "info",
+    "debug_mode": false
+  },
+  "project_config": {
+    "name": "{{PROJECT_NAME}}",
+    "main_task": "{{TASK}}",
+    "preferred_subagent": "{{SUBAGENT}}",
+    "created_at": "{{TIMESTAMP}}",
+    "version": "1.0.0"
+  }
+}`,
+        variables: [
+          {
+            name: 'PROJECT_ROOT',
+            description: 'Project root directory path',
+            type: 'path',
+            required: true
+          },
+          {
+            name: 'PROJECT_NAME',
+            description: 'Project name',
+            type: 'text',
+            required: true
+          },
+          {
+            name: 'TASK',
+            description: 'Main task description',
+            type: 'text',
+            required: true
+          },
+          {
+            name: 'SUBAGENT',
+            description: 'Preferred AI subagent',
+            type: 'subagent',
+            required: true,
+            defaultValue: 'claude',
+            choices: VALID_SUBAGENTS
+          },
+          {
+            name: 'TIMESTAMP',
+            description: 'Current timestamp',
+            type: 'date',
+            required: true
+          }
+        ],
+        version: '1.0.0',
+        fileExtension: '.json'
       }]
     ];
 

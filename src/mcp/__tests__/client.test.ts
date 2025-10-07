@@ -645,7 +645,7 @@ Backend #3: tool_result => Analysis complete`;
     it('should get default models', () => {
       expect(mapper.getDefaultModel('claude')).toBe('sonnet-4');
       expect(mapper.getDefaultModel('cursor')).toBe('gpt-4');
-      expect(mapper.getDefaultModel('codex')).toBe('code-davinci-002');
+      expect(mapper.getDefaultModel('codex')).toBe('gpt-5');
       expect(mapper.getDefaultModel('gemini')).toBe('gemini-pro');
     });
 
