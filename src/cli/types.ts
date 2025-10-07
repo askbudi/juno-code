@@ -165,6 +165,16 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   model?: string;
   /** Project directory */
   directory?: string;
+  /** Display performance metrics summary after execution */
+  showMetrics?: boolean;
+  /** Show interactive performance dashboard after execution */
+  showDashboard?: boolean;
+  /** Display performance trends from historical data */
+  showTrends?: boolean;
+  /** Save performance metrics to file */
+  saveMetrics?: boolean | string;
+  /** Custom path for metrics file */
+  metricsFile?: string;
 }
 
 /**

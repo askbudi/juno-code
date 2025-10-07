@@ -17,6 +17,9 @@ import { configureStartCommand } from '../cli/commands/start.js';
 import { configureFeedbackCommand } from '../cli/commands/feedback.js';
 import { configureSessionCommand } from '../cli/commands/session.js';
 import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
+import { configureLogsCommand } from '../cli/commands/logs.js';
+import { configureHelpCommand } from '../cli/commands/help.js';
+import CompletionCommand from '../cli/commands/completion.js';
 
 // Version information
 const VERSION = '1.0.0';
@@ -142,37 +145,16 @@ function displayBanner(verbose: boolean = false): void {
 }
 
 /**
- * Setup completion support
+ * Setup enhanced completion support
  */
 function setupCompletion(program: Command): void {
-  // Hidden completion command for shell integration
-  program
-    .command('completion', { hidden: true })
-    .description('Generate shell completion script')
-    .argument('<shell>', 'Shell type (bash, zsh, fish)')
-    .action(async (shell, options, command) => {
-      try {
-        const { generateCompletion } = await import('../cli/utils/completion.js');
-        const script = generateCompletion(shell, 'juno-task');
-        console.log(script);
-      } catch (error) {
-        handleCLIError(error, false);
-      }
-    });
-
-  // Install completion command
-  program
-    .command('install-completion', { hidden: true })
-    .description('Install shell completion')
-    .option('--shell <type>', 'Shell type (auto-detected if not specified)')
-    .action(async (options, command) => {
-      try {
-        const { installCompletion } = await import('../cli/utils/completion.js');
-        await installCompletion(options.shell);
-      } catch (error) {
-        handleCLIError(error, false);
-      }
-    });
+  try {
+    const completionCommand = new CompletionCommand();
+    completionCommand.register(program);
+  } catch (error) {
+    // Don't fail CLI startup if completion setup fails
+    console.warn(chalk.yellow('⚠️  Warning: Could not setup completion commands'));
+  }
 }
 
 /**
@@ -287,6 +269,8 @@ async function main(): Promise<void> {
   configureFeedbackCommand(program);
   configureSessionCommand(program);
   configureSetupGitCommand(program);
+  configureLogsCommand(program);
+  configureHelpCommand(program);
 
   // Setup completion
   setupCompletion(program);

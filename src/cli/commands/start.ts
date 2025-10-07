@@ -14,6 +14,8 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClient } from '../../mcp/client.js';
+import { PerformanceIntegration } from '../utils/performance-integration.js';
+import { cliLogger, mcpLogger, engineLogger, sessionLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { StartCommandOptions } from '../types.js';
 import { ConfigurationError, MCPError, FileSystemError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
@@ -246,11 +248,17 @@ class ExecutionCoordinator {
   private config: JunoTaskConfig;
   private sessionManager: SessionManager;
   private progressDisplay: ProgressDisplay;
+  private performanceIntegration: PerformanceIntegration;
   private currentSession: Session | null = null;
 
-  constructor(config: JunoTaskConfig, verbose: boolean = false) {
+  constructor(
+    config: JunoTaskConfig,
+    verbose: boolean = false,
+    performanceIntegration?: PerformanceIntegration
+  ) {
     this.config = config;
     this.progressDisplay = new ProgressDisplay(verbose);
+    this.performanceIntegration = performanceIntegration || new PerformanceIntegration();
   }
 
   async initialize(): Promise<void> {
@@ -258,51 +266,69 @@ class ExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Create session
-    this.currentSession = await this.sessionManager.createSession({
-      name: `Execution ${new Date().toISOString()}`,
-      subagent: request.subagent,
-      config: this.config,
-      tags: ['cli', 'start-command'],
-      metadata: {
-        requestId: request.requestId,
-        workingDirectory: request.workingDirectory,
-        maxIterations: request.maxIterations,
-        model: request.model
-      }
+    // Start performance monitoring
+    const performanceCollector = this.performanceIntegration.startMonitoring({
+      sessionId: request.requestId,
+      command: 'start',
+      arguments: [],
+      options: {},
+      startTime: Date.now()
     });
 
-    // Create MCP client - prioritize server name over server path
-    let mcpClientOptions: any = {
-      timeout: this.config.mcpTimeout,
-      retries: this.config.mcpRetries,
-      workingDirectory: request.workingDirectory,
-      debug: this.config.verbose
-    };
+    // Declare variables at function scope for cleanup access
+    let mcpClient: any = null;
+    let engine: any = null;
 
-    // TEMPORARY: Force server path approach for debugging
-    if (false && this.config.mcpServerName) {
-      // Use named server (preferred approach)
-      mcpClientOptions.serverName = this.config.mcpServerName;
+    try {
+      // Create session
+      this.performanceIntegration.startTiming(request.requestId, 'session_creation');
+      this.currentSession = await this.sessionManager.createSession({
+        name: `Execution ${new Date().toISOString()}`,
+        subagent: request.subagent,
+        config: this.config,
+        tags: ['cli', 'start-command'],
+        metadata: {
+          requestId: request.requestId,
+          workingDirectory: request.workingDirectory,
+          maxIterations: request.maxIterations,
+          model: request.model
+        }
+      });
+      this.performanceIntegration.endTiming(request.requestId, 'session_creation');
 
-    } else if (this.config.mcpServerPath) {
-      // Use server path
-      mcpClientOptions.serverPath = this.config.mcpServerPath;
+      // Create MCP client - prioritize server name over server path
+      this.performanceIntegration.startTiming(request.requestId, 'mcp_client_creation');
+      let mcpClientOptions: any = {
+        timeout: this.config.mcpTimeout,
+        retries: this.config.mcpRetries,
+        workingDirectory: request.workingDirectory,
+        debug: this.config.verbose
+      };
 
-      if (this.config.verbose) {
-        console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
+      // TEMPORARY: Force server path approach for debugging
+      if (false && this.config.mcpServerName) {
+        // Use named server (preferred approach)
+        mcpClientOptions.serverName = this.config.mcpServerName;
+
+      } else if (this.config.mcpServerPath) {
+        // Use server path
+        mcpClientOptions.serverPath = this.config.mcpServerPath;
+
+        if (this.config.verbose) {
+          console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
+        }
+      } else {
+        // TEMPORARY: Force a specific server path for debugging
+        mcpClientOptions.serverPath = '/Users/mahdiyar/miniconda3/envs/tmp_test/bin/roundtable-mcp-server';
       }
-    } else {
-      // TEMPORARY: Force a specific server path for debugging
-      mcpClientOptions.serverPath = '/Users/mahdiyar/miniconda3/envs/tmp_test/bin/roundtable-mcp-server';
-    }
 
+      mcpClient = createMCPClient(mcpClientOptions);
+      this.performanceIntegration.endTiming(request.requestId, 'mcp_client_creation');
 
-    const mcpClient = createMCPClient(mcpClientOptions);
-
-
-    // Create execution engine
-    const engine = createExecutionEngine(this.config, mcpClient);
+      // Create execution engine
+      this.performanceIntegration.startTiming(request.requestId, 'engine_creation');
+      engine = createExecutionEngine(this.config, mcpClient);
+      this.performanceIntegration.endTiming(request.requestId, 'engine_creation');
 
     // Set up progress callbacks
     engine.onProgress(async (event: ProgressEvent) => {
@@ -317,37 +343,48 @@ class ExecutionCoordinator {
       });
     });
 
-    // Set up event handlers
-    engine.on('iteration:start', ({ iterationNumber }) => {
-      this.progressDisplay.onIterationStart(iterationNumber);
-    });
+      // Set up event handlers
+      engine.on('iteration:start', ({ iterationNumber }) => {
+        this.progressDisplay.onIterationStart(iterationNumber);
+        this.performanceIntegration.startTiming(request.requestId, `iteration_${iterationNumber}`);
+      });
 
-    engine.on('iteration:complete', ({ iterationResult }) => {
-      this.progressDisplay.onIterationComplete(iterationResult);
-    });
+      engine.on('iteration:complete', ({ iterationResult }) => {
+        this.progressDisplay.onIterationComplete(iterationResult);
+        const iterationTime = this.performanceIntegration.endTiming(request.requestId, `iteration_${iterationResult.iterationNumber}`);
+        this.performanceIntegration.recordIteration(
+          request.requestId,
+          iterationResult.success,
+          iterationTime
+        );
+      });
 
     engine.on('rate-limit:start', ({ waitTimeMs, error }) => {
       this.progressDisplay.onRateLimit(waitTimeMs, error.resetTime);
     });
 
-    engine.on('execution:error', ({ error }) => {
-      this.progressDisplay.onError(error);
-    });
+      engine.on('execution:error', ({ error }) => {
+        this.progressDisplay.onError(error);
+      });
 
-    try {
       // Connect to MCP server
+      this.performanceIntegration.startTiming(request.requestId, 'mcp_connection');
       await mcpClient.connect();
+      this.performanceIntegration.endTiming(request.requestId, 'mcp_connection');
 
       // Start progress display
       this.progressDisplay.start(request);
 
       // Execute task
+      this.performanceIntegration.startTiming(request.requestId, 'task_execution');
       const result = await engine.execute(request);
+      this.performanceIntegration.endTiming(request.requestId, 'task_execution');
 
       // Complete progress display
       this.progressDisplay.complete(result);
 
       // Update session with results
+      this.performanceIntegration.startTiming(request.requestId, 'session_completion');
       await this.sessionManager.completeSession(this.currentSession.info.id, {
         success: result.status === ExecutionStatus.COMPLETED,
         output: result.iterations[result.iterations.length - 1]?.toolResult.content || '',
@@ -357,6 +394,7 @@ class ExecutionCoordinator {
           iterations: result.iterations.length
         }
       });
+      this.performanceIntegration.endTiming(request.requestId, 'session_completion');
 
       return result;
 
@@ -369,21 +407,33 @@ class ExecutionCoordinator {
         });
       }
 
+      // Record failed execution
+      this.performanceIntegration.recordIteration(request.requestId, false);
       throw error;
 
     } finally {
       // Cleanup
+      this.performanceIntegration.startTiming(request.requestId, 'cleanup');
       try {
-        await mcpClient.disconnect();
-        await engine.shutdown();
+        if (mcpClient) {
+          await mcpClient.disconnect();
+        }
+        if (engine) {
+          await engine.shutdown();
+        }
       } catch (cleanupError) {
         console.warn(chalk.yellow(`Warning: Cleanup error: ${cleanupError}`));
       }
+      this.performanceIntegration.endTiming(request.requestId, 'cleanup');
     }
   }
 
   getSessionId(): string | null {
     return this.currentSession?.info.id || null;
+  }
+
+  getPerformanceIntegration(): PerformanceIntegration {
+    return this.performanceIntegration;
   }
 }
 
@@ -398,7 +448,13 @@ export async function startCommandHandler(
   try {
     console.log(chalk.blue.bold('🎯 Juno Task - Start Execution'));
 
+    // Set logging level based on options
+    const logLevel = options.logLevel ? LogLevel[options.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
+    cliLogger.startTimer('start_command_total');
+    cliLogger.info('Starting execution command', { options, directory: options.directory || process.cwd() });
+
     // Load configuration
+    cliLogger.startTimer('config_loading');
     const config = await loadConfig({
       baseDir: options.directory || process.cwd(),
       configFile: options.config,
@@ -409,13 +465,18 @@ export async function startCommandHandler(
         workingDirectory: options.directory || process.cwd()
       }
     });
+    cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
 
     // Validate project context
+    cliLogger.startTimer('project_validation');
     const projectLoader = new ProjectContextLoader(config.workingDirectory);
     await projectLoader.validate();
+    cliLogger.endTimer('project_validation', 'Project context validated');
 
     // Load task instruction
+    cliLogger.startTimer('instruction_loading');
     const instruction = await projectLoader.loadInstruction();
+    cliLogger.endTimer('instruction_loading', 'Task instruction loaded', LogLevel.DEBUG);
 
     // Detect git info for context
     const gitInfo = await projectLoader.detectGitInfo();
@@ -440,26 +501,56 @@ export async function startCommandHandler(
       (executionRequest as any).model = options.model;
     }
 
+    // Create performance integration
+    const performanceIntegration = new PerformanceIntegration();
+
     // Create and initialize coordinator
-    const coordinator = new ExecutionCoordinator(config, options.verbose);
+    const coordinator = new ExecutionCoordinator(config, options.verbose, performanceIntegration);
     await coordinator.initialize();
 
     // Execute
     const result = await coordinator.execute(executionRequest);
+
+    // Complete performance monitoring
+    const finalMetrics = await performanceIntegration.completeMonitoring(
+      executionRequest.requestId,
+      {
+        verbose: options.verbose,
+        showMetrics: options.showMetrics,
+        showDashboard: options.showDashboard,
+        saveMetrics: options.saveMetrics,
+        metricsFile: options.metricsFile
+      }
+    );
 
     // Print session information
     const sessionId = coordinator.getSessionId();
     if (sessionId) {
       console.log(chalk.blue(`\n📁 Session ID: ${sessionId}`));
       console.log(chalk.gray('   Use "juno-task session info ' + sessionId + '" for detailed information'));
+      sessionLogger.info('Session completed', {
+        sessionId,
+        status: result.status,
+        iterations: result.iterations?.length || 0
+      });
+
+      // Show performance trends if requested
+      if (options.showTrends) {
+        performanceIntegration.displayTrends(10);
+      }
     }
+
+    // Complete command timing
+    cliLogger.endTimer('start_command_total', 'Start command completed successfully');
 
     // Set exit code based on result
     const exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
+    cliLogger.info('Command execution finished', { exitCode, status: result.status });
     process.exit(exitCode);
 
   } catch (error) {
     if (error instanceof ConfigurationError) {
+      cliLogger.error('Configuration error occurred', error.message, { suggestions: error.suggestions });
       console.error(chalk.red.bold('\n❌ Configuration Error'));
       console.error(chalk.red(`   ${error.message}`));
 
@@ -524,7 +615,17 @@ export function configureStartCommand(program: Command): void {
     .option('-m, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('--model <name>', 'Model to use for execution')
     .option('-d, --directory <path>', 'Project directory (default: current)')
+    .option('--show-metrics', 'Display performance metrics summary after execution')
+    .option('--show-dashboard', 'Show interactive performance dashboard after execution')
+    .option('--show-trends', 'Display performance trends from historical data')
+    .option('--save-metrics [file]', 'Save performance metrics to file (default: .juno_task/metrics.json)')
+    .option('--metrics-file <path>', 'Specify custom path for metrics file')
     .action(async (options, command) => {
+      // Set default metrics file if save-metrics is used without value
+      if (options.saveMetrics === true) {
+        options.saveMetrics = true;
+        options.metricsFile = options.metricsFile || '.juno_task/metrics.json';
+      }
       await startCommandHandler([], options, command);
     })
     .addHelpText('after', `
@@ -535,6 +636,18 @@ Examples:
   $ juno-task start --directory ./my-project         # Execute in specific directory
   $ juno-task start --verbose                        # Show detailed progress
   $ juno-task start --quiet                          # Minimize output
+  $ juno-task start --show-metrics                   # Display performance summary
+  $ juno-task start --show-dashboard                 # Interactive performance dashboard
+  $ juno-task start --show-trends                    # Show historical performance trends
+  $ juno-task start --save-metrics                   # Save metrics to .juno_task/metrics.json
+  $ juno-task start --save-metrics custom.json       # Save metrics to custom file
+
+Performance Options:
+  --show-metrics                Show performance summary after execution
+  --show-dashboard              Launch interactive performance dashboard
+  --show-trends                 Display historical performance trends
+  --save-metrics [file]         Save metrics to file (optional filename)
+  --metrics-file <path>         Custom metrics file path
 
 Environment Variables:
   JUNO_TASK_MAX_ITERATIONS      Default maximum iterations
@@ -546,6 +659,7 @@ Notes:
   - Requires .juno_task/init.md file (created by 'juno-task init')
   - Creates a new session for tracking execution
   - Progress is displayed in real-time
+  - Performance metrics are collected automatically
   - Use Ctrl+C to cancel execution gracefully
     `);
 }

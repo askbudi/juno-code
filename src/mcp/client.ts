@@ -8,7 +8,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ProgressEventType, SessionState, ProgressEvent, ProgressCallback } from './types.js';
-import { MCPConnectionError, MCPValidationError, MCPTimeoutError, MCPToolError } from './errors.js';
+import { MCPConnectionError, MCPValidationError, MCPTimeoutError, MCPToolError, MCPErrorCode } from './errors.js';
+import { ProgressStreamManager } from './advanced/progress-stream.js';
 import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
@@ -24,6 +25,8 @@ export interface MCPClientOptions {
   debug?: boolean;
   environment?: Record<string, string>;
   progressCallback?: ProgressCallback;
+  enableProgressStreaming?: boolean;
+  sessionId?: string;
 }
 
 export interface ToolCallRequest {
@@ -64,16 +67,18 @@ export interface SubagentInfo {
 
 /**
  * Main MCP Client using the official @modelcontextprotocol/sdk
+ * Uses per-operation connection pattern for stability
  */
 export class JunoMCPClient {
-  private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
   private progressTracker: MCPProgressTracker;
-  private connectionStatus: 'connected' | 'disconnected' | 'connecting' | 'error' = 'disconnected';
   private sessionManager = new SessionContextManager();
   private subagentMapper = new SubagentMapperImpl();
   private rateLimitMonitor: RateLimitMonitor;
   private eventHandlers: Map<string, Function[]> = new Map();
+  private progressStreamManager?: ProgressStreamManager;
+  private currentSessionId?: string;
+  private lastConnectionTest: number = 0;
+  private connectionTestInterval: number = 30000; // Test every 30 seconds
 
   constructor(
     private options: MCPClientOptions
@@ -84,103 +89,42 @@ export class JunoMCPClient {
       windowMs: 60000
     });
 
+    // Initialize progress streaming if enabled
+    if (options.enableProgressStreaming) {
+      this.progressStreamManager = new ProgressStreamManager();
+      this.currentSessionId = options.sessionId || `session-${Date.now()}`;
+    }
+
     if (options.progressCallback) {
       this.progressTracker.addCallback(options.progressCallback);
     }
   }
 
   async connect(): Promise<void> {
-    if (this.connectionStatus === 'connected') {
-      return; // Already connected
-    }
-
-    if (this.connectionStatus === 'connecting') {
-      throw new MCPConnectionError('Connection already in progress');
-    }
-
+    // Per-operation pattern - this method just validates configuration
     if (!this.options.serverPath && !this.options.serverName) {
       throw new MCPConnectionError('Server path or server name is required for connection');
     }
 
+    // Test connection by doing a quick tool list operation
     try {
-      this.connectionStatus = 'connecting';
-      this.emit('connection:state', 'CONNECTING');
-
-      // Handle server connection based on options
-      if (this.options.serverName) {
-        // Connect to named MCP server (e.g., "roundtable-ai")
-        await this.connectToNamedServer();
-      } else {
-        // Create transport using command approach (let transport manage the process)
-        const serverPath = this.options.serverPath!;
-        const isPython = serverPath.endsWith('.py');
-        this.transport = new StdioClientTransport({
-          command: isPython ? 'python' : serverPath,
-          args: isPython ? [serverPath] : []
-        });
-      }
-
-      // Create MCP client
-      this.client = new Client({
-        name: 'juno-task-ts',
-        version: '1.0.0'
-      }, {
-        capabilities: {
-          tools: {}
-        }
-      });
-
-      // Connect to the server
-      await this.client.connect(this.transport);
-
-      this.connectionStatus = 'connected';
-      this.emit('connection:state', 'CONNECTED');
-
+      await this.testConnection();
       if (this.options.debug) {
-        console.log('[MCP] Connected to server successfully');
+        console.log('[MCP] Connection test successful');
       }
-
     } catch (error) {
-      this.connectionStatus = 'error';
-      this.emit('connection:state', 'ERROR');
-
-      // Cleanup on failure
-      await this.cleanup();
-
-      throw new MCPConnectionError(`Failed to connect to MCP server: ${error instanceof Error ? error.message : String(error)}`, error as Error);
+      throw new MCPConnectionError(`MCP server connection test failed: ${error instanceof Error ? error.message : String(error)}`, error as Error);
     }
   }
 
   async disconnect(): Promise<void> {
-    try {
-      this.emit('connection:state', 'CLOSING');
-
-      if (this.client) {
-        await this.client.close();
-        this.client = null;
-      }
-
-      await this.cleanup();
-
-      this.connectionStatus = 'disconnected';
-      this.emit('connection:state', 'DISCONNECTED');
-
-      if (this.options.debug) {
-        console.log('[MCP] Disconnected from server');
-      }
-    } catch (error) {
-      // Don't throw on cleanup errors, just log them
-      if (this.options.debug) {
-        console.error('[MCP] Error during disconnect:', error);
-      }
+    // Per-operation pattern - no persistent connections to disconnect
+    if (this.options.debug) {
+      console.log('[MCP] Disconnect called (no persistent connections in per-operation mode)');
     }
   }
 
   async callTool(request: ToolCallRequest): Promise<ToolCallResponse> {
-    if (!this.client || this.connectionStatus !== 'connected') {
-      throw new MCPConnectionError('MCP client not connected');
-    }
-
     // Check rate limiting
     if (!this.rateLimitMonitor.isRequestAllowed(request.toolName)) {
       const waitTime = this.rateLimitMonitor.getTimeUntilAllowed(request.toolName);
@@ -190,8 +134,20 @@ export class JunoMCPClient {
     const startTime = Date.now();
     const toolId = `${request.toolName}_${startTime}`;
 
+    // Create fresh connection for this operation (per-operation pattern)
+    const { transport, client } = await this.createConnection();
+
     try {
       this.emit('tool:start', { toolName: request.toolName, toolId, parameters: request.parameters });
+
+      // Record tool start in progress stream
+      if (this.progressStreamManager && this.currentSessionId) {
+        this.progressStreamManager.recordToolStart(
+          this.currentSessionId,
+          request.toolName,
+          { parameters: request.parameters, toolId }
+        );
+      }
 
       if (this.options.debug) {
         console.log(`[MCP] Calling tool: ${request.toolName}`, request.parameters);
@@ -200,8 +156,9 @@ export class JunoMCPClient {
       // Record the request for rate limiting
       this.rateLimitMonitor.recordRequest(request.toolName);
 
-      // Call the tool through the MCP client
-      const result = await this.client.callTool({
+      // Connect and call the tool
+      await client.connect(transport);
+      const result = await client.callTool({
         name: request.toolName,
         arguments: request.parameters || {}
       });
@@ -226,6 +183,16 @@ export class JunoMCPClient {
         status: 'COMPLETED'
       };
 
+      // Record tool completion in progress stream
+      if (this.progressStreamManager && this.currentSessionId) {
+        this.progressStreamManager.recordToolComplete(
+          this.currentSessionId,
+          request.toolName,
+          duration,
+          true
+        );
+      }
+
       this.emit('tool:complete', response);
 
       if (this.options.debug) {
@@ -237,28 +204,53 @@ export class JunoMCPClient {
     } catch (error) {
       const duration = Date.now() - startTime;
 
+      // Record tool failure in progress stream
+      if (this.progressStreamManager && this.currentSessionId) {
+        this.progressStreamManager.recordToolComplete(
+          this.currentSessionId,
+          request.toolName,
+          duration,
+          false,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+
       this.emit('tool:error', { toolName: request.toolName, toolId, error, duration });
 
       if (this.options.debug) {
         console.error(`[MCP] Tool call failed after ${duration}ms:`, error);
       }
 
-      throw new MCPToolCallError(
+      throw new MCPToolError(
         `Tool call failed: ${error instanceof Error ? error.message : String(error)}`,
-        request.toolName,
-        request.parameters,
-        error as Error
+        { name: request.toolName, subagent: 'unknown' },
+        'tool_execution',
+        {
+          code: MCPErrorCode.TOOL_EXECUTION_FAILED,
+          cause: error as Error,
+          metadata: { parameters: request.parameters }
+        }
       );
+    } finally {
+      // Always cleanup - this is the key to per-operation pattern
+      try {
+        await client.close();
+      } catch (cleanupError) {
+        // Suppress cleanup errors like Python does
+        if (this.options.debug) {
+          console.debug('[MCP] Cleanup error suppressed:', cleanupError);
+        }
+      }
     }
   }
 
   async listTools(): Promise<ToolInfo[]> {
-    if (!this.client || this.connectionStatus !== 'connected') {
-      throw new MCPConnectionError('MCP client not connected');
-    }
+    // Use per-operation pattern for listing tools
+    const { transport, client } = await this.createConnection();
 
     try {
-      const result = await this.client.listTools();
+      await client.connect(transport);
+      const result = await client.listTools();
 
       return result.tools.map(tool => ({
         name: tool.name,
@@ -267,21 +259,34 @@ export class JunoMCPClient {
       }));
     } catch (error) {
       throw new MCPConnectionError(`Failed to list tools: ${error instanceof Error ? error.message : String(error)}`, error as Error);
+    } finally {
+      try {
+        await client.close();
+      } catch (cleanupError) {
+        if (this.options.debug) {
+          console.debug('[MCP] Cleanup error suppressed:', cleanupError);
+        }
+      }
     }
   }
 
   getConnectionStatus(): 'connected' | 'disconnected' | 'connecting' | 'error' {
-    return this.connectionStatus;
+    // Per-operation pattern - connection status is always 'connected' if server is available
+    const now = Date.now();
+    if (now - this.lastConnectionTest > this.connectionTestInterval) {
+      // Test connection periodically in background
+      this.testConnection().then(() => {
+        this.lastConnectionTest = now;
+      }).catch(() => {
+        // Connection test failed - will be caught on next actual operation
+      });
+    }
+    return 'connected'; // Assume connected until proven otherwise
   }
 
   async ping(): Promise<boolean> {
     try {
-      if (!this.client || this.connectionStatus !== 'connected') {
-        return false;
-      }
-
-      // Try to list tools as a health check
-      await this.client.listTools();
+      await this.testConnection();
       return true;
     } catch {
       return false;
@@ -289,12 +294,13 @@ export class JunoMCPClient {
   }
 
   isConnected(): boolean {
-    return this.connectionStatus === 'connected';
+    // For per-operation pattern, we're "connected" if we can reach the server
+    return true; // Let actual operations determine connectivity
   }
 
   getHealth(): any {
     return {
-      state: this.connectionStatus,
+      state: this.getConnectionStatus(),
       uptime: Date.now() - (this.sessionManager as any).startTime,
       successfulOperations: (this.rateLimitMonitor as any).successCount || 0,
       failedOperations: (this.rateLimitMonitor as any).errorCount || 0,
@@ -354,9 +360,96 @@ export class JunoMCPClient {
   }
 
   dispose(): void {
+    // Clean up progress streaming
+    if (this.progressStreamManager) {
+      this.progressStreamManager.destroy();
+    }
+
     this.disconnect().catch(() => {
       // Ignore cleanup errors
     });
+  }
+
+  // Progress Streaming Methods
+
+  /**
+   * Start progress streaming for the current session
+   */
+  async startProgressStreaming(sessionId?: string): Promise<void> {
+    if (!this.progressStreamManager) {
+      throw new Error('Progress streaming not enabled. Set enableProgressStreaming to true in options.');
+    }
+
+    const streamSessionId = sessionId || this.currentSessionId;
+    if (!streamSessionId) {
+      throw new Error('No session ID available for progress streaming');
+    }
+
+    await this.progressStreamManager.startStream(streamSessionId);
+  }
+
+  /**
+   * Stop progress streaming for the current session
+   */
+  async stopProgressStreaming(sessionId?: string): Promise<void> {
+    if (!this.progressStreamManager) return;
+
+    const streamSessionId = sessionId || this.currentSessionId;
+    if (streamSessionId) {
+      await this.progressStreamManager.stopStream(streamSessionId);
+    }
+  }
+
+  /**
+   * Record iteration start in progress stream
+   */
+  recordIterationStart(iterationNumber: number, totalIterations?: number): void {
+    if (this.progressStreamManager && this.currentSessionId) {
+      this.progressStreamManager.recordIterationStart(
+        this.currentSessionId,
+        iterationNumber,
+        totalIterations
+      );
+    }
+  }
+
+  /**
+   * Record iteration completion in progress stream
+   */
+  recordIterationComplete(iterationNumber: number): void {
+    if (this.progressStreamManager && this.currentSessionId) {
+      this.progressStreamManager.recordIterationComplete(
+        this.currentSessionId,
+        iterationNumber
+      );
+    }
+  }
+
+  /**
+   * Get the progress stream manager instance
+   */
+  getProgressStreamManager(): ProgressStreamManager | undefined {
+    return this.progressStreamManager;
+  }
+
+  /**
+   * Get current session metrics
+   */
+  getCurrentSessionMetrics() {
+    if (!this.progressStreamManager || !this.currentSessionId) {
+      return null;
+    }
+    return this.progressStreamManager.getMetrics(this.currentSessionId);
+  }
+
+  /**
+   * Check if progress streaming is active
+   */
+  isProgressStreamingActive(): boolean {
+    if (!this.progressStreamManager || !this.currentSessionId) {
+      return false;
+    }
+    return this.progressStreamManager.isStreaming(this.currentSessionId);
   }
 
   on(event: string, callback: Function): void {
@@ -491,14 +584,63 @@ export class JunoMCPClient {
   }
 
 
-  private async cleanup(): Promise<void> {
-    if (this.transport) {
-      try {
-        await this.transport.close();
-      } catch {
-        // Ignore cleanup errors
+  /**
+   * Create a fresh connection for per-operation pattern
+   */
+  private async createConnection(): Promise<{ transport: StdioClientTransport; client: Client }> {
+    let transport: StdioClientTransport;
+
+    // Handle server connection based on options
+    if (this.options.serverName) {
+      // Connect to named MCP server (e.g., "roundtable-ai")
+      const serverConfig = await this.resolveNamedServer(this.options.serverName);
+      if (serverConfig.type === 'executable') {
+        transport = new StdioClientTransport({
+          command: serverConfig.command!,
+          args: serverConfig.args || []
+        });
+      } else {
+        throw new MCPConnectionError(`Unsupported server type: ${serverConfig.type}`);
       }
-      this.transport = null;
+    } else {
+      // Create transport using command approach (let transport manage the process)
+      const serverPath = this.options.serverPath!;
+      const isPython = serverPath.endsWith('.py');
+      transport = new StdioClientTransport({
+        command: isPython ? 'python' : serverPath,
+        args: isPython ? [serverPath] : []
+      });
+    }
+
+    // Create MCP client for this operation
+    const client = new Client({
+      name: 'juno-task-ts',
+      version: '1.0.0'
+    }, {
+      capabilities: {
+        tools: {}
+      }
+    });
+
+    return { transport, client };
+  }
+
+  /**
+   * Test connection by doing a quick operation
+   */
+  private async testConnection(): Promise<void> {
+    const { transport, client } = await this.createConnection();
+
+    try {
+      await client.connect(transport);
+      // Test with a simple operation
+      await client.listTools();
+    } finally {
+      try {
+        await client.close();
+      } catch {
+        // Suppress cleanup errors
+      }
     }
   }
 
