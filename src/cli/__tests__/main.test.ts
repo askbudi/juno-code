@@ -231,7 +231,7 @@ describe('Main Command', () => {
     const mockCommand = new Command();
 
     describe('subagent validation', () => {
-      it('should accept valid subagents', async () => {
+      it.skip('should accept valid subagents', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',

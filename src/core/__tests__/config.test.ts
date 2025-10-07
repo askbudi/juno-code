@@ -710,6 +710,9 @@ logLevel: info
   describe('Advanced configuration scenarios', () => {
     it('should handle parseEnvValue with edge cases', () => {
       const parseEnvValue = (value: string): string | number | boolean => {
+        // Handle empty string
+        if (value === '') return value;
+
         // Handle boolean values
         if (value.toLowerCase() === 'true') return true;
         if (value.toLowerCase() === 'false') return false;

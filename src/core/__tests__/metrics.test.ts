@@ -202,7 +202,15 @@ describe('MetricsCollector', () => {
     });
 
     it('should end session and calculate final metrics', () => {
+      // Use fake timers to control time
+      vi.useFakeTimers();
+      const startTime = Date.now();
+      vi.setSystemTime(startTime);
+
       metricsCollector.startSession('test-session', 'claude', '/test/dir');
+
+      // Advance time by 50ms
+      vi.advanceTimersByTime(50);
 
       // Add some tool calls
       metricsCollector.recordToolCall({
@@ -214,6 +222,9 @@ describe('MetricsCollector', () => {
         subagent: 'claude',
       });
 
+      // Advance time by another 50ms
+      vi.advanceTimersByTime(50);
+
       metricsCollector.recordToolCall({
         name: 'test_tool',
         duration: 200,
@@ -223,6 +234,9 @@ describe('MetricsCollector', () => {
         iteration: 1,
         subagent: 'claude',
       });
+
+      // Advance time by another 50ms before ending
+      vi.advanceTimersByTime(50);
 
       metricsCollector.endSession('test-session', 'completed');
 
@@ -235,6 +249,9 @@ describe('MetricsCollector', () => {
       expect(sessionMetrics?.successCount).toBe(1);
       expect(sessionMetrics?.errorCount).toBe(1);
       expect(sessionMetrics?.successRate).toBe(0.5);
+
+      // Restore real timers
+      vi.useRealTimers();
     });
 
     it('should handle ending non-existent session', () => {

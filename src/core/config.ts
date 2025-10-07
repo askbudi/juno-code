@@ -192,6 +192,9 @@ function resolvePath(inputPath: string, basePath: string = process.cwd()): strin
  * @returns Parsed value with appropriate type
  */
 function parseEnvValue(value: string): string | number | boolean {
+  // Handle empty string
+  if (value === '') return value;
+
   // Handle boolean values
   if (value.toLowerCase() === 'true') return true;
   if (value.toLowerCase() === 'false') return false;

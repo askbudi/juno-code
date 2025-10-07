@@ -1744,9 +1744,8 @@ describe('Start Command', () => {
     describe('error handling', () => {
       it('should handle configuration errors', async () => {
         const { loadConfig } = await import('../../core/config.js');
-        const configError = new Error('Config error');
-        configError.constructor.name = 'ConfigurationError';
-        configError.suggestions = ['Check config file'];
+        const { ConfigurationError } = await import('../types.js');
+        const configError = new ConfigurationError('Config error', ['Check config file']);
         vi.mocked(loadConfig).mockRejectedValueOnce(configError);
 
         const options: StartCommandOptions = {
@@ -1757,10 +1756,9 @@ describe('Start Command', () => {
           logLevel: 'info'
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await startCommandHandler([], options, mockCommand);
 
+        // Verify error code and message
         expect(processExitSpy).toHaveBeenCalledWith(2);
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('Configuration Error')
@@ -1771,10 +1769,71 @@ describe('Start Command', () => {
         vi.mocked(fs.pathExists).mockResolvedValue(true);
         vi.mocked(fs.readFile).mockResolvedValue('Test task content');
 
+        // Re-establish critical mocks
+        const { loadConfig } = await import('../../core/config.js');
+        vi.mocked(loadConfig).mockResolvedValueOnce({
+          workingDirectory: '/project',
+          defaultMaxIterations: 1,
+          defaultModel: 'test-model',
+          defaultSubagent: 'claude',
+          mcpServerPath: '/test/mcp',
+          mcpTimeout: 30000,
+          mcpRetries: 3,
+          verbose: false
+        });
+
+        const { createExecutionEngine, createExecutionRequest, ExecutionStatus } = await import('../../core/engine.js');
+        const mockEngine = {
+          execute: vi.fn().mockResolvedValue({
+            status: ExecutionStatus.COMPLETED,
+            iterations: [],
+            statistics: {
+              totalIterations: 0,
+              successfulIterations: 0,
+              failedIterations: 0,
+              averageIterationDuration: 0,
+              totalToolCalls: 0,
+              rateLimitEncounters: 0,
+              rateLimitWaitTime: 0,
+              errorBreakdown: {}
+            }
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined)
+        };
+        vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
+        vi.mocked(createExecutionRequest).mockReturnValueOnce({
+          requestId: 'test-request-mcp',
+          instruction: 'Test task content',
+          subagent: 'claude',
+          workingDirectory: '/project',
+          maxIterations: 1,
+          model: 'test-model'
+        });
+
+        // Set up session manager mock
+        const { createSessionManager } = await import('../../core/session.js');
+        const mockSessionManager = {
+          createSession: vi.fn().mockResolvedValue({
+            info: {
+              id: 'test-session-id',
+              name: 'Test Session',
+              createdAt: new Date(),
+              status: 'active'
+            }
+          }),
+          addHistoryEntry: vi.fn().mockResolvedValue(undefined),
+          completeSession: vi.fn().mockResolvedValue(undefined),
+          save: vi.fn().mockResolvedValue(undefined),
+          load: vi.fn().mockResolvedValue(undefined),
+          list: vi.fn().mockResolvedValue([])
+        };
+        vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
+
         const { createMCPClient } = await import('../../mcp/client.js');
-        const mcpError = new Error('MCP connection failed');
-        mcpError.constructor.name = 'MCPError';
-        mcpError.suggestions = ['Check MCP server'];
+        const { MCPError } = await import('../types.js');
+        const mcpError = new MCPError('MCP connection failed', ['Check MCP server']);
 
         const mockClient = {
           connect: vi.fn().mockRejectedValue(mcpError),
@@ -1791,10 +1850,9 @@ describe('Start Command', () => {
           logLevel: 'info'
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await startCommandHandler([], options, mockCommand);
 
+        // Verify error code and message
         expect(processExitSpy).toHaveBeenCalledWith(4);
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('MCP Error')
@@ -1813,9 +1871,7 @@ describe('Start Command', () => {
           logLevel: 'info'
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await startCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(99);
         expect(console.error).toHaveBeenCalledWith(
@@ -1835,9 +1891,7 @@ describe('Start Command', () => {
           logLevel: 'info'
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await startCommandHandler([], options, mockCommand);
 
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('Stack Trace')
