@@ -16,9 +16,9 @@ import { useTUIState } from '../hooks/useTUIState.js';
 import type { PromptEditorProps, PromptEditorState } from '../types.js';
 
 /**
- * Advanced prompt editor with rich features
+ * Internal prompt editor component that uses TUI context
  */
-export const PromptEditor: React.FC<PromptEditorProps> = ({
+const PromptEditorInternal: React.FC<PromptEditorProps> = ({
   initialValue = '',
   onSubmit,
   onCancel,
@@ -252,11 +252,7 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
   const lineNumberWidth = String(lines.length).length + 1;
 
   return (
-    <TUIApp
-      title="Prompt Editor"
-      exitOnEscape={false}
-      testId={testId}
-    >
+    <>
       {/* Header */}
       <Box marginBottom={1} justifyContent="space-between">
         <Box>
@@ -388,6 +384,22 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
         ]}
         type="warning"
       />
+    </>
+  );
+};
+
+/**
+ * Advanced prompt editor with rich features
+ * This is the main component that wraps the internal editor in TUIApp
+ */
+export const PromptEditor: React.FC<PromptEditorProps> = (props) => {
+  return (
+    <TUIApp
+      title="Prompt Editor"
+      exitOnEscape={false}
+      testId={props.testId}
+    >
+      <PromptEditorInternal {...props} />
     </TUIApp>
   );
 };

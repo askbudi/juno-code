@@ -73,7 +73,7 @@ function setupGlobalOptions(program: Command): void {
     .option('-v, --verbose', 'Enable verbose output with detailed progress')
     .option('-q, --quiet', 'Disable rich formatting, use plain text')
     .option('-c, --config <path>', 'Configuration file path (.json, .toml, pyproject.toml)')
-    .option('--log-file <path>', 'Log file path (auto-generated if not specified)')
+    .option('-l, --log-file <path>', 'Log file path (auto-generated if not specified)')
     .option('--no-color', 'Disable colored output')
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info');
 
@@ -103,21 +103,21 @@ function setupGlobalOptions(program: Command): void {
 function setupMainCommand(program: Command): void {
   // Main command for direct execution with subagent
   program
-    .argument('[subagent]', 'Subagent to use (claude, cursor, codex, gemini)')
+    .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('-p, --prompt <text>', 'Prompt input (file path or inline text)')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
-    .option('--interactive-prompt', 'Launch TUI prompt editor')
-    .action(async (subagent, options, command) => {
+    .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
+    .action(async (options, command) => {
       try {
-        if (!subagent) {
+        if (!options.subagent) {
           console.log(chalk.blue.bold('🎯 Juno Task - TypeScript CLI for AI Subagent Orchestration\n'));
           console.log(chalk.white('To get started:'));
           console.log(chalk.gray('  juno-task init                    # Initialize new project'));
           console.log(chalk.gray('  juno-task start                   # Start execution'));
-          console.log(chalk.gray('  juno-task claude "your prompt"    # Quick execution with Claude'));
+          console.log(chalk.gray('  juno-task -s claude -p "prompt"   # Quick execution with Claude'));
           console.log(chalk.gray('  juno-task --help                  # Show all commands'));
           console.log('');
           return;
@@ -125,7 +125,7 @@ function setupMainCommand(program: Command): void {
 
         // Import and execute main command handler dynamically
         const { mainCommandHandler } = await import('../cli/commands/main.js');
-        await mainCommandHandler([subagent], { ...options, subagent }, command);
+        await mainCommandHandler([], { ...options, subagent: options.subagent }, command);
       } catch (error) {
         handleCLIError(error, options.verbose);
       }
