@@ -3,7 +3,7 @@
  */
 
 // Core client functionality
-export { MCPClient } from './client.js';
+export { MCPClient, JunoMCPClient, createMCPClient, createMCPClientFromConfig } from './client.js';
 export { MCPStubClient } from './client-stub.js';
 
 // Configuration management
