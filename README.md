@@ -221,6 +221,283 @@ All commands support these global options:
 - `-V, --version` - Display version information
 - `-h, --help` - Display help information
 
+## 🚀 Shell Completion
+
+juno-task-ts provides intelligent shell completion across multiple shells with context-aware suggestions for commands, options, file paths, models, sessions, and more.
+
+### Overview
+
+The shell completion system offers:
+
+- **Multi-shell support**: bash, zsh, fish, and PowerShell
+- **Context-aware completions**: Dynamic suggestions based on command context
+- **File path completion**: Smart filtering for relevant file types
+- **Model and session completion**: Auto-complete available models and session IDs
+- **Template completion**: Suggestions for available project templates
+- **Auto-installation**: Automatic shell detection and setup
+
+### Installation
+
+#### Automatic Installation (Recommended)
+
+The completion system automatically detects your shell and installs the appropriate completion script:
+
+```bash
+# Install completion for your current shell
+juno-task completion install
+
+# Check installation status
+juno-task completion status
+```
+
+#### Manual Installation by Shell
+
+**Bash:**
+```bash
+# Install completion
+juno-task completion install --shell bash
+
+# Or manually add to .bashrc
+echo 'eval "$(juno-task completion bash)"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Zsh:**
+```bash
+# Install completion
+juno-task completion install --shell zsh
+
+# Or manually add to .zshrc
+echo 'eval "$(juno-task completion zsh)"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Fish:**
+```bash
+# Install completion
+juno-task completion install --shell fish
+
+# Or manually add to Fish config
+juno-task completion fish > ~/.config/fish/completions/juno-task.fish
+```
+
+**PowerShell:**
+```powershell
+# Install completion
+juno-task completion install --shell powershell
+
+# Or manually add to PowerShell profile
+juno-task completion powershell >> $PROFILE
+```
+
+### Features
+
+#### Command and Option Completion
+
+Tab completion works for all commands and their options:
+
+```bash
+juno-task <TAB>
+# Suggests: init, start, session, feedback, setup-git, completion
+
+juno-task init --<TAB>
+# Suggests: --task, --subagent, --interactive, --template, --dry-run
+
+juno-task start --subagent <TAB>
+# Suggests: claude, cursor, codex, gemini
+```
+
+#### File Path Completion
+
+Smart file path completion with context-aware filtering:
+
+```bash
+juno-task init <TAB>
+# Shows directories for project initialization
+
+juno-task --config <TAB>
+# Shows .json, .toml, and pyproject.toml files
+
+juno-task --log-file <TAB>
+# Shows .log files and suggests log directory paths
+```
+
+#### Model Completion
+
+Auto-complete available models for each subagent:
+
+```bash
+juno-task start --model <TAB>
+# For Claude: claude-3-5-sonnet-20241022, claude-3-haiku-20240307, etc.
+# For Cursor: gpt-4-turbo-preview, gpt-3.5-turbo, etc.
+# For Codex: code-davinci-002, text-davinci-003, etc.
+```
+
+#### Session Completion
+
+Complete session IDs and session-related operations:
+
+```bash
+juno-task session info <TAB>
+# Shows available session IDs
+
+juno-task session remove <TAB>
+# Shows session IDs with preview information
+```
+
+#### Template Completion
+
+Auto-complete available project templates:
+
+```bash
+juno-task init --template <TAB>
+# Suggests: typescript-api, react-app, python-cli, nextjs-app, etc.
+```
+
+### Examples
+
+#### Basic Command Completion
+```bash
+# Type and press TAB
+juno-task s<TAB>
+# Completes to: juno-task start
+
+# Continue with options
+juno-task start --v<TAB>
+# Completes to: juno-task start --verbose
+```
+
+#### File Path Completion
+```bash
+# Initialize in specific directory
+juno-task init my-pr<TAB>
+# Completes to available directories starting with "my-pr"
+
+# Use custom config file
+juno-task --config ~/.jun<TAB>
+# Completes to: juno-task --config ~/.juno-task/config.json
+```
+
+#### Session Management
+```bash
+# View session information
+juno-task session info <TAB>
+# Shows list like:
+# 2024-01-15_10-30-45_init_claude    2024-01-15_14-22-10_start_cursor
+
+# Remove old sessions
+juno-task session remove 2024-01-<TAB>
+# Shows sessions from January 2024 with details
+```
+
+#### Model Selection
+```bash
+# Start with specific model
+juno-task start --subagent claude --model <TAB>
+# Shows Claude-specific models:
+# claude-3-5-sonnet-20241022    claude-3-haiku-20240307    claude-3-opus-20240229
+```
+
+### Troubleshooting
+
+#### Completion Not Working
+
+**Check installation status:**
+```bash
+juno-task completion status
+# Shows installation status for your shell
+```
+
+**Reinstall completion:**
+```bash
+juno-task completion uninstall
+juno-task completion install
+```
+
+**Manual verification:**
+```bash
+# Test completion generation
+juno-task completion bash > /tmp/test-completion.sh
+source /tmp/test-completion.sh
+```
+
+#### Bash-specific Issues
+
+**If completions don't load automatically:**
+```bash
+# Check if bash-completion is installed
+brew install bash-completion  # macOS
+apt-get install bash-completion  # Ubuntu/Debian
+
+# Ensure completion is sourced
+echo 'source ~/.bashrc' >> ~/.bash_profile
+```
+
+#### Zsh-specific Issues
+
+**If completions are slow or not working:**
+```bash
+# Rebuild completion cache
+rm ~/.zcompdump*
+compinit
+
+# Check zsh completion system
+autoload -U compinit && compinit
+```
+
+#### Fish-specific Issues
+
+**If completions don't appear:**
+```bash
+# Check Fish completion directory
+ls ~/.config/fish/completions/juno-task.fish
+
+# Reload Fish configuration
+fish -c "source ~/.config/fish/config.fish"
+```
+
+#### PowerShell-specific Issues
+
+**If completions aren't loaded:**
+```powershell
+# Check PowerShell profile
+Test-Path $PROFILE
+
+# Create profile if it doesn't exist
+New-Item -ItemType File -Path $PROFILE -Force
+
+# Reload profile
+. $PROFILE
+```
+
+### Advanced Usage
+
+#### Custom Completion Contexts
+
+The completion system adapts to different contexts:
+
+```bash
+# Different suggestions based on subagent
+juno-task start --subagent claude --model <TAB>    # Claude models
+juno-task start --subagent cursor --model <TAB>    # OpenAI models
+
+# Context-aware file filtering
+juno-task --config <TAB>                           # Config files only
+juno-task session clean --output <TAB>             # Log/output files
+```
+
+#### Performance Optimization
+
+For large projects with many files, completion performance can be optimized:
+
+```bash
+# Set completion cache timeout (in seconds)
+export JUNO_TASK_COMPLETION_CACHE=300
+
+# Disable file completion for specific commands
+export JUNO_TASK_COMPLETION_NO_FILES=1
+```
+
 ## ⚙️ Configuration
 
 juno-task-ts supports multiple configuration sources with proper precedence:
