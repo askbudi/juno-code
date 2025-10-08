@@ -80,6 +80,7 @@ export class JunoMCPClient {
   private currentSessionId?: string;
   private lastConnectionTest: number = 0;
   private connectionTestInterval: number = 30000; // Test every 30 seconds
+  private eventCounter: number = 0;
 
   constructor(
     private options: MCPClientOptions
@@ -141,6 +142,22 @@ export class JunoMCPClient {
     try {
       this.emit('tool:start', { toolName: request.toolName, toolId, arguments: request.arguments });
 
+      // Emit detailed progress event for verbose mode
+      await this.emitProgressEvent({
+        sessionId: this.currentSessionId || 'unknown',
+        timestamp: new Date(),
+        backend: 'mcp',
+        count: this.getNextEventCount(),
+        type: 'tool_start',
+        content: `Starting ${request.toolName}${request.arguments ? ` with arguments: ${JSON.stringify(request.arguments)}` : ''}`,
+        toolId,
+        metadata: {
+          toolName: request.toolName,
+          arguments: request.arguments,
+          phase: 'initialization'
+        }
+      });
+
       // Record tool start in progress stream
       if (this.progressStreamManager && this.currentSessionId) {
         this.progressStreamManager.recordToolStart(
@@ -157,8 +174,39 @@ export class JunoMCPClient {
       // Record the request for rate limiting
       this.rateLimitMonitor.recordRequest(request.toolName);
 
+      // Emit connection progress
+      await this.emitProgressEvent({
+        sessionId: this.currentSessionId || 'unknown',
+        timestamp: new Date(),
+        backend: 'mcp',
+        count: this.getNextEventCount(),
+        type: 'info',
+        content: `Connecting to MCP server for ${request.toolName}`,
+        toolId,
+        metadata: {
+          toolName: request.toolName,
+          phase: 'connection'
+        }
+      });
+
       // Connect and call the tool
       await client.connect(transport);
+
+      // Emit execution progress
+      await this.emitProgressEvent({
+        sessionId: this.currentSessionId || 'unknown',
+        timestamp: new Date(),
+        backend: 'mcp',
+        count: this.getNextEventCount(),
+        type: 'thinking',
+        content: `Executing ${request.toolName} on subagent`,
+        toolId,
+        metadata: {
+          toolName: request.toolName,
+          phase: 'execution'
+        }
+      });
+
       const result = await client.callTool({
         name: request.toolName,
         arguments: request.arguments || {}
@@ -168,6 +216,24 @@ export class JunoMCPClient {
 
       // Parse the response
       const content = this.extractToolResult(result);
+
+      // Emit processing completion progress
+      await this.emitProgressEvent({
+        sessionId: this.currentSessionId || 'unknown',
+        timestamp: new Date(),
+        backend: 'mcp',
+        count: this.getNextEventCount(),
+        type: 'tool_result',
+        content: `${request.toolName} completed successfully (${duration}ms)${content.length > 100 ? ` - Response: ${content.substring(0, 100)}...` : ` - Response: ${content}`}`,
+        toolId,
+        metadata: {
+          toolName: request.toolName,
+          duration,
+          success: true,
+          responseLength: content.length,
+          phase: 'completion'
+        }
+      });
 
       // Check for rate limit info in response
       const rateLimitInfo = this.parseRateLimitInfo(content);
@@ -204,6 +270,24 @@ export class JunoMCPClient {
 
     } catch (error) {
       const duration = Date.now() - startTime;
+
+      // Emit error progress event
+      await this.emitProgressEvent({
+        sessionId: this.currentSessionId || 'unknown',
+        timestamp: new Date(),
+        backend: 'mcp',
+        count: this.getNextEventCount(),
+        type: 'error',
+        content: `${request.toolName} failed after ${duration}ms: ${error instanceof Error ? error.message : String(error)}`,
+        toolId,
+        metadata: {
+          toolName: request.toolName,
+          duration,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          phase: 'error'
+        }
+      });
 
       // Record tool failure in progress stream
       if (this.progressStreamManager && this.currentSessionId) {
@@ -458,6 +542,22 @@ export class JunoMCPClient {
       this.eventHandlers.set(event, []);
     }
     this.eventHandlers.get(event)!.push(callback);
+  }
+
+  /**
+   * Get next event counter value for progress tracking
+   */
+  private getNextEventCount(): number {
+    return ++this.eventCounter;
+  }
+
+  /**
+   * Emit progress event through progress callback system
+   */
+  private async emitProgressEvent(event: ProgressEvent): Promise<void> {
+    if (this.progressTracker) {
+      await this.progressTracker.processProgressEvent(event);
+    }
   }
 
   private emit(event: string, data?: any): void {

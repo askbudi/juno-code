@@ -42,7 +42,7 @@ export function useKeyboard(options: {
   useInput(
     (input, key) => {
       const keyEvent: KeyboardEvent = {
-        key: input || key.return ? 'return' :
+        key: key.return ? 'return' :
              key.escape ? 'escape' :
              key.tab ? 'tab' :
              key.backspace ? 'backspace' :

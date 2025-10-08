@@ -519,7 +519,7 @@ export JUNO_TASK_VERBOSE=true
 export JUNO_TASK_MAX_ITERATIONS=5
 
 # MCP configuration
-export JUNO_TASK_MCP_SERVER_PATH=/path/to/roundtable-mcp-server
+export JUNO_TASK_MCP_SERVER_PATH=/path/to/roundtable-ai
 export JUNO_TASK_MCP_TIMEOUT=30000
 
 # Logging and output
@@ -555,7 +555,7 @@ logLevel = "warn"
 
 [juno-task.mcp]
 timeout = 45000
-serverPath = "/usr/local/bin/roundtable-mcp-server"
+serverPath = "/usr/local/bin/roundtable-ai"
 ```
 
 ### Configuration Discovery
@@ -575,10 +575,10 @@ juno-task-ts connects to the Roundtable MCP server for AI subagent orchestration
 
 ```bash
 # Install Roundtable MCP server
-pip install roundtable-mcp-server
+pip install roundtable-ai
 
 # Configure server path
-export JUNO_TASK_MCP_SERVER_PATH=$(which roundtable-mcp-server)
+export JUNO_TASK_MCP_SERVER_PATH=$(which roundtable-ai)
 
 # Test connection
 juno-task start --verbose  # Will show MCP connection status
@@ -779,9 +779,9 @@ Error: Failed to connect to MCP server
 ```
 
 **Solutions:**
-1. Verify Roundtable MCP server is installed: `pip install roundtable-mcp-server`
-2. Check server path: `which roundtable-mcp-server`
-3. Set environment variable: `export JUNO_TASK_MCP_SERVER_PATH=$(which roundtable-mcp-server)`
+1. Verify Roundtable MCP server is installed: `pip install roundtable-ai`
+2. Check server path: `which roundtable-ai`
+3. Set environment variable: `export JUNO_TASK_MCP_SERVER_PATH=$(which roundtable-ai)`
 4. Test with verbose mode: `juno-task start --verbose`
 
 #### CLI Not Found After Installation

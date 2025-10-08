@@ -48,12 +48,15 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
   const [showConfirmExit, setShowConfirmExit] = useState(false);
   const [viewportStart, setViewportStart] = useState(0);
 
-  // Calculate editor dimensions
-  const editorHeight = dimensions.height - 8; // Leave space for header, footer, etc.
-  const editorWidth = dimensions.width - 4; // Leave space for borders
-
   // Split text into lines
   const lines = text.split('\n');
+
+  // Calculate editor dimensions - start with 5 lines, grow with content
+  const minHeight = 5;
+  const maxHeight = dimensions.height - 8; // Leave space for header, footer, etc.
+  const contentHeight = Math.max(lines.length, minHeight);
+  const editorHeight = Math.min(contentHeight, maxHeight);
+  const editorWidth = dimensions.width - 4; // Leave space for borders
   const currentLineIndex = getCurrentLineIndex(text, cursorPosition);
   const currentColumnIndex = getCurrentColumnIndex(text, cursorPosition);
 
@@ -116,6 +119,7 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
 
       // Handle special keys
       if (key === 'return') {
+        // Enter adds new line (standard multiline behavior)
         insertText('\n');
         return;
       }
@@ -194,6 +198,14 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
           case 'end': // Go to document end
             moveCursor(text.length);
             return;
+          case 'j': // Ctrl+J adds new line (alternative method)
+            insertText('\n');
+            return;
+          case 'return': // Ctrl+Enter submits (user expectation)
+            if (text.trim()) {
+              onSubmit(text);
+            }
+            return;
           case 'z': // Undo (not implemented yet)
             return;
           case 'y': // Redo (not implemented yet)
@@ -235,21 +247,19 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
             onSubmit(text);
           }
         }
-      },
-      {
-        key: 'ctrl+return',
-        handler: () => {
-          if (text.trim()) {
-            onSubmit(text);
-          }
-        }
       }
     ]
   });
 
-  // Render visible lines
+  // Render visible lines - ensure we always show at least 5 lines for proper editing
   const visibleLines = lines.slice(viewportStart, viewportStart + editorHeight);
-  const lineNumberWidth = String(lines.length).length + 1;
+
+  // Pad with empty lines if we have fewer than the minimum height
+  while (visibleLines.length < minHeight && viewportStart + visibleLines.length < lines.length + minHeight) {
+    visibleLines.push('');
+  }
+
+  const lineNumberWidth = Math.max(String(lines.length).length + 1, 3);
 
   return (
     <>
@@ -277,7 +287,7 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
         borderStyle="round"
         borderColor={theme.primary}
         width="100%"
-        height={editorHeight + 2}
+        minHeight={editorHeight + 2}
       >
         {visibleLines.map((line, index) => {
           const actualLineIndex = viewportStart + index;
@@ -319,9 +329,9 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
           );
         })}
 
-        {/* Empty editor message */}
-        {lines.length === 1 && lines[0] === '' && (
-          <Box justifyContent="center" alignItems="center" height={editorHeight}>
+        {/* Empty editor message - only show if no lines are displayed */}
+        {visibleLines.length === 0 && (
+          <Box justifyContent="center" alignItems="center" height={Math.max(5, editorHeight)}>
             <Text color={theme.muted}>Start typing your prompt...</Text>
           </Box>
         )}
@@ -331,7 +341,7 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
       <Box marginTop={1} justifyContent="space-between">
         <Box>
           <Text color={theme.muted}>
-            Ctrl+S or Ctrl+Enter to submit • ESC to cancel • F1 for help
+            Enter for new line • Ctrl+Enter or Ctrl+S to submit • Ctrl+J alternative new line • ESC to cancel • F1 for help
           </Text>
         </Box>
         <Box>
@@ -342,7 +352,7 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
       </Box>
 
       {/* Help dialog */}
-      {showHelp && (
+      {showHelp && showingHelp && (
         <Dialog
           title="Prompt Editor Help"
           message={getHelpText()}
@@ -521,13 +531,14 @@ Navigation:
 
 Editing:
 • Type normally to insert text
+• Enter - New line
 • Backspace/Delete - Remove characters
 • Tab - Insert spaces (indentation)
-• Enter - New line
+• Ctrl+J - Alternative new line
 
 Commands:
-• Ctrl+S - Save and submit
 • Ctrl+Enter - Save and submit
+• Ctrl+S - Save and submit
 • ESC - Cancel (warns if unsaved)
 • F1 - Show this help
 

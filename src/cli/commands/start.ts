@@ -130,9 +130,61 @@ class ProgressDisplay {
   private displayVerboseProgress(event: ProgressEvent): void {
     const timestamp = event.timestamp.toLocaleTimeString();
     const backend = event.backend ? `[${event.backend}]` : '';
-    const toolId = event.toolId ? `{${event.toolId}}` : '';
+    const toolId = event.toolId ? `{${event.toolId.split('_')[0]}}` : '';
 
-    console.log(chalk.gray(`[${timestamp}] ${backend}${toolId} ${event.type}: ${event.content}`));
+    // Extract tool name from metadata if available
+    const toolName = event.metadata?.toolName || 'unknown';
+    const phase = event.metadata?.phase || '';
+    const duration = event.metadata?.duration;
+
+    // Format message based on event type
+    let formattedMessage = event.content;
+    let icon = '';
+    let color = chalk.gray;
+
+    switch (event.type) {
+      case 'tool_start':
+        icon = '🔧';
+        color = chalk.blue;
+        formattedMessage = `Starting tool: ${toolName}`;
+        if (event.metadata?.arguments) {
+          formattedMessage += ` with args: ${JSON.stringify(event.metadata.arguments)}`;
+        }
+        break;
+      case 'tool_result':
+        icon = '✅';
+        color = chalk.green;
+        formattedMessage = `Tool completed: ${toolName}`;
+        if (duration) {
+          formattedMessage += ` (${duration}ms)`;
+        }
+        break;
+      case 'thinking':
+        icon = '🤔';
+        color = chalk.yellow;
+        formattedMessage = `Executing: ${toolName}`;
+        break;
+      case 'error':
+        icon = '❌';
+        color = chalk.red;
+        formattedMessage = `Tool failed: ${toolName}`;
+        if (duration) {
+          formattedMessage += ` (${duration}ms)`;
+        }
+        break;
+      case 'info':
+        icon = 'ℹ️';
+        color = chalk.cyan;
+        if (phase === 'connection') {
+          formattedMessage = `Connecting to subagent for: ${toolName}`;
+        }
+        break;
+      default:
+        formattedMessage = event.content;
+        break;
+    }
+
+    console.log(color(`[${timestamp}] ${icon} ${backend}${toolId} ${formattedMessage}`));
   }
 
   private displaySimpleProgress(event: ProgressEvent): void {
@@ -302,7 +354,15 @@ class ExecutionCoordinator {
         timeout: this.config.mcpTimeout,
         retries: this.config.mcpRetries,
         workingDirectory: request.workingDirectory,
-        debug: this.config.verbose
+        debug: this.config.verbose,
+        enableProgressStreaming: true,
+        sessionId: request.requestId,
+        progressCallback: async (event: any) => {
+          // Route MCP progress events to the progress display
+          if (this.config.verbose) {
+            this.progressDisplay.onProgress(event);
+          }
+        }
       };
 
       // TEMPORARY: Force server path approach for debugging
