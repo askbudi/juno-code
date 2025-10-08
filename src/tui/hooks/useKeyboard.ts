@@ -41,26 +41,28 @@ export function useKeyboard(options: {
   // Main keyboard handler
   useInput(
     (input, key) => {
+      const keyName = key.return ? 'return' :
+                      key.escape ? 'escape' :
+                      key.tab ? 'tab' :
+                      key.backspace ? 'backspace' :
+                      key.delete ? 'delete' :
+                      key.upArrow ? 'upArrow' :
+                      key.downArrow ? 'downArrow' :
+                      key.leftArrow ? 'leftArrow' :
+                      key.rightArrow ? 'rightArrow' :
+                      key.pageUp ? 'pageUp' :
+                      key.pageDown ? 'pageDown' :
+                      key.home ? 'home' :
+                      key.end ? 'end' :
+                      input || 'unknown';
+
       const keyEvent: KeyboardEvent = {
-        key: key.return ? 'return' :
-             key.escape ? 'escape' :
-             key.tab ? 'tab' :
-             key.backspace ? 'backspace' :
-             key.delete ? 'delete' :
-             key.upArrow ? 'upArrow' :
-             key.downArrow ? 'downArrow' :
-             key.leftArrow ? 'leftArrow' :
-             key.rightArrow ? 'rightArrow' :
-             key.pageUp ? 'pageUp' :
-             key.pageDown ? 'pageDown' :
-             key.home ? 'home' :
-             key.end ? 'end' :
-             input || 'unknown',
+        key: keyName,
         ctrl: key.ctrl || false,
         meta: key.meta || false,
         shift: key.shift || false,
         alt: key.alt || false,
-        sequence: `${key.ctrl ? 'ctrl+' : ''}${key.meta ? 'meta+' : ''}${key.shift ? 'shift+' : ''}${key.alt ? 'alt+' : ''}${input || keyEvent.key}`
+        sequence: `${key.ctrl ? 'ctrl+' : ''}${key.meta ? 'meta+' : ''}${key.shift ? 'shift+' : ''}${key.alt ? 'alt+' : ''}${input || keyName}`
       };
 
       // Try key bindings first

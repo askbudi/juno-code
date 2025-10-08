@@ -659,7 +659,10 @@ export async function feedbackCommandHandler(
       // Add new feedback issue
       let issueText: string;
 
-      if (options.interactive) {
+      // Default to interactive mode if no arguments provided
+      const shouldUseInteractive = options.interactive || args.length === 0;
+
+      if (shouldUseInteractive) {
         try {
           // Use TUI prompt editor for multiline input
           const { launchPromptEditor, isTUISupported } = await import('../../tui/index.js');
@@ -687,14 +690,7 @@ export async function feedbackCommandHandler(
           issueText = await collectMultilineFeedback();
         }
       } else {
-        // Quick feedback mode
-        if (args.length === 0) {
-          console.log(chalk.yellow('Please provide feedback text or use --interactive mode'));
-          console.log(chalk.gray('Usage: juno-task feedback "Your feedback here"'));
-          console.log(chalk.gray('   or: juno-task feedback --interactive'));
-          return;
-        }
-
+        // Quick feedback mode with provided text
         issueText = args.join(' ').trim();
       }
 
@@ -784,12 +780,13 @@ Subcommands:
   remove <id>, rm <id>        Remove feedback item
 
 Examples:
-  $ juno-task feedback "The CLI is too slow"           # Quick feedback
-  $ juno-task feedback --interactive                   # Interactive mode
-  $ juno-task feedback list                           # List all feedback
-  $ juno-task feedback resolve abc123                 # Resolve item abc123
-  $ juno-task feedback remove abc123                  # Remove item abc123
-  $ juno-task feedback --file ./custom-feedback.md    # Use custom file
+  $ juno-task feedback                                # Interactive mode (default)
+  $ juno-task feedback "The CLI is too slow"          # Quick feedback
+  $ juno-task feedback --interactive                  # Explicit interactive mode
+  $ juno-task feedback list                          # List all feedback
+  $ juno-task feedback resolve abc123                # Resolve item abc123
+  $ juno-task feedback remove abc123                 # Remove item abc123
+  $ juno-task feedback --file ./custom-feedback.md   # Use custom file
 
 Environment Variables:
   JUNO_TASK_FEEDBACK_FILE    Default feedback file path

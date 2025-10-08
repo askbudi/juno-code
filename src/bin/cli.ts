@@ -19,6 +19,7 @@ import { configureSessionCommand } from '../cli/commands/session.js';
 import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
 import { configureLogsCommand } from '../cli/commands/logs.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
+import { setupConfigCommand } from '../cli/commands/config.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Version information
@@ -271,6 +272,7 @@ async function main(): Promise<void> {
   configureSetupGitCommand(program);
   configureLogsCommand(program);
   configureHelpCommand(program);
+  setupConfigCommand(program);
 
   // Setup completion
   setupCompletion(program);
@@ -307,6 +309,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Collect feedback')}
   juno-task feedback --interactive
+
+  ${chalk.gray('# Manage configuration profiles')}
+  juno-task config list
+  juno-task config create development
 
   ${chalk.gray('# Setup Git repository')}
   juno-task setup-git https://github.com/owner/repo

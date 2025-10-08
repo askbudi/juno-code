@@ -38,9 +38,9 @@ import type { SubagentType, JunoTaskConfig } from '../../types/index.js';
 import type {
   ExecutionRequest,
   ExecutionResult,
-  ProgressEvent,
-  ExecutionStatus
+  ProgressEvent
 } from '../../core/engine.js';
+import { ExecutionStatus } from '../../core/engine.js';
 
 /**
  * Prompt input processor for handling various input types
@@ -338,14 +338,40 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Create MCP client
-    const mcpClient = createMCPClient({
-      serverPath: this.config.mcpServerPath,
+    // Create MCP client with same logic as start command
+    let mcpClientOptions: any = {
       timeout: this.config.mcpTimeout,
       retries: this.config.mcpRetries,
       workingDirectory: request.workingDirectory,
-      debug: this.config.verbose
-    });
+      debug: this.config.verbose,
+      enableProgressStreaming: true,
+      sessionId: request.requestId,
+      progressCallback: async (event: any) => {
+        // Route MCP progress events to the progress display
+        if (this.config.verbose) {
+          this.progressDisplay.onProgress(event);
+        }
+      }
+    };
+
+    // TEMPORARY: Force server path approach for debugging
+    if (false && this.config.mcpServerName) {
+      // Use named server (preferred approach)
+      mcpClientOptions.serverName = this.config.mcpServerName;
+
+    } else if (this.config.mcpServerPath) {
+      // Use server path
+      mcpClientOptions.serverPath = this.config.mcpServerPath;
+
+      if (this.config.verbose) {
+        console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
+      }
+    } else {
+      // TEMPORARY: Force a specific server path for debugging
+      mcpClientOptions.serverPath = '/Users/mahdiyar/miniconda3/envs/tmp_test/bin/roundtable-mcp-server';
+    }
+
+    const mcpClient = createMCPClient(mcpClientOptions);
 
     // Create execution engine
     const engine = createExecutionEngine(this.config, mcpClient);

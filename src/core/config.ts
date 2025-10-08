@@ -15,6 +15,7 @@ import * as yaml from 'js-yaml';
 import type {
   JunoTaskConfig
 } from '../types/index';
+import type { ProfileManager } from './profiles.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -173,8 +174,9 @@ type ConfigFileFormat = 'json' | 'yaml' | 'toml' | 'js';
 
 /**
  * Configuration source types for precedence handling
+ * Precedence order: cli > env > file > profile > defaults
  */
-type ConfigSource = 'defaults' | 'file' | 'env' | 'cli';
+type ConfigSource = 'defaults' | 'profile' | 'file' | 'env' | 'cli';
 
 /**
  * Utility function to resolve paths (relative to absolute)
@@ -375,7 +377,7 @@ async function findConfigFile(searchDir: string = process.cwd()): Promise<string
 /**
  * ConfigLoader class for multi-source configuration loading
  *
- * Implements configuration precedence: CLI args > Environment Variables > Config Files > Defaults
+ * Implements configuration precedence: CLI args > Environment Variables > Config Files > Profile > Defaults
  */
 export class ConfigLoader {
   private configSources: Map<ConfigSource, Partial<JunoTaskConfig>> = new Map();
@@ -443,8 +445,26 @@ export class ConfigLoader {
   }
 
   /**
+   * Load configuration from active profile
+   *
+   * @param profileManager - ProfileManager instance to load active profile from
+   * @returns This ConfigLoader instance for method chaining
+   */
+  async fromProfile(profileManager: ProfileManager): Promise<this> {
+    try {
+      const profileConfig = await profileManager.getActiveProfile();
+      this.configSources.set('profile', profileConfig);
+    } catch (error) {
+      // If profile loading fails, we continue without profile config
+      // This allows the system to work even if profiles are misconfigured
+      console.warn(`Warning: Failed to load active profile: ${error}`);
+    }
+    return this;
+  }
+
+  /**
    * Merge all configuration sources according to precedence
-   * CLI args > Environment Variables > Config Files > Defaults
+   * CLI args > Environment Variables > Config Files > Profile > Defaults
    *
    * @returns Merged configuration object
    */
@@ -453,7 +473,7 @@ export class ConfigLoader {
     const mergedConfig = { ...DEFAULT_CONFIG };
 
     // Apply sources in order of precedence (lowest to highest)
-    const sourcePrecedence: ConfigSource[] = ['file', 'env', 'cli'];
+    const sourcePrecedence: ConfigSource[] = ['profile', 'file', 'env', 'cli'];
 
     for (const source of sourcePrecedence) {
       const sourceConfig = this.configSources.get(source);
@@ -487,11 +507,17 @@ export class ConfigLoader {
    * Convenience method that performs auto-discovery and returns validated config
    *
    * @param cliConfig - Optional CLI configuration
+   * @param profileManager - Optional ProfileManager for profile support
    * @returns Promise resolving to validated configuration
    */
-  async loadAll(cliConfig?: Partial<JunoTaskConfig>): Promise<JunoTaskConfig> {
+  async loadAll(cliConfig?: Partial<JunoTaskConfig>, profileManager?: ProfileManager): Promise<JunoTaskConfig> {
     // Load from environment
     this.fromEnvironment();
+
+    // Load from active profile if available
+    if (profileManager) {
+      await this.fromProfile(profileManager);
+    }
 
     // Auto-discover configuration file
     await this.autoDiscoverFile();
@@ -538,6 +564,7 @@ export function validateConfig(config: unknown): JunoTaskConfig {
  * @param options.baseDir - Base directory for relative path resolution
  * @param options.configFile - Specific configuration file to load
  * @param options.cliConfig - CLI configuration override
+ * @param options.profileManager - ProfileManager for profile support
  * @returns Promise resolving to validated configuration
  *
  * @example
@@ -554,23 +581,35 @@ export function validateConfig(config: unknown): JunoTaskConfig {
  * const config = await loadConfig({
  *   cliConfig: { verbose: true, logLevel: 'debug' }
  * });
+ *
+ * // Load with profile support
+ * const config = await loadConfig({
+ *   profileManager: profileManagerInstance
+ * });
  * ```
  */
 export async function loadConfig(options: {
   baseDir?: string;
   configFile?: string;
   cliConfig?: Partial<JunoTaskConfig>;
+  profileManager?: ProfileManager;
 } = {}): Promise<JunoTaskConfig> {
   const {
     baseDir = process.cwd(),
     configFile,
-    cliConfig
+    cliConfig,
+    profileManager
   } = options;
 
   const loader = new ConfigLoader(baseDir);
 
   // Load from environment
   loader.fromEnvironment();
+
+  // Load from active profile if available
+  if (profileManager) {
+    await loader.fromProfile(profileManager);
+  }
 
   // Load from specific file or auto-discover
   if (configFile) {
@@ -598,3 +637,9 @@ export type ConfigLoadOptions = Parameters<typeof loadConfig>[0];
  * Type export for environment variable mapping
  */
 export type EnvVarMapping = typeof ENV_VAR_MAPPING;
+
+/**
+ * Re-export ProfileManager and related types for convenience
+ */
+export type { ProfileManager, ProfileConfig, ProfileMetadata } from './profiles.js';
+export { createProfileManager, ProfileError, ProfileNotFoundError, ProfileExistsError, CircularInheritanceError } from './profiles.js';

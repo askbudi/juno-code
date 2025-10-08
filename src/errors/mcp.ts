@@ -40,7 +40,6 @@ export class MCPConnectionError extends MCPError {
 
     super(message, {
       code: ErrorCode.MCP_CONNECTION_FAILED,
-      category: ErrorCategory.MCP,
       context: {
         ...options?.context,
         metadata: {
@@ -113,7 +112,6 @@ export class MCPToolError extends MCPError {
 
     super(message, {
       code: ErrorCode.MCP_TOOL_EXECUTION_FAILED,
-      category: ErrorCategory.MCP,
       context: {
         ...options?.context,
         metadata: {

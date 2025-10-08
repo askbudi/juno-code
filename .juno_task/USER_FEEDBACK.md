@@ -16,7 +16,12 @@ List any features you'd like to see added.
 Items that have been resolved will be moved here.
 ## OPEN_ISSUES
 
-<!-- No current open issues -->
+<ISSUE>
+This is direct feedback
+[Added: 2025-10-08 03:17:56]
+[Status: acknowledged 2025-10-08]
+</ISSUE>
+
 
 ## RESOLVED_ISSUES
 
