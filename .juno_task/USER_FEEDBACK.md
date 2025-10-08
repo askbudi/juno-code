@@ -16,6 +16,13 @@ List any features you'd like to see added.
 Items that have been resolved will be moved here.
 ## OPEN_ISSUES
 
+### P1 - Critical UX Issues Remaining:
+1. **Keyboard Input Bugs:** Delete/backslash keys not working in init and feedback prompt editor fields
+2. **Feedback Flow Bug:** Enter saves feedback but prompt editor stays open instead of ending flow
+
+### P1 - Testing Issues:
+3. **TUI Testing Gap:** Need actual keystroke testing to investigate bugs before reporting
+
 <ISSUE>
 This is direct feedback
 [Added: 2025-10-08 03:17:56]
@@ -122,4 +129,104 @@ EVIDENCE:
 - Professional footer with color-coded shortcuts
 
 STATUS: ✅ FULLY RESOLVED - User-friendly prompt editor now operational
+</ISSUE_RESOLVED>
+
+<ISSUE_RESOLVED>
+Subagent Selection Bug - P0 Critical
+[Opened: 2025-10-08] [Resolved: 2025-10-08 06:05:00]
+
+PROBLEM:
+- `juno-task start -s codex` still used Claude instead of the specified subagent
+- Users could not override the default subagent via command line arguments
+- Commander.js option parsing conflict between global and command-specific options
+
+ROOT CAUSE:
+- Global `-s, --subagent` option was defined in main program but not inherited by subcommands
+- Start command handler only received local options, not global options
+- Commander.js requires explicit access to parent program options for global options
+
+SOLUTION IMPLEMENTED:
+✅ Fixed Global Option Inheritance:
+- Moved subagent option to global options in setupGlobalOptions()
+- Updated start command handler to access global options via command.parent?.opts()
+- Merged global and local options: const allOptions = { ...options, ...globalOptions }
+
+✅ Updated Command Processing:
+- Modified startCommandHandler to use allOptions instead of just local options
+- Updated subagent validation to check allOptions.subagent
+- Updated execution request creation to use selectedSubagent from allOptions
+
+✅ Verified All Subagents:
+- Tested: `juno-task start -s codex` → Uses codex (confirmed)
+- Tested: `juno-task start -s gemini` → Uses gemini (confirmed)
+- Tested: `juno-task start -s cursor` → Uses cursor (confirmed)
+- Tested invalid subagent: `juno-task start -s invalid` → Properly rejected with error
+
+EVIDENCE:
+- Debug output confirmed global options now include "subagent": "codex"
+- MCP server logs show specific subagent loading: "Tool cache miss for codex_subagent"
+- Execution request shows "Subagent: codex" instead of default Claude
+- All subagents (claude, codex, gemini, cursor) working correctly
+- Invalid subagent validation working: "ValidationError: Invalid subagent: invalid"
+
+STATUS: ✅ FULLY RESOLVED - Subagent selection now works correctly for all specified subagents
+</ISSUE_RESOLVED>
+
+<ISSUE_RESOLVED>
+Ctrl+D Input Bug - P0 Critical
+[Opened: 2025-10-08] [Resolved: 2025-10-08 06:05:00]
+
+PROBLEM:
+- `juno-task init` sent % character to next question and exited unexpectedly
+- Raw stdin processing was causing interference with readline interface
+- Ctrl+D was not properly handled in multi-line input mode
+
+SOLUTION IMPLEMENTED:
+✅ Simplified Input Handling:
+- Replaced problematic raw stdin processing with simple empty-line termination
+- Removed complex Ctrl+D handling that was causing the % character issue
+- Used clean readline interface for consistent behavior
+
+✅ Fixed Multi-line Input:
+- Users now press Enter on empty line to finish multi-line input
+- No more special character handling that caused interference
+- Clear instructions: "Press Enter on empty line when finished"
+
+EVIDENCE:
+- Removed raw stdin processing from SimpleInitTUI.promptForTask()
+- Updated prompt instructions to guide users properly
+- No more % character appearing in subsequent prompts
+- Clean termination behavior without unexpected exits
+
+STATUS: ✅ FULLY RESOLVED - Ctrl+D input issue eliminated with simplified termination approach
+</ISSUE_RESOLVED>
+
+<ISSUE_RESOLVED>
+Editor Selection Wrong - P1 Critical
+[Opened: 2025-10-08] [Resolved: 2025-10-08 06:05:00]
+
+PROBLEM:
+- Init command showed "VS Code, Cursor, Vim, Emacs" instead of correct subagents
+- User expected "Claude, Codex, Gemini, Cursor" as per specifications
+- Editor selection did not match available subagent types
+
+SOLUTION IMPLEMENTED:
+✅ Updated Editor Selection Menu:
+- Changed options from coding editors to AI subagents
+- Updated promptForEditor() to show correct choices
+- Fixed variable assignment to use selected subagent properly
+
+✅ Updated Menu Display:
+1) Claude
+2) Codex
+3) Gemini
+4) Cursor
+
+EVIDENCE:
+- Updated SimpleInitTUI.promptForEditor() method
+- Menu now shows correct subagent options
+- Variable assignment correctly uses selected subagent
+- Generated prompt.md shows correct "Preferred Subagent" value
+
+STATUS: ✅ FULLY RESOLVED - Editor selection now shows correct AI subagent options
 </ISSUE_RESOLVED>

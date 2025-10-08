@@ -86,7 +86,7 @@ class SimpleInitTUI {
     return {
       targetDirectory,
       task,
-      subagent: 'claude', // Default subagent
+      subagent: editor, // Use selected editor as subagent
       gitUrl,
       variables,
       force: false,
@@ -102,57 +102,48 @@ class SimpleInitTUI {
 
   private async promptForTask(): Promise<string> {
     console.log(chalk.gray('   Describe what you want to build'));
-    console.log(chalk.gray('   You can write multiple lines. Press Ctrl+D when finished.\n'));
+    console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
 
-    return new Promise((resolve, reject) => {
-      let input = '';
+    const lines: string[] = [];
 
-      process.stdin.setEncoding('utf8');
-      process.stdin.resume();
+    while (true) {
+      const line = await this.promptForInput(lines.length === 0 ? 'Task description' : '   (continue, empty line to finish)', '');
 
-      process.stdin.on('data', (chunk) => {
-        input += chunk;
-      });
+      if (line.trim() === '') {
+        break; // Empty line signals end of input
+      }
 
-      process.stdin.on('end', () => {
-        const trimmed = input.trim();
-        if (!trimmed || trimmed.length < 5) {
-          reject(new ValidationError(
-            'Task description must be at least 5 characters',
-            ['Provide a basic description of what you want to build']
-          ));
-        } else {
-          resolve(trimmed);
-        }
-      });
+      lines.push(line);
+    }
 
-      process.stdin.on('error', (error) => {
-        reject(new ValidationError(
-          `Failed to read input: ${error}`,
-          ['Try again with valid input']
-        ));
-      });
-    });
+    const input = lines.join('\n').trim();
+
+    if (!input || input.length < 5) {
+      throw new ValidationError(
+        'Task description must be at least 5 characters',
+        ['Provide a basic description of what you want to build']
+      );
+    }
+
+    return input;
   }
 
   private async promptForEditor(): Promise<string> {
-    console.log(chalk.gray('   Select your preferred coding editor (enter number):'));
-    console.log(chalk.gray('   1) VS Code'));
-    console.log(chalk.gray('   2) Cursor'));
-    console.log(chalk.gray('   3) Vim'));
-    console.log(chalk.gray('   4) Emacs'));
-    console.log(chalk.gray('   5) Other'));
+    console.log(chalk.gray('   Select your preferred AI subagent (enter number):'));
+    console.log(chalk.gray('   1) Claude'));
+    console.log(chalk.gray('   2) Codex'));
+    console.log(chalk.gray('   3) Gemini'));
+    console.log(chalk.gray('   4) Cursor'));
 
-    const answer = await this.promptForInput('Editor choice', '1');
+    const answer = await this.promptForInput('Subagent choice', '1');
     const choice = parseInt(answer) || 1;
 
     switch (choice) {
-      case 1: return 'VS Code';
-      case 2: return 'Cursor';
-      case 3: return 'Vim';
-      case 4: return 'Emacs';
-      case 5: return 'Other';
-      default: return 'VS Code';
+      case 1: return 'claude';
+      case 2: return 'codex';
+      case 3: return 'gemini';
+      case 4: return 'cursor';
+      default: return 'claude';
     }
   }
 
@@ -248,7 +239,7 @@ ${variables.TASK}
 ## Project Details
 
 **Project Name**: ${variables.PROJECT_NAME}
-**Preferred Editor**: ${variables.EDITOR}
+**Preferred Subagent**: ${variables.EDITOR.charAt(0).toUpperCase() + variables.EDITOR.slice(1)}
 **Created Date**: ${variables.CURRENT_DATE}
 **Version**: ${variables.VERSION}
 
@@ -271,7 +262,7 @@ ${variables.TASK}
 ### Project Setup
 
 - **Project Name**: ${variables.PROJECT_NAME}
-- **Preferred Editor**: ${variables.EDITOR}
+- **Preferred Subagent**: ${variables.EDITOR.charAt(0).toUpperCase() + variables.EDITOR.slice(1)}
 - **Created Date**: ${variables.CURRENT_DATE}
 
 ### Getting Started
@@ -356,13 +347,16 @@ class SimpleHeadlessInit {
     const task = this.options.task || 'Define your main task objective here';
     const gitUrl = this.options.gitUrl;
 
+    // Default subagent for headless mode
+    const defaultSubagent = 'claude';
+
     // Create simple variables
-    const variables = this.createSimpleVariables(targetDirectory, task, gitUrl);
+    const variables = this.createSimpleVariables(targetDirectory, task, defaultSubagent, gitUrl);
 
     return {
       targetDirectory,
       task,
-      subagent: 'claude',
+      subagent: defaultSubagent,
       gitUrl,
       variables,
       force: this.options.force || false,
@@ -373,6 +367,7 @@ class SimpleHeadlessInit {
   private createSimpleVariables(
     targetDirectory: string,
     task: string,
+    editor: string,
     gitUrl?: string
   ): TemplateVariables {
     const projectName = path.basename(targetDirectory);
@@ -381,7 +376,7 @@ class SimpleHeadlessInit {
     return {
       PROJECT_NAME: projectName,
       TASK: task,
-      EDITOR: 'VS Code',
+      EDITOR: editor,
       CURRENT_DATE: currentDate,
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',

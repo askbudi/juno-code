@@ -598,6 +598,45 @@ async function appendIssueToFeedback(feedbackFile: string, issueText: string): P
 }
 
 /**
+ * Ask user for a choice from available options
+ */
+async function askForChoice(prompt: string, validChoices: string[]): Promise<string> {
+  const readline = await import('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`${prompt}: `, (answer) => {
+      rl.close();
+      const normalizedAnswer = answer.trim();
+      if (validChoices.includes(normalizedAnswer)) {
+        resolve(normalizedAnswer);
+      } else {
+        // Default to first choice if invalid input
+        resolve(validChoices[0]);
+      }
+    });
+  });
+}
+
+/**
+ * Show recent feedback entries
+ */
+async function showRecentFeedback(feedbackFile: string, count: number): Promise<void> {
+  try {
+    const content = await fs.readFile(feedbackFile, 'utf-8');
+    console.log(chalk.blue.bold(`\n📋 Last ${count} Feedback Entr${count === 1 ? 'y' : 'ies'}:`));
+    console.log(chalk.gray('─'.repeat(50)));
+    console.log(content);
+    console.log(chalk.gray('─'.repeat(50)));
+  } catch (error) {
+    console.log(chalk.yellow('No feedback file found or unable to read feedback.'));
+  }
+}
+
+/**
  * Collect multiline feedback from user
  */
 async function collectMultilineFeedback(): Promise<string> {
@@ -702,8 +741,10 @@ export async function feedbackCommandHandler(
       // Append issue to USER_FEEDBACK.md
       await appendIssueToFeedback(feedbackFile, issueText);
 
-      console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
-      console.log(chalk.gray(`   File: ${feedbackFile}`));
+      console.log(chalk.green.bold('✅ Feedback submitted successfully!'));
+      console.log(chalk.gray(`   Saved to: ${feedbackFile}`));
+      console.log(chalk.blue('\n💡 Want to add more feedback?'));
+      console.log(chalk.gray('   Run `juno-task feedback` again to submit additional feedback.'));
 
     } else {
       // Handle subcommands

@@ -76,7 +76,8 @@ function setupGlobalOptions(program: Command): void {
     .option('-c, --config <path>', 'Configuration file path (.json, .toml, pyproject.toml)')
     .option('-l, --log-file <path>', 'Log file path (auto-generated if not specified)')
     .option('--no-color', 'Disable colored output')
-    .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info');
+    .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
+    .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
 
   // Global error handling
   program.exitOverride((err) => {
@@ -104,7 +105,6 @@ function setupGlobalOptions(program: Command): void {
 function setupMainCommand(program: Command): void {
   // Main command for direct execution with subagent
   program
-    .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('-p, --prompt <text>', 'Prompt input (file path or inline text)')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
@@ -113,7 +113,10 @@ function setupMainCommand(program: Command): void {
     .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
     .action(async (options, command) => {
       try {
-        if (!options.subagent) {
+        // Get global options from program
+        const globalOptions = program.opts();
+
+        if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
           console.log(chalk.blue.bold('🎯 Juno Task - TypeScript CLI for AI Subagent Orchestration\n'));
           console.log(chalk.white('To get started:'));
           console.log(chalk.gray('  juno-task init                    # Initialize new project'));
@@ -126,7 +129,7 @@ function setupMainCommand(program: Command): void {
 
         // Import and execute main command handler dynamically
         const { mainCommandHandler } = await import('../cli/commands/main.js');
-        await mainCommandHandler([], { ...options, subagent: options.subagent }, command);
+        await mainCommandHandler([], { ...options, ...globalOptions }, command);
       } catch (error) {
         handleCLIError(error, options.verbose);
       }

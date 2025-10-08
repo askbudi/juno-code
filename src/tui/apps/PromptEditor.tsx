@@ -253,8 +253,11 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
         }
       }
 
-      // Regular character input
-      if (key.length === 1 && !ctrl && !meta && !alt) {
+      // Regular character input - handle all printable characters
+      if (!ctrl && !meta && !alt && key !== 'unknown' &&
+          !['return', 'escape', 'tab', 'backspace', 'delete', 'upArrow',
+            'downArrow', 'leftArrow', 'rightArrow', 'pageUp', 'pageDown',
+            'home', 'end'].includes(key)) {
         insertText(key);
         return;
       }

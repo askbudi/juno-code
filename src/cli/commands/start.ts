@@ -188,8 +188,24 @@ class ProgressDisplay {
   }
 
   private displaySimpleProgress(event: ProgressEvent): void {
-    const dots = '.'.repeat((this.currentIteration % 3) + 1);
-    process.stdout.write(chalk.gray(`\r   Processing${dots}   `));
+    // Show meaningful tool progress information
+    const toolName = event.metadata?.toolName;
+
+    if (event.type === 'tool_start' && toolName) {
+      process.stdout.write(chalk.blue(`\r🔧 Calling ${toolName}...`));
+    } else if (event.type === 'tool_result' && toolName) {
+      const duration = event.metadata?.duration;
+      const durationText = duration ? ` (${duration}ms)` : '';
+      process.stdout.write(chalk.green(`\r✅ ${toolName} completed${durationText}`));
+    } else if (event.type === 'thinking') {
+      process.stdout.write(chalk.gray(`\r💭 Thinking...`));
+    } else if (event.type === 'error') {
+      process.stdout.write(chalk.red(`\r❌ Error: ${event.content.substring(0, 50)}...`));
+    } else {
+      // Fallback to dots for other events
+      const dots = '.'.repeat((this.currentIteration % 3) + 1);
+      process.stdout.write(chalk.gray(`\r   Processing${dots}   `));
+    }
   }
 
   private getElapsedTime(): string {
@@ -358,10 +374,8 @@ class ExecutionCoordinator {
         enableProgressStreaming: true,
         sessionId: request.requestId,
         progressCallback: async (event: any) => {
-          // Route MCP progress events to the progress display
-          if (this.config.verbose) {
-            this.progressDisplay.onProgress(event);
-          }
+          // Route MCP progress events to the progress display (always active)
+          this.progressDisplay.onProgress(event);
         }
       };
 
@@ -506,23 +520,28 @@ export async function startCommandHandler(
   command: Command
 ): Promise<void> {
   try {
+    // Get global options from command's parent program
+    const globalOptions = command.parent?.opts() || {};
+    const allOptions = { ...options, ...globalOptions };
+
+    // Successfully merged global and local options
     console.log(chalk.blue.bold('🎯 Juno Task - Start Execution'));
 
     // Set logging level based on options
-    const logLevel = options.logLevel ? LogLevel[options.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
+    const logLevel = allOptions.logLevel ? LogLevel[allOptions.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
     cliLogger.startTimer('start_command_total');
-    cliLogger.info('Starting execution command', { options, directory: options.directory || process.cwd() });
+    cliLogger.info('Starting execution command', { options: allOptions, directory: allOptions.directory || process.cwd() });
 
     // Load configuration
     cliLogger.startTimer('config_loading');
     const config = await loadConfig({
-      baseDir: options.directory || process.cwd(),
-      configFile: options.config,
+      baseDir: allOptions.directory || process.cwd(),
+      configFile: allOptions.config,
       cliConfig: {
-        verbose: options.verbose || false,
-        quiet: options.quiet || false,
-        logLevel: options.logLevel || 'info',
-        workingDirectory: options.directory || process.cwd()
+        verbose: allOptions.verbose || false,
+        quiet: allOptions.quiet || false,
+        logLevel: allOptions.logLevel || 'info',
+        workingDirectory: allOptions.directory || process.cwd()
       }
     });
     cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
@@ -545,11 +564,11 @@ export async function startCommandHandler(
     }
 
     // Validate subagent if provided via command line
-    if (options.subagent) {
+    if (allOptions.subagent) {
       const validSubagents: SubagentType[] = ['claude', 'cursor', 'codex', 'gemini'];
-      if (!validSubagents.includes(options.subagent)) {
+      if (!validSubagents.includes(allOptions.subagent)) {
         throw new ValidationError(
-          `Invalid subagent: ${options.subagent}`,
+          `Invalid subagent: ${allOptions.subagent}`,
           [
             `Use one of: ${validSubagents.join(', ')}`,
             'Run `juno-task help start` for examples'
@@ -559,28 +578,28 @@ export async function startCommandHandler(
     }
 
     // Create execution request with subagent override
-    const selectedSubagent = options.subagent || config.defaultSubagent;
+    const selectedSubagent = allOptions.subagent || config.defaultSubagent;
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: selectedSubagent,
       workingDirectory: config.workingDirectory,
-      maxIterations: options.maxIterations || config.defaultMaxIterations,
-      model: options.model || config.defaultModel
+      maxIterations: allOptions.maxIterations || config.defaultMaxIterations,
+      model: allOptions.model || config.defaultModel
     });
 
     // Apply command-line overrides
-    if (options.maxIterations !== undefined) {
-      (executionRequest as any).maxIterations = options.maxIterations;
+    if (allOptions.maxIterations !== undefined) {
+      (executionRequest as any).maxIterations = allOptions.maxIterations;
     }
-    if (options.model) {
-      (executionRequest as any).model = options.model;
+    if (allOptions.model) {
+      (executionRequest as any).model = allOptions.model;
     }
 
     // Create performance integration
     const performanceIntegration = new PerformanceIntegration();
 
     // Create and initialize coordinator
-    const coordinator = new ExecutionCoordinator(config, options.verbose, performanceIntegration);
+    const coordinator = new ExecutionCoordinator(config, allOptions.verbose, performanceIntegration);
     await coordinator.initialize();
 
     // Execute

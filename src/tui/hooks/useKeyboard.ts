@@ -41,20 +41,38 @@ export function useKeyboard(options: {
   // Main keyboard handler
   useInput(
     (input, key) => {
-      const keyName = key.return ? 'return' :
-                      key.escape ? 'escape' :
-                      key.tab ? 'tab' :
-                      key.backspace ? 'backspace' :
-                      key.delete ? 'delete' :
-                      key.upArrow ? 'upArrow' :
-                      key.downArrow ? 'downArrow' :
-                      key.leftArrow ? 'leftArrow' :
-                      key.rightArrow ? 'rightArrow' :
-                      key.pageUp ? 'pageUp' :
-                      key.pageDown ? 'pageDown' :
-                      key.home ? 'home' :
-                      key.end ? 'end' :
-                      input || 'unknown';
+      // Handle special keys that might not have proper input values
+      let keyName;
+      if (key.return) {
+        keyName = 'return';
+      } else if (key.escape) {
+        keyName = 'escape';
+      } else if (key.tab) {
+        keyName = 'tab';
+      } else if (key.backspace) {
+        keyName = 'backspace';
+      } else if (key.delete) {
+        keyName = 'delete';
+      } else if (key.upArrow) {
+        keyName = 'upArrow';
+      } else if (key.downArrow) {
+        keyName = 'downArrow';
+      } else if (key.leftArrow) {
+        keyName = 'leftArrow';
+      } else if (key.rightArrow) {
+        keyName = 'rightArrow';
+      } else if (key.pageUp) {
+        keyName = 'pageUp';
+      } else if (key.pageDown) {
+        keyName = 'pageDown';
+      } else if (key.home) {
+        keyName = 'home';
+      } else if (key.end) {
+        keyName = 'end';
+      } else {
+        // For regular characters and special characters like backslash
+        keyName = input || 'unknown';
+      }
 
       const keyEvent: KeyboardEvent = {
         key: keyName,
