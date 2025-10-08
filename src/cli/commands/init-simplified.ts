@@ -394,7 +394,7 @@ class SimpleHeadlessInit {
 /**
  * Main simplified init command handler
  */
-export async function initCommandHandler(
+export async function simplifiedInitCommandHandler(
   args: any,
   options: InitCommandOptions,
   command: Command
@@ -448,54 +448,4 @@ export async function initCommandHandler(
 
     process.exit(99);
   }
-}
-
-/**
- * Configure the init command for Commander.js (simplified)
- */
-export function configureInitCommand(program: Command): void {
-  program
-    .command('init')
-    .description('Initialize new juno-task project with simple setup')
-    .argument('[directory]', 'Target directory (default: current directory)')
-    .option('-f, --force', 'Force overwrite existing files')
-    .option('-t, --task <description>', 'Main task description')
-    .option('-g, --git-url <url>', 'Git repository URL')
-    .option('-i, --interactive', 'Launch simple interactive setup')
-    .action(async (directory, options, command) => {
-      const initOptions: InitCommandOptions = {
-        directory,
-        force: options.force,
-        task: options.task,
-        gitUrl: options.gitUrl,
-        interactive: options.interactive,
-        // Global options
-        verbose: options.verbose,
-        quiet: options.quiet,
-        config: options.config,
-        logFile: options.logFile,
-        logLevel: options.logLevel
-      };
-
-      await initCommandHandler([], initOptions, command);
-    })
-    .addHelpText('after', `
-Examples:
-  $ juno-task init                                    # Initialize in current directory
-  $ juno-task init my-project                         # Initialize in ./my-project
-  $ juno-task init --interactive                      # Use simple interactive setup
-
-Simplified Interactive Flow:
-  1. Project Root → Specify target directory
-  2. Main Task → Multi-line description (no character limits)
-  3. Editor Selection → Choose from VS Code, Cursor, Vim, Emacs, Other
-  4. Git Setup → Simple yes/no for Git configuration
-  5. Save → Handle existing files with override/cancel options
-
-Notes:
-  - No prompt cost calculation or token counting
-  - No character limits on task descriptions
-  - Simple file structure with basic templates
-  - Focus on quick project setup without complexity
-    `);
 }

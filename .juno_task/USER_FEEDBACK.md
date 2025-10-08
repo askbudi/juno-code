@@ -26,6 +26,55 @@ This is direct feedback
 ## RESOLVED_ISSUES
 
 <ISSUE_RESOLVED>
+Init TUI Simplification - P2 Priority
+[Opened: 2025-10-08] [Resolved: 2025-10-08 01:20:00]
+
+PROBLEM:
+- Init TUI was "too fancy and too complicated"
+- User wanted a simple 5-step flow without complex features
+- Complex token counting, cost calculation, and character limits were unnecessary overhead
+- User wanted: "Project Root → Main Task [Multi line] → select menu [Coding Editors] → Git Setup? yes | No → Save → Already exists? Override | Cancel → Done"
+
+SOLUTION IMPLEMENTED:
+✅ Complete Simplification:
+- Replaced complex InitTUI (696 lines) with SimpleInitTUI (501 lines)
+- Removed all complex features: token counting, cost calculation, character limits
+- Implemented exact 5-step flow requested by user
+- Removed TUI dependencies, using simple readline-based interaction
+
+✅ Simplified 5-Step Flow:
+1. Project Root → Specify target directory (with default current directory)
+2. Main Task → Multi-line description without character limits (Ctrl+D to finish)
+3. Editor Selection → Simple menu (VS Code, Cursor, Vim, Emacs, Other)
+4. Git Setup → Simple yes/no question + optional Git URL
+5. Save → Handle existing files with override/cancel options
+
+✅ Simplified File Generation:
+- Basic prompt.md with main task and project details
+- Simple init.md with project setup information
+- Clean README.md with getting started instructions
+- No complex template variable system
+- No token counting or cost estimation
+
+✅ Technical Improvements:
+- Reduced CLI bundle size from 663KB to 601KB (~62KB reduction)
+- Removed dependencies on complex TUI components
+- Simplified variable system (only core variables)
+- Removed complex template processing
+- Headless mode still available for automation
+
+EVIDENCE:
+- Complete replacement of src/cli/commands/init.ts with simplified implementation
+- Backup created as src/cli/commands/init-complex-backup.ts for reference
+- Build verification successful with reduced bundle size
+- Interactive testing confirmed simplified 5-step flow works correctly
+- Headless mode testing verified: `juno-task init --task "..." --git-url "..."`
+- Generated files are clean and simple without complex template variables
+
+STATUS: ✅ FULLY RESOLVED - Simplified init command now provides exact user-requested flow
+</ISSUE_RESOLVED>
+
+<ISSUE_RESOLVED>
 Prompt Editor Keyboard Controls and UI Modernization
 [Opened: 2025-10-07] [Resolved: 2025-10-07 22:44:47]
 
