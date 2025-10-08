@@ -279,3 +279,12 @@ export const ValidationPatterns = {
   /** Docker image name pattern */
   DOCKER_IMAGE: /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[a-zA-Z0-9_.-]+)?$/
 } as const;
+
+// Re-export all file management utilities
+export * from './file-manager';
+
+// Re-export all command execution utilities
+export * from './command-executor';
+
+// Re-export all system information utilities
+export * from './system-info';

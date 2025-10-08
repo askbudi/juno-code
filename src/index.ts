@@ -63,3 +63,6 @@ export * from './mcp';
 
 // Template exports
 export type { TemplateEngine } from './templates/engine';
+
+// Error exports (unified error hierarchy)
+export * from './errors';
