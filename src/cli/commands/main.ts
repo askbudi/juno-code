@@ -22,7 +22,7 @@ import { loadConfig } from '../../core/config.js';
 import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
-import { createMCPClient } from '../../mcp/client.js';
+import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
 import type {
   MainCommandOptions,
@@ -348,38 +348,21 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Create MCP client with same logic as start command
-    let mcpClientOptions: any = {
-      timeout: this.config.mcpTimeout,
-      retries: this.config.mcpRetries,
-      workingDirectory: request.workingDirectory,
-      debug: this.config.verbose,
-      enableProgressStreaming: true,
-      sessionId: request.requestId,
-      progressCallback: async (event: any) => {
-        // Route MCP progress events to the progress display (always show progress)
-        this.progressDisplay.onProgress(event);
+    // Create MCP client using proper configuration from .juno_task/mcp.json
+    const mcpClient = await createMCPClientFromConfig(
+      this.config.mcpServerName,
+      request.workingDirectory,
+      {
+        retries: this.config.mcpRetries,
+        debug: this.config.verbose,
+        enableProgressStreaming: true,
+        sessionId: request.requestId,
+        progressCallback: async (event: any) => {
+          // Route MCP progress events to the progress display (always show progress)
+          this.progressDisplay.onProgress(event);
+        }
       }
-    };
-
-    // TEMPORARY: Force server path approach for debugging
-    if (false && this.config.mcpServerName) {
-      // Use named server (preferred approach)
-      mcpClientOptions.serverName = this.config.mcpServerName;
-
-    } else if (this.config.mcpServerPath) {
-      // Use server path
-      mcpClientOptions.serverPath = this.config.mcpServerPath;
-
-      if (this.config.verbose) {
-        console.log(chalk.gray(`   Using MCP server path: ${this.config.mcpServerPath}`));
-      }
-    } else {
-      // TEMPORARY: Force a specific server path for debugging
-      mcpClientOptions.serverPath = '/Users/mahdiyar/miniconda3/envs/tmp_test/bin/roundtable-mcp-server';
-    }
-
-    const mcpClient = createMCPClient(mcpClientOptions);
+    );
 
     // Create execution engine
     const engine = createExecutionEngine(this.config, mcpClient);

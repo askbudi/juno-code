@@ -14,6 +14,7 @@ import { EXIT_CODES, isCLIError } from '../cli/types.js';
 // Import command configurations
 import { configureInitCommand } from '../cli/commands/init.js';
 import { configureStartCommand } from '../cli/commands/start.js';
+import { configureTestCommand } from '../cli/commands/test.js';
 import { configureFeedbackCommand } from '../cli/commands/feedback.js';
 import { configureSessionCommand } from '../cli/commands/session.js';
 import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
@@ -121,6 +122,7 @@ function setupMainCommand(program: Command): void {
           console.log(chalk.white('To get started:'));
           console.log(chalk.gray('  juno-task init                    # Initialize new project'));
           console.log(chalk.gray('  juno-task start                   # Start execution'));
+          console.log(chalk.gray('  juno-task test --generate --run   # AI-powered testing'));
           console.log(chalk.gray('  juno-task -s claude -p "prompt"   # Quick execution with Claude'));
           console.log(chalk.gray('  juno-task --help                  # Show all commands'));
           console.log('');
@@ -270,6 +272,7 @@ async function main(): Promise<void> {
   // Configure all commands
   configureInitCommand(program);
   configureStartCommand(program);
+  configureTestCommand(program);
   configureFeedbackCommand(program);
   configureSessionCommand(program);
   configureSetupGitCommand(program);
@@ -299,6 +302,11 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Start execution using .juno_task/init.md')}
   juno-task start
+
+  ${chalk.gray('# AI-powered testing')}
+  juno-task test --generate --run
+  juno-task test src/utils.ts --subagent claude
+  juno-task test --analyze --coverage
 
   ${chalk.gray('# Quick execution with Claude')}
   juno-task claude "Analyze this codebase and suggest improvements"

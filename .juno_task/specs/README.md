@@ -1,23 +1,15 @@
-# Specifications
+# Project Specifications
 
-This directory contains specification documents for your project.
+This directory contains detailed specifications for the project components.
 
-## Document Structure
+## Specification Files
 
-- `requirements.md` - Functional requirements
-- `architecture.md` - System architecture
-- `api.md` - API specifications
-- `testing.md` - Testing strategy
+- `requirements.md` - Functional and non-functional requirements
+- `architecture.md` - System architecture and design decisions
+- Additional spec files will be added as needed
 
-## How to Use
+## File Naming Convention
 
-1. Create specification documents as needed
-2. Reference them in your prompts
-3. Keep them updated as the project evolves
-
-## Best Practices
-
-- Keep specifications clear and concise
-- Use examples to illustrate complex concepts
-- Version control all specification changes
-- Review and update regularly
+- Use GenZ-style naming (descriptive, modern)
+- Avoid conflicts with existing file names
+- Use `.md` extension for all specification files

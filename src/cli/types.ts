@@ -239,6 +239,42 @@ export interface SetupGitOptions extends GlobalCLIOptions {
   remove?: boolean;
 }
 
+/**
+ * Test command options
+ */
+export interface TestCommandOptions extends GlobalCLIOptions {
+  /** Test type to generate/run */
+  type?: 'unit' | 'integration' | 'e2e' | 'performance' | 'all';
+  /** AI subagent for test generation */
+  subagent?: SubagentType;
+  /** AI intelligence level */
+  intelligence?: 'basic' | 'smart' | 'comprehensive';
+  /** Generate tests using AI */
+  generate?: boolean;
+  /** Execute tests */
+  run?: boolean;
+  /** Generate coverage report */
+  coverage?: boolean | string;
+  /** Analyze test quality and coverage */
+  analyze?: boolean;
+  /** Analysis quality level */
+  quality?: 'basic' | 'thorough' | 'exhaustive';
+  /** Generate improvement suggestions */
+  suggestions?: boolean;
+  /** Generate test report */
+  report?: boolean | string;
+  /** Report format */
+  format?: 'json' | 'html' | 'markdown' | 'console';
+  /** Test template to use */
+  template?: string;
+  /** Testing framework */
+  framework?: 'vitest' | 'jest' | 'mocha' | 'custom';
+  /** Watch mode for continuous testing */
+  watch?: boolean;
+  /** Test reporters (comma-separated) */
+  reporters?: string[];
+}
+
 // ============================================================================
 // Parsed Arguments Types
 // ============================================================================
@@ -658,7 +694,8 @@ export type AllCommandOptions =
   | SessionInfoOptions
   | SessionRemoveOptions
   | SessionCleanOptions
-  | SetupGitOptions;
+  | SetupGitOptions
+  | TestCommandOptions;
 
 /**
  * Union of all CLI error types
@@ -744,6 +781,7 @@ export const SUBAGENT_ALIASES: Record<string, SubagentType> = {
 export const COMMAND_CATEGORIES = {
   EXECUTION: ['juno-task', 'start'],
   PROJECT: ['init', 'setup-git'],
+  TESTING: ['test'],
   SESSION: ['session'],
   FEEDBACK: ['feedback']
 } as const;

@@ -204,15 +204,18 @@ export function configureFeedbackCommand(program: Command): void {
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
     .option('-i, --interactive', 'Launch simple interactive feedback form')
     .action(async (feedback, options, command) => {
+      // Get merged options including global ones
+      const mergedOptions = command.optsWithGlobals();
+
       const feedbackOptions: FeedbackCommandOptions = {
-        file: options.file,
-        interactive: options.interactive,
+        file: mergedOptions.file,
+        interactive: mergedOptions.interactive,
         // Global options
-        verbose: options.verbose,
-        quiet: options.quiet,
-        config: options.config,
-        logFile: options.logFile,
-        logLevel: options.logLevel
+        verbose: mergedOptions.verbose,
+        quiet: mergedOptions.quiet,
+        config: mergedOptions.config,
+        logFile: mergedOptions.logFile,
+        logLevel: mergedOptions.logLevel
       };
 
       const feedbackText = Array.isArray(feedback) ? feedback.join(' ') : feedback;

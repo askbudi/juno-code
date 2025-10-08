@@ -99,6 +99,11 @@ vi.mock('../../mcp/client.js', () => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
     execute: vi.fn()
+  }),
+  createMCPClientFromConfig: vi.fn().mockResolvedValue({
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    execute: vi.fn()
   })
 }));
 
@@ -917,6 +922,15 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockReturnValue(mockSessionManager);
 
+        // Mock MCP client
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
+        const mockMCPClient = {
+          connect: vi.fn().mockResolvedValue(undefined),
+          disconnect: vi.fn().mockResolvedValue(undefined),
+          execute: vi.fn().mockResolvedValue(undefined)
+        };
+        vi.mocked(createMCPClientFromConfig).mockResolvedValue(mockMCPClient);
+
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockResolvedValueOnce({
           workingDirectory: '/project',
@@ -1161,13 +1175,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Re-establish MCP client mock after clearAllMocks
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1254,13 +1268,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Re-establish MCP client mock
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1355,13 +1369,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Re-establish MCP client mock
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1454,13 +1468,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Re-establish MCP client mock
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1557,13 +1571,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Set up MCP client mock
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1631,13 +1645,13 @@ describe('Start Command', () => {
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
         // Set up MCP client mock
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockMCPClient = {
           connect: vi.fn().mockResolvedValue(undefined),
           disconnect: vi.fn().mockResolvedValue(undefined),
           execute: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockMCPClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1727,13 +1741,13 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const mockClient = {
           connect: vi.fn(),
           disconnect: vi.fn().mockRejectedValue(new Error('Disconnect failed')),
           execute: vi.fn()
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockClient);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1843,7 +1857,7 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        const { createMCPClient } = await import('../../mcp/client.js');
+        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
         const { MCPError } = await import('../types.js');
         const mcpError = new MCPError('MCP connection failed', ['Check MCP server']);
 
@@ -1852,7 +1866,7 @@ describe('Start Command', () => {
           disconnect: vi.fn(),
           execute: vi.fn()
         };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
+        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockClient);
 
         const options: StartCommandOptions = {
           directory: '/project',

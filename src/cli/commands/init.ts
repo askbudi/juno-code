@@ -229,107 +229,564 @@ class SimpleProjectGenerator {
     const junoTaskDir = path.join(targetDirectory, '.juno_task');
     await fs.ensureDir(junoTaskDir);
 
-    console.log(chalk.blue('📄 Creating basic project files...'));
+    console.log(chalk.blue('📄 Creating production-ready project files...'));
 
-    // Create simple prompt.md
-    const promptContent = `# Main Task
+    // Create comprehensive prompt.md with production template
+    const promptContent = `0a. study @.juno_task/specs/* to learn about the specifications
 
-${variables.TASK}
+0b. The source code of the project is in ${targetDirectory}
 
-## Project Details
+0c. study @.juno_task/plan.md.
 
-**Project Name**: ${variables.PROJECT_NAME}
-**Preferred Subagent**: ${variables.EDITOR.charAt(0).toUpperCase() + variables.EDITOR.slice(1)}
-**Created Date**: ${variables.CURRENT_DATE}
-**Version**: ${variables.VERSION}
+0e. **ALWAYS check @USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
 
-## Next Steps
+1. Your task is to ${variables.TASK}
 
-1. Review the main task above
-2. Run \`juno-task start\` to begin execution
-3. Or run \`juno-task -s claude\` to use the main command
+Test the implementation under the virtual environment: ${targetDirectory}
 
-${variables.GIT_URL ? `\n## Git Repository\n${variables.GIT_URL}` : ''}
+Using parallel subagents. Follow the @.juno_task/plan.md and choose the most important 1 things. Before making changes search codebase (don't assume not implemented) using subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
+
+Explicitly inform build/tests subagent to activate virtual environment at: ${targetDirectory}
+
+2. After implementing functionality or resolving problems, run the tests for that unit of code that was improved. If functionality is missing then it's your job to add it as per the application specifications. Think hard.
+
+2. When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update @.juno_task/plan.md with your findings using a ${variables.EDITOR} subagent. When the issue is resolved, update @.juno_task/plan.md and remove the item using a ${variables.EDITOR} subagent.
+
+3. When the tests pass update the @.juno_task/plan.md, then add changed code and @.juno_task/plan.md with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
+
+999. Important: When authoring documentation capture the why tests and the backing implementation is important.
+
+9999. Important: We want single sources of truth, no migrations/adapters. If tests unrelated to your work fail then it's your job to resolve these tests as part of the increment of change.
+
+999999. As soon as there are no build or test errors create a git tag. If there are no git tags start at 0.0.0 and increment patch by 1 for example 0.0.1 if 0.0.0 does not exist.
+
+999999999. You may add extra logging if required to be able to debug the issues.
+
+9999999999. ALWAYS KEEP @.juno_task/plan.md up to date with your learnings using a ${variables.EDITOR} subagent. Especially after wrapping up/finishing your turn.
+
+99999999999. **CRITICAL**: At start of each iteration, read @USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @USER_FEEDBACK.md using a ${variables.EDITOR} subagent.
+
+99999999999. When you learn something new about how to run the app or examples make sure you update @CLAUDE.md using a ${variables.EDITOR} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
+
+999999999999. IMPORTANT when you discover a bug resolve it using ${variables.EDITOR} subagents even if it is unrelated to the current piece of work after documenting it in @.juno_task/plan.md
+
+9999999999999999999. Keep @CLAUDE.md up to date with information on how to build the app and your learnings to optimize the build/test loop using a ${variables.EDITOR} subagent.
+
+999999999999999999999. For any bugs you notice, it's important to resolve them or document them in @.juno_task/plan.md to be resolved using a ${variables.EDITOR} subagent.
+
+99999999999999999999999. When authoring the missing features you may author multiple standard libraries at once using up to 1000 parallel subagents
+
+99999999999999999999999999. When @.juno_task/plan.md becomes large periodically clean out the items that are completed from the file using a ${variables.EDITOR} subagent.
+
+99999999999999999999999999. If you find inconsistencies in the specs/* then use the oracle and then update the specs. Specifically around types and lexical tokens.
+
+9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
+
+9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @CLAUDE.md
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), promptContent);
 
-    // Create simple init.md
+    // Create comprehensive init.md with production template
     const initContent = `# Main Task
-
 ${variables.TASK}
 
-### Project Setup
+### Task 1
+First task is to study @.juno_task/plan.md  (it may be incorrect) and is to use up to 500 subagents to study existing project
+and study what is needed to achieve the main task.
+From that create/update a @.juno_task/plan.md  which is a bullet point list sorted in priority of the items which have yet to be implemeneted. Think extra hard.
+Study @.juno_task/plan.md to determine starting point for research and keep it up to date with items considered complete/incomplete using subagents.
 
-- **Project Name**: ${variables.PROJECT_NAME}
-- **Preferred Subagent**: ${variables.EDITOR.charAt(0).toUpperCase() + variables.EDITOR.slice(1)}
-- **Created Date**: ${variables.CURRENT_DATE}
+### Task 2
+Second Task is to understand the task, create a spec for process to follow, plan to execute, scripts to create, virtual enviroment that we need, things that we need to be aware of, how to test the scripts and follow progress.
+Think hard and plan/create spec for every step of this task
+and for each part create a seperate .md file under @.juno_task/spec/*
 
-### Getting Started
+## ULTIMATE Goal
+We want to achieve the main Task with respect to the Constraints section
+Consider missing steps and plan. If the step is missing then author the specification at @.juno_task/spec/FILENAME.md (do NOT assume that it does not exist, search before creating). The naming of the module should be GenZ named and not conflict with another module name. If you create a new step then document the plan to implement in @.juno_task/plan.md
 
-1. Review the main task above
-2. Use \`juno-task start\` to execute with this task
-3. Use \`juno-task -s claude\` for quick execution
+### Constraints
+**Preferred Subagent**: ${variables.EDITOR}
+**Repository URL**: ${variables.GIT_URL || 'Not specified'}
+
+## Environment Setup
+[Empty]
+
+### 2. Package Installation
+[Empty]
+
+### 3. Test Installation
+[Empty]
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);
 
-    // Create basic README.md in root
-    const readmeContent = `# ${variables.PROJECT_NAME}
+    // Create USER_FEEDBACK.md
+    const userFeedbackContent = `## Bug Reports
 
-${variables.DESCRIPTION}
+List any bugs you encounter here.
 
-## Getting Started
+Example:
+1. Bug description
+2. Steps to reproduce
+3. Expected vs actual behavior
 
-This project uses juno-task for AI-powered development.
+## Feature Requests
 
-### Prerequisites
+List any features you'd like to see added.
 
-- Node.js installed
-- juno-task CLI installed
+## Resolved
 
-### Quick Start
+Items that have been resolved will be moved here.
+`;
 
-\`\`\`bash
-# Start task execution
-juno-task start
+    await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), userFeedbackContent);
 
-# Or use main command
-juno-task -s claude
-\`\`\`
+    // Create plan.md
+    const planContent = `# Juno-Task Implementation Plan
 
-### Project Structure
+## 🎯 CURRENT PRIORITIES
+
+### 1. Study Existing Project
+Analyze current codebase and identify what needs to be implemented for the main task.
+
+### 2. Create Specifications
+Create detailed specifications for each component needed to achieve the main task.
+
+## 📋 TASK BREAKDOWN
+
+Items will be added here as we discover what needs to be implemented.
+
+## ✅ COMPLETED
+
+- Project initialization complete
+- Basic file structure created
+- Task defined: ${variables.TASK}
+`;
+
+    await fs.writeFile(path.join(junoTaskDir, 'plan.md'), planContent);
+
+    // Create specs directory and files
+    const specsDir = path.join(junoTaskDir, 'specs');
+    await fs.ensureDir(specsDir);
+
+    // Create specs/README.md
+    const specsReadmeContent = `# Project Specifications
+
+This directory contains detailed specifications for the project components.
+
+## Specification Files
+
+- \`requirements.md\` - Functional and non-functional requirements
+- \`architecture.md\` - System architecture and design decisions
+- Additional spec files will be added as needed
+
+## File Naming Convention
+
+- Use GenZ-style naming (descriptive, modern)
+- Avoid conflicts with existing file names
+- Use \`.md\` extension for all specification files
+`;
+
+    await fs.writeFile(path.join(specsDir, 'README.md'), specsReadmeContent);
+
+    // Create specs/requirements.md
+    const requirementsContent = `# Requirements Specification
+
+## Functional Requirements
+
+### Core Features
+- **FR1**: ${variables.TASK}
+- **FR2**: Automated testing and validation
+- **FR3**: Git integration and version control
+
+### User Stories
+- **US1**: As a developer, I want to have clear task instructions so that I can implement the solution effectively
+- **US2**: As a developer, I want to have automated workflows so that I can focus on implementation
+- **US3**: As a developer, I want to have proper documentation so that others can understand the project
+
+## Non-Functional Requirements
+
+### Performance Requirements
+- Response time: Fast execution for AI subagent interactions
+- Throughput: Handle multiple parallel subagent operations
+- Scalability: Scale to handle complex tasks with multiple components
+
+### Quality Requirements
+- Code quality: Clean, maintainable, and well-documented code
+- Testing: Comprehensive test coverage for all implemented features
+- Documentation: Clear documentation for all components and workflows
+
+## Constraints
+
+### Technical Constraints
+- Platform: Node.js/TypeScript environment
+- AI Subagents: Use ${variables.EDITOR} as primary subagent
+- Version Control: Git-based workflow with automated commits
+
+## Acceptance Criteria
+
+### Definition of Done
+- [ ] All functional requirements implemented
+- [ ] Tests passing for all implemented features
+- [ ] Documentation updated
+- [ ] Code review completed
+
+### Success Metrics
+- Task completion: Main task successfully implemented
+- Code quality: Clean, maintainable codebase
+- Documentation: Complete and accurate documentation
+`;
+
+    await fs.writeFile(path.join(specsDir, 'requirements.md'), requirementsContent);
+
+    // Create specs/architecture.md
+    const architectureContent = `# Architecture Specification
+
+## System Overview
+
+This project uses AI-assisted development with juno-task to achieve: ${variables.TASK}
+
+## Architectural Decisions
+
+### 1. AI-First Development
+- Use ${variables.EDITOR} as primary AI subagent
+- Parallel subagent processing for complex tasks
+- Automated workflow orchestration
+
+### 2. Template-Driven Development
+- Production-ready templates for project initialization
+- Comprehensive prompt templates for AI guidance
+- Structured specification templates
+
+### 3. Git-Integrated Workflow
+- Automated commit generation
+- Tag-based version management
+- Branch management for features
+
+## Technology Stack
+
+- **Language**: TypeScript
+- **Runtime**: Node.js
+- **CLI**: juno-task with AI subagent integration
+- **Version Control**: Git
+- **Documentation**: Markdown-based
+
+## Component Architecture
+
+### Core Components
+1. **Task Management**: Task definition and execution tracking
+2. **Specification Management**: Requirements and architecture documentation
+3. **AI Integration**: Subagent orchestration and communication
+4. **Version Control**: Automated Git workflow management
+
+### Data Flow
+1. Task definition → AI processing → Implementation
+2. Specifications → Development → Testing → Documentation
+3. Continuous feedback loop through USER_FEEDBACK.md
+
+## Quality Attributes
+
+### Performance
+- Fast AI subagent response times
+- Efficient parallel processing
+- Minimal overhead for workflow automation
+
+### Maintainability
+- Clear separation of concerns
+- Comprehensive documentation
+- Standardized templates and workflows
+
+### Scalability
+- Support for complex multi-component projects
+- Flexible AI subagent configuration
+- Extensible template system
+
+## Implementation Guidelines
+
+### Code Organization
+- Follow TypeScript best practices
+- Use meaningful naming conventions
+- Implement proper error handling
+- Maintain comprehensive test coverage
+
+### Documentation Standards
+- Keep specifications up to date
+- Document architectural decisions
+- Provide clear usage examples
+- Maintain change logs
+
+### Quality Assurance
+- Automated testing for all components
+- Code review process
+- Performance monitoring
+- Security best practices
+`;
+
+    await fs.writeFile(path.join(specsDir, 'architecture.md'), architectureContent);
+
+    // Create CLAUDE.md in project root
+    const claudeContent = `# Claude Development Session Learnings
+
+## Project Overview
+
+This project was initialized on ${variables.CURRENT_DATE} using juno-task.
+
+**Main Task**: ${variables.TASK}
+**Preferred Subagent**: ${variables.EDITOR}
+**Project Root**: ${targetDirectory}
+
+## Development Environment
+
+### Build System
+- Use \`npm run build\` to build the project
+- Test with \`npm test\` for unit tests
+- Use \`npm run test:binary\` for CLI testing
+
+### Key Commands
+- \`juno-task start\` - Begin task execution
+- \`juno-task -s ${variables.EDITOR}\` - Quick execution with preferred subagent
+- \`juno-task feedback\` - Provide feedback on the process
+
+## Project Structure
 
 \`\`\`
 .
 ├── .juno_task/
-│   ├── prompt.md     # Main task definition
-│   └── init.md       # Initialization details
-└── README.md         # This file
+│   ├── prompt.md          # Main task definition with AI instructions
+│   ├── init.md            # Initial task breakdown and constraints
+│   ├── plan.md            # Dynamic planning and priority tracking
+│   ├── USER_FEEDBACK.md   # User feedback and issue tracking
+│   └── specs/             # Project specifications
+│       ├── README.md      # Specs overview
+│       ├── requirements.md # Functional requirements
+│       └── architecture.md # System architecture
+├── CLAUDE.md              # This file - session documentation
+└── README.md              # Project overview
 \`\`\`
+
+## AI Workflow
+
+The project uses a sophisticated AI workflow with:
+
+1. **Task Analysis**: Study existing codebase and requirements
+2. **Specification Creation**: Detailed specs for each component
+3. **Implementation**: AI-assisted development with parallel subagents
+4. **Testing**: Automated testing and validation
+5. **Documentation**: Continuous documentation updates
+6. **Version Control**: Automated Git workflow management
+
+## Important Notes
+
+- Always check USER_FEEDBACK.md first for user input
+- Keep plan.md up to date with current priorities
+- Use up to 500 parallel subagents for analysis
+- Use only 1 subagent for build/test operations
+- Focus on full implementations, not placeholders
+- Maintain comprehensive documentation
+
+## Session Progress
+
+This file will be updated as development progresses to track:
+- Key decisions and their rationale
+- Important learnings and discoveries
+- Build/test optimization techniques
+- Solutions to complex problems
+- Performance improvements and optimizations
+`;
+
+    await fs.writeFile(path.join(targetDirectory, 'CLAUDE.md'), claudeContent);
+
+    // Create AGENTS.md in project root
+    const agentsContent = `# AI Agent Selection and Performance
+
+## Available Agents
+
+### ${variables.EDITOR.toUpperCase()} ✅ SELECTED
+**Status**: Primary agent for this project
+**Usage**: Main development and task execution
+**Strengths**: ${this.getAgentStrengths(variables.EDITOR)}
+**Best For**: ${this.getAgentBestFor(variables.EDITOR)}
+
+### CLAUDE ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Complex reasoning, analysis, documentation
+**Strengths**: Analytical thinking, detailed explanations
+**Best For**: Code analysis, architectural decisions, documentation
+
+### CURSOR ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Code generation, debugging, optimization
+**Strengths**: Code-centric development, debugging
+**Best For**: Feature implementation, bug fixes, code optimization
+
+### CODEX ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: General development, problem solving
+**Strengths**: Versatile development capabilities
+**Best For**: General purpose development tasks
+
+### GEMINI ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Creative solutions, alternative approaches
+**Strengths**: Creative problem solving, diverse perspectives
+**Best For**: Brainstorming, alternative implementations, creative solutions
+
+## Agent Selection Strategy
+
+### Primary Agent Selection
+- **${variables.EDITOR}** chosen as primary agent for this project
+- Based on task requirements and project needs
+- Can be changed by updating project configuration
+
+### Secondary Agent Usage
+- Use parallel agents for analysis and research
+- Specialized agents for specific task types
+- Load balancing for complex operations
+
+## Performance Tracking
+
+Track agent performance for:
+- Task completion time
+- Code quality
+- Accuracy of implementation
+- Documentation quality
+- Problem-solving effectiveness
+
+## Optimization Tips
+
+1. **Right Agent for Right Task**: Choose agents based on their strengths
+2. **Parallel Processing**: Use multiple agents for analysis phases
+3. **Quality Validation**: Review and validate agent output
+4. **Feedback Loop**: Provide feedback to improve agent performance
+5. **Performance Monitoring**: Track and optimize agent usage
+`;
+
+    await fs.writeFile(path.join(targetDirectory, 'AGENTS.md'), agentsContent);
+
+    // Create enhanced README.md in root
+    const readmeContent = `# ${variables.PROJECT_NAME}
+
+${variables.DESCRIPTION}
+
+## Overview
+
+This project uses juno-task for AI-powered development with ${variables.EDITOR} as the primary AI subagent.
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js (v18 or higher)
+- juno-task CLI installed
+- Git for version control
+
+### Quick Start
+
+\`\`\`bash
+# Start task execution with production-ready AI instructions
+juno-task start
+
+# Or use main command with preferred subagent
+juno-task -s ${variables.EDITOR}
+
+# Provide feedback on the development process
+juno-task feedback
+\`\`\`
+
+## Project Structure
+
+\`\`\`
+.
+├── .juno_task/
+│   ├── prompt.md          # Production-ready AI instructions
+│   ├── init.md            # Task breakdown and constraints
+│   ├── plan.md            # Dynamic planning and tracking
+│   ├── USER_FEEDBACK.md   # User feedback and issue tracking
+│   └── specs/             # Comprehensive specifications
+│       ├── README.md      # Specs overview and guide
+│       ├── requirements.md # Detailed functional requirements
+│       └── architecture.md # System architecture and design
+├── CLAUDE.md              # Session documentation and learnings
+├── AGENTS.md              # AI agent selection and performance tracking
+└── README.md              # This file
+\`\`\`
+
+## AI-Powered Development
+
+This project implements a sophisticated AI development workflow:
+
+1. **Task Analysis**: AI studies existing codebase and requirements
+2. **Specification Creation**: Detailed specs with parallel subagents
+3. **Implementation**: AI-assisted development (up to 500 parallel agents)
+4. **Testing**: Automated testing with dedicated subagents
+5. **Documentation**: Continuous documentation updates
+6. **Version Control**: Automated Git workflow with smart commits
+
+## Key Features
+
+- **Production-Ready Templates**: Comprehensive templates for AI guidance
+- **Parallel Processing**: Up to 500 parallel subagents for analysis
+- **Automated Workflows**: Git integration, tagging, and documentation
+- **Quality Enforcement**: Strict requirements against placeholder implementations
+- **User Feedback Integration**: Continuous feedback loop via USER_FEEDBACK.md
+- **Session Management**: Detailed tracking of development sessions
 
 ## Configuration
 
-The project uses \`${variables.EDITOR}\` as the preferred editor.
+The project uses \`${variables.EDITOR}\` as the primary AI subagent with these settings:
+- **Parallel Agents**: Up to 500 for analysis, 1 for build/test
+- **Quality Standards**: Full implementations required
+- **Documentation**: Comprehensive and up-to-date
+- **Version Control**: Automated Git workflow
 
 ${variables.GIT_URL ? `\n## Repository\n${variables.GIT_URL}` : ''}
+
+## Development Workflow
+
+1. **Review Task**: Check \`.juno_task/init.md\` for main task
+2. **Check Plan**: Review \`.juno_task/plan.md\` for current priorities
+3. **Provide Feedback**: Use \`juno-task feedback\` for issues or suggestions
+4. **Track Progress**: Monitor AI development through \`.juno_task/prompt.md\`
 
 ---
 
 Created with juno-task on ${variables.CURRENT_DATE}
+${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 `;
 
     await fs.writeFile(path.join(targetDirectory, 'README.md'), readmeContent);
 
     console.log(chalk.green.bold('\n✅ Project initialization complete!'));
-    this.printNextSteps(targetDirectory);
+    this.printNextSteps(targetDirectory, variables.EDITOR);
   }
 
-  private printNextSteps(targetDirectory: string): void {
+  private getAgentStrengths(agent: string): string {
+    const strengths = {
+      claude: 'Analytical thinking, detailed explanations, architectural decisions',
+      cursor: 'Code-centric development, debugging, optimization',
+      codex: 'Versatile development capabilities, general purpose tasks',
+      gemini: 'Creative problem solving, diverse perspectives'
+    };
+    return strengths[agent as keyof typeof strengths] || 'General AI assistance';
+  }
+
+  private getAgentBestFor(agent: string): string {
+    const bestFor = {
+      claude: 'Code analysis, architectural decisions, documentation',
+      cursor: 'Feature implementation, bug fixes, code optimization',
+      codex: 'General purpose development tasks',
+      gemini: 'Brainstorming, alternative implementations, creative solutions'
+    };
+    return bestFor[agent as keyof typeof bestFor] || 'General development tasks';
+  }
+
+  private printNextSteps(targetDirectory: string, editor: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
     console.log(chalk.white('   juno-task start           # Start task execution'));
-    console.log(chalk.white('   juno-task -s claude       # Quick execution with Claude'));
+    console.log(chalk.white(`   juno-task -s ${editor}       # Quick execution with ${editor}`));
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
     console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));

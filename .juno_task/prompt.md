@@ -6,13 +6,13 @@
 
 0e. **ALWAYS check @USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
 
-1. Your task is to Define your main task objective here
+1. Your task is to Build a comprehensive testing framework
 
-Test the implementation under the virtual environment: /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.venv
+Test the implementation under the virtual environment: /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts
 
 Using parallel subagents. Follow the @.juno_task/plan.md and choose the most important 1 things. Before making changes search codebase (don't assume not implemented) using subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
 
-Explicitly inform build/tests subagent to activate virtual environment at: /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.venv
+Explicitly inform build/tests subagent to activate virtual environment at: /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts
 
 2. After implementing functionality or resolving problems, run the tests for that unit of code that was improved. If functionality is missing then it's your job to add it as per the application specifications. Think hard.
 
@@ -30,7 +30,7 @@ Explicitly inform build/tests subagent to activate virtual environment at: /User
 
 9999999999. ALWAYS KEEP @.juno_task/plan.md up to date with your learnings using a claude subagent. Especially after wrapping up/finishing your turn.
 
-99999999999. **CRITICAL**: At start of each iteration, read @USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from USER_FEEDBACK.md using a claude subagent.
+99999999999. **CRITICAL**: At start of each iteration, read @USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @USER_FEEDBACK.md using a claude subagent.
 
 99999999999. When you learn something new about how to run the app or examples make sure you update @CLAUDE.md using a claude subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
 

@@ -2,114 +2,79 @@
 
 ## System Overview
 
-### Purpose
-System purpose to be defined
-
-### Scope
-System scope to be defined
-
-### Key Stakeholders
-- Development Team: Role description to be defined
-- Product Owner: Role description to be defined
-- End Users: Role description to be defined
+This project uses AI-assisted development with juno-task to achieve: Build a comprehensive testing framework
 
 ## Architectural Decisions
 
-### Architecture Style
-- **Pattern**: Modular architecture (e.g., Microservices, Monolith, Layered)
-- **Rationale**: Architecture rationale to be defined
+### 1. AI-First Development
+- Use claude as primary AI subagent
+- Parallel subagent processing for complex tasks
+- Automated workflow orchestration
 
-### Technology Stack
-- **Frontend**: TypeScript CLI
-- **Backend**: Node.js
-- **Database**: File-based storage
-- **Infrastructure**: Local development
+### 2. Template-Driven Development
+- Production-ready templates for project initialization
+- Comprehensive prompt templates for AI guidance
+- Structured specification templates
 
-## System Architecture
+### 3. Git-Integrated Workflow
+- Automated commit generation
+- Tag-based version management
+- Branch management for features
 
-### High-Level Components
-```
-[Component Diagram - Replace with actual diagram]
+## Technology Stack
 
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Frontend  │────│   Backend   │────│  Database   │
-└─────────────┘    └─────────────┘    └─────────────┘
-```
+- **Language**: TypeScript
+- **Runtime**: Node.js
+- **CLI**: juno-task with AI subagent integration
+- **Version Control**: Git
+- **Documentation**: Markdown-based
 
-### Component Descriptions
-- **Frontend**: Command-line interface
-- **Backend**: Core application logic
-- **Database**: Configuration and data storage
+## Component Architecture
 
-## Detailed Design
+### Core Components
+1. **Task Management**: Task definition and execution tracking
+2. **Specification Management**: Requirements and architecture documentation
+3. **AI Integration**: Subagent orchestration and communication
+4. **Version Control**: Automated Git workflow management
 
-### Data Architecture
-- **Data Models**: Data model to be defined
-- **Persistence Strategy**: File-based persistence
-- **Data Flow**: Data flow to be defined
-
-### API Design
-- **API Style**: Internal APIs (REST, GraphQL, gRPC)
-- **Authentication**: Local authentication
-- **Rate Limiting**: No rate limiting required
-
-### Security Architecture
-- **Authentication Flow**: Local authentication flow
-- **Authorization Model**: Simple authorization model
-- **Data Protection**: Local data protection
-
-## Infrastructure
-
-### Deployment Architecture
-- **Environment Strategy**: Local deployment
-- **Container Strategy**: No containerization initially
-- **Orchestration**: Local orchestration
-
-### Monitoring and Logging
-- **Application Monitoring**: Console logging
-- **Log Aggregation**: File-based logging
-- **Alerting**: Console alerts
-
-### Backup and Recovery
-- **Backup Strategy**: Version control backup
-- **Recovery Time Objective**: 1 hour
-- **Recovery Point Objective**: 1 hour
+### Data Flow
+1. Task definition → AI processing → Implementation
+2. Specifications → Development → Testing → Documentation
+3. Continuous feedback loop through USER_FEEDBACK.md
 
 ## Quality Attributes
 
 ### Performance
-- **Response Time Targets**: Sub-second response
-- **Throughput Requirements**: Single user initially
-- **Scalability Strategy**: Horizontal scaling future
+- Fast AI subagent response times
+- Efficient parallel processing
+- Minimal overhead for workflow automation
 
-### Reliability
-- **Availability Target**: 99.9
-- **Fault Tolerance**: Graceful error handling
-- **Disaster Recovery**: Version control recovery
+### Maintainability
+- Clear separation of concerns
+- Comprehensive documentation
+- Standardized templates and workflows
 
-### Security
-- **Threat Model**: Local threat model
-- **Security Controls**: Input validation
-- **Compliance Requirements**: No specific compliance initially
+### Scalability
+- Support for complex multi-component projects
+- Flexible AI subagent configuration
+- Extensible template system
 
-## Implementation Considerations
+## Implementation Guidelines
 
-### Development Guidelines
-- **Coding Standards**: TypeScript strict mode
-- **Testing Strategy**: Unit and integration tests
-- **Documentation Requirements**: Comprehensive documentation
+### Code Organization
+- Follow TypeScript best practices
+- Use meaningful naming conventions
+- Implement proper error handling
+- Maintain comprehensive test coverage
 
-### Migration Strategy
-- **Data Migration**: No migration initially
-- **System Migration**: No migration initially
-- **Rollback Plan**: Version control rollback
+### Documentation Standards
+- Keep specifications up to date
+- Document architectural decisions
+- Provide clear usage examples
+- Maintain change logs
 
-## Risks and Mitigations
-
-### Technical Risks
-- **Risk 1**: Risk to be identified → Mitigation: Mitigation strategy to be defined
-- **Risk 2**: Risk to be identified → Mitigation: Mitigation strategy to be defined
-
-### Operational Risks
-- **Risk 1**: Risk to be identified → Mitigation: Mitigation strategy to be defined
-- **Risk 2**: Risk to be identified → Mitigation: Mitigation strategy to be defined
+### Quality Assurance
+- Automated testing for all components
+- Code review process
+- Performance monitoring
+- Security best practices

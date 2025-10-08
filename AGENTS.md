@@ -1,78 +1,62 @@
-# Available Coding Agents
+# AI Agent Selection and Performance
 
-## Currently Selected Agent: claude
+## Available Agents
 
-## Agent Comparison
+### CLAUDE ✅ SELECTED
+**Status**: Primary agent for this project
+**Usage**: Main development and task execution
+**Strengths**: Analytical thinking, detailed explanations, architectural decisions
+**Best For**: Code analysis, architectural decisions, documentation
 
-### Claude (Anthropic)
-- **Strengths:** Excellent code quality, strong reasoning, comprehensive documentation
-- **Best For:** Complex problem solving, refactoring, architectural decisions
-- **Model Options:** Claude-3-sonnet, Claude-3-opus
-- **Selection Status:** ✅ SELECTED
+### CLAUDE ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Complex reasoning, analysis, documentation
+**Strengths**: Analytical thinking, detailed explanations
+**Best For**: Code analysis, architectural decisions, documentation
 
-### Cursor (Cursor.sh)
-- **Strengths:** IDE integration, real-time collaboration, fast iterations
-- **Best For:** Interactive development, rapid prototyping, code completion
-- **Model Options:** GPT-4, Claude integration
-- **Selection Status:** ⭕ Available
+### CURSOR ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Code generation, debugging, optimization
+**Strengths**: Code-centric development, debugging
+**Best For**: Feature implementation, bug fixes, code optimization
 
-### Codex (GitHub Copilot)
-- **Strengths:** Code generation, pattern recognition, language versatility
-- **Best For:** Boilerplate code, common patterns, multi-language projects
-- **Model Options:** Codex, GPT-4 variants
-- **Selection Status:** ⭕ Available
+### CODEX ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: General development, problem solving
+**Strengths**: Versatile development capabilities
+**Best For**: General purpose development tasks
 
-### Gemini (Google)
-- **Strengths:** Multimodal capabilities, large context windows, research integration
-- **Best For:** Data analysis, ML projects, research-oriented tasks
-- **Model Options:** Gemini-pro, Gemini-ultra
-- **Selection Status:** ⭕ Available
+### GEMINI ⭕ Available
+**Status**: Available as secondary agent
+**Usage**: Creative solutions, alternative approaches
+**Strengths**: Creative problem solving, diverse perspectives
+**Best For**: Brainstorming, alternative implementations, creative solutions
 
-## Agent Selection Guidelines
+## Agent Selection Strategy
 
-### Task-Based Recommendations:
+### Primary Agent Selection
+- **claude** chosen as primary agent for this project
+- Based on task requirements and project needs
+- Can be changed by updating project configuration
 
-**Complex Architecture & Design:**
-- Primary: Claude (excellent reasoning)
-- Secondary: Gemini (large context)
+### Secondary Agent Usage
+- Use parallel agents for analysis and research
+- Specialized agents for specific task types
+- Load balancing for complex operations
 
-**Rapid Development & Prototyping:**
-- Primary: Cursor (real-time feedback)
-- Secondary: Codex (fast generation)
+## Performance Tracking
 
-**Data Science & ML:**
-- Primary: Gemini (multimodal, research focus)
-- Secondary: Claude (analytical depth)
+Track agent performance for:
+- Task completion time
+- Code quality
+- Accuracy of implementation
+- Documentation quality
+- Problem-solving effectiveness
 
-**Legacy Code & Refactoring:**
-- Primary: Claude (comprehensive analysis)
-- Secondary: Cursor (IDE integration)
+## Optimization Tips
 
-## Switching Agents
-
-To change the selected coding agent, run:
-```bash
-juno-task init --subagent <agent_name>
-```
-
-Available agent names: `claude`, `cursor`, `codex`, `gemini`
-
-## Agent Performance Tracking
-
-### claude Performance Metrics:
-- **Tasks Completed:** 0
-- **Success Rate:** N/A
-- **Average Completion Time:** N/A
-- **Code Quality Score:** N/A
-
-*Note: Metrics will be updated as tasks are completed*
-
-## Configuration History
-
-| Date | Previous Agent | New Agent | Reason |
-|------|---------------|-----------|---------|
-| 2025-10-07 | None | claude | Initial project setup |
-
----
-*Last updated: 2025-10-07*
-*Current configuration: claude agent selected*
+1. **Right Agent for Right Task**: Choose agents based on their strengths
+2. **Parallel Processing**: Use multiple agents for analysis phases
+3. **Quality Validation**: Review and validate agent output
+4. **Feedback Loop**: Provide feedback to improve agent performance
+5. **Performance Monitoring**: Track and optimize agent usage

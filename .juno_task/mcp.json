@@ -7,7 +7,7 @@
         "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/roundtable_mcp_server/roundtable_mcp_server/server.py"
       ],
       "timeout": 3600.0,
-      "enable_default_progress_callback": false,
+      "enable_default_progress_callback": true,
       "suppress_subprocess_logs": true,
       "env": {
         "PYTHONPATH": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
