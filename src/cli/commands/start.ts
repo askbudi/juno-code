@@ -17,7 +17,7 @@ import { createMCPClient } from '../../mcp/client.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, mcpLogger, engineLogger, sessionLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { StartCommandOptions } from '../types.js';
-import { ConfigurationError, MCPError, FileSystemError } from '../types.js';
+import { ConfigurationError, MCPError, FileSystemError, ValidationError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
 import type {
   ExecutionRequest,
@@ -544,10 +544,25 @@ export async function startCommandHandler(
       console.log(chalk.gray(`   Git: ${gitInfo.branch || 'unknown'}${gitInfo.url ? ` (${gitInfo.url})` : ''}${gitInfo.commit ? ` @ ${gitInfo.commit}` : ''}`));
     }
 
-    // Create execution request
+    // Validate subagent if provided via command line
+    if (options.subagent) {
+      const validSubagents: SubagentType[] = ['claude', 'cursor', 'codex', 'gemini'];
+      if (!validSubagents.includes(options.subagent)) {
+        throw new ValidationError(
+          `Invalid subagent: ${options.subagent}`,
+          [
+            `Use one of: ${validSubagents.join(', ')}`,
+            'Run `juno-task help start` for examples'
+          ]
+        );
+      }
+    }
+
+    // Create execution request with subagent override
+    const selectedSubagent = options.subagent || config.defaultSubagent;
     const executionRequest = createExecutionRequest({
       instruction,
-      subagent: config.defaultSubagent,
+      subagent: selectedSubagent,
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations || config.defaultMaxIterations,
       model: options.model || config.defaultModel
@@ -672,6 +687,7 @@ export function configureStartCommand(program: Command): void {
   program
     .command('start')
     .description('Start execution using .juno_task/init.md as prompt')
+    .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
     .option('-d, --directory <path>', 'Project directory (default: current)')
@@ -691,7 +707,9 @@ export function configureStartCommand(program: Command): void {
     .addHelpText('after', `
 Examples:
   $ juno-task start                                   # Start execution in current directory
-  $ juno-task start --max-iterations 10              # Limit to 10 iterations
+  $ juno-task start -s claude                        # Use claude subagent
+  $ juno-task start --subagent cursor                # Use cursor subagent
+  $ juno-task start -s codex --max-iterations 10     # Use codex with 10 iterations
   $ juno-task start --model sonnet-4                 # Use specific model
   $ juno-task start --directory ./my-project         # Execute in specific directory
   $ juno-task start --verbose                        # Show detailed progress

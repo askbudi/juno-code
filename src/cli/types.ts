@@ -159,6 +159,8 @@ export interface InitCommandOptions extends GlobalCLIOptions {
  * Start command options
  */
 export interface StartCommandOptions extends GlobalCLIOptions {
+  /** Subagent to use (optional override of config default) */
+  subagent?: SubagentType;
   /** Maximum iterations */
   maxIterations?: number;
   /** Model to use */

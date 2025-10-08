@@ -60,15 +60,23 @@ class PromptProcessor {
       if (this.options.interactive) {
         return await this.collectInteractivePrompt();
       } else {
-        throw new ValidationError(
-          'Prompt is required for execution',
-          [
-            'Provide prompt text: juno-task claude "your prompt here"',
-            'Use file input: juno-task claude prompt.txt',
-            'Use interactive mode: juno-task claude --interactive',
-            'Use TUI editor: juno-task claude --interactive-prompt'
-          ]
-        );
+        // Try default prompt file: .juno_task/prompt.md
+        const defaultPromptPath = path.join(process.cwd(), '.juno_task', 'prompt.md');
+        if (await fs.pathExists(defaultPromptPath)) {
+          console.log(chalk.blue(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
+          return await this.loadPromptFromFile(defaultPromptPath);
+        } else {
+          throw new ValidationError(
+            'Prompt is required for execution',
+            [
+              'Provide prompt text: juno-task claude "your prompt here"',
+              'Use file input: juno-task claude prompt.txt',
+              'Use interactive mode: juno-task claude --interactive',
+              'Use TUI editor: juno-task claude --interactive-prompt',
+              'Create default prompt file: .juno_task/prompt.md'
+            ]
+          );
+        }
       }
     }
 
