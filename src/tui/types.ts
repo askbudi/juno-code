@@ -373,6 +373,16 @@ export interface PromptEditorProps extends TUIComponentProps {
   enableSyntaxHighlighting?: boolean;
   /** Maximum prompt length */
   maxLength?: number;
+  /** Template variables for highlighting and completion */
+  templateVariables?: Record<string, any>;
+  /** Whether to show real-time preview */
+  showPreview?: boolean;
+  /** Whether to show token count estimation */
+  showTokenCount?: boolean;
+  /** Target AI model for token estimation */
+  targetModel?: 'gpt-4' | 'claude-3' | 'gemini';
+  /** Whether to show prompt analysis */
+  showAnalysis?: boolean;
 }
 
 /**
@@ -391,6 +401,140 @@ export interface PromptEditorState {
   currentLine: number;
   /** Total lines */
   totalLines: number;
+  /** Current token count estimate */
+  tokenCount?: TokenEstimate;
+  /** Current prompt analysis */
+  analysis?: PromptAnalysis;
+  /** Template preview text */
+  previewText?: string;
+}
+
+/**
+ * Template variable information
+ */
+export interface TemplateVariable {
+  /** Variable name */
+  name: string;
+  /** Variable type */
+  type: 'string' | 'number' | 'boolean' | 'array';
+  /** Whether variable is required */
+  required: boolean;
+  /** Default value */
+  default?: any;
+  /** Variable description */
+  description?: string;
+  /** Current value */
+  value?: any;
+}
+
+/**
+ * Token count estimation
+ */
+export interface TokenEstimate {
+  /** Estimated token count */
+  count: number;
+  /** Whether estimate is approximate */
+  approximate: boolean;
+  /** Estimated cost if available */
+  costEstimate?: number;
+  /** Model used for estimation */
+  model: string;
+}
+
+/**
+ * Prompt structure analysis
+ */
+export interface PromptAnalysis {
+  /** Overall quality score (0-100) */
+  qualityScore: number;
+  /** Structure analysis */
+  structure: StructureAnalysis;
+  /** Clarity analysis */
+  clarity: ClarityAnalysis;
+  /** Completeness analysis */
+  completeness: CompletenessAnalysis;
+  /** Optimization suggestions */
+  suggestions: PromptSuggestion[];
+}
+
+/**
+ * Prompt structure analysis
+ */
+export interface StructureAnalysis {
+  /** Whether prompt has clear structure */
+  hasClearStructure: boolean;
+  /** Whether prompt has context section */
+  hasContext: boolean;
+  /** Whether prompt has task definition */
+  hasTask: boolean;
+  /** Whether prompt has constraints */
+  hasConstraints: boolean;
+  /** Whether prompt has examples */
+  hasExamples: boolean;
+  /** Structure score (0-100) */
+  score: number;
+}
+
+/**
+ * Prompt clarity analysis
+ */
+export interface ClarityAnalysis {
+  /** Average sentence length */
+  avgSentenceLength: number;
+  /** Number of ambiguous words */
+  ambiguousWordCount: number;
+  /** Passive voice ratio */
+  passiveVoiceRatio: number;
+  /** Clarity score (0-100) */
+  clarityScore: number;
+}
+
+/**
+ * Prompt completeness analysis
+ */
+export interface CompletenessAnalysis {
+  /** Whether prompt defines the task clearly */
+  hasTaskDefinition: boolean;
+  /** Whether prompt provides sufficient context */
+  hasContext: boolean;
+  /** Whether prompt specifies output format */
+  hasOutputFormat: boolean;
+  /** Whether prompt includes examples */
+  hasExamples: boolean;
+  /** Completeness score (0-100) */
+  score: number;
+}
+
+/**
+ * Prompt optimization suggestion
+ */
+export interface PromptSuggestion {
+  /** Suggestion type */
+  type: 'structure' | 'clarity' | 'completeness' | 'efficiency' | 'specificity';
+  /** Suggestion message */
+  message: string;
+  /** Detailed suggestion */
+  suggestion: string;
+  /** Priority level */
+  priority: 'low' | 'medium' | 'high';
+  /** Line number if applicable */
+  lineNumber?: number;
+}
+
+/**
+ * Syntax highlighting token
+ */
+export interface SyntaxToken {
+  /** Token text */
+  text: string;
+  /** Token type for styling */
+  type: 'variable' | 'keyword' | 'string' | 'comment' | 'url' | 'path' | 'code' | 'plain';
+  /** Start position in text */
+  start: number;
+  /** End position in text */
+  end: number;
+  /** Whether token is valid (for variables) */
+  isValid?: boolean;
 }
 
 // ============================================================================

@@ -5,7 +5,7 @@
  * line numbers, and advanced editing features. Integrates with --interactive-prompt.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { TUIApp } from './TUIApp.js';
 import { Input } from '../components/Input.js';
@@ -13,7 +13,22 @@ import { Dialog } from '../components/Dialog.js';
 import { useTUIContext } from '../apps/TUIApp.js';
 import { useKeyboard, useNavigationKeys } from '../hooks/useKeyboard.js';
 import { useTUIState } from '../hooks/useTUIState.js';
-import type { PromptEditorProps, PromptEditorState } from '../types.js';
+import type {
+  PromptEditorProps,
+  PromptEditorState,
+  TokenEstimate,
+  PromptAnalysis
+} from '../types.js';
+
+// Import new utility modules
+import {
+  extractTemplateVariables,
+  substituteTemplateVariables,
+  validateTemplateVariables
+} from '../utils/templateVariables.js';
+import { estimateTokenCount, formatTokenDisplay } from '../utils/tokenEstimator.js';
+import { analyzePrompt, formatAnalysisSummary } from '../utils/promptAnalyzer.js';
+import { highlightLine, parseAllTokens } from '../utils/syntaxHighlighter.js';
 
 /**
  * Internal prompt editor component that uses TUI context
@@ -25,6 +40,11 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
   showHelp = true,
   enableSyntaxHighlighting = false,
   maxLength = 10000,
+  templateVariables = {},
+  showPreview = false,
+  showTokenCount = true,
+  targetModel = 'gpt-4',
+  showAnalysis = false,
   testId
 }) => {
   const { theme, dimensions } = useTUIContext();
@@ -47,6 +67,29 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
   const [showingHelp, setShowingHelp] = useState(false);
   const [showConfirmExit, setShowConfirmExit] = useState(false);
   const [viewportStart, setViewportStart] = useState(0);
+  const [showingPreview, setShowingPreview] = useState(false);
+  const [showingAnalysis, setShowingAnalysis] = useState(false);
+  const [showingVariables, setShowingVariables] = useState(false);
+
+  // Advanced features state
+  const tokenEstimate = useMemo(() => {
+    if (!showTokenCount) return undefined;
+    return estimateTokenCount(text, targetModel);
+  }, [text, targetModel, showTokenCount]);
+
+  const promptAnalysis = useMemo(() => {
+    if (!showAnalysis) return undefined;
+    return analyzePrompt(text);
+  }, [text, showAnalysis]);
+
+  const previewText = useMemo(() => {
+    if (!showPreview) return undefined;
+    return substituteTemplateVariables(text, templateVariables);
+  }, [text, templateVariables, showPreview]);
+
+  const templateVariableErrors = useMemo(() => {
+    return validateTemplateVariables(text, templateVariables);
+  }, [text, templateVariables]);
 
   // Split text into lines
   const lines = text.split('\n');
@@ -119,8 +162,10 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
 
       // Handle special keys
       if (key === 'return') {
-        // Enter adds new line (standard multiline behavior)
-        insertText('\n');
+        // Enter submits the prompt (user-friendly behavior)
+        if (text.trim()) {
+          onSubmit(text);
+        }
         return;
       }
 
@@ -201,11 +246,6 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
           case 'j': // Ctrl+J adds new line (alternative method)
             insertText('\n');
             return;
-          case 'return': // Ctrl+Enter submits (user expectation)
-            if (text.trim()) {
-              onSubmit(text);
-            }
-            return;
           case 'z': // Undo (not implemented yet)
             return;
           case 'y': // Redo (not implemented yet)
@@ -227,8 +267,11 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
       {
         key: 'escape',
         handler: () => {
-          if (showingHelp) {
+          if (showingHelp || showingPreview || showingAnalysis || showingVariables) {
             setShowingHelp(false);
+            setShowingPreview(false);
+            setShowingAnalysis(false);
+            setShowingVariables(false);
           } else if (isDirty) {
             setShowConfirmExit(true);
           } else {
@@ -239,6 +282,18 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
       {
         key: 'f1',
         handler: () => setShowingHelp(true)
+      },
+      {
+        key: 'f2',
+        handler: () => showPreview && setShowingPreview(!showingPreview)
+      },
+      {
+        key: 'f3',
+        handler: () => showAnalysis && setShowingAnalysis(!showingAnalysis)
+      },
+      {
+        key: 'f4',
+        handler: () => setShowingVariables(!showingVariables)
       },
       {
         key: 'ctrl+s',
@@ -263,20 +318,50 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
 
   return (
     <>
-      {/* Header */}
-      <Box marginBottom={1} justifyContent="space-between">
-        <Box>
-          <Text color={theme.text}>
-            Line {currentLineIndex + 1}, Column {currentColumnIndex + 1}
-          </Text>
+      {/* Modern Header */}
+      <Box
+        flexDirection="column"
+        marginBottom={1}
+        paddingX={1}
+        paddingY={1}
+        borderStyle="round"
+        borderColor={theme.primary}
+      >
+        <Box justifyContent="space-between" marginBottom={1}>
+          <Box flexDirection="row" gap={2}>
+            <Text color={theme.primary} bold>📝 Prompt Editor</Text>
+            <Text color={theme.muted}>
+              {currentLineIndex + 1}:{currentColumnIndex + 1}
+            </Text>
+          </Box>
+          <Box flexDirection="row" gap={1}>
+            <Text color={isDirty ? theme.warning : theme.success}>
+              {isDirty ? '● UNSAVED' : '✓ SAVED'}
+            </Text>
+          </Box>
         </Box>
-        <Box>
-          <Text color={isDirty ? theme.warning : theme.muted}>
-            {isDirty ? '(modified)' : '(saved)'}
-          </Text>
-          <Text color={theme.muted}> | </Text>
+
+        <Box justifyContent="space-between">
+          <Box flexDirection="row" gap={2}>
+            {templateVariableErrors.length > 0 && (
+              <Text color={theme.error}>
+                ⚠ {templateVariableErrors.length} variable error{templateVariableErrors.length > 1 ? 's' : ''}
+              </Text>
+            )}
+            {tokenEstimate && (
+              <Text color={theme.muted}>
+                {formatTokenDisplay(tokenEstimate)}
+              </Text>
+            )}
+            {promptAnalysis && (
+              <Text color={promptAnalysis.qualityScore >= 80 ? theme.success :
+                            promptAnalysis.qualityScore >= 60 ? theme.warning : theme.error}>
+                Quality: {promptAnalysis.qualityScore}%
+              </Text>
+            )}
+          </Box>
           <Text color={theme.muted}>
-            {text.length}/{maxLength} chars
+            {text.length}/{maxLength} characters
           </Text>
         </Box>
       </Box>
@@ -284,10 +369,12 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
       {/* Editor area */}
       <Box
         flexDirection="column"
-        borderStyle="round"
-        borderColor={theme.primary}
+        borderStyle="double"
+        borderColor={isDirty ? theme.warning : theme.primary}
         width="100%"
         minHeight={editorHeight + 2}
+        paddingX={1}
+        backgroundColor={undefined}
       >
         {visibleLines.map((line, index) => {
           const actualLineIndex = viewportStart + index;
@@ -312,17 +399,27 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
           }
 
           return (
-            <Box key={actualLineIndex}>
-              {/* Line number */}
-              <Text color={theme.muted} width={lineNumberWidth}>
+            <Box key={actualLineIndex} marginY={0}>
+              {/* Line number with modern styling */}
+              <Text
+                color={isCurrentLine ? theme.primary : theme.muted}
+                width={lineNumberWidth}
+                backgroundColor={isCurrentLine ? undefined : undefined}
+              >
                 {String(actualLineIndex + 1).padStart(lineNumberWidth - 1, ' ')}
+                {isCurrentLine ? '►' : ' '}
               </Text>
 
-              {/* Line content */}
-              <Text color={isCurrentLine ? theme.text : theme.muted}>
-                {enableSyntaxHighlighting ? highlightSyntax(displayLine) : displayLine}
+              {/* Line content with enhanced styling */}
+              <Text
+                color={isCurrentLine ? theme.text : theme.muted}
+                backgroundColor={isCurrentLine ? undefined : undefined}
+              >
+                {enableSyntaxHighlighting ?
+                  highlightLine(displayLine, 0, templateVariables) :
+                  displayLine}
                 {isCurrentLine && (
-                  <Text inverse>{cursorChar}</Text>
+                  <Text inverse backgroundColor={theme.primary}>{cursorChar}</Text>
                 )}
               </Text>
             </Box>
@@ -331,25 +428,82 @@ const PromptEditorInternal: React.FC<PromptEditorProps> = ({
 
         {/* Empty editor message - only show if no lines are displayed */}
         {visibleLines.length === 0 && (
-          <Box justifyContent="center" alignItems="center" height={Math.max(5, editorHeight)}>
-            <Text color={theme.muted}>Start typing your prompt...</Text>
+          <Box justifyContent="center" alignItems="center" height={Math.max(5, editorHeight)} flexDirection="column">
+            <Text color={theme.primary} bold>✨ Ready to Create</Text>
+            <Text color={theme.muted}>Start typing your prompt here...</Text>
+            <Text color={theme.muted}>Press <Text color={theme.success}>Enter</Text> to submit or <Text color={theme.success}>Ctrl+J</Text> for new lines</Text>
           </Box>
         )}
       </Box>
 
-      {/* Footer */}
-      <Box marginTop={1} justifyContent="space-between">
-        <Box>
+      {/* Modern Footer */}
+      <Box
+        marginTop={1}
+        paddingX={1}
+        paddingY={1}
+        borderStyle="single"
+        borderColor={theme.muted}
+        justifyContent="space-between"
+      >
+        <Box flexDirection="column">
+          <Text color={theme.primary} bold>Quick Keys:</Text>
           <Text color={theme.muted}>
-            Enter for new line • Ctrl+Enter or Ctrl+S to submit • Ctrl+J alternative new line • ESC to cancel • F1 for help
+            <Text color={theme.success}>Enter</Text> submit • <Text color={theme.success}>Ctrl+J</Text> new line • <Text color={theme.success}>Ctrl+S</Text> save • <Text color={theme.success}>ESC</Text> cancel
           </Text>
+          {(showPreview || showAnalysis) && (
+            <Text color={theme.muted}>
+              {showPreview && <><Text color={theme.success}>F2</Text> preview</>}
+              {showPreview && showAnalysis && ' • '}
+              {showAnalysis && <><Text color={theme.success}>F3</Text> analysis</>}
+              {' • '}<Text color={theme.success}>F4</Text> variables • <Text color={theme.success}>F1</Text> help
+            </Text>
+          )}
         </Box>
-        <Box>
+        <Box flexDirection="column" alignItems="flex-end">
+          <Text color={theme.primary} bold>
+            {showingHelp ? '📖 Help' :
+             showingPreview ? '👁  Preview' :
+             showingAnalysis ? '🔍 Analysis' :
+             showingVariables ? '🔧 Variables' : '✏️  Editor'}
+          </Text>
           <Text color={theme.muted}>
-            {showingHelp ? 'Help mode' : 'Edit mode'}
+            Mode
           </Text>
         </Box>
       </Box>
+
+      {/* Preview dialog */}
+      {showPreview && showingPreview && previewText && (
+        <Dialog
+          title="Template Preview"
+          message={`Preview with substituted variables:\n\n${previewText}`}
+          isVisible={showingPreview}
+          onClose={() => setShowingPreview(false)}
+          type="info"
+        />
+      )}
+
+      {/* Analysis dialog */}
+      {showAnalysis && showingAnalysis && promptAnalysis && (
+        <Dialog
+          title="Prompt Quality Analysis"
+          message={getAnalysisText(promptAnalysis)}
+          isVisible={showingAnalysis}
+          onClose={() => setShowingAnalysis(false)}
+          type={promptAnalysis.qualityScore >= 60 ? "info" : "warning"}
+        />
+      )}
+
+      {/* Variables dialog */}
+      {showingVariables && (
+        <Dialog
+          title="Template Variables"
+          message={getVariablesText(templateVariables, templateVariableErrors)}
+          isVisible={showingVariables}
+          onClose={() => setShowingVariables(false)}
+          type={templateVariableErrors.length > 0 ? "warning" : "info"}
+        />
+      )}
 
       {/* Help dialog */}
       {showHelp && showingHelp && (
@@ -494,34 +648,77 @@ function getPositionFromLineColumn(text: string, lineIndex: number, columnIndex:
   return position;
 }
 
-function highlightSyntax(text: string): string {
-  // Basic syntax highlighting for prompts
-  // This is a simple implementation - can be enhanced
+function getAnalysisText(analysis: PromptAnalysis): string {
+  const lines = [
+    `Overall Quality Score: ${analysis.qualityScore}/100`,
+    '',
+    `Structure Analysis (${analysis.structure.score}/100):`,
+    `• Clear Structure: ${analysis.structure.hasClearStructure ? 'Yes' : 'No'}`,
+    `• Has Context: ${analysis.structure.hasContext ? 'Yes' : 'No'}`,
+    `• Has Task Definition: ${analysis.structure.hasTask ? 'Yes' : 'No'}`,
+    `• Has Constraints: ${analysis.structure.hasConstraints ? 'Yes' : 'No'}`,
+    `• Has Examples: ${analysis.structure.hasExamples ? 'Yes' : 'No'}`,
+    '',
+    `Clarity Analysis (${analysis.clarity.clarityScore}/100):`,
+    `• Average Sentence Length: ${Math.round(analysis.clarity.avgSentenceLength)} characters`,
+    `• Ambiguous Words: ${analysis.clarity.ambiguousWordCount}`,
+    `• Passive Voice Ratio: ${Math.round(analysis.clarity.passiveVoiceRatio * 100)}%`,
+    '',
+    `Completeness Analysis (${analysis.completeness.score}/100):`,
+    `• Task Definition: ${analysis.completeness.hasTaskDefinition ? 'Yes' : 'No'}`,
+    `• Context Provided: ${analysis.completeness.hasContext ? 'Yes' : 'No'}`,
+    `• Output Format: ${analysis.completeness.hasOutputFormat ? 'Yes' : 'No'}`,
+    `• Examples: ${analysis.completeness.hasExamples ? 'Yes' : 'No'}`
+  ];
 
-  // Highlight URLs
-  text = text.replace(
-    /(https?:\/\/[^\s]+)/g,
-    '\x1b[34m$1\x1b[39m' // Blue
-  );
+  if (analysis.suggestions.length > 0) {
+    lines.push('', 'Optimization Suggestions:');
+    analysis.suggestions.slice(0, 5).forEach((suggestion, index) => {
+      lines.push(`${index + 1}. [${suggestion.priority.toUpperCase()}] ${suggestion.message}`);
+      lines.push(`   ${suggestion.suggestion}`);
+    });
+  }
 
-  // Highlight file paths
-  text = text.replace(
-    /(\/[^\s]*|[A-Za-z]:[^\s]*)/g,
-    '\x1b[33m$1\x1b[39m' // Yellow
-  );
+  return lines.join('\n');
+}
 
-  // Highlight code blocks (simple)
-  text = text.replace(
-    /(`[^`]+`)/g,
-    '\x1b[32m$1\x1b[39m' // Green
-  );
+function getVariablesText(
+  templateVariables: Record<string, any>,
+  errors: Array<{ variable: string; line: number; column: number; message: string }>
+): string {
+  const lines = [];
 
-  return text;
+  // Show detected variables
+  const detectedVars = Object.keys(templateVariables);
+  if (detectedVars.length > 0) {
+    lines.push('Template Variables:');
+    detectedVars.forEach(varName => {
+      const value = templateVariables[varName];
+      lines.push(`• ${varName}: ${String(value)} (${typeof value})`);
+    });
+  } else {
+    lines.push('No template variables defined.');
+  }
+
+  // Show errors
+  if (errors.length > 0) {
+    lines.push('', 'Variable Errors:');
+    errors.forEach(error => {
+      lines.push(`• Line ${error.line}, Column ${error.column}: ${error.message}`);
+    });
+  }
+
+  lines.push('', 'Variable Syntax:');
+  lines.push('• Standard: {VARIABLE_NAME}');
+  lines.push('• Environment: $VAR or ${VAR}');
+  lines.push('• Variables must be UPPERCASE with underscores');
+
+  return lines.join('\n');
 }
 
 function getHelpText(): string {
   return `
-Prompt Editor Help:
+Advanced Prompt Editor Help:
 
 Navigation:
 • Arrow keys - Move cursor
@@ -531,19 +728,33 @@ Navigation:
 
 Editing:
 • Type normally to insert text
-• Enter - New line
+• Enter - Submit prompt
+• Ctrl+J - New line (for multiline prompts)
 • Backspace/Delete - Remove characters
 • Tab - Insert spaces (indentation)
-• Ctrl+J - Alternative new line
 
 Commands:
-• Ctrl+Enter - Save and submit
-• Ctrl+S - Save and submit
+• Enter/Ctrl+S - Save and submit
 • ESC - Cancel (warns if unsaved)
 • F1 - Show this help
+• F2 - Toggle template preview (if enabled)
+• F3 - Show prompt quality analysis (if enabled)
+• F4 - Show template variables
 
-The editor supports multi-line prompts with unlimited length.
-Your prompt will be used as the instruction for the selected subagent.
+Advanced Features:
+• Syntax Highlighting - Highlights template variables, URLs, code, etc.
+• Template Variables - Use {VARIABLE_NAME} syntax for substitution
+• Token Counting - Real-time token estimation for AI models
+• Quality Analysis - Automatic prompt structure and clarity analysis
+• Real-time Preview - See how your prompt looks with variables substituted
+
+Template Variables:
+• Standard: {VARIABLE_NAME} - Must be UPPERCASE with underscores
+• Environment: $VAR or ${VAR} - Access environment variables
+• Variables are highlighted in green (valid) or red (undefined)
+
+The editor supports multi-line prompts with advanced AI-specific features.
+Your prompt will be optimized for the best AI interaction results.
   `.trim();
 }
 
