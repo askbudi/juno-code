@@ -149,7 +149,7 @@ class SimpleInitTUI {
 
   private async promptForGitSetup(): Promise<string | undefined> {
     console.log(chalk.gray('   Would you like to set up Git? (y/n):'));
-    const answer = await this.promptForInput('Git setup', 'y').toLowerCase();
+    const answer = (await this.promptForInput('Git setup', 'y')).toLowerCase();
 
     if (answer === 'y' || answer === 'yes') {
       console.log(chalk.gray('   Enter Git repository URL (optional):'));

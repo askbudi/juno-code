@@ -248,15 +248,17 @@ class MainProgressDisplay {
   }
 
   onProgress(event: ProgressEvent): void {
+    const timestamp = event.timestamp.toLocaleTimeString();
+    const content = event.content.length > 100
+      ? event.content.substring(0, 100) + '...'
+      : event.content;
+
     if (this.verbose) {
-      const timestamp = event.timestamp.toLocaleTimeString();
-      const content = event.content.length > 100
-        ? event.content.substring(0, 100) + '...'
-        : event.content;
+      // Verbose mode: Show detailed progress with timestamps and types
       console.log(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
     } else {
-      // Simple progress indicator
-      process.stdout.write(chalk.blue('.'));
+      // Non-verbose mode: Show meaningful progress messages (always display progress callbacks)
+      console.log(chalk.blue(`📡 ${event.type}: ${content}`));
     }
   }
 
@@ -355,10 +357,8 @@ class MainExecutionCoordinator {
       enableProgressStreaming: true,
       sessionId: request.requestId,
       progressCallback: async (event: any) => {
-        // Route MCP progress events to the progress display
-        if (this.config.verbose) {
-          this.progressDisplay.onProgress(event);
-        }
+        // Route MCP progress events to the progress display (always show progress)
+        this.progressDisplay.onProgress(event);
       }
     };
 

@@ -1,681 +1,243 @@
 /**
- * Feedback command implementation for juno-task-ts CLI
+ * Simplified Feedback command implementation for juno-task-ts CLI
  *
- * Provides comprehensive user feedback collection with TUI for bug reports,
- * feature requests, and general feedback. Integrates with USER_FEEDBACK.md
- * and supports both interactive and batch modes.
+ * Simple feedback collection with minimal interface.
+ * Removes complex features: structured data, metadata, categorization, etc.
  */
 
 import * as path from 'node:path';
-import { promises as fs } from 'node:fs';
+import * as readline from 'node:readline';
+import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
 import type { FeedbackCommandOptions } from '../types.js';
-import { FileSystemError, ValidationError } from '../types.js';
+import { ValidationError } from '../types.js';
 
 /**
- * Feedback entry structure
+ * Simple Interactive Feedback for user feedback collection
+ * Minimal flow as requested by user:
+ * Issue Description [Multi line] → Save → Done
  */
-interface FeedbackEntry {
-  id: string;
-  type: 'bug' | 'feature' | 'improvement' | 'question' | 'other';
-  title: string;
-  description: string;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  tags: string[];
-  timestamp: Date;
-  status: 'new' | 'in_progress' | 'resolved' | 'wont_fix';
-  metadata?: {
-    sessionId?: string;
-    reproduction?: string;
-    expectedBehavior?: string;
-    actualBehavior?: string;
-    environment?: Record<string, string>;
-  };
+class SimpleFeedbackTUI {
+  /**
+   * Helper method to prompt for text input using readline
+   */
+  private async promptForInput(prompt: string, defaultValue: string = ''): Promise<string> {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      const question = `${prompt}${defaultValue ? ` (default: ${defaultValue})` : ''}: `;
+      rl.question(question, (answer) => {
+        rl.close();
+        resolve(answer.trim() || defaultValue);
+      });
+    });
+  }
+
+  /**
+   * Simple gather method implementing the minimal flow
+   */
+  async gather(): Promise<string> {
+    console.log(chalk.blue.bold('\n📝 Submit Feedback\n'));
+
+    // Issue Description (multi-line, NO character limits)
+    console.log(chalk.yellow('📄 Step 1: Describe your issue or feedback'));
+    const feedback = await this.promptForFeedback();
+
+    console.log(chalk.green('\n✅ Feedback submitted successfully!'));
+    console.log(chalk.gray('   Thank you for your input.'));
+
+    return feedback;
+  }
+
+  private async promptForFeedback(): Promise<string> {
+    console.log(chalk.gray('   Describe your issue, bug report, or suggestion'));
+    console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
+
+    const lines: string[] = [];
+
+    while (true) {
+      const line = await this.promptForInput(lines.length === 0 ? 'Feedback' : '   (continue, empty line to finish)', '');
+
+      if (line.trim() === '') {
+        break; // Empty line signals end of input
+      }
+
+      lines.push(line);
+    }
+
+    const input = lines.join('\n').trim();
+
+    if (!input || input.length < 5) {
+      throw new ValidationError(
+        'Feedback must be at least 5 characters',
+        ['Provide a description of your issue or suggestion']
+      );
+    }
+
+    return input;
+  }
 }
 
 /**
- * Feedback file manager for USER_FEEDBACK.md manipulation
+ * Simple Feedback file manager for USER_FEEDBACK.md manipulation
  */
-class FeedbackFileManager {
-  constructor(private filePath: string) {}
+class SimpleFeedbackFileManager {
+  constructor(private feedbackFile: string) {}
 
   async ensureExists(): Promise<void> {
-    try {
-      await fs.access(this.filePath);
-    } catch {
+    if (!(await fs.pathExists(this.feedbackFile))) {
       await this.createInitialFile();
     }
   }
 
-  async loadEntries(): Promise<FeedbackEntry[]> {
+  async addFeedback(feedback: string): Promise<void> {
+    await this.ensureExists();
+
     try {
-      const content = await fs.readFile(this.filePath, 'utf-8');
-      return this.parseMarkdown(content);
+      const content = await fs.readFile(this.feedbackFile, 'utf-8');
+      const updatedContent = this.addIssueToContent(content, feedback);
+      await fs.writeFile(this.feedbackFile, updatedContent, 'utf-8');
     } catch (error) {
-      throw new FileSystemError(
-        `Failed to read feedback file: ${error}`,
-        this.filePath
+      throw new ValidationError(
+        `Failed to save feedback: ${error}`,
+        ['Check file permissions and try again']
       );
     }
-  }
-
-  async saveEntries(entries: FeedbackEntry[]): Promise<void> {
-    try {
-      const content = this.generateMarkdown(entries);
-      await fs.writeFile(this.filePath, content, 'utf-8');
-    } catch (error) {
-      throw new FileSystemError(
-        `Failed to write feedback file: ${error}`,
-        this.filePath
-      );
-    }
-  }
-
-  async addEntry(entry: FeedbackEntry): Promise<void> {
-    const entries = await this.loadEntries();
-    entries.unshift(entry); // Add to top
-    await this.saveEntries(entries);
-  }
-
-  async updateEntry(id: string, updates: Partial<FeedbackEntry>): Promise<boolean> {
-    const entries = await this.loadEntries();
-    const index = entries.findIndex(entry => entry.id === id);
-
-    if (index === -1) {
-      return false;
-    }
-
-    entries[index] = { ...entries[index], ...updates };
-    await this.saveEntries(entries);
-    return true;
-  }
-
-  async removeEntry(id: string): Promise<boolean> {
-    const entries = await this.loadEntries();
-    const filteredEntries = entries.filter(entry => entry.id !== id);
-
-    if (filteredEntries.length === entries.length) {
-      return false;
-    }
-
-    await this.saveEntries(filteredEntries);
-    return true;
   }
 
   private async createInitialFile(): Promise<void> {
     const initialContent = `# User Feedback
 
-This file contains feedback, bug reports, and feature requests for the project.
-Items are automatically organized by status and can be managed using the \`juno-task feedback\` command.
-
-## Active Items
-
-*No active items*
-
-## In Progress
-
-*No items in progress*
-
-## Resolved
-
-*No resolved items*
-
----
-*Generated by juno-task feedback system*
-`;
-
-    // Ensure directory exists
-    const dir = path.dirname(this.filePath);
-    await fs.mkdir(dir, { recursive: true });
-
-    await fs.writeFile(this.filePath, initialContent, 'utf-8');
-  }
-
-  private parseMarkdown(content: string): FeedbackEntry[] {
-    const entries: FeedbackEntry[] = [];
-
-    // Improved parser to extract all feedback metadata
-    const lines = content.split('\n');
-    let currentEntry: Partial<FeedbackEntry> | null = null;
-    let inCodeBlock = false;
-    let currentSection = '';
-    let currentDescription = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      // Track code blocks
-      if (trimmed.startsWith('```')) {
-        inCodeBlock = !inCodeBlock;
-        continue;
-      }
-
-      if (inCodeBlock) {
-        continue;
-      }
-
-      // Track sections
-      if (trimmed.startsWith('## ')) {
-        currentSection = trimmed.substring(3).trim().toLowerCase();
-        continue;
-      }
-
-      // Parse feedback entries
-      if (trimmed.startsWith('### ')) {
-        // Save previous entry
-        if (currentEntry && currentEntry.id) {
-          currentEntry.description = currentDescription.trim();
-          entries.push(currentEntry as FeedbackEntry);
-        }
-
-        // Start new entry - extract title and emoji indicators
-        const titleWithEmojis = trimmed.substring(4).trim();
-        const title = this.extractTitle(titleWithEmojis);
-        const priority = this.extractPriority(titleWithEmojis);
-        const type = this.extractType(titleWithEmojis);
-
-        currentEntry = {
-          id: '', // Will be set when we find the ID line
-          title,
-          type,
-          status: this.inferStatusFromSection(currentSection),
-          description: '',
-          priority,
-          tags: [],
-          timestamp: new Date()
-        };
-        currentDescription = '';
-      } else if (currentEntry) {
-        // Parse metadata lines
-        if (trimmed.startsWith('**Tags:**')) {
-          const tagsMatch = trimmed.match(/\*\*Tags:\*\*\s*(.+)/);
-          if (tagsMatch) {
-            currentEntry.tags = tagsMatch[1]
-              .split(/[,\s]+/)
-              .map(tag => tag.replace(/[`"']/g, '').trim())
-              .filter(tag => tag.length > 0);
-          }
-        } else if (trimmed.startsWith('**Created:**')) {
-          const dateMatch = trimmed.match(/\*\*Created:\*\*\s*(.+)/);
-          if (dateMatch) {
-            const dateStr = dateMatch[1].trim();
-            currentEntry.timestamp = new Date(dateStr);
-          }
-        } else if (trimmed.startsWith('**ID:**')) {
-          const idMatch = trimmed.match(/\*\*ID:\*\*\s*`([^`]+)`/);
-          if (idMatch) {
-            currentEntry.id = idMatch[1];
-          }
-        } else if (trimmed && !trimmed.startsWith('*') && !trimmed.startsWith('-') && !trimmed.startsWith('**')) {
-          // Add to description
-          if (currentDescription) {
-            currentDescription += '\n' + trimmed;
-          } else {
-            currentDescription = trimmed;
-          }
-        }
-      }
-    }
-
-    // Save last entry
-    if (currentEntry && currentEntry.id) {
-      currentEntry.description = currentDescription.trim();
-      entries.push(currentEntry as FeedbackEntry);
-    }
-
-    return entries;
-  }
-
-  private extractTitle(titleWithEmojis: string): string {
-    // Remove emoji indicators and extract clean title
-    return titleWithEmojis
-      .replace(/^[🐛✨📈❓📝]\s*/, '') // Remove type emoji
-      .replace(/\s*[🔵🟡🟠🔴]\s*$/, '') // Remove priority emoji
-      .trim();
-  }
-
-  private extractPriority(titleWithEmojis: string): FeedbackEntry['priority'] {
-    if (titleWithEmojis.includes('🔴')) return 'critical';
-    if (titleWithEmojis.includes('🟠')) return 'high';
-    if (titleWithEmojis.includes('🟡')) return 'medium';
-    if (titleWithEmojis.includes('🔵')) return 'low';
-    return 'medium';
-  }
-
-  private extractType(titleWithEmojis: string): FeedbackEntry['type'] {
-    if (titleWithEmojis.startsWith('🐛')) return 'bug';
-    if (titleWithEmojis.startsWith('✨')) return 'feature';
-    if (titleWithEmojis.startsWith('📈')) return 'improvement';
-    if (titleWithEmojis.startsWith('❓')) return 'question';
-    if (titleWithEmojis.startsWith('📝')) return 'other';
-    return 'other';
-  }
-
-  private generateMarkdown(entries: FeedbackEntry[]): string {
-    const activeItems = entries.filter(e => e.status === 'new');
-    const inProgressItems = entries.filter(e => e.status === 'in_progress');
-    const resolvedItems = entries.filter(e => e.status === 'resolved');
-
-    let content = `# User Feedback
-
-This file contains feedback, bug reports, and feature requests for the project.
-Items are automatically organized by status and can be managed using the \`juno-task feedback\` command.
-
-## Active Items
-
-`;
-
-    if (activeItems.length === 0) {
-      content += '*No active items*\n\n';
-    } else {
-      for (const item of activeItems) {
-        content += this.formatEntry(item);
-      }
-    }
-
-    content += '## In Progress\n\n';
-
-    if (inProgressItems.length === 0) {
-      content += '*No items in progress*\n\n';
-    } else {
-      for (const item of inProgressItems) {
-        content += this.formatEntry(item);
-      }
-    }
-
-    content += '## Resolved\n\n';
-
-    if (resolvedItems.length === 0) {
-      content += '*No resolved items*\n\n';
-    } else {
-      for (const item of resolvedItems) {
-        content += this.formatEntry(item);
-      }
-    }
-
-    content += `---
-*Generated by juno-task feedback system*
-*Last updated: ${new Date().toISOString()}*
-`;
-
-    return content;
-  }
-
-  private formatEntry(entry: FeedbackEntry): string {
-    const priorityEmoji = {
-      low: '🔵',
-      medium: '🟡',
-      high: '🟠',
-      critical: '🔴'
-    };
-
-    const typeEmoji = {
-      bug: '🐛',
-      feature: '✨',
-      improvement: '📈',
-      question: '❓',
-      other: '📝'
-    };
-
-    let content = `### ${typeEmoji[entry.type]} ${entry.title} ${priorityEmoji[entry.priority]}\n\n`;
-
-    if (entry.description) {
-      content += `${entry.description}\n\n`;
-    }
-
-    if (entry.tags.length > 0) {
-      content += `**Tags:** ${entry.tags.map(tag => `\`${tag}\``).join(', ')}\n`;
-    }
-
-    content += `**Created:** ${entry.timestamp.toLocaleDateString()}\n`;
-    content += `**ID:** \`${entry.id}\`\n\n`;
-
-    return content;
-  }
-
-  private inferTypeFromSection(section: string): FeedbackEntry['type'] {
-    if (section.includes('bug')) return 'bug';
-    if (section.includes('feature')) return 'feature';
-    if (section.includes('improvement')) return 'improvement';
-    if (section.includes('question')) return 'question';
-    return 'other';
-  }
-
-  private inferStatusFromSection(section: string): FeedbackEntry['status'] {
-    if (section.includes('progress')) return 'in_progress';
-    if (section.includes('resolved') || section.includes('done')) return 'resolved';
-    return 'new';
-  }
-
-  private generateId(): string {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-  }
-}
-
-/**
- * Interactive TUI for feedback collection
- */
-class FeedbackTUI {
-  private manager: FeedbackFileManager;
-
-  constructor(manager: FeedbackFileManager) {
-    this.manager = manager;
-  }
-
-  async collectFeedback(): Promise<FeedbackEntry> {
-    console.log(chalk.blue.bold('\n💬 User Feedback Collection\n'));
-
-    const entry: Partial<FeedbackEntry> = {
-      id: this.generateId(),
-      timestamp: new Date(),
-      status: 'new',
-      tags: []
-    };
-
-    // Get feedback type
-    entry.type = await this.promptForType();
-
-    // Get title
-    entry.title = await this.promptForTitle();
-
-    // Get description
-    entry.description = await this.promptForDescription();
-
-    // Get priority
-    entry.priority = await this.promptForPriority();
-
-    // Get tags
-    entry.tags = await this.promptForTags();
-
-    // Add metadata based on type
-    if (entry.type === 'bug') {
-      entry.metadata = await this.promptForBugMetadata();
-    }
-
-    return entry as FeedbackEntry;
-  }
-
-  async showFeedbackList(): Promise<void> {
-    const entries = await this.manager.loadEntries();
-
-    if (entries.length === 0) {
-      console.log(chalk.yellow('No feedback entries found.'));
-      return;
-    }
-
-    console.log(chalk.blue.bold('\n📝 Current Feedback Items\n'));
-
-    const activeItems = entries.filter(e => e.status === 'new');
-    const inProgressItems = entries.filter(e => e.status === 'in_progress');
-    const resolvedItems = entries.filter(e => e.status === 'resolved');
-
-    if (activeItems.length > 0) {
-      console.log(chalk.yellow.bold('Active Items:'));
-      this.displayEntries(activeItems);
-      console.log('');
-    }
-
-    if (inProgressItems.length > 0) {
-      console.log(chalk.blue.bold('In Progress:'));
-      this.displayEntries(inProgressItems);
-      console.log('');
-    }
-
-    if (resolvedItems.length > 0) {
-      console.log(chalk.green.bold('Resolved:'));
-      this.displayEntries(resolvedItems.slice(0, 5)); // Show only recent resolved items
-      if (resolvedItems.length > 5) {
-        console.log(chalk.gray(`   ... and ${resolvedItems.length - 5} more resolved items`));
-      }
-      console.log('');
-    }
-  }
-
-  private async promptForType(): Promise<FeedbackEntry['type']> {
-    console.log(chalk.yellow('🏷️  Feedback Type:'));
-    console.log('   1. 🐛 Bug Report');
-    console.log('   2. ✨ Feature Request');
-    console.log('   3. 📈 Improvement Suggestion');
-    console.log('   4. ❓ Question');
-    console.log('   5. 📝 Other');
-
-    // In real implementation, would prompt for user input
-    // For demonstration, return bug
-    return 'bug';
-  }
-
-  private async promptForTitle(): Promise<string> {
-    console.log(chalk.yellow('\n📋 Title:'));
-    console.log('   Enter a brief, descriptive title for your feedback');
-
-    // Default for demonstration
-    return 'Example feedback item';
-  }
-
-  private async promptForDescription(): Promise<string> {
-    console.log(chalk.yellow('\n📝 Description:'));
-    console.log('   Provide detailed information about your feedback');
-    console.log('   (Use Ctrl+D when finished)');
-
-    // Default for demonstration
-    return 'This is an example feedback description with detailed information.';
-  }
-
-  private async promptForPriority(): Promise<FeedbackEntry['priority']> {
-    console.log(chalk.yellow('\n⚡ Priority Level:'));
-    console.log('   1. 🔵 Low');
-    console.log('   2. 🟡 Medium');
-    console.log('   3. 🟠 High');
-    console.log('   4. 🔴 Critical');
-
-    // Default for demonstration
-    return 'medium';
-  }
-
-  private async promptForTags(): Promise<string[]> {
-    console.log(chalk.yellow('\n🏷️  Tags (optional):'));
-    console.log('   Enter comma-separated tags (e.g., cli, performance, ui)');
-
-    // Default for demonstration
-    return ['cli', 'example'];
-  }
-
-  private async promptForBugMetadata(): Promise<FeedbackEntry['metadata']> {
-    console.log(chalk.yellow('\n🐛 Bug Report Details:'));
-
-    // In real implementation, would prompt for:
-    // - Steps to reproduce
-    // - Expected behavior
-    // - Actual behavior
-    // - Environment details
-
-    return {
-      reproduction: 'Steps to reproduce the bug',
-      expectedBehavior: 'What should happen',
-      actualBehavior: 'What actually happens',
-      environment: {
-        os: process.platform,
-        node: process.version,
-        junoTask: '1.0.0'
-      }
-    };
-  }
-
-  private displayEntries(entries: FeedbackEntry[]): void {
-    for (const entry of entries) {
-      const typeEmoji = {
-        bug: '🐛',
-        feature: '✨',
-        improvement: '📈',
-        question: '❓',
-        other: '📝'
-      };
-
-      const priorityColor = {
-        low: chalk.blue,
-        medium: chalk.yellow,
-        high: chalk.magenta,
-        critical: chalk.red
-      };
-
-      const priorityText = priorityColor[entry.priority](entry.priority.toUpperCase());
-      const typeText = `${typeEmoji[entry.type]} ${entry.type}`;
-      const dateText = chalk.gray(entry.timestamp.toLocaleDateString());
-
-      console.log(`   ${chalk.white.bold(entry.title)}`);
-      console.log(`   ${typeText} | ${priorityText} | ${dateText} | ID: ${chalk.gray(entry.id)}`);
-
-      if (entry.description.length > 100) {
-        console.log(`   ${chalk.gray(entry.description.substring(0, 100))}...`);
-      } else if (entry.description) {
-        console.log(`   ${chalk.gray(entry.description)}`);
-      }
-
-      if (entry.tags.length > 0) {
-        console.log(`   Tags: ${entry.tags.map(tag => chalk.cyan(`#${tag}`)).join(' ')}`);
-      }
-
-      console.log('');
-    }
-  }
-
-  private generateId(): string {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-  }
-}
-
-/**
- * Simple function to append issue to USER_FEEDBACK.md
- */
-async function appendIssueToFeedback(feedbackFile: string, issueText: string): Promise<void> {
-  try {
-    let content = '';
-
-    // Try to read existing file
-    try {
-      content = await fs.readFile(feedbackFile, 'utf-8');
-    } catch (error) {
-      // File doesn't exist, create basic structure
-      content = `# USER_FEEDBACK
+List any features you'd like to see added or bugs you've encountered.
 
 ## OPEN_ISSUES
 
-## RESOLVED_ISSUES
+<OPEN_ISSUES>
+   <!-- New issues will be added here -->
+</OPEN_ISSUES>
 
-## NOTES
+## Past Issues
+
+<!-- Resolved issues will be moved here -->
 `;
-    }
+    await fs.ensureDir(path.dirname(this.feedbackFile));
+    await fs.writeFile(this.feedbackFile, initialContent, 'utf-8');
+  }
 
-    // Find OPEN_ISSUES section and append the new issue
-    const openIssuesMatch = content.match(/(## OPEN_ISSUES\s*\n)(.*?)(?=\n## |$)/s);
+  private addIssueToContent(content: string, feedback: string): string {
+    const timestamp = new Date().toISOString().split('T')[0];
+    const newIssue = `   <ISSUE>
+      ${feedback}
+
+Added: ${timestamp}
+   </ISSUE>`;
+
+    // Find the OPEN_ISSUES section and add the new issue
+    const openIssuesMatch = content.match(/(<OPEN_ISSUES>[\s\S]*?<\/OPEN_ISSUES>)/);
 
     if (openIssuesMatch) {
-      const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
-      const newIssue = `<ISSUE>\n${issueText}\n[Added: ${timestamp}]\n</ISSUE>\n\n`;
+      const openIssuesSection = openIssuesMatch[1];
+      const closingTag = '</OPEN_ISSUES>';
+      const insertionPoint = openIssuesSection.lastIndexOf(closingTag);
 
-      const beforeSection = content.slice(0, openIssuesMatch.index! + openIssuesMatch[1].length);
-      const afterSection = content.slice(openIssuesMatch.index! + openIssuesMatch[0].length);
+      if (insertionPoint !== -1) {
+        const updatedSection =
+          openIssuesSection.slice(0, insertionPoint) +
+          '\n' + newIssue + '\n' +
+          openIssuesSection.slice(insertionPoint);
 
-      content = beforeSection + newIssue + afterSection;
-    } else {
-      // No OPEN_ISSUES section found, append at end
-      const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
-      const newIssue = `\n## OPEN_ISSUES\n\n<ISSUE>\n${issueText}\n[Added: ${timestamp}]\n</ISSUE>\n`;
-      content += newIssue;
+        return content.replace(openIssuesSection, updatedSection);
+      }
     }
 
-    // Write back to file
-    await fs.writeFile(feedbackFile, content, 'utf-8');
-  } catch (error) {
-    throw new FileSystemError(
-      `Failed to update feedback file: ${error}`,
-      feedbackFile
-    );
+    // Fallback: just append to file
+    return content + '\n\n' + newIssue;
   }
 }
 
 /**
- * Ask user for a choice from available options
+ * Append issue to USER_FEEDBACK.md
  */
-async function askForChoice(prompt: string, validChoices: string[]): Promise<string> {
-  const readline = await import('readline');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`${prompt}: `, (answer) => {
-      rl.close();
-      const normalizedAnswer = answer.trim();
-      if (validChoices.includes(normalizedAnswer)) {
-        resolve(normalizedAnswer);
-      } else {
-        // Default to first choice if invalid input
-        resolve(validChoices[0]);
-      }
-    });
-  });
-}
-
-/**
- * Show recent feedback entries
- */
-async function showRecentFeedback(feedbackFile: string, count: number): Promise<void> {
+async function appendIssueToFeedback(feedbackFile: string, issueText: string): Promise<void> {
   try {
-    const content = await fs.readFile(feedbackFile, 'utf-8');
-    console.log(chalk.blue.bold(`\n📋 Last ${count} Feedback Entr${count === 1 ? 'y' : 'ies'}:`));
-    console.log(chalk.gray('─'.repeat(50)));
-    console.log(content);
-    console.log(chalk.gray('─'.repeat(50)));
+    const fileManager = new SimpleFeedbackFileManager(feedbackFile);
+    await fileManager.addFeedback(issueText);
   } catch (error) {
-    console.log(chalk.yellow('No feedback file found or unable to read feedback.'));
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+    throw new ValidationError(
+      `Failed to append feedback: ${error}`,
+      ['Check file permissions and try again']
+    );
   }
 }
 
 /**
  * Collect multiline feedback from user
  */
-async function collectMultilineFeedback(): Promise<string> {
-  console.log(chalk.blue('\n💬 Enter your feedback (press Ctrl+D when finished):'));
-  console.log(chalk.gray('You can type multiple lines. Describe any issues, bugs, or improvements.'));
-
-  return new Promise((resolve, reject) => {
-    let input = '';
-
-    process.stdin.setEncoding('utf8');
-    process.stdin.resume();
-
-    process.stdin.on('data', (chunk) => {
-      input += chunk;
-    });
-
-    process.stdin.on('end', () => {
-      const trimmed = input.trim();
-      if (!trimmed) {
-        reject(new ValidationError(
-          'No feedback provided',
-          ['Provide some feedback text', 'Use --help for usage examples']
-        ));
-      } else {
-        resolve(trimmed);
-      }
-    });
-
-    process.stdin.on('error', (error) => {
-      reject(new ValidationError(
-        `Failed to read feedback: ${error}`,
-        ['Try again with valid input']
-      ));
-    });
-  });
+async function collectFeedback(): Promise<string> {
+  const feedbackTUI = new SimpleFeedbackTUI();
+  return await feedbackTUI.gather();
 }
 
 /**
- * Main feedback command handler (simplified)
+ * Get feedback file path from options
+ */
+function getFeedbackFile(options: FeedbackCommandOptions): string {
+  return options.file || path.join(process.cwd(), '.juno_task', 'USER_FEEDBACK.md');
+}
+
+/**
+ * Configure the feedback command for Commander.js (simplified)
+ */
+export function configureFeedbackCommand(program: Command): void {
+  program
+    .command('feedback')
+    .description('Submit feedback about juno-task (simplified interface)')
+    .argument('[feedback...]', 'Feedback text or issue description')
+    .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
+    .option('-i, --interactive', 'Launch simple interactive feedback form')
+    .action(async (feedback, options, command) => {
+      const feedbackOptions: FeedbackCommandOptions = {
+        file: options.file,
+        interactive: options.interactive,
+        // Global options
+        verbose: options.verbose,
+        quiet: options.quiet,
+        config: options.config,
+        logFile: options.logFile,
+        logLevel: options.logLevel
+      };
+
+      const feedbackText = Array.isArray(feedback) ? feedback.join(' ') : feedback;
+      await feedbackCommandHandler([feedbackText], feedbackOptions, command);
+    })
+    .addHelpText('after', `
+Examples:
+  $ juno-task feedback                                    # Interactive feedback form
+  $ juno-task feedback "Issue with command"              # Direct feedback text
+  $ juno-task feedback --interactive                     # Use simple interactive form
+
+Simplified Interactive Flow:
+  1. Issue Description → Multi-line feedback input
+  2. Save → Automatically saved to USER_FEEDBACK.md
+
+Notes:
+  - No character limits or token counting
+  - Simple readline interface
+  - Direct file manipulation without structured data
+  - Focus on quick feedback collection
+    `);
+}
+
+/**
+ * Feedback command handler
  */
 export async function feedbackCommandHandler(
   args: string[],
@@ -683,159 +245,66 @@ export async function feedbackCommandHandler(
   command: Command
 ): Promise<void> {
   try {
-    // Determine feedback file path
-    const feedbackFile = options.file || path.join(process.cwd(), '.juno_task', 'USER_FEEDBACK.md');
+    // Default to interactive mode if no arguments provided
+    const shouldUseInteractive = options.interactive || args.length === 0;
 
-    // Ensure directory exists
-    const feedbackDir = path.dirname(feedbackFile);
-    await fs.mkdir(feedbackDir, { recursive: true });
-
-    // Check if first argument is a known subcommand
-    const knownSubcommands = ['list', 'ls'];
-    const isSubcommand = args.length > 0 && knownSubcommands.includes(args[0]);
-
-    if (!isSubcommand) {
-      // Add new feedback issue
-      let issueText: string;
-
-      // Default to interactive mode if no arguments provided
-      const shouldUseInteractive = options.interactive || args.length === 0;
-
-      if (shouldUseInteractive) {
-        try {
-          // Use TUI prompt editor for multiline input
-          const { launchPromptEditor, isTUISupported } = await import('../../tui/index.js');
-
-          if (isTUISupported()) {
-            console.log(chalk.blue('\n🎨 Launching TUI editor for feedback...'));
-
-            const result = await launchPromptEditor({
-              initialValue: '',
-              title: 'Feedback - Describe your issue',
-              maxLength: 2000
-            });
-
-            if (!result || !result.trim()) {
-              console.log(chalk.yellow('No feedback provided, cancelled.'));
-              return;
-            }
-
-            issueText = result.trim();
-          } else {
-            issueText = await collectMultilineFeedback();
-          }
-        } catch (error) {
-          console.log(chalk.yellow('TUI not available, using text input...'));
-          issueText = await collectMultilineFeedback();
-        }
-      } else {
-        // Quick feedback mode with provided text
-        issueText = args.join(' ').trim();
-      }
-
-      if (!issueText) {
-        console.log(chalk.yellow('No feedback provided.'));
-        return;
-      }
+    if (shouldUseInteractive) {
+      // Use simplified interactive mode
+      const issueText = await collectFeedback();
+      const feedbackFile = getFeedbackFile(options);
 
       // Append issue to USER_FEEDBACK.md
       await appendIssueToFeedback(feedbackFile, issueText);
 
-      console.log(chalk.green.bold('✅ Feedback submitted successfully!'));
-      console.log(chalk.gray(`   Saved to: ${feedbackFile}`));
-      console.log(chalk.blue('\n💡 Want to add more feedback?'));
-      console.log(chalk.gray('   Run `juno-task feedback` again to submit additional feedback.'));
+      console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+      console.log(chalk.gray(`   File: ${feedbackFile}`));
 
     } else {
       // Handle subcommands
-      const subcommand = args[0];
+      const [subcommand, ...subArgs] = args;
+
       switch (subcommand) {
         case 'list':
-        case 'ls':
-          try {
-            const content = await fs.readFile(feedbackFile, 'utf-8');
-            console.log(chalk.blue.bold('\n📝 Current USER_FEEDBACK.md content:\n'));
-            console.log(content);
-          } catch (error) {
-            console.log(chalk.yellow('No USER_FEEDBACK.md file found.'));
-          }
+          console.log(chalk.yellow('📋 Feedback listing not yet implemented'));
+          break;
+
+        case 'resolve':
+        case 'close':
+          console.log(chalk.yellow('🔧 Feedback resolution not yet implemented'));
+          break;
+
+        case 'remove':
+        case 'delete':
+          console.log(chalk.yellow('🗑️ Feedback removal not yet implemented'));
           break;
 
         default:
-          console.log(chalk.red(`Unknown subcommand: ${subcommand}`));
-          console.log(chalk.gray('Available subcommands: list'));
+          // Treat as feedback text
+          const feedbackText = args.join(' ');
+          if (feedbackText.trim()) {
+            const feedbackFile = getFeedbackFile(options);
+            await appendIssueToFeedback(feedbackFile, feedbackText);
+            console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+          } else {
+            console.log(chalk.yellow('Use --interactive mode or provide feedback text'));
+          }
+          break;
       }
     }
-
   } catch (error) {
-    if (error instanceof FileSystemError || error instanceof ValidationError) {
-      console.error(chalk.red.bold('\n❌ Feedback Error'));
-      console.error(chalk.red(`   ${error.message}`));
-
-      if (error.suggestions?.length) {
-        console.error(chalk.yellow('\n💡 Suggestions:'));
+    if (error instanceof ValidationError) {
+      console.error(chalk.red('❌ Validation Error:'));
+      console.error(chalk.red(error.message));
+      if (error.suggestions.length > 0) {
+        console.error(chalk.yellow('\nSuggestions:'));
         error.suggestions.forEach(suggestion => {
-          console.error(chalk.yellow(`   • ${suggestion}`));
+          console.error(chalk.gray(`  • ${suggestion}`));
         });
       }
-
+      process.exit(1);
+    } else {
+      console.error(chalk.red('❌ Unexpected Error:'), error);
       process.exit(1);
     }
-
-    // Unexpected error
-    console.error(chalk.red.bold('\n❌ Unexpected Error'));
-    console.error(chalk.red(`   ${error}`));
-
-    if (options.verbose) {
-      console.error('\n📍 Stack Trace:');
-      console.error(error);
-    }
-
-    process.exit(99);
   }
-}
-
-/**
- * Configure the feedback command for Commander.js
- */
-export function configureFeedbackCommand(program: Command): void {
-  program
-    .command('feedback [text...]')
-    .description('Collect and manage user feedback')
-    .option('-f, --file <path>', 'Custom USER_FEEDBACK.md file path')
-    .option('-i, --interactive', 'Launch interactive feedback collection')
-    .action(async function(text, options, command) {
-      // Get options from the command (local) and merge with parent (global) options
-      const localOpts = command?.opts() || {};
-      const parentOpts = command?.parent?.opts() || {};
-      const mergedOptions = { ...parentOpts, ...localOpts, ...options };
-
-      // Convert text to array if needed
-      const textArray = text ? (Array.isArray(text) ? text : [text]) : [];
-      await feedbackCommandHandler(textArray, mergedOptions as FeedbackCommandOptions, command);
-    })
-    .addHelpText('after', `
-Subcommands:
-  list, ls                    Show all feedback items
-  resolve <id>                Mark feedback item as resolved
-  remove <id>, rm <id>        Remove feedback item
-
-Examples:
-  $ juno-task feedback                                # Interactive mode (default)
-  $ juno-task feedback "The CLI is too slow"          # Quick feedback
-  $ juno-task feedback --interactive                  # Explicit interactive mode
-  $ juno-task feedback list                          # List all feedback
-  $ juno-task feedback resolve abc123                # Resolve item abc123
-  $ juno-task feedback remove abc123                 # Remove item abc123
-  $ juno-task feedback --file ./custom-feedback.md   # Use custom file
-
-Environment Variables:
-  JUNO_TASK_FEEDBACK_FILE    Default feedback file path
-
-Notes:
-  - Feedback is stored in USER_FEEDBACK.md by default
-  - Interactive mode provides guided collection
-  - Items are automatically organized by status
-  - Use feedback to communicate with your AI coding agents
-    `);
 }

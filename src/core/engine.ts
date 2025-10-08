@@ -831,7 +831,7 @@ export class ExecutionEngine extends EventEmitter {
 
       const iterationResult: IterationResult = {
         iterationNumber,
-        success: toolResult.status === 'completed',
+        success: toolResult.status?.toLowerCase() === 'completed',
         startTime: iterationStart,
         endTime: iterationEnd,
         duration,
