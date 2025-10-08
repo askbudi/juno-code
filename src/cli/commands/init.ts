@@ -483,7 +483,7 @@ Examples:
 Simplified Interactive Flow:
   1. Project Root → Specify target directory
   2. Main Task → Multi-line description (no character limits)
-  3. Editor Selection → Choose from VS Code, Cursor, Vim, Emacs, Other
+  3. Subagent Selection → Choose from Claude, Codex, Gemini, Cursor
   4. Git Setup → Simple yes/no for Git configuration
   5. Save → Handle existing files with override/cancel options
 

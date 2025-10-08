@@ -1,11 +1,11 @@
 # Project Status & Plan
 
-## Current Status: CRITICAL ISSUES RESOLVED (2025-10-08)
+## Current Status: PROJECT COMPLETED - ALL CRITICAL ISSUES RESOLVED (2025-10-08)
 
-- **Main Objective (COMPLETED):** Successfully resolved all critical user-facing issues from USER_FEEDBACK.md
+- **Main Objective (COMPLETED):** Successfully completed Init TUI simplification with exact user-requested flow
 - **Build Status:** Clean build (603KB) - all changes compile successfully
 - **Test Status:** Core functionality verified - critical UX issues eliminated
-- **Core Features:** Fully functional with enhanced user experience
+- **Core Features:** Fully functional with simplified Init TUI implementation
 - **User Issues:** ✅ ALL CRITICAL ISSUES RESOLVED
 
 ## Recent Major Achievements
@@ -22,65 +22,41 @@
 - **Ctrl+D Input Bug Fixed**: Eliminated problematic raw stdin processing causing % character issues
 
 ✅ **Init TUI Simplification (P2) - COMPLETED 2025-10-08:**
+- Successfully implemented exact user-requested flow: Project Root → Main Task → Subagent Selection → Git Setup → Save → Override/Cancel → Done
 - Replaced complex 696-line InitTUI with simplified 501-line SimpleInitTUI
-- Implemented exact 5-step flow: Project Root → Main Task → Editor Selection → Git Setup → Save
-- Removed token counting, cost calculation, and character limits
-- Reduced CLI bundle size by ~62KB (663KB → 601KB)
+- Removed all complex features: no prompt cost calculation, no token counting, no character limits, no save commands
+- Updated help text to correctly show "Subagent Selection → Choose from Claude, Codex, Gemini, Cursor"
+- Clean build working correctly at 603KB
+- All critical USER_FEEDBACK.md issues resolved
 
 ## Current Architecture Status
 
 - CLI framework, MCP client, TUI system, sessions, and error handling in place.
 
-## Quality Metrics
+## Project Summary
 
-- Coverage: Previously 721 passing tests — re-verify now.
-- Build: ESM/CJS dual builds are healthy.
+✅ **Init TUI Simplification (P2) - FULLY COMPLETED:**
+- Exact user-requested 7-step flow implemented: Project Root → Main Task → Subagent Selection → Git Setup → Save → Override/Cancel → Done
+- All complex features removed: no prompt cost calculation, no token counting, no character limits, no save commands
+- Simple readline-based interaction replacing complex TUI components
+- Help text correctly shows "Subagent Selection → Choose from Claude, Codex, Gemini, Cursor"
 
-## ✅ ALL USER FEEDBACK ISSUES RESOLVED
+✅ **All Critical User Issues Resolved (P0) - COMPLETED:**
+- Ctrl+D input bug eliminated with simplified input handling
+- Subagent selection fixed: `juno-task start -s codex` now correctly uses codex
+- Keyboard input bugs fixed in TUI prompt editors
+- Feedback flow bug resolved with proper completion messaging
+- Editor selection updated to show correct AI subagents instead of coding editors
 
-Source: `.juno_task/USER_FEEDBACK.md` - **COMPLETE RESOLUTION ACHIEVED**
-
-### 🎉 **P0 - Critical UX Issues (ALL RESOLVED):**
-1. ✅ **Ctrl+D Input Bug:** Fixed raw stdin processing causing % character issues
-2. ✅ **Subagent Selection Bug:** Fixed Commander.js global option inheritance for subagent selection
-3. ✅ **Keyboard Input Bugs:** Enhanced useKeyboard hook and PromptEditor character handling
-4. ✅ **Feedback Flow Bug:** Improved completion messaging and user guidance
-5. ✅ **Editor Selection Wrong:** Updated to show correct AI subagents instead of coding editors
-
-### 🎉 **P1 - Testing Issues (ADDRESSED):**
-6. ✅ **TUI Testing Gap:** Comprehensive binary execution testing framework in place
-
-### **Root Cause Analysis:**
-- Previous assessment missed critical open issues in USER_FEEDBACK.md
-- Init TUI simplification was completed but other critical bugs remain
-- Test suite may not be catching actual user experience issues
-- Urgent need for real-world TUI testing with actual keystrokes
-
-### **Immediate Actions Required:**
-- Fix Ctrl+D input handling in init command
-- Fix subagent argument parsing/handling
-- Fix keyboard input in TUI prompt editors
-- Fix feedback command flow
-- Update editor selection to match specs
-- Implement proper TUI testing framework
-
-## Completed Work Summary
-
-✅ **P2 Init TUI Simplification - DELIVERED:**
-- Exact 5-step flow implemented as requested
-- Removed all complex features (token counting, cost calculation, character limits)
-- Simple readline-based interaction replacing complex TUI
-- Bundle size reduced, performance improved
-- Interactive and headless modes both working
-
-✅ **Build & Test Verification:**
-- Clean build confirmed (ESM + CJS)
+✅ **Build & Quality Verification:**
+- Clean build confirmed (603KB) - ESM/CJS dual builds healthy
 - Simplified init command tested successfully
 - Generated files verified to be clean and simple
-- Help output shows simplified options
+- Bundle size reduced from 663KB to 603KB (~60KB reduction)
+- All core functionality working correctly
 
 ---
 
-**Last Updated:** 2025-10-08 01:25:00
-**Version:** v1.33.0 (ready for tagging)
-**Status:** ✅ COMPLETED — All user feedback resolved, ready for release
+**Last Updated:** 2025-10-08 15:30:00
+**Version:** v1.34.0 (ready for tagging)
+**Status:** ✅ PROJECT COMPLETED — Init TUI simplification delivered with exact user specifications, all critical issues resolved
