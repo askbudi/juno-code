@@ -799,9 +799,9 @@ export class JunoMCPClient {
 
       client.callTool(toolRequest, {
         timeout: timeoutMs,
-        // Ensure the client's internal overall deadline is extended as well
-        maxTotalTimeout: timeoutMs,
         resetTimeoutOnProgress: true
+        // Note: maxTotalTimeout is NOT set to allow indefinite operation with progress resets
+        // The timeout will reset on each progress event from the server
       })
         .then(result => {
           const actualDuration = Date.now() - startTime;
@@ -833,8 +833,8 @@ export class JunoMCPClient {
 
       client.connect(transport, {
         timeout: timeoutMs,
-        resetTimeoutOnProgress: true,
-        maxTotalTimeout: timeoutMs
+        resetTimeoutOnProgress: true
+        // Note: maxTotalTimeout is NOT set to allow indefinite operation with progress resets
       })
         .then(() => {
           clearTimeout(timer);
@@ -857,8 +857,8 @@ export class JunoMCPClient {
       // Test with a simple operation
       await client.listTools(undefined, {
         timeout: timeoutMs,
-        maxTotalTimeout: timeoutMs,
         resetTimeoutOnProgress: true
+        // Note: maxTotalTimeout is NOT set to allow indefinite operation with progress resets
       });
     } finally {
       try {

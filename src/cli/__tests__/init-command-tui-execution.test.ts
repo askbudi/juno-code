@@ -25,6 +25,7 @@ let pty: typeof import('node-pty') | null = null;
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
+const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';
 
 const TUI_TIMEOUT = 60000; // 60 seconds for fast iteration
 const RUN_TUI = process.env.RUN_TUI === '1';
@@ -87,9 +88,11 @@ suite('Init Command TUI Execution', () => {
     }
   });
   beforeEach(async () => {
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-init-tui-'));
+    tempDir = await fs.mkdtemp(path.join(BASE_TMP_DIR, 'juno-init-tui-'));
     outputDir = path.join(tempDir, 'test-outputs');
     await fs.ensureDir(outputDir);
+    // eslint-disable-next-line no-console
+    console.log(`🧪 TUI temp directory: ${tempDir}`);
 
     const mjsExists = await fs.pathExists(BINARY_MJS);
     if (!mjsExists) {
@@ -185,6 +188,7 @@ suite('Init Command TUI Execution', () => {
       // Save raw output
       const savedPath = await saveRawOutput(outputDir, stripAnsi(fullBuffer));
       console.log(`📄 Raw TUI output saved: ${savedPath}`);
+      console.log(`🧭 Inspect temp dir: ${tempDir}`);
 
       // Verify required files
       const required = [
@@ -212,6 +216,7 @@ suite('Init Command TUI Execution', () => {
       // On failure, save whatever we saw for debugging
       const savedPath = await saveRawOutput(outputDir, stripAnsi(fullBuffer));
       console.log(`❌ TUI test failed. Raw output saved: ${savedPath}`);
+      console.log(`🧭 Inspect temp dir: ${tempDir}`);
       throw err;
     } finally {
       try { if (ptyProcess) ptyProcess.kill(); } catch {}

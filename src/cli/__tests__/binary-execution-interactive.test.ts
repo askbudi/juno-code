@@ -23,6 +23,7 @@ import { performance } from 'node:perf_hooks';
 // __dirname is juno-task-ts/src/cli/__tests__; go up to juno-task-ts root
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
+const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';
 
 // Test timeout for interactive scenarios
 const INTERACTIVE_TIMEOUT = 45000; // 45 seconds for interactive tests
@@ -422,6 +423,7 @@ ${avgUXScore < 7 ? `
 
   await fs.writeFile(reportPath, report, 'utf-8');
   console.log(`\n📊 Interactive Test Report generated: ${reportPath}`);
+  console.log(`🧭 Inspect temp dir: ${tempDir}`);
 }
 
 describe('Binary Execution Interactive Tests', () => {
@@ -435,7 +437,9 @@ describe('Binary Execution Interactive Tests', () => {
 
   beforeEach(async () => {
     // Create temporary directory for each test
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-interactive-test-'));
+    tempDir = await fs.mkdtemp(path.join(BASE_TMP_DIR, 'juno-interactive-test-'));
+    // eslint-disable-next-line no-console
+    console.log(`🧪 Binary test temp directory: ${tempDir}`);
     testReportData = [];
   });
 
