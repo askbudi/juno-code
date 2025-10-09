@@ -129,7 +129,7 @@ describe('Configuration Module', () => {
     it('should reject timeout too high', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpTimeout: 700000 // Too high (exceeds 600000 max)
+        mcpTimeout: 90000000 // Too high (exceeds 86400000 max = 24 hours)
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpTimeout/);

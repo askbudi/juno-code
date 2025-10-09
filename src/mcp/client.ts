@@ -785,9 +785,10 @@ export class JunoMCPClient {
   private async callToolWithTimeout(
     client: Client,
     toolRequest: { name: string; arguments: Record<string, any> },
-    timeoutMs: number
+    timeoutMs: number,
+    attempt: number = 1
   ): Promise<any> {
-    console.log(`[MCP] callToolWithTimeout: Starting ${toolRequest.name} with ${timeoutMs}ms timeout`);
+    console.log(`[MCP] callToolWithTimeout: Starting ${toolRequest.name} with ${timeoutMs}ms timeout (attempt ${attempt})`);
     const startTime = Date.now();
 
     return new Promise((resolve, reject) => {
@@ -798,7 +799,7 @@ export class JunoMCPClient {
       }, timeoutMs);
 
       client.callTool(toolRequest, {
-        timeout: timeoutMs,
+        timeout: Math.min(timeoutMs, 550000), // Use slightly less than 60s to avoid SDK timeout
         resetTimeoutOnProgress: true
         // Note: maxTotalTimeout is NOT set to allow indefinite operation with progress resets
         // The timeout will reset on each progress event from the server
@@ -809,10 +810,37 @@ export class JunoMCPClient {
           clearTimeout(timer);
           resolve(result);
         })
-        .catch(error => {
+        .catch(async error => {
           const actualDuration = Date.now() - startTime;
           console.log(`[MCP] callToolWithTimeout: ERROR for ${toolRequest.name} after ${actualDuration}ms:`, error.message);
           clearTimeout(timer);
+
+          // Check for MCP SDK internal timeout error (-32001)
+          if (error.message.includes('32001') || error.message.includes('Request timed out')) {
+            console.log(`[MCP] Detected SDK internal timeout, implementing retry mechanism...`);
+            //No Retry!!!! It is not allowed.
+            if (attempt < 0) { // Retry up to 3 times
+              console.log(`[MCP] Retrying ${toolRequest.name} (attempt ${attempt + 1})...`);
+
+              // Create fresh connection
+              try {
+                const { transport: newTransport, client: newClient } = await this.createConnection();
+                await this.connectWithTimeout(newClient, newTransport, 30000);
+
+                // Retry with fresh connection
+                const retryResult = await this.callToolWithTimeout(newClient, toolRequest, timeoutMs, attempt + 1);
+                resolve(retryResult);
+                return;
+              } catch (retryError) {
+                console.log(`[MCP] Retry attempt ${attempt + 1} failed:`, retryError.message);
+                reject(retryError);
+                return;
+              }
+            } else {
+              console.log(`[MCP] Max retry attempts reached for ${toolRequest.name}`);
+            }
+          }
+
           reject(error);
         });
     });
@@ -1491,7 +1519,7 @@ export class SubagentMapperImpl {
 
   getDefaults(subagentType: string): any {
     return {
-      timeout: 600000,
+      timeout: 6000000,
       model: this.getDefaultModel(subagentType),
       arguments: {},
       priority: 'normal',

@@ -10,6 +10,14 @@
  *
  * These tests go beyond unit testing to validate the real user experience
  * that people encounter when using the CLI tool in production.
+ *
+ * How to run:
+ * - Build binary first: `npm --prefix juno-task-ts run build`
+ * - Run this suite: `npm --prefix juno-task-ts run test:binary`
+ * - Optional env vars:
+ *   - `PRESERVE_TMP=1` keep /tmp test dir for manual inspection
+ *   - `TEST_TMP_DIR=/tmp` override base tmp dir (default `/tmp`)
+ *   - `BINARY_ARTIFACTS_DIR=...` set stable artifact output dir (default: test-artifacts/binary)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
@@ -24,6 +32,7 @@ import { performance } from 'node:perf_hooks';
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
 const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';
+const ARTIFACTS_DIR = process.env.BINARY_ARTIFACTS_DIR || path.join(PROJECT_ROOT, 'test-artifacts', 'binary');
 
 // Test timeout for interactive scenarios
 const INTERACTIVE_TIMEOUT = 45000; // 45 seconds for interactive tests
@@ -263,6 +272,7 @@ function generateRecommendations(output: InteractiveTestReport['output']): strin
  */
 async function generateInteractiveTestReport(): Promise<void> {
   const reportPath = path.join(tempDir, 'binary-execution-interactive-report.md');
+  const stableDir = ARTIFACTS_DIR;
 
   const successfulTests = testReportData.filter(t => t.output.success);
   const interactiveTests = testReportData.filter(t => t.output.interactivePromptsDetected);
@@ -421,8 +431,12 @@ ${avgUXScore < 7 ? `
 *This report analyzes the real user experience of the CLI tool through comprehensive interactive testing scenarios.*
 `;
 
+  await fs.ensureDir(stableDir);
   await fs.writeFile(reportPath, report, 'utf-8');
+  const stablePath = path.join(stableDir, `binary-execution-interactive-report-${Date.now()}.md`);
+  await fs.writeFile(stablePath, report, 'utf-8');
   console.log(`\n📊 Interactive Test Report generated: ${reportPath}`);
+  console.log(`📦 Interactive Test Report (stable): ${stablePath}`);
   console.log(`🧭 Inspect temp dir: ${tempDir}`);
 }
 
@@ -451,7 +465,12 @@ describe('Binary Execution Interactive Tests', () => {
 
     // Clean up temporary directory
     if (tempDir && await fs.pathExists(tempDir)) {
-      await fs.remove(tempDir);
+      if (process.env.PRESERVE_TMP === '1') {
+        // eslint-disable-next-line no-console
+        console.log(`🛑 PRESERVE_TMP=1 set. Temp kept at: ${tempDir}`);
+      } else {
+        await fs.remove(tempDir);
+      }
     }
   });
 

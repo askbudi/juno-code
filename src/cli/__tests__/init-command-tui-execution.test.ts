@@ -4,6 +4,14 @@
  * End-to-end interactive test that drives the TUI with real keystrokes,
  * captures raw output to a file, and verifies expected files in .juno_task.
  *
+ * How to run:
+ * - Build binary first: `npm --prefix juno-task-ts run build`
+ * - Run via npm script: `npm --prefix juno-task-ts run test:tui`
+ * - Optional env vars:
+ *   - `PRESERVE_TMP=1` keep /tmp test dir for manual inspection
+ *   - `TEST_TMP_DIR=/tmp` override base tmp dir (default `/tmp`)
+ *   - `TUI_ARTIFACTS_DIR=...` set stable artifact output dir (default: test-artifacts/tui)
+ *
  * User flow (as requested):
  * 1) Press Enter on the first question (directory)
  * 2) Enter: "Count number of folders in this directory and give me a report"
@@ -26,6 +34,7 @@ let pty: typeof import('node-pty') | null = null;
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
 const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';
+const ARTIFACTS_DIR = process.env.TUI_ARTIFACTS_DIR || path.join(PROJECT_ROOT, 'test-artifacts', 'tui');
 
 const TUI_TIMEOUT = 60000; // 60 seconds for fast iteration
 const RUN_TUI = process.env.RUN_TUI === '1';
@@ -91,6 +100,7 @@ suite('Init Command TUI Execution', () => {
     tempDir = await fs.mkdtemp(path.join(BASE_TMP_DIR, 'juno-init-tui-'));
     outputDir = path.join(tempDir, 'test-outputs');
     await fs.ensureDir(outputDir);
+    await fs.ensureDir(ARTIFACTS_DIR);
     // eslint-disable-next-line no-console
     console.log(`🧪 TUI temp directory: ${tempDir}`);
 
@@ -105,8 +115,14 @@ suite('Init Command TUI Execution', () => {
       try { ptyProcess.kill(); } catch {}
       ptyProcess = null;
     }
+    // Preserve temp dir for manual inspection when requested
     if (tempDir && await fs.pathExists(tempDir)) {
-      try { await fs.remove(tempDir); } catch {}
+      if (process.env.PRESERVE_TMP === '1') {
+        // eslint-disable-next-line no-console
+        console.log(`🛑 PRESERVE_TMP=1 set. Temp kept at: ${tempDir}`);
+      } else {
+        try { await fs.remove(tempDir); } catch {}
+      }
     }
   });
 
@@ -185,9 +201,13 @@ suite('Init Command TUI Execution', () => {
         await new Promise(r => setTimeout(r, 300));
       }
 
-      // Save raw output
-      const savedPath = await saveRawOutput(outputDir, stripAnsi(fullBuffer));
+      // Save raw output (temp + stable artifacts)
+      const cleaned = stripAnsi(fullBuffer);
+      const savedPath = await saveRawOutput(outputDir, cleaned);
+      const stablePath = path.join(ARTIFACTS_DIR, `init-command-tui-output-${now()}.txt`);
+      await fs.writeFile(stablePath, cleaned, 'utf-8');
       console.log(`📄 Raw TUI output saved: ${savedPath}`);
+      console.log(`📦 Raw TUI artifact saved: ${stablePath}`);
       console.log(`🧭 Inspect temp dir: ${tempDir}`);
 
       // Verify required files
@@ -213,9 +233,13 @@ suite('Init Command TUI Execution', () => {
       expect(initContent).toContain('https://github.com/askbudi/temp-test-ts-repo');
 
     } catch (err) {
-      // On failure, save whatever we saw for debugging
-      const savedPath = await saveRawOutput(outputDir, stripAnsi(fullBuffer));
+      // On failure, save whatever we saw for debugging (temp + stable)
+      const cleaned = stripAnsi(fullBuffer);
+      const savedPath = await saveRawOutput(outputDir, cleaned);
+      const stablePath = path.join(ARTIFACTS_DIR, `init-command-tui-output-${now()}.txt`);
+      await fs.writeFile(stablePath, cleaned, 'utf-8');
       console.log(`❌ TUI test failed. Raw output saved: ${savedPath}`);
+      console.log(`📦 Raw TUI artifact saved: ${stablePath}`);
       console.log(`🧭 Inspect temp dir: ${tempDir}`);
       throw err;
     } finally {
