@@ -763,14 +763,15 @@ export class JunoMCPClient {
       });
     }
 
-    // Create MCP client for this operation
+    // Create MCP client for this operation with configured timeout
     const client = new Client({
       name: 'juno-task-ts',
       version: '1.0.0'
     }, {
       capabilities: {
         tools: {}
-      }
+      },
+      timeout: this.options.timeout // Pass our configured timeout to SDK client
     });
 
     return { transport, client };
@@ -798,11 +799,11 @@ export class JunoMCPClient {
         reject(new MCPTimeoutError(`Tool call '${toolRequest.name}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      client.callTool(toolRequest, {
-        timeout: Math.min(timeoutMs, 550000), // Use slightly less than 60s to avoid SDK timeout
-        resetTimeoutOnProgress: true
-        // Note: maxTotalTimeout is NOT set to allow indefinite operation with progress resets
-        // The timeout will reset on each progress event from the server
+      client.callTool(toolRequest, undefined, {
+        timeout: Math.max(timeoutMs, 55000), 
+        resetTimeoutOnProgress: true,
+        maxTotalTimeout: timeoutMs *100,
+        
       })
         .then(result => {
           const actualDuration = Date.now() - startTime;
@@ -1372,7 +1373,7 @@ export class MCPServerConfigResolver {
     return {
       serverPath: serverConfig.args[0], // For backwards compatibility
       serverName: serverConfig.name,
-      timeout: (serverConfig.timeout * 1000) || 120000, // Convert to milliseconds
+      timeout: options.timeout || (serverConfig.timeout * 1000) || 120000, // User timeout takes precedence over server config
       retries: 3,
       environment: serverConfig.env,
       ...options
