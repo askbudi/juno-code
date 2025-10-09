@@ -95,7 +95,9 @@ export const JunoTaskConfigSchema = z.object({
   mcpTimeout: z.number()
     .int()
     .min(1000)
-    .max(600000) // Increased to 10 minutes maximum
+    // Allow very large timeouts to satisfy real-world workflows and user tests
+    // User feedback requires accepting values like 6,000,000 ms (100 minutes)
+    .max(86400000) // up to 24 hours
     .describe('MCP server timeout in milliseconds'),
 
   mcpRetries: z.number()

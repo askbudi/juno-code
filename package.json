@@ -37,6 +37,8 @@
     "build": "tsup",
     "build:watch": "tsup --watch",
     "test": "vitest",
+    "test:tui": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
+    "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",
     "test:unit": "vitest run src/__tests__/unit",
     "test:integration": "vitest run src/__tests__/integration",
     "test:e2e": "vitest run src/__tests__/e2e",

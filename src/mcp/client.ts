@@ -33,6 +33,10 @@ export interface MCPClientOptions {
 export interface ToolCallRequest {
   toolName: string;
   arguments?: Record<string, any>;
+  timeout?: number;
+  priority?: 'low' | 'normal' | 'high';
+  metadata?: Record<string, unknown>;
+  progressCallback?: (event: ProgressEvent) => Promise<void>;
 }
 
 export interface ToolCallResponse {
@@ -215,9 +219,9 @@ export class JunoMCPClient {
         }
       });
 
-      // Apply timeout to tool call
-      const timeout = this.options.timeout || this.subagentMapper.getDefaults('claude').timeout;
-      console.log(`[MCP] Using timeout: ${timeout}ms (options.timeout=${this.options.timeout}, default=${this.subagentMapper.getDefaults('claude').timeout})`);
+      // Apply timeout to tool call - prioritize request timeout over client options
+      const timeout = request.timeout || this.options.timeout || this.subagentMapper.getDefaults('claude').timeout;
+      console.log(`[MCP] Using timeout: ${timeout}ms (request.timeout=${request.timeout}, options.timeout=${this.options.timeout}, default=${this.subagentMapper.getDefaults('claude').timeout})`);
       // Enforce timeout at the top level as well, so tests that mock
       // callToolWithTimeout still respect the configured timeout.
       const result = await new Promise<any>((resolve, reject) => {
@@ -795,6 +799,8 @@ export class JunoMCPClient {
 
       client.callTool(toolRequest, {
         timeout: timeoutMs,
+        // Ensure the client's internal overall deadline is extended as well
+        maxTotalTimeout: timeoutMs,
         resetTimeoutOnProgress: true
       })
         .then(result => {
@@ -849,7 +855,11 @@ export class JunoMCPClient {
       const timeoutMs = this.options.timeout || 30000; // Default 30 seconds
       await this.connectWithTimeout(client, transport, timeoutMs);
       // Test with a simple operation
-      await client.listTools(undefined, { timeout: timeoutMs, resetTimeoutOnProgress: true });
+      await client.listTools(undefined, {
+        timeout: timeoutMs,
+        maxTotalTimeout: timeoutMs,
+        resetTimeoutOnProgress: true
+      });
     } finally {
       try {
         await client.close();

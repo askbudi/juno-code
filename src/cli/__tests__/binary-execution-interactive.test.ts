@@ -20,7 +20,8 @@ import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
 
 // Binary paths for testing
-const PROJECT_ROOT = path.resolve(__dirname, '../../../..');
+// __dirname is juno-task-ts/src/cli/__tests__; go up to juno-task-ts root
+const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
 
 // Test timeout for interactive scenarios
