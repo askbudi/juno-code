@@ -189,8 +189,9 @@ export class JunoMCPClient {
         }
       });
 
-      // Connect and call the tool
-      await client.connect(transport);
+      // Connect and call the tool with timeout
+      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      await this.connectWithTimeout(client, transport, timeoutMs);
 
       // Emit execution progress
       await this.emitProgressEvent({
@@ -208,7 +209,7 @@ export class JunoMCPClient {
       });
 
       // Apply timeout to tool call
-      const timeout = this.options.timeout || this.getDefaults('claude').timeout;
+      const timeout = this.options.timeout || this.subagentMapper.getDefaults('claude').timeout;
       const result = await this.callToolWithTimeout(client, {
         name: request.toolName,
         arguments: request.arguments || {}
@@ -336,7 +337,9 @@ export class JunoMCPClient {
     const { transport, client } = await this.createConnection();
 
     try {
-      await client.connect(transport);
+      // Connect with timeout
+      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      await this.connectWithTimeout(client, transport, timeoutMs);
       const result = await client.listTools();
 
       return result.tools.map(tool => ({
@@ -775,11 +778,38 @@ export class JunoMCPClient {
     });
   }
 
+  /**
+   * Connect to MCP client with configurable timeout
+   */
+  private async connectWithTimeout(
+    client: Client,
+    transport: StdioClientTransport,
+    timeoutMs: number
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new MCPTimeoutError(`MCP connection timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      client.connect(transport)
+        .then(() => {
+          clearTimeout(timer);
+          resolve();
+        })
+        .catch(error => {
+          clearTimeout(timer);
+          reject(error);
+        });
+    });
+  }
+
   private async testConnection(): Promise<void> {
     const { transport, client } = await this.createConnection();
 
     try {
-      await client.connect(transport);
+      // Use timeout configuration for connection
+      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      await this.connectWithTimeout(client, transport, timeoutMs);
       // Test with a simple operation
       await client.listTools();
     } finally {
@@ -1406,7 +1436,7 @@ export class SubagentMapperImpl {
 
   getDefaults(subagentType: string): any {
     return {
-      timeout: 60000,
+      timeout: 600000,
       model: this.getDefaultModel(subagentType),
       arguments: {},
       priority: 'normal',

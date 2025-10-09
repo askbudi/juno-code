@@ -79,6 +79,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--no-color', 'Disable colored output')
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
+    .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
 
   // Global error handling
   program.exitOverride((err) => {

@@ -525,7 +525,8 @@ export async function startCommandHandler(
         verbose: allOptions.verbose || false,
         quiet: allOptions.quiet || false,
         logLevel: allOptions.logLevel || 'info',
-        workingDirectory: allOptions.directory || process.cwd()
+        workingDirectory: allOptions.directory || process.cwd(),
+        mcpTimeout: allOptions.mcpTimeout
       }
     });
     cliLogger.endTimer('config_loading', 'Configuration loaded successfully');

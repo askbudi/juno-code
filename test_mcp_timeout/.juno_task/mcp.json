@@ -1,0 +1,47 @@
+{
+  "mcpServers": {
+    "roundtable-ai": {
+      "name": "roundtable-ai",
+      "command": "python",
+      "args": [
+        "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/roundtable_mcp_server/roundtable_mcp_server/server.py"
+      ],
+      "timeout": 3600,
+      "enable_default_progress_callback": true,
+      "suppress_subprocess_logs": true,
+      "env": {
+        "PYTHONPATH": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+        "ROUNDTABLE_DEBUG": "false"
+      },
+      "_metadata": {
+        "description": "Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents",
+        "capabilities": [
+          "claude_subagent - Advanced reasoning and code quality",
+          "cursor_subagent - Real-time collaboration and editing",
+          "codex_subagent - Code generation and completion",
+          "gemini_subagent - Multimodal analysis and generation"
+        ],
+        "working_directory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_mcp_timeout",
+        "verbose": false,
+        "created_at": "2025-10-09T04:22:42.441Z",
+        "project_name": "test_mcp_timeout",
+        "main_task": "test task"
+      }
+    }
+  },
+  "default_server": "roundtable-ai",
+  "global_settings": {
+    "connection_timeout": 30,
+    "default_retries": 3,
+    "enable_progress_streaming": true,
+    "log_level": "info",
+    "debug_mode": false
+  },
+  "project_config": {
+    "name": "test_mcp_timeout",
+    "main_task": "test task",
+    "preferred_subagent": "claude",
+    "created_at": "2025-10-09T04:22:42.441Z",
+    "version": "1.0.0"
+  }
+}

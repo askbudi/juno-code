@@ -593,7 +593,7 @@ Backend #3: tool_result => Analysis complete`;
       const claudeDefaults = mapper.getDefaults('claude');
 
       expect(claudeDefaults).toEqual({
-        timeout: 60000,
+        timeout: 600000,
         model: 'sonnet-4',
         arguments: {},
         priority: 'normal',

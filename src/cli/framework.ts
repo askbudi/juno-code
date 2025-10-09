@@ -96,6 +96,12 @@ export class CLIFramework {
         description: 'Maximum iterations (-1 for unlimited)',
         defaultValue: undefined,
         env: 'JUNO_TASK_MAX_ITERATIONS'
+      },
+      {
+        flags: '--mcp-timeout <number>',
+        description: 'MCP server timeout in milliseconds',
+        defaultValue: undefined,
+        env: 'JUNO_TASK_MCP_TIMEOUT'
       }
     ];
 
