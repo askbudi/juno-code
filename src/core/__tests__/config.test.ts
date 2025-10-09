@@ -48,7 +48,7 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.logLevel).toBe('info');
       expect(DEFAULT_CONFIG.verbose).toBe(false);
       expect(DEFAULT_CONFIG.quiet).toBe(false);
-      expect(DEFAULT_CONFIG.mcpTimeout).toBe(30000);
+      expect(DEFAULT_CONFIG.mcpTimeout).toBe(120000);
       expect(DEFAULT_CONFIG.mcpRetries).toBe(3);
       expect(DEFAULT_CONFIG.interactive).toBe(true);
       expect(DEFAULT_CONFIG.headlessMode).toBe(false);
@@ -129,7 +129,7 @@ describe('Configuration Module', () => {
     it('should reject timeout too high', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpTimeout: 400000 // Too high
+        mcpTimeout: 700000 // Too high (exceeds 600000 max)
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpTimeout/);

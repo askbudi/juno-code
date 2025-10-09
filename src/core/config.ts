@@ -95,7 +95,7 @@ export const JunoTaskConfigSchema = z.object({
   mcpTimeout: z.number()
     .int()
     .min(1000)
-    .max(300000)
+    .max(600000) // Increased to 10 minutes maximum
     .describe('MCP server timeout in milliseconds'),
 
   mcpRetries: z.number()
@@ -142,7 +142,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   quiet: false,
 
   // MCP settings
-  mcpTimeout: 30000, // 30 seconds
+  mcpTimeout: 120000, // 120 seconds (2 minutes) - increased to prevent timeouts for longer operations
   mcpRetries: 3,
   mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
 
@@ -156,10 +156,10 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 };
 
 /**
- * Configuration file names to search for
- * Searched in order of preference
+ * Global configuration file names to search for
+ * Searched in order of preference (after project-specific config)
  */
-const CONFIG_FILE_NAMES = [
+const GLOBAL_CONFIG_FILE_NAMES = [
   'juno-task.config.json',
   'juno-task.config.js',
   '.juno-taskrc.json',
@@ -168,15 +168,20 @@ const CONFIG_FILE_NAMES = [
 ] as const;
 
 /**
+ * Project-specific configuration file (highest precedence for project settings)
+ */
+const PROJECT_CONFIG_FILE = '.juno_task/config.json';
+
+/**
  * Supported configuration file formats
  */
 type ConfigFileFormat = 'json' | 'yaml' | 'toml' | 'js';
 
 /**
  * Configuration source types for precedence handling
- * Precedence order: cli > env > file > profile > defaults
+ * Precedence order: cli > env > projectFile > file > profile > defaults
  */
-type ConfigSource = 'defaults' | 'profile' | 'file' | 'env' | 'cli';
+type ConfigSource = 'defaults' | 'profile' | 'file' | 'projectFile' | 'env' | 'cli';
 
 /**
  * Utility function to resolve paths (relative to absolute)
@@ -352,14 +357,57 @@ async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskCon
 }
 
 /**
- * Find configuration file in the specified directory
+ * Find project-specific configuration file
+ * Looks for .juno_task/config.json in the specified directory
+ *
+ * @param searchDir - Directory to search for project configuration file
+ * @returns Path to found project config file, or null if none found
+ */
+async function findProjectConfigFile(searchDir: string = process.cwd()): Promise<string | null> {
+  const filePath = path.join(searchDir, PROJECT_CONFIG_FILE);
+
+  try {
+    await fsPromises.access(filePath, fs.constants.R_OK);
+    return filePath;
+  } catch {
+    // File doesn't exist or isn't readable
+    return null;
+  }
+}
+
+/**
+ * Find global configuration file in the specified directory
+ * Searches for global config files in order of preference
+ *
+ * @param searchDir - Directory to search for global configuration files
+ * @returns Path to found global config file, or null if none found
+ */
+async function findGlobalConfigFile(searchDir: string = process.cwd()): Promise<string | null> {
+  for (const fileName of GLOBAL_CONFIG_FILE_NAMES) {
+    const filePath = path.join(searchDir, fileName);
+
+    try {
+      await fsPromises.access(filePath, fs.constants.R_OK);
+      return filePath;
+    } catch {
+      // File doesn't exist or isn't readable, continue searching
+      continue;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find configuration file in the specified directory (legacy function for backward compatibility)
  * Searches for config files in order of preference
  *
  * @param searchDir - Directory to search for configuration files
  * @returns Path to found configuration file, or null if none found
+ * @deprecated Use findProjectConfigFile and findGlobalConfigFile for proper precedence handling
  */
 async function findConfigFile(searchDir: string = process.cwd()): Promise<string | null> {
-  for (const fileName of CONFIG_FILE_NAMES) {
+  for (const fileName of GLOBAL_CONFIG_FILE_NAMES) {
     const filePath = path.join(searchDir, fileName);
 
     try {
@@ -377,7 +425,7 @@ async function findConfigFile(searchDir: string = process.cwd()): Promise<string
 /**
  * ConfigLoader class for multi-source configuration loading
  *
- * Implements configuration precedence: CLI args > Environment Variables > Config Files > Profile > Defaults
+ * Implements configuration precedence: CLI args > Environment Variables > Project Config > Global Config Files > Profile > Defaults
  */
 export class ConfigLoader {
   private configSources: Map<ConfigSource, Partial<JunoTaskConfig>> = new Map();
@@ -420,16 +468,46 @@ export class ConfigLoader {
   }
 
   /**
-   * Automatically discover and load configuration file
-   * Searches for config files in the base directory
+   * Load configuration from project-specific config file
+   * Loads from .juno_task/config.json with highest precedence for project settings
+   *
+   * @returns This ConfigLoader instance for method chaining
+   */
+  async fromProjectConfig(): Promise<this> {
+    try {
+      const projectConfigFile = await findProjectConfigFile(this.baseDir);
+      if (projectConfigFile) {
+        const fileConfig = await loadConfigFromFile(projectConfigFile);
+        this.configSources.set('projectFile', fileConfig);
+      }
+    } catch (error) {
+      throw new Error(`Failed to load project configuration file: ${error}`);
+    }
+    return this;
+  }
+
+  /**
+   * Automatically discover and load configuration files
+   * Searches for both project-specific and global config files in the base directory
+   * Project-specific config (.juno_task/config.json) takes precedence over global configs
    *
    * @returns This ConfigLoader instance for method chaining
    */
   async autoDiscoverFile(): Promise<this> {
-    const configFile = await findConfigFile(this.baseDir);
-    if (configFile) {
-      await this.fromFile(configFile);
+    // First, try to load project-specific config
+    const projectConfigFile = await findProjectConfigFile(this.baseDir);
+    if (projectConfigFile) {
+      const fileConfig = await loadConfigFromFile(projectConfigFile);
+      this.configSources.set('projectFile', fileConfig);
     }
+
+    // Then, try to load global config file
+    const globalConfigFile = await findGlobalConfigFile(this.baseDir);
+    if (globalConfigFile) {
+      const fileConfig = await loadConfigFromFile(globalConfigFile);
+      this.configSources.set('file', fileConfig);
+    }
+
     return this;
   }
 
@@ -464,7 +542,7 @@ export class ConfigLoader {
 
   /**
    * Merge all configuration sources according to precedence
-   * CLI args > Environment Variables > Config Files > Profile > Defaults
+   * CLI args > Environment Variables > Project Config > Global Config Files > Profile > Defaults
    *
    * @returns Merged configuration object
    */
@@ -473,7 +551,7 @@ export class ConfigLoader {
     const mergedConfig = { ...DEFAULT_CONFIG };
 
     // Apply sources in order of precedence (lowest to highest)
-    const sourcePrecedence: ConfigSource[] = ['profile', 'file', 'env', 'cli'];
+    const sourcePrecedence: ConfigSource[] = ['profile', 'file', 'projectFile', 'env', 'cli'];
 
     for (const source of sourcePrecedence) {
       const sourceConfig = this.configSources.get(source);

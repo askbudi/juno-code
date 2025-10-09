@@ -116,7 +116,60 @@ function setupMainCommand(program: Command): void {
       try {
         // Get global options from program
         const globalOptions = program.opts();
+        const allOptions = { ...options, ...globalOptions };
 
+        // Check if we should auto-detect project configuration
+        if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
+          const fs = await import('fs-extra');
+          const path = await import('node:path');
+          const cwd = process.cwd();
+          const junoTaskDir = path.join(cwd, '.juno_task');
+
+          // Check if project is initialized
+          if (await fs.pathExists(junoTaskDir)) {
+            console.log(chalk.blue.bold('🎯 Juno Task - Auto-detected Initialized Project\n'));
+
+            // Try to load configuration for auto-detection
+            try {
+              const { loadConfig } = await import('../core/config.js');
+              const config = await loadConfig({
+                baseDir: cwd,
+                cliConfig: {
+                  verbose: allOptions.verbose || false,
+                  quiet: allOptions.quiet || false,
+                  logLevel: allOptions.logLevel || 'info',
+                  workingDirectory: cwd
+                }
+              });
+
+              // Auto-detect subagent from config
+              if (!allOptions.subagent && config.defaultSubagent) {
+                allOptions.subagent = config.defaultSubagent;
+                console.log(chalk.gray(`🤖 Using configured subagent: ${chalk.cyan(config.defaultSubagent)}`));
+              }
+
+              // Auto-detect prompt file (.juno_task/prompt.md)
+              const promptFile = path.join(junoTaskDir, 'prompt.md');
+              if (!allOptions.prompt && await fs.pathExists(promptFile)) {
+                allOptions.prompt = promptFile;
+                console.log(chalk.gray(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
+              }
+
+              // Check if we have enough information to proceed
+              if (allOptions.subagent && (allOptions.prompt || await fs.pathExists(promptFile))) {
+                console.log(chalk.green('✓ Auto-detected project configuration\n'));
+                // Import and execute with auto-detected options
+                const { mainCommandHandler } = await import('../cli/commands/main.js');
+                await mainCommandHandler([], allOptions, command);
+                return;
+              }
+            } catch (configError) {
+              console.log(chalk.yellow(`⚠️  Could not load project configuration: ${configError}`));
+            }
+          }
+        }
+
+        // Show help if no arguments provided or auto-detection failed
         if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
           console.log(chalk.blue.bold('🎯 Juno Task - TypeScript CLI for AI Subagent Orchestration\n'));
           console.log(chalk.white('To get started:'));

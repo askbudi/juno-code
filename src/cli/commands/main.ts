@@ -353,6 +353,7 @@ class MainExecutionCoordinator {
       this.config.mcpServerName,
       request.workingDirectory,
       {
+        timeout: this.config.mcpTimeout,
         retries: this.config.mcpRetries,
         debug: this.config.verbose,
         enableProgressStreaming: true,
@@ -572,7 +573,6 @@ export function createMainCommand(): CLICommand {
       createOption({
         flags: '-i, --max-iterations <number>',
         description: 'Maximum iterations (-1 for unlimited)',
-        defaultValue: 1,
         env: 'JUNO_TASK_MAX_ITERATIONS'
       }),
       createOption({

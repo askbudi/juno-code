@@ -6,6 +6,7 @@
  */
 
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
@@ -228,6 +229,14 @@ class SimpleProjectGenerator {
     // Create .juno_task directory
     const junoTaskDir = path.join(targetDirectory, '.juno_task');
     await fs.ensureDir(junoTaskDir);
+
+    // Create config.json with user's subagent choice and other settings
+    console.log(chalk.blue('⚙️ Creating project configuration...'));
+    await this.createConfigFile(junoTaskDir, targetDirectory);
+
+    // Create mcp.json with MCP server configuration
+    console.log(chalk.blue('🔧 Setting up MCP configuration...'));
+    await this.createMcpFile(junoTaskDir, targetDirectory);
 
     console.log(chalk.blue('📄 Creating production-ready project files...'));
 
@@ -758,6 +767,9 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
     await fs.writeFile(path.join(targetDirectory, 'README.md'), readmeContent);
 
+    // Set up Git repository if Git URL is provided
+    await this.setupGitRepository();
+
     console.log(chalk.green.bold('\n✅ Project initialization complete!'));
     this.printNextSteps(targetDirectory, variables.EDITOR);
   }
@@ -782,6 +794,112 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     return bestFor[agent as keyof typeof bestFor] || 'General development tasks';
   }
 
+  private async createConfigFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
+    const configContent = {
+      // Core settings
+      defaultSubagent: this.context.subagent,
+      defaultMaxIterations: 50,
+      defaultModel: this.getDefaultModelForSubagent(this.context.subagent || 'claude'),
+
+      // Logging settings
+      logLevel: 'info',
+      verbose: false,
+      quiet: false,
+
+      // MCP settings
+      mcpTimeout: 120000, // 120 seconds (2 minutes) - increased to prevent timeouts for longer operations
+      mcpRetries: 3,
+      mcpServerName: 'roundtable-ai',
+
+      // TUI settings
+      interactive: true,
+      headlessMode: false,
+
+      // Paths
+      workingDirectory: targetDirectory,
+      sessionDirectory: path.join(targetDirectory, '.juno_task')
+    };
+
+    const configPath = path.join(junoTaskDir, 'config.json');
+    await fs.writeFile(configPath, JSON.stringify(configContent, null, 2));
+
+    console.log(chalk.green(`   ✓ Created .juno_task/config.json with ${this.context.subagent} as default subagent`));
+  }
+
+  private async createMcpFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
+    const projectName = path.basename(targetDirectory);
+    const timestamp = new Date().toISOString();
+
+    // Get the current directory in ESM way
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+
+    // Get the roundtable server path - use environment variable or default
+    const roundtablePath = process.env.JUNO_TASK_MCP_SERVER_PATH ||
+      path.join(__dirname, '../../../roundtable_mcp_server/roundtable_mcp_server/server.py');
+
+    const mcpContent = {
+      mcpServers: {
+        "roundtable-ai": {
+          name: "roundtable-ai",
+          command: "python",
+          args: [roundtablePath],
+          timeout: 3600.0,
+          enable_default_progress_callback: true,
+          suppress_subprocess_logs: true,
+          env: {
+            PYTHONPATH: path.resolve(__dirname, '../..'),
+            ROUNDTABLE_DEBUG: "false"
+          },
+          _metadata: {
+            description: "Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents",
+            capabilities: [
+              "claude_subagent - Advanced reasoning and code quality",
+              "cursor_subagent - Real-time collaboration and editing",
+              "codex_subagent - Code generation and completion",
+              "gemini_subagent - Multimodal analysis and generation"
+            ],
+            working_directory: targetDirectory,
+            verbose: false,
+            created_at: timestamp,
+            project_name: projectName,
+            main_task: this.context.task || "Project initialization"
+          }
+        }
+      },
+      default_server: "roundtable-ai",
+      global_settings: {
+        connection_timeout: 30.0,
+        default_retries: 3,
+        enable_progress_streaming: true,
+        log_level: "info",
+        debug_mode: false
+      },
+      project_config: {
+        name: projectName,
+        main_task: this.context.task || "Project initialization",
+        preferred_subagent: this.context.subagent || "claude",
+        created_at: timestamp,
+        version: "1.0.0"
+      }
+    };
+
+    const mcpPath = path.join(junoTaskDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify(mcpContent, null, 2));
+
+    console.log(chalk.green(`   ✓ Created .juno_task/mcp.json with roundtable-ai server configuration`));
+  }
+
+  private getDefaultModelForSubagent(subagent: string): string {
+    const modelDefaults = {
+      claude: 'claude-3-sonnet-20240229',
+      codex: 'gpt-4-turbo',
+      gemini: 'gemini-1.5-pro',
+      cursor: 'cursor-sonnet'
+    };
+    return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
+  }
+
   private printNextSteps(targetDirectory: string, editor: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
@@ -790,6 +908,96 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
     console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));
+  }
+
+  /**
+   * Initialize Git repository and set up remote if Git URL is provided
+   */
+  private async setupGitRepository(): Promise<void> {
+    if (!this.context.gitUrl) {
+      return; // No Git URL provided, skip Git setup
+    }
+
+    const { targetDirectory } = this.context;
+
+    try {
+      console.log(chalk.blue('🔧 Setting up Git repository...'));
+
+      // Check if git is available
+      const { execSync } = await import('child_process');
+
+      try {
+        execSync('git --version', { stdio: 'ignore' });
+      } catch (error) {
+        console.log(chalk.yellow('   ⚠️  Git not found, skipping repository setup'));
+        console.log(chalk.gray('   Install Git to enable repository initialization'));
+        return;
+      }
+
+      // Initialize git repository
+      try {
+        execSync('git init', { cwd: targetDirectory, stdio: 'ignore' });
+        console.log(chalk.green('   ✓ Initialized Git repository'));
+      } catch (error) {
+        // Git repository might already exist, that's okay
+        console.log(chalk.yellow('   ⚠️  Git repository already exists or initialization failed'));
+      }
+
+      // Add remote if URL is provided
+      if (this.context.gitUrl) {
+        try {
+          // Check if remote already exists
+          const remotes = execSync('git remote -v', {
+            cwd: targetDirectory,
+            encoding: 'utf8'
+          });
+
+          if (remotes.includes('origin')) {
+            console.log(chalk.yellow('   ⚠️  Git remote "origin" already exists'));
+          } else {
+            // Add origin remote
+            execSync(`git remote add origin "${this.context.gitUrl}"`, {
+              cwd: targetDirectory,
+              stdio: 'ignore'
+            });
+            console.log(chalk.green(`   ✓ Added remote origin: ${this.context.gitUrl}`));
+          }
+        } catch (error) {
+          console.log(chalk.yellow('   ⚠️  Failed to add Git remote'));
+        }
+      }
+
+      // Create initial commit if repository has no commits
+      try {
+        const commitCount = execSync('git rev-list --count HEAD', {
+          cwd: targetDirectory,
+          encoding: 'utf8'
+        }).trim();
+
+        if (commitCount === '0') {
+          // Add all files and create initial commit
+          execSync('git add .', { cwd: targetDirectory, stdio: 'ignore' });
+
+          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-task using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-task](https://github.com/owner/juno-task-ts)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+
+          execSync(`git commit -m "${commitMessage}"`, {
+            cwd: targetDirectory,
+            stdio: 'ignore'
+          });
+          console.log(chalk.green('   ✓ Created initial commit'));
+        } else {
+          console.log(chalk.gray('   ℹ️  Repository already has commits'));
+        }
+      } catch (error) {
+        console.log(chalk.yellow('   ⚠️  Failed to create initial commit'));
+        console.log(chalk.gray('   You can commit manually later'));
+      }
+
+    } catch (error) {
+      console.log(chalk.yellow('   ⚠️  Git setup failed'));
+      console.log(chalk.gray(`   Error: ${error}`));
+      console.log(chalk.gray('   You can set up Git manually later'));
+    }
   }
 }
 
@@ -804,16 +1012,16 @@ class SimpleHeadlessInit {
     const task = this.options.task || 'Define your main task objective here';
     const gitUrl = this.options.gitUrl;
 
-    // Default subagent for headless mode
-    const defaultSubagent = 'claude';
+    // Use subagent from options or fallback to default
+    const selectedSubagent = this.options.subagent || 'claude';
 
     // Create simple variables
-    const variables = this.createSimpleVariables(targetDirectory, task, defaultSubagent, gitUrl);
+    const variables = this.createSimpleVariables(targetDirectory, task, selectedSubagent, gitUrl);
 
     return {
       targetDirectory,
       task,
-      subagent: defaultSubagent,
+      subagent: selectedSubagent,
       gitUrl,
       variables,
       force: this.options.force || false,
@@ -852,6 +1060,10 @@ export async function initCommandHandler(
   command: Command
 ): Promise<void> {
   try {
+    // Get global options from command's parent program
+    const globalOptions = command.parent?.opts() || {};
+    const allOptions = { ...options, ...globalOptions };
+
     console.log(chalk.blue.bold('🎯 Juno Task - Simplified Initialization'));
 
     let context: InitializationContext;
@@ -866,7 +1078,7 @@ export async function initCommandHandler(
       context = await tui.gather();
     } else {
       // Headless mode
-      const headless = new SimpleHeadlessInit(options);
+      const headless = new SimpleHeadlessInit(allOptions);
       context = await headless.initialize();
     }
 
@@ -920,6 +1132,7 @@ export function configureInitCommand(program: Command): void {
         force: options.force,
         task: options.task,
         gitUrl: options.gitUrl,
+        subagent: options.subagent,
         interactive: options.interactive,
         // Global options
         verbose: options.verbose,

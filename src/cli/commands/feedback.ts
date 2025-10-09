@@ -208,8 +208,8 @@ export function configureFeedbackCommand(program: Command): void {
       const mergedOptions = command.optsWithGlobals();
 
       const feedbackOptions: FeedbackCommandOptions = {
-        file: mergedOptions.file,
-        interactive: mergedOptions.interactive,
+        file: options.file || mergedOptions.file,
+        interactive: options.interactive,
         // Global options
         verbose: mergedOptions.verbose,
         quiet: mergedOptions.quiet,
@@ -219,7 +219,9 @@ export function configureFeedbackCommand(program: Command): void {
       };
 
       const feedbackText = Array.isArray(feedback) ? feedback.join(' ') : feedback;
-      await feedbackCommandHandler([feedbackText], feedbackOptions, command);
+      // Only pass arguments if there's actual feedback text
+      const args = feedbackText ? [feedbackText] : [];
+      await feedbackCommandHandler(args, feedbackOptions, command);
     })
     .addHelpText('after', `
 Examples:

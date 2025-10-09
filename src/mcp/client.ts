@@ -207,10 +207,12 @@ export class JunoMCPClient {
         }
       });
 
-      const result = await client.callTool({
+      // Apply timeout to tool call
+      const timeout = this.options.timeout || this.getDefaults('claude').timeout;
+      const result = await this.callToolWithTimeout(client, {
         name: request.toolName,
         arguments: request.arguments || {}
-      });
+      }, timeout);
 
       const duration = Date.now() - startTime;
 
@@ -748,6 +750,31 @@ export class JunoMCPClient {
   /**
    * Test connection by doing a quick operation
    */
+  /**
+   * Call tool with configurable timeout
+   */
+  private async callToolWithTimeout(
+    client: Client,
+    toolRequest: { name: string; arguments: Record<string, any> },
+    timeoutMs: number
+  ): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new MCPTimeoutError(`Tool call '${toolRequest.name}' timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      client.callTool(toolRequest)
+        .then(result => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch(error => {
+          clearTimeout(timer);
+          reject(error);
+        });
+    });
+  }
+
   private async testConnection(): Promise<void> {
     const { transport, client } = await this.createConnection();
 
@@ -1239,7 +1266,7 @@ export class MCPServerConfigResolver {
     return {
       serverPath: serverConfig.args[0], // For backwards compatibility
       serverName: serverConfig.name,
-      timeout: (serverConfig.timeout * 1000) || 30000, // Convert to milliseconds
+      timeout: (serverConfig.timeout * 1000) || 120000, // Convert to milliseconds
       retries: 3,
       environment: serverConfig.env,
       ...options

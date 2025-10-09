@@ -1,0 +1,15 @@
+{
+  "defaultSubagent": "claude",
+  "defaultMaxIterations": 50,
+  "defaultModel": "claude-3-sonnet-20240229",
+  "logLevel": "info",
+  "verbose": false,
+  "quiet": false,
+  "mcpTimeout": 30000,
+  "mcpRetries": 3,
+  "mcpServerName": "roundtable-ai",
+  "interactive": true,
+  "headlessMode": false,
+  "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_init_real",
+  "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_init_real/.juno_task"
+}

@@ -1,66 +1,49 @@
 # Juno-Task Implementation Plan
 
-## 🎯 REMAINING WORK
+## 🚨 CRITICAL P0 BLOCKING ISSUE
 
-### 1. Minor Test Fix (1/284 tests failing)
-- **Issue**: 1 test expects exit code 0 but receives exit code 99
-- **File**: Likely in start.test.ts based on recent test modifications
-- **Impact**: Minimal - 99.6% test pass rate (284/285 tests passing)
-- **Priority**: Low - doesn't affect production functionality
+### 1. **Init command doesn't create mcp.json file** - BLOCKER
+- **Issue**: After `juno-task init` completes successfully, running `juno-task start` raises an error because init command doesn't create mcp.json file in the .juno_task folder
+- **Validation Evidence**:
+  - Init command creates: config.json, init.md, prompt.md, plan.md, specs/, USER_FEEDBACK.md
+  - **MISSING**: mcp.json file is NOT created by init command
+  - Start command expects mcp.json for MCP server configuration
+  - This is a critical issue that prevents newly initialized projects from running
+- **Impact**: Complete workflow blockage (init → start fails)
+- **User Impact**: First-experience failure - every new project is non-functional
+- **Priority**: P0 - Single remaining blocker for production readiness
 
-## ✅ MAJOR ACCOMPLISHMENTS
+### Required Implementation:
+- Modify `src/cli/commands/init.ts` to generate mcp.json file
+- Include default MCP server configuration for roundtable-ai
+- Ensure mcp.json creation alongside other initialization files
+- Test complete init → start workflow
 
-### 1. ✅ COMPREHENSIVE TESTING FRAMEWORK IMPLEMENTED
-- **Status**: COMPLETE - Fully functional and production-ready
-- **Code Volume**: 1,498 lines of production test code
-- **Coverage**: Extensive test suite across all components
-- **Test Types**: Unit tests, integration tests, binary execution tests
-- **Performance**: Tests complete in 1.78s (previously 2+ minute timeouts)
+### Success Criteria:
+- `juno-task init` creates all required files including mcp.json
+- `juno-task start` works immediately after init without errors
+- Complete workflow tested end-to-end
 
-### 2. ✅ USER_FEEDBACK.md REALITY CORRECTION
-- **Status**: COMPLETE - False documentation corrected
-- **Achievement**: Updated documentation to reflect actual project state
-- **Impact**: Users now get accurate project status information
-- **Transparency**: Removed misleading "production ready" claims when issues existed
+## ✅ CURRENT STATUS
 
-### 3. ✅ TEST EXECUTION INFRASTRUCTURE FIXED
-- **Status**: COMPLETE - Test infrastructure highly optimized
-- **Performance**: 1.78s execution time (60x faster than before)
-- **Reliability**: No more test timeouts or hanging tests
-- **Quality**: Fast, reliable test feedback loop
+### Functionality Already Working (per USER_FEEDBACK.md validation):
+- ✅ Config.json generation in init command
+- ✅ Start command subagent selection from config
+- ✅ Main command auto-detection of subagent and prompt
+- ✅ Feedback command interactive mode
+- ✅ Default iterations configuration (50)
+- ✅ Git remote setup in init command
 
-### 4. ✅ INTERACTIVE FEEDBACK COMMAND WORKING
-- **Status**: COMPLETE - All feedback command functionality operational
-- **Features**: Interactive mode, direct feedback submission, proper error handling
-- **UX**: User-friendly feedback collection system
-
-## 📊 PROJECT STATUS IMPROVEMENT
-
-### Before → After Progress:
-- **Requirements Compliance**: 2/10 → 10/10 (Main requirement EXCEEDED)
-- **Overall Production Readiness**: 4/10 → 8/10 (Highly functional)
-- **Test Infrastructure**: 3/10 → 9/10 (Fast and reliable)
-- **Test Pass Rate**: 99.6% (284/285 tests passing)
-
-### Technical Achievements:
-- Comprehensive test coverage across all CLI commands
-- Binary execution testing for real-world validation
-- Fast test execution with proper mocking
-- Interactive TUI components fully tested
-- MCP integration testing infrastructure
-- Session management testing
-
-### Code Quality Metrics:
-- **Production Code**: 1,498 lines of well-tested functionality
-- **Test Code**: Extensive test suite with high coverage
-- **Build System**: Optimized for fast execution
-- **Error Handling**: Robust error handling throughout
+### Project State:
+- **Overall Completion**: 99% - All features working except mcp.json creation
+- **Production Readiness**: Blocked by single file creation issue
+- **Test Coverage**: Comprehensive test suite in place
+- **All other features**: Validated as working through real CLI testing
 
 ## 🎯 NEXT STEPS
 
-1. **Immediate**: Fix the 1 failing test (exit code mismatch)
-2. **Future**: Maintain high test coverage and fast execution
-3. **Documentation**: Keep plan.md updated with progress
-4. **Quality**: Continue 99%+ test pass rate maintenance
+1. **IMMEDIATE PRIORITY**: Fix mcp.json file creation in init command
+2. **VALIDATION**: Test complete init → start workflow
+3. **COMPLETION**: Remove P0 issue from USER_FEEDBACK.md once resolved
 
-**Note**: Project has achieved exceptional quality standards with comprehensive testing framework and robust functionality. The remaining test fix is minor and doesn't impact production usage.
+**Note**: This is the ONLY remaining critical issue. Once resolved, the TypeScript juno-task CLI will be fully production-ready with complete feature parity to the Python version.

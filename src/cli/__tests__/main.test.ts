@@ -204,7 +204,8 @@ describe('Main Command', () => {
       const maxIterOption = command.options.find(opt => opt.flags.includes('--max-iterations'));
 
       expect(maxIterOption).toBeDefined();
-      expect(maxIterOption?.defaultValue).toBe(1);
+      // No hardcoded default - uses config.defaultMaxIterations (50)
+      expect(maxIterOption?.defaultValue).toBeUndefined();
     });
 
     it('should have interactive options', () => {

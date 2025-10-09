@@ -1,5 +1,5 @@
 # Main Task
-Build a comprehensive testing framework
+test mcp.json creation
 
 ### Task 1
 First task is to study @.juno_task/plan.md  (it may be incorrect) and is to use up to 500 subagents to study existing project

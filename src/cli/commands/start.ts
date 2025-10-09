@@ -370,6 +370,7 @@ class ExecutionCoordinator {
         this.config.mcpServerName,
         request.workingDirectory,
         {
+          timeout: this.config.mcpTimeout,
           retries: this.config.mcpRetries,
           debug: this.config.verbose,
           enableProgressStreaming: true,
@@ -562,6 +563,7 @@ export async function startCommandHandler(
 
     // Create execution request with subagent override
     const selectedSubagent = allOptions.subagent || config.defaultSubagent;
+
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: selectedSubagent,
