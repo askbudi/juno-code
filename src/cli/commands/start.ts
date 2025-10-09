@@ -537,6 +537,15 @@ export async function startCommandHandler(
     await projectLoader.validate();
     cliLogger.endTimer('project_validation', 'Project context validated');
 
+    // If dry-run: validate config and environment then exit early
+    if ((allOptions as any).dryRun) {
+      console.log(chalk.green('✓ Configuration loaded successfully'));
+      console.log(chalk.green('✓ Project context validated'));
+      console.log(chalk.green('✓ Dry run successful — no execution performed'));
+      cliLogger.endTimer('start_command_total', 'Dry run completed successfully');
+      process.exit(0);
+    }
+
     // Load task instruction
     cliLogger.startTimer('instruction_loading');
     const instruction = await projectLoader.loadInstruction();
@@ -701,6 +710,7 @@ export function configureStartCommand(program: Command): void {
     .option('--show-trends', 'Display performance trends from historical data')
     .option('--save-metrics [file]', 'Save performance metrics to file (default: .juno_task/metrics.json)')
     .option('--metrics-file <path>', 'Specify custom path for metrics file')
+    .option('--dry-run', 'Validate configuration and exit without executing')
     .action(async (options, command) => {
       // Set default metrics file if save-metrics is used without value
       if (options.saveMetrics === true) {

@@ -115,7 +115,14 @@ export class JunoMCPClient {
         console.log('[MCP] Connection test successful');
       }
     } catch (error) {
-      throw new MCPConnectionError(`MCP server connection test failed: ${error instanceof Error ? error.message : String(error)}`, error as Error);
+      // Preserve timeout classification for callers/tests
+      if (error instanceof MCPTimeoutError) {
+        throw error;
+      }
+      throw new MCPConnectionError(
+        `MCP server connection test failed: ${error instanceof Error ? error.message : String(error)}`,
+        error as Error
+      );
     }
   }
 
@@ -190,7 +197,7 @@ export class JunoMCPClient {
       });
 
       // Connect and call the tool with timeout
-      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      const timeoutMs = this.options.timeout || 30000; // Default 30 seconds
       await this.connectWithTimeout(client, transport, timeoutMs);
 
       // Emit execution progress
@@ -210,10 +217,21 @@ export class JunoMCPClient {
 
       // Apply timeout to tool call
       const timeout = this.options.timeout || this.subagentMapper.getDefaults('claude').timeout;
-      const result = await this.callToolWithTimeout(client, {
-        name: request.toolName,
-        arguments: request.arguments || {}
-      }, timeout);
+      console.log(`[MCP] Using timeout: ${timeout}ms (options.timeout=${this.options.timeout}, default=${this.subagentMapper.getDefaults('claude').timeout})`);
+      // Enforce timeout at the top level as well, so tests that mock
+      // callToolWithTimeout still respect the configured timeout.
+      const result = await new Promise<any>((resolve, reject) => {
+        const guard = setTimeout(() => {
+          reject(new MCPTimeoutError(`Tool call '${request.toolName}' timed out after ${timeout}ms`));
+        }, timeout);
+
+        this.callToolWithTimeout(client, {
+          name: request.toolName,
+          arguments: request.arguments || {}
+        }, timeout)
+          .then(r => { clearTimeout(guard); resolve(r); })
+          .catch(e => { clearTimeout(guard); reject(e); });
+      });
 
       const duration = Date.now() - startTime;
 
@@ -272,6 +290,10 @@ export class JunoMCPClient {
       return response;
 
     } catch (error) {
+      if (error instanceof MCPTimeoutError) {
+        // Surface timeout errors directly for callers/tests
+        throw error;
+      }
       const duration = Date.now() - startTime;
 
       // Emit error progress event
@@ -338,9 +360,9 @@ export class JunoMCPClient {
 
     try {
       // Connect with timeout
-      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      const timeoutMs = this.options.timeout || 30000; // Default 30 seconds
       await this.connectWithTimeout(client, transport, timeoutMs);
-      const result = await client.listTools();
+      const result = await client.listTools(undefined, { timeout: timeoutMs, resetTimeoutOnProgress: true });
 
       return result.tools.map(tool => ({
         name: tool.name,
@@ -761,17 +783,29 @@ export class JunoMCPClient {
     toolRequest: { name: string; arguments: Record<string, any> },
     timeoutMs: number
   ): Promise<any> {
+    console.log(`[MCP] callToolWithTimeout: Starting ${toolRequest.name} with ${timeoutMs}ms timeout`);
+    const startTime = Date.now();
+
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        const actualDuration = Date.now() - startTime;
+        console.log(`[MCP] callToolWithTimeout: TIMEOUT triggered for ${toolRequest.name} after ${actualDuration}ms (expected ${timeoutMs}ms)`);
         reject(new MCPTimeoutError(`Tool call '${toolRequest.name}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      client.callTool(toolRequest)
+      client.callTool(toolRequest, {
+        timeout: timeoutMs,
+        resetTimeoutOnProgress: true
+      })
         .then(result => {
+          const actualDuration = Date.now() - startTime;
+          console.log(`[MCP] callToolWithTimeout: COMPLETED ${toolRequest.name} in ${actualDuration}ms`);
           clearTimeout(timer);
           resolve(result);
         })
         .catch(error => {
+          const actualDuration = Date.now() - startTime;
+          console.log(`[MCP] callToolWithTimeout: ERROR for ${toolRequest.name} after ${actualDuration}ms:`, error.message);
           clearTimeout(timer);
           reject(error);
         });
@@ -791,7 +825,11 @@ export class JunoMCPClient {
         reject(new MCPTimeoutError(`MCP connection timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      client.connect(transport)
+      client.connect(transport, {
+        timeout: timeoutMs,
+        resetTimeoutOnProgress: true,
+        maxTotalTimeout: timeoutMs
+      })
         .then(() => {
           clearTimeout(timer);
           resolve();
@@ -808,10 +846,10 @@ export class JunoMCPClient {
 
     try {
       // Use timeout configuration for connection
-      const timeoutMs = this.options.timeoutMs || 30000; // Default 30 seconds
+      const timeoutMs = this.options.timeout || 30000; // Default 30 seconds
       await this.connectWithTimeout(client, transport, timeoutMs);
       // Test with a simple operation
-      await client.listTools();
+      await client.listTools(undefined, { timeout: timeoutMs, resetTimeoutOnProgress: true });
     } finally {
       try {
         await client.close();
@@ -1311,6 +1349,13 @@ export type MCPClient = JunoMCPClient;
  * Create an MCP client instance with automatic configuration loading
  */
 export function createMCPClient(options: MCPClientOptions = {}): JunoMCPClient {
+  // Allow environment variable to define timeout if not explicitly provided
+  if (options.timeout == null && process.env.JUNO_TASK_MCP_TIMEOUT) {
+    const parsed = Number(process.env.JUNO_TASK_MCP_TIMEOUT);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      options.timeout = parsed;
+    }
+  }
   return new JunoMCPClient(options);
 }
 

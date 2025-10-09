@@ -1069,7 +1069,9 @@ export async function initCommandHandler(
     let context: InitializationContext;
 
     // Default to interactive mode if no task is provided
-    const shouldUseInteractive = options.interactive || (!options.task && !process.env.CI);
+    const shouldUseInteractive = options.interactive ||
+      (!options.task && !process.env.CI) ||
+      process.env.FORCE_INTERACTIVE === '1';
 
     if (shouldUseInteractive) {
       // Interactive mode with simplified TUI
@@ -1085,6 +1087,17 @@ export async function initCommandHandler(
     // Generate project
     const generator = new SimpleProjectGenerator(context);
     await generator.generate();
+
+    // Ensure the process exits cleanly after successful initialization to avoid
+    // lingering interactive sessions waiting for manual quit keys.
+    // This makes automated TUI runs finish without requiring 'q'.
+    try {
+      const { EXIT_CODES } = await import('../types.js');
+      process.exit(EXIT_CODES.SUCCESS);
+    } catch {
+      // Fallback if import path changes; still attempt graceful exit
+      process.exit(0);
+    }
 
   } catch (error) {
     if (error instanceof ValidationError) {

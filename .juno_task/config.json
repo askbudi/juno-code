@@ -1,0 +1,5 @@
+{
+  "defaultSubagent": "cursor",
+  "defaultModel": "auto",
+  "defaultMaxIterations": 50
+}
