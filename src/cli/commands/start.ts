@@ -374,11 +374,8 @@ class ExecutionCoordinator {
           retries: this.config.mcpRetries,
           debug: this.config.verbose,
           enableProgressStreaming: true,
-          sessionId: request.requestId,
-          progressCallback: async (event: any) => {
-            // Route MCP progress events to the progress display (always active)
-            this.progressDisplay.onProgress(event);
-          }
+          sessionId: request.requestId
+          // Progress events are now handled by the engine to avoid duplicates
         }
       );
       this.performanceIntegration.endTiming(request.requestId, 'mcp_client_creation');
