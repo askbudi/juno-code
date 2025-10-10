@@ -861,13 +861,13 @@ export class JunoMCPClient {
 
       // Use proper RequestOptions interface
       const requestOptions = {
-        timeout: Math.max(timeoutMs, 55000),
+        timeout: Math.min(timeoutMs, 55000),
         resetTimeoutOnProgress: true,
-        onprogress: progressCallback
-        // Note: maxTotalTimeout removed as it conflicts with resetTimeoutOnProgress
+        onprogress: progressCallback,
+        maxTotalTimeout: timeoutMs *100
       };
-
-      client.callTool(toolRequest, requestOptions)
+      //client.callTool(toolRequest, undefined, requestOptions) #This is a correct signature, it wont work without the undefined parameter.
+      client.callTool(toolRequest, undefined, requestOptions)
         .then(result => {
           const actualDuration = Date.now() - startTime;
           this.logger.debug(`callToolWithTimeout: COMPLETED ${toolRequest.name} in ${actualDuration}ms`).catch(() => {});
