@@ -84,9 +84,9 @@ class SimpleFeedbackTUI {
 }
 
 /**
- * Simple Feedback file manager for USER_FEEDBACK.md manipulation
+ * Enhanced Feedback file manager for USER_FEEDBACK.md manipulation
  */
-class SimpleFeedbackFileManager {
+class EnhancedFeedbackFileManager {
   constructor(private feedbackFile: string) {}
 
   async ensureExists(): Promise<void> {
@@ -95,12 +95,12 @@ class SimpleFeedbackFileManager {
     }
   }
 
-  async addFeedback(feedback: string): Promise<void> {
+  async addFeedback(issue: string, testCriteria?: string): Promise<void> {
     await this.ensureExists();
 
     try {
       const content = await fs.readFile(this.feedbackFile, 'utf-8');
-      const updatedContent = this.addIssueToContent(content, feedback);
+      const updatedContent = this.addIssueToContent(content, issue, testCriteria);
       await fs.writeFile(this.feedbackFile, updatedContent, 'utf-8');
     } catch (error) {
       throw new ValidationError(
@@ -110,34 +110,68 @@ class SimpleFeedbackFileManager {
     }
   }
 
-  private async createInitialFile(): Promise<void> {
-    const initialContent = `# User Feedback
+  /**
+   * Add resilience for malformed USER_FEEDBACK.md files
+   */
+  async repairMalformedFile(): Promise<void> {
+    try {
+      const content = await fs.readFile(this.feedbackFile, 'utf-8');
+
+      // Check if file has proper structure
+      const hasOpenIssues = content.includes('<OPEN_ISSUES>');
+      const hasClosingTag = content.includes('</OPEN_ISSUES>');
+
+      if (!hasOpenIssues || !hasClosingTag) {
+        // Create backup and regenerate
+        const backupPath = this.feedbackFile + '.backup.' + Date.now();
+        await fs.writeFile(backupPath, content, 'utf-8');
+
+        // Extract existing issues if possible
+        const existingIssues = this.extractIssuesFromMalformedContent(content);
+
+        // Create new proper structure with extracted issues
+        await this.createInitialFile(existingIssues);
+      }
+    } catch (error) {
+      // If file is severely corrupted, create fresh one
+      await this.createInitialFile();
+    }
+  }
+
+  private async createInitialFile(existingIssues: string[] = []): Promise<void> {
+    let initialContent = `# User Feedback
 
 List any features you'd like to see added or bugs you've encountered.
 
 ## OPEN_ISSUES
 
 <OPEN_ISSUES>
-   <!-- New issues will be added here -->
-</OPEN_ISSUES>
+   <!-- New issues will be added here -->`;
 
-## Past Issues
+    // Add existing issues if any were recovered
+    for (const issue of existingIssues) {
+      initialContent += `\n\n   <ISSUE>\n      ${issue}\n      <DATE>${new Date().toISOString().split('T')[0]}</DATE>\n   </ISSUE>`;
+    }
 
-<!-- Resolved issues will be moved here -->
-`;
+    initialContent += `\n</OPEN_ISSUES>\n\n## Past Issues\n\n<!-- Resolved issues will be moved here -->\n`;
+
     await fs.ensureDir(path.dirname(this.feedbackFile));
     await fs.writeFile(this.feedbackFile, initialContent, 'utf-8');
   }
 
-  private addIssueToContent(content: string, feedback: string): string {
+  private addIssueToContent(content: string, issue: string, testCriteria?: string): string {
     const timestamp = new Date().toISOString().split('T')[0];
-    const newIssue = `   <ISSUE>
-      ${feedback}
 
-Added: ${timestamp}
-   </ISSUE>`;
+    // Create properly formatted XML entry
+    let newIssue = `   <ISSUE>\n      ${issue}`;
 
-    // Find the OPEN_ISSUES section and add the new issue
+    if (testCriteria && testCriteria.trim()) {
+      newIssue += `\n      <Test_CRITERIA>${testCriteria}</Test_CRITERIA>`;
+    }
+
+    newIssue += `\n      <DATE>${timestamp}</DATE>\n   </ISSUE>`;
+
+    // Try to find and insert into OPEN_ISSUES section
     const openIssuesMatch = content.match(/(<OPEN_ISSUES>[\s\S]*?<\/OPEN_ISSUES>)/);
 
     if (openIssuesMatch) {
@@ -155,18 +189,40 @@ Added: ${timestamp}
       }
     }
 
-    // Fallback: just append to file
+    // Fallback: append to file
     return content + '\n\n' + newIssue;
+  }
+
+  private extractIssuesFromMalformedContent(content: string): string[] {
+    const issues: string[] = [];
+
+    // Try to extract content from malformed ISSUE tags
+    const issueMatches = content.match(/<ISSUE>[\s\S]*?<\/ISSUE>/g) || [];
+
+    for (const match of issueMatches) {
+      // Remove tags but keep the content
+      const cleanContent = match
+        .replace(/<\/?ISSUE>/g, '')
+        .replace(/<\/?Test_CRITERIA>/g, '')
+        .replace(/<\/?DATE>/g, '')
+        .trim();
+
+      if (cleanContent && !issues.includes(cleanContent)) {
+        issues.push(cleanContent);
+      }
+    }
+
+    return issues;
   }
 }
 
 /**
- * Append issue to USER_FEEDBACK.md
+ * Append issue to USER_FEEDBACK.md with optional test criteria
  */
-async function appendIssueToFeedback(feedbackFile: string, issueText: string): Promise<void> {
+async function appendIssueToFeedback(feedbackFile: string, issueText: string, testCriteria?: string): Promise<void> {
   try {
-    const fileManager = new SimpleFeedbackFileManager(feedbackFile);
-    await fileManager.addFeedback(issueText);
+    const fileManager = new EnhancedFeedbackFileManager(feedbackFile);
+    await fileManager.addFeedback(issueText, testCriteria);
   } catch (error) {
     if (error instanceof ValidationError) {
       throw error;
@@ -194,15 +250,19 @@ function getFeedbackFile(options: FeedbackCommandOptions): string {
 }
 
 /**
- * Configure the feedback command for Commander.js (simplified)
+ * Configure the feedback command for Commander.js (enhanced)
  */
 export function configureFeedbackCommand(program: Command): void {
   program
     .command('feedback')
-    .description('Submit feedback about juno-task (simplified interface)')
+    .description('Submit feedback about juno-task (enhanced interface)')
     .argument('[feedback...]', 'Feedback text or issue description')
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
-    .option('-i, --interactive', 'Launch simple interactive feedback form')
+    .option('--interactive', 'Launch simple interactive feedback form')
+    .option('-i, --issue <description>', 'Issue description')
+    .option('-it, --test <criteria>', 'Test criteria or success factors (short form)')
+    .option('-t, --test <criteria>', 'Test criteria or success factors')
+    .option('--test-criteria <criteria>', 'Test criteria (long form)')
     .action(async (feedback, options, command) => {
       // Get merged options including global ones
       const mergedOptions = command.optsWithGlobals();
@@ -210,6 +270,9 @@ export function configureFeedbackCommand(program: Command): void {
       const feedbackOptions: FeedbackCommandOptions = {
         file: options.file || mergedOptions.file,
         interactive: options.interactive,
+        issue: options.issue,
+        test: options.test,
+        testCriteria: options.testCriteria,
         // Global options
         verbose: mergedOptions.verbose,
         quiet: mergedOptions.quiet,
@@ -227,17 +290,21 @@ export function configureFeedbackCommand(program: Command): void {
 Examples:
   $ juno-task feedback                                    # Interactive feedback form
   $ juno-task feedback "Issue with command"              # Direct feedback text
-  $ juno-task feedback --interactive                     # Use simple interactive form
+  $ juno-task feedback --interactive                     # Use interactive form
+  $ juno-task feedback --issue "Bug description" --test "Should work without errors"  # Issue with test criteria
+  $ juno-task feedback -i "Connection timeout" -t "Connect within 30 seconds"           # Short form
 
-Simplified Interactive Flow:
-  1. Issue Description → Multi-line feedback input
-  2. Save → Automatically saved to USER_FEEDBACK.md
+Enhanced Features:
+  1. Issue Description → Structured feedback with optional test criteria
+  2. Test Criteria → Success factors and validation requirements
+  3. XML Formatting → Proper <ISSUE><Test_CRITERIA><DATE> structure
+  4. File Resilience → Automatic repair of malformed USER_FEEDBACK.md
 
 Notes:
-  - No character limits or token counting
-  - Simple readline interface
-  - Direct file manipulation without structured data
-  - Focus on quick feedback collection
+  - Supports both positional arguments and --issue flag
+  - Test criteria are optional but recommended for actionable feedback
+  - XML structure ensures proper parsing and organization
+  - Automatic backup and repair for corrupted feedback files
     `);
 }
 
@@ -253,7 +320,30 @@ export async function feedbackCommandHandler(
     // Default to interactive mode if no arguments provided
     const shouldUseInteractive = options.interactive || args.length === 0;
 
-    if (shouldUseInteractive) {
+    // Handle --issue flag with optional --test criteria
+    if (options.issue || (options.test || options.testCriteria)) {
+      const issueText = options.issue || args.join(' ') || '';
+      const testCriteria = options.test || options.testCriteria || '';
+
+      // Ensure we have an issue description
+      if (!issueText.trim()) {
+        throw new ValidationError(
+          'Issue description is required when using --issue or --test flags',
+          ['Use: juno-task feedback -i "Issue description" -t "Test criteria"']
+        );
+      }
+      const feedbackFile = getFeedbackFile(options);
+
+      // Append issue with test criteria to USER_FEEDBACK.md
+      await appendIssueToFeedback(feedbackFile, issueText, testCriteria);
+
+      console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+      console.log(chalk.gray(`   File: ${feedbackFile}`));
+      if (testCriteria) {
+        console.log(chalk.blue(`   Test Criteria: ${testCriteria}`));
+      }
+
+    } else if (shouldUseInteractive) {
       // Use simplified interactive mode
       const issueText = await collectFeedback();
       const feedbackFile = getFeedbackFile(options);
@@ -291,7 +381,10 @@ export async function feedbackCommandHandler(
             await appendIssueToFeedback(feedbackFile, feedbackText);
             console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
           } else {
-            console.log(chalk.yellow('Use --interactive mode or provide feedback text'));
+            console.log(chalk.yellow('Use --interactive mode, --issue flag, or provide feedback text'));
+            console.log(chalk.gray('Examples:'));
+            console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));
+            console.log(chalk.gray('  juno-task feedback -i "Issue" -t "Test criteria"'));
           }
           break;
       }

@@ -352,22 +352,27 @@ Consider missing steps and plan. If the step is missing then author the specific
     await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);
 
     // Create USER_FEEDBACK.md
-    const userFeedbackContent = `## Bug Reports
+    const userFeedbackContent = `## OPEN ISSUES
+<OPEN_ISSUES>
+<ISSUE>
+</ISSUE>
+...
+</OPEN_ISSUES>
 
-List any bugs you encounter here.
 
-Example:
-1. Bug description
-2. Steps to reproduce
-3. Expected vs actual behavior
 
-## Feature Requests
 
-List any features you'd like to see added.
+## Past Issues
+Agent Response to previously reported issues.
+(There could be mistakes in the agent response, agent could report an issue resolved while the error hasn't been resolved, Look at them, as a source of understanding agent thinking, and files that it touched. Not as a source of truth.)
 
-## Resolved
 
-Items that have been resolved will be moved here.
+<REPORTED_ISSUES>
+<ISSUE_RESPONSE>
+</ISSUE_RESPONSE>
+...
+</REPORTED_ISSUES>
+
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), userFeedbackContent);

@@ -187,6 +187,12 @@ export interface FeedbackCommandOptions extends GlobalCLIOptions {
   file?: string;
   /** Interactive multiline input */
   interactive?: boolean;
+  /** Issue description */
+  issue?: string;
+  /** Test criteria or success factors */
+  test?: string;
+  /** Test criteria alias */
+  testCriteria?: string;
 }
 
 /**

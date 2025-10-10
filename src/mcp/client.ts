@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { getMCPLogger } from '../utils/logger.js';
 
 // Core interfaces
 export interface MCPClientOptions {
@@ -85,6 +86,7 @@ export class JunoMCPClient {
   private lastConnectionTest: number = 0;
   private connectionTestInterval: number = 30000; // Test every 30 seconds
   private eventCounter: number = 0;
+  private logger = getMCPLogger();
 
   constructor(
     private options: MCPClientOptions
@@ -104,6 +106,11 @@ export class JunoMCPClient {
     if (options.progressCallback) {
       this.progressTracker.addCallback(options.progressCallback);
     }
+
+    // Initialize MCP logger
+    this.logger.initialize().catch(error => {
+      console.error('Failed to initialize MCP logger:', error);
+    });
   }
 
   async connect(): Promise<void> {
@@ -116,7 +123,7 @@ export class JunoMCPClient {
     try {
       await this.testConnection();
       if (this.options.debug) {
-        console.log('[MCP] Connection test successful');
+        this.logger.debug('Connection test successful').catch(() => {});
       }
     } catch (error) {
       // Preserve timeout classification for callers/tests
@@ -133,7 +140,7 @@ export class JunoMCPClient {
   async disconnect(): Promise<void> {
     // Per-operation pattern - no persistent connections to disconnect
     if (this.options.debug) {
-      console.log('[MCP] Disconnect called (no persistent connections in per-operation mode)');
+      this.logger.debug('Disconnect called (no persistent connections in per-operation mode)').catch(() => {});
     }
   }
 
@@ -179,7 +186,7 @@ export class JunoMCPClient {
       }
 
       if (this.options.debug) {
-        console.log(`[MCP] Calling tool: ${request.toolName}`, request.arguments);
+        this.logger.debug(`Calling tool: ${request.toolName} ${JSON.stringify(request.arguments)}`).catch(() => {});
       }
 
       // Record the request for rate limiting
@@ -221,7 +228,7 @@ export class JunoMCPClient {
 
       // Apply timeout to tool call - prioritize request timeout over client options
       const timeout = request.timeout || this.options.timeout || this.subagentMapper.getDefaults('claude').timeout;
-      console.log(`[MCP] Using timeout: ${timeout}ms (request.timeout=${request.timeout}, options.timeout=${this.options.timeout}, default=${this.subagentMapper.getDefaults('claude').timeout})`);
+      this.logger.debug(`Using timeout: ${timeout}ms (request.timeout=${request.timeout}, options.timeout=${this.options.timeout}, default=${this.subagentMapper.getDefaults('claude').timeout})`).catch(() => {});
       // Enforce timeout at the top level as well, so tests that mock
       // callToolWithTimeout still respect the configured timeout.
       const result = await new Promise<any>((resolve, reject) => {
@@ -288,7 +295,7 @@ export class JunoMCPClient {
       this.emit('tool:complete', response);
 
       if (this.options.debug) {
-        console.log(`[MCP] Tool call completed in ${duration}ms`);
+        this.logger.debug(`Tool call completed in ${duration}ms`).catch(() => {});
       }
 
       return response;
@@ -332,7 +339,7 @@ export class JunoMCPClient {
       this.emit('tool:error', { toolName: request.toolName, toolId, error, duration });
 
       if (this.options.debug) {
-        console.error(`[MCP] Tool call failed after ${duration}ms:`, error);
+        this.logger.error(`Tool call failed after ${duration}ms: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
       }
 
       throw new MCPToolError(
@@ -599,7 +606,9 @@ export class JunoMCPClient {
           handler(data);
         } catch (error) {
           if (this.options.debug) {
-            console.error(`[MCP] Error in event handler for ${event}:`, error);
+            this.logger.error(`Error in event handler for ${event}: ${error instanceof Error ? error.message : String(error)}`).catch(err => {
+              // Ignore logger errors to prevent infinite loops
+            });
           }
         }
       });
@@ -611,7 +620,7 @@ export class JunoMCPClient {
     const serverName = this.options.serverName!;
 
     if (this.options.debug) {
-      console.log(`[MCP] Connecting to named server: ${serverName}`);
+      this.logger.debug(`Connecting to named server: ${serverName}`).catch(() => {});
     }
 
     // For named servers like "roundtable-ai", we need to check if it's available
@@ -621,7 +630,7 @@ export class JunoMCPClient {
     if (serverConfig.type === 'executable') {
       // Named server points to an executable - let transport manage the process
       if (this.options.debug) {
-        console.log(`[MCP] Creating transport for server command: ${serverConfig.command}`, serverConfig.args);
+        this.logger.debug(`Creating transport for server command: ${serverConfig.command} ${serverConfig.args.join(' ')}`).catch(() => {});
       }
 
       // Create transport for executable-based named server using correct constructor
@@ -645,15 +654,15 @@ export class JunoMCPClient {
         this.options.workingDirectory
       );
 
-      console.log(`[MCP] Resolved server '${serverName}' from configuration`);
+      this.logger.debug(`Resolved server '${serverName}' from configuration`).catch(() => {});
       return {
         type: 'executable',
         command,
         args
       };
     } catch (error) {
-      console.warn(`[MCP] Failed to resolve server from config: ${error}`);
-      console.warn(`[MCP] Falling back to hardcoded server definitions`);
+      this.logger.warning(`Failed to resolve server from config: ${error}`).catch(() => {});
+      this.logger.warning(`Falling back to hardcoded server definitions`).catch(() => {});
 
       // Fallback to known server configurations
       const knownServers: Record<string, any> = {
@@ -789,13 +798,13 @@ export class JunoMCPClient {
     timeoutMs: number,
     attempt: number = 1
   ): Promise<any> {
-    console.log(`[MCP] callToolWithTimeout: Starting ${toolRequest.name} with ${timeoutMs}ms timeout (attempt ${attempt})`);
+    this.logger.debug(`callToolWithTimeout: Starting ${toolRequest.name} with ${timeoutMs}ms timeout (attempt ${attempt})`).catch(() => {});
     const startTime = Date.now();
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const actualDuration = Date.now() - startTime;
-        console.log(`[MCP] callToolWithTimeout: TIMEOUT triggered for ${toolRequest.name} after ${actualDuration}ms (expected ${timeoutMs}ms)`);
+        this.logger.debug(`callToolWithTimeout: TIMEOUT triggered for ${toolRequest.name} after ${actualDuration}ms (expected ${timeoutMs}ms)`).catch(() => {});
         reject(new MCPTimeoutError(`Tool call '${toolRequest.name}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -803,15 +812,15 @@ export class JunoMCPClient {
      * IMPORTANT SCHEMA NOTE: Correct callTool usage with Progress Callbacks
      *
      * Previous INCORRECT implementation:
-     * client.callTool(toolRequest, undefined, { timeout, ... })
+     * client.callTool(toolRequest, { timeout, ... })
      *
      * Current CORRECT implementation:
-     * client.callTool(toolRequest, requestOptions)
+     * client.callTool(toolRequest, undefined, requestOptions)
      *
      * Based on user feedback and Python budi-cli implementation analysis:
      * - Use RequestOptions.onprogress for proper MCP progress handling
-     * - Progress callback should handle flexible argument patterns like Python version
-     * - Remove maxTotalTimeout to allow resetTimeoutOnProgress to work
+     * - Progress callback should handle Callbacks
+     * - maxTotalTimeout is necessary.
      *
      * The user identified that ESLint would have caught this schema error immediately.
      */
@@ -819,7 +828,11 @@ export class JunoMCPClient {
       // Create proper progress callback based on Python budi-cli implementation
       const progressCallback = (progress: any) => {
         // Handle progress events similar to Python version
+        const logger = getMCPLogger();
+        logger.debug(`Progress event: ${JSON.stringify(progress)}`).catch(() => {});
+
         if (this.options.debug) {
+          // In debug mode, progress events should stay visible to user
           console.log(`[MCP] Progress event:`, progress);
         }
 
@@ -841,7 +854,7 @@ export class JunoMCPClient {
         } catch (error) {
           // Never break execution on progress callback issues
           if (this.options.debug) {
-            console.log(`[MCP] Progress callback error (non-critical): ${error}`);
+            this.logger.debug(`Progress callback error (non-critical): ${error}`);
           }
         }
       };
@@ -857,21 +870,21 @@ export class JunoMCPClient {
       client.callTool(toolRequest, requestOptions)
         .then(result => {
           const actualDuration = Date.now() - startTime;
-          console.log(`[MCP] callToolWithTimeout: COMPLETED ${toolRequest.name} in ${actualDuration}ms`);
+          this.logger.debug(`callToolWithTimeout: COMPLETED ${toolRequest.name} in ${actualDuration}ms`).catch(() => {});
           clearTimeout(timer);
           resolve(result);
         })
         .catch(async error => {
           const actualDuration = Date.now() - startTime;
-          console.log(`[MCP] callToolWithTimeout: ERROR for ${toolRequest.name} after ${actualDuration}ms:`, error.message);
+          this.logger.debug(`callToolWithTimeout: ERROR for ${toolRequest.name} after ${actualDuration}ms: ${error.message}`).catch(() => {});
           clearTimeout(timer);
 
           // Check for MCP SDK internal timeout error (-32001)
           if (error.message.includes('32001') || error.message.includes('Request timed out')) {
-            console.log(`[MCP] Detected SDK internal timeout, implementing retry mechanism...`);
+            this.logger.debug(`Detected SDK internal timeout, implementing retry mechanism...`).catch(() => {});
             //No Retry!!!! It is not allowed.
             if (attempt < 0) { // No Retries
-              console.log(`[MCP] Retrying ${toolRequest.name} (attempt ${attempt + 1})...`);
+              this.logger.debug(`Retrying ${toolRequest.name} (attempt ${attempt + 1})...`).catch(() => {});
 
               // Create fresh connection
               try {
@@ -883,12 +896,12 @@ export class JunoMCPClient {
                 resolve(retryResult);
                 return;
               } catch (retryError) {
-                console.log(`[MCP] Retry attempt ${attempt + 1} failed:`, retryError.message);
+                this.logger.debug(`Retry attempt ${attempt + 1} failed: ${retryError.message}`).catch(() => {});
                 reject(retryError);
                 return;
               }
             } else {
-              console.log(`[MCP] Max retry attempts reached for ${toolRequest.name}`);
+              this.logger.debug(`Max retry attempts reached for ${toolRequest.name}`).catch(() => {});
             }
           }
 
@@ -1378,9 +1391,10 @@ export class MCPServerConfigResolver {
         await this.validateServerPath(serverScript);
       }
 
-      console.log(`[MCP] Using server config: ${serverConfig.name}`);
-      console.log(`[MCP] Command: ${serverConfig.command}`);
-      console.log(`[MCP] Args: ${serverConfig.args.join(' ')}`);
+      const logger = getMCPLogger();
+      logger.debug(`Using server config: ${serverConfig.name}`).catch(() => {});
+      logger.debug(`Command: ${serverConfig.command}`).catch(() => {});
+      logger.debug(`Args: ${serverConfig.args.join(' ')}`).catch(() => {});
 
       return {
         config: serverConfig,
@@ -1463,14 +1477,18 @@ export async function createMCPClientFromConfig(
       ...additionalOptions
     });
 
-    console.log(`[MCP] Creating client with configuration: ${config.name}`);
+    const logger = getMCPLogger();
+    logger.debug(`Creating client with configuration: ${config.name}`).catch(() => {});
     return new JunoMCPClient(clientOptions);
   } catch (error) {
-    console.warn(`[MCP] Failed to create client from config: ${error}`);
-    console.warn(`[MCP] Creating client with provided options or defaults`);
+    // Log to file instead of console to avoid pollution
+    const logger = getMCPLogger();
+    logger.debug(`Failed to create client from config: ${error}`).catch(() => {});
+    logger.debug(`Creating client with provided options or defaults`).catch(() => {});
 
     // Fallback to basic client creation
     return new JunoMCPClient({
+      serverName,  // Include the server name even when config loading fails
       workingDirectory,
       ...additionalOptions
     });

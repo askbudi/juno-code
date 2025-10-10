@@ -1,0 +1,117 @@
+{
+  "info": {
+    "id": "6a1302c6-6231-429f-88f0-b02301c2e05f",
+    "name": "Execution 2025-10-10T03:54:19.495Z",
+    "status": "failed",
+    "subagent": "cursor",
+    "createdAt": "2025-10-10T03:54:19.496Z",
+    "updatedAt": "2025-10-10T03:54:19.499Z",
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": false,
+      "quiet": false,
+      "mcpTimeout": 6000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno-task"
+    },
+    "tags": [
+      "cli",
+      "start-command"
+    ],
+    "metadata": {
+      "requestId": "req-1760068459494-6nii6e9bt",
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "maxIterations": 50,
+      "model": "auto"
+    },
+    "completedAt": "2025-10-10T03:54:19.499Z"
+  },
+  "context": {
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "environment": {
+      "TERM_PROGRAM": "Apple_Terminal",
+      "SHELL": "/bin/zsh",
+      "TERM": "xterm-256color",
+      "TMPDIR": "/var/folders/xt/wjpdzp3x2yv48wp9_713q66h0000gn/T/",
+      "TERM_PROGRAM_VERSION": "464",
+      "TERM_SESSION_ID": "D1F73E2C-094B-4010-9372-2406519B2F11",
+      "USER": "mahdiyar",
+      "SSH_AUTH_SOCK": "/private/tmp/com.apple.launchd.1fpqFi5tu3/Listeners",
+      "PATH": "/Users/mahdiyar/.bun/bin:/Users/mahdiyar/.local/bin:/Users/mahdiyar/miniconda3/envs/tmp_test/bin:/Users/mahdiyar/miniconda3/condabin:/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "LaunchInstanceID": "8C00C38D-D376-4A63-AA26-2B846F78EAE9",
+      "__CFBundleIdentifier": "com.apple.Terminal",
+      "PWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "XPC_FLAGS": "0x0",
+      "XPC_SERVICE_NAME": "0",
+      "SHLVL": "1",
+      "HOME": "/Users/mahdiyar",
+      "LOGNAME": "mahdiyar",
+      "OSLogRateLimit": "64",
+      "SECURITYSESSIONID": "186cc",
+      "COLORTERM": "truecolor",
+      "OLDPWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts",
+      "CONDA_EXE": "/Users/mahdiyar/miniconda3/bin/conda",
+      "_CE_M": "",
+      "_CE_CONDA": "",
+      "CONDA_PYTHON_EXE": "/Users/mahdiyar/miniconda3/bin/python",
+      "CONDA_SHLVL": "2",
+      "CONDA_PREFIX": "/Users/mahdiyar/miniconda3/envs/tmp_test",
+      "CONDA_DEFAULT_ENV": "tmp_test",
+      "CONDA_PROMPT_MODIFIER": "(tmp_test) ",
+      "BUN_INSTALL": "/Users/mahdiyar/.bun",
+      "CONDA_PREFIX_1": "/Users/mahdiyar/miniconda3",
+      "LANG": "C.UTF-8",
+      "LC_CTYPE": "UTF-8",
+      "_": "/opt/homebrew/bin/timeout",
+      "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0"
+    },
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": false,
+      "quiet": false,
+      "mcpTimeout": 6000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno-task"
+    },
+    "processInfo": {
+      "pid": 97423,
+      "nodeVersion": "v24.10.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "statistics": {
+    "duration": 3,
+    "iterations": 0,
+    "toolCalls": 0,
+    "toolStats": {},
+    "successRate": 0,
+    "errorCount": 0,
+    "warningCount": 0,
+    "performance": {
+      "avgIterationTime": 0,
+      "avgToolCallTime": 0,
+      "totalThinkingTime": 0
+    }
+  },
+  "history": [],
+  "result": {
+    "success": false,
+    "error": "Server path or server name is required for connection"
+  }
+}
