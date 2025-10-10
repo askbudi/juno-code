@@ -195,12 +195,17 @@ class SimpleInitTUI {
   ): TemplateVariables {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
+    let AGENTMD = 'AGENTS.md';
+    if (editor == 'claude'){
+      AGENTMD = 'CLAUDE.md';
+    }
 
     return {
       // Core variables only
       PROJECT_NAME: projectName,
       TASK: task,
       EDITOR: editor,
+      AGENTMD:AGENTMD,
       CURRENT_DATE: currentDate,
 
       // Simple defaults
@@ -286,11 +291,11 @@ Explicitly inform build/tests subagent to activate virtual environment at: ${tar
 
 99999999999. **CRITICAL**: At start of each iteration, read @.juno_task/USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @.juno_task/USER_FEEDBACK.md using a ${variables.EDITOR} subagent.
 
-99999999999. When you learn something new about how to run the app or examples make sure you update @CLAUDE.md using a ${variables.EDITOR} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
+99999999999. When you learn something new about how to run the app or examples make sure you update @${variables.AGENTMD} using a ${variables.EDITOR} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
 
 999999999999. IMPORTANT when you discover a bug resolve it using ${variables.EDITOR} subagents even if it is unrelated to the current piece of work after documenting it in @.juno_task/plan.md
 
-9999999999999999999. Keep @CLAUDE.md up to date with information on how to build the app and your learnings to optimize the build/test loop using a ${variables.EDITOR} subagent.
+9999999999999999999. Keep @${variables.AGENTMD} up to date with information on how to build the app and your learnings to optimize the build/test loop using a ${variables.EDITOR} subagent.
 
 999999999999999999999. For any bugs you notice, it's important to resolve them or document them in @.juno_task/plan.md to be resolved using a ${variables.EDITOR} subagent.
 
@@ -302,11 +307,11 @@ Explicitly inform build/tests subagent to activate virtual environment at: ${tar
 
 9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
 
-9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @CLAUDE.md
+9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @${variables.AGENTMD}
 
-99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
+99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or @${variables.AGENTMD} as resolved. You should update it to reflect that the issue is not resolved.
 it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
-Plan , USER_FEEDBACK and CLAUDE should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
+Plan , USER_FEEDBACK and @${variables.AGENTMD} should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), promptContent);
