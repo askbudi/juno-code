@@ -633,11 +633,22 @@ export class JunoMCPClient {
         this.logger.debug(`Creating transport for server command: ${serverConfig.command} ${serverConfig.args.join(' ')}`).catch(() => {});
       }
 
-      // Create transport for executable-based named server using correct constructor
+      // Create transport for executable-based named server with stderr redirection
       this.transport = new StdioClientTransport({
         command: serverConfig.command,
-        args: serverConfig.args || []
+        args: serverConfig.args || [],
+        stderr: 'pipe', // Redirect stderr to prevent console pollution
+        env: {
+          ...serverConfig.env,
+          // Add logging suppression environment variables
+          PYTHONUNBUFFERED: '1',
+          MCP_LOG_LEVEL: 'ERROR',
+          ROUNDTABLE_DEBUG: 'false'
+        }
       });
+
+      // Set up stderr logging for the long-lived transport
+      this.setupStderrLogging(this.transport);
     } else if (serverConfig.type === 'url') {
       // Named server is available at a URL (WebSocket, HTTP, etc.)
       throw new MCPConnectionError(`URL-based servers not yet supported for ${serverName}`);
@@ -757,18 +768,34 @@ export class JunoMCPClient {
       if (serverConfig.type === 'executable') {
         transport = new StdioClientTransport({
           command: serverConfig.command!,
-          args: serverConfig.args || []
+          args: serverConfig.args || [],
+          stderr: 'pipe', // Redirect stderr to prevent console pollution
+          env: {
+            ...serverConfig.env,
+            // Add logging suppression environment variables
+            PYTHONUNBUFFERED: '1',
+            MCP_LOG_LEVEL: 'ERROR',
+            ROUNDTABLE_DEBUG: 'false'
+          }
         });
       } else {
         throw new MCPConnectionError(`Unsupported server type: ${serverConfig.type}`);
       }
     } else {
-      // Create transport using command approach (let transport manage the process)
+      // Create transport using command approach with stderr redirection
       const serverPath = this.options.serverPath!;
       const isPython = serverPath.endsWith('.py');
       transport = new StdioClientTransport({
         command: isPython ? 'python' : serverPath,
-        args: isPython ? [serverPath] : []
+        args: isPython ? [serverPath] : [],
+        stderr: 'pipe', // Redirect stderr to prevent console pollution
+        env: {
+          ...this.options.environment,
+          // Add logging suppression environment variables
+          PYTHONUNBUFFERED: '1',
+          MCP_LOG_LEVEL: 'ERROR',
+          ROUNDTABLE_DEBUG: 'false'
+        }
       });
     }
 
@@ -782,6 +809,9 @@ export class JunoMCPClient {
       }
       // Note: timeout applied at request level, not client level
     });
+
+    // Set up stderr logging to prevent console pollution
+    this.setupStderrLogging(transport);
 
     return { transport, client };
   }
@@ -937,6 +967,39 @@ export class JunoMCPClient {
           reject(error);
         });
     });
+  }
+
+  /**
+   * Set up stderr logging to redirect MCP server logs to files instead of console
+   * This is the main fix for MCP logging pollution issue
+   */
+  private setupStderrLogging(transport: StdioClientTransport): void {
+    try {
+      const stderr = transport.stderr;
+      if (stderr) {
+        // Get MCP logger for redirecting stderr output
+        const mcpLogger = getMCPLogger();
+
+        // Set up error logging to capture all stderr output
+        stderr.on('data', (chunk: Buffer) => {
+          const message = chunk.toString().trim();
+          if (message) {
+            // Log stderr messages to file only, never to console
+            mcpLogger.error(`[MCP-Server] ${message}`).catch(() => {
+              // Ignore logging errors to prevent infinite loops
+            });
+          }
+        });
+
+        // Handle stderr stream errors
+        stderr.on('error', (error: Error) => {
+          // Silently ignore stderr stream errors to prevent noise
+        });
+      }
+    } catch (error) {
+      // If stderr logging setup fails, continue without it
+      // This prevents the logging fix from breaking the main functionality
+    }
   }
 
   private async testConnection(): Promise<void> {

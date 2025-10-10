@@ -11,7 +11,9 @@
       "suppress_subprocess_logs": true,
       "env": {
         "PYTHONPATH": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
-        "ROUNDTABLE_DEBUG": "false"
+        "ROUNDTABLE_DEBUG": "false",
+        "PYTHONUNBUFFERED": "1",
+        "MCP_LOG_LEVEL": "ERROR"
       },
       "_metadata": {
         "description": "Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents",

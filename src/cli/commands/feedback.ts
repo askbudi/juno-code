@@ -259,26 +259,24 @@ export function configureFeedbackCommand(program: Command): void {
     .argument('[feedback...]', 'Feedback text or issue description')
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
     .option('--interactive', 'Launch simple interactive feedback form')
-    .option('-i, --issue <description>', 'Issue description')
-    .option('-it, --test <criteria>', 'Test criteria or success factors (short form)')
-    .option('-t, --test <criteria>', 'Test criteria or success factors')
+    .option('-d, --issue <description>', 'Issue description')
+    .option('-s, --test <criteria>', 'Test criteria or success factors (user-specified flag)')
+    .option('-t, --test-criteria <criteria>', 'Test criteria or success factors (alternative form)')
     .option('--test-criteria <criteria>', 'Test criteria (long form)')
     .action(async (feedback, options, command) => {
-      // Get merged options including global ones
-      const mergedOptions = command.optsWithGlobals();
-
+      // Create feedback options from command options (similar to init command)
       const feedbackOptions: FeedbackCommandOptions = {
-        file: options.file || mergedOptions.file,
+        file: options.file,
         interactive: options.interactive,
         issue: options.issue,
-        test: options.test,
+        test: options.test || options.testCriteria, // Handle both -s (--test) and -t (--test-criteria) flags
         testCriteria: options.testCriteria,
         // Global options
-        verbose: mergedOptions.verbose,
-        quiet: mergedOptions.quiet,
-        config: mergedOptions.config,
-        logFile: mergedOptions.logFile,
-        logLevel: mergedOptions.logLevel
+        verbose: options.verbose,
+        quiet: options.quiet,
+        config: options.config,
+        logFile: options.logFile,
+        logLevel: options.logLevel
       };
 
       const feedbackText = Array.isArray(feedback) ? feedback.join(' ') : feedback;
@@ -292,7 +290,8 @@ Examples:
   $ juno-task feedback "Issue with command"              # Direct feedback text
   $ juno-task feedback --interactive                     # Use interactive form
   $ juno-task feedback --issue "Bug description" --test "Should work without errors"  # Issue with test criteria
-  $ juno-task feedback -i "Connection timeout" -t "Connect within 30 seconds"           # Short form
+  $ juno-task feedback -d "Connection timeout" -s "Connect within 30 seconds"           # User-specified short form
+  $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Alternative short form
 
 Enhanced Features:
   1. Issue Description → Structured feedback with optional test criteria
@@ -317,10 +316,8 @@ export async function feedbackCommandHandler(
   command: Command
 ): Promise<void> {
   try {
-    // Default to interactive mode if no arguments provided
-    const shouldUseInteractive = options.interactive || args.length === 0;
-
-    // Handle --issue flag with optional --test criteria
+    // Handle --issue flag with optional --test criteria (headless mode)
+    // Handle both -r (--test) and -t (--test-criteria) flags
     if (options.issue || (options.test || options.testCriteria)) {
       const issueText = options.issue || args.join(' ') || '';
       const testCriteria = options.test || options.testCriteria || '';
@@ -343,50 +340,55 @@ export async function feedbackCommandHandler(
         console.log(chalk.blue(`   Test Criteria: ${testCriteria}`));
       }
 
-    } else if (shouldUseInteractive) {
-      // Use simplified interactive mode
-      const issueText = await collectFeedback();
-      const feedbackFile = getFeedbackFile(options);
-
-      // Append issue to USER_FEEDBACK.md
-      await appendIssueToFeedback(feedbackFile, issueText);
-
-      console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
-      console.log(chalk.gray(`   File: ${feedbackFile}`));
-
     } else {
-      // Handle subcommands
-      const [subcommand, ...subArgs] = args;
+      // Default to interactive mode if no headless arguments provided
+      const shouldUseInteractive = options.interactive || args.length === 0;
 
-      switch (subcommand) {
-        case 'list':
-          console.log(chalk.yellow('📋 Feedback listing not yet implemented'));
-          break;
+      if (shouldUseInteractive) {
+        // Use simplified interactive mode
+        const issueText = await collectFeedback();
+        const feedbackFile = getFeedbackFile(options);
 
-        case 'resolve':
-        case 'close':
-          console.log(chalk.yellow('🔧 Feedback resolution not yet implemented'));
-          break;
+        // Append issue to USER_FEEDBACK.md
+        await appendIssueToFeedback(feedbackFile, issueText);
 
-        case 'remove':
-        case 'delete':
-          console.log(chalk.yellow('🗑️ Feedback removal not yet implemented'));
-          break;
+        console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+        console.log(chalk.gray(`   File: ${feedbackFile}`));
 
-        default:
-          // Treat as feedback text
-          const feedbackText = args.join(' ');
-          if (feedbackText.trim()) {
-            const feedbackFile = getFeedbackFile(options);
-            await appendIssueToFeedback(feedbackFile, feedbackText);
-            console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
-          } else {
-            console.log(chalk.yellow('Use --interactive mode, --issue flag, or provide feedback text'));
-            console.log(chalk.gray('Examples:'));
-            console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));
-            console.log(chalk.gray('  juno-task feedback -i "Issue" -t "Test criteria"'));
-          }
-          break;
+      } else {
+        // Handle subcommands
+        const [subcommand, ...subArgs] = args;
+
+        switch (subcommand) {
+          case 'list':
+            console.log(chalk.yellow('📋 Feedback listing not yet implemented'));
+            break;
+
+          case 'resolve':
+          case 'close':
+            console.log(chalk.yellow('🔧 Feedback resolution not yet implemented'));
+            break;
+
+          case 'remove':
+          case 'delete':
+            console.log(chalk.yellow('🗑️ Feedback removal not yet implemented'));
+            break;
+
+          default:
+            // Treat as feedback text
+            const feedbackText = args.join(' ');
+            if (feedbackText.trim()) {
+              const feedbackFile = getFeedbackFile(options);
+              await appendIssueToFeedback(feedbackFile, feedbackText);
+              console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
+            } else {
+              console.log(chalk.yellow('Use --interactive mode, --issue flag, or provide feedback text'));
+              console.log(chalk.gray('Examples:'));
+              console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));
+              console.log(chalk.gray('  juno-task feedback -d "Issue" -s "Test criteria"'));
+            }
+            break;
+        }
       }
     }
   } catch (error) {

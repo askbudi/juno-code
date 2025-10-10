@@ -427,3 +427,35 @@ Added: 2025-10-08
       **Test Criteria**: MCP server connects and subagent executes successfully - ✅ PASSED
       <DATE>2025-10-10</DATE>
    </ISSUE>
+
+   <ISSUE>
+      Priority 1 Issue 4: Feedback Command Headless Mode - FULLY RESOLVED
+      **STATUS**: ✅ RESOLVED - Fixed flag conflicts and implemented proper -s flag for test criteria
+
+      **Original Issue**: feedback command missing headless mode with -i and -s flags as specified by user
+      **User Requirements**:
+      - `node dist/bin/cli.mjs feedback -d "Issue 1" -s "issue 1 should be visible in feedback file"`
+      - `node dist/bin/cli.mjs feedback -d "Issue 2" -s "issue 2 should be visible in feedback file"`
+      - `node dist/bin/cli.mjs feedback -d "Issue 3" -s "issue 3 should be visible in feedback file"`
+      - `node dist/bin/cli.mjs feedback --help` should list available flags
+
+      **Root Cause**: Global option conflicts with -i (max-iterations) and -s (subagent) flags; incorrect flag mapping
+      **Implementation**:
+      - Changed issue flag to -d (description) to avoid global conflicts
+      - Updated test criteria flag to -s as specifically requested by user (was -r)
+      - Fixed option mapping and handler logic in src/cli/commands/feedback.ts
+      - Updated help examples to reflect correct -s flag usage
+      - Enhanced argument parsing to properly handle headless mode
+
+      **Validation**:
+      - ✅ `node dist/bin/cli.mjs feedback --help` shows -s flag correctly: "Test criteria or success factors (user-specified flag)"
+      - ✅ `node dist/bin/cli.mjs feedback -d "Issue 1" -s "issue 1 should be visible in feedback file"` works perfectly
+      - ✅ `node dist/bin/cli.mjs feedback -d "Issue 2" -s "issue 2 should be visible in feedback file"` works perfectly
+      - ✅ `node dist/bin/cli.mjs feedback -d "Issue 3" -s "issue 3 should be visible in feedback file"` works perfectly
+      - ✅ All 3 test commands successfully added entries to USER_FEEDBACK.md with proper XML formatting
+      - ✅ Multiple submissions working correctly with proper sequential append to OPEN_ISSUES section
+
+      **Resolution**: 2025-10-10 - Feedback command headless mode fully implemented with user-specified flags
+      **Test Criteria**: All 3 user-specified commands work with proper -s flag and help documentation - ✅ PASSED
+      <DATE>2025-10-10</DATE>
+   </ISSUE>

@@ -1,0 +1,157 @@
+{
+  "info": {
+    "id": "ac46ea4b-3439-4c81-9b56-700ef898d9d7",
+    "name": "Execution 2025-10-10T04:43:34.173Z",
+    "status": "running",
+    "subagent": "cursor",
+    "createdAt": "2025-10-10T04:43:34.173Z",
+    "updatedAt": "2025-10-10T04:43:34.173Z",
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 30000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno-task"
+    },
+    "tags": [
+      "cli",
+      "start-command"
+    ],
+    "metadata": {
+      "requestId": "req-1760071414172-cq4r6n7vz",
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "maxIterations": 50,
+      "model": "auto"
+    }
+  },
+  "context": {
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "environment": {
+      "HOME": "/Users/mahdiyar",
+      "LOGNAME": "mahdiyar",
+      "PATH": "/Users/mahdiyar/.bun/bin:/Users/mahdiyar/.local/bin:/Users/mahdiyar/miniconda3/envs/tmp_test/bin:/Users/mahdiyar/miniconda3/condabin:/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "SHELL": "/bin/zsh",
+      "TERM": "xterm-256color",
+      "USER": "mahdiyar",
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+      "ANTHROPIC_AUTH_TOKEN": "892e12822fa94054890e9c1e9e1432ed.vmXCqlVIygPXSfvK",
+      "PYTHONWARNINGS": "ignore",
+      "MCP_LOG_LEVEL": "ERROR",
+      "LOGGING_LEVEL": "ERROR",
+      "PYTHONUNBUFFERED": "0",
+      "LC_CTYPE": "C.UTF-8",
+      "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+      "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+      "COREPACK_ENABLE_AUTO_PIN": "0",
+      "NoDefaultCurrentDirectoryInExePath": "1",
+      "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta",
+      "GIT_EDITOR": "true",
+      "CLAUDECODE": "1",
+      "SHLVL": "1",
+      "PWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "OLDPWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts",
+      "LANG": "C.UTF-8",
+      "_": "/opt/homebrew/bin/timeout"
+    },
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 30000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno-task"
+    },
+    "processInfo": {
+      "pid": 34937,
+      "nodeVersion": "v24.10.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "statistics": {
+    "duration": 0,
+    "iterations": 0,
+    "toolCalls": 0,
+    "toolStats": {},
+    "successRate": 0,
+    "errorCount": 0,
+    "warningCount": 0,
+    "performance": {
+      "avgIterationTime": 0,
+      "avgToolCallTime": 0,
+      "totalThinkingTime": 0
+    }
+  },
+  "history": [
+    {
+      "id": "c00b2ef4-75ea-402d-a929-358d297f2053",
+      "timestamp": "2025-10-10T04:43:35.146Z",
+      "type": "system",
+      "content": "tool_start: Starting cursor_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+      "data": {
+        "sessionId": "req-1760071414172-cq4r6n7vz",
+        "timestamp": "2025-10-10T04:43:35.123Z",
+        "type": "tool_start",
+        "content": "Starting cursor_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "arguments": {
+            "instruction": "# Juno Task Initialization\n\n## Project Overview\nTest project for MCP timeout functionality validation.\n\n## Task Description\nTest that MCP timeout settings work correctly with long-running operations.\n\n## Initialization Date\n2025-10-09T16:36:00Z\n\n## Configuration\n- Subagent: cursor\n- Model: auto\n- MCP Timeout: 300000 (5 minutes)",
+            "project_path": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+            "model": "auto",
+            "iteration": 1
+          },
+          "phase": "initialization"
+        }
+      }
+    },
+    {
+      "id": "a5ac5718-7e98-4a92-9770-2e181e7e67bc",
+      "timestamp": "2025-10-10T04:43:35.148Z",
+      "type": "system",
+      "content": "info: Connecting to MCP server for cursor_subagent",
+      "data": {
+        "sessionId": "req-1760071414172-cq4r6n7vz",
+        "timestamp": "2025-10-10T04:43:35.147Z",
+        "type": "info",
+        "content": "Connecting to MCP server for cursor_subagent",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "phase": "connection"
+        }
+      }
+    },
+    {
+      "id": "7bb06b7d-4fe1-41bb-b9ea-d4500089ee54",
+      "timestamp": "2025-10-10T04:43:36.068Z",
+      "type": "system",
+      "content": "thinking: Executing cursor_subagent on subagent",
+      "data": {
+        "sessionId": "req-1760071414172-cq4r6n7vz",
+        "timestamp": "2025-10-10T04:43:36.068Z",
+        "type": "thinking",
+        "content": "Executing cursor_subagent on subagent",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "phase": "execution"
+        }
+      }
+    }
+  ]
+}
