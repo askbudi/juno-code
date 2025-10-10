@@ -985,7 +985,7 @@ export class JunoMCPClient {
           const message = chunk.toString().trim();
           if (message) {
             // Log stderr messages to file only, never to console
-            mcpLogger.error(`[MCP-Server] ${message}`).catch(() => {
+            mcpLogger.error(`[MCP-Server] ${message}`, false).catch(() => {
               // Ignore logging errors to prevent infinite loops
             });
           }

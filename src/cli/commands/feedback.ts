@@ -259,18 +259,18 @@ export function configureFeedbackCommand(program: Command): void {
     .argument('[feedback...]', 'Feedback text or issue description')
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
     .option('--interactive', 'Launch simple interactive feedback form')
-    .option('-d, --issue <description>', 'Issue description')
-    .option('-s, --test <criteria>', 'Test criteria or success factors (user-specified flag)')
-    .option('-t, --test-criteria <criteria>', 'Test criteria or success factors (alternative form)')
-    .option('--test-criteria <criteria>', 'Test criteria (long form)')
+    .option('-d, --detail <description>', 'Issue description')
+    .option('--details <description>', 'Issue description (alternative form)')
+    .option('--description <description>', 'Issue description (alternative form)')
+    .option('-t, --test <criteria>', 'Test criteria or success factors')
     .action(async (feedback, options, command) => {
       // Create feedback options from command options (similar to init command)
       const feedbackOptions: FeedbackCommandOptions = {
         file: options.file,
         interactive: options.interactive,
-        issue: options.issue,
-        test: options.test || options.testCriteria, // Handle both -s (--test) and -t (--test-criteria) flags
-        testCriteria: options.testCriteria,
+        issue: options.detail || options.details || options.description,
+        test: options.test, // Handle -t/--test flag
+        testCriteria: options.test,
         // Global options
         verbose: options.verbose,
         quiet: options.quiet,
@@ -289,9 +289,9 @@ Examples:
   $ juno-task feedback                                    # Interactive feedback form
   $ juno-task feedback "Issue with command"              # Direct feedback text
   $ juno-task feedback --interactive                     # Use interactive form
-  $ juno-task feedback --issue "Bug description" --test "Should work without errors"  # Issue with test criteria
-  $ juno-task feedback -d "Connection timeout" -s "Connect within 30 seconds"           # User-specified short form
-  $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Alternative short form
+  $ juno-task feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
+  $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
+  $ juno-task feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
 
 Enhanced Features:
   1. Issue Description → Structured feedback with optional test criteria
@@ -300,8 +300,8 @@ Enhanced Features:
   4. File Resilience → Automatic repair of malformed USER_FEEDBACK.md
 
 Notes:
-  - Supports both positional arguments and --issue flag
-  - Test criteria are optional but recommended for actionable feedback
+  - Supports both positional arguments and --detail/--description/-d flag
+  - Use -t/--test for test criteria (recommended for actionable feedback)
   - XML structure ensures proper parsing and organization
   - Automatic backup and repair for corrupted feedback files
     `);
@@ -316,17 +316,17 @@ export async function feedbackCommandHandler(
   command: Command
 ): Promise<void> {
   try {
-    // Handle --issue flag with optional --test criteria (headless mode)
-    // Handle both -r (--test) and -t (--test-criteria) flags
-    if (options.issue || (options.test || options.testCriteria)) {
+    // Handle --detail/--description flag with optional --test criteria (headless mode)
+    // Handle -d/--detail/--description and -t/--test flags
+    if (options.issue || options.test) {
       const issueText = options.issue || args.join(' ') || '';
-      const testCriteria = options.test || options.testCriteria || '';
+      const testCriteria = options.test || '';
 
       // Ensure we have an issue description
       if (!issueText.trim()) {
         throw new ValidationError(
-          'Issue description is required when using --issue or --test flags',
-          ['Use: juno-task feedback -i "Issue description" -t "Test criteria"']
+          'Issue description is required when using --detail/--description or --test flags',
+          ['Use: juno-task feedback -d "Issue description" -t "Test criteria"']
         );
       }
       const feedbackFile = getFeedbackFile(options);
@@ -382,10 +382,10 @@ export async function feedbackCommandHandler(
               await appendIssueToFeedback(feedbackFile, feedbackText);
               console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
             } else {
-              console.log(chalk.yellow('Use --interactive mode, --issue flag, or provide feedback text'));
+              console.log(chalk.yellow('Use --interactive mode, --detail/--description flag, or provide feedback text'));
               console.log(chalk.gray('Examples:'));
-              console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));
-              console.log(chalk.gray('  juno-task feedback -d "Issue" -s "Test criteria"'));
+              console.log(chalk.gray('  juno-task feedback --detail "Bug description"'));
+              console.log(chalk.gray('  juno-task feedback -d "Issue" -t "Test criteria"'));
             }
             break;
         }

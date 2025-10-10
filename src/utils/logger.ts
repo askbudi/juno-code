@@ -208,11 +208,11 @@ export class MCPLogger {
   }
 
   /**
-   * Log MCP error messages (can go to console for visibility)
+   * Log MCP error messages (file only by default)
    */
-  async error(message: string): Promise<void> {
+  async error(message: string, writeToConsole: boolean = false): Promise<void> {
     await this.ensureInitialized();
-    await this.logger.error(`[MCP] ${message}`, true); // Errors can be visible
+    await this.logger.error(`[MCP] ${message}`, writeToConsole); // Default to file only
   }
 
   /**
