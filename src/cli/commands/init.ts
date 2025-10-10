@@ -242,16 +242,27 @@ class SimpleProjectGenerator {
 
     // Create comprehensive prompt.md with production template
     const promptContent = `0a. study @.juno_task/specs/* to learn about the specifications
+0b. **ALWAYS check @.juno_task/USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
 
-0b. The source code of the project is in ${targetDirectory}
 
 0c. study @.juno_task/plan.md.
 
-0e. **ALWAYS check @USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
+
+0d. Based on USER FEEDBACK reflect on @.juno_task/plan.md and keep it up-to-date.
+0g. User Feedback has higher priority that test results. maybe the test results hasn't follow the use cases. IT is very important to focus on it.
+
+0f. After reviwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
+
+0h. Assign a subagent to do steps of 0b to 0f and when it is done. And the files has reflected the reality.
+then do 0b, 0c youself (So your actual planning and thinking would be based on latest state of those KEY files.) and continue with the task.
+
+0f. The source code of the project is in ${targetDirectory}
 
 1. Your task is to ${variables.TASK}
 
 Test the implementation under the virtual environment: ${targetDirectory}
+virtual environment not necessarly has been created.!
 
 Using parallel subagents. Follow the @.juno_task/plan.md and choose the most important 1 things. Before making changes search codebase (don't assume not implemented) using subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
 
@@ -273,7 +284,7 @@ Explicitly inform build/tests subagent to activate virtual environment at: ${tar
 
 9999999999. ALWAYS KEEP @.juno_task/plan.md up to date with your learnings using a ${variables.EDITOR} subagent. Especially after wrapping up/finishing your turn.
 
-99999999999. **CRITICAL**: At start of each iteration, read @USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @USER_FEEDBACK.md using a ${variables.EDITOR} subagent.
+99999999999. **CRITICAL**: At start of each iteration, read @.juno_task/USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @.juno_task/USER_FEEDBACK.md using a ${variables.EDITOR} subagent.
 
 99999999999. When you learn something new about how to run the app or examples make sure you update @CLAUDE.md using a ${variables.EDITOR} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
 
@@ -292,6 +303,10 @@ Explicitly inform build/tests subagent to activate virtual environment at: ${tar
 9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
 
 9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @CLAUDE.md
+
+99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
+Plan , USER_FEEDBACK and CLAUDE should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), promptContent);

@@ -763,15 +763,15 @@ export class JunoMCPClient {
       });
     }
 
-    // Create MCP client for this operation with configured timeout
+    // Create MCP client for this operation
     const client = new Client({
       name: 'juno-task-ts',
       version: '1.0.0'
     }, {
       capabilities: {
         tools: {}
-      },
-      timeout: this.options.timeout // Pass our configured timeout to SDK client
+      }
+      // Note: timeout applied at request level, not client level
     });
 
     return { transport, client };
@@ -799,12 +799,62 @@ export class JunoMCPClient {
         reject(new MCPTimeoutError(`Tool call '${toolRequest.name}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      client.callTool(toolRequest, undefined, {
-        timeout: Math.max(timeoutMs, 55000), 
+      /*
+     * IMPORTANT SCHEMA NOTE: Correct callTool usage with Progress Callbacks
+     *
+     * Previous INCORRECT implementation:
+     * client.callTool(toolRequest, undefined, { timeout, ... })
+     *
+     * Current CORRECT implementation:
+     * client.callTool(toolRequest, requestOptions)
+     *
+     * Based on user feedback and Python budi-cli implementation analysis:
+     * - Use RequestOptions.onprogress for proper MCP progress handling
+     * - Progress callback should handle flexible argument patterns like Python version
+     * - Remove maxTotalTimeout to allow resetTimeoutOnProgress to work
+     *
+     * The user identified that ESLint would have caught this schema error immediately.
+     */
+
+      // Create proper progress callback based on Python budi-cli implementation
+      const progressCallback = (progress: any) => {
+        // Handle progress events similar to Python version
+        if (this.options.debug) {
+          console.log(`[MCP] Progress event:`, progress);
+        }
+
+        // Extract progress information and route to existing progress system
+        try {
+          if (typeof progress === 'object' && progress !== null) {
+            const progressValue = progress.progress || progress.percent || 0;
+            const message = progress.message || '';
+
+            // Emit progress event for existing progress handling system
+            this.emit('progress', {
+              toolName: toolRequest.name,
+              progress: progressValue,
+              message,
+              timestamp: new Date(),
+              data: progress
+            });
+          }
+        } catch (error) {
+          // Never break execution on progress callback issues
+          if (this.options.debug) {
+            console.log(`[MCP] Progress callback error (non-critical): ${error}`);
+          }
+        }
+      };
+
+      // Use proper RequestOptions interface
+      const requestOptions = {
+        timeout: Math.max(timeoutMs, 55000),
         resetTimeoutOnProgress: true,
-        maxTotalTimeout: timeoutMs *100,
-        
-      })
+        onprogress: progressCallback
+        // Note: maxTotalTimeout removed as it conflicts with resetTimeoutOnProgress
+      };
+
+      client.callTool(toolRequest, requestOptions)
         .then(result => {
           const actualDuration = Date.now() - startTime;
           console.log(`[MCP] callToolWithTimeout: COMPLETED ${toolRequest.name} in ${actualDuration}ms`);
@@ -820,7 +870,7 @@ export class JunoMCPClient {
           if (error.message.includes('32001') || error.message.includes('Request timed out')) {
             console.log(`[MCP] Detected SDK internal timeout, implementing retry mechanism...`);
             //No Retry!!!! It is not allowed.
-            if (attempt < 0) { // Retry up to 3 times
+            if (attempt < 0) { // No Retries
               console.log(`[MCP] Retrying ${toolRequest.name} (attempt ${attempt + 1})...`);
 
               // Create fresh connection
@@ -1373,7 +1423,7 @@ export class MCPServerConfigResolver {
     return {
       serverPath: serverConfig.args[0], // For backwards compatibility
       serverName: serverConfig.name,
-      timeout: options.timeout || (serverConfig.timeout * 1000) || 120000, // User timeout takes precedence over server config
+      timeout: (serverConfig.timeout * 1000) || 120000, // Server config timeout (user timeout applied at request level)
       retries: 3,
       environment: serverConfig.env,
       ...options
