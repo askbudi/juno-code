@@ -10,7 +10,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
-      'src/cli/__tests__/init-command-tui-execution.test.ts'
+      'src/cli/__tests__/init-command-tui-execution.test.ts',
+      'src/cli/__tests__/feedback-command-tui-execution.test.ts'
     ],
     exclude: [
       'node_modules',

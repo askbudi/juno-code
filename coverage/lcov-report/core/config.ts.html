@@ -1390,7 +1390,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 &nbsp;
   // Paths
   workingDirectory: process.cwd(),
-  sessionDirectory: path.join(process.cwd(), '.juno-task'),
+  sessionDirectory: path.join(process.cwd(), '.juno_task'),
 };
 &nbsp;
 /**
@@ -1400,8 +1400,8 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 const CONFIG_FILE_NAMES = [
   'juno-task.config.json',
   'juno-task.config.js',
-  '.juno-taskrc.json',
-  '.juno-taskrc.js',
+  '.juno_taskrc.json',
+  '.juno_taskrc.js',
   'package.json', // Will look for 'junoTask' field
 ] as const;
 &nbsp;
@@ -1539,7 +1539,7 @@ function getConfigFileFormat(filePath: string): ConfigFileFormat {
 <span class="branch-0 cbranch-no" title="branch not covered" >    case '.mjs':</span>
 <span class="cstat-no" title="statement not covered" >      return 'js';</span>
 <span class="branch-0 cbranch-no" title="branch not covered" >    default:</span>
-<span class="cstat-no" title="statement not covered" >      // For files like .juno-taskrc (no extension), assume JSON</span>
+<span class="cstat-no" title="statement not covered" >      // For files like .juno_taskrc (no extension), assume JSON</span>
 <span class="cstat-no" title="statement not covered" >      return 'json';</span>
   }
 }

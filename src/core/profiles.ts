@@ -560,7 +560,7 @@ export class ProfileManager {
 
       // Paths
       workingDirectory: process.cwd(),
-      sessionDirectory: path.join(process.cwd(), '.juno-task', 'sessions'),
+      sessionDirectory: path.join(process.cwd(), '.juno_task', 'sessions'),
     };
   }
 }

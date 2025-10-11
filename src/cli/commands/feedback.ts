@@ -41,17 +41,35 @@ class SimpleFeedbackTUI {
   /**
    * Simple gather method implementing the minimal flow
    */
-  async gather(): Promise<string> {
+  async gather(): Promise<{ issue: string; testCriteria?: string }> {
     console.log(chalk.blue.bold('\n📝 Submit Feedback\n'));
 
     // Issue Description (multi-line, NO character limits)
     console.log(chalk.yellow('📄 Step 1: Describe your issue or feedback'));
-    const feedback = await this.promptForFeedback();
+    const issue = await this.promptForFeedback();
+
+    // Optional Test Criteria (multi-line)
+    console.log(chalk.yellow('\n🧪 Step 2: (Optional) Provide Test Criteria'));
+    console.log(chalk.gray('   Would you like to add test criteria? (y/n)'));
+    const addCriteriaAnswer = (await this.promptForInput('Add test criteria', 'n')).toLowerCase();
+    let testCriteria: string | undefined = undefined;
+    if (addCriteriaAnswer === 'y' || addCriteriaAnswer === 'yes') {
+      console.log(chalk.gray('   Describe how we should validate the fix'));
+      console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
+
+      const tcLines: string[] = [];
+      while (true) {
+        const line = await this.promptForInput(tcLines.length === 0 ? 'Test criteria' : '   (continue, empty line to finish)', '');
+        if (line.trim() === '') break;
+        tcLines.push(line);
+      }
+      testCriteria = tcLines.join('\n').trim() || undefined;
+    }
 
     console.log(chalk.green('\n✅ Feedback submitted successfully!'));
     console.log(chalk.gray('   Thank you for your input.'));
 
-    return feedback;
+    return { issue, testCriteria };
   }
 
   private async promptForFeedback(): Promise<string> {
@@ -237,7 +255,7 @@ async function appendIssueToFeedback(feedbackFile: string, issueText: string, te
 /**
  * Collect multiline feedback from user
  */
-async function collectFeedback(): Promise<string> {
+async function collectFeedback(): Promise<{ issue: string; testCriteria?: string }> {
   const feedbackTUI = new SimpleFeedbackTUI();
   return await feedbackTUI.gather();
 }
@@ -351,14 +369,17 @@ export async function feedbackCommandHandler(
 
       if (shouldUseInteractive) {
         // Use simplified interactive mode
-        const issueText = await collectFeedback();
+        const { issue: issueText, testCriteria } = await collectFeedback();
         const feedbackFile = getFeedbackFile(options);
 
         // Append issue to USER_FEEDBACK.md
-        await appendIssueToFeedback(feedbackFile, issueText);
+        await appendIssueToFeedback(feedbackFile, issueText, testCriteria);
 
         console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
         console.log(chalk.gray(`   File: ${feedbackFile}`));
+        if (testCriteria) {
+          console.log(chalk.blue(`   Test Criteria: ${testCriteria}`));
+        }
 
       } else {
         // Handle subcommands

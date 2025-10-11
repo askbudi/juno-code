@@ -144,7 +144,7 @@ class ProfileDisplayFormatter {
  */
 async function listProfiles(options: { verbose?: boolean } = {}): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     const profiles = await profileManager.listProfiles();
@@ -168,7 +168,7 @@ async function listProfiles(options: { verbose?: boolean } = {}): Promise<void> 
  */
 async function showProfile(profileName?: string, options: { verbose?: boolean } = {}): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     // Use active profile if no name specified
@@ -201,7 +201,7 @@ async function showProfile(profileName?: string, options: { verbose?: boolean } 
  */
 async function setActiveProfile(profileName: string): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     await profileManager.setActiveProfile(profileName);
@@ -235,7 +235,7 @@ async function createProfile(
   } = {}
 ): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     // Create basic profile structure
@@ -281,7 +281,7 @@ async function createProfile(
  */
 async function deleteProfile(profileName: string, options: { force?: boolean } = {}): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     // Confirmation for non-force deletion
@@ -328,7 +328,7 @@ async function exportProfile(
   options: { format?: 'json' | 'yaml' } = {}
 ): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     const format = options.format || 'json';
@@ -364,7 +364,7 @@ async function importProfile(
   options: { format?: 'json' | 'yaml'; force?: boolean } = {}
 ): Promise<void> {
   try {
-    const profileManager = createProfileManager(path.join(process.cwd(), '.juno-task'));
+    const profileManager = createProfileManager(path.join(process.cwd(), '.juno_task'));
     await profileManager.initialize();
 
     // Read import data

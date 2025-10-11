@@ -154,7 +154,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 
   // Paths
   workingDirectory: process.cwd(),
-  sessionDirectory: path.join(process.cwd(), '.juno-task'),
+  sessionDirectory: path.join(process.cwd(), '.juno_task'),
 };
 
 /**

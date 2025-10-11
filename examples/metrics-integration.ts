@@ -242,7 +242,7 @@ export async function demonstrateMetricsIntegration(): Promise<void> {
     interactive: true,
     headlessMode: false,
     workingDirectory: process.cwd(),
-    sessionDirectory: './.juno-task',
+    sessionDirectory: './.juno_task',
   };
 
   // Create session manager and metrics collector

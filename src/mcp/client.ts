@@ -861,10 +861,9 @@ export class JunoMCPClient {
         const logger = getMCPLogger();
         logger.debug(`Progress event: ${JSON.stringify(progress)}`).catch(() => {});
 
-        if (this.options.debug) {
-          // In debug mode, progress events should stay visible to user
-          console.log(`[MCP] Progress event:`, progress);
-        }
+        // Do not print progress to console here to avoid duplicate lines.
+        // Progress events are rendered by the CLI (start command) via engine callbacks.
+        // In debug mode, keep writing to file-based MCP logger only.
 
         // Extract progress information and route to existing progress system
         try {

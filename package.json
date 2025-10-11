@@ -39,6 +39,7 @@
     "test": "vitest",
     "test:tui": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
     "test:tui:preserve": "PRESERVE_TMP=1 RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
+    "test:feedback": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run src/cli/__tests__/feedback-command-tui-execution.test.ts",
     "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",
     "help:test:tui": "bash ./scripts/test-usage.sh tui",
     "help:test:binary": "bash ./scripts/test-usage.sh binary",
