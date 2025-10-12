@@ -993,16 +993,52 @@ export class JunoMCPClient {
           }
         });
 
-        // Handle stream errors silently to avoid process-level noise
-        stderr.on('error', () => {});
+        // Handle stream errors: log to MCP file, avoid throwing
+        stderr.on('error', (err: any) => {
+          const emsg = err?.message || String(err);
+          const lower = emsg.toLowerCase();
+          const isConnectionLike = ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
+            .some(t => lower.includes(t));
+          const prefix = isConnectionLike ? '[MCP-Server][connection]' : '[MCP-Server][stream-error]';
+          mcpLogger.error(`${prefix} ${emsg}`, false).catch(() => {});
+          // Do not rethrow; preventing process-level 'error' crash
+        });
       }
 
       // Best-effort: also attach silent error handlers to stdout/stdin if present
       if (stdout && typeof stdout.on === 'function') {
-        stdout.on('error', () => {});
+        stdout.on('error', (err: any) => {
+          const message = err?.message || String(err);
+          mcpLogger.error(`[MCP-Server][stdout-error] ${message}`, false).catch(() => {});
+        });
       }
       if (stdin && typeof stdin.on === 'function') {
-        stdin.on('error', () => {});
+        stdin.on('error', (err: any) => {
+          const message = err?.message || String(err);
+          mcpLogger.error(`[MCP-Server][stdin-error] ${message}`, false).catch(() => {});
+        });
+      }
+
+      // Attach error handlers to underlying transport/process if available
+      const anyTransport: any = transport as any;
+      const child: any = anyTransport?.child || anyTransport?.process || anyTransport?._child;
+      if (child) {
+        try {
+          child.on?.('error', (err: any) => {
+            const message = err?.message || String(err);
+            const lower = message.toLowerCase();
+            const isConnectionLike = ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
+              .some(t => lower.includes(t));
+            const prefix = isConnectionLike ? '[MCP-Server][child-connection]' : '[MCP-Server][child-error]';
+            mcpLogger.error(`${prefix} ${message}`, false).catch(() => {});
+          });
+          // Guard stdio sockets
+          child.stdin?.on?.('error', (err: any) => mcpLogger.error(`[MCP-Server][child-stdin] ${err?.message || err}`, false).catch(() => {}));
+          child.stdout?.on?.('error', (err: any) => mcpLogger.error(`[MCP-Server][child-stdout] ${err?.message || err}`, false).catch(() => {}));
+          child.stderr?.on?.('error', (err: any) => mcpLogger.error(`[MCP-Server][child-stderr] ${err?.message || err}`, false).catch(() => {}));
+        } catch {
+          // ignore
+        }
       }
     } catch (error) {
       // If stderr logging setup fails, continue without it

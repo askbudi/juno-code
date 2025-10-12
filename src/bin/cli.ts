@@ -26,6 +26,14 @@ import CompletionCommand from '../cli/commands/completion.js';
 // Version information
 const VERSION = '1.0.0';
 
+/** Determine if an error is a transient connection/pipe error. */
+function isConnectionLikeError(err: unknown): boolean {
+  const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  const lower = msg.toLowerCase();
+  return ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
+    .some(token => lower.includes(token));
+}
+
 /**
  * Global error handler for CLI operations
  */
@@ -414,7 +422,23 @@ ${chalk.blue.bold('Support:')}
 /**
  * Global error handlers
  */
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', async (reason, promise) => {
+  try {
+    if (isConnectionLikeError(reason)) {
+      // Log and continue (don’t exit) for transient pipe/socket issues
+      const { getMCPLogger } = await import('../utils/logger.js');
+      const logger = getMCPLogger();
+      await logger.error(`[Process][unhandledRejection][connection] ${String(reason)}`, false);
+      const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+      if (verbose) {
+        console.error(chalk.yellow('\n⚠️  Transient connection issue (continuing):'));
+        console.error(chalk.gray('   Reason:'), reason);
+      }
+      return; // do not exit
+    }
+  } catch {
+    // fall through to default handler
+  }
   console.error(chalk.red.bold('\n💥 Unhandled Promise Rejection'));
   console.error(chalk.red('   This is likely a bug. Please report it.'));
   console.error(chalk.gray('   Promise:'), promise);
@@ -422,7 +446,22 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(EXIT_CODES.UNEXPECTED_ERROR);
 });
 
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', async (error) => {
+  try {
+    if (isConnectionLikeError(error)) {
+      const { getMCPLogger } = await import('../utils/logger.js');
+      const logger = getMCPLogger();
+      await logger.error(`[Process][uncaughtException][connection] ${error.message}`, false);
+      const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+      if (verbose) {
+        console.error(chalk.yellow('\n⚠️  Transient connection exception (continuing):'));
+        console.error(chalk.gray('   Error:'), error.message);
+      }
+      return; // do not exit
+    }
+  } catch {
+    // ignore and fall through
+  }
   console.error(chalk.red.bold('\n💥 Uncaught Exception'));
   console.error(chalk.red('   This is likely a bug. Please report it.'));
   console.error(chalk.gray('   Error:'), error.message);

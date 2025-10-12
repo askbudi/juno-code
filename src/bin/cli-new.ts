@@ -308,6 +308,21 @@ ${chalk.blue.bold('Support:')}
  * Global error handlers
  */
 process.on('unhandledRejection', (reason, promise) => {
+  const msg = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+  const lower = msg.toLowerCase();
+  const isConnectionLike = ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
+    .some(t => lower.includes(t));
+  if (isConnectionLike) {
+    import('../utils/logger.js').then(async ({ getMCPLogger }) => {
+      try { await getMCPLogger().error(`[Process][unhandledRejection][connection] ${msg}`, false); } catch {}
+    });
+    const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+    if (verbose) {
+      console.error(chalk.yellow('\\n⚠️  Transient connection issue (continuing):'));
+      console.error(chalk.gray('   Reason:'), reason);
+    }
+    return; // do not exit
+  }
   console.error(chalk.red.bold('\\n💥 Unhandled Promise Rejection'));
   console.error(chalk.red('   This is likely a bug. Please report it.'));
   console.error(chalk.gray('   Promise:'), promise);
@@ -316,6 +331,21 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 process.on('uncaughtException', (error) => {
+  const msg = `${error.name}: ${error.message}`;
+  const lower = msg.toLowerCase();
+  const isConnectionLike = ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
+    .some(t => lower.includes(t));
+  if (isConnectionLike) {
+    import('../utils/logger.js').then(async ({ getMCPLogger }) => {
+      try { await getMCPLogger().error(`[Process][uncaughtException][connection] ${msg}`, false); } catch {}
+    });
+    const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+    if (verbose) {
+      console.error(chalk.yellow('\\n⚠️  Transient connection exception (continuing):'));
+      console.error(chalk.gray('   Error:'), error.message);
+    }
+    return; // do not exit
+  }
   console.error(chalk.red.bold('\\n💥 Uncaught Exception'));
   console.error(chalk.red('   This is likely a bug. Please report it.'));
   console.error(chalk.gray('   Error:'), error.message);
