@@ -1088,11 +1088,31 @@ export class ExecutionEngine extends EventEmitter {
       return error;
     }
 
-    // Import error classes and create appropriate error type
-    // This is a simplified implementation
+    // Classify common transport/socket failures as connection errors so the loop can continue
+    const msg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    const lower = msg.toLowerCase();
+    const isConnectionLike = [
+      'epipe',
+      'broken pipe',
+      'econnreset',
+      'socket hang up',
+      'err_socket_closed',
+      'connection reset by peer',
+    ].some(token => lower.includes(token));
+
+    if (isConnectionLike) {
+      return {
+        type: 'connection',
+        message: msg,
+        timestamp: new Date(),
+        code: 'MCP_CONNECTION_LOST' as any,
+      } as any;
+    }
+
+    // Fallback: treat as tool execution error
     return {
       type: 'tool_execution',
-      message: error instanceof Error ? error.message : String(error),
+      message: msg,
       timestamp: new Date(),
     } as any;
   }

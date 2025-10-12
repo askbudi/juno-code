@@ -976,6 +976,8 @@ export class JunoMCPClient {
   private setupStderrLogging(transport: StdioClientTransport): void {
     try {
       const stderr = transport.stderr;
+      const stdout = (transport as any).stdout;
+      const stdin = (transport as any).stdin;
       if (stderr) {
         // Get MCP logger for redirecting stderr output
         const mcpLogger = getMCPLogger();
@@ -991,10 +993,16 @@ export class JunoMCPClient {
           }
         });
 
-        // Handle stderr stream errors
-        stderr.on('error', (error: Error) => {
-          // Silently ignore stderr stream errors to prevent noise
-        });
+        // Handle stream errors silently to avoid process-level noise
+        stderr.on('error', () => {});
+      }
+
+      // Best-effort: also attach silent error handlers to stdout/stdin if present
+      if (stdout && typeof stdout.on === 'function') {
+        stdout.on('error', () => {});
+      }
+      if (stdin && typeof stdin.on === 'function') {
+        stdin.on('error', () => {});
       }
     } catch (error) {
       // If stderr logging setup fails, continue without it
