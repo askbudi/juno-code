@@ -368,10 +368,8 @@ class MainExecutionCoordinator {
     // Create execution engine
     const engine = createExecutionEngine(this.config, mcpClient);
 
-    // Set up progress callbacks
-    engine.onProgress(async (event: ProgressEvent) => {
-      this.progressDisplay.onProgress(event);
-    });
+    // Note: Progress callbacks are handled by MCP client progressCallback above
+    // This prevents duplicate progress messages in verbose mode
 
     // Set up event handlers
     engine.on('iteration:start', ({ iterationNumber }) => {

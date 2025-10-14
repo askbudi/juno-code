@@ -1,0 +1,115 @@
+{
+  "info": {
+    "id": "016bad1a-8123-4265-b5f9-d4bc5c9a2c8e",
+    "name": "Execution 2025-10-14T20:05:03.404Z",
+    "status": "failed",
+    "subagent": "cursor",
+    "createdAt": "2025-10-14T20:05:03.405Z",
+    "updatedAt": "2025-10-14T20:05:03.586Z",
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 6000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task"
+    },
+    "tags": [
+      "cli",
+      "start-command"
+    ],
+    "metadata": {
+      "requestId": "req-1760472303403-oit8gqu29",
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "maxIterations": 50,
+      "model": "auto"
+    },
+    "completedAt": "2025-10-14T20:05:03.586Z"
+  },
+  "context": {
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "environment": {
+      "TERM": "dumb",
+      "SHELL": "/bin/zsh",
+      "PYTHONUNBUFFERED": "1",
+      "USER": "mahdiyar",
+      "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+      "ROUNDTABLE_DEBUG": "false",
+      "MCP_LOG_LEVEL": "ERROR",
+      "PATH": "/Users/mahdiyar/.nvm/versions/node/v20.19.5/bin:/Users/mahdiyar/.bun/bin:/Users/mahdiyar/.local/bin:/Users/mahdiyar/miniconda3/bin:/Users/mahdiyar/miniconda3/condabin:/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "PWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "SHLVL": "1",
+      "HOME": "/Users/mahdiyar",
+      "LOGNAME": "mahdiyar",
+      "LC_CTYPE": "C.UTF-8",
+      "NODE_ENV": "production",
+      "NO_COLOR": "1",
+      "FORCE_COLOR": "0",
+      "CURSOR_AGENT": "1",
+      "OLDPWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "BUN_INSTALL": "/Users/mahdiyar/.bun",
+      "CONDA_DEFAULT_ENV": "base",
+      "CONDA_EXE": "/Users/mahdiyar/miniconda3/bin/conda",
+      "CONDA_PREFIX": "/Users/mahdiyar/miniconda3",
+      "CONDA_PROMPT_MODIFIER": "(base) ",
+      "CONDA_PYTHON_EXE": "/Users/mahdiyar/miniconda3/bin/python",
+      "CONDA_SHLVL": "1",
+      "LANG": "C.UTF-8",
+      "NVM_BIN": "/Users/mahdiyar/.nvm/versions/node/v20.19.5/bin",
+      "NVM_CD_FLAGS": "-q",
+      "NVM_DIR": "/Users/mahdiyar/.nvm",
+      "NVM_INC": "/Users/mahdiyar/.nvm/versions/node/v20.19.5/include/node",
+      "_CE_CONDA": "",
+      "_CE_M": "",
+      "_": "/opt/homebrew/bin/timeout"
+    },
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 6000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task"
+    },
+    "processInfo": {
+      "pid": 79580,
+      "nodeVersion": "v20.19.5",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "statistics": {
+    "duration": 181,
+    "iterations": 0,
+    "toolCalls": 0,
+    "toolStats": {},
+    "successRate": 0,
+    "errorCount": 0,
+    "warningCount": 0,
+    "performance": {
+      "avgIterationTime": 0,
+      "avgToolCallTime": 0,
+      "totalThinkingTime": 0
+    }
+  },
+  "history": [],
+  "result": {
+    "success": false,
+    "error": "MCP server connection test failed: MCP error -32000: Connection closed"
+  }
+}
