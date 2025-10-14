@@ -26,6 +26,7 @@ import type {
   ToolCallResult,
   MCPSessionContext,
 } from '../mcp/types';
+import { runPreflightTests, getPreflightConfig } from '../utils/preflight.js';
 import {
   MCPError,
   MCPRateLimitError,
@@ -800,6 +801,24 @@ export class ExecutionEngine extends EventEmitter {
    */
   private async executeIteration(context: ExecutionContext, iterationNumber: number): Promise<void> {
     const iterationStart = new Date();
+
+    // Run preflight tests before each iteration
+    const preflightConfig = getPreflightConfig(context.request.workingDirectory, context.request.subagent);
+    if (iterationNumber === 1) {
+      // Only run preflight tests on first iteration to avoid repeated checks
+      const preflightResult = await runPreflightTests(preflightConfig);
+      if (preflightResult.triggered) {
+        // Emit preflight test results for progress tracking
+        this.emit('progress', {
+          toolName: 'preflight',
+          progress: 100,
+          message: `Completed ${preflightResult.actions.length} preflight action(s)`,
+          timestamp: new Date(),
+          data: preflightResult
+        });
+      }
+    }
+
     this.emit('iteration:start', { context, iterationNumber });
 
     const toolRequest: ToolCallRequest = {
