@@ -49,7 +49,7 @@ async function loadWithConfigFile() {
       defaultMaxIterations: 100,
       logLevel: 'debug',
       verbose: true,
-      mcpTimeout: 45000
+      mcpTimeout: 450000
     };
 
     // In real usage, you would load from an actual file:
@@ -102,10 +102,10 @@ async function environmentVariableExample() {
   console.log('\n=== Environment Variable Usage ===');
 
   // Set some environment variables
-  process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'gemini';
+  process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'cursor';
   process.env.JUNO_TASK_VERBOSE = 'true';
   process.env.JUNO_TASK_LOG_LEVEL = 'debug';
-  process.env.JUNO_TASK_MCP_TIMEOUT = '60000';
+  process.env.JUNO_TASK_MCP_TIMEOUT = '86400000';
 
   try {
     const config = await loadConfig();
@@ -142,7 +142,7 @@ function configValidationExample() {
     // Valid configuration
     const validConfig = {
       ...DEFAULT_CONFIG,
-      defaultSubagent: 'claude',
+      defaultSubagent: 'cursor',
       defaultMaxIterations: 25,
       logLevel: 'warn'
     };

@@ -144,7 +144,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   quiet: false,
 
   // MCP settings
-  mcpTimeout: 120000, // 120 seconds (2 minutes) - increased to prevent timeouts for longer operations
+  mcpTimeout: 600000, // 600 seconds (10 minutes) - increased to prevent timeouts for longer operations
   mcpRetries: 3,
   mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
 

@@ -237,7 +237,7 @@ export async function demonstrateMetricsIntegration(): Promise<void> {
     logLevel: 'info',
     verbose: true,
     quiet: false,
-    mcpTimeout: 30000,
+    mcpTimeout: 300000,
     mcpRetries: 3,
     interactive: true,
     headlessMode: false,

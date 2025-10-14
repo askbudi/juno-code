@@ -401,7 +401,7 @@ export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitHandlingConfig = {
  */
 export const DEFAULT_PROGRESS_CONFIG: ProgressTrackingConfig = {
   enabled: true,
-  bufferSize: 1000,
+  bufferSize: 10000,
   filters: [],
   processors: [],
 };

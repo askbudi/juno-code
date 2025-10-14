@@ -832,7 +832,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       quiet: false,
 
       // MCP settings
-      mcpTimeout: 120000, // 120 seconds (2 minutes) - increased to prevent timeouts for longer operations
+      mcpTimeout: 3600000, // 3600 seconds (1 hour) - increased to prevent timeouts for longer operations
       mcpRetries: 3,
       mcpServerName: 'roundtable-ai',
 
@@ -869,7 +869,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           name: "roundtable-ai",
           command: "python",
           args: [roundtablePath],
-          timeout: 3600.0,
+          timeout: 7200.0,
           enable_default_progress_callback: true,
           suppress_subprocess_logs: true,
           env: {
@@ -894,7 +894,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       },
       default_server: "roundtable-ai",
       global_settings: {
-        connection_timeout: 30.0,
+        connection_timeout: 300.0,
         default_retries: 3,
         enable_progress_streaming: true,
         log_level: "info",
@@ -917,10 +917,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
   private getDefaultModelForSubagent(subagent: string): string {
     const modelDefaults = {
-      claude: 'claude-3-sonnet-20240229',
-      codex: 'gpt-4-turbo',
-      gemini: 'gemini-1.5-pro',
-      cursor: 'cursor-sonnet'
+      claude: 'sonnet-4',
+      codex: 'gpt-5',
+      gemini: 'gemini-2.5-pro',
+      cursor: 'auto'
     };
     return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
   }

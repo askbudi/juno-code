@@ -891,10 +891,10 @@ export class JunoMCPClient {
 
       // Use proper RequestOptions interface
       const requestOptions = {
-        timeout: Math.min(timeoutMs, 55000),
+        timeout: Math.max(timeoutMs, 55000), //The bigger the better.
         resetTimeoutOnProgress: true,
         onprogress: progressCallback,
-        maxTotalTimeout: timeoutMs *100
+        maxTotalTimeout: timeoutMs *1000
       };
       //client.callTool(toolRequest, undefined, requestOptions) #This is a correct signature, it wont work without the undefined parameter.
       client.callTool(toolRequest, undefined, requestOptions)
@@ -919,7 +919,7 @@ export class JunoMCPClient {
               // Create fresh connection
               try {
                 const { transport: newTransport, client: newClient } = await this.createConnection();
-                await this.connectWithTimeout(newClient, newTransport, 30000);
+                await this.connectWithTimeout(newClient, newTransport, 300000);
 
                 // Retry with fresh connection
                 const retryResult = await this.callToolWithTimeout(newClient, toolRequest, timeoutMs, attempt + 1);
@@ -1674,9 +1674,9 @@ export class SubagentMapperImpl {
   validateModel(subagentType: string, model: string): boolean {
     const validModels: Record<string, string[]> = {
       'claude': ['sonnet-4', 'opus-4.1', 'haiku-4'],
-      'cursor': ['gpt-5', 'sonnet-4', 'sonnet-4-thinking'],
+      'cursor': ['auto','gpt-5','sonnet-4', 'sonnet-4.5', 'sonnet-4-thinking'],
       'codex': ['gpt-5'],
-      'gemini': ['gemini-pro', 'gemini-ultra'],
+      'gemini': ['gemini-2.5-pro', 'gemini-2.5-flash'],
     };
 
     const models = validModels[subagentType];
@@ -1686,16 +1686,16 @@ export class SubagentMapperImpl {
   getDefaultModel(subagentType: string): string {
     const defaults: Record<string, string> = {
       'claude': 'sonnet-4',
-      'cursor': 'gpt-5',
+      'cursor': 'auto',
       'codex': 'gpt-5',
-      'gemini': 'gemini-pro',
+      'gemini': 'gemini-2.5-pro',
     };
     return defaults[subagentType] || 'default-model';
   }
 
   getDefaults(subagentType: string): any {
     return {
-      timeout: 6000000,
+      timeout: 36000000,
       model: this.getDefaultModel(subagentType),
       arguments: {},
       priority: 'normal',
