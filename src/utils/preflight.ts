@@ -193,6 +193,9 @@ export async function runPreflightTests(config: PreflightConfig): Promise<Prefli
       console.log(`  📝 ${action.file}: ${action.lineCount} lines (threshold: ${action.threshold})`);
     }
     console.log('');
+  } else {
+    // Log that preflight tests ran but no actions were needed
+    console.log(`\n🔍 Preflight tests: No actions needed (all files within ${config.threshold} line threshold)\n`);
   }
 
   return result;

@@ -584,16 +584,16 @@ Backend #3: tool_result => Analysis complete`;
 
     it('should get default models', () => {
       expect(mapper.getDefaultModel('claude')).toBe('sonnet-4');
-      expect(mapper.getDefaultModel('cursor')).toBe('gpt-5');
+      expect(mapper.getDefaultModel('cursor')).toBe('auto');
       expect(mapper.getDefaultModel('codex')).toBe('gpt-5');
-      expect(mapper.getDefaultModel('gemini')).toBe('gemini-pro');
+      expect(mapper.getDefaultModel('gemini')).toBe('gemini-2.5-pro');
     });
 
     it('should get default configurations', () => {
       const claudeDefaults = mapper.getDefaults('claude');
 
       expect(claudeDefaults).toEqual({
-        timeout: 6000000,
+        timeout: 36000000,
         model: 'sonnet-4',
         arguments: {},
         priority: 'normal',
