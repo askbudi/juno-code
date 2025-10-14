@@ -6,13 +6,13 @@
  */
 
 import * as path from 'node:path';
-import * as readline from 'node:readline';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
 import type { FeedbackCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
+import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 /**
  * Simple Interactive Feedback for user feedback collection
@@ -20,24 +20,6 @@ import { ValidationError } from '../types.js';
  * Issue Description [Multi line] → Save → Done
  */
 class SimpleFeedbackTUI {
-  /**
-   * Helper method to prompt for text input using readline
-   */
-  private async promptForInput(prompt: string, defaultValue: string = ''): Promise<string> {
-    return new Promise((resolve) => {
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-      });
-
-      const question = `${prompt}${defaultValue ? ` (default: ${defaultValue})` : ''}: `;
-      rl.question(question, (answer) => {
-        rl.close();
-        resolve(answer.trim() || defaultValue);
-      });
-    });
-  }
-
   /**
    * Simple gather method implementing the minimal flow
    */
@@ -51,19 +33,15 @@ class SimpleFeedbackTUI {
     // Optional Test Criteria (multi-line)
     console.log(chalk.yellow('\n🧪 Step 2: (Optional) Provide Test Criteria'));
     console.log(chalk.gray('   Would you like to add test criteria? (y/n)'));
-    const addCriteriaAnswer = (await this.promptForInput('Add test criteria', 'n')).toLowerCase();
+    const addCriteriaAnswer = (await promptInputOnce('Add test criteria', 'n')).toLowerCase();
     let testCriteria: string | undefined = undefined;
     if (addCriteriaAnswer === 'y' || addCriteriaAnswer === 'yes') {
-      console.log(chalk.gray('   Describe how we should validate the fix'));
-      console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
-
-      const tcLines: string[] = [];
-      while (true) {
-        const line = await this.promptForInput(tcLines.length === 0 ? 'Test criteria' : '   (continue, empty line to finish)', '');
-        if (line.trim() === '') break;
-        tcLines.push(line);
-      }
-      testCriteria = tcLines.join('\n').trim() || undefined;
+      testCriteria = await promptMultiline({
+        label: 'Describe how we should validate the fix',
+        hint: 'Finish with double Enter. Blank lines are kept.',
+        prompt: '  ',
+      });
+      testCriteria = testCriteria.trim() || undefined;
     }
 
     console.log(chalk.green('\n✅ Feedback submitted successfully!'));
@@ -73,24 +51,14 @@ class SimpleFeedbackTUI {
   }
 
   private async promptForFeedback(): Promise<string> {
-    console.log(chalk.gray('   Describe your issue, bug report, or suggestion'));
-    console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
+    const input = await promptMultiline({
+      label: 'Describe your issue, bug report, or suggestion',
+      hint: 'Finish with double Enter. Blank lines are kept.',
+      prompt: '  ',
+      minLength: 5,
+    });
 
-    const lines: string[] = [];
-
-    while (true) {
-      const line = await this.promptForInput(lines.length === 0 ? 'Feedback' : '   (continue, empty line to finish)', '');
-
-      if (line.trim() === '') {
-        break; // Empty line signals end of input
-      }
-
-      lines.push(line);
-    }
-
-    const input = lines.join('\n').trim();
-
-    if (!input || input.length < 5) {
+    if (!input || input.replace(/\s+/g, '').length < 5) {
       throw new ValidationError(
         'Feedback must be at least 5 characters',
         ['Provide a description of your issue or suggestion']

@@ -96,19 +96,18 @@ suite('Feedback Command TUI Execution', () => {
     // Step 1 prompts
     await waitFor(/📝 Submit Feedback/);
     await waitFor(/📄 Step 1: Describe your issue or feedback/);
-    await waitFor(/Feedback/);
+    await waitFor(/Describe your issue, bug report, or suggestion/);
     child.stdin?.write('Interactive feedback issue: something is wrong\n');
-    await waitFor(/continue, empty line to finish/);
     child.stdin?.write('with the new feature.\n');
-    child.stdin?.write('\n'); // finish issue
+    child.stdin?.write('\n\n'); // double Enter to finish
 
     // Step 2 prompts and inputs
     await waitFor(/Optional\) Provide Test Criteria/);
     await waitFor(/Add test criteria/);
     child.stdin?.write('y\n');
-    await waitFor(/Test criteria/);
+    await waitFor(/Describe how we should validate the fix/);
     child.stdin?.write('Should reproduce in a temp project and exit cleanly\n');
-    child.stdin?.write('\n'); // finish criteria
+    child.stdin?.write('\n\n'); // double Enter to finish criteria
 
     // Completion indicator
     await waitFor(/✅ Feedback added to USER_FEEDBACK.md!/);

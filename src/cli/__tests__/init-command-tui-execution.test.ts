@@ -27,9 +27,16 @@ import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import stripAnsi from 'strip-ansi';
-// Lazy-load node-pty to avoid hard failure in environments where
-// native addon cannot be loaded. Test can be opted-in via RUN_TUI=1.
+// Try to load node-pty; if unavailable for current Node, skip this suite.
 let pty: typeof import('node-pty') | null = null;
+let PTY_AVAILABLE = false;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  pty = require('node-pty');
+  PTY_AVAILABLE = !!pty;
+} catch {
+  PTY_AVAILABLE = false;
+}
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
@@ -77,25 +84,11 @@ function waitForOutput(ptyProc: pty.IPty, regex: RegExp, options: { timeout?: nu
   });
 }
 
-// Skip entire suite unless explicitly enabled
-const suite = RUN_TUI ? describe : describe.skip;
+// Skip when PTY is not available, or not explicitly enabled
+const suite = RUN_TUI && PTY_AVAILABLE ? describe : describe.skip;
 
 suite('Init Command TUI Execution', () => {
-  // Try to import node-pty only when suite is enabled
-  beforeEach(async () => {
-    if (!pty) {
-      try {
-        pty = (await import('node-pty')).default as unknown as typeof import('node-pty');
-      } catch (e) {
-        // If PTY cannot be loaded, skip this test run gracefully
-        // to prevent native crashes in CI/local mismatches
-        // eslint-disable-next-line no-console
-        console.warn('node-pty not available:', e);
-        // Force skip by throwing a known error that will be caught by the test
-        throw new Error('SKIP_PTY_UNAVAILABLE');
-      }
-    }
-  });
+  // No-op: PTY is pre-detected; if unavailable, suite is skipped.
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(BASE_TMP_DIR, 'juno-init-tui-'));
     outputDir = path.join(tempDir, 'test-outputs');
@@ -160,11 +153,12 @@ suite('Init Command TUI Execution', () => {
 
       // Step 2: Task multi-line input
       await waitForOutput(ptyProcess, /📝 Step 2: Main Task/);
-      await waitForOutput(ptyProcess, /Task description/);
+      await waitForOutput(ptyProcess, /Describe what you want to build/);
       ptyProcess.write('Count number of folders in this directory and give me a report');
       ptyProcess.write('\r'); // submit first line
-      await waitForOutput(ptyProcess, /continue, empty line to finish/);
-      ptyProcess.write('\r'); // empty line to finish
+      // Finish with double Enter (preserve blank lines in content)
+      ptyProcess.write('\r');
+      ptyProcess.write('\r');
 
       // Step 3: Subagent selection -> choose 2 (Codex)
       await waitForOutput(ptyProcess, /👨‍💻 Step 3: Select Coding Editor/);

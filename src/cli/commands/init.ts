@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
-import * as readline from 'node:readline';
+import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 import { loadConfig } from '../../core/config.js';
 import type { InitCommandOptions } from '../types.js';
@@ -35,23 +35,7 @@ interface InitializationContext {
 class SimpleInitTUI {
   private context: Partial<InitializationContext> = {};
 
-  /**
-   * Helper method to prompt for text input using readline
-   */
-  private async promptForInput(prompt: string, defaultValue: string = ''): Promise<string> {
-    return new Promise((resolve) => {
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-      });
-
-      const question = `${prompt}${defaultValue ? ` (default: ${defaultValue})` : ''}: `;
-      rl.question(question, (answer) => {
-        rl.close();
-        resolve(answer.trim() || defaultValue);
-      });
-    });
-  }
+  // Simple single-line input helper is provided by utils
 
   /**
    * Simplified gather method implementing the minimal flow
@@ -97,29 +81,19 @@ class SimpleInitTUI {
 
   private async promptForDirectory(): Promise<string> {
     console.log(chalk.gray('   Enter the target directory for your project'));
-    const answer = await this.promptForInput('Directory path', process.cwd());
+    const answer = await promptInputOnce('Directory path', process.cwd());
     return path.resolve(answer || process.cwd());
   }
 
   private async promptForTask(): Promise<string> {
-    console.log(chalk.gray('   Describe what you want to build'));
-    console.log(chalk.gray('   You can write multiple lines. Press Enter on empty line when finished.\n'));
+    const input = await promptMultiline({
+      label: 'Describe what you want to build',
+      hint: 'Finish with double Enter. Blank lines are kept.',
+      prompt: '  ',
+      minLength: 5,
+    });
 
-    const lines: string[] = [];
-
-    while (true) {
-      const line = await this.promptForInput(lines.length === 0 ? 'Task description' : '   (continue, empty line to finish)', '');
-
-      if (line.trim() === '') {
-        break; // Empty line signals end of input
-      }
-
-      lines.push(line);
-    }
-
-    const input = lines.join('\n').trim();
-
-    if (!input || input.length < 5) {
+    if (!input || input.replace(/\s+/g, '').length < 5) {
       throw new ValidationError(
         'Task description must be at least 5 characters',
         ['Provide a basic description of what you want to build']
@@ -136,7 +110,7 @@ class SimpleInitTUI {
     console.log(chalk.gray('   3) Gemini'));
     console.log(chalk.gray('   4) Cursor'));
 
-    const answer = await this.promptForInput('Subagent choice', '1');
+    const answer = await promptInputOnce('Subagent choice', '1');
     const choice = parseInt(answer) || 1;
 
     switch (choice) {
@@ -150,11 +124,11 @@ class SimpleInitTUI {
 
   private async promptForGitSetup(): Promise<string | undefined> {
     console.log(chalk.gray('   Would you like to set up Git? (y/n):'));
-    const answer = (await this.promptForInput('Git setup', 'y')).toLowerCase();
+    const answer = (await promptInputOnce('Git setup', 'y')).toLowerCase();
 
     if (answer === 'y' || answer === 'yes') {
       console.log(chalk.gray('   Enter Git repository URL (optional):'));
-      const gitUrl = await this.promptForInput('Git URL', '');
+      const gitUrl = await promptInputOnce('Git URL', '');
 
       if (gitUrl && gitUrl.trim()) {
         return gitUrl.trim();
@@ -174,7 +148,7 @@ class SimpleInitTUI {
       console.log(chalk.gray('   1) Override existing files'));
       console.log(chalk.gray('   2) Cancel'));
 
-      const answer = await this.promptForInput('Choice', '2');
+      const answer = await promptInputOnce('Choice', '2');
       const choice = parseInt(answer) || 2;
 
       if (choice !== 1) {
