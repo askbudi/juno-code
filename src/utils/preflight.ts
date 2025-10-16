@@ -8,6 +8,7 @@
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export interface PreflightConfig {
   /** Threshold for file line count (default: 500) */
@@ -82,11 +83,15 @@ async function countLines(filePath: string): Promise<number> {
  */
 async function runFeedbackCommand(projectPath: string, message: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const cliPath = path.join(projectPath, 'dist', 'bin', 'cli.mjs');
+    // Get the current CLI executable path instead of hardcoding
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    // From utils/preflight.ts, go up to project root, then to dist/bin/cli.mjs
+    const cliPath = path.resolve(__dirname, '../..', 'dist', 'bin', 'cli.mjs');
     const feedbackCommand = `node "${cliPath}" feedback --issue "${message}"`;
 
     const child = spawn('node', [
-      path.join(projectPath, 'dist', 'bin', 'cli.mjs'),
+      cliPath,
       'feedback',
       '--issue',
       message
