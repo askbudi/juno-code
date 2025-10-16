@@ -177,6 +177,8 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   saveMetrics?: boolean | string;
   /** Custom path for metrics file */
   metricsFile?: string;
+  /** Enable concurrent feedback collection during execution */
+  enableFeedback?: boolean;
 }
 
 /**

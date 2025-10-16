@@ -16,6 +16,7 @@ import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, mcpLogger, engineLogger, sessionLogger, LogLevel } from '../utils/advanced-logger.js';
+import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import type { StartCommandOptions } from '../types.js';
 import { ConfigurationError, MCPError, FileSystemError, ValidationError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
@@ -318,19 +319,34 @@ class ExecutionCoordinator {
   private progressDisplay: ProgressDisplay;
   private performanceIntegration: PerformanceIntegration;
   private currentSession: Session | null = null;
+  private feedbackCollector: ConcurrentFeedbackCollector | null = null;
+  private enableFeedback: boolean = false;
 
   constructor(
     config: JunoTaskConfig,
     verbose: boolean = false,
-    performanceIntegration?: PerformanceIntegration
+    performanceIntegration?: PerformanceIntegration,
+    enableFeedback: boolean = false
   ) {
     this.config = config;
     this.progressDisplay = new ProgressDisplay(verbose);
     this.performanceIntegration = performanceIntegration || new PerformanceIntegration();
+    this.enableFeedback = enableFeedback;
   }
 
   async initialize(): Promise<void> {
     this.sessionManager = await createSessionManager(this.config);
+
+    // Initialize feedback collector if enabled
+    if (this.enableFeedback) {
+      this.feedbackCollector = new ConcurrentFeedbackCollector({
+        command: 'node',
+        commandArgs: ['dist/bin/cli.mjs', 'feedback'],
+        verbose: this.config.verbose,
+        showHeader: true,
+        progressInterval: 0 // Don't use built-in ticker, we have our own progress display
+      });
+    }
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
@@ -433,6 +449,12 @@ class ExecutionCoordinator {
       // Start progress display
       this.progressDisplay.start(request);
 
+      // Start feedback collector if enabled
+      if (this.feedbackCollector) {
+        console.log(chalk.gray('   Feedback collection: enabled (submit with blank line)'));
+        this.feedbackCollector.start();
+      }
+
       // Execute task
       this.performanceIntegration.startTiming(request.requestId, 'task_execution');
       const result = await engine.execute(request);
@@ -473,6 +495,15 @@ class ExecutionCoordinator {
       // Cleanup
       this.performanceIntegration.startTiming(request.requestId, 'cleanup');
       try {
+        // Stop feedback collector if running
+        if (this.feedbackCollector) {
+          await this.feedbackCollector.stop();
+          const submissionCount = this.feedbackCollector.getSubmissionCount();
+          if (submissionCount > 0) {
+            console.log(chalk.blue(`\n📝 Total feedback submissions: ${submissionCount}`));
+          }
+        }
+
         if (mcpClient) {
           await mcpClient.disconnect();
         }
@@ -594,7 +625,12 @@ export async function startCommandHandler(
     const performanceIntegration = new PerformanceIntegration();
 
     // Create and initialize coordinator
-    const coordinator = new ExecutionCoordinator(config, allOptions.verbose, performanceIntegration);
+    const coordinator = new ExecutionCoordinator(
+      config,
+      allOptions.verbose,
+      performanceIntegration,
+      allOptions.enableFeedback || false
+    );
     await coordinator.initialize();
 
     // Execute
@@ -705,6 +741,7 @@ export function configureStartCommand(program: Command): void {
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
     .option('-d, --directory <path>', 'Project directory (default: current)')
+    .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
     .option('--show-metrics', 'Display performance metrics summary after execution')
     .option('--show-dashboard', 'Show interactive performance dashboard after execution')
     .option('--show-trends', 'Display performance trends from historical data')
@@ -727,6 +764,7 @@ Examples:
   $ juno-task start -s codex --max-iterations 10     # Use codex with 10 iterations
   $ juno-task start --model sonnet-4                 # Use specific model
   $ juno-task start --directory ./my-project         # Execute in specific directory
+  $ juno-task start --enable-feedback                # Enable feedback collection while running
   $ juno-task start --verbose                        # Show detailed progress
   $ juno-task start --quiet                          # Minimize output
   $ juno-task start --show-metrics                   # Display performance summary
@@ -734,6 +772,12 @@ Examples:
   $ juno-task start --show-trends                    # Show historical performance trends
   $ juno-task start --save-metrics                   # Save metrics to .juno_task/metrics.json
   $ juno-task start --save-metrics custom.json       # Save metrics to custom file
+
+Feedback Collection:
+  --enable-feedback             Enable concurrent feedback collection
+                                Type multiline feedback and submit with blank line
+                                Continue monitoring app progress while typing
+                                Feedback is sent to the feedback command automatically
 
 Performance Options:
   --show-metrics                Show performance summary after execution
@@ -753,6 +797,7 @@ Notes:
   - Creates a new session for tracking execution
   - Progress is displayed in real-time
   - Performance metrics are collected automatically
+  - Use --enable-feedback to submit feedback while execution is running
   - Use Ctrl+C to cancel execution gracefully
     `);
 }
