@@ -657,7 +657,7 @@ export class JunoMCPClient {
     }
   }
 
-  private async resolveNamedServer(serverName: string): Promise<{ type: string; command?: string; args?: string[]; url?: string }> {
+  private async resolveNamedServer(serverName: string): Promise<{ type: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string }> {
     try {
       // Try to load configuration from .juno_task/mcp.json first
       const { config, command, args } = await MCPServerConfigResolver.getServerConfig(
@@ -669,7 +669,8 @@ export class JunoMCPClient {
       return {
         type: 'executable',
         command,
-        args
+        args,
+        env: config.env
       };
     } catch (error) {
       this.logger.warning(`Failed to resolve server from config: ${error}`).catch(() => {});
