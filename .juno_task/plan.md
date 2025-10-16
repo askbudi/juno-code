@@ -188,4 +188,31 @@
 - **Action Taken**: Updated plan.md to reflect actual completed status
 - **Validation**: Both files now aligned with real implementation state
 
+---
+
+## 🔧 RECENTLY COMPLETED FIXES
+
+### **MCP Environment Variables Bug** - ✅ COMPLETED (2025-10-17)
+- **Status**: RESOLVED AND VALIDATED
+- **Issue**: Environment variables configured in `.juno_task/mcp.json` were being overwritten by hardcoded values in MCP client transport setup
+- **Root Cause**: Three locations in `src/mcp/client.ts` were hardcoding environment variables that overwrote user configuration:
+  - Line 646: `ROUNDTABLE_DEBUG: 'false'` overwrote user settings
+  - Line 779: Same issue in per-operation connection
+  - Line 798: Same issue in direct server path connection
+- **Solution Applied**: Updated all three StdioClientTransport creation points:
+  1. Inherit parent process environment first (`...process.env`)
+  2. User configuration from mcp.json overrides parent env (`...serverConfig.env`)
+  3. Use defaults only when not set (nullish coalescing `??`)
+  4. Removed hardcoded `ROUNDTABLE_DEBUG: 'false'`
+- **Test Results**:
+  - ✅ Build successful with no compilation errors
+  - ✅ 742 unit tests passing
+  - ✅ Environment variable merging logic verified
+  - ✅ User config properly preserved
+  - ✅ Parent environment inherited
+- **Resolution Date**: 2025-10-17
+- **Key Learning**: Always check where environment variables are being used in transport setup, not just where they're loaded from configuration
+
+---
+
 This plan now accurately reflects the completed current state based on USER_FEEDBACK.md and actual implementation validation. All user-requested functionality has been successfully implemented and tested.

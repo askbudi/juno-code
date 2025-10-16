@@ -634,17 +634,21 @@ export class JunoMCPClient {
       }
 
       // Create transport for executable-based named server with stderr redirection
+      // Merge: parent process env -> user config -> defaults (only if not set)
+      const mergedEnv = {
+        ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
+        ...serverConfig.env,  // User configuration from mcp.json takes priority
+        // Only set defaults if not already configured by user
+        PYTHONUNBUFFERED: serverConfig.env?.PYTHONUNBUFFERED ?? '1',
+        MCP_LOG_LEVEL: serverConfig.env?.MCP_LOG_LEVEL ?? 'ERROR'
+        // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+      };
+
       this.transport = new StdioClientTransport({
         command: serverConfig.command,
         args: serverConfig.args || [],
         stderr: 'pipe', // Redirect stderr to prevent console pollution
-        env: {
-          ...serverConfig.env,
-          // Add logging suppression environment variables
-          PYTHONUNBUFFERED: '1',
-          MCP_LOG_LEVEL: 'ERROR',
-          ROUNDTABLE_DEBUG: 'false'
-        }
+        env: mergedEnv
       });
 
       // Set up stderr logging for the long-lived transport
@@ -767,17 +771,21 @@ export class JunoMCPClient {
       // Connect to named MCP server (e.g., "roundtable-ai")
       const serverConfig = await this.resolveNamedServer(this.options.serverName);
       if (serverConfig.type === 'executable') {
+        // Merge: parent process env -> user config -> defaults (only if not set)
+        const mergedEnv = {
+          ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
+          ...serverConfig.env,  // User configuration from mcp.json takes priority
+          // Only set defaults if not already configured by user
+          PYTHONUNBUFFERED: serverConfig.env?.PYTHONUNBUFFERED ?? '1',
+          MCP_LOG_LEVEL: serverConfig.env?.MCP_LOG_LEVEL ?? 'ERROR'
+          // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+        };
+
         transport = new StdioClientTransport({
           command: serverConfig.command!,
           args: serverConfig.args || [],
           stderr: 'pipe', // Redirect stderr to prevent console pollution
-          env: {
-            ...serverConfig.env,
-            // Add logging suppression environment variables
-            PYTHONUNBUFFERED: '1',
-            MCP_LOG_LEVEL: 'ERROR',
-            ROUNDTABLE_DEBUG: 'false'
-          }
+          env: mergedEnv
         });
       } else {
         throw new MCPConnectionError(`Unsupported server type: ${serverConfig.type}`);
@@ -786,17 +794,22 @@ export class JunoMCPClient {
       // Create transport using command approach with stderr redirection
       const serverPath = this.options.serverPath!;
       const isPython = serverPath.endsWith('.py');
+
+      // Merge: parent process env -> user options -> defaults (only if not set)
+      const mergedEnv = {
+        ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
+        ...this.options.environment,  // User-provided environment from options takes priority
+        // Only set defaults if not already configured by user
+        PYTHONUNBUFFERED: this.options.environment?.PYTHONUNBUFFERED ?? '1',
+        MCP_LOG_LEVEL: this.options.environment?.MCP_LOG_LEVEL ?? 'ERROR'
+        // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+      };
+
       transport = new StdioClientTransport({
         command: isPython ? 'python' : serverPath,
         args: isPython ? [serverPath] : [],
         stderr: 'pipe', // Redirect stderr to prevent console pollution
-        env: {
-          ...this.options.environment,
-          // Add logging suppression environment variables
-          PYTHONUNBUFFERED: '1',
-          MCP_LOG_LEVEL: 'ERROR',
-          ROUNDTABLE_DEBUG: 'false'
-        }
+        env: mergedEnv
       });
     }
 
