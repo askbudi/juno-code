@@ -13,6 +13,8 @@ import { Command } from 'commander';
 import type { FeedbackCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
+import { compactConfigFile, formatFileSize, shouldCompactFile } from '../../utils/file-compaction.js';
+import { archiveResolvedIssues, countOpenIssues, shouldArchive } from '../../utils/feedback-archival.js';
 
 /**
  * Simple Interactive Feedback for user feedback collection
@@ -283,12 +285,17 @@ Examples:
   $ juno-task feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
   $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
   $ juno-task feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
+  $ juno-task feedback archive                                                       # Archive resolved issues to keep file lean
+  $ juno-task feedback compact                                                        # Compact CLAUDE.md and AGENTS.md
+  $ juno-task feedback compact CLAUDE.md                                             # Compact specific file
 
 Enhanced Features:
   1. Issue Description → Structured feedback with optional test criteria
   2. Test Criteria → Success factors and validation requirements
   3. XML Formatting → Proper <ISSUE><Test_CRITERIA><DATE> structure
   4. File Resilience → Automatic repair of malformed USER_FEEDBACK.md
+  5. Archival System → Archive resolved issues to yearly archive files
+  5. File Compaction → Smart compaction of CLAUDE.md/AGENTS.md files
 
 Notes:
   - Supports both positional arguments and --issue/-is/--detail/--description/-d flag
@@ -296,6 +303,169 @@ Notes:
   - XML structure ensures proper parsing and organization
   - Automatic backup and repair for corrupted feedback files
     `);
+}
+
+/**
+ * Handle compact subcommand for compacting CLAUDE.md and AGENTS.md files
+ */
+async function handleCompactCommand(subArgs: string[], options: FeedbackCommandOptions): Promise<void> {
+  try {
+    // Default to compacting CLAUDE.md in current directory
+    const defaultClaudeFile = path.join(process.cwd(), 'CLAUDE.md');
+    const defaultAgentsFile = path.join(process.cwd(), 'AGENTS.md');
+
+    // Check which files exist and should be compacted
+    const filesToCompact: string[] = [];
+
+    if (subArgs.length > 0) {
+      // Specific files provided
+      for (const filePath of subArgs) {
+        const resolvedPath = path.resolve(filePath);
+        if (await fs.pathExists(resolvedPath)) {
+          filesToCompact.push(resolvedPath);
+        } else {
+          console.warn(chalk.yellow(`⚠️  File not found: ${filePath}`));
+        }
+      }
+    } else {
+      // Auto-detect config files
+      if (await fs.pathExists(defaultClaudeFile)) {
+        filesToCompact.push(defaultClaudeFile);
+      }
+      if (await fs.pathExists(defaultAgentsFile)) {
+        filesToCompact.push(defaultAgentsFile);
+      }
+    }
+
+    if (filesToCompact.length === 0) {
+      console.log(chalk.yellow('📄 No config files found to compact'));
+      console.log(chalk.gray('   Looking for: CLAUDE.md, AGENTS.md'));
+      console.log(chalk.gray('   Usage: juno-task feedback compact [file1] [file2]'));
+      return;
+    }
+
+    console.log(chalk.blue.bold('\n🗜️  File Compaction Process\n'));
+
+    for (const filePath of filesToCompact) {
+      const fileName = path.basename(filePath);
+
+      // Check if file needs compaction
+      const needsCompaction = await shouldCompactFile(filePath, 30); // 30KB threshold
+
+      if (!needsCompaction) {
+        console.log(chalk.green(`✅ ${fileName} - File is already compact (< 30KB)`));
+        continue;
+      }
+
+      console.log(chalk.cyan(`📝 Compacting ${fileName}...`));
+
+      try {
+        const result = await compactConfigFile(filePath, {
+          createBackup: true,
+          dryRun: false,
+          preserveDays: 30,
+          preservePatterns: [
+            'CRITICAL',
+            'OPEN ISSUES',
+            'BUILD.*LOOP',
+            'TEST PATTERNS',
+            'UX.*TUI',
+            'important-instruction-reminders'
+          ]
+        });
+
+        console.log(chalk.green(`✅ ${fileName} compacted successfully!`));
+        console.log(chalk.gray(`   Original size: ${formatFileSize(result.originalSize)}`));
+        console.log(chalk.gray(`   Compacted size: ${formatFileSize(result.compactedSize)}`));
+        console.log(chalk.gray(`   Space saved: ${result.reductionPercentage}%`));
+        console.log(chalk.gray(`   Backup created: ${path.basename(result.backupPath)}`));
+
+        if (result.sectionsRemoved.length > 0) {
+          console.log(chalk.gray(`   Removed sections: ${result.sectionsRemoved.length}`));
+          if (options.verbose) {
+            result.sectionsRemoved.forEach(section => {
+              console.log(chalk.gray(`     - ${section}`));
+            });
+          }
+        }
+
+        console.log('');
+      } catch (error) {
+        console.error(chalk.red(`❌ Failed to compact ${fileName}: ${error}`));
+      }
+    }
+
+    console.log(chalk.green.bold('🎉 Compaction process completed!'));
+    console.log(chalk.gray('   Essential information preserved, historical content removed'));
+
+  } catch (error) {
+    console.error(chalk.red('❌ Compaction failed:'), error);
+    throw error;
+  }
+}
+
+/**
+ * Handle archive subcommand
+ */
+async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<void> {
+  const feedbackFile = getFeedbackFile(options);
+
+  try {
+    // Check if archival is needed
+    const archivalCheck = await shouldArchive(feedbackFile, {
+      openIssuesThreshold: 10,
+      fileSizeThreshold: 50 * 1024, // 50KB
+      lineCountThreshold: 500
+    });
+
+    if (!archivalCheck.shouldArchive) {
+      console.log(chalk.blue('📋 No archival needed'));
+      console.log(chalk.gray(`   Open issues: ${archivalCheck.stats.openIssuesCount}`));
+      console.log(chalk.gray(`   Resolved issues: ${archivalCheck.stats.resolvedIssuesCount}`));
+      console.log(chalk.gray(`   File size: ${(archivalCheck.stats.fileSizeBytes / 1024).toFixed(1)}KB`));
+      console.log(chalk.gray(`   Line count: ${archivalCheck.stats.lineCount}`));
+      return;
+    }
+
+    // Perform archival
+    const results = await archiveResolvedIssues({
+      feedbackFile,
+      archiveDir: path.join(path.dirname(feedbackFile), 'archives'),
+      openIssuesThreshold: 10,
+      dryRun: false,
+      verbose: true
+    });
+
+    // Display results
+    console.log(chalk.green.bold('✅ Feedback archival completed!'));
+    console.log(chalk.gray(`   Archived issues: ${results.archivedCount}`));
+    console.log(chalk.gray(`   Remaining open issues: ${results.openIssuesCount}`));
+
+    if (results.archiveFile) {
+      console.log(chalk.gray(`   Archive file: ${results.archiveFile}`));
+    }
+
+    // Display warnings
+    if (results.warningsGenerated.length > 0) {
+      console.log(chalk.yellow('\n⚠️  Warnings:'));
+      results.warningsGenerated.forEach(warning => {
+        console.log(chalk.yellow(`   • ${warning}`));
+      });
+      console.log(chalk.gray('   Check .juno_task/logs/feedback-warnings.log for details'));
+    }
+
+    // Show summary
+    console.log(chalk.blue('\n📊 Archival reasons:'));
+    archivalCheck.reasons.forEach(reason => {
+      console.log(chalk.gray(`   • ${reason}`));
+    });
+
+  } catch (error) {
+    throw new ValidationError(
+      `Failed to archive feedback: ${error}`,
+      ['Check file permissions and try again', 'Verify USER_FEEDBACK.md is not corrupted']
+    );
+  }
 }
 
 /**
@@ -307,13 +477,12 @@ export async function feedbackCommandHandler(
   command: Command
 ): Promise<void> {
   try {
-    // Handle --detail/--description flag with optional --test criteria (headless mode)
-    // Handle -d/--detail/--description and -t/--test flags
+    // Handle explicit --issue/--detail/--description flags (headless mode)
     if (options.issue || options.test || options.testCriteria) {
-      const issueText = options.issue || args.join(' ') || '';
+      const issueText = options.issue || '';
       const testCriteria = options.test || options.testCriteria || '';
 
-      // Ensure we have an issue description
+      // Ensure we have an issue description when using explicit flags
       if (!issueText.trim()) {
         throw new ValidationError(
           'Issue description is required when using --issue/-is/--detail/--description or --test/-tc flags',
@@ -354,6 +523,10 @@ export async function feedbackCommandHandler(
         const [subcommand, ...subArgs] = args;
 
         switch (subcommand) {
+          case 'archive':
+            await handleArchiveCommand(options);
+            break;
+
           case 'list':
             console.log(chalk.yellow('📋 Feedback listing not yet implemented'));
             break;
@@ -366,6 +539,10 @@ export async function feedbackCommandHandler(
           case 'remove':
           case 'delete':
             console.log(chalk.yellow('🗑️ Feedback removal not yet implemented'));
+            break;
+
+          case 'compact':
+            await handleCompactCommand(subArgs, options);
             break;
 
           default:

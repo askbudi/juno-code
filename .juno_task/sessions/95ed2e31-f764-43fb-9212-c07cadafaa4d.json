@@ -1,0 +1,204 @@
+{
+  "info": {
+    "id": "95ed2e31-f764-43fb-9212-c07cadafaa4d",
+    "name": "Execution 2025-10-16T03:13:02.237Z",
+    "status": "completed",
+    "subagent": "claude",
+    "createdAt": "2025-10-16T03:13:02.237Z",
+    "updatedAt": "2025-10-16T03:13:07.835Z",
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": false,
+      "quiet": false,
+      "mcpTimeout": 120000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task"
+    },
+    "tags": [
+      "cli",
+      "start-command"
+    ],
+    "metadata": {
+      "requestId": "req-1760584382236-gr02bo6ij",
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "maxIterations": 1,
+      "model": "auto"
+    },
+    "completedAt": "2025-10-16T03:13:07.835Z"
+  },
+  "context": {
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "environment": {
+      "HOME": "/Users/mahdiyar",
+      "LOGNAME": "mahdiyar",
+      "PATH": "/Users/mahdiyar/.bun/bin:/Users/mahdiyar/.local/bin:/Users/mahdiyar/miniconda3/envs/tmp_test/bin:/Users/mahdiyar/miniconda3/condabin:/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "SHELL": "/bin/zsh",
+      "TERM": "xterm-256color",
+      "USER": "mahdiyar",
+      "PYTHONUNBUFFERED": "1",
+      "MCP_LOG_LEVEL": "ERROR",
+      "LC_CTYPE": "C.UTF-8",
+      "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+      "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+      "COREPACK_ENABLE_AUTO_PIN": "0",
+      "NoDefaultCurrentDirectoryInExePath": "1",
+      "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta",
+      "GIT_EDITOR": "true",
+      "CLAUDECODE": "1",
+      "SHLVL": "1",
+      "PWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "OLDPWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts",
+      "LANG": "C.UTF-8",
+      "JUNO_PREFLIGHT_THRESHOLD": "50",
+      "_": "/opt/homebrew/bin/node"
+    },
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": false,
+      "quiet": false,
+      "mcpTimeout": 120000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task"
+    },
+    "processInfo": {
+      "pid": 83129,
+      "nodeVersion": "v24.10.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "statistics": {
+    "duration": 5598,
+    "iterations": 0,
+    "toolCalls": 0,
+    "toolStats": {},
+    "successRate": 0,
+    "errorCount": 0,
+    "warningCount": 0,
+    "performance": {
+      "avgIterationTime": 0,
+      "avgToolCallTime": 0,
+      "totalThinkingTime": 0
+    }
+  },
+  "history": [
+    {
+      "id": "a0c3eb96-bada-4d09-9318-2ea9aa6853b1",
+      "timestamp": "2025-10-16T03:13:03.047Z",
+      "type": "system",
+      "content": "tool_start: Starting claude_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+      "data": {
+        "sessionId": "req-1760584382236-gr02bo6ij",
+        "timestamp": "2025-10-16T03:13:03.047Z",
+        "type": "tool_start",
+        "content": "Starting claude_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+        "metadata": {
+          "toolName": "claude_subagent",
+          "arguments": {
+            "instruction": "# Juno Task Initialization\n\n## Project Overview\nTest project for MCP timeout functionality validation.\n\n## Task Description\nTest that MCP timeout settings work correctly with long-running operations.\n\n## Initialization Date\n2025-10-09T16:36:00Z\n\n## Configuration\n- Subagent: cursor\n- Model: auto\n- MCP Timeout: 300000 (5 minutes)",
+            "project_path": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+            "model": "auto",
+            "iteration": 1
+          },
+          "phase": "initialization"
+        }
+      }
+    },
+    {
+      "id": "e19f4efa-09df-47ed-a451-bcfc346510f0",
+      "timestamp": "2025-10-16T03:13:03.048Z",
+      "type": "system",
+      "content": "info: Connecting to MCP server for claude_subagent",
+      "data": {
+        "sessionId": "req-1760584382236-gr02bo6ij",
+        "timestamp": "2025-10-16T03:13:03.048Z",
+        "type": "info",
+        "content": "Connecting to MCP server for claude_subagent",
+        "metadata": {
+          "toolName": "claude_subagent",
+          "phase": "connection"
+        }
+      }
+    },
+    {
+      "id": "af881eaf-dfa9-4a98-9851-4639afea4ade",
+      "timestamp": "2025-10-16T03:13:03.346Z",
+      "type": "system",
+      "content": "thinking: Executing claude_subagent on subagent",
+      "data": {
+        "sessionId": "req-1760584382236-gr02bo6ij",
+        "timestamp": "2025-10-16T03:13:03.346Z",
+        "type": "thinking",
+        "content": "Executing claude_subagent on subagent",
+        "metadata": {
+          "toolName": "claude_subagent",
+          "phase": "execution"
+        }
+      }
+    },
+    {
+      "id": "a9370ae1-e9c9-40c3-b151-9b1cce38b5d7",
+      "timestamp": "2025-10-16T03:13:05.831Z",
+      "type": "system",
+      "content": "tool_result: claude_subagent completed successfully (2784ms) - Response: {\"type\":\"text\",\"text\":\"API Error: 404 {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"not_found_error\\\",\\\"...",
+      "data": {
+        "sessionId": "req-1760584382236-gr02bo6ij",
+        "timestamp": "2025-10-16T03:13:05.831Z",
+        "type": "tool_result",
+        "content": "claude_subagent completed successfully (2784ms) - Response: {\"type\":\"text\",\"text\":\"API Error: 404 {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"not_found_error\\\",\\\"...",
+        "metadata": {
+          "toolName": "claude_subagent",
+          "duration": 2784,
+          "success": true,
+          "responseLength": 177,
+          "phase": "completion"
+        }
+      }
+    }
+  ],
+  "result": {
+    "success": true,
+    "output": "{\"type\":\"text\",\"text\":\"API Error: 404 {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"not_found_error\\\",\\\"message\\\":\\\"model: auto\\\"},\\\"request_id\\\":\\\"req_011CUA9VfaB22yvg8m25h7EP\\\"}\"}",
+    "finalState": {
+      "status": "completed",
+      "statistics": {
+        "totalIterations": 1,
+        "successfulIterations": 1,
+        "failedIterations": 0,
+        "averageIterationDuration": 3146,
+        "totalToolCalls": 1,
+        "totalProgressEvents": 0,
+        "rateLimitEncounters": 0,
+        "rateLimitWaitTime": 0,
+        "errorBreakdown": {},
+        "performanceMetrics": {
+          "cpuUsage": 0,
+          "memoryUsage": 24337808,
+          "networkRequests": 0,
+          "fileSystemOperations": 0,
+          "throughput": {
+            "iterationsPerMinute": 19.065776930409914,
+            "progressEventsPerSecond": 0,
+            "toolCallsPerMinute": 19.065776930409914
+          }
+        }
+      },
+      "iterations": 1
+    }
+  }
+}

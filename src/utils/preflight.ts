@@ -9,6 +9,8 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { compactConfigFile, shouldCompactFile, formatFileSize } from './file-compaction.js';
+import { archiveResolvedIssues, shouldArchive } from './feedback-archival.js';
 
 export interface PreflightConfig {
   /** Threshold for file line count (default: 500) */
@@ -30,7 +32,7 @@ export interface PreflightResult {
 
 export interface PreflightAction {
   /** Type of action taken */
-  type: 'config_compaction' | 'feedback_compaction';
+  type: 'config_compaction' | 'feedback_compaction' | 'feedback_archival';
   /** File that was checked */
   file: string;
   /** Current line count */
@@ -39,6 +41,20 @@ export interface PreflightAction {
   threshold: number;
   /** Feedback command that was run */
   feedbackCommand?: string;
+  /** Compaction results if file was compacted */
+  compactionResult?: {
+    originalSize: number;
+    compactedSize: number;
+    reductionPercentage: number;
+    backupPath: string;
+  };
+  /** Archival results if feedback was archived */
+  archivalResult?: {
+    archivedCount: number;
+    openIssuesCount: number;
+    archiveFile: string;
+    warningsGenerated: string[];
+  };
 }
 
 /**
@@ -116,32 +132,129 @@ async function runFeedbackCommand(projectPath: string, message: string): Promise
 }
 
 /**
- * Check if a file needs compaction and run feedback command if needed
+ * Check if a config file needs compaction and compact it directly
  */
-async function checkAndCompactFile(
+async function checkAndCompactConfigFile(
   projectPath: string,
   filePath: string,
-  threshold: number,
-  feedbackMessage: string,
-  fileType: 'config' | 'feedback'
+  threshold: number
 ): Promise<PreflightAction | null> {
   const fullPath = path.join(projectPath, filePath);
   const lineCount = await countLines(fullPath);
 
-  if (lineCount > threshold) {
+  // Check if file needs compaction (convert line threshold to size threshold)
+  const needsCompaction = await shouldCompactFile(fullPath, 30); // 30KB threshold
+
+  if (lineCount > threshold && needsCompaction) {
     try {
-      await runFeedbackCommand(projectPath, feedbackMessage);
+      console.log(`\n🗜️  Auto-compacting ${filePath} (${lineCount} lines > ${threshold} threshold)...`);
+
+      const result = await compactConfigFile(fullPath, {
+        createBackup: true,
+        dryRun: false,
+        preserveDays: 30,
+        preservePatterns: [
+          'CRITICAL',
+          'OPEN ISSUES',
+          'BUILD.*LOOP',
+          'TEST PATTERNS',
+          'UX.*TUI',
+          'important-instruction-reminders'
+        ]
+      });
+
+      console.log(`✅ ${filePath} compacted: ${formatFileSize(result.originalSize)} → ${formatFileSize(result.compactedSize)} (${result.reductionPercentage}% reduction)`);
 
       return {
-        type: fileType === 'config' ? 'config_compaction' : 'feedback_compaction',
+        type: 'config_compaction',
         file: filePath,
         lineCount,
         threshold,
-        feedbackCommand: `feedback --issue "${feedbackMessage}"`
+        compactionResult: {
+          originalSize: result.originalSize,
+          compactedSize: result.compactedSize,
+          reductionPercentage: result.reductionPercentage,
+          backupPath: result.backupPath
+        }
       };
     } catch (error) {
-      console.warn(`Failed to run feedback command for ${filePath}:`, error);
+      console.warn(`Failed to compact ${filePath}:`, error);
       return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if a feedback file needs archival and perform archival
+ */
+async function checkAndArchiveFeedbackFile(
+  projectPath: string,
+  filePath: string,
+  threshold: number
+): Promise<PreflightAction | null> {
+  const fullPath = path.join(projectPath, filePath);
+  const lineCount = await countLines(fullPath);
+
+  // Check if archival is needed using the archival system
+  const archivalCheck = await shouldArchive(fullPath, {
+    openIssuesThreshold: 10,
+    fileSizeThreshold: 50 * 1024, // 50KB
+    lineCountThreshold: threshold
+  });
+
+  if (archivalCheck.shouldArchive) {
+    try {
+      console.log(`\n📋 Auto-archiving ${filePath} (${archivalCheck.reasons.join(', ')})...`);
+
+      // Perform archival
+      const archivalResult = await archiveResolvedIssues({
+        feedbackFile: fullPath,
+        archiveDir: path.join(path.dirname(fullPath), 'archives'),
+        openIssuesThreshold: 10,
+        dryRun: false,
+        verbose: false
+      });
+
+      console.log(`✅ ${filePath} archived: ${archivalResult.archivedCount} resolved issues → ${archivalResult.archiveFile}`);
+      console.log(`   Remaining open issues: ${archivalResult.openIssuesCount}`);
+
+      if (archivalResult.warningsGenerated.length > 0) {
+        console.log(`⚠️  Warnings: ${archivalResult.warningsGenerated.join(', ')}`);
+      }
+
+      return {
+        type: 'feedback_archival',
+        file: filePath,
+        lineCount,
+        threshold,
+        archivalResult: {
+          archivedCount: archivalResult.archivedCount,
+          openIssuesCount: archivalResult.openIssuesCount,
+          archiveFile: archivalResult.archiveFile,
+          warningsGenerated: archivalResult.warningsGenerated
+        }
+      };
+    } catch (error) {
+      console.warn(`Failed to archive ${filePath}:`, error);
+
+      // Fallback to feedback command if archival fails
+      try {
+        const feedbackMessage = `@.juno_task/USER_FEEDBACK.md needs to kept lean, and any verified Resolved Issue should archive from this file. Compact this file and remember to keep the OPEN ISSUES as it is. If there are many open issues, Give user a warning about it. So they could manage it manually`;
+        await runFeedbackCommand(projectPath, feedbackMessage);
+
+        return {
+          type: 'feedback_compaction',
+          file: filePath,
+          lineCount,
+          threshold,
+          feedbackCommand: `feedback --issue "${feedbackMessage}"`
+        };
+      } catch (fallbackError) {
+        console.warn(`Failed to run fallback feedback command for ${filePath}:`, fallbackError);
+        return null;
+      }
     }
   }
 
@@ -162,14 +275,12 @@ export async function runPreflightTests(config: PreflightConfig): Promise<Prefli
     return result;
   }
 
-  // Check config file (CLAUDE.md or AGENTS.md)
+  // Check config file (CLAUDE.md or AGENTS.md) and compact directly
   const configFile = getConfigFile(config.subagent);
-  const configAction = await checkAndCompactFile(
+  const configAction = await checkAndCompactConfigFile(
     config.projectPath,
     configFile,
-    config.threshold,
-    `[System Feedback]{configFile}.md is very large, you need to compact it. And keep essential information that the agent needs on each run, remember this file is not a place to save project updates and progress and you need to keep it compacts and right to the point.`,
-    'config'
+    config.threshold
   );
 
   if (configAction) {
@@ -177,13 +288,11 @@ export async function runPreflightTests(config: PreflightConfig): Promise<Prefli
     result.actions.push(configAction);
   }
 
-  // Check USER_FEEDBACK.md
-  const feedbackAction = await checkAndCompactFile(
+  // Check USER_FEEDBACK.md and archive resolved issues automatically
+  const feedbackAction = await checkAndArchiveFeedbackFile(
     config.projectPath,
     '.juno_task/USER_FEEDBACK.md',
-    config.threshold,
-    `@.juno_task/USER_FEEDBACK.md needs to kept lean, and any verified Resolved Issue should archive from this file. Compact this file and remember to keep the OPEN ISSUES as it is. If there are many open issues, Give user a warning about it. So they could manage it manually`,
-    'feedback'
+    config.threshold
   );
 
   if (feedbackAction) {
@@ -195,7 +304,11 @@ export async function runPreflightTests(config: PreflightConfig): Promise<Prefli
   if (result.triggered) {
     console.log(`\n🔍 Preflight tests triggered ${result.actions.length} action(s):`);
     for (const action of result.actions) {
-      console.log(`  📝 ${action.file}: ${action.lineCount} lines (threshold: ${action.threshold})`);
+      if (action.type === 'feedback_archival') {
+        console.log(`  📋 ${action.file}: Archived ${action.archivalResult?.archivedCount || 0} resolved issues`);
+      } else {
+        console.log(`  📝 ${action.file}: ${action.lineCount} lines (threshold: ${action.threshold})`);
+      }
     }
     console.log('');
   } else {

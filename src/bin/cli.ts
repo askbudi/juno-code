@@ -331,6 +331,31 @@ async function main(): Promise<void> {
   const isVerbose = process.argv.includes('--verbose') || process.argv.includes('-v');
   displayBanner(isVerbose);
 
+  // Validate JSON configuration files on startup
+  // Skip validation for help/version commands to avoid unnecessary checks
+  const isHelpOrVersion = process.argv.includes('--help') ||
+                         process.argv.includes('-h') ||
+                         process.argv.includes('--version') ||
+                         process.argv.includes('-V');
+
+  if (!isHelpOrVersion) {
+    try {
+      const { validateStartupConfigs } = await import('../utils/startup-validation.js');
+      const validationPassed = await validateStartupConfigs(process.cwd(), isVerbose);
+
+      if (!validationPassed) {
+        console.log(chalk.red('💥 Cannot continue with invalid configuration. Please fix the errors above.\n'));
+        process.exit(EXIT_CODES.CONFIGURATION_ERROR);
+      }
+    } catch (validationError) {
+      // Validation system error - log but don't block startup
+      console.log(chalk.yellow('⚠️  Configuration validation unavailable, continuing with startup...'));
+      if (isVerbose) {
+        console.log(chalk.gray(`   Validation error: ${validationError instanceof Error ? validationError.message : String(validationError)}`));
+      }
+    }
+  }
+
   // Configure all commands
   configureInitCommand(program);
   configureStartCommand(program);
