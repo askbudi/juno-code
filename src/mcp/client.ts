@@ -1369,14 +1369,14 @@ export class SubagentMapper {
         name: 'claude',
         description: 'Claude by Anthropic - Advanced reasoning and coding',
         capabilities: ['coding', 'analysis', 'reasoning', 'writing'],
-        models: ['sonnet-4', 'opus-4.1', 'haiku-4'],
+        models: ['sonnet-4.5', 'opus-4.1', 'haiku-4.5'],
         aliases: ['claude-code', 'claude_code']
       },
       {
         name: 'cursor',
         description: 'Cursor AI - Specialized code editing and refactoring',
         capabilities: ['code-editing', 'refactoring', 'debugging'],
-        models: ['gpt-5', 'sonnet-4', 'sonnet-4-thinking'],
+        models: ['auto','gpt-5','sonnet-4.5', 'sonnet-4', 'sonnet-4-thinking'],
         aliases: ['cursor-agent']
       },
       {
@@ -1390,7 +1390,7 @@ export class SubagentMapper {
         name: 'gemini',
         description: 'Google Gemini - Multimodal AI with coding capabilities',
         capabilities: ['coding', 'multimodal', 'analysis'],
-        models: ['gemini-pro', 'gemini-ultra'],
+        models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
         aliases: ['gemini-cli']
       }
     ];
@@ -1684,7 +1684,7 @@ export class SubagentMapperImpl {
 
   validateModel(subagentType: string, model: string): boolean {
     const validModels: Record<string, string[]> = {
-      'claude': ['sonnet-4', 'opus-4.1', 'haiku-4'],
+      'claude': ['sonnet-4.5', 'opus-4.1', 'haiku-4.5'],
       'cursor': ['auto','gpt-5','sonnet-4', 'sonnet-4.5', 'sonnet-4-thinking'],
       'codex': ['gpt-5'],
       'gemini': ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -1696,7 +1696,7 @@ export class SubagentMapperImpl {
 
   getDefaultModel(subagentType: string): string {
     const defaults: Record<string, string> = {
-      'claude': 'sonnet-4',
+      'claude': 'sonnet-4.5',
       'cursor': 'auto',
       'codex': 'gpt-5',
       'gemini': 'gemini-2.5-pro',
