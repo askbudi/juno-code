@@ -634,14 +634,13 @@ export class JunoMCPClient {
       }
 
       // Create transport for executable-based named server with stderr redirection
-      // Merge: parent process env -> user config -> defaults (only if not set)
+      // SECURITY: Only pass hardcoded defaults + user config (NO parent process.env inheritance)
       const mergedEnv = {
-        ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
-        ...serverConfig.env,  // User configuration from mcp.json takes priority
-        // Only set defaults if not already configured by user
-        PYTHONUNBUFFERED: serverConfig.env?.PYTHONUNBUFFERED ?? '1',
-        MCP_LOG_LEVEL: serverConfig.env?.MCP_LOG_LEVEL ?? 'ERROR'
-        // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+        // Hardcoded defaults for MCP server operation
+        PYTHONUNBUFFERED: '1',
+        MCP_LOG_LEVEL: 'ERROR',
+        // User configuration from mcp.json overrides defaults
+        ...serverConfig.env
       };
 
       this.transport = new StdioClientTransport({
@@ -771,14 +770,13 @@ export class JunoMCPClient {
       // Connect to named MCP server (e.g., "roundtable-ai")
       const serverConfig = await this.resolveNamedServer(this.options.serverName);
       if (serverConfig.type === 'executable') {
-        // Merge: parent process env -> user config -> defaults (only if not set)
+        // SECURITY: Only pass hardcoded defaults + user config (NO parent process.env inheritance)
         const mergedEnv = {
-          ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
-          ...serverConfig.env,  // User configuration from mcp.json takes priority
-          // Only set defaults if not already configured by user
-          PYTHONUNBUFFERED: serverConfig.env?.PYTHONUNBUFFERED ?? '1',
-          MCP_LOG_LEVEL: serverConfig.env?.MCP_LOG_LEVEL ?? 'ERROR'
-          // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+          // Hardcoded defaults for MCP server operation
+          PYTHONUNBUFFERED: '1',
+          MCP_LOG_LEVEL: 'ERROR',
+          // User configuration from mcp.json overrides defaults
+          ...serverConfig.env
         };
 
         transport = new StdioClientTransport({
@@ -795,14 +793,13 @@ export class JunoMCPClient {
       const serverPath = this.options.serverPath!;
       const isPython = serverPath.endsWith('.py');
 
-      // Merge: parent process env -> user options -> defaults (only if not set)
+      // SECURITY: Only pass hardcoded defaults + user config (NO parent process.env inheritance)
       const mergedEnv = {
-        ...process.env,  // Inherit parent process environment (includes ANTHROPIC_BASE_URL, etc.)
-        ...this.options.environment,  // User-provided environment from options takes priority
-        // Only set defaults if not already configured by user
-        PYTHONUNBUFFERED: this.options.environment?.PYTHONUNBUFFERED ?? '1',
-        MCP_LOG_LEVEL: this.options.environment?.MCP_LOG_LEVEL ?? 'ERROR'
-        // Note: Removed hardcoded ROUNDTABLE_DEBUG to respect user configuration
+        // Hardcoded defaults for MCP server operation
+        PYTHONUNBUFFERED: '1',
+        MCP_LOG_LEVEL: 'ERROR',
+        // User-provided environment from options overrides defaults
+        ...this.options.environment
       };
 
       transport = new StdioClientTransport({

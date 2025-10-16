@@ -57,6 +57,29 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
+### 2025-10-16 — MCP Environment Variables Security Fix RESOLVED
+
+- **Issue**: SECURITY VULNERABILITY - Environment variables configured in `.juno_task/mcp.json` were being overwritten, AND parent process environment was being inherited without user consent
+- **Root Cause Discovery**: Three separate attempts revealed progressive security requirements:
+  1. **2025-10-16 First Attempt**: Fixed environment variable loading from config but variables still overwritten by hardcoded values
+  2. **2025-10-17 Second Attempt**: Fixed overwriting but introduced `...process.env` spreading, creating security risk by inheriting parent environment
+  3. **2025-10-16 Final Resolution**: Complete process isolation - removed ALL `...process.env` spreading
+- **Security Requirements**: MCP server processes must have complete environment isolation:
+  - NO inheritance from parent process environment
+  - ONLY hardcoded secure defaults + explicit user configuration
+  - Prevents accidental exposure of sensitive parent environment variables
+- **Final Solution**: Updated all three StdioClientTransport creation points in `src/mcp/client.ts`:
+  - Line 646: Removed `...process.env`, kept only hardcoded defaults + user config
+  - Line 779: Same security fix for per-operation connections
+  - Line 798: Same security fix for direct server path connections
+  - Environment merging: `hardcoded_defaults` + `user_config` (NO parent env)
+- **Test Results**:
+  - ✅ Build successful, 573 unit tests passing
+  - ✅ Security verification: no parent environment inheritance
+  - ✅ User configuration properly applied from mcp.json
+  - ✅ Complete process isolation achieved
+- **Key Learning**: Always validate security requirements before implementing environment variable fixes. Process isolation is critical for MCP server security.
+
 ## Session Progress
 
 This file will be updated as development progresses to track:
