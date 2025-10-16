@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'bin/cli': 'src/bin/cli.ts',
+    'bin/feedback-collector': 'src/bin/feedback-collector.ts',
     'utils/preflight': 'src/utils/preflight.ts'
   },
   format: ['esm', 'cjs'],
@@ -50,8 +51,8 @@ export default defineConfig({
     options.logLimit = 0;
   },
 
-  // Only add shebang to CLI entry
-  onSuccess: 'chmod +x dist/bin/cli.js',
+  // Only add shebang to CLI entries
+  onSuccess: 'chmod +x dist/bin/cli.js && chmod +x dist/bin/feedback-collector.js',
 
   // Development mode
   watch: process.env.NODE_ENV === 'development',

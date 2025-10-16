@@ -25,7 +25,8 @@
     }
   },
   "bin": {
-    "juno-ts-task": "./dist/bin/cli.mjs"
+    "juno-ts-task": "./dist/bin/cli.mjs",
+    "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
   },
   "files": [
     "dist",
