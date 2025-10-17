@@ -16,6 +16,7 @@ import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getMCPLogger } from '../utils/logger.js';
+import { writeTerminalProgressWithPrefix } from '../utils/terminal-progress-writer.js';
 
 // Core interfaces
 export interface MCPClientOptions {
@@ -874,8 +875,9 @@ export class JunoMCPClient {
 
         if (this.options.debug) {
           // In debug mode, progress events should stay visible but go to stderr to avoid mixing with user input
-          // Use console.error for colored, formatted output on stderr with proper line coordination
-          console.error('[MCP] Progress event:', progress);
+          // Use terminal-aware progress writer to properly coordinate with active user input
+          // This prevents visual mixing of progress output with user-typed characters
+          writeTerminalProgressWithPrefix('[MCP] Progress event:', progress);
         }
 
         // Extract progress information and route to existing progress system

@@ -6,6 +6,7 @@
  */
 
 import type { MCPClient, MCPClientOptions, ToolCallRequest, ToolCallResponse } from './types.js';
+import { writeTerminalProgressWithPrefix } from '../utils/terminal-progress-writer.js';
 
 /**
  * Mock MCP Client that simulates basic functionality
@@ -20,14 +21,14 @@ export class MockMCPClient implements MCPClient {
 
   async connect(): Promise<void> {
     if (this.options.debug) {
-      console.error('[MCP] Mock client connecting...');
+      writeTerminalProgressWithPrefix('[MCP]', 'Mock client connecting...');
     }
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
     if (this.options.debug) {
-      console.error('[MCP] Mock client disconnecting...');
+      writeTerminalProgressWithPrefix('[MCP]', 'Mock client disconnecting...');
     }
     this.connected = false;
   }
@@ -38,7 +39,7 @@ export class MockMCPClient implements MCPClient {
     }
 
     if (this.options.debug) {
-      console.error('[MCP] Mock tool call:', request.toolName, request.parameters);
+      writeTerminalProgressWithPrefix('[MCP] Mock tool call:', { tool: request.toolName, parameters: request.parameters });
     }
 
     // Mock successful response
