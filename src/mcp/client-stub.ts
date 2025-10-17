@@ -5,6 +5,8 @@
  * Replace this with the full implementation when MCP SDK is available.
  */
 
+import { writeTerminalProgressWithPrefix } from '../utils/terminal-progress-writer.js';
+
 // Stub types to match expected interface
 export interface MCPClientOptions {
   serverPath?: string;
@@ -49,14 +51,14 @@ export class StubMCPClient implements MCPClient {
 
   async connect(): Promise<void> {
     if (this.options.debug) {
-      console.error('[MCP] Stub client connecting...');
+      writeTerminalProgressWithPrefix('[MCP]', 'Stub client connecting...');
     }
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
     if (this.options.debug) {
-      console.error('[MCP] Stub client disconnecting...');
+      writeTerminalProgressWithPrefix('[MCP]', 'Stub client disconnecting...');
     }
     this.connected = false;
   }
@@ -67,7 +69,7 @@ export class StubMCPClient implements MCPClient {
     }
 
     if (this.options.debug) {
-      console.error('[MCP] Stub tool call:', request.toolName, request.parameters);
+      writeTerminalProgressWithPrefix('[MCP] Stub tool call:', { tool: request.toolName, parameters: request.parameters });
     }
 
     // Simulate tool execution
