@@ -567,8 +567,8 @@ Backend #3: tool_result => Analysis complete`;
     });
 
     it('should validate models correctly', () => {
-      expect(mapper.validateModel('claude', 'sonnet-4')).toBe(true);
-      expect(mapper.validateModel('claude', 'haiku-4')).toBe(true);
+      expect(mapper.validateModel('claude', 'sonnet-4.5')).toBe(true);
+      expect(mapper.validateModel('claude', 'haiku-4.5')).toBe(true);
       expect(mapper.validateModel('claude', 'opus-4.1')).toBe(true);
       expect(mapper.validateModel('claude', 'invalid-model')).toBe(false);
 
@@ -583,7 +583,7 @@ Backend #3: tool_result => Analysis complete`;
     });
 
     it('should get default models', () => {
-      expect(mapper.getDefaultModel('claude')).toBe('sonnet-4');
+      expect(mapper.getDefaultModel('claude')).toBe('sonnet-4.5');
       expect(mapper.getDefaultModel('cursor')).toBe('auto');
       expect(mapper.getDefaultModel('codex')).toBe('gpt-5');
       expect(mapper.getDefaultModel('gemini')).toBe('gemini-2.5-pro');
@@ -594,7 +594,7 @@ Backend #3: tool_result => Analysis complete`;
 
       expect(claudeDefaults).toEqual({
         timeout: 36000000,
-        model: 'sonnet-4',
+        model: 'sonnet-4.5',
         arguments: {},
         priority: 'normal',
       });
