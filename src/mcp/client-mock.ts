@@ -20,14 +20,14 @@ export class MockMCPClient implements MCPClient {
 
   async connect(): Promise<void> {
     if (this.options.debug) {
-      console.log('[MCP] Mock client connecting...');
+      process.stderr.write('[MCP] Mock client connecting...\n');
     }
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
     if (this.options.debug) {
-      console.log('[MCP] Mock client disconnecting...');
+      process.stderr.write('[MCP] Mock client disconnecting...\n');
     }
     this.connected = false;
   }
@@ -38,7 +38,7 @@ export class MockMCPClient implements MCPClient {
     }
 
     if (this.options.debug) {
-      console.log(`[MCP] Mock tool call: ${request.toolName}`, request.parameters);
+      process.stderr.write(`[MCP] Mock tool call: ${request.toolName} ${JSON.stringify(request.parameters)}\n`);
     }
 
     // Mock successful response

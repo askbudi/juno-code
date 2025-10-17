@@ -49,14 +49,14 @@ export class StubMCPClient implements MCPClient {
 
   async connect(): Promise<void> {
     if (this.options.debug) {
-      console.log('[MCP] Stub client connecting...');
+      process.stderr.write('[MCP] Stub client connecting...\n');
     }
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
     if (this.options.debug) {
-      console.log('[MCP] Stub client disconnecting...');
+      process.stderr.write('[MCP] Stub client disconnecting...\n');
     }
     this.connected = false;
   }
@@ -67,7 +67,7 @@ export class StubMCPClient implements MCPClient {
     }
 
     if (this.options.debug) {
-      console.log(`[MCP] Stub tool call: ${request.toolName}`, request.parameters);
+      process.stderr.write(`[MCP] Stub tool call: ${request.toolName} ${JSON.stringify(request.parameters)}\n`);
     }
 
     // Simulate tool execution
