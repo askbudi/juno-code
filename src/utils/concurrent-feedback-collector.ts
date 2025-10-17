@@ -15,6 +15,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
+import { setFeedbackActive } from './feedback-state';
 
 export interface FeedbackCollectorOptions {
   /**
@@ -100,6 +101,9 @@ export class ConcurrentFeedbackCollector {
     this.isActive = true;
     this.startTime = new Date();
 
+    // Set global feedback state to active (suppresses progress output)
+    setFeedbackActive(true);
+
     // Enable UTF-8 encoding for stdin
     process.stdin.setEncoding('utf8');
 
@@ -115,6 +119,9 @@ export class ConcurrentFeedbackCollector {
 
     // Setup stdin handlers
     this.setupStdinHandlers();
+
+    // Ensure feedback state is reset on process exit
+    this.setupExitHandlers();
   }
 
   /**
@@ -126,6 +133,9 @@ export class ConcurrentFeedbackCollector {
     }
 
     this.isActive = false;
+
+    // Set global feedback state to inactive (re-enables progress output)
+    setFeedbackActive(false);
 
     // Stop progress ticker
     if (this.progressTimer) {
@@ -203,6 +213,23 @@ export class ConcurrentFeedbackCollector {
   }
 
   /**
+   * Setup exit handlers to ensure feedback state is reset
+   */
+  private setupExitHandlers(): void {
+    const cleanup = () => {
+      if (this.isActive) {
+        setFeedbackActive(false);
+      }
+    };
+
+    // Handle various exit scenarios
+    process.on('SIGINT', cleanup);   // Ctrl-C
+    process.on('SIGTERM', cleanup);  // Termination signal
+    process.on('exit', cleanup);     // Normal exit
+    process.on('uncaughtException', cleanup);  // Uncaught exceptions
+  }
+
+  /**
    * Setup stdin event handlers
    */
   private setupStdinHandlers(): void {
@@ -236,6 +263,9 @@ export class ConcurrentFeedbackCollector {
       if (this.progressTimer) {
         clearInterval(this.progressTimer);
       }
+
+      // Reset feedback state when feedback ends via EOF
+      setFeedbackActive(false);
 
       if (this.options.verbose) {
         process.stderr.write(`${EOL}[feedback-collector] EOF received. Total submissions: ${this.submissionCount}${EOL}`);

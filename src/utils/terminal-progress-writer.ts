@@ -21,6 +21,7 @@
  */
 
 import { EOL } from 'node:os';
+import { isFeedbackActive, bufferProgressEvent } from './feedback-state';
 
 export interface TerminalProgressOptions {
   /**
@@ -55,6 +56,12 @@ export class TerminalProgressWriter {
    * @param content - The content to write (can be string or object for console.error formatting)
    */
   write(content: any): void {
+    // If feedback collection is active, buffer the progress event instead of displaying it
+    if (isFeedbackActive()) {
+      bufferProgressEvent(content);
+      return;
+    }
+
     if (this.options.terminalAware) {
       // Terminal-aware mode: clear the line, write content, let terminal restore input
       // Note: We use \r\x1b[K to clear the current line before writing
@@ -95,6 +102,12 @@ export class TerminalProgressWriter {
    * @param message - The message or object to write
    */
   writeWithPrefix(prefix: string, message: any): void {
+    // If feedback collection is active, buffer the progress event instead of displaying it
+    if (isFeedbackActive()) {
+      bufferProgressEvent(message, prefix);
+      return;
+    }
+
     if (this.options.terminalAware) {
       this.options.stream.write('\r\x1b[K'); // Clear line first
     }
