@@ -193,19 +193,19 @@ class ProgressDisplay {
     const toolName = event.metadata?.toolName;
 
     if (event.type === 'tool_start' && toolName) {
-      process.stdout.write(chalk.blue(`\r🔧 Calling ${toolName}...`));
+      process.stderr.write(chalk.blue(`\r🔧 Calling ${toolName}...`));
     } else if (event.type === 'tool_result' && toolName) {
       const duration = event.metadata?.duration;
       const durationText = duration ? ` (${duration}ms)` : '';
-      process.stdout.write(chalk.green(`\r✅ ${toolName} completed${durationText}`));
+      process.stderr.write(chalk.green(`\r✅ ${toolName} completed${durationText}`));
     } else if (event.type === 'thinking') {
-      process.stdout.write(chalk.gray(`\r💭 Thinking...`));
+      process.stderr.write(chalk.gray(`\r💭 Thinking...`));
     } else if (event.type === 'error') {
-      process.stdout.write(chalk.red(`\r❌ Error: ${event.content.substring(0, 50)}...`));
+      process.stderr.write(chalk.red(`\r❌ Error: ${event.content.substring(0, 50)}...`));
     } else {
       // Fallback to dots for other events
       const dots = '.'.repeat((this.currentIteration % 3) + 1);
-      process.stdout.write(chalk.gray(`\r   Processing${dots}   `));
+      process.stderr.write(chalk.gray(`\r   Processing${dots}   `));
     }
   }
 
@@ -540,7 +540,7 @@ export async function startCommandHandler(
     const allOptions = { ...options, ...globalOptions };
 
     // Successfully merged global and local options
-    console.log(chalk.blue.bold('🎯 Juno Task - Start Execution'));
+    process.stderr.write(chalk.blue.bold('🎯 Juno Task - Start Execution') + '\n');
 
     // Set logging level based on options
     const logLevel = allOptions.logLevel ? LogLevel[allOptions.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
@@ -570,9 +570,9 @@ export async function startCommandHandler(
 
     // If dry-run: validate config and environment then exit early
     if ((allOptions as any).dryRun) {
-      console.log(chalk.green('✓ Configuration loaded successfully'));
-      console.log(chalk.green('✓ Project context validated'));
-      console.log(chalk.green('✓ Dry run successful — no execution performed'));
+      process.stderr.write(chalk.green('✓ Configuration loaded successfully') + '\n');
+      process.stderr.write(chalk.green('✓ Project context validated') + '\n');
+      process.stderr.write(chalk.green('✓ Dry run successful — no execution performed') + '\n');
       cliLogger.endTimer('start_command_total', 'Dry run completed successfully');
       process.exit(0);
     }
