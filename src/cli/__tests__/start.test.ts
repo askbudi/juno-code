@@ -1204,6 +1204,7 @@ describe('Start Command', () => {
 
       it('should handle failed execution', async () => {
         const errorSpy = vi.spyOn(console, 'error');
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
         // Re-establish critical mocks
         const { loadConfig } = await import('../../core/config.js');
@@ -1292,14 +1293,17 @@ describe('Start Command', () => {
           throw new Error(`Unexpected error in failed execution test:\n${errorMessage}`);
         }
 
-        // Verify failed status is displayed
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Status:')
-        );
+        // Verify failed status is displayed on stderr (progress display now uses stderr)
+        const stderrOutput = stderrSpy.mock.calls.map(call => call[0]).join('');
+        expect(stderrOutput).toContain('Status:');
         expect(processExitSpy).toHaveBeenCalledWith(1);
+
+        stderrSpy.mockRestore();
       });
 
       it('should display execution statistics in verbose mode', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
         // Re-establish critical mocks (clearAllMocks in beforeEach clears them)
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockResolvedValueOnce({
@@ -1387,18 +1391,18 @@ describe('Start Command', () => {
 
         await startCommandHandler([], options, mockCommand);
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Execution Summary:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Total Iterations: 1')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Successful: 1')
-        );
+        // Execution statistics now go to stderr (progress display change)
+        const stderrOutput = stderrSpy.mock.calls.map(call => call[0]).join('');
+        expect(stderrOutput).toContain('Execution Summary:');
+        expect(stderrOutput).toContain('Total Iterations: 1');
+        expect(stderrOutput).toContain('Successful: 1');
+
+        stderrSpy.mockRestore();
       });
 
       it('should display final result content', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
         // Re-establish critical mocks
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockResolvedValueOnce({
@@ -1486,12 +1490,13 @@ describe('Start Command', () => {
 
         await startCommandHandler([], options, mockCommand);
 
-        // Verify execution complete message is displayed
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Execution Complete!')
-        );
+        // Verify execution complete message is displayed on stderr (progress display change)
+        const stderrOutput = stderrSpy.mock.calls.map(call => call[0]).join('');
+        expect(stderrOutput).toContain('Execution Complete!');
         // Verify exit code is success
         expect(processExitSpy).toHaveBeenCalledWith(0);
+
+        stderrSpy.mockRestore();
       });
     });
 

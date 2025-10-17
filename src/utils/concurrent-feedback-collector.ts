@@ -19,13 +19,13 @@ import chalk from 'chalk';
 export interface FeedbackCollectorOptions {
   /**
    * Command to run for each feedback submission
-   * @default 'node'
+   * @default 'juno-ts-task'
    */
   command?: string;
 
   /**
    * Arguments for the feedback command
-   * @default ['dist/bin/cli.mjs', 'feedback']
+   * @default ['juno-ts-task', 'feedback']
    */
   commandArgs?: string[];
 
@@ -80,8 +80,8 @@ export class ConcurrentFeedbackCollector {
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
-      command: options.command || 'node',
-      commandArgs: options.commandArgs || ['dist/bin/cli.mjs', 'feedback'],
+      command: options.command || 'juno-ts-task',
+      commandArgs: options.commandArgs || ['juno-ts-task', 'feedback'],
       verbose: options.verbose || false,
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,
