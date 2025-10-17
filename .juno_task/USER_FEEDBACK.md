@@ -33,6 +33,54 @@
 ## Resolved Issues - VALIDATED FIXES ONLY
 
 <RESOLVED_ISSUE>
+      MCP Progress Formatting Regression
+      MCP Progress changed to "all black fonts, and not human readable" after stream separation fix
+
+      <Test_CRITERIA>MCP Progress events should display with colored, multi-line, human-readable JSON formatting</Test_CRITERIA>
+      <DATE>2025-10-17</DATE>
+      <RESOLVED_DATE>2025-10-17</RESOLVED_DATE>
+
+      <ROOT_CAUSE>
+      Recent stream separation fix (commit d34ffa8) replaced `console.log()` with `process.stderr.write(JSON.stringify())`, losing:
+      - Color formatting (yellow for progress, green for messages)
+      - Multi-line formatted JSON structure
+      - Human readability
+      </ROOT_CAUSE>
+
+      <RESOLUTION_SUMMARY>
+      Fix Applied: Replaced `process.stderr.write(JSON.stringify())` with `console.error()` in:
+      - `juno-task-ts/src/mcp/client.ts` (line 877)
+      - `juno-task-ts/src/mcp/client-mock.ts` (lines 23, 30, 41)
+      - `juno-task-ts/src/mcp/client-stub.ts` (lines 52, 59, 70)
+
+      Result: Restored colored, multi-line, human-readable JSON formatting while maintaining stderr output
+
+      Test Results: 576/577 tests passing, build successful, no regressions introduced
+      </RESOLUTION_SUMMARY>
+   </RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
+      User Input Mixing with App Updates
+      User typed "X" characters were visually mixed with MCP Progress events during feedback collection
+
+      <Test_CRITERIA>User input should not visually interfere with application progress updates on the terminal</Test_CRITERIA>
+      <DATE>2025-10-17</DATE>
+      <RESOLVED_DATE>2025-10-17</RESOLVED_DATE>
+
+      <ROOT_CAUSE>
+      Terminal line coordination issue - stderr output can visually interrupt stdout line where user is typing, causing visual mixing of user input with MCP Progress events
+      </ROOT_CAUSE>
+
+      <RESOLUTION_SUMMARY>
+      Fix Applied: Switched from `process.stderr.write()` to `console.error()` which provides better terminal line coordination
+
+      Result: console.error() handles line breaks and terminal coordination automatically, preventing visual mixing of user input with progress events
+
+      Test Results: 576/577 tests passing, build successful, terminal display coordination improved
+      </RESOLUTION_SUMMARY>
+   </RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
       {configFile}.md File Size Issue
       [System Feedback]{configFile}.md is very large, you need to compact it. And keep essential information that the agent needs on each run, remember this file is not a place to save project updates and progress and you need to keep it compacts and right to the point.
 

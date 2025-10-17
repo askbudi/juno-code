@@ -874,7 +874,8 @@ export class JunoMCPClient {
 
         if (this.options.debug) {
           // In debug mode, progress events should stay visible but go to stderr to avoid mixing with user input
-          process.stderr.write(`[MCP] Progress event: ${JSON.stringify(progress)}\n`);
+          // Use console.error for colored, formatted output on stderr with proper line coordination
+          console.error('[MCP] Progress event:', progress);
         }
 
         // Extract progress information and route to existing progress system
