@@ -4,6 +4,7 @@
  * Reusable class for collecting multiline feedback while other processes are running.
  * - Type/paste feedback (multiline)
  * - Press Enter on a BLANK line to SUBMIT that block
+ * - Alternative: Type --- on a line by itself to submit
  * - Multiple blocks allowed; exit with EOF (Ctrl-D / Ctrl-Z then Enter) or Ctrl-C
  * - Progress logs go to stderr; UI/instructions to stdout
  * - NO TTY/Raw mode - simple line-based stdin for AI agent compatibility
@@ -172,13 +173,20 @@ export class ConcurrentFeedbackCollector {
    * Print header instructions
    */
   private printHeader(): void {
+    const border = '═'.repeat(60);
     process.stdout.write(
       [
         '',
-        chalk.blue.bold('📝 Feedback Collection Enabled'),
-        chalk.gray('   Type or paste your feedback. Submit by pressing Enter on an EMPTY line.'),
-        chalk.gray('   (Continue working - your progress updates will be shown below)'),
-        ''
+        chalk.blue.bold('╔' + border + '╗'),
+        chalk.blue.bold('║') + chalk.yellow.bold('  📝 FEEDBACK COLLECTION ENABLED  ') + ' '.repeat(25) + chalk.blue.bold('║'),
+        chalk.blue.bold('╠' + border + '╣'),
+        chalk.blue.bold('║') + chalk.white('  Type or paste your multiline feedback below:') + ' '.repeat(12) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.green('  • Submit: Press Enter on a BLANK line') + ' '.repeat(19) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.green('  • Alternative: Type --- on a line by itself') + ' '.repeat(13) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.green('  • Exit: Press Ctrl-D (or Ctrl-Z on Windows)') + ' '.repeat(13) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.gray('  Progress updates will appear below while you type...') + ' '.repeat(5) + chalk.blue.bold('║'),
+        chalk.blue.bold('╚' + border + '╝'),
+        chalk.cyan.bold('> ') + chalk.gray('(Type your feedback here)')
       ].join(EOL) + EOL
     );
   }
@@ -239,7 +247,16 @@ export class ConcurrentFeedbackCollector {
    * Process a single line of input
    */
   private processLine(line: string): void {
-    const isBlank = line.trim().length === 0;
+    const trimmed = line.trim();
+    const isBlank = trimmed.length === 0;
+    const isDelimiter = trimmed === '---';
+
+    // Check for delimiter submission
+    if (isDelimiter) {
+      this.submitBufferIfAny();
+      this.lastLineWasBlank = false;
+      return;
+    }
 
     if (isBlank && !this.lastLineWasBlank) {
       // A single blank line means "submit this block"
@@ -315,6 +332,7 @@ export class ConcurrentFeedbackCollector {
           process.stderr.write(`[feedback-collector ${n}] Custom handler completed${EOL}`);
         }
         process.stdout.write(EOL + chalk.green('✅ Feedback submitted successfully. You can type another block.') + EOL);
+        process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL);
       } catch (error) {
         process.stderr.write(`[feedback-collector ${n}] Custom handler error: ${error}${EOL}`);
         process.stdout.write(EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL);
@@ -358,6 +376,7 @@ export class ConcurrentFeedbackCollector {
 
         if (code === 0) {
           process.stdout.write(EOL + chalk.green('✅ Feedback submitted successfully. You can type another block.') + EOL);
+          process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL);
         } else {
           process.stdout.write(EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL);
         }
