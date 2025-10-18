@@ -332,13 +332,23 @@ async function main(): Promise<void> {
   displayBanner(isVerbose);
 
   // Validate JSON configuration files on startup
-  // Skip validation for help/version commands to avoid unnecessary checks
+  // Skip validation for help/version commands or when no arguments provided to avoid unnecessary checks
   const isHelpOrVersion = process.argv.includes('--help') ||
                          process.argv.includes('-h') ||
                          process.argv.includes('--version') ||
                          process.argv.includes('-V');
 
-  if (!isHelpOrVersion) {
+  // Skip validation when no arguments provided (will show default help)
+  const hasNoArguments = process.argv.length <= 2;
+
+  // Check if project is initialized - only validate if .juno_task exists
+  const fs = await import('fs-extra');
+  const path = await import('node:path');
+  const junoTaskDir = path.join(process.cwd(), '.juno_task');
+  const isInitialized = await fs.pathExists(junoTaskDir);
+
+  // Only run validation for initialized projects (has .juno_task folder) and not for help/version/no-args
+  if (!isHelpOrVersion && !hasNoArguments && isInitialized) {
     try {
       const { validateStartupConfigs } = await import('../utils/startup-validation.js');
       const validationPassed = await validateStartupConfigs(process.cwd(), isVerbose);
