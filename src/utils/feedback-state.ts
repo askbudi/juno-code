@@ -29,6 +29,7 @@ class FeedbackState {
   private _isActive: boolean = false;
   private _progressBuffer: ProgressEvent[] = [];
   private readonly _maxBufferSize: number = 100; // Prevent memory leaks
+  private _inputRedisplayCallback: (() => void) | null = null;
 
   /**
    * Check if feedback collection is currently active
@@ -48,6 +49,13 @@ class FeedbackState {
     if (wasActive && !active && this._progressBuffer.length > 0) {
       this.flushProgressBuffer();
     }
+  }
+
+  /**
+   * Set the callback to redisplay user input after progress flush
+   */
+  setInputRedisplayCallback(callback: (() => void) | null): void {
+    this._inputRedisplayCallback = callback;
   }
 
   /**
@@ -107,6 +115,11 @@ class FeedbackState {
     }
 
     this.clearProgressBuffer();
+
+    // After flushing progress, redisplay the user's current input if callback is set
+    if (this._inputRedisplayCallback) {
+      this._inputRedisplayCallback();
+    }
   }
 
   /**
@@ -180,6 +193,13 @@ export function getFeedbackBufferStats(): { count: number; maxSize: number } {
  */
 export function flushBufferedProgress(): void {
   globalFeedbackState.flushBufferedProgress();
+}
+
+/**
+ * Set the callback to redisplay user input after progress flush
+ */
+export function setInputRedisplayCallback(callback: (() => void) | null): void {
+  globalFeedbackState.setInputRedisplayCallback(callback);
 }
 
 /**
