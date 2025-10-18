@@ -15,7 +15,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
-import { setFeedbackActive, flushBufferedProgress } from './feedback-state.js';
+import { setFeedbackActive, flushBufferedProgress, setInputRedisplayCallback } from './feedback-state.js';
 
 export interface FeedbackCollectorOptions {
   /**
@@ -112,6 +112,9 @@ export class ConcurrentFeedbackCollector {
     // Set global feedback state to active (suppresses progress output)
     setFeedbackActive(true);
 
+    // Set up input redisplay callback to restore user input after progress flushes
+    setInputRedisplayCallback(() => this.redisplayCurrentInput());
+
     // Enable UTF-8 encoding for stdin
     process.stdin.setEncoding('utf8');
 
@@ -149,6 +152,9 @@ export class ConcurrentFeedbackCollector {
 
     // Set global feedback state to inactive (re-enables progress output)
     setFeedbackActive(false);
+
+    // Clear input redisplay callback
+    setInputRedisplayCallback(null);
 
     // Stop progress ticker
     if (this.progressTimer) {
@@ -199,6 +205,25 @@ export class ConcurrentFeedbackCollector {
    */
   isRunning(): boolean {
     return this.isActive;
+  }
+
+  /**
+   * Redisplay the current user input after progress events are flushed
+   * This maintains visual continuity so user sees their partial input restored
+   */
+  private redisplayCurrentInput(): void {
+    if (!this.isActive) {
+      return;
+    }
+
+    // If there's any partial input in the carry buffer, redisplay it
+    if (this.carry.length > 0) {
+      // Write a fresh prompt line with the current partial input
+      process.stdout.write(chalk.cyan.bold('> ') + this.carry);
+    } else {
+      // No partial input, just show the prompt
+      process.stdout.write(chalk.cyan.bold('> '));
+    }
   }
 
   /**
