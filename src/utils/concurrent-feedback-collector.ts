@@ -216,10 +216,26 @@ export class ConcurrentFeedbackCollector {
       return;
     }
 
-    // If there's any partial input in the carry buffer, redisplay it
-    if (this.carry.length > 0) {
-      // Write a fresh prompt line with the current partial input
-      process.stdout.write(chalk.cyan.bold('> ') + this.carry);
+    // Combine both buffer (accumulated complete lines) and carry (current incomplete line)
+    const fullInput = this.buffer + this.carry;
+
+    if (fullInput.length > 0) {
+      // Write a fresh prompt with ALL the user's accumulated input
+      // Show it in a compact way - just the last few lines to maintain context
+      const lines = fullInput.split(/\r?\n/);
+      const visibleLines = lines.slice(-3); // Show last 3 lines for context
+
+      if (lines.length > 3) {
+        process.stdout.write(chalk.gray(`... (${lines.length - 3} more lines above)\n`));
+      }
+
+      // Display each line with continuation marker
+      for (let i = 0; i < visibleLines.length - 1; i++) {
+        process.stdout.write(chalk.cyan('│ ') + visibleLines[i] + '\n');
+      }
+
+      // Last line with the active prompt
+      process.stdout.write(chalk.cyan.bold('> ') + visibleLines[visibleLines.length - 1]);
     } else {
       // No partial input, just show the prompt
       process.stdout.write(chalk.cyan.bold('> '));
