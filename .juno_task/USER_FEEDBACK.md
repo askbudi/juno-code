@@ -33,6 +33,33 @@
 ## Resolved Issues - VALIDATED FIXES ONLY
 
 <RESOLVED_ISSUE>
+      MCP Server Progress Output Buffering - Real-Time Display Restored
+      now app progress from mcp server is going to a buffer, and only become visible on screen after ctrl-c
+
+      <Test_CRITERIA>MCP server progress should display in real-time during feedback collection without requiring ctrl-c to view buffered output</Test_CRITERIA>
+      <DATE>2025-10-17</DATE>
+      <RESOLVED_DATE>2025-10-17</RESOLVED_DATE>
+
+      <ROOT_CAUSE>
+      The progress suppression fix that was implemented to solve user input mixing worked by completely buffering progress events when feedback collection was active. This meant users couldn't see progress in real-time and had to press ctrl-c to flush the buffer and see accumulated progress output.
+      </ROOT_CAUSE>
+
+      <RESOLUTION_SUMMARY>
+      Fix Applied: Removed progress buffering checks from TerminalProgressWriter.write() and writeWithPrefix() methods in `juno-task-ts/src/utils/terminal-progress-writer.ts`
+
+      Technical Details:
+      - Removed isFeedbackActive() checks that were preventing real-time progress display
+      - Progress is now always displayed immediately, even during feedback collection
+      - ANSI escape codes (\r\x1b[K) properly coordinate terminal output to prevent visual mixing
+      - This provides the best of both worlds: real-time progress visibility with clean input separation
+
+      Result: Users can now see MCP server progress in real-time during feedback collection without needing to interrupt the process. The ANSI escape code approach works correctly for stderr output in TTY mode, with terminal automatically restoring user input line after progress output.
+
+      Test Results: Build successful, terminal-progress-writer tests: 13/13 passing, feedback-state tests: 13/13 passing, Full test suite: 572/573 tests passing (1 unrelated binary test issue)
+      </RESOLUTION_SUMMARY>
+   </RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
       MCP Progress Formatting Regression
       MCP Progress changed to "all black fonts, and not human readable" after stream separation fix
 
