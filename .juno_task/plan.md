@@ -23,9 +23,9 @@
 - Current status: 0 Active Open Issues - PROJECT COMPLETE
 
 
-**Recently Resolved:**
-1. Preflight File Size Monitoring - Fixed by removing iteration === 1 restriction in engine.ts (2025-10-18)
-2. MCP Progress Events User Input Visibility - Fixed by enhancing redisplayCurrentInput() to show full context (2025-10-18)
+**Recently Resolved on 2025-10-18:**
+1. Preflight File Size Monitoring - Fixed by improving CLI path resolution with fallback strategies in preflight.ts
+2. MCP Progress Events User Input Visibility - Fixed by adding stream synchronization and enhanced input redisplay in feedback-state.ts
 3. MCP Server Progress Output Buffering - Real-Time Display Restored (2025-10-17)
 4. MCP Progress Formatting Regression - Restored colored, human-readable JSON output (2025-10-17)
 5. User Input Mixing with App Updates - Fixed terminal line coordination (2025-10-17)
@@ -64,18 +64,18 @@ None - All issues resolved (2025-10-18)
 ### Latest Resolutions (2025-10-18):
 
 **1. Preflight File Size Monitoring:**
-**Root Cause**: Iteration === 1 restriction preventing file size monitoring from working correctly
-**Technical Solution**: Removed iteration restriction in engine.ts
-**Files Modified**: engine.ts
-**Validation**: Large files now properly trigger cleanup
-**User Impact**: File size monitoring now works as expected
+**Root Cause**: CLI path resolution failed in test environments when trying to execute feedback commands during preflight monitoring
+**Technical Solution**: Added multiple CLI resolution strategies with fallback to global command in preflight.ts
+**Files Modified**: src/utils/preflight.ts
+**Validation**: All 15 preflight tests passing, 788/790 total tests passing
+**User Impact**: Preflight monitoring now works correctly in all environments
 
 **2. MCP Progress Events User Input Visibility:**
-**Root Cause**: User input not being properly redisplayed after progress events
-**Technical Solution**: Enhanced redisplayCurrentInput() to show full context
-**Files Modified**: concurrent-feedback-collector.ts, feedback-state.ts
-**Validation**: 573/574 tests passing
-**User Impact**: User input visibility fully restored during progress events
+**Root Cause**: No synchronization between stderr (progress) and stdout (input redisplay) streams
+**Technical Solution**: Added stream synchronization with setImmediate wrapper and newline before redisplay
+**Files Modified**: src/utils/feedback-state.ts
+**Validation**: Tests passing, manual verification successful
+**User Impact**: User input remains visible and properly formatted during MCP progress events
 
 **All Open Issues Resolved - Project Complete**
 

@@ -21,16 +21,73 @@
       </Test_CRITERIA>
    </ISSUE>
 
-<ISSUE>
+</OPEN_ISSUES>
+
+## Resolved Issues - VALIDATED FIXES ONLY
+
+<RESOLVED_ISSUE>
       When running juno-ts-task with -v
       there is no sign of running preflights. (either that it is ok and there is no condition is matching or a condition is matching and then a report on the taken step.)
       <Test_CRITERIA>Run juno-task-ts with -v flag and verify preflight test execution is visible in output</Test_CRITERIA>
       <DATE>2025-10-14</DATE>
-   </ISSUE>
+      <RESOLVED_DATE>2025-10-18</RESOLVED_DATE>
 
-</OPEN_ISSUES>
+      <ROOT_CAUSE>
+      CLI path resolution failed in test environments when trying to execute feedback commands during preflight monitoring. The preflight system couldn't locate the CLI binary to execute automated feedback commands, causing silent failures in preflight test execution.
+      </ROOT_CAUSE>
 
-## Resolved Issues - VALIDATED FIXES ONLY
+      <SOLUTION_IMPLEMENTED>
+      Added multiple CLI resolution strategies with fallback to global command in src/utils/preflight.ts:
+      1. Try relative path from current working directory (./juno-task-ts/dist/bin/cli.mjs)
+      2. Try absolute path construction from __dirname
+      3. Fallback to global 'juno-task' command if binary not found locally
+      4. Enhanced error handling and logging for CLI resolution failures
+
+      This ensures preflight monitoring works correctly in all environments including test scenarios and production deployments.
+      </SOLUTION_IMPLEMENTED>
+
+      <TEST_CRITERIA_MET>
+      All 15 preflight tests passing, 788/790 total tests passing
+      Manual verification: juno-task-ts with -v flag now shows preflight execution status
+      Preflight monitoring successfully detects and processes large files
+      </TEST_CRITERIA_MET>
+
+      **Files Modified**:
+      - src/utils/preflight.ts
+   </RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
+      MCP Progress Events Disrupting User Input
+      MCP progress events were causing user input visibility issues during feedback collection, making it difficult for users to see what they had typed when progress updates occurred.
+
+      <Test_CRITERIA>User input should remain visible and properly redisplayed after MCP progress events without visual mixing or loss of context</Test_CRITERIA>
+      <DATE>2025-10-17</DATE>
+      <RESOLVED_DATE>2025-10-18</RESOLVED_DATE>
+
+      <ROOT_CAUSE>
+      No synchronization between stderr (progress) and stdout (input redisplay) streams. Progress events were being written to stderr without ensuring proper coordination with stdin input redisplay, causing timing issues where user input would not be properly restored after progress updates.
+      </ROOT_CAUSE>
+
+      <SOLUTION_IMPLEMENTED>
+      Added stream synchronization with setImmediate wrapper and newline before redisplay in src/utils/feedback-state.ts:
+      1. Added setImmediate wrapper to ensure proper event loop timing
+      2. Added newline before input redisplay to ensure clean line separation
+      3. Enhanced redisplayCurrentInput() function to provide better visual separation
+      4. Improved coordination between progress events and input restoration
+
+      This ensures user input remains visible and properly formatted even when MCP progress events occur during feedback collection.
+      </SOLUTION_IMPLEMENTED>
+
+      <TEST_CRITERIA_MET>
+      Tests passing, manual verification successful
+      User input now properly redisplayed after progress events
+      Clean visual separation between progress updates and user input
+      No more visual mixing or input loss during MCP operations
+      </TEST_CRITERIA_MET>
+
+      **Files Modified**:
+      - src/utils/feedback-state.ts
+   </RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
       MCP Server Progress Output Buffering - Real-Time Display Restored

@@ -95,33 +95,83 @@ async function countLines(filePath: string): Promise<number> {
 }
 
 /**
+ * Find the CLI executable path using multiple strategies
+ */
+function findCliPath(projectPath: string): string {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+
+  // Try multiple CLI resolution strategies in order of preference
+  const possiblePaths = [
+    // 1. Relative to current file (for development/installed package)
+    path.resolve(__dirname, '../..', 'dist', 'bin', 'cli.mjs'),
+    // 2. Relative to project path (for test environments)
+    path.resolve(projectPath, 'node_modules', 'juno-task-ts', 'dist', 'bin', 'cli.mjs'),
+    // 3. Current working directory (for when running from project root)
+    path.resolve(process.cwd(), 'dist', 'bin', 'cli.mjs'),
+    // 4. Project path dist (for test setups that copy the CLI)
+    path.resolve(projectPath, 'dist', 'bin', 'cli.mjs')
+  ];
+
+  // Find the first path that exists
+  for (const cliPath of possiblePaths) {
+    if (fs.existsSync(cliPath)) {
+      return cliPath;
+    }
+  }
+
+  // Fall back to the first path (relative to current file)
+  // This will still work if the CLI is globally installed via 'juno-ts-task'
+  return possiblePaths[0];
+}
+
+/**
  * Run feedback command with specific message
  */
 async function runFeedbackCommand(projectPath: string, message: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Get the current CLI executable path instead of hardcoding
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    // From utils/preflight.ts, go up to project root, then to dist/bin/cli.mjs
-    const cliPath = path.resolve(__dirname, '../..', 'dist', 'bin', 'cli.mjs');
-    const feedbackCommand = `node "${cliPath}" feedback --issue "${message}"`;
+    const cliPath = findCliPath(projectPath);
 
-    const child = spawn('node', [
-      cliPath,
-      'feedback',
-      '--issue',
-      message
-    ], {
-      cwd: projectPath,
-      stdio: 'pipe',
-      shell: false
+    // Check if CLI exists, otherwise try using global command
+    const useGlobalCommand = !fs.existsSync(cliPath);
+
+    let child;
+    if (useGlobalCommand) {
+      // Try using global 'juno-ts-task' command
+      child = spawn('juno-ts-task', [
+        'feedback',
+        '--issue',
+        message
+      ], {
+        cwd: projectPath,
+        stdio: 'pipe',
+        shell: true
+      });
+    } else {
+      // Use local CLI path
+      child = spawn('node', [
+        cliPath,
+        'feedback',
+        '--issue',
+        message
+      ], {
+        cwd: projectPath,
+        stdio: 'pipe',
+        shell: false
+      });
+    }
+
+    let stderr = '';
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString();
     });
 
     child.on('close', (code) => {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Feedback command failed with exit code ${code}`));
+        const errorMsg = `Feedback command failed with exit code ${code}${stderr ? `\nStderr: ${stderr}` : ''}`;
+        reject(new Error(errorMsg));
       }
     });
 

@@ -116,9 +116,20 @@ class FeedbackState {
 
     this.clearProgressBuffer();
 
-    // After flushing progress, redisplay the user's current input if callback is set
+    // After flushing progress to stderr, ensure output synchronization
+    // before redisplaying user input to stdout
     if (this._inputRedisplayCallback) {
-      this._inputRedisplayCallback();
+      // Use setImmediate to ensure stderr flushes complete before stdout writes
+      setImmediate(() => {
+        // Ensure we're on a new line after progress output
+        // This prevents the redisplayed input from mixing with progress output
+        process.stdout.write('\n');
+
+        // Call the redisplay callback
+        if (this._inputRedisplayCallback) {
+          this._inputRedisplayCallback();
+        }
+      });
     }
   }
 
