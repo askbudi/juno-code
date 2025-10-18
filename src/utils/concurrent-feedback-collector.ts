@@ -15,7 +15,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
-import { setFeedbackActive } from './feedback-state';
+import { setFeedbackActive, flushBufferedProgress } from './feedback-state.js';
 
 export interface FeedbackCollectorOptions {
   /**
@@ -49,6 +49,12 @@ export interface FeedbackCollectorOptions {
   progressInterval?: number;
 
   /**
+   * Progress flush interval (ms) - how often to display buffered progress
+   * @default 2000 (2 seconds)
+   */
+  progressFlushInterval?: number;
+
+  /**
    * Custom feedback submission handler
    * If provided, this will be called instead of spawning the command
    */
@@ -74,6 +80,7 @@ export class ConcurrentFeedbackCollector {
   private carry: string = '';
   private lastLineWasBlank: boolean = false;
   private progressTimer?: NodeJS.Timeout;
+  private progressFlushTimer?: NodeJS.Timeout;
   private progressTick: number = 0;
   private startTime: Date = new Date();
   private isActive: boolean = false;
@@ -86,6 +93,7 @@ export class ConcurrentFeedbackCollector {
       verbose: options.verbose || false,
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,
+      progressFlushInterval: options.progressFlushInterval ?? 2000, // Default: flush every 2 seconds
       onSubmit: options.onSubmit
     };
   }
@@ -117,6 +125,11 @@ export class ConcurrentFeedbackCollector {
       this.startProgressTicker();
     }
 
+    // Start progress flush timer to periodically display buffered progress
+    if (this.options.progressFlushInterval > 0) {
+      this.startProgressFlushTimer();
+    }
+
     // Setup stdin handlers
     this.setupStdinHandlers();
 
@@ -142,6 +155,15 @@ export class ConcurrentFeedbackCollector {
       clearInterval(this.progressTimer);
       this.progressTimer = undefined;
     }
+
+    // Stop progress flush timer
+    if (this.progressFlushTimer) {
+      clearInterval(this.progressFlushTimer);
+      this.progressFlushTimer = undefined;
+    }
+
+    // Flush any remaining buffered progress
+    flushBufferedProgress();
 
     // Submit any remaining buffer
     this.submitBufferIfAny();
@@ -210,6 +232,17 @@ export class ConcurrentFeedbackCollector {
       const elapsed = ((Date.now() - this.startTime.getTime()) / 1000).toFixed(1);
       process.stderr.write(`[progress] tick=${this.progressTick} elapsed=${elapsed}s${EOL}`);
     }, this.options.progressInterval);
+  }
+
+  /**
+   * Start progress flush timer to periodically display buffered progress
+   */
+  private startProgressFlushTimer(): void {
+    this.progressFlushTimer = setInterval(() => {
+      // Flush buffered progress events periodically
+      // This displays progress that accumulated while user was typing
+      flushBufferedProgress();
+    }, this.options.progressFlushInterval);
   }
 
   /**

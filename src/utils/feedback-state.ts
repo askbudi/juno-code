@@ -89,16 +89,15 @@ class FeedbackState {
 
   /**
    * Flush buffered progress events to stderr
-   * Called when feedback collection ends
+   * Called when feedback collection ends or periodically
    */
   private flushProgressBuffer(): void {
     if (this._progressBuffer.length === 0) {
       return;
     }
 
-    // Write a separator to indicate buffered events
-    process.stderr.write('\n--- Buffered progress events during feedback ---\n');
-
+    // Display buffered progress events
+    // Note: We don't add separators - just display the progress naturally
     for (const event of this._progressBuffer) {
       if (event.prefix) {
         console.error(event.prefix, event.content);
@@ -107,8 +106,14 @@ class FeedbackState {
       }
     }
 
-    process.stderr.write('--- End buffered events ---\n\n');
     this.clearProgressBuffer();
+  }
+
+  /**
+   * Manually flush buffered progress (can be called periodically)
+   */
+  flushBufferedProgress(): void {
+    this.flushProgressBuffer();
   }
 
   /**
@@ -167,6 +172,14 @@ export function clearBufferedProgressEvents(): void {
  */
 export function getFeedbackBufferStats(): { count: number; maxSize: number } {
   return globalFeedbackState.getBufferStats();
+}
+
+/**
+ * Manually flush buffered progress events
+ * Useful for periodic flushing during feedback collection
+ */
+export function flushBufferedProgress(): void {
+  globalFeedbackState.flushBufferedProgress();
 }
 
 /**
