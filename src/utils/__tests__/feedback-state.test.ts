@@ -142,11 +142,9 @@ describe('FeedbackState', () => {
       // Buffer should be cleared
       expect(getBufferedProgressEvents()).toHaveLength(0);
 
-      // Should have written flush header and events
-      expect(stderrWriteSpy).toHaveBeenCalledWith('\n--- Buffered progress events during feedback ---\n');
+      // Should have written buffered events (without separators)
       expect(consoleErrorSpy).toHaveBeenCalledWith('test message 1');
       expect(consoleErrorSpy).toHaveBeenCalledWith('[PREFIX]', 'test message 2');
-      expect(stderrWriteSpy).toHaveBeenCalledWith('--- End buffered events ---\n\n');
 
       consoleErrorSpy.mockRestore();
       stderrWriteSpy.mockRestore();
