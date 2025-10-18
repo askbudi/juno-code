@@ -147,6 +147,19 @@ async function checkAndCompactConfigFile(
 
   if (lineCount > threshold && needsCompaction) {
     try {
+      // FIRST: Trigger feedback command with specific message format
+      const feedbackMessage = `File ${filePath} is becoming big, you need to compact it and keep it lean.`;
+      console.log(`\n⚠️  Triggering feedback for ${filePath} (${lineCount} lines > ${threshold} threshold)...`);
+
+      try {
+        await runFeedbackCommand(projectPath, feedbackMessage);
+        console.log(`✅ Feedback command executed successfully for ${filePath}`);
+      } catch (feedbackError) {
+        console.warn(`Warning: Feedback command failed for ${filePath}:`, feedbackError);
+        // Continue with automatic compaction even if feedback fails
+      }
+
+      // THEN: Auto-compact the file
       console.log(`\n🗜️  Auto-compacting ${filePath} (${lineCount} lines > ${threshold} threshold)...`);
 
       const result = await compactConfigFile(fullPath, {
@@ -170,6 +183,7 @@ async function checkAndCompactConfigFile(
         file: filePath,
         lineCount,
         threshold,
+        feedbackCommand: `feedback --issue "${feedbackMessage}"`,
         compactionResult: {
           originalSize: result.originalSize,
           compactedSize: result.compactedSize,
@@ -206,6 +220,19 @@ async function checkAndArchiveFeedbackFile(
 
   if (archivalCheck.shouldArchive) {
     try {
+      // FIRST: Trigger feedback command with specific message format
+      const feedbackMessage = `File ${filePath} is becoming big, you need to compact it and keep it lean.`;
+      console.log(`\n⚠️  Triggering feedback for ${filePath} (${archivalCheck.reasons.join(', ')})...`);
+
+      try {
+        await runFeedbackCommand(projectPath, feedbackMessage);
+        console.log(`✅ Feedback command executed successfully for ${filePath}`);
+      } catch (feedbackError) {
+        console.warn(`Warning: Feedback command failed for ${filePath}:`, feedbackError);
+        // Continue with automatic archival even if feedback fails
+      }
+
+      // THEN: Auto-archive the file
       console.log(`\n📋 Auto-archiving ${filePath} (${archivalCheck.reasons.join(', ')})...`);
 
       // Perform archival
@@ -229,6 +256,7 @@ async function checkAndArchiveFeedbackFile(
         file: filePath,
         lineCount,
         threshold,
+        feedbackCommand: `feedback --issue "${feedbackMessage}"`,
         archivalResult: {
           archivedCount: archivalResult.archivedCount,
           openIssuesCount: archivalResult.openIssuesCount,
@@ -241,7 +269,7 @@ async function checkAndArchiveFeedbackFile(
 
       // Fallback to feedback command if archival fails
       try {
-        const feedbackMessage = `@.juno_task/USER_FEEDBACK.md needs to kept lean, and any verified Resolved Issue should archive from this file. Compact this file and remember to keep the OPEN ISSUES as it is. If there are many open issues, Give user a warning about it. So they could manage it manually`;
+        const feedbackMessage = `File ${filePath} is becoming big, you need to compact it and keep it lean.`;
         await runFeedbackCommand(projectPath, feedbackMessage);
 
         return {

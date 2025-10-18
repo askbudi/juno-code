@@ -34,8 +34,8 @@ Test task for validation purposes.
 </OPEN_ISSUES>
 
 ## Resolved Issues - VALIDATED FIXES ONLY
-<RESOLVED_ISSUE>
-</RESOLVED_ISSUE>
+<RESOLVED_ISSUES>
+</RESOLVED_ISSUES>
 `;
   await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), feedbackContent);
 
