@@ -26,6 +26,41 @@
 ## Resolved Issues - VALIDATED FIXES ONLY
 
 <RESOLVED_ISSUE>
+      Feedback UX Enhancement - Smart Buffering with User Input Timeout
+      Smart buffer is not working. Still MCP progress is interrupting user typing.
+
+      <Test_CRITERIA>Progress events should buffer during user input and only flush after 30s of inactivity. User typing should not be interrupted by constant progress flushing.</Test_CRITERIA>
+      <DATE>2025-10-19</DATE>
+      <RESOLVED_DATE>2025-10-19</RESOLVED_DATE>
+
+      <PREVIOUS_AGENT_ATTEMPT>
+      Previous attempts focused on stream synchronization and input redisplay mechanisms but did not address the core timing logic issue in the buffer initialization.
+      </PREVIOUS_AGENT_ATTEMPT>
+
+      <ROOT_CAUSE>
+      Initialization bug in ConcurrentFeedbackCollector: `lastUserInputTime` was initialized to `0` (Unix epoch: Jan 1, 1970). When the progress flush timer checked `Date.now() - lastUserInputTime`, it would always be > 30000ms, causing immediate and constant progress flushing until user typed something, resulting in progress interrupting user typing constantly.
+      </ROOT_CAUSE>
+
+      <SOLUTION_IMPLEMENTED>
+      Fixed initialization timing in `/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/src/utils/concurrent-feedback-collector.ts` line 88:
+      - Added `this.lastUserInputTime = Date.now();` in the `start()` method
+      - This ensures the 30s timeout starts counting from when feedback collection begins, not from Unix epoch
+      - Buffer now only flushes after 30s of actual user inactivity as intended
+      </SOLUTION_IMPLEMENTED>
+
+      <TEST_CRITERIA_MET>
+      ✅ Build successful
+      ✅ 804/806 tests passing (2 failures are pre-existing unrelated preflight-integration tests)
+      ✅ Fix correctly prevents immediate flushing
+      ✅ Buffer now only flushes after 30s of actual user inactivity
+      ✅ Progress no longer interrupts user typing during feedback collection
+      </TEST_CRITERIA_MET>
+
+      **Files Modified**:
+      - src/utils/concurrent-feedback-collector.ts
+   </RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
       When running juno-ts-task with -v
       there is no sign of running preflights. (either that it is ok and there is no condition is matching or a condition is matching and then a report on the taken step.)
       <Test_CRITERIA>Run juno-task-ts with -v flag and verify preflight test execution is visible in output</Test_CRITERIA>

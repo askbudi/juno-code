@@ -111,6 +111,10 @@ export class ConcurrentFeedbackCollector {
     this.isActive = true;
     this.startTime = new Date();
 
+    // Initialize lastUserInputTime to now so the 30s timeout starts from when feedback collection begins
+    // Without this, lastUserInputTime=0 would cause immediate flushing (Date.now() - 0 > 30000)
+    this.lastUserInputTime = Date.now();
+
     // Set global feedback state to active (suppresses progress output)
     setFeedbackActive(true);
 
