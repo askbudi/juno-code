@@ -15,7 +15,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
-import { setFeedbackActive, flushBufferedProgress, setInputRedisplayCallback } from './feedback-state.js';
+import { setFeedbackActive, isFeedbackActive, flushBufferedProgress, setInputRedisplayCallback } from './feedback-state.js';
 
 export interface FeedbackCollectorOptions {
   /**
@@ -87,6 +87,8 @@ export class ConcurrentFeedbackCollector {
   private submissions: FeedbackSubmission[] = [];
   private lastUserInputTime: number = 0;
   private userInputTimeout: number = 30000; // 30 seconds in milliseconds
+  private totalInputLength: number = 0; // Track total characters typed
+  private minCharsForBuffering: number = 3; // Minimum characters before activating buffering
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
@@ -115,8 +117,12 @@ export class ConcurrentFeedbackCollector {
     // Without this, lastUserInputTime=0 would cause immediate flushing (Date.now() - 0 > 30000)
     this.lastUserInputTime = Date.now();
 
-    // Set global feedback state to active (suppresses progress output)
-    setFeedbackActive(true);
+    // Reset total input length counter
+    this.totalInputLength = 0;
+
+    // DON'T activate feedback state yet - wait until user has typed at least 3 characters
+    // This prevents buffering from activating when stdin is empty
+    // setFeedbackActive(true); // MOVED - will be called after user types 3+ chars
 
     // Set up input redisplay callback to restore user input after progress flushes
     setInputRedisplayCallback(() => this.redisplayCurrentInput());
@@ -325,6 +331,18 @@ export class ConcurrentFeedbackCollector {
 
       // Update last user input time - this resets the 30s inactivity timer
       this.lastUserInputTime = Date.now();
+
+      // Track total input length (buffer + carry + new chunk)
+      this.totalInputLength += chunk.length;
+
+      // Activate buffering mode only after user has typed at least 3 characters
+      // This prevents buffering from activating when stdin is empty
+      if (!isFeedbackActive() && this.totalInputLength >= this.minCharsForBuffering) {
+        setFeedbackActive(true);
+        if (this.options.verbose) {
+          process.stderr.write(`[feedback-collector] Buffering activated after ${this.totalInputLength} characters typed\n`);
+        }
+      }
 
       this.carry += chunk;
 
