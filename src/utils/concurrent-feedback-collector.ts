@@ -85,6 +85,8 @@ export class ConcurrentFeedbackCollector {
   private startTime: Date = new Date();
   private isActive: boolean = false;
   private submissions: FeedbackSubmission[] = [];
+  private lastUserInputTime: number = 0;
+  private userInputTimeout: number = 30000; // 30 seconds in milliseconds
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
@@ -277,12 +279,18 @@ export class ConcurrentFeedbackCollector {
 
   /**
    * Start progress flush timer to periodically display buffered progress
+   * Only flushes if 30s has passed since last user input (inactivity timeout)
    */
   private startProgressFlushTimer(): void {
     this.progressFlushTimer = setInterval(() => {
-      // Flush buffered progress events periodically
-      // This displays progress that accumulated while user was typing
-      flushBufferedProgress();
+      const now = Date.now();
+      const timeSinceLastInput = now - this.lastUserInputTime;
+
+      // Only flush if 30s has passed since last user input
+      // This prevents interrupting user while they're actively typing
+      if (timeSinceLastInput >= this.userInputTimeout) {
+        flushBufferedProgress();
+      }
     }, this.options.progressFlushInterval);
   }
 
@@ -310,6 +318,9 @@ export class ConcurrentFeedbackCollector {
     // Handle stdin data events
     process.stdin.on('data', (chunk: string) => {
       if (!this.isActive) return;
+
+      // Update last user input time - this resets the 30s inactivity timer
+      this.lastUserInputTime = Date.now();
 
       this.carry += chunk;
 
@@ -393,6 +404,10 @@ export class ConcurrentFeedbackCollector {
     process.stdout.write(EOL + chalk.cyan('===== SUBMITTING FEEDBACK BLOCK =====') + EOL);
     process.stdout.write(content + EOL);
     process.stdout.write(chalk.cyan('===== END BLOCK =====') + EOL);
+
+    // Flush any buffered progress when user submits feedback
+    // This ensures they see all accumulated updates
+    flushBufferedProgress();
 
     this.enqueueSubmission(content).catch((err) => {
       process.stderr.write(`${EOL}[feedback-collector] Error submitting feedback: ${err}${EOL}`);

@@ -16,6 +16,8 @@
  * - Optionally flush queued progress after feedback submission completes
  */
 
+import chalk from 'chalk';
+
 export interface ProgressEvent {
   content: any;
   prefix?: string;
@@ -103,6 +105,12 @@ class FeedbackState {
     if (this._progressBuffer.length === 0) {
       return;
     }
+
+    const bufferCount = this._progressBuffer.length;
+
+    // Show colored status message before flushing
+    console.error(chalk.yellow.bold(`\n⏸️  Agent working - ${bufferCount} buffered update${bufferCount > 1 ? 's' : ''} (live updates paused while you type)`));
+    console.error(chalk.gray('   Updates will resume after you submit feedback or 30s of inactivity\n'));
 
     // Display buffered progress events
     // Note: We don't add separators - just display the progress naturally
