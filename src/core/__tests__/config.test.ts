@@ -48,7 +48,7 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.logLevel).toBe('info');
       expect(DEFAULT_CONFIG.verbose).toBe(false);
       expect(DEFAULT_CONFIG.quiet).toBe(false);
-      expect(DEFAULT_CONFIG.mcpTimeout).toBe(600000);
+      expect(DEFAULT_CONFIG.mcpTimeout).toBe(86400000); // 24 hours (1 day) in milliseconds
       expect(DEFAULT_CONFIG.mcpRetries).toBe(3);
       expect(DEFAULT_CONFIG.interactive).toBe(true);
       expect(DEFAULT_CONFIG.headlessMode).toBe(false);
