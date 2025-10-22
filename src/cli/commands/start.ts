@@ -549,16 +549,24 @@ export async function startCommandHandler(
 
     // Load configuration
     cliLogger.startTimer('config_loading');
+
+    // Build cliConfig, only including defined values to avoid overriding defaults with undefined
+    const cliConfig: Partial<JunoTaskConfig> = {
+      verbose: allOptions.verbose || false,
+      quiet: allOptions.quiet || false,
+      logLevel: allOptions.logLevel || 'info',
+      workingDirectory: allOptions.directory || process.cwd()
+    };
+
+    // Only include mcpTimeout if explicitly provided (don't override defaults with undefined)
+    if (allOptions.mcpTimeout !== undefined) {
+      cliConfig.mcpTimeout = allOptions.mcpTimeout;
+    }
+
     const config = await loadConfig({
       baseDir: allOptions.directory || process.cwd(),
       configFile: allOptions.config,
-      cliConfig: {
-        verbose: allOptions.verbose || false,
-        quiet: allOptions.quiet || false,
-        logLevel: allOptions.logLevel || 'info',
-        workingDirectory: allOptions.directory || process.cwd(),
-        mcpTimeout: allOptions.mcpTimeout
-      }
+      cliConfig
     });
     cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
 
