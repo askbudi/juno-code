@@ -12,6 +12,7 @@ export * from './core/metrics';
 
 // Utility exports (excluding validateConfig to avoid conflicts)
 export * from './utils/environment';
+export * from './utils/hooks';
 export {
   ValidationError,
   SubagentSchema,
