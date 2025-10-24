@@ -685,20 +685,28 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
     // Check if config file exists
     const configExists = await fs.pathExists(configPath);
 
+    // Define all available hook types with empty command arrays as examples
+    const allHookTypes = {
+      START_RUN: { commands: [] },
+      START_ITERATION: { commands: [] },
+      END_ITERATION: { commands: [] },
+      END_RUN: { commands: [] }
+    };
+
     if (!configExists) {
-      // Create new config file with default config including hooks
+      // Create new config file with default config including all hook types
       const defaultConfig = {
         ...DEFAULT_CONFIG,
-        hooks: {}
+        hooks: allHookTypes
       };
       await fs.writeJson(configPath, defaultConfig, { spaces: 2 });
     } else {
-      // Read existing config and ensure hooks field exists
+      // Read existing config and ensure hooks field exists with all hook types
       const existingConfig = await fs.readJson(configPath);
 
-      // If hooks field doesn't exist, add it
+      // If hooks field doesn't exist, add it with all hook types
       if (!existingConfig.hooks) {
-        existingConfig.hooks = {};
+        existingConfig.hooks = allHookTypes;
         await fs.writeJson(configPath, existingConfig, { spaces: 2 });
       }
     }

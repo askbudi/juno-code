@@ -755,7 +755,13 @@ describe('hooks', () => {
       expect(await fs.pathExists(configPath)).toBe(true);
 
       const config = await fs.readJson(configPath);
-      expect(config.hooks).toEqual({});
+      // Auto-migration now includes all hook types with empty command arrays for better UX
+      expect(config.hooks).toEqual({
+        START_RUN: { commands: [] },
+        START_ITERATION: { commands: [] },
+        END_ITERATION: { commands: [] },
+        END_RUN: { commands: [] }
+      });
     });
 
     it('should add hooks field to existing config', async () => {
@@ -775,7 +781,13 @@ describe('hooks', () => {
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      expect(config.hooks).toEqual({});
+      // Auto-migration now includes all hook types with empty command arrays for better UX
+      expect(config.hooks).toEqual({
+        START_RUN: { commands: [] },
+        START_ITERATION: { commands: [] },
+        END_ITERATION: { commands: [] },
+        END_RUN: { commands: [] }
+      });
       expect(config.defaultSubagent).toBe('claude'); // Preserve existing config
       expect(config.logLevel).toBe('info');
     });
