@@ -568,7 +568,16 @@ logLevel: info
       });
 
       // Should use defaults when no config file found
-      expect(config).toEqual(expect.objectContaining(DEFAULT_CONFIG));
+      // NOTE: loadConfig() auto-migrates hooks to include all hook types with empty command arrays
+      expect(config).toMatchObject({
+        ...DEFAULT_CONFIG,
+        hooks: {
+          START_RUN: { commands: [] },
+          START_ITERATION: { commands: [] },
+          END_ITERATION: { commands: [] },
+          END_RUN: { commands: [] }
+        }
+      });
     });
   });
 
@@ -988,7 +997,16 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       // All configs should be identical
       expect(configs[0]).toEqual(configs[1]);
       expect(configs[1]).toEqual(configs[2]);
-      expect(configs[0]).toEqual(expect.objectContaining(DEFAULT_CONFIG));
+      // Auto-migration adds all hook types with empty command arrays
+      expect(configs[0]).toMatchObject({
+        ...DEFAULT_CONFIG,
+        hooks: {
+          START_RUN: { commands: [] },
+          START_ITERATION: { commands: [] },
+          END_ITERATION: { commands: [] },
+          END_RUN: { commands: [] }
+        }
+      });
     });
 
     it('should handle config loading with non-existent specific file', async () => {
