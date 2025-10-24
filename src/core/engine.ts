@@ -31,6 +31,8 @@ import {
   MCPError,
   MCPRateLimitError,
 } from '../mcp/errors';
+import { executeHook } from '../utils/hooks.js';
+import { engineLogger } from '../cli/utils/advanced-logger.js';
 
 // =============================================================================
 // Type Definitions
@@ -748,6 +750,27 @@ export class ExecutionEngine extends EventEmitter {
     context.status = ExecutionStatus.RUNNING;
     context.sessionContext = { ...context.sessionContext, state: 'active' as any };
 
+    // Execute START_RUN hook
+    try {
+      if (this.engineConfig.config.hooks) {
+        await executeHook('START_RUN', this.engineConfig.config.hooks, {
+          workingDirectory: context.request.workingDirectory,
+          sessionId: context.sessionContext.sessionId,
+          runId: context.request.requestId,
+          metadata: {
+            sessionId: context.sessionContext.sessionId,
+            requestId: context.request.requestId,
+            subagent: context.request.subagent,
+            maxIterations: context.request.maxIterations,
+            instruction: context.request.instruction,
+          }
+        });
+      }
+    } catch (error) {
+      engineLogger.warn('Hook START_RUN failed', { error });
+      // Continue execution despite hook failure
+    }
+
     try {
       await this.runIterationLoop(context);
 
@@ -759,6 +782,30 @@ export class ExecutionEngine extends EventEmitter {
       context.sessionContext = { ...context.sessionContext, state: 'failed' as any };
     } finally {
       context.endTime = new Date();
+    }
+
+    // Execute END_RUN hook
+    try {
+      if (this.engineConfig.config.hooks) {
+        await executeHook('END_RUN', this.engineConfig.config.hooks, {
+          workingDirectory: context.request.workingDirectory,
+          sessionId: context.sessionContext.sessionId,
+          runId: context.request.requestId,
+          metadata: {
+            sessionId: context.sessionContext.sessionId,
+            requestId: context.request.requestId,
+            status: context.status,
+            totalIterations: context.statistics.totalIterations,
+            successfulIterations: context.statistics.successfulIterations,
+            failedIterations: context.statistics.failedIterations,
+            duration: context.endTime ? context.endTime.getTime() - context.startTime.getTime() : 0,
+            success: context.status === ExecutionStatus.COMPLETED,
+          }
+        });
+      }
+    } catch (error) {
+      engineLogger.warn('Hook END_RUN failed', { error });
+      // Continue execution despite hook failure
     }
 
     return this.createExecutionResult(context);
@@ -801,6 +848,29 @@ export class ExecutionEngine extends EventEmitter {
    */
   private async executeIteration(context: ExecutionContext, iterationNumber: number): Promise<void> {
     const iterationStart = new Date();
+
+    // Execute START_ITERATION hook
+    try {
+      if (this.engineConfig.config.hooks) {
+        await executeHook('START_ITERATION', this.engineConfig.config.hooks, {
+          workingDirectory: context.request.workingDirectory,
+          sessionId: context.sessionContext.sessionId,
+          runId: context.request.requestId,
+          iteration: iterationNumber,
+          totalIterations: context.request.maxIterations,
+          metadata: {
+            sessionId: context.sessionContext.sessionId,
+            requestId: context.request.requestId,
+            iterationNumber,
+            maxIterations: context.request.maxIterations,
+            subagent: context.request.subagent,
+          }
+        });
+      }
+    } catch (error) {
+      engineLogger.warn('Hook START_ITERATION failed', { error, iterationNumber });
+      // Continue execution despite hook failure
+    }
 
     // Run preflight tests before each iteration to detect large files during execution
     const preflightConfig = getPreflightConfig(context.request.workingDirectory, context.request.subagent);
@@ -860,6 +930,30 @@ export class ExecutionEngine extends EventEmitter {
       this.updateStatistics(context, iterationResult);
 
       this.emit('iteration:complete', { context, iterationResult });
+
+      // Execute END_ITERATION hook for successful iteration
+      try {
+        if (this.engineConfig.config.hooks) {
+          await executeHook('END_ITERATION', this.engineConfig.config.hooks, {
+            workingDirectory: context.request.workingDirectory,
+            sessionId: context.sessionContext.sessionId,
+            runId: context.request.requestId,
+            iteration: iterationNumber,
+            totalIterations: context.request.maxIterations,
+            metadata: {
+              sessionId: context.sessionContext.sessionId,
+              requestId: context.request.requestId,
+              iterationNumber,
+              success: iterationResult.success,
+              duration: iterationResult.duration,
+              toolCallStatus: iterationResult.toolResult.status,
+            }
+          });
+        }
+      } catch (error) {
+        engineLogger.warn('Hook END_ITERATION failed', { error, iterationNumber });
+        // Continue execution despite hook failure
+      }
     } catch (error) {
       const iterationEnd = new Date();
       const duration = iterationEnd.getTime() - iterationStart.getTime();
@@ -889,6 +983,32 @@ export class ExecutionEngine extends EventEmitter {
       this.updateStatistics(context, iterationResult);
 
       this.emit('iteration:error', { context, iterationResult });
+
+      // Execute END_ITERATION hook for failed iteration
+      try {
+        if (this.engineConfig.config.hooks) {
+          await executeHook('END_ITERATION', this.engineConfig.config.hooks, {
+            workingDirectory: context.request.workingDirectory,
+            sessionId: context.sessionContext.sessionId,
+            runId: context.request.requestId,
+            iteration: iterationNumber,
+            totalIterations: context.request.maxIterations,
+            metadata: {
+              sessionId: context.sessionContext.sessionId,
+              requestId: context.request.requestId,
+              iterationNumber,
+              success: false,
+              duration: iterationResult.duration,
+              error: mcpError.message,
+              errorType: mcpError.type,
+            }
+          });
+        }
+      } catch (hookError) {
+        engineLogger.warn('Hook END_ITERATION failed', { error: hookError, iterationNumber });
+        // Continue execution despite hook failure
+      }
+
       throw error;
     }
   }
