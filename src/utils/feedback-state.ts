@@ -110,7 +110,7 @@ class FeedbackState {
 
     // Show colored status message before flushing
     console.error(chalk.yellow.bold(`\n⏸️  Agent working - ${bufferCount} buffered update${bufferCount > 1 ? 's' : ''} (live updates paused while you type)`));
-    console.error(chalk.gray('   Updates will resume after you submit feedback or 30s of inactivity\n'));
+    console.error(chalk.gray('   Updates will resume after you submit feedback or 2min of inactivity\n'));
 
     // Display buffered progress events
     // Note: We don't add separators - just display the progress naturally

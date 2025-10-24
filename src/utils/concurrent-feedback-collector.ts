@@ -86,9 +86,8 @@ export class ConcurrentFeedbackCollector {
   private isActive: boolean = false;
   private submissions: FeedbackSubmission[] = [];
   private lastUserInputTime: number = 0;
-  private userInputTimeout: number = 30000; // 30 seconds in milliseconds
-  private totalInputLength: number = 0; // Track total characters typed
-  private minCharsForBuffering: number = 3; // Minimum characters before activating buffering
+  private userInputTimeout: number = 120000; // 2 minutes (120 seconds) in milliseconds
+  private hasUserStartedTyping: boolean = false; // Track if user has typed anything
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
@@ -113,16 +112,15 @@ export class ConcurrentFeedbackCollector {
     this.isActive = true;
     this.startTime = new Date();
 
-    // Initialize lastUserInputTime to now so the 30s timeout starts from when feedback collection begins
-    // Without this, lastUserInputTime=0 would cause immediate flushing (Date.now() - 0 > 30000)
+    // Initialize lastUserInputTime to now so the 2min timeout starts from when feedback collection begins
+    // Without this, lastUserInputTime=0 would cause immediate flushing (Date.now() - 0 > 120000)
     this.lastUserInputTime = Date.now();
 
-    // Reset total input length counter
-    this.totalInputLength = 0;
+    // Reset typing state
+    this.hasUserStartedTyping = false;
 
-    // DON'T activate feedback state yet - wait until user has typed at least 3 characters
+    // DON'T activate feedback state yet - wait until user actually starts typing
     // This prevents buffering from activating when stdin is empty
-    // setFeedbackActive(true); // MOVED - will be called after user types 3+ chars
 
     // Set up input redisplay callback to restore user input after progress flushes
     setInputRedisplayCallback(() => this.redisplayCurrentInput());
@@ -289,16 +287,16 @@ export class ConcurrentFeedbackCollector {
 
   /**
    * Start progress flush timer to periodically display buffered progress
-   * Only flushes if 30s has passed since last user input (inactivity timeout)
+   * Only flushes if 2min has passed since last user input (inactivity timeout)
    */
   private startProgressFlushTimer(): void {
     this.progressFlushTimer = setInterval(() => {
       const now = Date.now();
       const timeSinceLastInput = now - this.lastUserInputTime;
 
-      // Only flush if 30s has passed since last user input
+      // Only flush if 2min has passed since last user input
       // This prevents interrupting user while they're actively typing
-      if (timeSinceLastInput >= this.userInputTimeout) {
+      if (this.hasUserStartedTyping && timeSinceLastInput >= this.userInputTimeout) {
         flushBufferedProgress();
       }
     }, this.options.progressFlushInterval);
@@ -329,20 +327,18 @@ export class ConcurrentFeedbackCollector {
     process.stdin.on('data', (chunk: string) => {
       if (!this.isActive) return;
 
-      // Update last user input time - this resets the 30s inactivity timer
-      this.lastUserInputTime = Date.now();
-
-      // Track total input length (buffer + carry + new chunk)
-      this.totalInputLength += chunk.length;
-
-      // Activate buffering mode only after user has typed at least 3 characters
+      // Activate buffering mode on FIRST keystroke - pause stdout/stderr for 2min
       // This prevents buffering from activating when stdin is empty
-      if (!isFeedbackActive() && this.totalInputLength >= this.minCharsForBuffering) {
+      if (!this.hasUserStartedTyping && chunk.trim().length > 0) {
+        this.hasUserStartedTyping = true;
         setFeedbackActive(true);
         if (this.options.verbose) {
-          process.stderr.write(`[feedback-collector] Buffering activated after ${this.totalInputLength} characters typed\n`);
+          process.stderr.write(`[feedback-collector] Buffering activated - stdout/stderr paused for 2min\n`);
         }
       }
+
+      // Update last user input time - this resets the 2min inactivity timer
+      this.lastUserInputTime = Date.now();
 
       this.carry += chunk;
 
@@ -423,12 +419,15 @@ export class ConcurrentFeedbackCollector {
       return;
     }
 
-    process.stdout.write(EOL + chalk.cyan('===== SUBMITTING FEEDBACK BLOCK =====') + EOL);
-    process.stdout.write(content + EOL);
-    process.stdout.write(chalk.cyan('===== END BLOCK =====') + EOL);
+    process.stdout.write(EOL + chalk.green.bold('✅ Feedback registered and being processed...') + EOL);
+    if (this.options.verbose) {
+      process.stdout.write(chalk.gray('Feedback content:') + EOL);
+      process.stdout.write(content + EOL);
+      process.stdout.write(chalk.cyan('===== END BLOCK =====') + EOL);
+    }
 
     // Flush any buffered progress when user submits feedback
-    // This ensures they see all accumulated updates
+    // This shows logs from app and MCP in real-time after submission
     flushBufferedProgress();
 
     this.enqueueSubmission(content).catch((err) => {
