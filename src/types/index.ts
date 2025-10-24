@@ -11,6 +11,17 @@ export type SessionStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 // Log levels
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
+// Hook types
+export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN';
+
+// Hook configuration
+export interface Hook {
+  commands: string[];
+}
+
+// Hooks configuration mapping
+export type Hooks = Record<HookType, Hook>;
+
 // Progress event types
 export type ProgressEventType = 'tool_start' | 'tool_result' | 'thinking' | 'error' | 'info';
 
@@ -39,6 +50,9 @@ export interface JunoTaskConfig {
   // Paths
   workingDirectory: string;
   sessionDirectory: string;
+
+  // Hooks configuration
+  hooks?: Hooks;
 }
 
 // Re-export metrics types for convenience

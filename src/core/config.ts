@@ -9,11 +9,15 @@
 
 import { z } from 'zod';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import * as yaml from 'js-yaml';
+import fs from 'fs-extra';
 import type {
-  JunoTaskConfig
+  JunoTaskConfig,
+  Hooks,
+  HookType,
+  Hook
 } from '../types/index';
 import type { ProfileManager } from './profiles.js';
 
@@ -57,6 +61,24 @@ const SubagentTypeSchema = z.enum(['claude', 'cursor', 'codex', 'gemini']);
  * Zod schema for validating log levels
  */
 const LogLevelSchema = z.enum(['error', 'warn', 'info', 'debug', 'trace']);
+
+/**
+ * Zod schema for validating hook types
+ */
+const HookTypeSchema = z.enum(['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN']);
+
+/**
+ * Zod schema for validating individual hook configuration
+ */
+const HookSchema = z.object({
+  commands: z.array(z.string()).describe('List of bash commands to execute for this hook')
+});
+
+/**
+ * Zod schema for validating hooks configuration
+ * Maps hook types to their respective configurations
+ */
+const HooksSchema = z.record(HookTypeSchema, HookSchema).optional();
 
 /**
  * Zod schema for validating JunoTaskConfig
@@ -127,6 +149,10 @@ export const JunoTaskConfigSchema = z.object({
 
   sessionDirectory: z.string()
     .describe('Directory for storing session data'),
+
+  // Hooks configuration
+  hooks: HooksSchema
+    .describe('Hook system configuration for executing commands at specific lifecycle events'),
 }).strict();
 
 /**
@@ -155,6 +181,9 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Paths
   workingDirectory: process.cwd(),
   sessionDirectory: path.join(process.cwd(), '.juno_task'),
+
+  // Hooks configuration
+  hooks: {},
 };
 
 /**
@@ -330,7 +359,7 @@ async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskCon
 
   // Check if file exists
   try {
-    await fsPromises.access(resolvedPath, fs.constants.R_OK);
+    await fsPromises.access(resolvedPath, nodeFs.constants.R_OK);
   } catch {
     throw new Error(`Configuration file not readable: ${resolvedPath}`);
   }
@@ -369,7 +398,7 @@ async function findProjectConfigFile(searchDir: string = process.cwd()): Promise
   const filePath = path.join(searchDir, PROJECT_CONFIG_FILE);
 
   try {
-    await fsPromises.access(filePath, fs.constants.R_OK);
+    await fsPromises.access(filePath, nodeFs.constants.R_OK);
     return filePath;
   } catch {
     // File doesn't exist or isn't readable
@@ -389,7 +418,7 @@ async function findGlobalConfigFile(searchDir: string = process.cwd()): Promise<
     const filePath = path.join(searchDir, fileName);
 
     try {
-      await fsPromises.access(filePath, fs.constants.R_OK);
+      await fsPromises.access(filePath, nodeFs.constants.R_OK);
       return filePath;
     } catch {
       // File doesn't exist or isn't readable, continue searching
@@ -413,7 +442,7 @@ async function findConfigFile(searchDir: string = process.cwd()): Promise<string
     const filePath = path.join(searchDir, fileName);
 
     try {
-      await fsPromises.access(filePath, fs.constants.R_OK);
+      await fsPromises.access(filePath, nodeFs.constants.R_OK);
       return filePath;
     } catch {
       // File doesn't exist or isn't readable, continue searching
@@ -635,6 +664,51 @@ export function validateConfig(config: unknown): JunoTaskConfig {
 }
 
 /**
+ * Ensure hooks configuration exists in project config file
+ *
+ * This function handles auto-migration for the hooks configuration:
+ * - If .juno_task/config.json doesn't exist: create it with default config including empty hooks section
+ * - If it exists but has no "hooks" field: add hooks: {} to the file
+ * - Preserve all existing configuration
+ *
+ * @param baseDir - Base directory where .juno_task directory should be located
+ * @returns Promise that resolves when migration is complete
+ */
+async function ensureHooksConfig(baseDir: string): Promise<void> {
+  try {
+    const configDir = path.join(baseDir, '.juno_task');
+    const configPath = path.join(configDir, 'config.json');
+
+    // Ensure the .juno_task directory exists
+    await fs.ensureDir(configDir);
+
+    // Check if config file exists
+    const configExists = await fs.pathExists(configPath);
+
+    if (!configExists) {
+      // Create new config file with default config including hooks
+      const defaultConfig = {
+        ...DEFAULT_CONFIG,
+        hooks: {}
+      };
+      await fs.writeJson(configPath, defaultConfig, { spaces: 2 });
+    } else {
+      // Read existing config and ensure hooks field exists
+      const existingConfig = await fs.readJson(configPath);
+
+      // If hooks field doesn't exist, add it
+      if (!existingConfig.hooks) {
+        existingConfig.hooks = {};
+        await fs.writeJson(configPath, existingConfig, { spaces: 2 });
+      }
+    }
+  } catch (error) {
+    // Log warning but don't block app startup
+    console.warn(`Warning: Failed to ensure hooks configuration: ${error}`);
+  }
+}
+
+/**
  * Load and validate configuration from all sources
  *
  * This is the main entry point for configuration loading.
@@ -680,6 +754,9 @@ export async function loadConfig(options: {
     cliConfig,
     profileManager
   } = options;
+
+  // Ensure hooks configuration exists in project config (auto-migration)
+  await ensureHooksConfig(baseDir);
 
   const loader = new ConfigLoader(baseDir);
 
