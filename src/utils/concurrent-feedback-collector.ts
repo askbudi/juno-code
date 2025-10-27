@@ -72,22 +72,27 @@ export interface FeedbackSubmission {
  *
  * Manages multiline input collection concurrently with other processes.
  */
+/**
+ * Feedback collector mode states
+ */
+enum FeedbackMode {
+  NORMAL = 'normal',           // Normal mode - MCP progress shown, waiting for f+enter
+  FEEDBACK = 'feedback'        // Feedback mode - MCP progress buffered, collecting feedback until q+enter
+}
+
 export class ConcurrentFeedbackCollector {
   private options: Required<Omit<FeedbackCollectorOptions, 'onSubmit'>> & Pick<FeedbackCollectorOptions, 'onSubmit'>;
   private submissionCount: number = 0;
   private pending: Promise<void> = Promise.resolve();
   private buffer: string = '';
   private carry: string = '';
-  private lastLineWasBlank: boolean = false;
   private progressTimer?: NodeJS.Timeout;
   private progressFlushTimer?: NodeJS.Timeout;
   private progressTick: number = 0;
   private startTime: Date = new Date();
   private isActive: boolean = false;
   private submissions: FeedbackSubmission[] = [];
-  private lastUserInputTime: number = 0;
-  private userInputTimeout: number = 120000; // 2 minutes (120 seconds) in milliseconds
-  private hasUserStartedTyping: boolean = false; // Track if user has typed anything
+  private feedbackMode: FeedbackMode = FeedbackMode.NORMAL; // Current feedback mode state
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
@@ -112,15 +117,11 @@ export class ConcurrentFeedbackCollector {
     this.isActive = true;
     this.startTime = new Date();
 
-    // Initialize lastUserInputTime to now so the 2min timeout starts from when feedback collection begins
-    // Without this, lastUserInputTime=0 would cause immediate flushing (Date.now() - 0 > 120000)
-    this.lastUserInputTime = Date.now();
+    // Start in NORMAL mode - MCP progress shown, waiting for f+enter
+    this.feedbackMode = FeedbackMode.NORMAL;
 
-    // Reset typing state
-    this.hasUserStartedTyping = false;
-
-    // DON'T activate feedback state yet - wait until user actually starts typing
-    // This prevents buffering from activating when stdin is empty
+    // DON'T activate feedback buffering state yet - only when user enters feedback mode
+    // This ensures MCP progress is shown normally until f+enter
 
     // Set up input redisplay callback to restore user input after progress flushes
     setInputRedisplayCallback(() => this.redisplayCurrentInput());
@@ -138,10 +139,8 @@ export class ConcurrentFeedbackCollector {
       this.startProgressTicker();
     }
 
-    // Start progress flush timer to periodically display buffered progress
-    if (this.options.progressFlushInterval > 0) {
-      this.startProgressFlushTimer();
-    }
+    // Progress flush timer not needed in new f+enter/q+enter mode
+    // Progress is only buffered when IN feedback mode (between f+enter and q+enter)
 
     // Setup stdin handlers
     this.setupStdinHandlers();
@@ -160,8 +159,10 @@ export class ConcurrentFeedbackCollector {
 
     this.isActive = false;
 
-    // Set global feedback state to inactive (re-enables progress output)
-    setFeedbackActive(false);
+    // Exit feedback mode if still in it
+    if (this.feedbackMode === FeedbackMode.FEEDBACK) {
+      this.exitFeedbackMode();
+    }
 
     // Clear input redisplay callback
     setInputRedisplayCallback(null);
@@ -172,17 +173,13 @@ export class ConcurrentFeedbackCollector {
       this.progressTimer = undefined;
     }
 
-    // Stop progress flush timer
-    if (this.progressFlushTimer) {
-      clearInterval(this.progressFlushTimer);
-      this.progressFlushTimer = undefined;
-    }
-
     // Flush any remaining buffered progress
     flushBufferedProgress();
 
-    // Submit any remaining buffer
-    this.submitBufferIfAny();
+    // Submit any remaining buffer if in feedback mode
+    if (this.buffer.trim().length > 0) {
+      this.submitFeedback();
+    }
 
     // Wait for pending submissions
     await this.pending;
@@ -263,13 +260,13 @@ export class ConcurrentFeedbackCollector {
         chalk.blue.bold('╔' + border + '╗'),
         chalk.blue.bold('║') + chalk.yellow.bold('  📝 FEEDBACK COLLECTION ENABLED  ') + ' '.repeat(25) + chalk.blue.bold('║'),
         chalk.blue.bold('╠' + border + '╣'),
-        chalk.blue.bold('║') + chalk.white('  Type or paste your multiline feedback below:') + ' '.repeat(12) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.green('  • Submit: Press Enter on a BLANK line') + ' '.repeat(19) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.green('  • Alternative: Type --- on a line by itself') + ' '.repeat(13) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.green('  • Exit: Press Ctrl-D (or Ctrl-Z on Windows)') + ' '.repeat(13) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.gray('  Progress updates will appear below while you type...') + ' '.repeat(5) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.white('  MCP progress updates shown normally until you enter feedback mode') + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.green('  • Enter feedback mode: Type F (or f) then press Enter') + ' '.repeat(5) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.green('  • Exit & submit feedback: Type Q (or q) then press Enter') + ' '.repeat(2) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.gray('  Progress updates paused only WHILE in feedback mode') + ' '.repeat(7) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') + chalk.gray('  Exit: Press Ctrl-D (or Ctrl-Z on Windows)') + ' '.repeat(16) + chalk.blue.bold('║'),
         chalk.blue.bold('╚' + border + '╝'),
-        chalk.cyan.bold('> ') + chalk.gray('(Type your feedback here)')
+        chalk.cyan.bold('> ') + chalk.gray('(Type F+Enter to start giving feedback)')
       ].join(EOL) + EOL
     );
   }
@@ -286,20 +283,32 @@ export class ConcurrentFeedbackCollector {
   }
 
   /**
-   * Start progress flush timer to periodically display buffered progress
-   * Only flushes if 2min has passed since last user input (inactivity timeout)
+   * Enter feedback mode - start buffering MCP progress
    */
-  private startProgressFlushTimer(): void {
-    this.progressFlushTimer = setInterval(() => {
-      const now = Date.now();
-      const timeSinceLastInput = now - this.lastUserInputTime;
+  private enterFeedbackMode(): void {
+    this.feedbackMode = FeedbackMode.FEEDBACK;
+    setFeedbackActive(true); // Start buffering MCP progress
+    this.buffer = ''; // Clear any existing buffer
 
-      // Only flush if 2min has passed since last user input
-      // This prevents interrupting user while they're actively typing
-      if (this.hasUserStartedTyping && timeSinceLastInput >= this.userInputTimeout) {
-        flushBufferedProgress();
-      }
-    }, this.options.progressFlushInterval);
+    process.stdout.write(EOL + chalk.yellow.bold('📝 FEEDBACK MODE ACTIVE') + chalk.gray(' (MCP progress paused)') + EOL);
+    process.stdout.write(chalk.gray('Type your multiline feedback. When done, type Q+Enter to submit and exit.') + EOL);
+    process.stdout.write(chalk.cyan.bold('> ') + chalk.gray('(Type your feedback here)') + EOL);
+
+    if (this.options.verbose) {
+      process.stderr.write(`[feedback-collector] Entered FEEDBACK mode - MCP progress buffering activated${EOL}`);
+    }
+  }
+
+  /**
+   * Exit feedback mode - stop buffering MCP progress
+   */
+  private exitFeedbackMode(): void {
+    this.feedbackMode = FeedbackMode.NORMAL;
+    setFeedbackActive(false); // Stop buffering MCP progress
+
+    if (this.options.verbose) {
+      process.stderr.write(`[feedback-collector] Exited FEEDBACK mode - MCP progress restored${EOL}`);
+    }
   }
 
   /**
@@ -327,19 +336,6 @@ export class ConcurrentFeedbackCollector {
     process.stdin.on('data', (chunk: string) => {
       if (!this.isActive) return;
 
-      // Activate buffering mode on FIRST keystroke - pause stdout/stderr for 2min
-      // This prevents buffering from activating when stdin is empty
-      if (!this.hasUserStartedTyping && chunk.trim().length > 0) {
-        this.hasUserStartedTyping = true;
-        setFeedbackActive(true);
-        if (this.options.verbose) {
-          process.stderr.write(`[feedback-collector] Buffering activated - stdout/stderr paused for 2min\n`);
-        }
-      }
-
-      // Update last user input time - this resets the 2min inactivity timer
-      this.lastUserInputTime = Date.now();
-
       this.carry += chunk;
 
       // Split into complete lines, keep the last partial in carry
@@ -355,20 +351,21 @@ export class ConcurrentFeedbackCollector {
     process.stdin.on('end', async () => {
       if (!this.isActive) return;
 
-      // If there is remaining partial data, treat as part of the last block
-      if (this.carry.length) {
-        this.buffer += this.carry;
+      // If in feedback mode and there's content, submit it
+      if (this.feedbackMode === FeedbackMode.FEEDBACK && this.buffer.trim().length > 0) {
+        this.submitFeedback();
       }
 
-      this.submitBufferIfAny();
+      // Exit feedback mode if still in it
+      if (this.feedbackMode === FeedbackMode.FEEDBACK) {
+        this.exitFeedbackMode();
+      }
+
       await this.pending;
 
       if (this.progressTimer) {
         clearInterval(this.progressTimer);
       }
-
-      // Reset feedback state when feedback ends via EOF
-      setFeedbackActive(false);
 
       if (this.options.verbose) {
         process.stderr.write(`${EOL}[feedback-collector] EOF received. Total submissions: ${this.submissionCount}${EOL}`);
@@ -380,42 +377,48 @@ export class ConcurrentFeedbackCollector {
    * Process a single line of input
    */
   private processLine(line: string): void {
-    const trimmed = line.trim();
-    const isBlank = trimmed.length === 0;
-    const isDelimiter = trimmed === '---';
+    const trimmed = line.trim().toLowerCase(); // Case insensitive
 
-    // Check for delimiter submission
-    if (isDelimiter) {
-      this.submitBufferIfAny();
-      this.lastLineWasBlank = false;
+    // Handle mode transitions
+    if (this.feedbackMode === FeedbackMode.NORMAL) {
+      // In NORMAL mode, look for 'f' command to enter feedback mode
+      if (trimmed === 'f') {
+        this.enterFeedbackMode();
+        return;
+      }
+      // Ignore other input in NORMAL mode - just show prompt again
+      if (trimmed.length > 0) {
+        process.stdout.write(chalk.gray('Type F+Enter to enter feedback mode, or Ctrl-D to exit') + EOL);
+        process.stdout.write(chalk.cyan.bold('> '));
+      }
       return;
     }
 
-    if (isBlank && !this.lastLineWasBlank) {
-      // A single blank line means "submit this block"
-      this.submitBufferIfAny();
-      this.lastLineWasBlank = true;
-      return;
-    }
+    // In FEEDBACK mode, look for 'q' command to exit and submit
+    if (this.feedbackMode === FeedbackMode.FEEDBACK) {
+      if (trimmed === 'q') {
+        this.submitFeedback();
+        this.exitFeedbackMode();
 
-    if (!isBlank) {
-      // Any non-blank line is part of the current block
+        // Show ready prompt for next feedback
+        process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Type F+Enter for another feedback, or Ctrl-D to exit)') + EOL);
+        return;
+      }
+
+      // Any other line is part of the feedback content
       this.buffer += line + EOL;
-      this.lastLineWasBlank = false;
-    } else {
-      // Consecutive blank lines: ignore (prevent accidental multiple submits)
-      this.lastLineWasBlank = true;
     }
   }
 
   /**
-   * Submit the current buffer if it has content
+   * Submit the current feedback buffer
    */
-  private submitBufferIfAny(): void {
+  private submitFeedback(): void {
     const content = this.buffer.trimEnd();
     this.buffer = ''; // Clean buffer for the next round
 
     if (content.length === 0) {
+      process.stdout.write(EOL + chalk.yellow('⚠️  No feedback content to submit') + EOL);
       return;
     }
 
@@ -427,7 +430,7 @@ export class ConcurrentFeedbackCollector {
     }
 
     // Flush any buffered progress when user submits feedback
-    // This shows logs from app and MCP in real-time after submission
+    // This shows accumulated MCP logs that were buffered during feedback mode
     flushBufferedProgress();
 
     this.enqueueSubmission(content).catch((err) => {
