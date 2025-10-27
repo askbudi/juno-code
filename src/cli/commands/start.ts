@@ -44,19 +44,19 @@ class ProgressDisplay {
 
   start(request: ExecutionRequest): void {
     this.startTime = new Date();
-    process.stderr.write(chalk.blue.bold('\n🚀 Starting Task Execution') + '\n');
-    process.stderr.write(chalk.gray(`   Request ID: ${request.requestId}`) + '\n');
-    process.stderr.write(chalk.gray(`   Subagent: ${request.subagent}`) + '\n');
-    process.stderr.write(chalk.gray(`   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`) + '\n');
-    process.stderr.write(chalk.gray(`   Working Directory: ${request.workingDirectory}`) + '\n');
+    writeTerminalProgress(chalk.blue.bold('\n🚀 Starting Task Execution') + '\n');
+    writeTerminalProgress(chalk.gray(`   Request ID: ${request.requestId}`) + '\n');
+    writeTerminalProgress(chalk.gray(`   Subagent: ${request.subagent}`) + '\n');
+    writeTerminalProgress(chalk.gray(`   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`) + '\n');
+    writeTerminalProgress(chalk.gray(`   Working Directory: ${request.workingDirectory}`) + '\n');
 
     if (request.model) {
-      process.stderr.write(chalk.gray(`   Model: ${request.model}`) + '\n');
+      writeTerminalProgress(chalk.gray(`   Model: ${request.model}`) + '\n');
     }
 
-    process.stderr.write(chalk.blue('\n📋 Task Instructions:') + '\n');
-    process.stderr.write(chalk.white(`   ${request.instruction.substring(0, 200)}${request.instruction.length > 200 ? '...' : ''}`) + '\n');
-    process.stderr.write('\n');
+    writeTerminalProgress(chalk.blue('\n📋 Task Instructions:') + '\n');
+    writeTerminalProgress(chalk.white(`   ${request.instruction.substring(0, 200)}${request.instruction.length > 200 ? '...' : ''}`) + '\n');
+    writeTerminalProgress('\n');
   }
 
   onProgress(event: ProgressEvent): void {
@@ -73,7 +73,7 @@ class ProgressDisplay {
     this.currentIteration = iteration;
     const elapsed = this.getElapsedTime();
 
-    process.stderr.write(chalk.yellow(`\n🔄 Iteration ${iteration} started ${chalk.gray(`(${elapsed})`)}`) + '\n');
+    writeTerminalProgress(chalk.yellow(`\n🔄 Iteration ${iteration} started ${chalk.gray(`(${elapsed})`)}`) + '\n');
   }
 
   onIterationComplete(result: IterationResult): void {
@@ -81,12 +81,12 @@ class ProgressDisplay {
     const duration = `${result.duration.toFixed(0)}ms`;
 
     if (result.success) {
-      process.stderr.write(chalk.green(`✅ Iteration ${result.iterationNumber} completed ${chalk.gray(`(${duration}, total: ${elapsed})`)}`) + '\n');
+      writeTerminalProgress(chalk.green(`✅ Iteration ${result.iterationNumber} completed ${chalk.gray(`(${duration}, total: ${elapsed})`)}`) + '\n');
     } else {
-      process.stderr.write(chalk.red(`❌ Iteration ${result.iterationNumber} failed ${chalk.gray(`(${duration}, total: ${elapsed})`)}`) + '\n');
+      writeTerminalProgress(chalk.red(`❌ Iteration ${result.iterationNumber} failed ${chalk.gray(`(${duration}, total: ${elapsed})`)}`) + '\n');
 
       if (result.error && this.verbose) {
-        process.stderr.write(chalk.red(`   Error: ${result.error.message}`) + '\n');
+        writeTerminalProgress(chalk.red(`   Error: ${result.error.message}`) + '\n');
       }
     }
   }
@@ -95,36 +95,36 @@ class ProgressDisplay {
     const waitMinutes = Math.ceil(waitTimeMs / 60000);
     const resetTimeStr = resetTime ? resetTime.toLocaleTimeString() : 'unknown';
 
-    process.stderr.write(chalk.yellow(`\n⏳ Rate limit encountered - waiting ${waitMinutes} minutes (resets at ${resetTimeStr})`) + '\n');
+    writeTerminalProgress(chalk.yellow(`\n⏳ Rate limit encountered - waiting ${waitMinutes} minutes (resets at ${resetTimeStr})`) + '\n');
   }
 
   onError(error: Error): void {
-    process.stderr.write(chalk.red(`\n❌ Execution error: ${error.message}`) + '\n');
+    writeTerminalProgress(chalk.red(`\n❌ Execution error: ${error.message}`) + '\n');
   }
 
   complete(result: ExecutionResult): void {
     const elapsed = this.getElapsedTime();
     const stats = result.statistics;
 
-    process.stderr.write(chalk.green.bold(`\n✅ Execution Complete! ${chalk.gray(`(${elapsed})`)}`) + '\n');
+    writeTerminalProgress(chalk.green.bold(`\n✅ Execution Complete! ${chalk.gray(`(${elapsed})`)}`) + '\n');
 
-    process.stderr.write(chalk.blue('\n📊 Execution Summary:') + '\n');
-    process.stderr.write(chalk.white(`   Status: ${this.getStatusDisplay(result.status)}`) + '\n');
-    process.stderr.write(chalk.white(`   Total Iterations: ${stats.totalIterations}`) + '\n');
-    process.stderr.write(chalk.white(`   Successful: ${stats.successfulIterations}`) + '\n');
-    process.stderr.write(chalk.white(`   Failed: ${stats.failedIterations}`) + '\n');
-    process.stderr.write(chalk.white(`   Average Iteration Time: ${stats.averageIterationDuration.toFixed(0)}ms`) + '\n');
-    process.stderr.write(chalk.white(`   Total Tool Calls: ${stats.totalToolCalls}`) + '\n');
+    writeTerminalProgress(chalk.blue('\n📊 Execution Summary:') + '\n');
+    writeTerminalProgress(chalk.white(`   Status: ${this.getStatusDisplay(result.status)}`) + '\n');
+    writeTerminalProgress(chalk.white(`   Total Iterations: ${stats.totalIterations}`) + '\n');
+    writeTerminalProgress(chalk.white(`   Successful: ${stats.successfulIterations}`) + '\n');
+    writeTerminalProgress(chalk.white(`   Failed: ${stats.failedIterations}`) + '\n');
+    writeTerminalProgress(chalk.white(`   Average Iteration Time: ${stats.averageIterationDuration.toFixed(0)}ms`) + '\n');
+    writeTerminalProgress(chalk.white(`   Total Tool Calls: ${stats.totalToolCalls}`) + '\n');
 
     if (stats.rateLimitEncounters > 0) {
-      process.stderr.write(chalk.yellow(`   Rate Limit Encounters: ${stats.rateLimitEncounters}`) + '\n');
-      process.stderr.write(chalk.yellow(`   Rate Limit Wait Time: ${(stats.rateLimitWaitTime / 1000).toFixed(1)}s`) + '\n');
+      writeTerminalProgress(chalk.yellow(`   Rate Limit Encounters: ${stats.rateLimitEncounters}`) + '\n');
+      writeTerminalProgress(chalk.yellow(`   Rate Limit Wait Time: ${(stats.rateLimitWaitTime / 1000).toFixed(1)}s`) + '\n');
     }
 
     if (Object.keys(stats.errorBreakdown).length > 0) {
-      process.stderr.write(chalk.red('   Error Breakdown:') + '\n');
+      writeTerminalProgress(chalk.red('   Error Breakdown:') + '\n');
       Object.entries(stats.errorBreakdown).forEach(([type, count]) => {
-        process.stderr.write(chalk.red(`     ${type}: ${count}`) + '\n');
+        writeTerminalProgress(chalk.red(`     ${type}: ${count}`) + '\n');
       });
     }
   }
@@ -452,7 +452,7 @@ class ExecutionCoordinator {
 
       // Start feedback collector if enabled
       if (this.feedbackCollector) {
-        process.stderr.write(chalk.gray('   Feedback collection: enabled (submit with blank line)') + '\n');
+        writeTerminalProgress(chalk.gray('   Feedback collection: enabled (submit with blank line)') + '\n');
         this.feedbackCollector.start();
       }
 
@@ -501,7 +501,7 @@ class ExecutionCoordinator {
           await this.feedbackCollector.stop();
           const submissionCount = this.feedbackCollector.getSubmissionCount();
           if (submissionCount > 0) {
-            process.stderr.write(chalk.blue(`\n📝 Total feedback submissions: ${submissionCount}`) + '\n');
+            writeTerminalProgress(chalk.blue(`\n📝 Total feedback submissions: ${submissionCount}`) + '\n');
           }
         }
 
@@ -541,7 +541,7 @@ export async function startCommandHandler(
     const allOptions = { ...options, ...globalOptions };
 
     // Successfully merged global and local options
-    process.stderr.write(chalk.blue.bold('🎯 Juno Task - Start Execution') + '\n');
+    writeTerminalProgress(chalk.blue.bold('🎯 Juno Task - Start Execution') + '\n');
 
     // Set logging level based on options
     const logLevel = allOptions.logLevel ? LogLevel[allOptions.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
@@ -579,9 +579,9 @@ export async function startCommandHandler(
 
     // If dry-run: validate config and environment then exit early
     if ((allOptions as any).dryRun) {
-      process.stderr.write(chalk.green('✓ Configuration loaded successfully') + '\n');
-      process.stderr.write(chalk.green('✓ Project context validated') + '\n');
-      process.stderr.write(chalk.green('✓ Dry run successful — no execution performed') + '\n');
+      writeTerminalProgress(chalk.green('✓ Configuration loaded successfully') + '\n');
+      writeTerminalProgress(chalk.green('✓ Project context validated') + '\n');
+      writeTerminalProgress(chalk.green('✓ Dry run successful — no execution performed') + '\n');
       cliLogger.endTimer('start_command_total', 'Dry run completed successfully');
       process.exit(0);
     }
@@ -594,7 +594,7 @@ export async function startCommandHandler(
     // Detect git info for context
     const gitInfo = await projectLoader.detectGitInfo();
     if (gitInfo.branch || gitInfo.url) {
-      process.stderr.write(chalk.gray(`   Git: ${gitInfo.branch || 'unknown'}${gitInfo.url ? ` (${gitInfo.url})` : ''}${gitInfo.commit ? ` @ ${gitInfo.commit}` : ''}`) + '\n');
+      writeTerminalProgress(chalk.gray(`   Git: ${gitInfo.branch || 'unknown'}${gitInfo.url ? ` (${gitInfo.url})` : ''}${gitInfo.commit ? ` @ ${gitInfo.commit}` : ''}`) + '\n');
     }
 
     // Validate subagent if provided via command line
@@ -660,8 +660,8 @@ export async function startCommandHandler(
     // Print session information
     const sessionId = coordinator.getSessionId();
     if (sessionId) {
-      process.stderr.write(chalk.blue(`\n📁 Session ID: ${sessionId}`) + '\n');
-      process.stderr.write(chalk.gray('   Use "juno-task session info ' + sessionId + '" for detailed information') + '\n');
+      writeTerminalProgress(chalk.blue(`\n📁 Session ID: ${sessionId}`) + '\n');
+      writeTerminalProgress(chalk.gray('   Use "juno-task session info ' + sessionId + '" for detailed information') + '\n');
       sessionLogger.info('Session completed', {
         sessionId,
         status: result.status,
