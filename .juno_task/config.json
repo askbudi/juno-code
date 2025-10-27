@@ -1,5 +1,19 @@
 {
   "defaultSubagent": "cursor",
   "defaultModel": "auto",
-  "defaultMaxIterations": 50
+  "defaultMaxIterations": 50,
+  "hooks": {
+    "START_RUN": {
+      "commands": []
+    },
+    "START_ITERATION": {
+      "commands": []
+    },
+    "END_ITERATION": {
+      "commands": []
+    },
+    "END_RUN": {
+      "commands": []
+    }
+  }
 }

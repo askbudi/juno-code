@@ -17,6 +17,7 @@ import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, mcpLogger, engineLogger, sessionLogger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
+import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type { StartCommandOptions } from '../types.js';
 import { ConfigurationError, MCPError, FileSystemError, ValidationError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
@@ -185,7 +186,7 @@ class ProgressDisplay {
         break;
     }
 
-    process.stderr.write(color(`[${timestamp}] ${icon} ${backend}${toolId} ${formattedMessage}`) + '\n');
+    writeTerminalProgress(color(`[${timestamp}] ${icon} ${backend}${toolId} ${formattedMessage}`) + '\n');
   }
 
   private displaySimpleProgress(event: ProgressEvent): void {
@@ -193,19 +194,19 @@ class ProgressDisplay {
     const toolName = event.metadata?.toolName;
 
     if (event.type === 'tool_start' && toolName) {
-      process.stderr.write(chalk.blue(`\r🔧 Calling ${toolName}...`));
+      writeTerminalProgress(chalk.blue(`\r🔧 Calling ${toolName}...`));
     } else if (event.type === 'tool_result' && toolName) {
       const duration = event.metadata?.duration;
       const durationText = duration ? ` (${duration}ms)` : '';
-      process.stderr.write(chalk.green(`\r✅ ${toolName} completed${durationText}`));
+      writeTerminalProgress(chalk.green(`\r✅ ${toolName} completed${durationText}`));
     } else if (event.type === 'thinking') {
-      process.stderr.write(chalk.gray(`\r💭 Thinking...`));
+      writeTerminalProgress(chalk.gray(`\r💭 Thinking...`));
     } else if (event.type === 'error') {
-      process.stderr.write(chalk.red(`\r❌ Error: ${event.content.substring(0, 50)}...`));
+      writeTerminalProgress(chalk.red(`\r❌ Error: ${event.content.substring(0, 50)}...`));
     } else {
       // Fallback to dots for other events
       const dots = '.'.repeat((this.currentIteration % 3) + 1);
-      process.stderr.write(chalk.gray(`\r   Processing${dots}   `));
+      writeTerminalProgress(chalk.gray(`\r   Processing${dots}   `));
     }
   }
 

@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TerminalProgressWriter, getTerminalProgressWriter, resetTerminalProgressWriter, writeTerminalProgress, writeTerminalProgressWithPrefix } from '../terminal-progress-writer.js';
+import { setFeedbackActive, resetFeedbackState, getBufferedProgressEvents } from '../feedback-state.js';
 import { Writable } from 'node:stream';
 
 describe('TerminalProgressWriter', () => {
@@ -178,6 +179,111 @@ describe('TerminalProgressWriter', () => {
 
       const writer2 = new TerminalProgressWriter({ terminalAware: false });
       expect(writer2.isTerminalAware()).toBe(false);
+    });
+  });
+
+  describe('Feedback State Integration', () => {
+    beforeEach(() => {
+      resetFeedbackState();
+    });
+
+    afterEach(() => {
+      resetFeedbackState();
+    });
+
+    it('should buffer progress when feedback is active', () => {
+      mockStream.isTTY = true;
+      const writer = new TerminalProgressWriter({ terminalAware: true, stream: mockStream });
+
+      // Activate feedback mode
+      setFeedbackActive(true);
+
+      // Write progress - should be buffered instead of written to stream
+      writer.write('Progress message');
+
+      // Stream should NOT have received the message
+      expect(writtenData.length).toBe(0);
+
+      // Message should be in buffer
+      const bufferedEvents = getBufferedProgressEvents();
+      expect(bufferedEvents).toHaveLength(1);
+      expect(bufferedEvents[0].content).toBe('Progress message');
+    });
+
+    it('should write normally when feedback is inactive', () => {
+      mockStream.isTTY = true;
+      const writer = new TerminalProgressWriter({ terminalAware: true, stream: mockStream });
+
+      // Feedback is inactive by default
+      writer.write('Progress message');
+
+      // Stream should have received the message
+      expect(writtenData.length).toBeGreaterThan(0);
+      expect(writtenData.join('')).toContain('Progress message');
+
+      // Buffer should be empty
+      const bufferedEvents = getBufferedProgressEvents();
+      expect(bufferedEvents).toHaveLength(0);
+    });
+
+    it('should buffer progress with prefix when feedback is active', () => {
+      mockStream.isTTY = true;
+      const writer = new TerminalProgressWriter({ terminalAware: true, stream: mockStream });
+
+      setFeedbackActive(true);
+
+      // Write with prefix - should be buffered
+      writer.writeWithPrefix('[MCP]', 'Progress event');
+
+      // Stream should NOT have received the message
+      expect(writtenData.length).toBe(0);
+
+      // Message should be in buffer with prefix
+      const bufferedEvents = getBufferedProgressEvents();
+      expect(bufferedEvents).toHaveLength(1);
+      expect(bufferedEvents[0].content).toBe('Progress event');
+      expect(bufferedEvents[0].prefix).toBe('[MCP]');
+    });
+
+    it('should use global writeTerminalProgress with feedback integration', () => {
+      const stderrWriteSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      setFeedbackActive(true);
+
+      // Write using global function
+      writeTerminalProgress('Test message');
+
+      // Should NOT have written to stderr (buffered instead)
+      expect(stderrWriteSpy).not.toHaveBeenCalled();
+
+      // Should be in buffer
+      const bufferedEvents = getBufferedProgressEvents();
+      expect(bufferedEvents).toHaveLength(1);
+      expect(bufferedEvents[0].content).toBe('Test message');
+
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('should transition correctly between active and inactive feedback states', () => {
+      mockStream.isTTY = true;
+      const writer = new TerminalProgressWriter({ terminalAware: true, stream: mockStream });
+
+      // Start inactive - should write normally
+      writer.write('Message 1');
+      expect(writtenData.length).toBeGreaterThan(0);
+      writtenData = []; // Clear
+
+      // Activate feedback - should buffer
+      setFeedbackActive(true);
+      writer.write('Message 2');
+      expect(writtenData.length).toBe(0);
+      expect(getBufferedProgressEvents()).toHaveLength(1);
+
+      // Deactivate feedback - should write normally again
+      setFeedbackActive(false);
+      writer.write('Message 3');
+      expect(writtenData.length).toBeGreaterThan(0);
+      expect(writtenData.join('')).toContain('Message 3');
     });
   });
 });
