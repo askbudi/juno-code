@@ -57,13 +57,21 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-### ✅ 0 OPEN ISSUES (Last updated: 2025-10-24)
+### 🔴 2 OPEN ISSUES (Last updated: 2025-10-27)
 
 **Active Open Issues:**
-None - All issues resolved!
+1. 🔴 --enable-feedback Progress Display - Awaiting User Clarification
+2. 🔴 --enable-feedback does not show mcp progress anymore - Awaiting User Clarification
 
-**Most Recently Completed (2025-10-24):**
-1. ✅ Hook System Configuration Documentation Enhancement - RESOLVED
+**Most Recently Completed (2025-10-27):**
+1. ✅ New Feedback Mode Requirement - f+enter/q+enter - RESOLVED
+   - Issue: Enhanced feedback mode requiring f+enter (feedback submission) and q+enter (quit) key combinations
+   - Solution: Implemented f+enter/q+enter state machine for intuitive feedback mode interaction
+   - Technical details: State machine handles key combination recognition and appropriate actions
+   - Test results: 848/850 tests passing (2 pre-existing failures unrelated), build successful
+
+**Previously Completed (2025-10-24):**
+2. ✅ Hook System Configuration Documentation Enhancement - RESOLVED
    - Issue: When creating hooks key in config.json file, include all available hooks with empty command arrays for syntax clarity
    - Solution: Enhanced ensureHooksConfig() function in src/core/config.ts to include all 4 hook types (START_RUN, START_ITERATION, END_ITERATION, END_RUN) with empty command arrays
    - Technical details: Auto-migration support for existing configs, robust error handling where failed hooks log errors but don't stop application
