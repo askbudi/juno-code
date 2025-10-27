@@ -1,0 +1,183 @@
+{
+  "info": {
+    "id": "d7f19b0b-7983-416d-ba8b-6309fb970444",
+    "name": "Execution 2025-10-27T17:53:07.249Z",
+    "status": "running",
+    "subagent": "cursor",
+    "createdAt": "2025-10-27T17:53:07.250Z",
+    "updatedAt": "2025-10-27T17:53:07.250Z",
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 86400000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task",
+      "hooks": {
+        "START_RUN": {
+          "commands": []
+        },
+        "START_ITERATION": {
+          "commands": []
+        },
+        "END_ITERATION": {
+          "commands": []
+        },
+        "END_RUN": {
+          "commands": []
+        }
+      }
+    },
+    "tags": [
+      "cli",
+      "start-command"
+    ],
+    "metadata": {
+      "requestId": "req-1761587587248-83rfs5071",
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "maxIterations": 50,
+      "model": "auto"
+    }
+  },
+  "context": {
+    "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+    "environment": {
+      "HOME": "/Users/mahdiyar",
+      "LOGNAME": "mahdiyar",
+      "PATH": "/Users/mahdiyar/.bun/bin:/Users/mahdiyar/.local/bin:/Users/mahdiyar/miniconda3/envs/tmp_test/bin:/Users/mahdiyar/miniconda3/condabin:/opt/homebrew/opt/libpq/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "SHELL": "/bin/zsh",
+      "TERM": "xterm-256color",
+      "USER": "mahdiyar",
+      "PYTHONUNBUFFERED": "1",
+      "MCP_LOG_LEVEL": "ERROR",
+      "PYTHONPATH": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "ROUNDTABLE_DEBUG": "false",
+      "LC_CTYPE": "C.UTF-8",
+      "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+      "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+      "COREPACK_ENABLE_AUTO_PIN": "0",
+      "NoDefaultCurrentDirectoryInExePath": "1",
+      "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta",
+      "GIT_EDITOR": "true",
+      "CLAUDECODE": "1",
+      "SHLVL": "1",
+      "PWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "OLDPWD": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts",
+      "LANG": "C.UTF-8",
+      "_": "/opt/homebrew/bin/timeout"
+    },
+    "config": {
+      "defaultSubagent": "cursor",
+      "defaultMaxIterations": 50,
+      "defaultModel": "auto",
+      "logLevel": "info",
+      "verbose": true,
+      "quiet": false,
+      "mcpTimeout": 86400000,
+      "mcpRetries": 3,
+      "mcpServerName": "roundtable-ai",
+      "interactive": true,
+      "headlessMode": false,
+      "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+      "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task",
+      "hooks": {
+        "START_RUN": {
+          "commands": []
+        },
+        "START_ITERATION": {
+          "commands": []
+        },
+        "END_ITERATION": {
+          "commands": []
+        },
+        "END_RUN": {
+          "commands": []
+        }
+      }
+    },
+    "processInfo": {
+      "pid": 45359,
+      "nodeVersion": "v24.10.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "statistics": {
+    "duration": 0,
+    "iterations": 0,
+    "toolCalls": 0,
+    "toolStats": {},
+    "successRate": 0,
+    "errorCount": 0,
+    "warningCount": 0,
+    "performance": {
+      "avgIterationTime": 0,
+      "avgToolCallTime": 0,
+      "totalThinkingTime": 0
+    }
+  },
+  "history": [
+    {
+      "id": "274f520a-910e-487c-8554-0553f2a56526",
+      "timestamp": "2025-10-27T17:53:07.914Z",
+      "type": "system",
+      "content": "tool_start: Starting cursor_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+      "data": {
+        "sessionId": "req-1761587587248-83rfs5071",
+        "timestamp": "2025-10-27T17:53:07.892Z",
+        "type": "tool_start",
+        "content": "Starting cursor_subagent with arguments: {\"instruction\":\"# Juno Task Initialization\\n\\n## Project Overview\\nTest project for MCP timeout functionality validation.\\n\\n## Task Description\\nTest that MCP timeout settings work correctly with long-running operations.\\n\\n## Initialization Date\\n2025-10-09T16:36:00Z\\n\\n## Configuration\\n- Subagent: cursor\\n- Model: auto\\n- MCP Timeout: 300000 (5 minutes)\",\"project_path\":\"/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts\",\"model\":\"auto\",\"iteration\":1}",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "arguments": {
+            "instruction": "# Juno Task Initialization\n\n## Project Overview\nTest project for MCP timeout functionality validation.\n\n## Task Description\nTest that MCP timeout settings work correctly with long-running operations.\n\n## Initialization Date\n2025-10-09T16:36:00Z\n\n## Configuration\n- Subagent: cursor\n- Model: auto\n- MCP Timeout: 300000 (5 minutes)",
+            "project_path": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
+            "model": "auto",
+            "iteration": 1
+          },
+          "phase": "initialization"
+        }
+      }
+    },
+    {
+      "id": "f462d7c6-713a-47f6-8bd7-2355434a1cac",
+      "timestamp": "2025-10-27T17:53:07.917Z",
+      "type": "system",
+      "content": "info: Connecting to MCP server for cursor_subagent",
+      "data": {
+        "sessionId": "req-1761587587248-83rfs5071",
+        "timestamp": "2025-10-27T17:53:07.917Z",
+        "type": "info",
+        "content": "Connecting to MCP server for cursor_subagent",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "phase": "connection"
+        }
+      }
+    },
+    {
+      "id": "40793771-fb03-428e-a326-2727f27985d5",
+      "timestamp": "2025-10-27T17:53:08.533Z",
+      "type": "system",
+      "content": "thinking: Executing cursor_subagent on subagent",
+      "data": {
+        "sessionId": "req-1761587587248-83rfs5071",
+        "timestamp": "2025-10-27T17:53:08.533Z",
+        "type": "thinking",
+        "content": "Executing cursor_subagent on subagent",
+        "metadata": {
+          "toolName": "cursor_subagent",
+          "phase": "execution"
+        }
+      }
+    }
+  ]
+}
