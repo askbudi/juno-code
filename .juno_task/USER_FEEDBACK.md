@@ -31,6 +31,11 @@
       File .juno_task/USER_FEEDBACK.md is becoming big, you need to compact it and keep it lean.
       <DATE>2025-10-28</DATE>
    </ISSUE>
+
+   <ISSUE>
+      File .juno_task/USER_FEEDBACK.md is becoming big (      39 lines), you need to compact it and keep it lean.
+      <DATE>2025-10-28</DATE>
+   </ISSUE>
 </OPEN_ISSUES>
 
 ## Resolved Issues - VALIDATED FIXES ONLY

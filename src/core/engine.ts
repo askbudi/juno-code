@@ -26,7 +26,6 @@ import type {
   ToolCallResult,
   MCPSessionContext,
 } from '../mcp/types';
-import { runPreflightTests, getPreflightConfig } from '../utils/preflight.js';
 import {
   MCPError,
   MCPRateLimitError,
@@ -872,19 +871,6 @@ export class ExecutionEngine extends EventEmitter {
       // Continue execution despite hook failure
     }
 
-    // Run preflight tests before each iteration to detect large files during execution
-    const preflightConfig = getPreflightConfig(context.request.workingDirectory, context.request.subagent);
-    const preflightResult = await runPreflightTests(preflightConfig);
-    if (preflightResult.triggered) {
-      // Emit preflight test results for progress tracking
-      this.emit('progress', {
-        toolName: 'preflight',
-        progress: 100,
-        message: `Completed ${preflightResult.actions.length} preflight action(s)`,
-        timestamp: new Date(),
-        data: preflightResult
-      });
-    }
 
     this.emit('iteration:start', { context, iterationNumber });
 

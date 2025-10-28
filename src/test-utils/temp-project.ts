@@ -95,10 +95,10 @@ export async function cleanupTempProject(tempDir: string): Promise<void> {
 }
 
 /**
- * Create a large file for testing preflight functionality
+ * Create a large file for testing file size functionality
  */
 export async function createLargeFile(filePath: string, lineCount: number): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
-  const content = Array(lineCount).fill('# Test line for preflight testing\n').join('');
+  const content = Array(lineCount).fill('# Test line for file size testing\n').join('');
   await fs.writeFile(filePath, content);
 }
