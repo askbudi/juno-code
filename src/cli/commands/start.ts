@@ -562,6 +562,12 @@ export async function startCommandHandler(
     // Only include mcpTimeout if explicitly provided (don't override defaults with undefined)
     if (allOptions.mcpTimeout !== undefined) {
       cliConfig.mcpTimeout = allOptions.mcpTimeout;
+      cliLogger.info(`MCP timeout from CLI options: ${allOptions.mcpTimeout}ms`);
+    }
+
+    // Log environment variable for debugging
+    if (process.env.JUNO_TASK_MCP_TIMEOUT) {
+      cliLogger.info(`MCP timeout from environment: ${process.env.JUNO_TASK_MCP_TIMEOUT}ms`);
     }
 
     const config = await loadConfig({
@@ -569,6 +575,9 @@ export async function startCommandHandler(
       configFile: allOptions.config,
       cliConfig
     });
+
+    // Log final resolved timeout value
+    cliLogger.info(`Final MCP timeout value: ${config.mcpTimeout}ms`);
     cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
 
     // Validate project context
