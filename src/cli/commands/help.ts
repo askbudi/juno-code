@@ -443,7 +443,6 @@ Available Topics:
   sessions            Session management
   templates           Template system
   troubleshooting     Common issues and solutions
-  preflight-tests     Automated file size monitoring
 
 Navigation (Interactive Mode):
   ↑↓ or j/k          Navigate items

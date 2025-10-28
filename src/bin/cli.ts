@@ -441,8 +441,6 @@ ${chalk.blue.bold('Environment Variables:')}
   JUNO_TASK_VERBOSE          Enable verbose output (true/false)
   JUNO_TASK_ENABLE_FEEDBACK  Enable concurrent feedback collection (true/false)
   NO_COLOR                   Disable colored output (standard)
-  JUNO_PREFLIGHT_THRESHOLD   Line count threshold for preflight tests (default: 500)
-  JUNO_PREFLIGHT_DISABLED    Disable preflight tests (set to 'true' to disable)
 
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:

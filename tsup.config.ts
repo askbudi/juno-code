@@ -4,8 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'bin/cli': 'src/bin/cli.ts',
-    'bin/feedback-collector': 'src/bin/feedback-collector.ts',
-    'utils/preflight': 'src/utils/preflight.ts'
+    'bin/feedback-collector': 'src/bin/feedback-collector.ts'
   },
   format: ['esm', 'cjs'],
   target: 'node18',
