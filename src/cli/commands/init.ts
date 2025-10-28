@@ -198,15 +198,25 @@ class SimpleProjectGenerator {
   constructor(private context: InitializationContext) {}
 
   async generate(): Promise<void> {
-    const { targetDirectory, variables } = this.context;
+    const { targetDirectory, variables, force } = this.context;
 
     console.log(chalk.blue('📁 Creating project directory...'));
 
     // Ensure target directory exists
     await fs.ensureDir(targetDirectory);
 
-    // Create .juno_task directory
+    // Check if .juno_task already exists (unless force flag is set)
     const junoTaskDir = path.join(targetDirectory, '.juno_task');
+    const junoTaskExists = await fs.pathExists(junoTaskDir);
+
+    if (junoTaskExists && !force) {
+      throw new ValidationError(
+        'Project already initialized. Directory .juno_task already exists.',
+        ['Use --force flag to overwrite existing files', 'Choose a different directory']
+      );
+    }
+
+    // Create .juno_task directory
     await fs.ensureDir(junoTaskDir);
 
     // Create config.json with user's subagent choice and other settings

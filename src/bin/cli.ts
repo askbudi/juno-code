@@ -341,14 +341,17 @@ async function main(): Promise<void> {
   // Skip validation when no arguments provided (will show default help)
   const hasNoArguments = process.argv.length <= 2;
 
+  // Skip validation for init command - it handles its own directory checks
+  const isInitCommand = process.argv.includes('init');
+
   // Check if project is initialized - only validate if .juno_task exists
   const fs = await import('fs-extra');
   const path = await import('node:path');
   const junoTaskDir = path.join(process.cwd(), '.juno_task');
   const isInitialized = await fs.pathExists(junoTaskDir);
 
-  // Only run validation for initialized projects (has .juno_task folder) and not for help/version/no-args
-  if (!isHelpOrVersion && !hasNoArguments && isInitialized) {
+  // Only run validation for initialized projects (has .juno_task folder) and not for help/version/init/no-args
+  if (!isHelpOrVersion && !hasNoArguments && !isInitCommand && isInitialized) {
     try {
       const { validateStartupConfigs } = await import('../utils/startup-validation.js');
       const validationPassed = await validateStartupConfigs(process.cwd(), isVerbose);
