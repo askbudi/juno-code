@@ -250,6 +250,11 @@ export class CLIFramework {
       }
     }
 
+    // Link environment variable if specified
+    if (option.env) {
+      opt.env(option.env);
+    }
+
     // Add parser for numeric options
     if (option.flags.includes('--max-iterations') || option.flags.includes('--mcp-timeout') || option.flags.includes('--mcp-retries')) {
       opt.argParser((value: string) => {
