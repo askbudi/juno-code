@@ -88,6 +88,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
+    .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
 
   // Global error handling
   program.exitOverride((err) => {
@@ -273,7 +274,8 @@ function configureEnvironment(): void {
     'JUNO_TASK_CONFIG',
     'JUNO_TASK_MCP_SERVER_PATH',
     'JUNO_TASK_MCP_TIMEOUT',
-    'JUNO_TASK_NO_COLOR'
+    'JUNO_TASK_NO_COLOR',
+    'JUNO_TASK_ENABLE_FEEDBACK'
   ];
 
   // Set defaults from environment variables
@@ -287,6 +289,7 @@ function configureEnvironment(): void {
         case 'verbose':
         case 'quiet':
         case 'no-color':
+        case 'enable-feedback':
           if (value.toLowerCase() === 'true' || value === '1') {
             process.argv.push(`--${option}`);
           }
@@ -418,6 +421,9 @@ ${chalk.blue.bold('Examples:')}
   juno-task session list
   juno-task session info abc123
 
+  ${chalk.gray('# Enable feedback collection globally')}
+  juno-task --enable-feedback start
+
   ${chalk.gray('# Collect feedback')}
   juno-task feedback --interactive
 
@@ -433,6 +439,7 @@ ${chalk.blue.bold('Environment Variables:')}
   JUNO_TASK_MCP_SERVER_PATH  Path to MCP server executable
   JUNO_TASK_CONFIG           Configuration file path
   JUNO_TASK_VERBOSE          Enable verbose output (true/false)
+  JUNO_TASK_ENABLE_FEEDBACK  Enable concurrent feedback collection (true/false)
   NO_COLOR                   Disable colored output (standard)
   JUNO_PREFLIGHT_THRESHOLD   Line count threshold for preflight tests (default: 500)
   JUNO_PREFLIGHT_DISABLED    Disable preflight tests (set to 'true' to disable)
