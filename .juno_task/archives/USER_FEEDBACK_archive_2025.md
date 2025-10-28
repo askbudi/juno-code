@@ -4,8 +4,8 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
 
 ## Archive Index
 
-- Total archived issues: 10
-- Last updated: 2025-10-24
+- Total archived issues: 11
+- Last updated: 2025-10-28
 
 ---
 
@@ -339,4 +339,63 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       </RESOLUTION_SUMMARY>
    </RESOLVED_ISSUE>
 <!-- Archived on 2025-10-24 -->
+
+
+<RESOLVED_ISSUE>
+   **--enable-feedback Progress Interruption - Complete Architectural Fix** - RESOLVED 2025-10-27
+
+   **Issue**: Progress output interrupts user typing during --enable-feedback mode despite buffering implementation. Progress events bypass feedback state checks and write directly to stderr while user is typing.
+
+   <USER_FEEDBACK_QUOTE>and it should provide a multiline input for the Issue, and also multiline Optional input for the test criteria</USER_FEEDBACK_QUOTE>
+
+   <PREVIOUS_AGENT_ATTEMPT>
+   Multiple previous attempts focused on peripheral issues rather than the core architectural problem:
+   1. 2025-10-18: Focused on stream synchronization timing rather than the bypass issue
+   2. 2025-10-19: Added character threshold complexity but didn't fix the core bypass problem
+   3. 2025-10-24: Simplified timeout logic but ProgressDisplay still bypassed feedback state
+   </PREVIOUS_AGENT_ATTEMPT>
+
+   <ROOT_CAUSE>
+   The core problem was architectural: there were TWO separate progress output paths, and only ONE respected the feedback state.
+   - Path 1: MCP Progress Events → ProgressDisplay.onProgress() → writeTerminalProgress() (CORRECTLY HANDLED via TerminalProgressWriter)
+   - Path 2: Engine Progress Events → ProgressDisplay methods → process.stderr.write() (BYPASSED FEEDBACK STATE)
+
+   The ProgressDisplay class in src/cli/commands/start.ts had direct `process.stderr.write()` calls on lines 188, 196, 200, 202, 204, 208 that completely ignored the `isFeedbackActive()` checks. These writes happened regardless of whether feedback collection was active, causing output to interrupt user typing.
+   </ROOT_CAUSE>
+
+   <SOLUTION_IMPLEMENTED>
+   1. Added import of `writeTerminalProgress` from terminal-progress-writer.ts to start.ts
+   2. Replaced all 6 direct `process.stderr.write()` calls in ProgressDisplay progress methods with `writeTerminalProgress()`
+   3. Added 5 comprehensive integration tests to verify feedback state is respected
+   4. All tests pass (848 passing, 2 pre-existing failures unrelated)
+
+   **Files Modified:**
+   - juno-task-ts/src/cli/commands/start.ts (lines 20, 189, 197, 201, 203, 205, 209)
+   - juno-task-ts/src/utils/__tests__/terminal-progress-writer.test.ts (added 5 new tests for feedback integration)
+   </SOLUTION_IMPLEMENTED>
+
+   <TEST_CRITERIA_MET>
+   ✅ Build successful
+   ✅ 848/850 tests passing (2 failures are pre-existing unrelated preflight-integration issues)
+   ✅ All 5 new feedback integration tests passing
+   ✅ Terminal progress writer correctly buffers when feedback is active
+   ✅ Progress output resumes normally when feedback is inactive
+   ✅ When --enable-feedback is active and user starts typing:
+      - `setFeedbackActive(true)` is called
+      - All calls to `writeTerminalProgress()` check `isFeedbackActive()`
+      - If feedback is active, progress events are buffered instead of written to stderr
+      - After 2min of inactivity or feedback submission, buffered events are flushed
+      - User typing is never interrupted by progress output
+   </TEST_CRITERIA_MET>
+
+   <RESOLVED_DATE>2025-10-27</RESOLVED_DATE>
+
+   **Why Previous Fixes Failed:**
+   Previous attempts failed because they didn't address the fundamental architectural issue where ProgressDisplay had two separate code paths for progress output, with one path completely bypassing the feedback state management system.
+
+   **Verification:**
+   The fix ensures that all progress output from both MCP and Engine events flows through the same `writeTerminalProgress()` function, which properly respects the feedback collection state and buffers output when appropriate.
+
+</RESOLVED_ISSUE>
+<!-- Archived on 2025-10-28 -->
 

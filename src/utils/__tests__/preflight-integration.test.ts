@@ -15,6 +15,8 @@ import type { PreflightResult } from '../../utils/preflight.js';
 describe('Preflight Tests - Integration', () => {
   let tempProject: string;
   const originalEnv = process.env;
+  const projectRoot = path.resolve(__dirname, '../../..');
+  const cliPath = path.join(projectRoot, 'dist', 'bin', 'cli.mjs');
 
   beforeEach(async () => {
     tempProject = await createTempProject();
@@ -39,7 +41,7 @@ describe('Preflight Tests - Integration', () => {
 
       try {
         const { stdout } = await execa('node', [
-          'dist/bin/cli.mjs',
+          cliPath,
           'start',
           '--max-iterations', '1',
           '--subagent', 'claude',
@@ -73,7 +75,7 @@ describe('Preflight Tests - Integration', () => {
 
       try {
         const { stdout } = await execa('node', [
-          'dist/bin/cli.mjs',
+          cliPath,
           'start',
           '--max-iterations', '1',
           '--subagent', 'claude',
@@ -208,7 +210,7 @@ describe('Preflight Tests - Integration', () => {
 
       try {
         const { stdout } = await execa('node', [
-          'dist/bin/cli.mjs',
+          cliPath,
           'start',
           '--max-iterations', '1',
           '--subagent', 'claude',
@@ -241,7 +243,7 @@ describe('Preflight Tests - Integration', () => {
 
       try {
         const { stdout } = await execa('node', [
-          'dist/bin/cli.mjs',
+          cliPath,
           'start',
           '--max-iterations', '1',
           '--subagent', 'claude',
