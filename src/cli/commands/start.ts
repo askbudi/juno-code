@@ -538,7 +538,9 @@ export async function startCommandHandler(
   try {
     // Get global options from command's parent program
     const globalOptions = command.parent?.opts() || {};
-    const allOptions = { ...options, ...globalOptions };
+
+    // Merge options: global options first, then local options override
+    const allOptions = { ...globalOptions, ...options };
 
     // Successfully merged global and local options
     writeTerminalProgress(chalk.blue.bold('🎯 Juno Task - Start Execution') + '\n');
