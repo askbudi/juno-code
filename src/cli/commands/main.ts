@@ -24,6 +24,8 @@ import { createExecutionEngine, createExecutionRequest } from '../../core/engine
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
+import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
+import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type {
   MainCommandOptions,
   CLICommand
@@ -341,10 +343,24 @@ class MainProgressDisplay {
 class MainExecutionCoordinator {
   private config: any;
   private progressDisplay: MainProgressDisplay;
+  private feedbackCollector: ConcurrentFeedbackCollector | null = null;
+  private enableFeedback: boolean = false;
 
-  constructor(config: any, verbose: boolean = false) {
+  constructor(config: any, verbose: boolean = false, enableFeedback: boolean = false) {
     this.config = config;
     this.progressDisplay = new MainProgressDisplay(verbose);
+    this.enableFeedback = enableFeedback;
+
+    // Initialize feedback collector if enabled
+    if (this.enableFeedback) {
+      this.feedbackCollector = new ConcurrentFeedbackCollector({
+        command: 'juno-ts-task',
+        commandArgs: ['feedback'],
+        verbose: this.config.verbose,
+        showHeader: true,
+        progressInterval: 0 // Don't use built-in ticker, we have our own progress display
+      });
+    }
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
@@ -394,6 +410,12 @@ class MainExecutionCoordinator {
       // Start progress display
       this.progressDisplay.start(request);
 
+      // Start feedback collector if enabled
+      if (this.feedbackCollector) {
+        writeTerminalProgress(chalk.gray('   Feedback collection: enabled (Type F+Enter to enter feedback mode)') + '\n');
+        this.feedbackCollector.start();
+      }
+
       // Execute task
       const result = await engine.execute(request);
 
@@ -406,6 +428,11 @@ class MainExecutionCoordinator {
       throw error;
 
     } finally {
+      // Stop feedback collector if it was started
+      if (this.feedbackCollector) {
+        await this.feedbackCollector.stop();
+      }
+
       // Cleanup
       try {
         await mcpClient.disconnect();
@@ -465,7 +492,7 @@ export async function mainCommandHandler(
     });
 
     // Execute
-    const coordinator = new MainExecutionCoordinator(config, options.verbose);
+    const coordinator = new MainExecutionCoordinator(config, options.verbose, options.enableFeedback || false);
     const result = await coordinator.execute(executionRequest);
 
     // Set exit code based on result

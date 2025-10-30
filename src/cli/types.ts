@@ -111,6 +111,8 @@ export interface GlobalCLIOptions {
   noColor?: boolean;
   /** Log level for output */
   logLevel?: LogLevel;
+  /** Enable concurrent feedback collection during execution */
+  enableFeedback?: boolean;
 }
 
 /**
