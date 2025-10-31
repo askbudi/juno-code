@@ -11,5 +11,19 @@
   "interactive": true,
   "headlessMode": false,
   "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_init_real",
-  "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_init_real/.juno_task"
+  "sessionDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test_init_real/.juno_task",
+  "hooks": {
+    "START_RUN": {
+      "commands": []
+    },
+    "START_ITERATION": {
+      "commands": []
+    },
+    "END_ITERATION": {
+      "commands": []
+    },
+    "END_RUN": {
+      "commands": []
+    }
+  }
 }
