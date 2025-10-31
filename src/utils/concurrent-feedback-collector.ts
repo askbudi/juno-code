@@ -290,9 +290,9 @@ export class ConcurrentFeedbackCollector {
     setFeedbackActive(true); // Start buffering MCP progress
     this.buffer = ''; // Clear any existing buffer
 
-    process.stdout.write(EOL + chalk.yellow.bold('📝 FEEDBACK MODE ACTIVE') + chalk.gray(' (MCP progress paused)') + EOL);
-    process.stdout.write(chalk.gray('Type your multiline feedback. When done, type Q+Enter to submit and exit.') + EOL);
-    process.stdout.write(chalk.cyan.bold('> ') + chalk.gray('(Type your feedback here)') + EOL);
+    // Show concise 1-line usage guide as requested by user
+    process.stdout.write(EOL + chalk.yellow.bold('📝 FEEDBACK MODE') + chalk.gray(' - Type feedback (multiline ok), then Q+Enter to submit | MCP progress paused') + EOL);
+    process.stdout.write(chalk.cyan.bold('> '));
 
     if (this.options.verbose) {
       process.stderr.write(`[feedback-collector] Entered FEEDBACK mode - MCP progress buffering activated${EOL}`);

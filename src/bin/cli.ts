@@ -88,7 +88,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
-    .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
+    .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
 
   // Global error handling
   program.exitOverride((err) => {
