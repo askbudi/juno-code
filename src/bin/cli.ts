@@ -300,6 +300,15 @@ function configureEnvironment(): void {
     }
   }
 
+  // Handle JUNO_INTERACTIVE_FEEDBACK_MODE environment variable (user-requested alternative)
+  // This is an alias for --enable-feedback, provides user-friendly environment variable name
+  if (!process.argv.includes('--enable-feedback')) {
+    const feedbackMode = process.env.JUNO_INTERACTIVE_FEEDBACK_MODE;
+    if (feedbackMode && (feedbackMode.toLowerCase() === 'true' || feedbackMode === '1')) {
+      process.argv.push('--enable-feedback');
+    }
+  }
+
   // Handle NO_COLOR standard
   if (process.env.NO_COLOR && !process.argv.includes('--no-color')) {
     process.argv.push('--no-color');
@@ -435,12 +444,13 @@ ${chalk.blue.bold('Examples:')}
   juno-task setup-git https://github.com/owner/repo
 
 ${chalk.blue.bold('Environment Variables:')}
-  JUNO_TASK_SUBAGENT         Default subagent (claude, cursor, codex, gemini)
-  JUNO_TASK_MCP_SERVER_PATH  Path to MCP server executable
-  JUNO_TASK_CONFIG           Configuration file path
-  JUNO_TASK_VERBOSE          Enable verbose output (true/false)
-  JUNO_TASK_ENABLE_FEEDBACK  Enable concurrent feedback collection (true/false)
-  NO_COLOR                   Disable colored output (standard)
+  JUNO_TASK_SUBAGENT              Default subagent (claude, cursor, codex, gemini)
+  JUNO_TASK_MCP_SERVER_PATH       Path to MCP server executable
+  JUNO_TASK_CONFIG                Configuration file path
+  JUNO_TASK_VERBOSE               Enable verbose output (true/false)
+  JUNO_TASK_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
+  JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
+  NO_COLOR                        Disable colored output (standard)
 
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:

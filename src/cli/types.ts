@@ -579,7 +579,11 @@ export const ENVIRONMENT_MAPPINGS = {
 
   // UI options
   JUNO_TASK_NO_COLOR: 'noColor',
-  JUNO_TASK_HEADLESS: 'headless'
+  JUNO_TASK_HEADLESS: 'headless',
+
+  // Feedback options
+  JUNO_TASK_ENABLE_FEEDBACK: 'enableFeedback',
+  JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback'  // Alias for enableFeedback
 } as const;
 
 /**
