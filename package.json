@@ -35,7 +35,8 @@
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",
-    "build": "tsup",
+    "build": "tsup && npm run build:copy-templates",
+    "build:copy-templates": "node -e \"require('fs-extra').copySync('src/templates/scripts', 'dist/templates/scripts', { recursive: true })\"",
     "build:watch": "tsup --watch",
     "test": "vitest",
     "test:tui": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
