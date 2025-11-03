@@ -1,5 +1,5 @@
 ## Open Issues
-<!-- Current status: 2 OPEN ISSUES -->
+<!-- Current status: 4 OPEN ISSUES -->
 <OPEN_ISSUES>
 
 <ISSUE>
@@ -40,5 +40,46 @@
 
 ## Resolved Issues - VALIDATED FIXES ONLY
 
-<!-- Resolved issues have been archived to preserve space -->
+<RESOLVED_ISSUE>
+   **Log Cleanup Script Implementation**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-03
+   **RESOLVED_DATE**: 2025-11-03
+
+   **USER_FEEDBACK_QUOTE**: "Need a script to clean up old log files in .juno_task/logs/ directory to manage disk space. The script should archive log files older than 3 days and remove them to free up space."
+
+   **ROOT_CAUSE**: User needed automated log file management to prevent disk space issues from accumulating log files in the .juno_task/logs/ directory.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Created template script directory: src/templates/scripts/
+   2. Created clean_logs_folder.sh script with comprehensive log archival logic:
+      - Finds log files older than 3 days in .juno_task/logs/*.logs
+      - Archives them to .juno_task/logs/archive.zip (creates or appends)
+      - Removes archived files to free up space
+      - Includes colored console output, error handling, and verification
+   3. Updated init command (src/cli/commands/init.ts) to copy scripts from templates to .juno_task/scripts/ during initialization
+   4. Implemented automatic execution permission setting (chmod 755) for .sh files
+   5. Added build step to copy template scripts to dist/templates/scripts/
+   6. Updated project structure documentation in README and CLAUDE.md templates
+   7. Framework supports future script additions - just add to src/templates/scripts/
+
+   **TEST_CRITERIA_MET**:
+   - ✅ Script created at src/templates/scripts/clean_logs_folder.sh
+   - ✅ Script archives log files older than 3 days
+   - ✅ Script appends to existing archive.zip (tested with multiple runs)
+   - ✅ Script installed to .juno_task/scripts/ during init command
+   - ✅ Executable permissions automatically set (755)
+   - ✅ Script has comprehensive error handling and colored output
+   - ✅ Build successful with template copying
+   - ✅ Binary execution tests passing (4 passed, 1 skipped)
+   - ✅ Framework ready for future script additions
+   - ✅ Project structure documentation updated
+
+   **Files Modified/Created**:
+   - Created: juno-task-ts/src/templates/scripts/clean_logs_folder.sh (log archival script)
+   - Modified: juno-task-ts/src/cli/commands/init.ts (added copyScriptsFromTemplates method)
+   - Modified: juno-task-ts/package.json (added build:copy-templates script)
+</RESOLVED_ISSUE>
+
+<!-- Older resolved issues have been archived to preserve space -->
 <!-- Check .juno_task/archives/ for historical resolved issues -->

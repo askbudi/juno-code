@@ -576,6 +576,8 @@ This project was initialized on ${variables.CURRENT_DATE} using juno-task.
 │   ├── init.md            # Initial task breakdown and constraints
 │   ├── plan.md            # Dynamic planning and priority tracking
 │   ├── USER_FEEDBACK.md   # User feedback and issue tracking
+│   ├── scripts/           # Utility scripts for project maintenance
+│   │   └── clean_logs_folder.sh  # Archive old log files
 │   └── specs/             # Project specifications
 │       ├── README.md      # Specs overview
 │       ├── requirements.md # Functional requirements
@@ -722,6 +724,8 @@ juno-task feedback
 │   ├── init.md            # Task breakdown and constraints
 │   ├── plan.md            # Dynamic planning and tracking
 │   ├── USER_FEEDBACK.md   # User feedback and issue tracking
+│   ├── scripts/           # Utility scripts for project maintenance
+│   │   └── clean_logs_folder.sh  # Archive old log files (3+ days)
 │   └── specs/             # Comprehensive specifications
 │       ├── README.md      # Specs overview and guide
 │       ├── requirements.md # Detailed functional requirements
@@ -775,6 +779,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 `;
 
     await fs.writeFile(path.join(targetDirectory, 'README.md'), readmeContent);
+
+    // Copy utility scripts from templates to .juno_task/scripts/
+    console.log(chalk.blue('📦 Installing utility scripts...'));
+    await this.copyScriptsFromTemplates(junoTaskDir);
 
     // Set up Git repository if Git URL is provided
     await this.setupGitRepository();
@@ -909,6 +917,82 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
   }
 
+  /**
+   * Copy utility scripts from templates/scripts to .juno_task/scripts directory
+   * This includes scripts like clean_logs_folder.sh for log management
+   */
+  private async copyScriptsFromTemplates(junoTaskDir: string): Promise<void> {
+    try {
+      // Create scripts directory in .juno_task
+      const scriptsDir = path.join(junoTaskDir, 'scripts');
+      await fs.ensureDir(scriptsDir);
+
+      // Get the template scripts directory path
+      // In development: src/cli/commands/init.ts -> src/templates/scripts
+      // In production (dist): dist/bin/cli.mjs -> dist/templates/scripts
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+
+      // Determine the correct path based on whether we're in dist or src
+      let templatesScriptsDir: string;
+
+      if (__dirname.includes('/dist/bin') || __dirname.includes('\\dist\\bin')) {
+        // Production: dist/bin -> dist/templates/scripts
+        templatesScriptsDir = path.join(__dirname, '../templates/scripts');
+      } else if (__dirname.includes('/src/cli/commands') || __dirname.includes('\\src\\cli\\commands')) {
+        // Development: src/cli/commands -> src/templates/scripts
+        templatesScriptsDir = path.join(__dirname, '../../templates/scripts');
+      } else {
+        // Fallback - try both
+        templatesScriptsDir = path.join(__dirname, '../../templates/scripts');
+      }
+
+      // Check if template scripts directory exists
+      if (!await fs.pathExists(templatesScriptsDir)) {
+        console.log(chalk.yellow('   ⚠️  Template scripts directory not found, skipping script installation'));
+        return;
+      }
+
+      // Read all files from template scripts directory
+      const scriptFiles = await fs.readdir(templatesScriptsDir);
+
+      if (scriptFiles.length === 0) {
+        console.log(chalk.gray('   ℹ️  No template scripts found to install'));
+        return;
+      }
+
+      // Copy each script file
+      let copiedCount = 0;
+      for (const scriptFile of scriptFiles) {
+        const sourcePath = path.join(templatesScriptsDir, scriptFile);
+        const destPath = path.join(scriptsDir, scriptFile);
+
+        // Only copy files (not directories)
+        const stats = await fs.stat(sourcePath);
+        if (stats.isFile()) {
+          await fs.copy(sourcePath, destPath);
+
+          // Set executable permissions (chmod +x) for .sh files
+          if (scriptFile.endsWith('.sh')) {
+            await fs.chmod(destPath, 0o755); // rwxr-xr-x
+          }
+
+          copiedCount++;
+          console.log(chalk.green(`   ✓ Installed script: ${scriptFile}`));
+        }
+      }
+
+      if (copiedCount > 0) {
+        console.log(chalk.green(`   ✓ Installed ${copiedCount} utility script(s) in .juno_task/scripts/`));
+      }
+
+    } catch (error) {
+      console.log(chalk.yellow('   ⚠️  Failed to copy utility scripts'));
+      console.log(chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`));
+      console.log(chalk.gray('   Scripts can be added manually later if needed'));
+    }
+  }
+
   private printNextSteps(targetDirectory: string, editor: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
@@ -917,6 +1001,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
     console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));
+    console.log(chalk.gray('   - Run .juno_task/scripts/clean_logs_folder.sh to archive old logs'));
   }
 
   /**
