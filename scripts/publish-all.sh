@@ -192,15 +192,16 @@ publish_package() {
 }
 
 publish_all_variants() {
-  print_step "Publishing all package variants..."
+  print_step "Publishing juno-code package..."
 
-  local variants=("juno-agent" "juno-code" "juno-ts-task")
+  # Only publish juno-code as requested by user
+  local variants=("juno-code")
 
   for variant in "${variants[@]}"; do
     publish_package "$variant"
   done
 
-  print_success "All packages published"
+  print_success "juno-code package published"
 }
 
 ###############################################################################
