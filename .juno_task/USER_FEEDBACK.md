@@ -1,5 +1,5 @@
 ## Open Issues
-<!-- Current status: 4 OPEN ISSUES -->
+<!-- Current status: 1 OPEN ISSUE -->
 <OPEN_ISSUES>
 
 <ISSUE>
@@ -22,23 +22,49 @@
       </Test_CRITERIA>
    </ISSUE>
 
-<ISSUE>
-      File .juno_task/USER_FEEDBACK.md is becoming big, you need to compact it and keep it lean.
-      <DATE>2025-10-24</DATE>
-   </ISSUE>
-
-<ISSUE>
-      File .juno_task/USER_FEEDBACK.md is becoming big, you need to compact it and keep it lean.
-      <DATE>2025-10-28</DATE>
-   </ISSUE>
-
-   <ISSUE>
-      File .juno_task/USER_FEEDBACK.md is becoming big (      39 lines), you need to compact it and keep it lean.
-      <DATE>2025-10-28</DATE>
-   </ISSUE>
 </OPEN_ISSUES>
 
 ## Resolved Issues - VALIDATED FIXES ONLY
+
+<RESOLVED_ISSUE>
+   **Hooks System Default State Configuration**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-07
+   **RESOLVED_DATE**: 2025-11-07
+
+   **USER_FEEDBACK_QUOTE**: "for hooks system we need to update the DEFAULT state, that comes on installation (init command). right now in config.json we have hooks:{} we need to change to hooks :{"supported_key":{"commands":[]} } so user could see a list of supported hooks. ONLY for hook: START_ITERATION , have the following commands in the hook config --file=\"CLAUDE.md\"; lines=$(wc -l < \"$file\"); chars=$(wc -m < \"$file\"); if [ \"$lines\" -gt 450 ] || [ \"$chars\" -gt 60000 ]; then juno-kanban \"[Critical] file $file is too large, keep it lean and useful for every run of the agent.\"; fi and another for AGENTS.md. the best way would be to have a place in the codebase for the template of default hooks, so in the future we could easily modify it for adding/removing new commands we like to ship as default hooks of juno-code"
+
+   **ROOT_CAUSE**: The init command was creating config.json with empty hooks object ({}) instead of providing default hooks configuration with file size monitoring commands for CLAUDE.md and AGENTS.md files.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Created src/core/default-hooks.ts with centralized default hooks template
+   2. Implemented START_ITERATION hook with file size monitoring for both CLAUDE.md and AGENTS.md
+   3. File monitoring commands check for >450 lines or >60000 characters and trigger juno-kanban notifications
+   4. Modified config.ts ensureHooksConfig() to use getDefaultHooks() from default-hooks.ts
+   5. Updated init.ts createConfigFile() to include hooks field with default configuration
+   6. Added auto-migration support for existing configs without hooks
+   7. All changes maintain backward compatibility and robust error handling
+
+   **TEST_CRITERIA_MET**:
+   - ✅ Default hooks template created in centralized location (src/core/default-hooks.ts)
+   - ✅ START_ITERATION hook contains CLAUDE.md monitoring command
+   - ✅ START_ITERATION hook contains AGENTS.md monitoring command
+   - ✅ Both commands check for >450 lines or >60000 chars with juno-kanban notifications
+   - ✅ Init command creates config.json with default hooks instead of empty hooks object
+   - ✅ Auto-migration adds default hooks to existing configs missing hooks field
+   - ✅ Build successful - npm run build completed without errors
+   - ✅ All hooks tests passing (35/35 in utils/__tests__/hooks.test.ts)
+   - ✅ All config tests passing (58/58 in core/__tests__/config.test.ts)
+   - ✅ Manual verification: init command creates config with populated hooks field
+   - ✅ Centralized template supports future modifications for new default hooks
+
+   **Files Modified/Created**:
+   - Created: juno-task-ts/src/core/default-hooks.ts (centralized default hooks template)
+   - Modified: juno-task-ts/src/core/config.ts (updated ensureHooksConfig to use getDefaultHooks)
+   - Modified: juno-task-ts/src/cli/commands/init.ts (added hooks field to config creation)
+   - Modified: juno-task-ts/src/core/__tests__/config.test.ts (updated test expectations)
+   - Modified: juno-task-ts/src/utils/__tests__/hooks.test.ts (updated test expectations)
+</RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
    **Log Cleanup Script Implementation**
