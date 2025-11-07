@@ -1,6 +1,6 @@
 {
   "name": "juno-task-ts",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "TypeScript implementation of juno-task CLI tool for AI subagent orchestration",
   "keywords": [
     "ai",
