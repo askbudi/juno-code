@@ -25,6 +25,9 @@
     }
   },
   "bin": {
+    "juno": "./dist/bin/cli.mjs",
+    "juno-agent": "./dist/bin/cli.mjs",
+    "juno-code": "./dist/bin/cli.mjs",
     "juno-ts-task": "./dist/bin/cli.mjs",
     "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
   },
@@ -60,7 +63,12 @@
     "cli": "tsx src/bin/cli.ts",
     "completion:install": "tsx src/bin/cli.ts --install-completion",
     "docs:api": "typedoc src/index.ts",
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "deploy": "bash scripts/publish-all.sh patch",
+    "deploy:minor": "bash scripts/publish-all.sh minor",
+    "deploy:major": "bash scripts/publish-all.sh major",
+    "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run",
+    "variants:generate": "node scripts/generate-variants.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

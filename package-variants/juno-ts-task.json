@@ -1,0 +1,31 @@
+{
+  "name": "juno-ts-task",
+  "description": "TypeScript implementation of juno-task CLI tool for AI subagent orchestration (legacy package name - use juno-agent for new installations)",
+  "keywords": [
+    "ai",
+    "cli",
+    "typescript",
+    "mcp",
+    "subagents",
+    "automation",
+    "claude",
+    "cursor",
+    "codex",
+    "gemini"
+  ],
+  "bin": {
+    "juno": "./dist/bin/cli.mjs",
+    "juno-agent": "./dist/bin/cli.mjs",
+    "juno-code": "./dist/bin/cli.mjs",
+    "juno-ts-task": "./dist/bin/cli.mjs",
+    "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/owner/juno-task-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/owner/juno-task-ts/issues"
+  },
+  "homepage": "https://github.com/owner/juno-task-ts#readme"
+}

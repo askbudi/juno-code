@@ -1,31 +1,60 @@
 # juno-task-ts
 
-Build a comprehensive testing framework
+TypeScript implementation of juno-task CLI tool for AI subagent orchestration.
 
 ## Overview
 
-This project uses juno-task for AI-powered development with claude as the primary AI subagent.
+juno-task-ts is an AI-powered development CLI that orchestrates subagents (Claude, Cursor, Codex, Gemini) through MCP (Model Context Protocol) servers. It provides a modern TypeScript implementation with React INK TUI, comprehensive testing infrastructure, and automated feedback collection.
+
+## Installation
+
+This package is available on NPM under multiple names for flexibility:
+
+```bash
+# Primary package (recommended)
+npm install -g juno-agent
+
+# Alternative installations
+npm install -g juno-code
+npm install -g juno-ts-task
+```
+
+All three packages provide the same functionality and binary commands.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js (v18 or higher)
-- juno-task CLI installed
+- Python 3.8+ (for dependency scripts)
 - Git for version control
+- NPM or UV package manager
 
 ### Quick Start
 
 ```bash
-# Start task execution with production-ready AI instructions
-juno-task start
+# Initialize a new project
+juno-agent init --task "Your task" --subagent claude --git-url "https://github.com/user/repo"
 
-# Or use main command with preferred subagent
-juno-task -s claude
+# Start task execution
+juno-agent start
 
-# Provide feedback on the development process
-juno-task feedback
+# Or use the universal command
+juno --help
+
+# Collect feedback during execution
+juno-collect-feedback
 ```
+
+### Available Commands
+
+All packages install these binary commands:
+
+- `juno` - Universal command (recommended)
+- `juno-agent` - Package-specific command
+- `juno-code` - Package-specific command
+- `juno-ts-task` - Legacy command
+- `juno-collect-feedback` - Feedback collection utility
 
 ## Project Structure
 
