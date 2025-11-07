@@ -784,6 +784,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     console.log(chalk.blue('📦 Installing utility scripts...'));
     await this.copyScriptsFromTemplates(junoTaskDir);
 
+    // Execute install_requirements.sh to install Python dependencies
+    console.log(chalk.blue('🐍 Installing Python requirements...'));
+    await this.executeInstallRequirements(junoTaskDir);
+
     // Set up Git repository if Git URL is provided
     await this.setupGitRepository();
 
@@ -990,6 +994,76 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       console.log(chalk.yellow('   ⚠️  Failed to copy utility scripts'));
       console.log(chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`));
       console.log(chalk.gray('   Scripts can be added manually later if needed'));
+    }
+  }
+
+  /**
+   * Execute install_requirements.sh script to install Python dependencies
+   * This runs automatically during init to install juno-kanban and roundtable-ai
+   */
+  private async executeInstallRequirements(junoTaskDir: string): Promise<void> {
+    try {
+      const scriptsDir = path.join(junoTaskDir, 'scripts');
+      const installScript = path.join(scriptsDir, 'install_requirements.sh');
+
+      // Check if install_requirements.sh exists
+      if (!await fs.pathExists(installScript)) {
+        console.log(chalk.yellow('   ⚠️  install_requirements.sh not found, skipping Python dependencies installation'));
+        console.log(chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'));
+        return;
+      }
+
+      // Import child_process to execute the script
+      const { execSync } = await import('child_process');
+
+      // Execute the install_requirements.sh script
+      try {
+        // Run the script and capture output
+        const output = execSync(installScript, {
+          cwd: junoTaskDir,
+          encoding: 'utf8',
+          stdio: 'pipe' // Capture output instead of inheriting
+        });
+
+        // Print the script output
+        if (output && output.trim()) {
+          console.log(output);
+        }
+
+        console.log(chalk.green('   ✓ Python requirements installation completed'));
+
+      } catch (error: any) {
+        // Script execution failed
+        const errorOutput = error.stdout ? error.stdout.toString() : '';
+        const errorMsg = error.stderr ? error.stderr.toString() : error.message;
+
+        // Print any output the script produced before failing
+        if (errorOutput && errorOutput.trim()) {
+          console.log(errorOutput);
+        }
+
+        // Check if this is a "requirements already satisfied" scenario (exit code 0)
+        if (error.status === 0) {
+          console.log(chalk.green('   ✓ Python requirements installation completed'));
+          return;
+        }
+
+        // Check if this is a "neither uv nor pip found" error
+        if (errorMsg.includes('Neither') || errorMsg.includes('not found')) {
+          console.log(chalk.yellow('   ⚠️  Python package manager not found'));
+          console.log(chalk.gray('   Please install uv or pip manually to install Python dependencies'));
+          console.log(chalk.gray('   Required packages: juno-kanban, roundtable-ai'));
+        } else {
+          console.log(chalk.yellow('   ⚠️  Failed to install Python requirements'));
+          console.log(chalk.gray(`   Error: ${errorMsg}`));
+          console.log(chalk.gray('   You can run the script manually later: .juno_task/scripts/install_requirements.sh'));
+        }
+      }
+
+    } catch (error) {
+      console.log(chalk.yellow('   ⚠️  Failed to execute install_requirements.sh'));
+      console.log(chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`));
+      console.log(chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'));
     }
   }
 
