@@ -266,7 +266,7 @@ cleanup() {
 ###############################################################################
 
 main() {
-  print_header "🚀 NPM Multi-Package Publishing"
+  print_header "🚀 NPM Package Publishing - juno-code"
 
   if [[ "$DRY_RUN" == true ]]; then
     print_warning "Running in DRY RUN mode - no actual publishing will occur"
@@ -293,10 +293,8 @@ main() {
 
   # Publish
   if [[ "$DRY_RUN" == false ]]; then
-    echo -e "\n${YELLOW}⚠ About to publish the following packages to NPM:${NC}"
-    echo "  • juno-agent@$new_version"
+    echo -e "\n${YELLOW}⚠ About to publish the following package to NPM:${NC}"
     echo "  • juno-code@$new_version"
-    echo "  • juno-ts-task@$new_version"
     echo ""
     read -p "Continue with publishing? (y/N) " -n 1 -r
     echo
@@ -321,19 +319,17 @@ main() {
 
   if [[ "$DRY_RUN" == false ]]; then
     echo -e "\n${GREEN}Successfully published:${NC}"
-    echo "  • juno-agent@$new_version"
     echo "  • juno-code@$new_version"
-    echo "  • juno-ts-task@$new_version"
     echo ""
     echo -e "${BLUE}Next steps:${NC}"
-    echo "  1. Verify packages on npmjs.com"
-    echo "  2. Test installation: npm install -g juno-agent@$new_version"
+    echo "  1. Verify package on npmjs.com"
+    echo "  2. Test installation: npm install -g juno-code@$new_version"
     echo "  3. Update documentation if needed"
   else
     echo -e "\n${YELLOW}DRY RUN Summary:${NC}"
     echo "  • Would bump version: $VERSION_TYPE"
-    echo "  • Would publish 3 packages"
-    echo "  • Package variants available in: $PACKAGES_DIR"
+    echo "  • Would publish juno-code package only"
+    echo "  • Package variant available in: $PACKAGES_DIR/juno-code"
     echo ""
     echo "Run without --dry-run to actually publish"
   fi
