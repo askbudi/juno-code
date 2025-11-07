@@ -13,6 +13,7 @@ import { Command } from 'commander';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 import { loadConfig } from '../../core/config.js';
+import { getDefaultHooks } from '../../core/default-hooks.js';
 import type { InitCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
 import type { TemplateVariables } from '../../templates/types.js';
@@ -838,7 +839,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
       // Paths
       workingDirectory: targetDirectory,
-      sessionDirectory: path.join(targetDirectory, '.juno_task')
+      sessionDirectory: path.join(targetDirectory, '.juno_task'),
+
+      // Hooks configuration with default file size monitoring
+      hooks: getDefaultHooks()
     };
 
     const configPath = path.join(junoTaskDir, 'config.json');
