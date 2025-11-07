@@ -533,27 +533,10 @@ Consider missing steps and plan. If the step is missing then author the specific
         name: 'Agent Prompt Template',
         description: 'Comprehensive agent prompt with task instructions',
         category: TemplateCategory.CORE,
-        content: `0a. study @.juno_task/specs/* to learn about the specifications
+        content: `0a. study @.juno_task/implement.md.
 
-0b. The source code of the project is in {{PROJECT_ROOT}}
+0b.  When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update  tasks.md with your findings using a {{SUBAGENT}} subagent. When the issue is resolved, update tasks.md and remove the item using a {{SUBAGENT}} subagent.
 
-0c. study @.juno_task/plan.md.
-
-0e. **ALWAYS check @USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
-
-1. Your task is to {{TASK}}
-
-Test the implementation under the virtual environment: {{VENV_PATH}}
-
-Using parallel subagents. Follow the @.juno_task/plan.md and choose the most important 1 things. Before making changes search codebase (don't assume not implemented) using subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
-
-Explicitly inform build/tests subagent to activate virtual environment at: {{VENV_PATH}}
-
-2. After implementing functionality or resolving problems, run the tests for that unit of code that was improved. If functionality is missing then it's your job to add it as per the application specifications. Think hard.
-
-2. When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update @.juno_task/plan.md with your findings using a {{SUBAGENT}} subagent. When the issue is resolved, update @.juno_task/plan.md and remove the item using a {{SUBAGENT}} subagent.
-
-3. When the tests pass update the @.juno_task/plan.md, then add changed code and @.juno_task/plan.md with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
 
 999. Important: When authoring documentation capture the why tests and the backing implementation is important.
 
@@ -563,27 +546,33 @@ Explicitly inform build/tests subagent to activate virtual environment at: {{VEN
 
 999999999. You may add extra logging if required to be able to debug the issues.
 
-9999999999. ALWAYS KEEP @.juno_task/plan.md up to date with your learnings using a {{SUBAGENT}} subagent. Especially after wrapping up/finishing your turn.
+9999999999. ALWAYS KEEP Tasks up to date with your learnings using a {{SUBAGENT}} subagent. Especially after wrapping up/finishing your turn.
 
-99999999999. **CRITICAL**: At start of each iteration, read @USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from USER_FEEDBACK.md using a {{SUBAGENT}} subagent.
 
-99999999999. When you learn something new about how to run the app or examples make sure you update @CLAUDE.md using a {{SUBAGENT}} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
 
-999999999999. IMPORTANT when you discover a bug resolve it using {{SUBAGENT}} subagents even if it is unrelated to the current piece of work after documenting it in @.juno_task/plan.md
+99999999999. When you learn something new about how to run the app or examples make sure you update @{{AGENT_DOC_FILE}} using a {{SUBAGENT}} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
 
-9999999999999999999. Keep @CLAUDE.md up to date with information on how to build the app and your learnings to optimize the build/test loop using a {{SUBAGENT}} subagent.
+999999999999. IMPORTANT when you discover a bug resolve it using {{SUBAGENT}} subagents even if it is unrelated to the current piece of work after documenting it in Tasks
 
-999999999999999999999. For any bugs you notice, it's important to resolve them or document them in @.juno_task/plan.md to be resolved using a {{SUBAGENT}} subagent.
+9999999999999999999. Keep @{{AGENT_DOC_FILE}} up to date with information on how to build the app and your learnings to optimize the build/test loop using a {{SUBAGENT}} subagent.
+
+999999999999999999999. For any bugs you notice, it's important to resolve them or document them in Tasks to be resolved using a {{SUBAGENT}} subagent.
 
 99999999999999999999999. When authoring the missing features you may author multiple standard libraries at once using up to 1000 parallel subagents
 
-99999999999999999999999999. When @.juno_task/plan.md becomes large periodically clean out the items that are completed from the file using a {{SUBAGENT}} subagent.
+99999999999999999999999999. When Tasks, {{AGENT_DOC_FILE}} becomes large periodically clean out the items that are completed from the file using a {{SUBAGENT}} subagent.
+Large {{AGENT_DOC_FILE}} reduce the performance.
 
-99999999999999999999999999. If you find inconsistencies in the specs/* then use the oracle and then update the specs. Specifically around types and lexical tokens.
+
 
 9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
 
-9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @CLAUDE.md`,
+9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @{{AGENT_DOC_FILE}}
+
+99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the Tasks or @{{AGENT_DOC_FILE}} as resolved. You should update it to reflect that the issue is not resolved.
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
+Tasks , USER_FEEDBACK and @{{AGENT_DOC_FILE}} should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
+`,
         variables: [
           {
             name: 'PROJECT_ROOT',
@@ -610,6 +599,12 @@ Explicitly inform build/tests subagent to activate virtual environment at: {{VEN
             required: true,
             defaultValue: 'claude',
             choices: VALID_SUBAGENTS
+          },
+          {
+            name: 'AGENT_DOC_FILE',
+            description: 'Agent documentation file - CLAUDE.md if subagent is claude, otherwise AGENTS.md',
+            type: 'text',
+            required: false
           }
         ],
         version: '1.0.0',
@@ -1474,6 +1469,10 @@ This directory contains specification documents for your project.
    * Prepare rendering context with helpers and environment data.
    */
   private prepareRenderingContext(context: TemplateContext, options: RenderOptions): any {
+    // Determine agent documentation file based on SUBAGENT
+    const subagent = (context.variables.SUBAGENT as string || 'claude').toLowerCase();
+    const agentDocFile = subagent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
+
     return {
       // Flatten variables for easier access in templates
       ...context.variables,
@@ -1490,6 +1489,9 @@ This directory contains specification documents for your project.
       // Built-in computed values
       CURRENT_DATE: context.timestamp.toISOString().split('T')[0],
       TIMESTAMP: context.timestamp.toISOString(),
+
+      // Agent documentation file (conditional based on SUBAGENT)
+      AGENT_DOC_FILE: agentDocFile,
 
       // Agent status helpers (matching Python implementation)
       CLAUDE_STATUS: this.getAgentStatus(context.variables.SUBAGENT as string, 'claude'),
