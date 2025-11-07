@@ -1206,10 +1206,17 @@ class SimpleHeadlessInit {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
 
+    // Determine agent documentation file based on selected editor/subagent
+    let AGENTMD = 'AGENTS.md';
+    if (editor == 'claude'){
+      AGENTMD = 'CLAUDE.md';
+    }
+
     return {
       PROJECT_NAME: projectName,
       TASK: task,
       EDITOR: editor,
+      AGENTMD: AGENTMD,
       CURRENT_DATE: currentDate,
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',
