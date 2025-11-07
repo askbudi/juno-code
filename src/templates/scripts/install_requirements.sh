@@ -7,9 +7,12 @@
 # This script:
 # 1. Checks if 'uv' (ultrafast Python package manager) is installed
 # 2. Falls back to 'pip' if 'uv' is not available
-# 3. Installs required packages: juno-kanban, roundtable-ai
-# 4. Reports if requirements are already satisfied
-# 5. Shows error if neither 'uv' nor 'pip' is available
+# 3. Detects virtual environment and installs accordingly:
+#    - If inside venv: installs into venv
+#    - If outside venv: uses --system flag for system-wide installation
+# 4. Installs required packages: juno-kanban, roundtable-ai
+# 5. Reports if requirements are already satisfied
+# 6. Shows error if neither 'uv' nor 'pip' is available
 #
 # Usage: ./install_requirements.sh
 #
@@ -75,15 +78,46 @@ check_all_requirements_satisfied() {
     fi
 }
 
+# Function to check if we're inside a virtual environment
+is_in_virtualenv() {
+    # Check for VIRTUAL_ENV environment variable (most common indicator)
+    if [ -n "${VIRTUAL_ENV:-}" ]; then
+        return 0  # Inside venv
+    fi
+
+    # Check for CONDA_DEFAULT_ENV (conda environments)
+    if [ -n "${CONDA_DEFAULT_ENV:-}" ]; then
+        return 0  # Inside conda env
+    fi
+
+    # Check if sys.prefix != sys.base_prefix (Python way to detect venv)
+    if command -v python3 &> /dev/null; then
+        if python3 -c "import sys; exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
+            return 0  # Inside venv
+        fi
+    fi
+
+    return 1  # Not inside venv
+}
+
 # Function to install packages using uv
 install_with_uv() {
     log_info "Installing packages using 'uv' (ultrafast Python package manager)..."
+
+    # Determine if we need --system flag
+    local uv_flags="--quiet"
+    if ! is_in_virtualenv; then
+        log_info "Not in a virtual environment - using --system flag for system-wide installation"
+        uv_flags="--quiet --system"
+    else
+        log_info "Detected virtual environment - installing into venv"
+    fi
 
     local failed_packages=()
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
         log_info "Installing: $package"
-        if uv pip install "$package" --quiet; then
+        if uv pip install "$package" $uv_flags; then
             log_success "Successfully installed: $package"
         else
             log_error "Failed to install: $package"
