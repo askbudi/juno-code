@@ -1,0 +1,64 @@
+/**
+ * Default hooks template configuration
+ *
+ * This module provides default hook commands that are shipped with juno-code.
+ * These hooks are automatically configured during project initialization (init command).
+ *
+ * Hook Types:
+ * - START_RUN: Executes at the beginning of a run (before all iterations)
+ * - START_ITERATION: Executes at the start of each iteration
+ * - END_ITERATION: Executes at the end of each iteration
+ * - END_RUN: Executes at the end of a run (after all iterations)
+ *
+ * To modify default hooks:
+ * 1. Update the commands in this file
+ * 2. Rebuild the project (npm run build)
+ * 3. New installations will use the updated defaults
+ *
+ * @module core/default-hooks
+ */
+
+import type { Hooks } from '../types/index';
+
+/**
+ * Default hooks configuration template
+ *
+ * These hooks provide useful default behaviors:
+ * - File size monitoring for CLAUDE.md and AGENTS.md
+ * - Alerts via juno-kanban when documentation files become too large
+ *
+ * Users can customize these hooks by editing .juno_task/config.json after initialization
+ */
+export const DEFAULT_HOOKS: Partial<Hooks> = {
+  START_ITERATION: {
+    commands: [
+      // Monitor CLAUDE.md file size
+      'file="CLAUDE.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 60000 ]; then juno-kanban "[Critical] file $file is too large, keep it lean and useful for every run of the agent."; fi',
+
+      // Monitor AGENTS.md file size
+      'file="AGENTS.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 60000 ]; then juno-kanban "[Critical] file $file is too large, keep it lean and useful for every run of the agent."; fi',
+    ]
+  }
+};
+
+/**
+ * Get default hooks configuration
+ *
+ * Returns a copy of the default hooks to prevent mutation of the template.
+ * This function can be used during initialization to populate the config.json file.
+ *
+ * @returns A copy of the default hooks configuration
+ */
+export function getDefaultHooks(): Partial<Hooks> {
+  return JSON.parse(JSON.stringify(DEFAULT_HOOKS));
+}
+
+/**
+ * Get default hooks as formatted JSON string for config.json
+ *
+ * @param indent - Number of spaces for indentation (default: 2)
+ * @returns Formatted JSON string of default hooks
+ */
+export function getDefaultHooksJson(indent: number = 2): string {
+  return JSON.stringify(DEFAULT_HOOKS, null, indent);
+}

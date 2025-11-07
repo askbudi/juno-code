@@ -20,6 +20,7 @@ import type {
   Hook
 } from '../types/index';
 import type { ProfileManager } from './profiles.js';
+import { getDefaultHooks } from './default-hooks.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -182,8 +183,8 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   workingDirectory: process.cwd(),
   sessionDirectory: path.join(process.cwd(), '.juno_task'),
 
-  // Hooks configuration
-  hooks: {},
+  // Hooks configuration - populated with default hooks template
+  hooks: getDefaultHooks(),
 };
 
 /**
@@ -685,13 +686,8 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
     // Check if config file exists
     const configExists = await fs.pathExists(configPath);
 
-    // Define all available hook types with empty command arrays as examples
-    const allHookTypes = {
-      START_RUN: { commands: [] },
-      START_ITERATION: { commands: [] },
-      END_ITERATION: { commands: [] },
-      END_RUN: { commands: [] }
-    };
+    // Use default hooks template with file size monitoring commands
+    const allHookTypes = getDefaultHooks();
 
     if (!configExists) {
       // Create new config file with default config including all hook types

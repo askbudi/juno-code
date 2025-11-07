@@ -568,14 +568,16 @@ logLevel: info
       });
 
       // Should use defaults when no config file found
-      // NOTE: loadConfig() auto-migrates hooks to include all hook types with empty command arrays
+      // NOTE: loadConfig() auto-migrates hooks to include default hooks template with file size monitoring
       expect(config).toMatchObject({
         ...DEFAULT_CONFIG,
         hooks: {
-          START_RUN: { commands: [] },
-          START_ITERATION: { commands: [] },
-          END_ITERATION: { commands: [] },
-          END_RUN: { commands: [] }
+          START_ITERATION: {
+            commands: expect.arrayContaining([
+              expect.stringContaining('CLAUDE.md'),
+              expect.stringContaining('AGENTS.md')
+            ])
+          }
         }
       });
     });
@@ -997,14 +999,16 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       // All configs should be identical
       expect(configs[0]).toEqual(configs[1]);
       expect(configs[1]).toEqual(configs[2]);
-      // Auto-migration adds all hook types with empty command arrays
+      // Auto-migration adds default hooks template with file size monitoring
       expect(configs[0]).toMatchObject({
         ...DEFAULT_CONFIG,
         hooks: {
-          START_RUN: { commands: [] },
-          START_ITERATION: { commands: [] },
-          END_ITERATION: { commands: [] },
-          END_RUN: { commands: [] }
+          START_ITERATION: {
+            commands: expect.arrayContaining([
+              expect.stringContaining('CLAUDE.md'),
+              expect.stringContaining('AGENTS.md')
+            ])
+          }
         }
       });
     });

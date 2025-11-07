@@ -755,12 +755,14 @@ describe('hooks', () => {
       expect(await fs.pathExists(configPath)).toBe(true);
 
       const config = await fs.readJson(configPath);
-      // Auto-migration now includes all hook types with empty command arrays for better UX
-      expect(config.hooks).toEqual({
-        START_RUN: { commands: [] },
-        START_ITERATION: { commands: [] },
-        END_ITERATION: { commands: [] },
-        END_RUN: { commands: [] }
+      // Auto-migration now includes default hooks template with file size monitoring
+      expect(config.hooks).toMatchObject({
+        START_ITERATION: {
+          commands: expect.arrayContaining([
+            expect.stringContaining('CLAUDE.md'),
+            expect.stringContaining('AGENTS.md')
+          ])
+        }
       });
     });
 
@@ -781,12 +783,14 @@ describe('hooks', () => {
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      // Auto-migration now includes all hook types with empty command arrays for better UX
-      expect(config.hooks).toEqual({
-        START_RUN: { commands: [] },
-        START_ITERATION: { commands: [] },
-        END_ITERATION: { commands: [] },
-        END_RUN: { commands: [] }
+      // Auto-migration now includes default hooks template with file size monitoring
+      expect(config.hooks).toMatchObject({
+        START_ITERATION: {
+          commands: expect.arrayContaining([
+            expect.stringContaining('CLAUDE.md'),
+            expect.stringContaining('AGENTS.md')
+          ])
+        }
       });
       expect(config.defaultSubagent).toBe('claude'); // Preserve existing config
       expect(config.logLevel).toBe('info');
