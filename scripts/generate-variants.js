@@ -19,8 +19,8 @@ const DIST_DIR = path.join(ROOT_DIR, 'dist');
 const VARIANTS_DIR = path.join(ROOT_DIR, 'package-variants');
 const PACKAGES_OUTPUT_DIR = path.join(DIST_DIR, 'packages');
 
-// Variant names
-const VARIANTS = ['juno-agent', 'juno-code', 'juno-ts-task'];
+// Variant names - Only juno-code for npm registry as requested
+const VARIANTS = ['juno-code'];
 
 /**
  * Load base package.json
@@ -54,8 +54,12 @@ function mergePackageConfig(basePackage, variantConfig) {
 
   // Override with variant-specific values
   Object.keys(variantConfig).forEach(key => {
-    if (typeof variantConfig[key] === 'object' && !Array.isArray(variantConfig[key])) {
-      // Deep merge objects (like bin, repository, etc.)
+    if (key === 'bin') {
+      // For bin section, completely replace (don't merge)
+      // This allows variants to specify only their own binary commands
+      merged[key] = variantConfig[key];
+    } else if (typeof variantConfig[key] === 'object' && !Array.isArray(variantConfig[key])) {
+      // Deep merge objects (like repository, etc.)
       merged[key] = { ...merged[key], ...variantConfig[key] };
     } else {
       // Direct override for primitives and arrays

@@ -1,17 +1,16 @@
 #!/bin/bash
 
 ###############################################################################
-# NPM Multi-Package Publishing Script
+# NPM Package Publishing Script for juno-code
 #
-# This script automates the process of publishing multiple NPM package variants
-# (juno-agent, juno-code, juno-ts-task) from a single codebase.
+# This script automates the process of publishing the juno-code NPM package.
 #
 # Features:
 # - Automated version bumping (patch/minor/major)
 # - Builds the project once
-# - Generates multiple package variants
-# - Publishes all variants to NPM
-# - Includes template scripts in all packages
+# - Generates juno-code package variant
+# - Publishes to NPM
+# - Includes template scripts in package
 #
 # Usage:
 #   ./scripts/publish-all.sh [patch|minor|major] [--dry-run]
