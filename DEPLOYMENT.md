@@ -2,48 +2,38 @@
 
 ## Overview
 
-This project is published to NPM under **three different package names**, all providing the same CLI functionality:
+This project is published to NPM as **`juno-code`**, providing the `juno-code` command for AI-powered code automation and Claude Code integration.
 
-- **`juno-agent`** (Primary - recommended for new installations)
-- **`juno-code`** (Code-focused alias)
-- **`juno-ts-task`** (Legacy package name for backward compatibility)
+**Package**: `juno-code`
+**Binary Command**: `juno-code`
 
-All packages install the same binary commands: `juno`, `juno-agent`, `juno-code`, `juno-ts-task`, and `juno-collect-feedback`.
+## Package Strategy
 
-## Package Aliasing Strategy
-
-We use a **separate packages strategy** where:
+We use a **focused single-package strategy**:
 1. Single codebase in this repository
 2. Build artifacts generated once
-3. Multiple package variants created from the build
-4. All variants published to NPM simultaneously with identical versions
+3. Single package variant (`juno-code`) created from the build
+4. Published to NPM as `juno-code`
+
+This simplified approach eliminates binary command conflicts and provides a clean installation experience.
 
 ## Installation
 
-Users can install any of the three package names:
+Users install via:
 
 ```bash
-# Recommended (primary package)
-npm install -g juno-agent
-
-# Alternative installations
 npm install -g juno-code
-npm install -g juno-ts-task
 ```
 
-All three installations provide the same functionality and binary commands.
+## Binary Command
 
-## Binary Commands
-
-After installation, all packages provide these commands:
+After installation, the package provides:
 
 ```bash
-juno --help               # Universal command
-juno-agent --help         # Package-specific command
-juno-code --help          # Package-specific command
-juno-ts-task --help       # Legacy command
-juno-collect-feedback     # Feedback collection utility
+juno-code --help          # Main command for code automation
 ```
+
+**Note**: Only the `juno-code` command is installed to avoid conflicts with other packages.
 
 ## Deployment Process
 
@@ -109,19 +99,15 @@ The `scripts/publish-all.sh` script automates the entire deployment workflow:
 
 4. **Package Variant Generation**
    - Runs `node scripts/generate-variants.js`
-   - Creates three package variants in `dist/packages/`:
-     - `juno-agent`
-     - `juno-code`
-     - `juno-ts-task`
-   - Each variant includes:
+   - Creates juno-code package in `dist/packages/juno-code/`
+   - Package includes:
      - All build artifacts
      - Template scripts (clean_logs_folder.sh, install_requirements.sh)
      - README.md
-     - Variant-specific package.json
+     - juno-code-specific package.json with only the `juno-code` binary
 
 5. **Publishing**
-   - Publishes all three packages to NPM
-   - All packages get the same version number
+   - Publishes juno-code package to NPM
    - Published with `--access public`
 
 6. **Git Operations**
@@ -148,13 +134,11 @@ ls -la dist/packages/
 cat dist/packages/juno-agent/package.json
 
 # 4. Test package locally (optional)
-cd dist/packages/juno-agent
+cd dist/packages/juno-code
 npm pack --dry-run
 
-# 5. Publish each package
-cd dist/packages/juno-agent && npm publish --access public
+# 5. Publish package
 cd dist/packages/juno-code && npm publish --access public
-cd dist/packages/juno-ts-task && npm publish --access public
 
 # 6. Create git tag
 git tag -a v1.0.1 -m "Release v1.0.1"
@@ -163,20 +147,25 @@ git push && git push --tags
 
 ## Package Variant Configuration
 
-Package variants are defined in `package-variants/`:
+The package variant is defined in `package-variants/juno-code.json`:
 
-- **`juno-agent.json`**: Primary package configuration
-- **`juno-code.json`**: Code-focused package configuration
-- **`juno-ts-task.json`**: Legacy package configuration
+```json
+{
+  "name": "juno-code",
+  "description": "AI Subagent Orchestration CLI - Code-focused package...",
+  "keywords": [...],
+  "bin": {
+    "juno-code": "./dist/bin/cli.mjs"
+  }
+}
+```
 
-Each variant file contains package-specific overrides:
-- Package name
-- Description
-- Keywords
-- Binary command mappings
-- Repository URLs
+Key features:
+- **Single binary**: Only installs the `juno-code` command
+- **No conflicts**: Won't conflict with other juno packages
+- **Clean install**: Simple, focused installation
 
-The `scripts/generate-variants.js` merges these overrides with the base `package.json`.
+The `scripts/generate-variants.js` merges this configuration with the base `package.json`.
 
 ## Template Scripts Inclusion
 
@@ -192,9 +181,7 @@ These scripts are automatically:
 
 ## Version Management
 
-### Synchronized Versioning
-
-All three packages maintain **identical version numbers**. When you publish, all packages get the same version.
+### Versioning
 
 ### Semantic Versioning
 
@@ -226,23 +213,21 @@ After publishing, verify the packages:
 
 1. **Check NPM Registry**
    ```bash
-   npm view juno-agent
    npm view juno-code
-   npm view juno-ts-task
    ```
 
 2. **Test Installation**
    ```bash
-   npm install -g juno-agent@latest
-   juno --version
-   juno-agent --help
+   npm install -g juno-code@latest
+   juno-code --version
+   juno-code --help
    ```
 
 3. **Verify Template Scripts**
    ```bash
    # Initialize a test project
    mkdir test-juno && cd test-juno
-   juno-agent init --task "test" --subagent "claude" --git-url "https://example.com"
+   juno-code init --task "test" --subagent "claude" --git-url "https://example.com"
 
    # Check scripts were installed
    ls -la .juno_task/scripts/
@@ -270,7 +255,7 @@ npm login
 
 ```bash
 # Check current version
-npm view juno-agent version
+npm view juno-code version
 
 # Ensure local version is higher
 cat package.json | grep version
@@ -305,21 +290,27 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run variants:generate
-      - run: npm publish dist/packages/juno-agent --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
       - run: npm publish dist/packages/juno-code --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
-      - run: npm publish dist/packages/juno-ts-task --access public
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
 ```
 
 ## Package Naming Rationale
 
-- **juno-agent**: Primary package name focusing on AI agent orchestration
-- **juno-code**: Alternative name emphasizing coding assistance
-- **juno-ts-task**: Legacy name for backward compatibility with existing installations
+- **juno-code**: Focused package name emphasizing AI-powered code automation and Claude Code integration
+- **Single binary**: Avoids conflicts with other packages by only installing the `juno-code` command
 
-All three names point to the same functionality to provide flexibility for different user preferences and use cases.
+## Migration from Previous Versions
+
+If you had installed version 1.0.1 with multiple binary aliases:
+
+```bash
+# Uninstall old version
+npm uninstall -g juno-code
+
+# Install new version (1.0.2+)
+npm install -g juno-code
+
+# Only juno-code command will be available
+juno-code --help
+```

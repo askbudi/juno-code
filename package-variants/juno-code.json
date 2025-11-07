@@ -17,11 +17,7 @@
     "coding"
   ],
   "bin": {
-    "juno": "./dist/bin/cli.mjs",
-    "juno-agent": "./dist/bin/cli.mjs",
-    "juno-code": "./dist/bin/cli.mjs",
-    "juno-ts-task": "./dist/bin/cli.mjs",
-    "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
+    "juno-code": "./dist/bin/cli.mjs"
   },
   "repository": {
     "type": "git",
