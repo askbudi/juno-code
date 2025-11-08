@@ -933,13 +933,13 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       mcpServers: {
         "roundtable-ai": {
           name: "roundtable-ai",
-          command: "python",
-          args: [roundtablePath],
+          command: "roundtable-ai",
+          args: [],
           timeout: 7200.0,
           enable_default_progress_callback: true,
           suppress_subprocess_logs: true,
           env: {
-            PYTHONPATH: path.resolve(__dirname, '../..'),
+            
             ROUNDTABLE_DEBUG: "false"
           },
           _metadata: {
