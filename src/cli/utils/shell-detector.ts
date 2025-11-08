@@ -1,5 +1,5 @@
 /**
- * Shell Detection Utility for juno-task-ts
+ * Shell Detection Utility for juno-code
  *
  * Detects available shells and manages shell-specific configuration paths.
  * Supports bash, zsh, fish, and other common shells.
@@ -137,19 +137,19 @@ export class ShellDetector {
       case 'bash':
         // Use user completion directory
         if (process.platform === 'darwin') {
-          return path.join('/usr/local/etc/bash_completion.d', 'juno-ts-task');
+          return path.join('/usr/local/etc/bash_completion.d', 'juno-code');
         }
-        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'juno-ts-task');
+        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'juno-code');
 
       case 'zsh':
         // Use user site-functions directory
-        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_juno-ts-task');
+        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_juno-code');
 
       case 'fish':
-        return path.join(homeDir, '.config', 'fish', 'completions', 'juno-ts-task.fish');
+        return path.join(homeDir, '.config', 'fish', 'completions', 'juno-code.fish');
 
       case 'powershell':
-        return path.join(homeDir, '.config', 'powershell', 'completions', 'juno-ts-task.ps1');
+        return path.join(homeDir, '.config', 'powershell', 'completions', 'juno-code.ps1');
 
       default:
         throw new Error(`Unsupported shell: ${shell}`);
@@ -174,19 +174,19 @@ export class ShellDetector {
   getSourceCommand(shell: ShellType, completionPath: string): string {
     switch (shell) {
       case 'bash':
-        return `# juno-ts-task completion\n[ -f "${completionPath}" ] && source "${completionPath}"`;
+        return `# juno-code completion\n[ -f "${completionPath}" ] && source "${completionPath}"`;
 
       case 'zsh':
         // Add to fpath and enable completion
         const zshDir = path.dirname(completionPath);
-        return `# juno-ts-task completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit && compinit`;
+        return `# juno-code completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit && compinit`;
 
       case 'fish':
         // Fish automatically loads completions from ~/.config/fish/completions/
-        return `# juno-ts-task completion (automatically loaded)`;
+        return `# juno-code completion (automatically loaded)`;
 
       case 'powershell':
-        return `# juno-ts-task completion\n. "${completionPath}"`;
+        return `# juno-code completion\n. "${completionPath}"`;
 
       default:
         throw new Error(`Unsupported shell: ${shell}`);
@@ -204,7 +204,7 @@ export class ShellDetector {
 
       const content = await fs.readFile(configPath, 'utf-8');
       // Check for the marker comment
-      return content.includes('juno-ts-task completion');
+      return content.includes('juno-code completion');
     } catch {
       return false;
     }

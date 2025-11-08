@@ -633,7 +633,7 @@ describe('GitManager', () => {
       );
       expect(mockExeca).toHaveBeenCalledWith(
         'git',
-        ['commit', '-m', 'Initial commit - juno-task project setup'],
+        ['commit', '-m', 'Initial commit - juno-code project setup'],
         { cwd: tempDir }
       );
     });
@@ -829,7 +829,7 @@ EXISTING_CONFIG: value
       await gitManager.updateJunoTaskConfig(gitUrl);
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Warning: Failed to update juno-task configuration')
+        expect.stringContaining('Warning: Failed to update juno-code configuration')
       );
 
       consoleSpy.mockRestore();

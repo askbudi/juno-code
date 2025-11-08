@@ -473,12 +473,12 @@ describe.skip('CLI Completion Utilities', () => {
       // Mock the module if it doesn't exist
       completionModule = {
         generateBashCompletion: vi.fn(() => '#!/bin/bash\n# Bash completion script'),
-        generateZshCompletion: vi.fn(() => '#compdef juno-task\n# Zsh completion script'),
+        generateZshCompletion: vi.fn(() => '#compdef juno-code\n# Zsh completion script'),
         generateFishCompletion: vi.fn(() => '# Fish completion script'),
         installCompletion: vi.fn(),
         uninstallCompletion: vi.fn(),
         detectShell: vi.fn(() => 'bash'),
-        getCompletionPath: vi.fn((shell) => `/etc/bash_completion.d/juno-task`),
+        getCompletionPath: vi.fn((shell) => `/etc/bash_completion.d/juno-code`),
         completeCommands: vi.fn(() => ['init', 'start', 'session', 'feedback']),
         completeOptions: vi.fn(() => ['--verbose', '--quiet', '--help']),
         completeSubagents: vi.fn(() => ['claude', 'cursor', 'codex', 'gemini'])
@@ -508,7 +508,7 @@ describe.skip('CLI Completion Utilities', () => {
       const script = completionModule.generateZshCompletion();
 
       expect(script).toContain('#compdef');
-      expect(script).toContain('juno-task');
+      expect(script).toContain('juno-code');
     });
   });
 
@@ -543,7 +543,7 @@ describe.skip('CLI Completion Utilities', () => {
       const path = completionModule.getCompletionPath('bash');
 
       expect(path).toContain('bash');
-      expect(path).toContain('juno-task');
+      expect(path).toContain('juno-code');
     });
 
     it('should return completion path for zsh', () => {

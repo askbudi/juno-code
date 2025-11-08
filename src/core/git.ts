@@ -407,7 +407,7 @@ export class GitManager {
   /**
    * Create initial commit
    */
-  async createInitialCommit(message: string = 'Initial commit - juno-task project setup'): Promise<void> {
+  async createInitialCommit(message: string = 'Initial commit - juno-code project setup'): Promise<void> {
     try {
       const { execa } = await import('execa');
 
@@ -509,7 +509,7 @@ GIT_URL: ${gitUrl}
       await fs.writeFile(configPath, content, 'utf-8');
     } catch (error) {
       // Log warning but don't fail the operation
-      console.warn(`Warning: Failed to update juno-task configuration: ${error}`);
+      console.warn(`Warning: Failed to update juno-code configuration: ${error}`);
     }
   }
 

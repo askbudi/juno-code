@@ -1,5 +1,5 @@
 /**
- * Core configuration module for juno-task-ts
+ * Core configuration module for juno-code
  *
  * Provides comprehensive configuration management with multi-source loading,
  * validation, and environment variable support.
@@ -224,11 +224,11 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
  * Searched in order of preference (after project-specific config)
  */
 const GLOBAL_CONFIG_FILE_NAMES = [
-  'juno-task.config.json',
-  'juno-task.config.js',
-  '.juno-taskrc.json',
-  '.juno-taskrc.js',
-  'package.json', // Will look for 'junoTask' field
+  'juno-code.config.json',
+  'juno-code.config.js',
+  '.juno-coderc.json',
+  '.juno-coderc.js',
+  'package.json', // Will look for 'junoCode' field
 ] as const;
 
 /**
@@ -348,7 +348,7 @@ async function loadYamlConfig(filePath: string): Promise<Partial<JunoTaskConfig>
 
 /**
  * Load configuration from package.json
- * Looks for configuration in the 'junoTask' field
+ * Looks for configuration in the 'junoCode' field
  *
  * @param filePath - Path to package.json
  * @returns Parsed configuration object
@@ -357,7 +357,7 @@ async function loadPackageJsonConfig(filePath: string): Promise<Partial<JunoTask
   try {
     const content = await fsPromises.readFile(filePath, 'utf-8');
     const packageJson = JSON.parse(content);
-    return packageJson.junoTask || {};
+    return packageJson.junoCode || {};
   } catch (error) {
     throw new Error(`Failed to load package.json config from ${filePath}: ${error}`);
   }
@@ -384,7 +384,7 @@ function getConfigFileFormat(filePath: string): ConfigFileFormat {
     case '.mjs':
       return 'js';
     default:
-      // For files like .juno-taskrc (no extension), assume JSON
+      // For files like .juno-coderc (no extension), assume JSON
       return 'json';
   }
 }

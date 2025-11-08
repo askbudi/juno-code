@@ -341,7 +341,7 @@ class ExecutionCoordinator {
     // Initialize feedback collector if enabled
     if (this.enableFeedback) {
       this.feedbackCollector = new ConcurrentFeedbackCollector({
-        command: 'juno-ts-task',
+        command: 'juno-code',
         commandArgs: ['feedback'],
         verbose: this.config.verbose,
         showHeader: true,
@@ -807,10 +807,10 @@ Performance Options:
   --metrics-file <path>         Custom metrics file path
 
 Environment Variables:
-  JUNO_TASK_MAX_ITERATIONS      Default maximum iterations
-  JUNO_TASK_MODEL              Default model to use
-  JUNO_TASK_MCP_SERVER_PATH    Path to MCP server executable
-  JUNO_TASK_MCP_TIMEOUT        MCP operation timeout (ms)
+  JUNO_CODE_MAX_ITERATIONS      Default maximum iterations
+  JUNO_CODE_MODEL              Default model to use
+  JUNO_CODE_MCP_SERVER_PATH    Path to MCP server executable
+  JUNO_CODE_MCP_TIMEOUT        MCP operation timeout (ms)
 
 Notes:
   - Requires .juno_task/init.md file (created by 'juno-code init')
