@@ -156,18 +156,31 @@ install_with_uv() {
 
     local uv_flags="--quiet"
 
-    if is_in_virtualenv; then
+    # Check if we're in a venv using uv's own detection (most reliable for uv)
+    # Try a test install to see if uv detects a venv
+    local needs_venv=false
+    if ! is_in_virtualenv; then
+        # Not in a venv according to Python - let's verify with uv
+        # Test if uv would accept installation without --system flag
+        if ! uv pip list &>/dev/null; then
+            needs_venv=true
+        fi
+    fi
+
+    if is_in_virtualenv && ! $needs_venv; then
         log_info "Detected virtual environment - installing into venv"
-    elif is_externally_managed_python; then
-        log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
-        log_info "Creating temporary virtual environment for installation..."
+    elif is_externally_managed_python || $needs_venv; then
+        if is_externally_managed_python; then
+            log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
+        fi
+        log_info "Creating virtual environment for installation..."
 
         # Create a project-local venv if it doesn't exist
-        local venv_path=".juno_venv"
+        local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
             if ! python3 -m venv "$venv_path" 2>/dev/null; then
                 log_error "Failed to create virtual environment"
-                log_info "Please install python3-venv: sudo apt install python3-venv python3-full"
+                log_info "Please install python3-venv (Linux: sudo apt install python3-venv python3-full)"
                 return 1
             fi
             log_success "Created virtual environment at $venv_path"
@@ -217,17 +230,17 @@ install_with_pip() {
         fi
     fi
 
-    # Handle externally managed Python
+    # Handle externally managed Python or missing venv
     if ! is_in_virtualenv && is_externally_managed_python; then
         log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
-        log_info "Creating temporary virtual environment for installation..."
+        log_info "Creating virtual environment for installation..."
 
         # Create a project-local venv if it doesn't exist
-        local venv_path=".juno_venv"
+        local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
             if ! $python_cmd -m venv "$venv_path" 2>/dev/null; then
                 log_error "Failed to create virtual environment"
-                log_info "Please install python3-venv: sudo apt install python3-venv python3-full"
+                log_info "Please install python3-venv (Linux: sudo apt install python3-venv python3-full)"
                 return 1
             fi
             log_success "Created virtual environment at $venv_path"
@@ -353,9 +366,9 @@ main() {
         if install_with_uv; then
             echo ""
             log_success "All packages installed successfully using 'uv'!"
-            if [ -d ".juno_venv" ]; then
-                log_info "Packages installed in virtual environment: .juno_venv"
-                log_info "To use them, activate the venv: source .juno_venv/bin/activate"
+            if [ -d ".venv_juno" ]; then
+                log_info "Packages installed in virtual environment: .venv_juno"
+                log_info "To use them, activate the venv: source .venv_juno/bin/activate"
             fi
             echo ""
             exit 0
@@ -367,9 +380,9 @@ main() {
         if install_with_pip; then
             echo ""
             log_success "All packages installed successfully using 'pip'!"
-            if [ -d ".juno_venv" ]; then
-                log_info "Packages installed in virtual environment: .juno_venv"
-                log_info "To use them, activate the venv: source .juno_venv/bin/activate"
+            if [ -d ".venv_juno" ]; then
+                log_info "Packages installed in virtual environment: .venv_juno"
+                log_info "To use them, activate the venv: source .venv_juno/bin/activate"
             fi
             echo ""
             exit 0
