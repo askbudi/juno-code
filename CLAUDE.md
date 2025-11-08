@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project was initialized on 2025-10-08 using juno-task.
+This project was initialized on 2025-10-08 using juno-code.
 
 **Main Task**: Build a comprehensive testing framework
 **Preferred Subagent**: claude
@@ -16,9 +16,9 @@ This project was initialized on 2025-10-08 using juno-task.
 - Use `npm run test:binary` for CLI testing
 
 ### Key Commands
-- `juno-task start` - Begin task execution
-- `juno-task -s claude` - Quick execution with preferred subagent
-- `juno-task feedback` - Provide feedback on the process
+- `juno-code start` - Begin task execution
+- `juno-code -s claude` - Quick execution with preferred subagent
+- `juno-code feedback` - Provide feedback on the process
 
 ## Project Structure
 
@@ -135,9 +135,9 @@ The project uses a sophisticated AI workflow with:
 6. ✅ MCP Progress formatting regression - restored colored, human-readable JSON output (2025-10-17)
 7. ✅ User Input Mixing with App Updates - Fixed terminal line coordination (2025-10-17)
 8. ✅ MCP Environment Variables Security Fix - complete process isolation (2025-10-16)
-9. ✅ File Compaction System - `juno-task feedback compact` (16/16 tests passing)
+9. ✅ File Compaction System - `juno-code feedback compact` (16/16 tests passing)
 10. ✅ Concurrent Feedback Collector - `juno-collect-feedback` (No TTY, multiline paste support)
-11. ✅ juno-ts-task Feedback Integration - `juno-task start --enable-feedback` (Concurrent feedback collection)
+11. ✅ juno-code Feedback Integration - `juno-code start --enable-feedback` (Concurrent feedback collection)
 
 
 ### 2025-10-16 — MCP Environment Variables Security Fix RESOLVED

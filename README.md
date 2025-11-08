@@ -1,10 +1,10 @@
-# juno-task-ts
+# juno-code
 
-TypeScript implementation of juno-task CLI tool for AI subagent orchestration.
+TypeScript CLI tool for AI subagent orchestration with code automation.
 
 ## Overview
 
-juno-task-ts is an AI-powered development CLI that orchestrates subagents (Claude, Cursor, Codex, Gemini) through MCP (Model Context Protocol) servers. It provides a modern TypeScript implementation with React INK TUI, comprehensive testing infrastructure, and automated feedback collection.
+juno-code is an AI-powered development CLI that orchestrates subagents (Claude, Cursor, Codex, Gemini) through MCP (Model Context Protocol) servers. It provides a modern TypeScript implementation with React INK TUI, comprehensive testing infrastructure, and automated feedback collection.
 
 ## Installation
 
@@ -12,14 +12,8 @@ This package is available on NPM under multiple names for flexibility:
 
 ```bash
 # Primary package (recommended)
-npm install -g juno-agent
-
-# Alternative installations
 npm install -g juno-code
-npm install -g juno-ts-task
 ```
-
-All three packages provide the same functionality and binary commands.
 
 ## Getting Started
 
@@ -34,13 +28,13 @@ All three packages provide the same functionality and binary commands.
 
 ```bash
 # Initialize a new project
-juno-agent init --task "Your task" --subagent claude --git-url "https://github.com/user/repo"
+juno-code init --task "Your task" --subagent claude --git-url "https://github.com/user/repo"
 
 # Start task execution
-juno-agent start
+juno-code start
 
-# Or use the universal command
-juno --help
+# Or use the juno-code command for all operations
+juno-code --help
 
 # Collect feedback during execution
 juno-collect-feedback
@@ -48,12 +42,9 @@ juno-collect-feedback
 
 ### Available Commands
 
-All packages install these binary commands:
+The package installs these binary commands:
 
-- `juno` - Universal command (recommended)
-- `juno-agent` - Package-specific command
-- `juno-code` - Package-specific command
-- `juno-ts-task` - Legacy command
+- `juno-code` - Main command (recommended)
 - `juno-collect-feedback` - Feedback collection utility
 
 ## Project Structure
@@ -108,10 +99,10 @@ The project uses `claude` as the primary AI subagent with these settings:
 
 1. **Review Task**: Check `.juno_task/init.md` for main task
 2. **Check Plan**: Review `.juno_task/plan.md` for current priorities
-3. **Provide Feedback**: Use `juno-task feedback` for issues or suggestions
+3. **Provide Feedback**: Use `juno-code feedback` for issues or suggestions
 4. **Track Progress**: Monitor AI development through `.juno_task/prompt.md`
 
 ---
 
-Created with juno-task on 2025-10-08
+Created with juno-code on 2025-10-08
 using claude as primary AI subagent

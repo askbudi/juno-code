@@ -236,7 +236,7 @@ export class CompletionCommand {
 
       if (uninstalledShells.length > 0) {
         console.log(chalk.blue('\n💡 Suggestions:'));
-        console.log(chalk.white(`   Install completion: juno-ts-task completion install ${uninstalledShells.join(' ')}`));
+        console.log(chalk.white(`   Install completion: juno-code completion install ${uninstalledShells.join(' ')}`));
       }
 
       // Show current shell info
@@ -247,7 +247,7 @@ export class CompletionCommand {
           console.log(chalk.green(`\n🎯 Current shell (${currentShell}): Completion active`));
         } else {
           console.log(chalk.yellow(`\n🎯 Current shell (${currentShell}): Completion not installed`));
-          console.log(chalk.white(`   Install: juno-ts-task completion install ${currentShell}`));
+          console.log(chalk.white(`   Install: juno-code completion install ${currentShell}`));
         }
       }
 
@@ -357,7 +357,7 @@ export class CompletionCommand {
         break;
     }
 
-    console.log(chalk.white('• Test: juno-ts-task <TAB>'));
+    console.log(chalk.white('• Test: juno-code <TAB>'));
   }
 }
 

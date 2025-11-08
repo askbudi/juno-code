@@ -1,5 +1,5 @@
 /**
- * CLI Types Module for juno-task-ts
+ * CLI Types Module for juno-code
  *
  * Comprehensive TypeScript interfaces and types for the CLI framework,
  * supporting all commands, options, error handling, and help systems.
@@ -471,7 +471,7 @@ export class CommandNotFoundError extends CLIError {
     if (availableCommands.length > 0) {
       this.suggestions = [
         `Available commands: ${availableCommands.join(', ')}`,
-        `Use 'juno-task --help' for usage information`
+        `Use 'juno-code --help' for usage information`
       ];
     }
   }
@@ -520,7 +520,7 @@ export class SessionError extends CLIError {
     this.suggestions = [
       'Check session directory permissions',
       'Verify sufficient disk space',
-      'Use juno-task session clean to remove old sessions'
+      'Use juno-code session clean to remove old sessions'
     ];
   }
 }
@@ -819,7 +819,7 @@ export const SUBAGENT_ALIASES: Record<string, SubagentType> = {
  * Command categories for help organization
  */
 export const COMMAND_CATEGORIES = {
-  EXECUTION: ['juno-task', 'start'],
+  EXECUTION: ['juno-code', 'start'],
   PROJECT: ['init', 'setup-git'],
   TESTING: ['test'],
   SESSION: ['session'],

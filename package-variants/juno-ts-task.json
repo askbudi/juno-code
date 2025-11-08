@@ -1,6 +1,6 @@
 {
   "name": "juno-ts-task",
-  "description": "TypeScript implementation of juno-task CLI tool for AI subagent orchestration (legacy package name - use juno-agent for new installations)",
+  "description": "TypeScript CLI tool for AI subagent orchestration (legacy package name - use juno-code for new installations)",
   "keywords": [
     "ai",
     "cli",
@@ -22,10 +22,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/owner/juno-task-ts.git"
+    "url": "https://github.com/owner/juno-code.git"
   },
   "bugs": {
-    "url": "https://github.com/owner/juno-task-ts/issues"
+    "url": "https://github.com/owner/juno-code/issues"
   },
-  "homepage": "https://github.com/owner/juno-task-ts#readme"
+  "homepage": "https://github.com/owner/juno-code#readme"
 }

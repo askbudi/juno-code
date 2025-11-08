@@ -354,7 +354,7 @@ class MainExecutionCoordinator {
     // Initialize feedback collector if enabled
     if (this.enableFeedback) {
       this.feedbackCollector = new ConcurrentFeedbackCollector({
-        command: 'juno-ts-task',
+        command: 'juno-code',
         commandArgs: ['feedback'],
         verbose: this.config.verbose,
         showHeader: true,
@@ -582,34 +582,34 @@ export function createMainCommand(): CLICommand {
         description: 'Subagent to use',
         required: true,
         choices: ['claude', 'cursor', 'codex', 'gemini', 'claude-code', 'claude_code', 'gemini-cli', 'cursor-agent'],
-        env: 'JUNO_TASK_SUBAGENT'
+        env: 'JUNO_CODE_SUBAGENT'
       }),
       createOption({
         flags: '-p, --prompt <text|file>',
         description: 'Prompt input (file path or inline text)',
-        env: 'JUNO_TASK_PROMPT'
+        env: 'JUNO_CODE_PROMPT'
       }),
       createOption({
         flags: '-w, --cwd <path>',
         description: 'Working directory',
         defaultValue: process.cwd(),
-        env: 'JUNO_TASK_CWD'
+        env: 'JUNO_CODE_CWD'
       }),
       createOption({
         flags: '-i, --max-iterations <number>',
         description: 'Maximum iterations (-1 for unlimited)',
-        env: 'JUNO_TASK_MAX_ITERATIONS'
+        env: 'JUNO_CODE_MAX_ITERATIONS'
       }),
       createOption({
         flags: '-m, --model <name>',
         description: 'Model to use (optional, subagent-specific)',
-        env: 'JUNO_TASK_MODEL'
+        env: 'JUNO_CODE_MODEL'
       }),
       createOption({
         flags: '-I, --interactive',
         description: 'Interactive mode for typing/pasting prompts',
         defaultValue: false,
-        env: 'JUNO_TASK_INTERACTIVE'
+        env: 'JUNO_CODE_INTERACTIVE'
       }),
       createOption({
         flags: '--interactive-prompt',
