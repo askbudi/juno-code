@@ -20,13 +20,13 @@ import { setFeedbackActive, isFeedbackActive, flushBufferedProgress, setInputRed
 export interface FeedbackCollectorOptions {
   /**
    * Command to run for each feedback submission
-   * @default 'juno-ts-task'
+   * @default 'juno-code'
    */
   command?: string;
 
   /**
    * Arguments for the feedback command
-   * @default ['juno-ts-task', 'feedback']
+   * @default ['juno-code', 'feedback']
    */
   commandArgs?: string[];
 
@@ -96,8 +96,8 @@ export class ConcurrentFeedbackCollector {
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
-      command: options.command || 'juno-ts-task',
-      commandArgs: options.commandArgs || ['juno-ts-task', 'feedback'],
+      command: options.command || 'juno-code',
+      commandArgs: options.commandArgs || ['juno-code', 'feedback'],
       verbose: options.verbose || false,
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,

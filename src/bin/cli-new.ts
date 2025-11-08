@@ -1,5 +1,5 @@
 /**
- * CLI entry point for juno-task-ts using the new framework
+ * CLI entry point for juno-code using the new framework
  *
  * Comprehensive TypeScript CLI implementation with full functionality parity
  * to the Python budi-cli. Uses the new CLI framework for consistent command
@@ -43,7 +43,7 @@ function setupCompletionCommands(): void {
     handler: async (args: string[]) => {
       try {
         const shell = args[0];
-        const script = generateCompletion(shell as any, 'juno-task');
+        const script = generateCompletion(shell as any, 'juno-code');
         console.log(script);
       } catch (error) {
         throw error;
