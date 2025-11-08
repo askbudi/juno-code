@@ -386,6 +386,68 @@ Items will be added here as we discover what needs to be implemented.
 
     await fs.writeFile(path.join(junoTaskDir, 'plan.md'), planContent);
 
+    // Create implement.md
+    const implementContent = `# Implementation Guide
+
+## Current Focus
+
+**Main Task**: ${variables.TASK}
+
+## Implementation Steps
+
+### Step 1: Analysis and Planning
+- [ ] Review existing codebase structure
+- [ ] Identify key components and dependencies
+- [ ] Document current state in @.juno_task/plan.md
+- [ ] Create detailed specifications in @.juno_task/specs/
+
+### Step 2: Design and Architecture
+- [ ] Define system architecture
+- [ ] Design data models and APIs
+- [ ] Plan integration points
+- [ ] Document architecture decisions
+
+### Step 3: Implementation
+- [ ] Implement core functionality
+- [ ] Write comprehensive tests
+- [ ] Ensure code quality and documentation
+- [ ] Follow coding standards and best practices
+
+### Step 4: Testing and Validation
+- [ ] Unit tests with >90% coverage
+- [ ] Integration tests
+- [ ] Performance testing
+- [ ] Security review
+
+### Step 5: Documentation and Deployment
+- [ ] Update all documentation
+- [ ] Create deployment guides
+- [ ] Version control and tagging
+- [ ] Final review and sign-off
+
+## Current Tasks
+
+Update this section with specific tasks for the current iteration:
+
+1. **Task 1**: Study existing codebase and create specifications
+   - Status: Not Started
+   - Owner: ${variables.EDITOR}
+   - Priority: High
+
+## Notes and Considerations
+
+- Keep this file updated as implementation progresses
+- Document any blockers or issues encountered
+- Reference related specs and plan items
+- Track progress and update status regularly
+
+---
+*Last updated: ${variables.CURRENT_DATE}*
+*Primary subagent: ${variables.EDITOR}*
+`;
+
+    await fs.writeFile(path.join(junoTaskDir, 'implement.md'), implementContent);
+
     // Create specs directory and files
     const specsDir = path.join(junoTaskDir, 'specs');
     await fs.ensureDir(specsDir);
@@ -576,6 +638,7 @@ This project was initialized on ${variables.CURRENT_DATE} using juno-task.
 │   ├── prompt.md          # Main task definition with AI instructions
 │   ├── init.md            # Initial task breakdown and constraints
 │   ├── plan.md            # Dynamic planning and priority tracking
+│   ├── implement.md       # Implementation guide and current tasks
 │   ├── USER_FEEDBACK.md   # User feedback and issue tracking
 │   ├── scripts/           # Utility scripts for project maintenance
 │   │   └── clean_logs_folder.sh  # Archive old log files
@@ -724,8 +787,10 @@ juno-task feedback
 │   ├── prompt.md          # Production-ready AI instructions
 │   ├── init.md            # Task breakdown and constraints
 │   ├── plan.md            # Dynamic planning and tracking
+│   ├── implement.md       # Implementation guide and current tasks
 │   ├── USER_FEEDBACK.md   # User feedback and issue tracking
 │   ├── scripts/           # Utility scripts for project maintenance
+│   │   ├── install_requirements.sh  # Install Python dependencies
 │   │   └── clean_logs_folder.sh  # Archive old log files (3+ days)
 │   └── specs/             # Comprehensive specifications
 │       ├── README.md      # Specs overview and guide
@@ -770,8 +835,9 @@ ${variables.GIT_URL ? `\n## Repository\n${variables.GIT_URL}` : ''}
 
 1. **Review Task**: Check \`.juno_task/init.md\` for main task
 2. **Check Plan**: Review \`.juno_task/plan.md\` for current priorities
-3. **Provide Feedback**: Use \`juno-task feedback\` for issues or suggestions
-4. **Track Progress**: Monitor AI development through \`.juno_task/prompt.md\`
+3. **Track Implementation**: Follow \`.juno_task/implement.md\` for current implementation steps
+4. **Provide Feedback**: Use \`juno-task feedback\` for issues or suggestions
+5. **Monitor Progress**: Track AI development through \`.juno_task/prompt.md\`
 
 ---
 

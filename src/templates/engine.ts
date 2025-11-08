@@ -622,6 +622,94 @@ Tasks , USER_FEEDBACK and @{{AGENT_DOC_FILE}} should repesent truth. User Open I
         fileExtension: '.md'
       }],
 
+      ['implement.md', {
+        id: 'implement.md',
+        name: 'Implementation Guide',
+        description: 'Implementation steps and current task breakdown',
+        category: TemplateCategory.WORKFLOW,
+        content: `# Implementation Guide
+
+## Current Focus
+
+**Main Task**: {{TASK}}
+
+## Implementation Steps
+
+### Step 1: Analysis and Planning
+- [ ] Review existing codebase structure
+- [ ] Identify key components and dependencies
+- [ ] Document current state in @.juno_task/plan.md
+- [ ] Create detailed specifications in @.juno_task/specs/
+
+### Step 2: Design and Architecture
+- [ ] Define system architecture
+- [ ] Design data models and APIs
+- [ ] Plan integration points
+- [ ] Document architecture decisions
+
+### Step 3: Implementation
+- [ ] Implement core functionality
+- [ ] Write comprehensive tests
+- [ ] Ensure code quality and documentation
+- [ ] Follow coding standards and best practices
+
+### Step 4: Testing and Validation
+- [ ] Unit tests with >90% coverage
+- [ ] Integration tests
+- [ ] Performance testing
+- [ ] Security review
+
+### Step 5: Documentation and Deployment
+- [ ] Update all documentation
+- [ ] Create deployment guides
+- [ ] Version control and tagging
+- [ ] Final review and sign-off
+
+## Current Tasks
+
+Update this section with specific tasks for the current iteration:
+
+1. **Task 1**: [Description]
+   - Status: Not Started
+   - Owner: {{SUBAGENT}}
+   - Priority: High
+
+## Notes and Considerations
+
+- Keep this file updated as implementation progresses
+- Document any blockers or issues encountered
+- Reference related specs and plan items
+- Track progress and update status regularly
+
+---
+*Last updated: {{CURRENT_DATE}}*
+*Primary subagent: {{SUBAGENT}}*`,
+        variables: [
+          {
+            name: 'TASK',
+            description: 'Main task description',
+            type: 'text',
+            required: true
+          },
+          {
+            name: 'SUBAGENT',
+            description: 'Preferred AI subagent',
+            type: 'subagent',
+            required: true,
+            defaultValue: 'claude',
+            choices: VALID_SUBAGENTS
+          },
+          {
+            name: 'CURRENT_DATE',
+            description: 'Current date',
+            type: 'date',
+            required: true
+          }
+        ],
+        version: '1.0.0',
+        fileExtension: '.md'
+      }],
+
       ['USER_FEEDBACK.md', {
         id: 'USER_FEEDBACK.md',
         name: 'User Feedback Template',
