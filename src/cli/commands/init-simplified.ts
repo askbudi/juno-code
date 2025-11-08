@@ -1,5 +1,5 @@
 /**
- * Simplified Init command implementation for juno-task-ts CLI
+ * Simplified Init command implementation for juno-code CLI
  *
  * Minimal flow: Project Root → Main Task → Editor Selection → Git Setup → Save
  * Removes all complex features: token counting, cost calculation, character limits, etc.
@@ -255,8 +255,8 @@ ${variables.TASK}
 ## Next Steps
 
 1. Review the main task above
-2. Run \`juno-task start\` to begin execution
-3. Or run \`juno-task -s claude\` to use the main command
+2. Run \`juno-code start\` to begin execution
+3. Or run \`juno-code -s claude\` to use the main command
 
 ${variables.GIT_URL ? `\n## Git Repository\n${variables.GIT_URL}` : ''}
 `;
@@ -277,8 +277,8 @@ ${variables.TASK}
 ### Getting Started
 
 1. Review the main task above
-2. Use \`juno-task start\` to execute with this task
-3. Use \`juno-task -s claude\` for quick execution
+2. Use \`juno-code start\` to execute with this task
+3. Use \`juno-code -s claude\` for quick execution
 `;
 
     await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);
@@ -290,21 +290,21 @@ ${variables.DESCRIPTION}
 
 ## Getting Started
 
-This project uses juno-task for AI-powered development.
+This project uses juno-code for AI-powered development.
 
 ### Prerequisites
 
 - Node.js installed
-- juno-task CLI installed
+- juno-code CLI installed
 
 ### Quick Start
 
 \`\`\`bash
 # Start task execution
-juno-task start
+juno-code start
 
 # Or use main command
-juno-task -s claude
+juno-code -s claude
 \`\`\`
 
 ### Project Structure
@@ -325,7 +325,7 @@ ${variables.GIT_URL ? `\n## Repository\n${variables.GIT_URL}` : ''}
 
 ---
 
-Created with juno-task on ${variables.CURRENT_DATE}
+Created with juno-code on ${variables.CURRENT_DATE}
 `;
 
     await fs.writeFile(path.join(targetDirectory, 'README.md'), readmeContent);
@@ -337,8 +337,8 @@ Created with juno-task on ${variables.CURRENT_DATE}
   private printNextSteps(targetDirectory: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
-    console.log(chalk.white('   juno-task start           # Start task execution'));
-    console.log(chalk.white('   juno-task -s claude       # Quick execution with Claude'));
+    console.log(chalk.white('   juno-code start           # Start task execution'));
+    console.log(chalk.white('   juno-code -s claude       # Quick execution with Claude'));
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
     console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));

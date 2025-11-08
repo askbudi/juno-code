@@ -59,6 +59,26 @@ vi.mock('../../mcp/client.js', () => ({
 }));
 
 vi.mock('../utils/advanced-logger.js', () => ({
+  logger: {
+    child: vi.fn().mockReturnValue({
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      startTimer: vi.fn(),
+      endTimer: vi.fn()
+    }),
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    startTimer: vi.fn(),
+    endTimer: vi.fn()
+  },
   cliLogger: {
     startTimer: vi.fn(),
     endTimer: vi.fn(),
@@ -68,7 +88,22 @@ vi.mock('../utils/advanced-logger.js', () => ({
     info: vi.fn()
   },
   LogLevel: {
-    INFO: 'info'
+    TRACE: 0,
+    DEBUG: 1,
+    INFO: 2,
+    WARN: 3,
+    ERROR: 4,
+    FATAL: 5
+  },
+  LogContext: {
+    CLI: 'CLI',
+    MCP: 'MCP',
+    ENGINE: 'ENGINE',
+    SESSION: 'SESSION',
+    TEMPLATE: 'TEMPLATE',
+    CONFIG: 'CONFIG',
+    PERFORMANCE: 'PERFORMANCE',
+    SYSTEM: 'SYSTEM'
   }
 }));
 

@@ -1,5 +1,5 @@
 /**
- * Completion Command for juno-task-ts CLI
+ * Completion Command for juno-code CLI
  *
  * Manages shell completion installation, uninstallation, and status.
  * Supports auto-detection and manual shell selection.

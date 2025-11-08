@@ -38,7 +38,7 @@ describe('Feedback Command Binary Execution', () => {
       '--test', criteria
     ], {
       cwd: tempDir,
-      env: { NO_COLOR: '1', NODE_ENV: 'development', JUNO_TASK_CONFIG: '' },
+      env: { NO_COLOR: '1', NODE_ENV: 'development', JUNO_CODE_CONFIG: '', JUNO_TASK_CONFIG: '' },
       reject: false
     });
 

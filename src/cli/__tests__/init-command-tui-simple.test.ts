@@ -94,7 +94,8 @@ describe('Simple TUI Verification', () => {
         NODE_ENV: 'development',
         CI: '',
         FORCE_INTERACTIVE: '1',
-        JUNO_TASK_CONFIG: '',
+        JUNO_CODE_CONFIG: '',
+        JUNO_TASK_CONFIG: '', // Backward compatibility
         TERM: 'xterm-256color'
       }
     });

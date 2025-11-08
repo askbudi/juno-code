@@ -2,7 +2,7 @@
 
 ## Overview
 
-This module provides a comprehensive template processing engine for juno-task-ts, based on the Python budi-cli implementation. It supports Handlebars template compilation with variable substitution patterns compatible with the original Python implementation.
+This module provides a comprehensive template processing engine for juno-code, based on the Python budi-cli implementation. It supports Handlebars template compilation with variable substitution patterns compatible with the original Python implementation.
 
 ## Features
 
@@ -256,9 +256,9 @@ This will showcase:
 
 ## Integration
 
-The template engine integrates seamlessly with the juno-task-ts ecosystem:
+The template engine integrates seamlessly with the juno-code ecosystem:
 
-- **CLI commands** - Used by `juno-task init` command
+- **CLI commands** - Used by `juno-code init` command
 - **Configuration** - Integrates with project configuration system
 - **File system** - Safe file operations with proper error handling
 - **Metrics** - Template usage tracking and performance monitoring

@@ -1,5 +1,5 @@
 /**
- * Session command implementation for juno-task-ts CLI
+ * Session command implementation for juno-code CLI
  *
  * Provides comprehensive session management including list, info, remove, and clean
  * operations with detailed statistics, filtering, and cleanup capabilities.
@@ -329,8 +329,8 @@ async function handleSessionInfo(
 
   if (!sessionId) {
     console.log(chalk.red('Session ID is required'));
-    console.log(chalk.gray('Usage: juno-task session info <session-id>'));
-    console.log(chalk.gray('Use "juno-task session list" to see available sessions'));
+    console.log(chalk.gray('Usage: juno-code session info <session-id>'));
+    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
     return;
   }
 
@@ -338,7 +338,7 @@ async function handleSessionInfo(
 
   if (!session) {
     console.log(chalk.red(`Session not found: ${sessionId}`));
-    console.log(chalk.gray('Use "juno-task session list" to see available sessions'));
+    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
     return;
   }
 
@@ -358,7 +358,7 @@ async function handleSessionRemove(
 
   if (sessionIds.length === 0) {
     console.log(chalk.red('At least one session ID is required'));
-    console.log(chalk.gray('Usage: juno-task session remove <session-id> [session-id...]'));
+    console.log(chalk.gray('Usage: juno-code session remove <session-id> [session-id...]'));
     process.exit(1);
   }
 
@@ -554,15 +554,15 @@ Subcommands:
   clean, cleanup              Clean up old/empty sessions
 
 Examples:
-  $ juno-task session                                 # List all sessions
-  $ juno-task session list --limit 10                # Show 10 most recent
-  $ juno-task session list --subagent claude         # Filter by subagent
-  $ juno-task session list --status completed failed # Filter by status
-  $ juno-task session info abc123                    # Show session details
-  $ juno-task session remove abc123 def456           # Remove sessions
-  $ juno-task session remove abc123 --force          # Skip confirmation
-  $ juno-task session clean --days 30                # Remove sessions >30 days
-  $ juno-task session clean --empty --force          # Remove empty sessions
+  $ juno-code session                                 # List all sessions
+  $ juno-code session list --limit 10                # Show 10 most recent
+  $ juno-code session list --subagent claude         # Filter by subagent
+  $ juno-code session list --status completed failed # Filter by status
+  $ juno-code session info abc123                    # Show session details
+  $ juno-code session remove abc123 def456           # Remove sessions
+  $ juno-code session remove abc123 --force          # Skip confirmation
+  $ juno-code session clean --days 30                # Remove sessions >30 days
+  $ juno-code session clean --empty --force          # Remove empty sessions
 
 Environment Variables:
   JUNO_TASK_SESSION_DIR      Session storage directory

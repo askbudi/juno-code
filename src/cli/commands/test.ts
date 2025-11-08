@@ -1,5 +1,5 @@
 /**
- * Test command implementation for juno-task-ts CLI
+ * Test command implementation for juno-code CLI
  *
  * Comprehensive AI-powered testing framework with intelligent test generation,
  * execution, analysis, and reporting capabilities.
@@ -1443,18 +1443,18 @@ export function configureTestCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task test --generate                          # Generate tests for current project
-  $ juno-task test --run                              # Run existing tests
-  $ juno-task test --generate --run                   # Generate and run tests
-  $ juno-task test src/utils.ts --generate            # Generate tests for specific file
-  $ juno-task test --type unit --intelligence smart   # Generate smart unit tests
-  $ juno-task test --subagent cursor --generate       # Use Cursor for test generation
-  $ juno-task test --run --coverage                   # Run tests with coverage
-  $ juno-task test --analyze --quality thorough       # Analyze test quality thoroughly
-  $ juno-task test --report --format html             # Generate HTML report
-  $ juno-task test --framework jest --generate        # Generate Jest tests
-  $ juno-task test --template api-integration         # Use specific template
-  $ juno-task test --watch                            # Run tests in watch mode
+  $ juno-code test --generate                          # Generate tests for current project
+  $ juno-code test --run                              # Run existing tests
+  $ juno-code test --generate --run                   # Generate and run tests
+  $ juno-code test src/utils.ts --generate            # Generate tests for specific file
+  $ juno-code test --type unit --intelligence smart   # Generate smart unit tests
+  $ juno-code test --subagent cursor --generate       # Use Cursor for test generation
+  $ juno-code test --run --coverage                   # Run tests with coverage
+  $ juno-code test --analyze --quality thorough       # Analyze test quality thoroughly
+  $ juno-code test --report --format html             # Generate HTML report
+  $ juno-code test --framework jest --generate        # Generate Jest tests
+  $ juno-code test --template api-integration         # Use specific template
+  $ juno-code test --watch                            # Run tests in watch mode
 
 Test Types:
   unit         Unit tests for individual functions/classes

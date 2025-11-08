@@ -17,7 +17,7 @@ describe('TemplateEngine', () => {
 
   describe('initialization', () => {
     it('should initialize with correct properties', () => {
-      expect(engine.name).toBe('juno-task-handlebars');
+      expect(engine.name).toBe('juno-code-handlebars');
       expect(engine.version).toBe('1.0.0');
       expect(engine.supportedExtensions).toEqual(['.md', '.hbs', '.txt', '.json', '.yml', '.ts', '.js']);
     });

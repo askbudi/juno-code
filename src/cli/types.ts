@@ -547,9 +547,45 @@ export class TemplateError extends CLIError {
 
 /**
  * Environment variable mappings for CLI options
+ * Updated to use JUNO_CODE_* prefix with backward compatibility for JUNO_TASK_*
  */
 export const ENVIRONMENT_MAPPINGS = {
-  // Core options
+  // Core options (new JUNO_CODE_* names)
+  JUNO_CODE_SUBAGENT: 'subagent',
+  JUNO_CODE_PROMPT: 'prompt',
+  JUNO_CODE_CWD: 'cwd',
+  JUNO_CODE_MAX_ITERATIONS: 'maxIterations',
+  JUNO_CODE_MODEL: 'model',
+  JUNO_CODE_LOG_FILE: 'logFile',
+  JUNO_CODE_VERBOSE: 'verbose',
+  JUNO_CODE_QUIET: 'quiet',
+  JUNO_CODE_INTERACTIVE: 'interactive',
+  JUNO_CODE_CONFIG: 'config',
+
+  // MCP options (new JUNO_CODE_* names)
+  JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
+  JUNO_CODE_MCP_TIMEOUT: 'mcpTimeout',
+  JUNO_CODE_MCP_RETRIES: 'mcpRetries',
+
+  // Session options (new JUNO_CODE_* names)
+  JUNO_CODE_SESSION_DIR: 'sessionDir',
+  JUNO_CODE_LOG_LEVEL: 'logLevel',
+
+  // Template options (new JUNO_CODE_* names)
+  JUNO_CODE_TEMPLATE: 'template',
+  JUNO_CODE_FORCE: 'force',
+
+  // Git options (new JUNO_CODE_* names)
+  JUNO_CODE_GIT_URL: 'gitUrl',
+
+  // UI options (new JUNO_CODE_* names)
+  JUNO_CODE_NO_COLOR: 'noColor',
+  JUNO_CODE_HEADLESS: 'headless',
+
+  // Feedback options (new JUNO_CODE_* names)
+  JUNO_CODE_ENABLE_FEEDBACK: 'enableFeedback',
+
+  // Legacy JUNO_TASK_* names for backward compatibility
   JUNO_TASK_SUBAGENT: 'subagent',
   JUNO_TASK_PROMPT: 'prompt',
   JUNO_TASK_CWD: 'cwd',
@@ -560,29 +596,19 @@ export const ENVIRONMENT_MAPPINGS = {
   JUNO_TASK_QUIET: 'quiet',
   JUNO_TASK_INTERACTIVE: 'interactive',
   JUNO_TASK_CONFIG: 'config',
-
-  // MCP options
   JUNO_TASK_MCP_SERVER_PATH: 'mcpServerPath',
   JUNO_TASK_MCP_TIMEOUT: 'mcpTimeout',
   JUNO_TASK_MCP_RETRIES: 'mcpRetries',
-
-  // Session options
   JUNO_TASK_SESSION_DIR: 'sessionDir',
   JUNO_TASK_LOG_LEVEL: 'logLevel',
-
-  // Template options
   JUNO_TASK_TEMPLATE: 'template',
   JUNO_TASK_FORCE: 'force',
-
-  // Git options
   JUNO_TASK_GIT_URL: 'gitUrl',
-
-  // UI options
   JUNO_TASK_NO_COLOR: 'noColor',
   JUNO_TASK_HEADLESS: 'headless',
-
-  // Feedback options
   JUNO_TASK_ENABLE_FEEDBACK: 'enableFeedback',
+
+  // Special aliases
   JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback'  // Alias for enableFeedback
 } as const;
 

@@ -992,7 +992,7 @@ describe('Start Command', () => {
 
         // Verify that the start execution message is displayed on stderr
         expect(stderrSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task - Start Execution')
+          expect.stringContaining('Juno Code - Start Execution')
         );
 
         stderrSpy.mockRestore();
@@ -1030,7 +1030,7 @@ describe('Start Command', () => {
 
         // Verify that the start execution message is displayed on stderr
         expect(stderrSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task - Start Execution')
+          expect.stringContaining('Juno Code - Start Execution')
         );
 
         stderrSpy.mockRestore();
@@ -1070,7 +1070,7 @@ describe('Start Command', () => {
 
         // Verify that the start execution message is displayed on stderr
         expect(stderrSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task - Start Execution')
+          expect.stringContaining('Juno Code - Start Execution')
         );
 
         stderrSpy.mockRestore();
@@ -1110,7 +1110,7 @@ describe('Start Command', () => {
 
         // Verify that the start execution message is displayed on stderr
         expect(stderrSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task - Start Execution')
+          expect.stringContaining('Juno Code - Start Execution')
         );
 
         stderrSpy.mockRestore();
@@ -1218,7 +1218,7 @@ describe('Start Command', () => {
 
         // Verify that the start execution message is displayed on stderr
         expect(stderrSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task - Start Execution')
+          expect.stringContaining('Juno Code - Start Execution')
         );
 
         stderrSpy.mockRestore();

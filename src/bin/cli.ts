@@ -1,5 +1,5 @@
 /**
- * CLI entry point for juno-task-ts
+ * CLI entry point for juno-code
  *
  * Comprehensive TypeScript CLI implementation with full functionality parity
  * to the Python budi-cli. Provides all core commands with interactive and
@@ -137,7 +137,7 @@ function setupMainCommand(program: Command): void {
 
           // Check if project is initialized
           if (await fs.pathExists(junoTaskDir)) {
-            console.log(chalk.blue.bold('🎯 Juno Task - Auto-detected Initialized Project\n'));
+            console.log(chalk.blue.bold('🎯 Juno Code - Auto-detected Initialized Project\n'));
 
             // Try to load configuration for auto-detection
             try {
@@ -181,13 +181,13 @@ function setupMainCommand(program: Command): void {
 
         // Show help if no arguments provided or auto-detection failed
         if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
-          console.log(chalk.blue.bold('🎯 Juno Task - TypeScript CLI for AI Subagent Orchestration\n'));
+          console.log(chalk.blue.bold('🎯 Juno Code - TypeScript CLI for AI Subagent Orchestration\n'));
           console.log(chalk.white('To get started:'));
-          console.log(chalk.gray('  juno-task init                    # Initialize new project'));
-          console.log(chalk.gray('  juno-task start                   # Start execution'));
-          console.log(chalk.gray('  juno-task test --generate --run   # AI-powered testing'));
-          console.log(chalk.gray('  juno-task -s claude -p "prompt"   # Quick execution with Claude'));
-          console.log(chalk.gray('  juno-task --help                  # Show all commands'));
+          console.log(chalk.gray('  juno-code init                    # Initialize new project'));
+          console.log(chalk.gray('  juno-code start                   # Start execution'));
+          console.log(chalk.gray('  juno-code test --generate --run   # AI-powered testing'));
+          console.log(chalk.gray('  juno-code -s claude -p "prompt"   # Quick execution with Claude'));
+          console.log(chalk.gray('  juno-code --help                  # Show all commands'));
           console.log('');
           return;
         }
@@ -206,7 +206,7 @@ function setupMainCommand(program: Command): void {
  */
 function displayBanner(verbose: boolean = false): void {
   if (verbose) {
-    console.log(chalk.blue.bold(`\n🎯 Juno Task v${VERSION} - TypeScript CLI`));
+    console.log(chalk.blue.bold(`\n🎯 Juno Code v${VERSION} - TypeScript CLI`));
     console.log(chalk.gray(`   Node.js ${process.version} on ${process.platform}`));
     console.log(chalk.gray(`   Working directory: ${process.cwd()}`));
     console.log('');
@@ -259,10 +259,28 @@ function setupAliases(program: Command): void {
 
 /**
  * Configure environment variable integration
+ * Supports both JUNO_CODE_* and JUNO_TASK_* environment variables with priority for JUNO_CODE_*
  */
 function configureEnvironment(): void {
-  // Load environment variables with JUNO_TASK_ prefix
-  const envVars = [
+  // New JUNO_CODE_* environment variables (priority)
+  const newEnvVars = [
+    'JUNO_CODE_SUBAGENT',
+    'JUNO_CODE_PROMPT',
+    'JUNO_CODE_CWD',
+    'JUNO_CODE_MAX_ITERATIONS',
+    'JUNO_CODE_MODEL',
+    'JUNO_CODE_LOG_FILE',
+    'JUNO_CODE_VERBOSE',
+    'JUNO_CODE_QUIET',
+    'JUNO_CODE_CONFIG',
+    'JUNO_CODE_MCP_SERVER_PATH',
+    'JUNO_CODE_MCP_TIMEOUT',
+    'JUNO_CODE_NO_COLOR',
+    'JUNO_CODE_ENABLE_FEEDBACK'
+  ];
+
+  // Legacy JUNO_TASK_* environment variables (backward compatibility)
+  const legacyEnvVars = [
     'JUNO_TASK_SUBAGENT',
     'JUNO_TASK_PROMPT',
     'JUNO_TASK_CWD',
@@ -278,12 +296,12 @@ function configureEnvironment(): void {
     'JUNO_TASK_ENABLE_FEEDBACK'
   ];
 
-  // Set defaults from environment variables
-  for (const envVar of envVars) {
+  // Helper function to process environment variables
+  const processEnvVar = (envVar: string, prefix: string) => {
     const value = process.env[envVar];
-    if (value && !process.argv.includes(`--${envVar.toLowerCase().replace('juno_task_', '').replace(/_/g, '-')}`)) {
+    if (value && !process.argv.includes(`--${envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-')}`)) {
       // Environment variable is set but not overridden by CLI argument
-      const option = envVar.toLowerCase().replace('juno_task_', '').replace(/_/g, '-');
+      const option = envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-');
 
       switch (option) {
         case 'verbose':
@@ -297,6 +315,25 @@ function configureEnvironment(): void {
         default:
           process.argv.push(`--${option}`, value);
       }
+      return true; // Indicates value was processed
+    }
+    return false;
+  };
+
+  // Process new JUNO_CODE_* variables first (higher priority)
+  const processedOptions = new Set<string>();
+  for (const envVar of newEnvVars) {
+    if (processEnvVar(envVar, 'juno_code_')) {
+      const option = envVar.toLowerCase().replace('juno_code_', '').replace(/_/g, '-');
+      processedOptions.add(option);
+    }
+  }
+
+  // Process legacy JUNO_TASK_* variables only if the option wasn't already set by JUNO_CODE_*
+  for (const envVar of legacyEnvVars) {
+    const option = envVar.toLowerCase().replace('juno_task_', '').replace(/_/g, '-');
+    if (!processedOptions.has(option)) {
+      processEnvVar(envVar, 'juno_task_');
     }
   }
 
@@ -331,8 +368,8 @@ async function main(): Promise<void> {
 
   // Basic program setup
   program
-    .name('juno-task')
-    .description('TypeScript implementation of juno-task CLI tool for AI subagent orchestration')
+    .name('juno-code')
+    .description('TypeScript implementation of juno-code CLI tool for AI subagent orchestration')
     .version(VERSION, '-V, --version', 'Display version information')
     .helpOption('-h, --help', 'Display help information');
 
@@ -403,54 +440,58 @@ async function main(): Promise<void> {
 
   // Add comprehensive help
   program.addHelpText('beforeAll', `
-${chalk.blue.bold('🎯 Juno Task')} - TypeScript CLI for AI Subagent Orchestration
+${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestration
 
 `);
 
   program.addHelpText('afterAll', `
 ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Initialize new project')}
-  juno-task init
+  juno-code init
 
   ${chalk.gray('# Start execution using .juno_task/init.md')}
-  juno-task start
+  juno-code start
 
   ${chalk.gray('# AI-powered testing')}
-  juno-task test --generate --run
-  juno-task test src/utils.ts --subagent claude
-  juno-task test --analyze --coverage
+  juno-code test --generate --run
+  juno-code test src/utils.ts --subagent claude
+  juno-code test --analyze --coverage
 
   ${chalk.gray('# Quick execution with Claude')}
-  juno-task claude "Analyze this codebase and suggest improvements"
+  juno-code claude "Analyze this codebase and suggest improvements"
 
   ${chalk.gray('# Interactive project setup')}
-  juno-task init --interactive
+  juno-code init --interactive
 
   ${chalk.gray('# Manage sessions')}
-  juno-task session list
-  juno-task session info abc123
+  juno-code session list
+  juno-code session info abc123
 
   ${chalk.gray('# Enable feedback collection globally')}
-  juno-task --enable-feedback start
+  juno-code --enable-feedback start
 
   ${chalk.gray('# Collect feedback')}
-  juno-task feedback --interactive
+  juno-code feedback --interactive
 
   ${chalk.gray('# Manage configuration profiles')}
-  juno-task config list
-  juno-task config create development
+  juno-code config list
+  juno-code config create development
 
   ${chalk.gray('# Setup Git repository')}
-  juno-task setup-git https://github.com/owner/repo
+  juno-code setup-git https://github.com/owner/repo
 
 ${chalk.blue.bold('Environment Variables:')}
-  JUNO_TASK_SUBAGENT              Default subagent (claude, cursor, codex, gemini)
-  JUNO_TASK_MCP_SERVER_PATH       Path to MCP server executable
-  JUNO_TASK_CONFIG                Configuration file path
-  JUNO_TASK_VERBOSE               Enable verbose output (true/false)
-  JUNO_TASK_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
+  JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini)
+  JUNO_CODE_MCP_SERVER_PATH       Path to MCP server executable
+  JUNO_CODE_CONFIG                Configuration file path
+  JUNO_CODE_VERBOSE               Enable verbose output (true/false)
+  JUNO_CODE_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
+  JUNO_CODE_MCP_TIMEOUT           MCP server timeout in milliseconds
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)
+
+  ${chalk.gray('Legacy variables (backward compatibility):')}
+  JUNO_TASK_*                     All JUNO_TASK_* variables still supported
 
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:
@@ -460,8 +501,8 @@ ${chalk.blue.bold('Configuration:')}
   4. Built-in defaults (lowest priority)
 
 ${chalk.blue.bold('Support:')}
-  Documentation: https://github.com/owner/juno-task-ts#readme
-  Issues: https://github.com/owner/juno-task-ts/issues
+  Documentation: https://github.com/owner/juno-code#readme
+  Issues: https://github.com/owner/juno-code/issues
   License: MIT
 
 `);

@@ -1,5 +1,5 @@
 /**
- * Core type definitions for juno-task-ts
+ * Core type definitions for juno-code
  */
 
 // Subagent types

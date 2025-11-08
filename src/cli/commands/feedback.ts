@@ -1,5 +1,5 @@
 /**
- * Simplified Feedback command implementation for juno-task-ts CLI
+ * Simplified Feedback command implementation for juno-code CLI
  *
  * Simple feedback collection with minimal interface.
  * Removes complex features: structured data, metadata, categorization, etc.
@@ -243,7 +243,7 @@ function getFeedbackFile(options: FeedbackCommandOptions): string {
 export function configureFeedbackCommand(program: Command): void {
   program
     .command('feedback')
-    .description('Submit feedback about juno-task (enhanced interface)')
+    .description('Submit feedback about juno-code (enhanced interface)')
     .argument('[feedback...]', 'Feedback text or issue description')
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
     .option('--interactive', 'Launch simple interactive feedback form')
@@ -276,18 +276,18 @@ export function configureFeedbackCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task feedback                                    # Interactive feedback form
-  $ juno-task feedback "Issue with command"              # Direct feedback text
-  $ juno-task feedback --interactive                     # Use interactive form
-  $ juno-task feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria
-  $ juno-task feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
-  $ juno-task feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form
-  $ juno-task feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
-  $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
-  $ juno-task feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
-  $ juno-task feedback archive                                                       # Archive resolved issues to keep file lean
-  $ juno-task feedback compact                                                        # Compact CLAUDE.md and AGENTS.md
-  $ juno-task feedback compact CLAUDE.md                                             # Compact specific file
+  $ juno-code feedback                                    # Interactive feedback form
+  $ juno-code feedback "Issue with command"              # Direct feedback text
+  $ juno-code feedback --interactive                     # Use interactive form
+  $ juno-code feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria
+  $ juno-code feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
+  $ juno-code feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form
+  $ juno-code feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
+  $ juno-code feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
+  $ juno-code feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
+  $ juno-code feedback archive                                                       # Archive resolved issues to keep file lean
+  $ juno-code feedback compact                                                        # Compact CLAUDE.md and AGENTS.md
+  $ juno-code feedback compact CLAUDE.md                                             # Compact specific file
 
 Enhanced Features:
   1. Issue Description → Structured feedback with optional test criteria
@@ -340,7 +340,7 @@ async function handleCompactCommand(subArgs: string[], options: FeedbackCommandO
     if (filesToCompact.length === 0) {
       console.log(chalk.yellow('📄 No config files found to compact'));
       console.log(chalk.gray('   Looking for: CLAUDE.md, AGENTS.md'));
-      console.log(chalk.gray('   Usage: juno-task feedback compact [file1] [file2]'));
+      console.log(chalk.gray('   Usage: juno-code feedback compact [file1] [file2]'));
       return;
     }
 
@@ -486,7 +486,7 @@ export async function feedbackCommandHandler(
       if (!issueText.trim()) {
         throw new ValidationError(
           'Issue description is required when using --issue/-is/--detail/--description or --test/-tc flags',
-          ['Use: juno-task feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"']
+          ['Use: juno-code feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"']
         );
       }
       const feedbackFile = getFeedbackFile(options);
@@ -555,10 +555,10 @@ export async function feedbackCommandHandler(
             } else {
               console.log(chalk.yellow('Use --interactive mode, --issue/-is/--detail/--description flag, or provide feedback text'));
               console.log(chalk.gray('Examples:'));
-              console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));
-              console.log(chalk.gray('  juno-task feedback -is "Issue" -t "Test criteria"'));
-              console.log(chalk.gray('  juno-task feedback --detail "Bug description"'));
-              console.log(chalk.gray('  juno-task feedback -d "Issue" -t "Test criteria"'));
+              console.log(chalk.gray('  juno-code feedback --issue "Bug description"'));
+              console.log(chalk.gray('  juno-code feedback -is "Issue" -t "Test criteria"'));
+              console.log(chalk.gray('  juno-code feedback --detail "Bug description"'));
+              console.log(chalk.gray('  juno-code feedback -d "Issue" -t "Test criteria"'));
             }
             break;
         }

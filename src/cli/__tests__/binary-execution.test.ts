@@ -62,7 +62,8 @@ async function executeCLI(
     // Set CI mode for quiet output
     CI: '1',
     // Override any user config
-    JUNO_TASK_CONFIG: '',
+    JUNO_CODE_CONFIG: '',
+    JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env
   };
 
@@ -123,7 +124,7 @@ describe('Binary Execution Tests', () => {
 
   beforeEach(async () => {
     // Create temporary directory for each test
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-task-binary-test-'));
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-binary-test-'));
   });
 
   afterEach(async () => {
@@ -138,10 +139,10 @@ describe('Binary Execution Tests', () => {
       const result = await executeCLI([]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain('Juno Task');
+      expect(result.stdout).toContain('Juno Code');
       expect(result.stdout).toContain('TypeScript CLI for AI Subagent Orchestration');
-      expect(result.stdout).toContain('juno-task init');
-      expect(result.stdout).toContain('juno-task start');
+      expect(result.stdout).toContain('juno-code init');
+      expect(result.stdout).toContain('juno-code start');
     });
 
     it('should display help with --help flag', async () => {
@@ -390,7 +391,15 @@ describe('Binary Execution Tests', () => {
   });
 
   describe('Environment Variables Tests', () => {
-    it('should respect JUNO_TASK_VERBOSE environment variable', async () => {
+    it('should respect JUNO_CODE_VERBOSE environment variable', async () => {
+      const result = await executeCLI(['--version'], {
+        env: { JUNO_CODE_VERBOSE: 'true' }
+      });
+
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('should respect JUNO_TASK_VERBOSE environment variable (backward compatibility)', async () => {
       const result = await executeCLI(['--version'], {
         env: { JUNO_TASK_VERBOSE: 'true' }
       });
@@ -495,7 +504,7 @@ describe('Binary Execution Tests', () => {
       });
 
       const result = await executeCLI(['start'], {
-        env: { JUNO_TASK_MCP_TIMEOUT: '1' }, // Very short timeout
+        env: { JUNO_CODE_MCP_TIMEOUT: '1' }, // Very short timeout
         expectError: true
       });
 
@@ -551,7 +560,7 @@ describe('Binary Execution Tests', () => {
 
   describe('Command Aliases and Shortcuts', () => {
     it('should handle subagent direct commands (if implemented)', async () => {
-      // Test if subagent shortcuts like 'juno-task claude "prompt"' work
+      // Test if subagent shortcuts like 'juno-code claude "prompt"' work
       const result = await executeCLI(['claude', '--help'], { expectError: true });
 
       // This might work or might not, depending on implementation

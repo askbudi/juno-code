@@ -1,5 +1,5 @@
 /**
- * Help command implementation for juno-task-ts CLI
+ * Help command implementation for juno-code CLI
  *
  * Enhanced help system with interactive tutorials, contextual assistance,
  * and comprehensive documentation access.
@@ -56,22 +56,22 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'init',
         description: 'Initialize new project',
-        usage: 'juno-task init [--interactive]'
+        usage: 'juno-code init [--interactive]'
       },
       {
         name: 'start',
         description: 'Execute task',
-        usage: 'juno-task start [--max-iterations N]'
+        usage: 'juno-code start [--max-iterations N]'
       },
       {
         name: 'logs',
         description: 'View application logs',
-        usage: 'juno-task logs [--interactive]'
+        usage: 'juno-code logs [--interactive]'
       },
       {
         name: 'session',
         description: 'Manage execution sessions',
-        usage: 'juno-task session <list|info|remove>'
+        usage: 'juno-code session <list|info|remove>'
       }
     ]
   },
@@ -81,22 +81,22 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'claude',
         description: 'Execute with Claude subagent',
-        usage: 'juno-task claude "task description"'
+        usage: 'juno-code claude "task description"'
       },
       {
         name: 'cursor',
         description: 'Execute with Cursor subagent',
-        usage: 'juno-task cursor "task description"'
+        usage: 'juno-code cursor "task description"'
       },
       {
         name: 'codex',
         description: 'Execute with Codex subagent',
-        usage: 'juno-task codex "task description"'
+        usage: 'juno-code codex "task description"'
       },
       {
         name: 'gemini',
         description: 'Execute with Gemini subagent',
-        usage: 'juno-task gemini "task description"'
+        usage: 'juno-code gemini "task description"'
       }
     ]
   },
@@ -106,22 +106,22 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'feedback',
         description: 'Collect user feedback',
-        usage: 'juno-task feedback [--interactive]'
+        usage: 'juno-code feedback [--interactive]'
       },
       {
         name: 'setup-git',
         description: 'Initialize Git repository',
-        usage: 'juno-task setup-git <repository-url>'
+        usage: 'juno-code setup-git <repository-url>'
       },
       {
         name: 'completion',
         description: 'Shell completion setup',
-        usage: 'juno-task completion <install|uninstall>'
+        usage: 'juno-code completion <install|uninstall>'
       },
       {
         name: 'help',
         description: 'Show help information',
-        usage: 'juno-task help [--interactive]'
+        usage: 'juno-code help [--interactive]'
       }
     ]
   }
@@ -141,15 +141,15 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 
 **Solutions**:
 1. Install MCP server (e.g., roundtable-mcp-server)
-2. Check configuration: \`juno-task init --interactive\`
+2. Check configuration: \`juno-code init --interactive\`
 3. Verify server path: \`which roundtable-mcp-server\`
-4. Test connection: \`juno-task start --verbose\`
+4. Test connection: \`juno-code start --verbose\`
 
 ### 📁 File System Issues
 
 **Issue**: "init.md not found"
 **Cause**: No project initialized in current directory
-**Solution**: Run \`juno-task init\` to create project structure
+**Solution**: Run \`juno-code init\` to create project structure
 
 **Issue**: "Permission denied"
 **Cause**: Insufficient file permissions
@@ -177,19 +177,19 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 Get detailed debug information:
 \`\`\`bash
 # Verbose execution with debug logging
-juno-task start --verbose --log-level debug
+juno-code start --verbose --log-level debug
 
 # View recent error logs
-juno-task logs --level error --tail 50
+juno-code logs --level error --tail 50
 
 # Export logs for analysis
-juno-task logs --export debug.json --level debug
+juno-code logs --export debug.json --level debug
 \`\`\`
 
 ## Getting More Help
 
-1. **Interactive Help**: \`juno-task help --interactive\`
-2. **View Logs**: \`juno-task logs --interactive\`
+1. **Interactive Help**: \`juno-code help --interactive\`
+2. **View Logs**: \`juno-code logs --interactive\`
 3. **Check Configuration**: Review .juno_task/config.json
 4. **Test MCP Connection**: Use --verbose flag with any command
 5. **Report Issues**: Include debug logs when reporting problems
@@ -198,9 +198,13 @@ juno-task logs --export debug.json --level debug
 
 Useful for debugging:
 \`\`\`bash
+export JUNO_CODE_VERBOSE=true
+export JUNO_CODE_LOG_LEVEL=debug
+export NO_COLOR=true  # Disable colors for log analysis
+
+# Legacy variables (still supported for backward compatibility)
 export JUNO_TASK_VERBOSE=true
 export JUNO_TASK_LOG_LEVEL=debug
-export NO_COLOR=true  # Disable colors for log analysis
 \`\`\`
 `;
 
@@ -213,9 +217,9 @@ export NO_COLOR=true  # Disable colors for log analysis
  */
 function displayQuickReference(formatter: RichFormatter): void {
   console.log(formatter.panel(
-    'Welcome to juno-task! This quick reference shows the most commonly used commands.',
+    'Welcome to juno-code! This quick reference shows the most commonly used commands.',
     {
-      title: '🚀 juno-task Quick Reference',
+      title: '🚀 juno-code Quick Reference',
       border: 'rounded',
       style: 'success',
       padding: 1
@@ -234,7 +238,7 @@ function displayQuickReference(formatter: RichFormatter): void {
   });
 
   console.log(formatter.panel(
-    `Use ${chalk.cyan('juno-task help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-task <command> --help')} for detailed command information.`,
+    `Use ${chalk.cyan('juno-code help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-code <command> --help')} for detailed command information.`,
     {
       title: '💡 Next Steps',
       border: 'rounded',
@@ -292,8 +296,8 @@ function listHelpTopics(): void {
     console.log(`${icon} ${chalk.cyan(topic.id.padEnd(20))} ${topic.title}`);
   });
 
-  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-task help --topic <id>')} to view a specific topic`));
-  console.log(chalk.yellow(`Use ${chalk.cyan('juno-task help --interactive')} for full interactive help`));
+  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view a specific topic`));
+  console.log(chalk.yellow(`Use ${chalk.cyan('juno-code help --interactive')} for full interactive help`));
 }
 
 /**
@@ -320,7 +324,7 @@ function searchHelpTopics(searchTerm: string): void {
     console.log(chalk.cyan(`• ${topicId}`));
   });
 
-  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-task help --topic <id>')} to view details`));
+  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view details`));
 }
 
 // ============================================================================
@@ -421,12 +425,12 @@ export function configureHelpCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task help                                    # Quick reference guide
-  $ juno-task help --interactive                      # Interactive help system
-  $ juno-task help --topic quickstart                 # Specific topic
-  $ juno-task help --search "mcp"                     # Search topics
-  $ juno-task help --list                             # List all topics
-  $ juno-task help --troubleshooting                  # Troubleshooting guide
+  $ juno-code help                                    # Quick reference guide
+  $ juno-code help --interactive                      # Interactive help system
+  $ juno-code help --topic quickstart                 # Specific topic
+  $ juno-code help --search "mcp"                     # Search topics
+  $ juno-code help --list                             # List all topics
+  $ juno-code help --troubleshooting                  # Troubleshooting guide
 
 Interactive Help Features:
   - Browse help by category
@@ -455,7 +459,7 @@ Navigation (Interactive Mode):
 Notes:
   - Interactive help provides the most comprehensive assistance
   - Use --verbose with any command for detailed output
-  - Check logs with 'juno-task logs' for debugging
+  - Check logs with 'juno-code logs' for debugging
   - All help content is searchable and cross-referenced
     `);
 }
