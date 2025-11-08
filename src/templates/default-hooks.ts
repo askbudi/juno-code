@@ -15,7 +15,7 @@
  * 2. Rebuild the project (npm run build)
  * 3. New installations will use the updated defaults
  *
- * @module core/default-hooks
+ * @module templates/default-hooks
  */
 
 import type { Hooks } from '../types/index';

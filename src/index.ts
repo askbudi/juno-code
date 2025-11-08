@@ -6,7 +6,7 @@
 
 // Core exports
 export * from './core/config';
-export * from './core/default-hooks';
+export * from './templates/default-hooks';
 export * from './core/engine';
 export * from './core/session';
 export * from './core/metrics';
