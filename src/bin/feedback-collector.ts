@@ -13,7 +13,7 @@
  *   juno-collect-feedback <command> [arg1 arg2 ...]
  * Example:
  *   juno-collect-feedback node dist/bin/cli.mjs feedback
- *   juno-collect-feedback juno-ts-task feedback
+ *   juno-collect-feedback juno-code feedback
  *
  * OR run standalone:
  *   node dist/bin/feedback-collector.mjs

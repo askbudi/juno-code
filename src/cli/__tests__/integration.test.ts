@@ -178,7 +178,7 @@ describe.skip('CLI Integration Tests', () => {
   describe('CLI Framework Integration', () => {
     it('should configure and register commands successfully', async () => {
       framework.configure({
-        name: 'juno-task',
+        name: 'juno-code',
         description: 'AI subagent orchestration CLI',
         version: '1.0.0'
       });
@@ -187,7 +187,7 @@ describe.skip('CLI Integration Tests', () => {
       framework.registerCommand(mainCommand);
 
       const program = framework.getProgram();
-      expect(program.name()).toBe('juno-task');
+      expect(program.name()).toBe('juno-code');
       expect(program.commands).toHaveLength(1);
       expect(program.commands[0].name()).toBe('main');
     });
@@ -203,7 +203,7 @@ describe.skip('CLI Integration Tests', () => {
 
     it('should provide help information', async () => {
       framework.configure({
-        name: 'juno-task',
+        name: 'juno-code',
         description: 'AI subagent orchestration CLI',
         version: '1.0.0'
       });
@@ -221,7 +221,7 @@ describe.skip('CLI Integration Tests', () => {
 
     it('should handle version display', async () => {
       framework.configure({
-        name: 'juno-task',
+        name: 'juno-code',
         description: 'AI subagent orchestration CLI',
         version: '1.0.0'
       });

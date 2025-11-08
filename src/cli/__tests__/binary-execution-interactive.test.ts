@@ -12,8 +12,8 @@
  * that people encounter when using the CLI tool in production.
  *
  * How to run:
- * - Build binary first: `npm --prefix juno-task-ts run build`
- * - Run this suite: `npm --prefix juno-task-ts run test:binary`
+ * - Build binary first: `npm --prefix juno-code run build`
+ * - Run this suite: `npm --prefix juno-code run test:binary`
  * - Optional env vars:
  *   - `PRESERVE_TMP=1` keep /tmp test dir for manual inspection
  *   - `TEST_TMP_DIR=/tmp` override base tmp dir (default `/tmp`)
@@ -28,7 +28,7 @@ import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
 
 // Binary paths for testing
-// __dirname is juno-task-ts/src/cli/__tests__; go up to juno-task-ts root
+// __dirname is juno-code/src/cli/__tests__; go up to juno-code root
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
 const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';

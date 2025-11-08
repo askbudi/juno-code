@@ -56,7 +56,7 @@ class SimpleInitTUI {
    * Simplified gather method implementing the minimal flow
    */
   async gather(): Promise<InitializationContext> {
-    console.log(chalk.blue.bold('\n🚀 Juno Task Project Initialization\n'));
+    console.log(chalk.blue.bold('\n🚀 Juno Code Project Initialization\n'));
 
     // 1. Project Root
     console.log(chalk.yellow('📁 Step 1: Project Directory'));
@@ -341,7 +341,7 @@ Created with juno-code on ${variables.CURRENT_DATE}
     console.log(chalk.white('   juno-code -s claude       # Quick execution with Claude'));
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
-    console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));
+    console.log(chalk.gray('   - Use "juno-code --help" to see all available commands'));
   }
 }
 
@@ -400,7 +400,7 @@ export async function simplifiedInitCommandHandler(
   command: Command
 ): Promise<void> {
   try {
-    console.log(chalk.blue.bold('🎯 Juno Task - Simplified Initialization'));
+    console.log(chalk.blue.bold('🎯 Juno Code - Simplified Initialization'));
 
     let context: InitializationContext;
 

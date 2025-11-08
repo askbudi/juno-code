@@ -1,5 +1,5 @@
 /**
- * juno-task-ts - TypeScript implementation of juno-task CLI tool
+ * juno-code - TypeScript implementation of juno-code CLI tool
  *
  * Main entry point for the library exports
  */

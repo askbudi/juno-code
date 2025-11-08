@@ -51,9 +51,9 @@ if [ -f "$FEEDBACK_FILE" ]; then
         echo "Consider archiving resolved issues or compacting the file"
 
         # Trigger feedback command if CLI is available
-        if command -v juno-ts-task >/dev/null 2>&1; then
+        if command -v juno-code >/dev/null 2>&1; then
             echo "📝 Triggering feedback command..."
-            juno-ts-task feedback --issue "File $FEEDBACK_FILE is becoming big ($FEEDBACK_LINES lines), you need to compact it and keep it lean."
+            juno-code feedback --issue "File $FEEDBACK_FILE is becoming big ($FEEDBACK_LINES lines), you need to compact it and keep it lean."
         fi
     else
         echo "✅ $FEEDBACK_FILE: $FEEDBACK_LINES lines (within threshold)"
@@ -80,9 +80,9 @@ if [ -f "$CONFIG_FILE" ]; then
         echo "Consider compacting the configuration file"
 
         # Trigger feedback command if CLI is available
-        if command -v juno-ts-task >/dev/null 2>&1; then
+        if command -v juno-code >/dev/null 2>&1; then
             echo "📝 Triggering feedback command..."
-            juno-ts-task feedback --issue "File $CONFIG_FILE is becoming big ($CONFIG_LINES lines), you need to compact it and keep it lean."
+            juno-code feedback --issue "File $CONFIG_FILE is becoming big ($CONFIG_LINES lines), you need to compact it and keep it lean."
         fi
     else
         echo "✅ $CONFIG_FILE: $CONFIG_LINES lines (within threshold)"

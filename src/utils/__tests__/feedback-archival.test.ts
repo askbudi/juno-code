@@ -501,8 +501,8 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
          and analyze the response of the feedback command based on the user feedback file.
          Similar to init test, use a test project in tmp folder.
          INIT Command is getting tested using
-         \`\`\` - TUI: npm --prefix juno-task-ts run test:tui
-         - Binary: npm --prefix juno-task-ts run test:binary\`\`\`
+         \`\`\` - TUI: npm --prefix juno-code run test:tui
+         - Binary: npm --prefix juno-code run test:binary\`\`\`
 
          You need to create and executre and test feedback by creating similar tests
          and name it test:feedback
@@ -530,7 +530,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       const updatedContent = await fs.readFile(feedbackFile, 'utf-8');
       expect(updatedContent).toContain('Interactive Feedback Command TUI Mode');
       expect(updatedContent).toContain('<Test_CRITERIA>');
-      expect(updatedContent).toContain('npm --prefix juno-task-ts run test:tui');
+      expect(updatedContent).toContain('npm --prefix juno-code run test:tui');
     });
   });
 });

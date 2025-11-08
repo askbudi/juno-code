@@ -3,9 +3,8 @@
 /**
  * Generate Package Variants Script
  *
- * This script generates multiple NPM package variants from a base package.json.
- * It creates separate package directories for juno-agent, juno-code, and juno-ts-task,
- * each with its own package.json configuration.
+ * This script generates the juno-code NPM package from a base package.json.
+ * It creates the package directory for juno-code with its own package.json configuration.
  *
  * Usage: node scripts/generate-variants.js
  */

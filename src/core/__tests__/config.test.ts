@@ -27,7 +27,7 @@ describe('Configuration Module', () => {
     // Save original environment variables
     originalEnv = { ...process.env };
 
-    // Clear juno-code and juno-task environment variables
+    // Clear juno-code environment variables
     for (const envVar of Object.keys(ENV_VAR_MAPPING)) {
       delete process.env[envVar];
       // Also clear JUNO_CODE variants for testing
@@ -305,7 +305,7 @@ describe('Configuration Module', () => {
         mcpTimeout: 60000
       };
 
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, configData);
 
       const loader = new ConfigLoader(tempDir);
@@ -341,7 +341,7 @@ describe('Configuration Module', () => {
       };
 
       // Test multiple file formats in order of preference
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, configData);
 
       const loader = new ConfigLoader(tempDir);
@@ -354,11 +354,11 @@ describe('Configuration Module', () => {
 
     it('should prefer files in order of precedence', async () => {
       // Create multiple config files
-      await fs.writeJson(path.join(tempDir, 'juno-task.config.json'), {
+      await fs.writeJson(path.join(tempDir, 'juno-code.config.json'), {
         defaultSubagent: 'claude'
       });
 
-      await fs.writeJson(path.join(tempDir, '.juno-taskrc.json'), {
+      await fs.writeJson(path.join(tempDir, '.juno-coderc.json'), {
         defaultSubagent: 'cursor'
       });
 
@@ -366,7 +366,7 @@ describe('Configuration Module', () => {
       await loader.autoDiscoverFile();
       const config = loader.merge();
 
-      // Should prefer the first one found (juno-task.config.json)
+      // Should prefer the first one found (juno-code.config.json)
       expect(config.defaultSubagent).toBe('claude');
     });
 
@@ -374,7 +374,7 @@ describe('Configuration Module', () => {
       const packageJson = {
         name: 'test-package',
         version: '1.0.0',
-        junoTask: {
+        junoCode: {
           defaultSubagent: 'gemini',
           logLevel: 'trace',
           verbose: true
@@ -393,7 +393,7 @@ describe('Configuration Module', () => {
       expect(config.verbose).toBe(true);
     });
 
-    it('should handle package.json without junoTask field', async () => {
+    it('should handle package.json without junoCode field', async () => {
       const packageJson = {
         name: 'test-package',
         version: '1.0.0'
@@ -406,7 +406,7 @@ describe('Configuration Module', () => {
       await loader.fromFile(packagePath);
       const config = loader.merge();
 
-      // Should use defaults since no junoTask field
+      // Should use defaults since no junoCode field
       expect(config.defaultSubagent).toBe(DEFAULT_CONFIG.defaultSubagent);
     });
   });
@@ -469,7 +469,7 @@ logLevel: info
         logLevel: 'info',
         verbose: false
       };
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment config
@@ -567,7 +567,7 @@ logLevel: info
         defaultSubagent: 'claude',
         logLevel: 'info'
       };
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment
@@ -672,7 +672,7 @@ logLevel: info
 
     it('should handle loadAll convenience method', async () => {
       const fileConfig = { defaultSubagent: 'cursor' };
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       process.env.JUNO_CODE_VERBOSE = 'true';
@@ -875,7 +875,7 @@ logLevel: info
           case '.mjs':
             return 'js';
           default:
-            // For files like .juno-taskrc (no extension), assume JSON
+            // For files like .juno-coderc (no extension), assume JSON
             return 'json';
         }
       };
@@ -892,7 +892,7 @@ logLevel: info
       expect(getConfigFileFormat('config.JS')).toBe('js');
       expect(getConfigFileFormat('config.mjs')).toBe('js');
       expect(getConfigFileFormat('config.MJS')).toBe('js');
-      expect(getConfigFileFormat('.juno-taskrc')).toBe('json');
+      expect(getConfigFileFormat('.juno-coderc')).toBe('json');
       expect(getConfigFileFormat('config')).toBe('json');
       expect(getConfigFileFormat('config.unknown')).toBe('json');
     });
@@ -1086,7 +1086,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
         defaultSubagent: 'gemini',
         logLevel: 'warn'
       };
-      const configPath = path.join(tempDir, 'juno-task.config.json');
+      const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       process.env.JUNO_CODE_VERBOSE = 'true';

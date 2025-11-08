@@ -638,7 +638,7 @@ describe('CLIFramework', () => {
         expect.stringContaining('Try again')
       );
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Use \'juno-task test --help\'')
+        expect.stringContaining('Use \'juno-code test --help\'')
       );
     });
 

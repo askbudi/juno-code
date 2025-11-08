@@ -1,6 +1,6 @@
 {
   "name": "juno-code",
-  "description": "AI Subagent Orchestration CLI - Code-focused package for juno-task-ts providing Claude Code integration and MCP server orchestration",
+  "description": "AI Subagent Orchestration CLI - Professional TypeScript CLI for AI-powered code intelligence, MCP server orchestration, and subagent collaboration",
   "keywords": [
     "ai",
     "code",
@@ -21,10 +21,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/owner/juno-task-ts.git"
+    "url": "https://github.com/owner/juno-code.git"
   },
   "bugs": {
-    "url": "https://github.com/owner/juno-task-ts/issues"
+    "url": "https://github.com/owner/juno-code/issues"
   },
-  "homepage": "https://github.com/owner/juno-task-ts#readme"
+  "homepage": "https://github.com/owner/juno-code#readme"
 }

@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-all}"
 
 echo ""
-echo "Juno Task TS – Test Runner Usage"
+echo "Juno Code – Test Runner Usage"
 echo "---------------------------------"
 echo ""
 
