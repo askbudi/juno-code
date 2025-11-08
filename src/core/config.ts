@@ -20,7 +20,7 @@ import type {
   Hook
 } from '../types/index';
 import type { ProfileManager } from './profiles.js';
-import { getDefaultHooks } from './default-hooks.js';
+import { getDefaultHooks } from '../templates/default-hooks.js';
 
 /**
  * Environment variable mapping for configuration options

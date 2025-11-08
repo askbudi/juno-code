@@ -627,59 +627,186 @@ Tasks , USER_FEEDBACK and @{{AGENT_DOC_FILE}} should repesent truth. User Open I
         name: 'Implementation Guide',
         description: 'Implementation steps and current task breakdown',
         category: TemplateCategory.WORKFLOW,
-        content: `# Implementation Guide
+        content: `---
+description: Execute the implementation plan by processing and executing all tasks defined in tasks.md
+---
 
-## Current Focus
+## User Input
+\`\`\`text
+A.
+**ALWAYS check remaing tasks and user feedbacks. Integrate it into the plan,
+this is the primary mechanism for user input and for you to track your progress.
+\`./.juno_task/scripts/kanban.sh list --limit 5\`
+return the most recent 5 Tasks and their status and potential agent response to them.
 
-**Main Task**: {{TASK}}
+**Important** ./.juno_task/scripts/kanban.sh has already installed in your enviroment and you can execute it in your bash.
 
-## Implementation Steps
+A-1.
+read @.juno_task/USER_FEEDBACK.md user feedback on your current execution will be writeen here. And will guide you. If user wants to talk to you while you are working , he will write into this file. first think you do is to read it file.
 
-### Step 1: Analysis and Planning
-- [ ] Review existing codebase structure
-- [ ] Identify key components and dependencies
-- [ ] Document current state in @.juno_task/plan.md
-- [ ] Create detailed specifications in @.juno_task/specs/
+B.
+Based on Items in **./.juno_task/scripts/kanban.sh** reflect on @.juno_task/plan.md and keep it up-to-date.
+0g. Entities and their status in **./.juno_task/scripts/kanban.sh** has higher priority and level of truth than other parts of the app.
+If you see user report a bug that you earlier marked as resolved, you need to investigate the issue again.
+./.juno_task/scripts/kanban.sh items has the higher level of truth. Always
 
-### Step 2: Design and Architecture
-- [ ] Define system architecture
-- [ ] Design data models and APIs
-- [ ] Plan integration points
-- [ ] Document architecture decisions
+0e. Status in ./.juno_task/scripts/kanban.sh could be backlog, todo, in_progress, done.
+in_progress, todo, backlog. That is the priority of tasks in general sense, unless you find something with 10X magnitute of importance, or if you do it first it make other tasks easier or unnecessary.
 
-### Step 3: Implementation
-- [ ] Implement core functionality
-- [ ] Write comprehensive tests
-- [ ] Ensure code quality and documentation
-- [ ] Follow coding standards and best practices
 
-### Step 4: Testing and Validation
-- [ ] Unit tests with >90% coverage
-- [ ] Integration tests
-- [ ] Performance testing
-- [ ] Security review
+0f. After reviwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
+\`./.juno_task/scripts/kanban.sh mark todo --ID {Task_ID}\`
 
-### Step 5: Documentation and Deployment
-- [ ] Update all documentation
-- [ ] Create deployment guides
-- [ ] Version control and tagging
-- [ ] Final review and sign-off
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 
+   1.the issue is still open,
+   2. past approaches to resolve it, what it was, and know that it has failed.
+\`./.juno_task/scripts/kanban.sh mark todo --ID {Task_ID} --response "<PREVIOUS_AGENT_ATTEMP>{what happend before ...}<PREVIOUS_AGENT_ATTEMP>" \`
 
-## Current Tasks
+   **Note** updating response will REPLACE response. So you need to include everything important from the past as well you can check the content of a task with 
+   \`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
 
-Update this section with specific tasks for the current iteration:
 
-1. **Task 1**: [Description]
-   - Status: Not Started
-   - Owner: {{SUBAGENT}}
-   - Priority: High
 
-## Notes and Considerations
+C. Using parallel subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
 
-- Keep this file updated as implementation progresses
-- Document any blockers or issues encountered
-- Reference related specs and plan items
-- Track progress and update status regularly
+D. Choose the most important 1 things, ( Based on Open Issue  and Also Tasks ), Think hard about what is the most important Task. 
+
+E. update status of most important task on ./.juno_task/scripts/kanban.sh. 
+(if the task is not on ./.juno_task/scripts/kanban.sh, create it ! Kanban is our source of truth)
+\`./.juno_task/scripts/kanban.sh mark in_progress --ID {Task_ID}\`
+
+
+F. Implement the most important 1 thing following the outline. 
+
+\`\`\`
+
+You **MUST** consider the user input before proceeding (if not empty).
+
+## Outline
+
+1. Run \`.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks\` from repo root and parse FEATURE_DIR and AVAILABLE_DOCS list. All paths must be absolute. For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\\''m Groot' (or double-quote if possible: "I'm Groot").
+
+2. **Check checklists status** (if FEATURE_DIR/checklists/ exists):
+   - Scan all checklist files in the checklists/ directory
+   - For each checklist, count:
+     * Total items: All lines matching \`- [ ]\` or \`- [X]\` or \`- [x]\`
+     * Completed items: Lines matching \`- [X]\` or \`- [x]\`
+     * Incomplete items: Lines matching \`- [ ]\`
+   - Create a status table:
+     \`\`\`
+     | Checklist | Total | Completed | Incomplete | Status |
+     |-----------|-------|-----------|------------|--------|
+     | ux.md     | 12    | 12        | 0          | ✓ PASS |
+     | test.md   | 8     | 5         | 3          | ✗ FAIL |
+     | security.md | 6   | 6         | 0          | ✓ PASS |
+     \`\`\`
+   - Calculate overall status:
+     * **PASS**: All checklists have 0 incomplete items
+     * **FAIL**: One or more checklists have incomplete items
+   
+   - **If any checklist is incomplete**:
+     * Display the table with incomplete item counts
+     * **STOP** and ask: "Some checklists are incomplete. Do you want to proceed with implementation anyway? (yes/no)"
+     * Wait for user response before continuing (User could answer through USER_FEEDBACK )
+     * If user says "no" or "wait" or "stop", halt execution
+     * If user says "yes" or "proceed" or "continue", proceed to step 3
+   
+   - **If all checklists are complete**:
+     * Display the table showing all checklists passed
+     * Automatically proceed to step 3
+
+3. Load and analyze the implementation context:
+   - **REQUIRED**: Read tasks.md for the complete task list and execution plan
+   - **REQUIRED**: Read plan.md for tech stack, architecture, and file structure
+   - **IF EXISTS**: Read data-model.md for entities and relationships
+   - **IF EXISTS**: Read contracts/ for API specifications and test requirements
+   - **IF EXISTS**: Read research.md for technical decisions and constraints
+   - **IF EXISTS**: Read quickstart.md for integration scenarios
+
+4. **Project Setup Verification**:
+   - **REQUIRED**: Create/verify ignore files based on actual project setup:
+   
+   **Detection & Creation Logic**:
+   - Check if the following command succeeds to determine if the repository is a git repo (create/verify .gitignore if so):
+
+     \`\`\`sh
+     git rev-parse --git-dir 2>/dev/null
+     \`\`\`
+   - Check if Dockerfile* exists or Docker in plan.md → create/verify .dockerignore
+   - Check if .eslintrc* or eslint.config.* exists → create/verify .eslintignore
+   - Check if .prettierrc* exists → create/verify .prettierignore
+   - Check if .npmrc or package.json exists → create/verify .npmignore (if publishing)
+   - Check if terraform files (*.tf) exist → create/verify .terraformignore
+   - Check if .helmignore needed (helm charts present) → create/verify .helmignore
+   
+   **If ignore file already exists**: Verify it contains essential patterns, append missing critical patterns only
+   **If ignore file missing**: Create with full pattern set for detected technology
+   
+   **Common Patterns by Technology** (from plan.md tech stack):
+   - **Node.js/JavaScript**: \`node_modules/\`, \`dist/\`, \`build/\`, \`*.log\`, \`.env*\`
+   - **Python**: \`__pycache__/\`, \`*.pyc\`, \`.venv/\`, \`venv/\`, \`dist/\`, \`*.egg-info/\`
+   - **Java**: \`target/\`, \`*.class\`, \`*.jar\`, \`.gradle/\`, \`build/\`
+   - **C#/.NET**: \`bin/\`, \`obj/\`, \`*.user\`, \`*.suo\`, \`packages/\`
+   - **Go**: \`*.exe\`, \`*.test\`, \`vendor/\`, \`*.out\`
+   - **Universal**: \`.DS_Store\`, \`Thumbs.db\`, \`*.tmp\`, \`*.swp\`, \`.vscode/\`, \`.idea/\`
+   
+   **Tool-Specific Patterns**:
+   - **Docker**: \`node_modules/\`, \`.git/\`, \`Dockerfile*\`, \`.dockerignore\`, \`*.log*\`, \`.env*\`, \`coverage/\`
+   - **ESLint**: \`node_modules/\`, \`dist/\`, \`build/\`, \`coverage/\`, \`*.min.js\`
+   - **Prettier**: \`node_modules/\`, \`dist/\`, \`build/\`, \`coverage/\`, \`package-lock.json\`, \`yarn.lock\`, \`pnpm-lock.yaml\`
+   - **Terraform**: \`.terraform/\`, \`*.tfstate*\`, \`*.tfvars\`, \`.terraform.lock.hcl\`
+
+5. Parse tasks.md structure and extract:
+   - **Task phases**: Setup, Tests, Core, Integration, Polish
+   - **Task dependencies**: Sequential vs parallel execution rules
+   - **Task details**: ID, description, file paths, parallel markers [P]
+   - **Execution flow**: Order and dependency requirements
+
+6. Execute implementation following the task plan:
+   - **Phase-by-phase execution**: Complete each phase before moving to the next
+   - **Respect dependencies**: Run sequential tasks in order, parallel tasks [P] can run together  
+   - **Follow TDD approach**: Execute test tasks before their corresponding implementation tasks
+   - **File-based coordination**: Tasks affecting the same files must run sequentially
+   - **Validation checkpoints**: Verify each phase completion before proceeding
+
+7. Implementation execution rules:
+   - **Setup first**: Initialize project structure, dependencies, configuration
+   - **Tests before code**: If you need to write tests for contracts, entities, and integration scenarios
+   - **Core development**: Implement models, services, CLI commands, endpoints
+   - **Integration work**: Database connections, middleware, logging, external services
+   - **Polish and validation**: Unit tests, performance optimization, documentation
+
+8. Progress tracking and error handling:
+   - Report progress after each completed task
+   - Halt execution if any non-parallel task fails
+   - For parallel tasks [P], continue with successful tasks, report failed ones
+   - Provide clear error messages with context for debugging
+   - Suggest next steps if implementation cannot proceed
+   - **IMPORTANT** For completed tasks, make sure to mark the task off as [X] in the tasks file.
+   - **IMPORTANT** Keep ./.juno_task/scripts/kanban.sh up-to-date
+   When the issue is resolved always update ./.juno_task/scripts/kanban.sh
+   \`./.juno_task/scripts/kanban.sh --status {status} --ID {task_id} --response "{key actions you take, and how you did test it}"\`
+
+9. Completion validation:
+   - Verify all required tasks are completed
+   - Check that implemented features match the original specification
+   - Validate that tests pass and coverage meets requirements
+   - Confirm the implementation follows the technical plan
+   - Report final status with summary of completed work
+   - When the issue is resolved always update ./.juno_task/scripts/kanban.sh
+   \` ./.juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}" \`
+
+10. Git
+
+   When the tests pass update ./.juno_task/scripts/kanban.sh, then add changed code with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
+   Use commit message as a backlog of what has achieved. So later on we would know exactly what we achieved in each commit.
+   Update the task in ./.juno_task/scripts/kanban.sh with the commit hash so later on we could map each task to a specific git commit
+   \`./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}\`
+
+
+
+Note: This command assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running \`/tasks\` first to regenerate the task list.
+
 
 ---
 *Last updated: {{CURRENT_DATE}}*
@@ -845,87 +972,67 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
       ['AGENTS.md', {
         id: 'AGENTS.md',
-        name: 'Available Coding Agents',
-        description: 'Documentation of available coding agents and their capabilities',
+        name: 'AGENTS.md Session Documentation',
+        description: 'Documentation for AGENTS.md coding sessions and learnings',
         category: TemplateCategory.DOCS,
-        content: `# Available Coding Agents
+        content: `# AGENTS.md Session Documentation
 
-## Currently Selected Agent: {{SUBAGENT}}
+## Current Project Configuration
 
-## Agent Comparison
+**Selected Coding Agent:** {{SUBAGENT}}
+**Main Task:** {{TASK}}
+**Project Path:** {{PROJECT_PATH}}
+**Git Repository:** {{GIT_URL}}
+**Configuration Date:** {{CURRENT_DATE}}
 
-### Claude (Anthropic)
-- **Strengths:** Excellent code quality, strong reasoning, comprehensive documentation
-- **Best For:** Complex problem solving, refactoring, architectural decisions
-- **Model Options:** Claude-3-sonnet, Claude-3-opus
-- **Selection Status:** {{CLAUDE_STATUS}}
+## Agent-Specific Instructions
 
-### Cursor (Cursor.sh)
-- **Strengths:** IDE integration, real-time collaboration, fast iterations
-- **Best For:** Interactive development, rapid prototyping, code completion
-- **Model Options:** GPT-4, Claude integration
-- **Selection Status:** {{CURSOR_STATUS}}
+### {{SUBAGENT}} Configuration
+- **Recommended Model:** Latest available model for {{SUBAGENT}}
+- **Interaction Style:** Professional and detail-oriented
+- **Code Quality:** Focus on production-ready, well-documented code
+- **Testing:** Comprehensive unit and integration tests required
 
-### Codex (GitHub Copilot)
-- **Strengths:** Code generation, pattern recognition, language versatility
-- **Best For:** Boilerplate code, common patterns, multi-language projects
-- **Model Options:** Codex, GPT-4 variants
-- **Selection Status:** {{CODEX_STATUS}}
+## Build & Test Commands
 
-### Gemini (Google)
-- **Strengths:** Multimodal capabilities, large context windows, research integration
-- **Best For:** Data analysis, ML projects, research-oriented tasks
-- **Model Options:** Gemini-pro, Gemini-ultra
-- **Selection Status:** {{GEMINI_STATUS}}
-
-## Agent Selection Guidelines
-
-### Task-Based Recommendations:
-
-**Complex Architecture & Design:**
-- Primary: Claude (excellent reasoning)
-- Secondary: Gemini (large context)
-
-**Rapid Development & Prototyping:**
-- Primary: Cursor (real-time feedback)
-- Secondary: Codex (fast generation)
-
-**Data Science & ML:**
-- Primary: Gemini (multimodal, research focus)
-- Secondary: Claude (analytical depth)
-
-**Legacy Code & Refactoring:**
-- Primary: Claude (comprehensive analysis)
-- Secondary: Cursor (IDE integration)
-
-## Switching Agents
-
-To change the selected coding agent, run:
+**Environment Setup:**
 \`\`\`bash
-juno-task init --subagent <agent_name>
+# Activate virtual environment (if applicable)
+source {{VENV_PATH}}/bin/activate
+
+# Navigate to project
+cd {{PROJECT_PATH}}
 \`\`\`
 
-Available agent names: \`claude\`, \`cursor\`, \`codex\`, \`gemini\`
+**Testing:**
+\`\`\`bash
+# Run tests
+python -m pytest tests/ -v
 
-## Agent Performance Tracking
+# Run with coverage
+python -m pytest tests/ --cov=src --cov-report=term-missing
+\`\`\`
 
-### {{SUBAGENT}} Performance Metrics:
-- **Tasks Completed:** 0
-- **Success Rate:** N/A
-- **Average Completion Time:** N/A
-- **Code Quality Score:** N/A
+**Development Notes:**
+- Keep this file updated with important learnings and optimizations
+- Document any environment-specific setup requirements
+- Record successful command patterns for future reference
 
-*Note: Metrics will be updated as tasks are completed*
+## Session History
 
-## Configuration History
+| Date | Agent | Task Summary | Status |
+|------|-------|--------------|---------|
+| {{CURRENT_DATE}} | {{SUBAGENT}} | Project initialization | ✅ Completed |
 
-| Date | Previous Agent | New Agent | Reason |
-|------|---------------|-----------|---------|
-| {{CURRENT_DATE}} | None | {{SUBAGENT}} | Initial project setup |
+## Agent Performance Notes
 
----
-*Last updated: {{CURRENT_DATE}}*
-*Current configuration: {{SUBAGENT}} agent selected*`,
+### {{SUBAGENT}} Observations:
+- Initial setup: Successful
+- Code quality: To be evaluated
+- Test coverage: To be assessed
+- Documentation: To be reviewed
+
+*Note: Update this section with actual performance observations during development*`,
         variables: [
           {
             name: 'SUBAGENT',
@@ -936,38 +1043,34 @@ Available agent names: \`claude\`, \`cursor\`, \`codex\`, \`gemini\`
             choices: VALID_SUBAGENTS
           },
           {
+            name: 'TASK',
+            description: 'Main task description',
+            type: 'text',
+            required: true
+          },
+          {
+            name: 'PROJECT_PATH',
+            description: 'Project root directory path',
+            type: 'path',
+            required: true
+          },
+          {
+            name: 'GIT_URL',
+            description: 'Git repository URL',
+            type: 'url',
+            required: true
+          },
+          {
             name: 'CURRENT_DATE',
             description: 'Current date',
             type: 'date',
             required: true
           },
           {
-            name: 'CLAUDE_STATUS',
-            description: 'Claude agent selection status',
-            type: 'text',
-            required: false,
-            defaultValue: '⭕ Available'
-          },
-          {
-            name: 'CURSOR_STATUS',
-            description: 'Cursor agent selection status',
-            type: 'text',
-            required: false,
-            defaultValue: '⭕ Available'
-          },
-          {
-            name: 'CODEX_STATUS',
-            description: 'Codex agent selection status',
-            type: 'text',
-            required: false,
-            defaultValue: '⭕ Available'
-          },
-          {
-            name: 'GEMINI_STATUS',
-            description: 'Gemini agent selection status',
-            type: 'text',
-            required: false,
-            defaultValue: '⭕ Available'
+            name: 'VENV_PATH',
+            description: 'Virtual environment path',
+            type: 'path',
+            required: true
           }
         ],
         version: '1.0.0',
@@ -1288,11 +1391,11 @@ This directory contains specification documents for your project.
   "mcpServers": {
     "roundtable-ai": {
       "name": "roundtable-ai",
-      "command": "python",
+      "command": "roundtable-ai",
       "args": [
-        "{{PROJECT_ROOT}}/roundtable_mcp_server/roundtable_mcp_server/server.py"
+        
       ],
-      "timeout": 3600.0,
+      "timeout": 36000000.0,
       "enable_default_progress_callback": false,
       "suppress_subprocess_logs": true,
       "env": {
@@ -1317,7 +1420,7 @@ This directory contains specification documents for your project.
   },
   "default_server": "roundtable-ai",
   "global_settings": {
-    "connection_timeout": 30.0,
+    "connection_timeout": 30000000.0,
     "default_retries": 3,
     "enable_progress_streaming": true,
     "log_level": "info",

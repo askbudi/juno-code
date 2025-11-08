@@ -13,7 +13,7 @@ import { Command } from 'commander';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 import { loadConfig } from '../../core/config.js';
-import { getDefaultHooks } from '../../core/default-hooks.js';
+import { getDefaultHooks } from '../../templates/default-hooks.js';
 import type { InitCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
 import type { TemplateVariables } from '../../templates/types.js';
