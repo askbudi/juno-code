@@ -22,14 +22,17 @@ describe('Configuration Module', () => {
 
   beforeEach(async () => {
     // Create temporary directory for test files
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-config-test-'));
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-config-test-'));
 
     // Save original environment variables
     originalEnv = { ...process.env };
 
-    // Clear juno-task environment variables
+    // Clear juno-code and juno-task environment variables
     for (const envVar of Object.keys(ENV_VAR_MAPPING)) {
       delete process.env[envVar];
+      // Also clear JUNO_CODE variants for testing
+      const junoCodeVar = envVar.replace('JUNO_TASK_', 'JUNO_CODE_');
+      delete process.env[junoCodeVar];
     }
   });
 
@@ -175,8 +178,20 @@ describe('Configuration Module', () => {
   });
 
   describe('Environment variable parsing', () => {
-    it('should parse boolean environment variables', () => {
-      process.env.JUNO_TASK_VERBOSE = 'true';
+    it('should parse boolean environment variables (JUNO_CODE)', () => {
+      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.JUNO_CODE_QUIET = 'false';
+
+      const loader = new ConfigLoader(tempDir);
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.verbose).toBe(true);
+      expect(config.quiet).toBe(false);
+    });
+
+    it('should parse boolean environment variables (JUNO_TASK backward compatibility)', () => {
+      process.env.JUNO_CODE_VERBOSE = 'true';
       process.env.JUNO_TASK_QUIET = 'false';
 
       const loader = new ConfigLoader(tempDir);
@@ -187,7 +202,21 @@ describe('Configuration Module', () => {
       expect(config.quiet).toBe(false);
     });
 
-    it('should parse numeric environment variables', () => {
+    it('should parse numeric environment variables (JUNO_CODE)', () => {
+      process.env.JUNO_CODE_DEFAULT_MAX_ITERATIONS = '75';
+      process.env.JUNO_CODE_MCP_TIMEOUT = '45000';
+      process.env.JUNO_CODE_MCP_RETRIES = '5';
+
+      const loader = new ConfigLoader(tempDir);
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.defaultMaxIterations).toBe(75);
+      expect(config.mcpTimeout).toBe(45000);
+      expect(config.mcpRetries).toBe(5);
+    });
+
+    it('should parse numeric environment variables (JUNO_TASK backward compatibility)', () => {
       process.env.JUNO_TASK_DEFAULT_MAX_ITERATIONS = '75';
       process.env.JUNO_TASK_MCP_TIMEOUT = '45000';
       process.env.JUNO_TASK_MCP_RETRIES = '5';
@@ -201,9 +230,23 @@ describe('Configuration Module', () => {
       expect(config.mcpRetries).toBe(5);
     });
 
-    it('should parse string environment variables', () => {
+    it('should parse string environment variables (JUNO_CODE)', () => {
+      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
+      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
+      process.env.JUNO_CODE_WORKING_DIRECTORY = '/custom/path';
+
+      const loader = new ConfigLoader(tempDir);
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.defaultSubagent).toBe('cursor');
+      expect(config.logLevel).toBe('debug');
+      expect(config.workingDirectory).toBe('/custom/path');
+    });
+
+    it('should parse string environment variables (JUNO_TASK backward compatibility)', () => {
       process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_TASK_LOG_LEVEL = 'debug';
+      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
       process.env.JUNO_TASK_WORKING_DIRECTORY = '/custom/path';
 
       const loader = new ConfigLoader(tempDir);
@@ -216,8 +259,8 @@ describe('Configuration Module', () => {
     });
 
     it('should handle case-insensitive boolean values', () => {
-      process.env.JUNO_TASK_VERBOSE = 'TRUE';
-      process.env.JUNO_TASK_QUIET = 'False';
+      process.env.JUNO_CODE_VERBOSE = 'TRUE';
+      process.env.JUNO_CODE_QUIET = 'False';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -228,13 +271,27 @@ describe('Configuration Module', () => {
     });
 
     it('should ignore invalid numeric values', () => {
-      process.env.JUNO_TASK_DEFAULT_MAX_ITERATIONS = 'not-a-number';
+      process.env.JUNO_CODE_DEFAULT_MAX_ITERATIONS = 'not-a-number';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
       const config = loader.merge();
 
       expect(config.defaultMaxIterations).toBe('not-a-number');
+    });
+
+    it('should prefer JUNO_CODE over JUNO_TASK when both are set', () => {
+      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.JUNO_TASK_VERBOSE = 'false';
+      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
+      process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'claude';
+
+      const loader = new ConfigLoader(tempDir);
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.verbose).toBe(true);
+      expect(config.defaultSubagent).toBe('cursor');
     });
   });
 
@@ -416,8 +473,8 @@ logLevel: info
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment config
-      process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_TASK_VERBOSE = 'true';
+      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
+      process.env.JUNO_CODE_VERBOSE = 'true';
 
       // Setup CLI config
       const cliConfig = {
@@ -514,7 +571,7 @@ logLevel: info
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment
-      process.env.JUNO_TASK_VERBOSE = 'true';
+      process.env.JUNO_CODE_VERBOSE = 'true';
 
       // Setup CLI
       const cliConfig = {
@@ -599,7 +656,7 @@ logLevel: info
       const configPath = path.join(tempDir, 'test.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_TASK_LOG_LEVEL = 'debug';
+      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
 
       const loader = new ConfigLoader(tempDir);
       await loader.fromFile(configPath);
@@ -618,7 +675,7 @@ logLevel: info
       const configPath = path.join(tempDir, 'juno-task.config.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_TASK_VERBOSE = 'true';
+      process.env.JUNO_CODE_VERBOSE = 'true';
 
       const loader = new ConfigLoader(tempDir);
       const config = await loader.loadAll({ logLevel: 'error' });
@@ -874,9 +931,9 @@ logLevel: info
       await fs.writeJson(configPath, fileConfig);
 
       // Set some environment variables
-      process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_TASK_VERBOSE = 'true';
-      process.env.JUNO_TASK_MCP_RETRIES = '5';
+      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
+      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.JUNO_CODE_MCP_RETRIES = '5';
 
       // Create CLI config
       const cliConfig = {
@@ -1032,8 +1089,8 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       const configPath = path.join(tempDir, 'juno-task.config.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_TASK_VERBOSE = 'true';
-      process.env.JUNO_TASK_MCP_TIMEOUT = '50000';
+      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.JUNO_CODE_MCP_TIMEOUT = '50000';
 
       const cliOverrides = {
         quiet: true,

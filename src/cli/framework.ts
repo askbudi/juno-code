@@ -1,5 +1,5 @@
 /**
- * CLI Framework Module for juno-task-ts
+ * CLI Framework Module for juno-code
  *
  * Comprehensive CLI framework implementation providing command registration,
  * routing, validation, error handling, and execution management. This module
@@ -57,23 +57,23 @@ export class CLIFramework {
         flags: '-v, --verbose',
         description: 'Enable verbose output with detailed progress',
         defaultValue: false,
-        env: 'JUNO_TASK_VERBOSE'
+        env: 'JUNO_CODE_VERBOSE'
       },
       {
         flags: '-q, --quiet',
         description: 'Disable rich formatting, use plain text',
         defaultValue: false,
-        env: 'JUNO_TASK_QUIET'
+        env: 'JUNO_CODE_QUIET'
       },
       {
         flags: '-c, --config <path>',
         description: 'Configuration file path (.json, .toml, pyproject.toml)',
-        env: 'JUNO_TASK_CONFIG'
+        env: 'JUNO_CODE_CONFIG'
       },
       {
         flags: '--log-file <path>',
         description: 'Log file path (auto-generated if not specified)',
-        env: 'JUNO_TASK_LOG_FILE'
+        env: 'JUNO_CODE_LOG_FILE'
       },
       {
         flags: '--no-color',
@@ -84,24 +84,24 @@ export class CLIFramework {
         description: 'Log level for output (error, warn, info, debug, trace)',
         defaultValue: 'info',
         choices: ['error', 'warn', 'info', 'debug', 'trace'],
-        env: 'JUNO_TASK_LOG_LEVEL'
+        env: 'JUNO_CODE_LOG_LEVEL'
       },
       {
         flags: '-s, --subagent <type>',
         description: 'Subagent to use',
-        env: 'JUNO_TASK_SUBAGENT'
+        env: 'JUNO_CODE_SUBAGENT'
       },
       {
         flags: '--max-iterations <number>',
         description: 'Maximum iterations (-1 for unlimited)',
         defaultValue: undefined,
-        env: 'JUNO_TASK_MAX_ITERATIONS'
+        env: 'JUNO_CODE_MAX_ITERATIONS'
       },
       {
         flags: '--mcp-timeout <number>',
         description: 'MCP server timeout in milliseconds',
         defaultValue: undefined,
-        env: 'JUNO_TASK_MCP_TIMEOUT'
+        env: 'JUNO_CODE_MCP_TIMEOUT'
       }
     ];
 
@@ -427,7 +427,7 @@ export class CLIFramework {
         }
 
         if (error.showHelp) {
-          console.error(chalk.gray(`\n   Use 'juno-task ${commandName} --help' for usage information`));
+          console.error(chalk.gray(`\n   Use 'juno-code ${commandName} --help' for usage information`));
         }
 
         const exitCode = Object.values(EXIT_CODES).includes((error as any).code)
@@ -494,7 +494,7 @@ export class CLIFramework {
     try {
       await this.program.parseAsync(argv);
     } catch (error) {
-      await this.handleCommandError(error, 'juno-task', {});
+      await this.handleCommandError(error, 'juno-code', {});
     }
   }
 

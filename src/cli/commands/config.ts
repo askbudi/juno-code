@@ -1,5 +1,5 @@
 /**
- * Configuration Profile Management Command for juno-task-ts CLI
+ * Configuration Profile Management Command for juno-code CLI
  *
  * Provides comprehensive profile management including list, show, set, create,
  * delete, export, and import operations with detailed formatting and validation.
@@ -35,7 +35,7 @@ class ProfileDisplayFormatter {
   formatProfileList(profiles: string[], activeProfile: string): void {
     if (profiles.length === 0) {
       console.log(chalk.yellow('No configuration profiles found.'));
-      console.log(chalk.gray('\nUse "juno-task config create <name>" to create your first profile.'));
+      console.log(chalk.gray('\nUse "juno-code config create <name>" to create your first profile.'));
       return;
     }
 
@@ -154,7 +154,7 @@ async function listProfiles(options: { verbose?: boolean } = {}): Promise<void> 
     formatter.formatProfileList(profiles, activeProfile);
 
     if (options.verbose && profiles.length > 0) {
-      console.log(chalk.gray('\nUse "juno-task config show <profile>" for detailed information.'));
+      console.log(chalk.gray('\nUse "juno-code config show <profile>" for detailed information.'));
     }
   } catch (error) {
     const formatter = new ProfileDisplayFormatter();
@@ -188,7 +188,7 @@ async function showProfile(profileName?: string, options: { verbose?: boolean } 
     const formatter = new ProfileDisplayFormatter();
     if (error instanceof ProfileNotFoundError) {
       formatter.formatError(`Profile '${profileName}' not found.`);
-      console.log(chalk.gray('\nUse "juno-task config list" to see available profiles.'));
+      console.log(chalk.gray('\nUse "juno-code config list" to see available profiles.'));
     } else {
       formatter.formatError(`Failed to show profile: ${error}`);
     }
@@ -213,7 +213,7 @@ async function setActiveProfile(profileName: string): Promise<void> {
     const formatter = new ProfileDisplayFormatter();
     if (error instanceof ProfileNotFoundError) {
       formatter.formatError(`Profile '${profileName}' not found.`);
-      console.log(chalk.gray('\nUse "juno-task config list" to see available profiles.'));
+      console.log(chalk.gray('\nUse "juno-code config list" to see available profiles.'));
     } else {
       formatter.formatError(`Failed to set active profile: ${error}`);
     }
@@ -259,14 +259,14 @@ async function createProfile(
 
     if (options.interactive) {
       console.log(chalk.gray('\nYou can now configure this profile using:'));
-      console.log(chalk.cyan(`  juno-task config edit ${profileName}`));
+      console.log(chalk.cyan(`  juno-code config edit ${profileName}`));
     }
 
   } catch (error) {
     const formatter = new ProfileDisplayFormatter();
     if (error instanceof ProfileExistsError) {
       formatter.formatError(`Profile '${profileName}' already exists.`);
-      console.log(chalk.gray('Use "juno-task config show <profile>" to view existing profile.'));
+      console.log(chalk.gray('Use "juno-code config show <profile>" to view existing profile.'));
     } else if (error instanceof CircularInheritanceError) {
       formatter.formatError(`Circular inheritance detected: ${error.message}`);
     } else {
@@ -459,12 +459,12 @@ export function setupConfigCommand(program: Command): void {
   configCmd.on('--help', () => {
     console.log('');
     console.log('Examples:');
-    console.log('  $ juno-task config list                    # List all profiles');
-    console.log('  $ juno-task config show development        # Show development profile');
-    console.log('  $ juno-task config set production          # Set active profile');
-    console.log('  $ juno-task config create dev --description "Development settings"');
-    console.log('  $ juno-task config export prod prod.json  # Export to file');
-    console.log('  $ juno-task config import backup.json     # Import from file');
+    console.log('  $ juno-code config list                    # List all profiles');
+    console.log('  $ juno-code config show development        # Show development profile');
+    console.log('  $ juno-code config set production          # Set active profile');
+    console.log('  $ juno-code config create dev --description "Development settings"');
+    console.log('  $ juno-code config export prod prod.json  # Export to file');
+    console.log('  $ juno-code config import backup.json     # Import from file');
     console.log('');
   });
 }

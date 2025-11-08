@@ -1,5 +1,5 @@
 /**
- * Simplified Init command implementation for juno-task-ts CLI
+ * Simplified Init command implementation for juno-code CLI
  *
  * Minimal flow: Project Root → Main Task → Editor Selection → Git Setup → Save
  * Removes all complex features: token counting, cost calculation, character limits, etc.
@@ -42,7 +42,7 @@ class SimpleInitTUI {
    * Simplified gather method implementing the minimal flow
    */
   async gather(): Promise<InitializationContext> {
-    console.log(chalk.blue.bold('\n🚀 Juno Task Project Initialization\n'));
+    console.log(chalk.blue.bold('\n🚀 Juno Code Project Initialization\n'));
 
     // 1. Project Root
     console.log(chalk.yellow('📁 Step 1: Project Directory'));
@@ -527,7 +527,7 @@ This directory contains detailed specifications for the project components.
 
 ## System Overview
 
-This project uses AI-assisted development with juno-task to achieve: ${variables.TASK}
+This project uses AI-assisted development with juno-code to achieve: ${variables.TASK}
 
 ## Architectural Decisions
 
@@ -550,7 +550,7 @@ This project uses AI-assisted development with juno-task to achieve: ${variables
 
 - **Language**: TypeScript
 - **Runtime**: Node.js
-- **CLI**: juno-task with AI subagent integration
+- **CLI**: juno-code with AI subagent integration
 - **Version Control**: Git
 - **Documentation**: Markdown-based
 
@@ -612,7 +612,7 @@ This project uses AI-assisted development with juno-task to achieve: ${variables
 
 ## Project Overview
 
-This project was initialized on ${variables.CURRENT_DATE} using juno-task.
+This project was initialized on ${variables.CURRENT_DATE} using juno-code.
 
 **Main Task**: ${variables.TASK}
 **Preferred Subagent**: ${variables.EDITOR}
@@ -626,9 +626,9 @@ This project was initialized on ${variables.CURRENT_DATE} using juno-task.
 - Use \`npm run test:binary\` for CLI testing
 
 ### Key Commands
-- \`juno-task start\` - Begin task execution
-- \`juno-task -s ${variables.EDITOR}\` - Quick execution with preferred subagent
-- \`juno-task feedback\` - Provide feedback on the process
+- \`juno-code start\` - Begin task execution
+- \`juno-code -s ${variables.EDITOR}\` - Quick execution with preferred subagent
+- \`juno-code feedback\` - Provide feedback on the process
 
 ## Project Structure
 
@@ -756,27 +756,27 @@ ${variables.DESCRIPTION}
 
 ## Overview
 
-This project uses juno-task for AI-powered development with ${variables.EDITOR} as the primary AI subagent.
+This project uses juno-code for AI-powered development with ${variables.EDITOR} as the primary AI subagent.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js (v18 or higher)
-- juno-task CLI installed
+- juno-code CLI installed
 - Git for version control
 
 ### Quick Start
 
 \`\`\`bash
 # Start task execution with production-ready AI instructions
-juno-task start
+juno-code start
 
 # Or use main command with preferred subagent
-juno-task -s ${variables.EDITOR}
+juno-code -s ${variables.EDITOR}
 
 # Provide feedback on the development process
-juno-task feedback
+juno-code feedback
 \`\`\`
 
 ## Project Structure
@@ -836,12 +836,12 @@ ${variables.GIT_URL ? `\n## Repository\n${variables.GIT_URL}` : ''}
 1. **Review Task**: Check \`.juno_task/init.md\` for main task
 2. **Check Plan**: Review \`.juno_task/plan.md\` for current priorities
 3. **Track Implementation**: Follow \`.juno_task/implement.md\` for current implementation steps
-4. **Provide Feedback**: Use \`juno-task feedback\` for issues or suggestions
+4. **Provide Feedback**: Use \`juno-code feedback\` for issues or suggestions
 5. **Monitor Progress**: Track AI development through \`.juno_task/prompt.md\`
 
 ---
 
-Created with juno-task on ${variables.CURRENT_DATE}
+Created with juno-code on ${variables.CURRENT_DATE}
 ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 `;
 
@@ -1140,11 +1140,11 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   private printNextSteps(targetDirectory: string, editor: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
-    console.log(chalk.white('   juno-task start           # Start task execution'));
-    console.log(chalk.white(`   juno-task -s ${editor}       # Quick execution with ${editor}`));
+    console.log(chalk.white('   juno-code start           # Start task execution'));
+    console.log(chalk.white(`   juno-code -s ${editor}       # Quick execution with ${editor}`));
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
-    console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));
+    console.log(chalk.gray('   - Use "juno-code --help" to see all available commands'));
     console.log(chalk.gray('   - Run .juno_task/scripts/clean_logs_folder.sh to archive old logs'));
   }
 
@@ -1216,7 +1216,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           // Add all files and create initial commit
           execSync('git add .', { cwd: targetDirectory, stdio: 'ignore' });
 
-          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-task using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-task](https://github.com/owner/juno-task-ts)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-code using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-code](https://github.com/owner/juno-code-ts)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
 
           execSync(`git commit -m "${commitMessage}"`, {
             cwd: targetDirectory,
@@ -1309,7 +1309,7 @@ export async function initCommandHandler(
     const globalOptions = command.parent?.opts() || {};
     const allOptions = { ...options, ...globalOptions };
 
-    console.log(chalk.blue.bold('🎯 Juno Task - Simplified Initialization'));
+    console.log(chalk.blue.bold('🎯 Juno Code - Simplified Initialization'));
 
     let context: InitializationContext;
 
@@ -1378,7 +1378,7 @@ export async function initCommandHandler(
 export function configureInitCommand(program: Command): void {
   program
     .command('init')
-    .description('Initialize new juno-task project with simple setup')
+    .description('Initialize new juno-code project with simple setup')
     .argument('[directory]', 'Target directory (default: current directory)')
     .option('-f, --force', 'Force overwrite existing files')
     .option('-t, --task <description>', 'Main task description')
@@ -1404,9 +1404,9 @@ export function configureInitCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task init                                    # Initialize in current directory
-  $ juno-task init my-project                         # Initialize in ./my-project
-  $ juno-task init --interactive                      # Use simple interactive setup
+  $ juno-code init                                    # Initialize in current directory
+  $ juno-code init my-project                         # Initialize in ./my-project
+  $ juno-code init --interactive                      # Use simple interactive setup
 
 Simplified Interactive Flow:
   1. Project Root → Specify target directory

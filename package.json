@@ -1,7 +1,7 @@
 {
-  "name": "juno-task-ts",
+  "name": "juno-code",
   "version": "1.0.12",
-  "description": "TypeScript implementation of juno-task CLI tool for AI subagent orchestration",
+  "description": "TypeScript CLI tool for AI subagent orchestration with code automation",
   "keywords": [
     "ai",
     "cli",
@@ -25,10 +25,7 @@
     }
   },
   "bin": {
-    "juno": "./dist/bin/cli.mjs",
-    "juno-agent": "./dist/bin/cli.mjs",
     "juno-code": "./dist/bin/cli.mjs",
-    "juno-ts-task": "./dist/bin/cli.mjs",
     "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
   },
   "files": [
@@ -131,12 +128,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/owner/juno-task-ts.git"
+    "url": "https://github.com/owner/juno-code.git"
   },
   "bugs": {
-    "url": "https://github.com/owner/juno-task-ts/issues"
+    "url": "https://github.com/owner/juno-code/issues"
   },
-  "homepage": "https://github.com/owner/juno-task-ts#readme",
+  "homepage": "https://github.com/owner/juno-code#readme",
   "license": "MIT",
   "author": {
     "name": "Development Team",

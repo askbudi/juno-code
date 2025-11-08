@@ -117,7 +117,7 @@ describe('Init Command', () => {
       const initCommand = program.commands.find(cmd => cmd.name() === 'init');
 
       expect(initCommand).toBeDefined();
-      expect(initCommand?.description()).toContain('Initialize new juno-task project');
+      expect(initCommand?.description()).toContain('Initialize new juno-code project');
       expect(initCommand?.args).toHaveLength(1); // directory argument
       // Note: The total options include global options added by the framework
       expect(initCommand?.options.length).toBeGreaterThanOrEqual(4); // At least 4 command-specific options
@@ -380,7 +380,7 @@ describe('Init Command', () => {
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Task Project Initialization')
+          expect.stringContaining('Juno Code Project Initialization')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
           expect.stringContaining('Project initialization complete')
@@ -511,7 +511,7 @@ describe('Init Command', () => {
           expect.stringContaining('cd my-project')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-task start')
+          expect.stringContaining('juno-code start')
         );
       });
 
@@ -558,16 +558,16 @@ describe('Init Command', () => {
           expect.stringContaining('Useful Commands:')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-task start')
+          expect.stringContaining('juno-code start')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-task session list')
+          expect.stringContaining('juno-code session list')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-task feedback')
+          expect.stringContaining('juno-code feedback')
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-task --help')
+          expect.stringContaining('juno-code --help')
         );
       });
     });

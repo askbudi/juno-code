@@ -1,5 +1,5 @@
 /**
- * Start command implementation for juno-task-ts CLI
+ * Start command implementation for juno-code CLI
  *
  * Executes tasks using .juno_task/init.md as the prompt with full MCP integration,
  * real-time progress tracking, session management, and comprehensive error handling.
@@ -250,7 +250,7 @@ class ProjectContextLoader {
 
     if (!(await fs.pathExists(junoTaskDir))) {
       throw new FileSystemError(
-        'No .juno_task directory found. Run "juno-task init" first.',
+        'No .juno_task directory found. Run "juno-code init" first.',
         junoTaskDir
       );
     }
@@ -543,7 +543,7 @@ export async function startCommandHandler(
     const allOptions = { ...globalOptions, ...options };
 
     // Successfully merged global and local options
-    writeTerminalProgress(chalk.blue.bold('🎯 Juno Task - Start Execution') + '\n');
+    writeTerminalProgress(chalk.blue.bold('🎯 Juno Code - Start Execution') + '\n');
 
     // Set logging level based on options
     const logLevel = allOptions.logLevel ? LogLevel[allOptions.logLevel.toUpperCase() as keyof typeof LogLevel] : LogLevel.INFO;
@@ -616,7 +616,7 @@ export async function startCommandHandler(
           `Invalid subagent: ${allOptions.subagent}`,
           [
             `Use one of: ${validSubagents.join(', ')}`,
-            'Run `juno-task help start` for examples'
+            'Run `juno-code help start` for examples'
           ]
         );
       }
@@ -672,7 +672,7 @@ export async function startCommandHandler(
     const sessionId = coordinator.getSessionId();
     if (sessionId) {
       writeTerminalProgress(chalk.blue(`\n📁 Session ID: ${sessionId}`) + '\n');
-      writeTerminalProgress(chalk.gray('   Use "juno-task session info ' + sessionId + '" for detailed information') + '\n');
+      writeTerminalProgress(chalk.gray('   Use "juno-code session info ' + sessionId + '" for detailed information') + '\n');
       sessionLogger.info('Session completed', {
         sessionId,
         status: result.status,
@@ -778,20 +778,20 @@ export function configureStartCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task start                                   # Start execution in current directory
-  $ juno-task start -s claude                        # Use claude subagent
-  $ juno-task start --subagent cursor                # Use cursor subagent
-  $ juno-task start -s codex --max-iterations 10     # Use codex with 10 iterations
-  $ juno-task start --model sonnet-4                 # Use specific model
-  $ juno-task start --directory ./my-project         # Execute in specific directory
-  $ juno-task start --enable-feedback                # Enable feedback collection while running
-  $ juno-task start --verbose                        # Show detailed progress
-  $ juno-task start --quiet                          # Minimize output
-  $ juno-task start --show-metrics                   # Display performance summary
-  $ juno-task start --show-dashboard                 # Interactive performance dashboard
-  $ juno-task start --show-trends                    # Show historical performance trends
-  $ juno-task start --save-metrics                   # Save metrics to .juno_task/metrics.json
-  $ juno-task start --save-metrics custom.json       # Save metrics to custom file
+  $ juno-code start                                   # Start execution in current directory
+  $ juno-code start -s claude                        # Use claude subagent
+  $ juno-code start --subagent cursor                # Use cursor subagent
+  $ juno-code start -s codex --max-iterations 10     # Use codex with 10 iterations
+  $ juno-code start --model sonnet-4                 # Use specific model
+  $ juno-code start --directory ./my-project         # Execute in specific directory
+  $ juno-code start --enable-feedback                # Enable feedback collection while running
+  $ juno-code start --verbose                        # Show detailed progress
+  $ juno-code start --quiet                          # Minimize output
+  $ juno-code start --show-metrics                   # Display performance summary
+  $ juno-code start --show-dashboard                 # Interactive performance dashboard
+  $ juno-code start --show-trends                    # Show historical performance trends
+  $ juno-code start --save-metrics                   # Save metrics to .juno_task/metrics.json
+  $ juno-code start --save-metrics custom.json       # Save metrics to custom file
 
 Feedback Collection:
   --enable-feedback             Enable concurrent feedback collection
@@ -813,7 +813,7 @@ Environment Variables:
   JUNO_TASK_MCP_TIMEOUT        MCP operation timeout (ms)
 
 Notes:
-  - Requires .juno_task/init.md file (created by 'juno-task init')
+  - Requires .juno_task/init.md file (created by 'juno-code init')
   - Creates a new session for tracking execution
   - Progress is displayed in real-time
   - Performance metrics are collected automatically

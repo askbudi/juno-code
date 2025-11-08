@@ -1,5 +1,5 @@
 /**
- * @fileoverview Template engine implementation for juno-task-ts
+ * @fileoverview Template engine implementation for juno-code
  *
  * Comprehensive template processing engine based on the Python budi-cli implementation.
  * Supports Handlebars template engine with variable substitution patterns compatible
@@ -7,7 +7,7 @@
  * file generation with conflict resolution, and template discovery.
  *
  * @version 1.0.0
- * @author juno-task-ts
+ * @author juno-code
  */
 
 import fs from 'fs-extra';
@@ -48,7 +48,7 @@ import {
  */
 export class TemplateEngine implements ITemplateEngine {
   /** Engine name identifier */
-  public readonly name = 'juno-task-handlebars';
+  public readonly name = 'juno-code-handlebars';
 
   /** Engine version */
   public readonly version = '1.0.0';

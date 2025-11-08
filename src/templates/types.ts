@@ -1,5 +1,5 @@
 /**
- * @fileoverview Template system types for juno-task-ts
+ * @fileoverview Template system types for juno-code
  *
  * Comprehensive TypeScript type definitions for the template system,
  * based on the Python budi-cli implementation. Supports Handlebars
@@ -7,7 +7,7 @@
  * with the Python implementation.
  *
  * @version 1.0.0
- * @author juno-task-ts
+ * @author juno-code
  */
 
 /**
@@ -504,7 +504,7 @@ export const DEFAULT_TEMPLATE_VARIABLES = {
     AUTHOR: 'Anonymous',
     EMAIL: 'author@example.com',
     LICENSE: 'MIT',
-    DESCRIPTION: 'A juno-task project',
+    DESCRIPTION: 'A juno-code project',
     VERSION: '0.1.0'
   }
 } as const;
@@ -626,7 +626,7 @@ export const VARIABLE_CATEGORIES: Record<string, VariableCategory> = {
       DESCRIPTION: {
         description: 'Project description',
         type: 'text',
-        defaultValue: 'A juno-task project',
+        defaultValue: 'A juno-code project',
         required: false
       },
       VERSION: {

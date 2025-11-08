@@ -1,5 +1,5 @@
 /**
- * Configuration Profile Management for juno-task-ts
+ * Configuration Profile Management for juno-code
  *
  * Provides comprehensive profile management including creation, switching,
  * inheritance, and import/export functionality as specified in config.md.

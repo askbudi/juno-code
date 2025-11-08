@@ -1,5 +1,5 @@
 /**
- * Performance Metrics Collection System for juno-task-ts
+ * Performance Metrics Collection System for juno-code
  *
  * Comprehensive performance analytics and metrics collection.
  * Provides real-time execution metrics, resource usage monitoring,

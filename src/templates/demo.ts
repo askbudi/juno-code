@@ -2,7 +2,7 @@
  * @fileoverview Template engine demonstration
  *
  * This demo shows the comprehensive template engine functionality
- * implemented for juno-task-ts based on the Python budi-cli.
+ * implemented for juno-code based on the Python budi-cli.
  */
 
 import { TemplateEngine, TemplateUtils } from './engine.js';

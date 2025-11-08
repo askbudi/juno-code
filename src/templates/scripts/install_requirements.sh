@@ -2,7 +2,7 @@
 
 # install_requirements.sh
 #
-# Purpose: Install Python dependencies required for juno-task-ts
+# Purpose: Install Python dependencies required for juno-code
 #
 # This script:
 # 1. Checks if 'uv' (ultrafast Python package manager) is installed
@@ -16,7 +16,7 @@
 #
 # Usage: ./install_requirements.sh
 #
-# Created by: juno-task-ts init command
+# Created by: juno-code init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure

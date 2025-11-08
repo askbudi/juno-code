@@ -24,9 +24,41 @@ import { getDefaultHooks } from '../templates/default-hooks.js';
 
 /**
  * Environment variable mapping for configuration options
- * All config options can be set via JUNO_TASK_* environment variables
+ * All config options can be set via JUNO_CODE_* environment variables
+ * Backward compatibility maintained for JUNO_TASK_* variables
  */
 export const ENV_VAR_MAPPING = {
+  // Core settings
+  JUNO_CODE_DEFAULT_SUBAGENT: 'defaultSubagent',
+  JUNO_CODE_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
+  JUNO_CODE_DEFAULT_MODEL: 'defaultModel',
+
+  // Logging settings
+  JUNO_CODE_LOG_LEVEL: 'logLevel',
+  JUNO_CODE_LOG_FILE: 'logFile',
+  JUNO_CODE_VERBOSE: 'verbose',
+  JUNO_CODE_QUIET: 'quiet',
+
+  // MCP settings
+  JUNO_CODE_MCP_TIMEOUT: 'mcpTimeout',
+  JUNO_CODE_MCP_RETRIES: 'mcpRetries',
+  JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
+  JUNO_CODE_MCP_SERVER_NAME: 'mcpServerName',
+
+  // TUI settings
+  JUNO_CODE_INTERACTIVE: 'interactive',
+  JUNO_CODE_HEADLESS_MODE: 'headlessMode',
+
+  // Paths
+  JUNO_CODE_WORKING_DIRECTORY: 'workingDirectory',
+  JUNO_CODE_SESSION_DIRECTORY: 'sessionDirectory',
+} as const;
+
+/**
+ * Legacy environment variable mapping for backward compatibility
+ * Maps old JUNO_TASK_* variables to the same config keys
+ */
+export const LEGACY_ENV_VAR_MAPPING = {
   // Core settings
   JUNO_TASK_DEFAULT_SUBAGENT: 'defaultSubagent',
   JUNO_TASK_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
@@ -256,16 +288,26 @@ function parseEnvValue(value: string): string | number | boolean {
 
 /**
  * Load configuration from environment variables
- * Maps JUNO_TASK_* environment variables to config properties
+ * Maps JUNO_CODE_* environment variables to config properties with backward compatibility for JUNO_TASK_*
+ * Prioritizes new JUNO_CODE_* variables over legacy JUNO_TASK_* variables
  *
  * @returns Partial configuration from environment variables
  */
 function loadConfigFromEnv(): Partial<JunoTaskConfig> {
   const config: Partial<JunoTaskConfig> = {};
 
+  // First, load from new JUNO_CODE_* environment variables
   for (const [envVar, configKey] of Object.entries(ENV_VAR_MAPPING)) {
     const value = process.env[envVar];
     if (value !== undefined) {
+      (config as any)[configKey] = parseEnvValue(value);
+    }
+  }
+
+  // Then, load from legacy JUNO_TASK_* environment variables (only if not already set by new variables)
+  for (const [envVar, configKey] of Object.entries(LEGACY_ENV_VAR_MAPPING)) {
+    const value = process.env[envVar];
+    if (value !== undefined && (config as any)[configKey] === undefined) {
       (config as any)[configKey] = parseEnvValue(value);
     }
   }

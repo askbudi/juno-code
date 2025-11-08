@@ -1,5 +1,5 @@
 /**
- * Main command implementation for juno-task-ts CLI
+ * Main command implementation for juno-code CLI
  *
  * Comprehensive main execution command with full specification compliance.
  * Handles direct subagent execution with support for:
@@ -71,10 +71,10 @@ class PromptProcessor {
           throw new ValidationError(
             'Prompt is required for execution',
             [
-              'Provide prompt text: juno-task claude "your prompt here"',
-              'Use file input: juno-task claude prompt.txt',
-              'Use interactive mode: juno-task claude --interactive',
-              'Use TUI editor: juno-task claude --interactive-prompt',
+              'Provide prompt text: juno-code claude "your prompt here"',
+              'Use file input: juno-code claude prompt.txt',
+              'Use interactive mode: juno-code claude --interactive',
+              'Use TUI editor: juno-code claude --interactive-prompt',
               'Create default prompt file: .juno_task/prompt.md'
             ]
           );
@@ -460,7 +460,7 @@ export async function mainCommandHandler(
         `Invalid subagent: ${options.subagent}`,
         [
           `Use one of: ${validSubagents.join(', ')}`,
-          'Example: juno-task claude "your prompt"',
+          'Example: juno-code claude "your prompt"',
           'Use --help for more information'
         ]
       );
@@ -619,19 +619,19 @@ export function createMainCommand(): CLICommand {
     ],
     examples: [
       {
-        command: 'juno-task -s claude -p "Create a REST API"',
+        command: 'juno-code -s claude -p "Create a REST API"',
         description: 'Execute task with Claude using inline prompt'
       },
       {
-        command: 'juno-task -s cursor -p ./task.md -i 3',
+        command: 'juno-code -s cursor -p ./task.md -i 3',
         description: 'Execute task with Cursor using file prompt, max 3 iterations'
       },
       {
-        command: 'juno-task -s gemini --interactive',
+        command: 'juno-code -s gemini --interactive',
         description: 'Use interactive mode to enter prompt'
       },
       {
-        command: 'juno-task -s claude --interactive-prompt',
+        command: 'juno-code -s claude --interactive-prompt',
         description: 'Use enhanced TUI prompt editor'
       }
     ],

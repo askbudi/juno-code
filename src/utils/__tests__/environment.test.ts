@@ -78,7 +78,12 @@ describe('Environment Detection', () => {
       expect(isHeadlessEnvironment()).toBe(true);
     });
 
-    test('should return true when JUNO_TASK_HEADLESS is set', () => {
+    test('should return true when JUNO_CODE_HEADLESS is set', () => {
+      process.env.JUNO_CODE_HEADLESS = 'true';
+      expect(isHeadlessEnvironment()).toBe(true);
+    });
+
+    test('should return true when JUNO_TASK_HEADLESS is set (backward compatibility)', () => {
       process.env.JUNO_TASK_HEADLESS = 'true';
       expect(isHeadlessEnvironment()).toBe(true);
     });

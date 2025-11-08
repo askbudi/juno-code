@@ -5,8 +5,8 @@
  * captures raw output to a file, and verifies expected files in .juno_task.
  *
  * How to run:
- * - Build binary first: `npm --prefix juno-task-ts run build`
- * - Run via npm script: `npm --prefix juno-task-ts run test:tui`
+ * - Build binary first: `npm --prefix juno-code run build`
+ * - Run via npm script: `npm --prefix juno-code run test:tui`
  * - Optional env vars:
  *   - `PRESERVE_TMP=1` keep /tmp test dir for manual inspection
  *   - `TEST_TMP_DIR=/tmp` override base tmp dir (default `/tmp`)
@@ -139,7 +139,8 @@ suite('Init Command TUI Execution', () => {
         NODE_ENV: 'development',
         CI: '',
         FORCE_INTERACTIVE: '1',
-        JUNO_TASK_CONFIG: '',
+        JUNO_CODE_CONFIG: '',
+        JUNO_TASK_CONFIG: '', // Backward compatibility
         TERM: 'xterm-256color'
       }
     });

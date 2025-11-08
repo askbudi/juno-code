@@ -1,5 +1,5 @@
 /**
- * Logs command implementation for juno-task-ts CLI
+ * Logs command implementation for juno-code CLI
  *
  * Interactive log viewer with filtering, search, and real-time updates.
  * Provides access to structured logs with Python Rich-style aesthetics.
@@ -402,16 +402,16 @@ export function configureLogsCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task logs                                    # Show recent logs
-  $ juno-task logs --interactive                      # Interactive log viewer
-  $ juno-task logs --level error                      # Show only errors
-  $ juno-task logs --context mcp                      # Show only MCP logs
-  $ juno-task logs --search "connection"              # Search for connection logs
-  $ juno-task logs --tail 100                         # Show last 100 entries
-  $ juno-task logs --follow                           # Follow logs in real-time
-  $ juno-task logs --export logs.json                 # Export logs to file
-  $ juno-task logs --stats                            # Show statistics only
-  $ juno-task logs --format json                      # JSON output format
+  $ juno-code logs                                    # Show recent logs
+  $ juno-code logs --interactive                      # Interactive log viewer
+  $ juno-code logs --level error                      # Show only errors
+  $ juno-code logs --context mcp                      # Show only MCP logs
+  $ juno-code logs --search "connection"              # Search for connection logs
+  $ juno-code logs --tail 100                         # Show last 100 entries
+  $ juno-code logs --follow                           # Follow logs in real-time
+  $ juno-code logs --export logs.json                 # Export logs to file
+  $ juno-code logs --stats                            # Show statistics only
+  $ juno-code logs --format json                      # JSON output format
 
 Interactive Viewer:
   ↑↓ or j/k       Navigate entries

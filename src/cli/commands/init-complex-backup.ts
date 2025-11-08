@@ -1,5 +1,5 @@
 /**
- * Init command implementation for juno-task-ts CLI
+ * Init command implementation for juno-code CLI
  *
  * Provides interactive project initialization with template generation,
  * configuration setup, and directory structure creation. Includes both
@@ -368,7 +368,7 @@ class HeadlessInit {
     if (!subagentResult.success) {
       throw new ValidationError(
         `Invalid subagent: ${subagent}. Must be one of: claude, cursor, codex, gemini`,
-        ['Use --subagent with a valid option', 'Run juno-task init --help for examples']
+        ['Use --subagent with a valid option', 'Run juno-code init --help for examples']
       );
     }
 
@@ -569,13 +569,13 @@ class ProjectGenerator {
 
     console.log(chalk.white('   2. Review and customize .juno_task/init.md with your specific requirements'));
     console.log(chalk.white('   3. Update .juno_task/plan.md with your project plan'));
-    console.log(chalk.white('   4. Run: juno-task start'));
+    console.log(chalk.white('   4. Run: juno-code start'));
 
     console.log(chalk.blue('\n💡 Useful Commands:'));
-    console.log(chalk.white('   juno-task start              # Start execution using init.md'));
-    console.log(chalk.white('   juno-task session list       # View execution sessions'));
-    console.log(chalk.white('   juno-task feedback           # Provide feedback to the AI'));
-    console.log(chalk.white('   juno-task --help             # Show all available commands'));
+    console.log(chalk.white('   juno-code start              # Start execution using init.md'));
+    console.log(chalk.white('   juno-code session list       # View execution sessions'));
+    console.log(chalk.white('   juno-code feedback           # Provide feedback to the AI'));
+    console.log(chalk.white('   juno-code --help             # Show all available commands'));
 
     console.log(chalk.gray('\n   Happy coding! 🚀'));
   }
@@ -647,7 +647,7 @@ export async function initCommandHandler(
 export function configureInitCommand(program: Command): void {
   program
     .command('init')
-    .description('Initialize new juno-task project with template files')
+    .description('Initialize new juno-code project with template files')
     .argument('[directory]', 'Target directory (default: current directory)')
     .option('-f, --force', 'Force overwrite existing files')
     .option('-t, --task <description>', 'Main task description')
@@ -681,12 +681,12 @@ export function configureInitCommand(program: Command): void {
     })
     .addHelpText('after', `
 Examples:
-  $ juno-task init                                    # Initialize in current directory
-  $ juno-task init my-project                         # Initialize in ./my-project
-  $ juno-task init --interactive                      # Use interactive setup
-  $ juno-task init --force --subagent claude          # Force overwrite with Claude
-  $ juno-task init --task "Build a web scraper"       # Set specific task
-  $ juno-task init --git-url https://github.com/me/repo # Set repository URL
+  $ juno-code init                                    # Initialize in current directory
+  $ juno-code init my-project                         # Initialize in ./my-project
+  $ juno-code init --interactive                      # Use interactive setup
+  $ juno-code init --force --subagent claude          # Force overwrite with Claude
+  $ juno-code init --task "Build a web scraper"       # Set specific task
+  $ juno-code init --git-url https://github.com/me/repo # Set repository URL
 
 Environment Variables:
   JUNO_TASK_SUBAGENT         Default subagent to use

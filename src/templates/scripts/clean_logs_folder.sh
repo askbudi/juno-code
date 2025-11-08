@@ -11,7 +11,7 @@
 #
 # Usage: ./clean_logs_folder.sh
 #
-# Created by: juno-task-ts init command
+# Created by: juno-code init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
