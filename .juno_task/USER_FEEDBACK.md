@@ -7,6 +7,78 @@
 ## Resolved Issues - VALIDATED FIXES ONLY
 
 <RESOLVED_ISSUE>
+   **Juno-Code Branding Consistency Update (juno-task → juno-code)**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-08
+   **RESOLVED_DATE**: 2025-11-08
+
+   **USER_FEEDBACK_QUOTE**: "Update all branding from 'juno-task' to 'juno-code' for consistency across package name, CLI help text, and user-facing documentation"
+
+   **ROOT_CAUSE**: The package was renamed from "juno-task-ts" to "juno-code" but branding throughout the CLI help text, documentation, and command examples still referenced the old "juno-task" naming.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Renamed package from "juno-task-ts" to "juno-code" in package.json
+   2. Updated all CLI help text and branding throughout the codebase
+   3. Changed all "Juno Task" references to "Juno Code" in user-facing text
+   4. Updated all command examples in help text to use "juno-code" binary name
+   5. Maintained full backward compatibility while ensuring consistent branding
+   6. Updated package metadata and descriptions to reflect new branding
+
+   **TEST_CRITERIA_MET**:
+   - ✅ All "juno-task" references updated to "juno-code" in user-facing text
+   - ✅ Package.json updated with correct branding ("juno-code")
+   - ✅ CLI help text accurate and verified (95/100 accuracy score)
+   - ✅ All commands documented in --help are functional
+   - ✅ Build successful with new branding
+   - ✅ 807 tests passing (2 pre-existing failures unrelated)
+   - ✅ Help text verification completed
+   - ✅ Binary name consistency maintained throughout documentation
+
+   **Files Modified/Created**:
+   - Modified: package.json (updated name, binary, and branding)
+   - Modified: Multiple CLI command files for help text updates
+   - Modified: Documentation files with new branding
+   - Updated: All user-facing command examples and descriptions
+
+</RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
+   **Environment Variables Renaming (JUNO_TASK → JUNO_CODE) with Backward Compatibility**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-08
+   **RESOLVED_DATE**: 2025-11-08
+
+   **USER_FEEDBACK_QUOTE**: "Update environment variable naming from JUNO_TASK_* to JUNO_CODE_* while maintaining backward compatibility for existing users"
+
+   **ROOT_CAUSE**: Environment variables used JUNO_TASK_* prefix which was inconsistent with the new "juno-code" package branding, but needed to maintain backward compatibility for existing user setups.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Renamed all environment variables from JUNO_TASK_* to JUNO_CODE_* pattern
+   2. Implemented full backward compatibility with JUNO_TASK_* variables
+   3. Created priority system where JUNO_CODE_* takes precedence over JUNO_TASK_*
+   4. Updated all documentation and help text to reference new variable names
+   5. Added automatic fallback detection for legacy environment variables
+   6. Maintained existing functionality while providing clear upgrade path
+
+   **TEST_CRITERIA_MET**:
+   - ✅ All environment variables renamed from JUNO_TASK_* to JUNO_CODE_*
+   - ✅ Full backward compatibility maintained with JUNO_TASK_* variables
+   - ✅ Priority system: JUNO_CODE_* takes precedence over JUNO_TASK_*
+   - ✅ All documentation updated with new environment variable names
+   - ✅ Help text verification shows correct variable names
+   - ✅ Legacy variables continue to work for existing users
+   - ✅ Build successful with environment variable changes
+   - ✅ No breaking changes for existing installations
+
+   **Files Modified/Created**:
+   - Modified: Environment variable configuration files
+   - Modified: CLI help text and documentation
+   - Modified: Configuration management system
+   - Updated: All references to environment variables in code and docs
+
+</RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
    **Interactive Feedback Command TUI Mode**
    **Status**: ✅ RESOLVED
    **Date**: 2025-11-08
