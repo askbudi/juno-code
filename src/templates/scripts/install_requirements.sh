@@ -102,6 +102,54 @@ is_in_virtualenv() {
     return 1  # Not inside venv
 }
 
+# Function to find the best Python version (3.10-3.13, preferably 3.13)
+find_best_python() {
+    # Try to find Python in order of preference: 3.13, 3.12, 3.11, 3.10
+    local python_versions=("python3.13" "python3.12" "python3.11" "python3.10")
+
+    for py_cmd in "${python_versions[@]}"; do
+        if command -v "$py_cmd" &> /dev/null; then
+            # Verify it's actually the right version
+            local version
+            version=$($py_cmd --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            local major
+            major=$(echo "$version" | cut -d'.' -f1)
+            local minor
+            minor=$(echo "$version" | cut -d'.' -f2)
+
+            # Check if version is 3.10 or higher
+            if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+                echo "$py_cmd"
+                return 0
+            fi
+        fi
+    done
+
+    # Fall back to python3 if available and check its version
+    if command -v python3 &> /dev/null; then
+        local version
+        version=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        local major
+        major=$(echo "$version" | cut -d'.' -f1)
+        local minor
+        minor=$(echo "$version" | cut -d'.' -f2)
+
+        # Check if version is 3.10 or higher
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            echo "python3"
+            return 0
+        else
+            # Python3 exists but is too old
+            log_error "Found Python $version, but Python 3.10+ is required"
+            return 1
+        fi
+    fi
+
+    # No suitable Python found
+    log_error "No Python 3.10+ found. Please install Python 3.10, 3.11, 3.12, or 3.13 (preferably 3.13)"
+    return 1
+}
+
 # Function to check if Python is externally managed (PEP 668)
 # This is common on Ubuntu 23.04+, Debian, and other modern Linux distros
 is_externally_managed_python() {
@@ -156,57 +204,63 @@ install_with_uv() {
 
     local uv_flags="--quiet"
 
-    # CRITICAL FIX: The only reliable way to know if uv will accept installation
-    # is to check for VIRTUAL_ENV environment variable (standard venv indicator)
-    # uv pip list doesn't verify venv status - it can succeed even outside a venv
+    # CRITICAL FIX: Check if we're truly in a venv that uv recognizes
     # User feedback: "Maybe the way you are verifying being inside venv by uv is not correct !!!"
+    # Solution: Actually test if uv pip install will work by checking for venv
 
-    # Check if we're actually in a virtual environment that uv will recognize
-    # uv ONLY works with proper venv (VIRTUAL_ENV set) or needs --system flag
-    if [ -n "${VIRTUAL_ENV:-}" ]; then
-        # We're in a proper virtual environment - uv will work without --system
-        log_info "Detected virtual environment (VIRTUAL_ENV set) - installing into venv"
-    elif is_externally_managed_python; then
-        # Externally managed Python (Ubuntu/Debian PEP 668) - must use venv
-        log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
-        log_info "Creating virtual environment for installation..."
+    # Test if uv recognizes current environment as a venv
+    local uv_venv_check=false
+    if uv pip list &>/dev/null 2>&1; then
+        # uv pip list succeeded - we're in a venv that uv recognizes
+        uv_venv_check=true
+        log_info "Detected virtual environment (verified by uv) - installing into venv"
+    fi
+
+    # If uv doesn't recognize a venv, we need to create one
+    if [ "$uv_venv_check" = false ]; then
+        # Not in a venv that uv recognizes - create .venv_juno
+        # This handles both: (1) no venv at all, (2) conda/other venvs that uv doesn't recognize
+        log_info "uv requires a proper virtual environment - creating .venv_juno..."
+
+        # Find best Python version (3.10-3.13, preferably 3.13)
+        local python_cmd
+        if ! python_cmd=$(find_best_python); then
+            log_error "Cannot create venv: No suitable Python version found"
+            log_info "Please install Python 3.10+ (preferably Python 3.13)"
+            log_info "  Mac: brew install python@3.13"
+            log_info "  Ubuntu/Debian: sudo apt install python3.13 python3.13-venv"
+            return 1
+        fi
+
+        local version
+        version=$($python_cmd --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        log_info "Using Python $version for virtual environment"
 
         # Create a project-local venv if it doesn't exist
         local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
-            if ! python3 -m venv "$venv_path" 2>/dev/null; then
+            log_info "Creating virtual environment with $python_cmd..."
+            if ! $python_cmd -m venv "$venv_path" 2>/dev/null; then
                 log_error "Failed to create virtual environment"
-                log_info "Please install python3-venv (Linux: sudo apt install python3-venv python3-full)"
+                log_info "Please ensure python venv module is installed:"
+                log_info "  Mac: brew install python@3.13"
+                log_info "  Ubuntu/Debian: sudo apt install python3.13-venv python3-full"
                 return 1
             fi
-            log_success "Created virtual environment at $venv_path"
+            log_success "Created virtual environment at $venv_path with Python $version"
+        else
+            log_info "Using existing virtual environment at $venv_path"
         fi
 
         # Activate the venv for this script
         # shellcheck disable=SC1091
-        source "$venv_path/bin/activate"
-        log_success "Activated virtual environment"
-    else
-        # Not in a proper virtual environment (VIRTUAL_ENV not set)
-        # User request: "we want to always do it if we are not inside a virtual environment already"
-        # Create a proper venv that uv will recognize
-        log_info "Not in a virtual environment - creating .venv_juno for installation..."
-
-        # Create a project-local venv if it doesn't exist
-        local venv_path=".venv_juno"
-        if [ ! -d "$venv_path" ]; then
-            if ! python3 -m venv "$venv_path" 2>/dev/null; then
-                log_error "Failed to create virtual environment"
-                log_info "Please install python3-venv (Mac: brew install python; Linux: sudo apt install python3-venv)"
-                return 1
-            fi
-            log_success "Created virtual environment at $venv_path"
+        if [ -f "$venv_path/bin/activate" ]; then
+            source "$venv_path/bin/activate"
+            log_success "Activated virtual environment"
+        else
+            log_error "Virtual environment activation script not found"
+            return 1
         fi
-
-        # Activate the venv for this script
-        # shellcheck disable=SC1091
-        source "$venv_path/bin/activate"
-        log_success "Activated virtual environment"
     fi
 
     local failed_packages=()
@@ -249,15 +303,27 @@ install_with_pip() {
         log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
         log_info "Creating virtual environment for installation..."
 
+        # Find best Python version (3.10-3.13, preferably 3.13)
+        if ! python_cmd=$(find_best_python); then
+            log_error "Cannot create venv: No suitable Python version found"
+            log_info "Please install Python 3.10+ (preferably Python 3.13)"
+            log_info "  Ubuntu/Debian: sudo apt install python3.13 python3.13-venv"
+            return 1
+        fi
+
+        local version
+        version=$($python_cmd --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        log_info "Using Python $version for virtual environment"
+
         # Create a project-local venv if it doesn't exist
         local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
             if ! $python_cmd -m venv "$venv_path" 2>/dev/null; then
                 log_error "Failed to create virtual environment"
-                log_info "Please install python3-venv (Linux: sudo apt install python3-venv python3-full)"
+                log_info "Please install python3-venv (Linux: sudo apt install python3.13-venv python3-full)"
                 return 1
             fi
-            log_success "Created virtual environment at $venv_path"
+            log_success "Created virtual environment at $venv_path with Python $version"
         fi
 
         # Activate the venv for this script
