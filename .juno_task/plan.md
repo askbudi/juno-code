@@ -18,7 +18,7 @@
 **Last Updated**: 2025-11-09
 
 **✅ ALL ISSUES RESOLVED** (2025-11-09)
-- **LATEST RESOLUTION**: VIRTUAL_ENV Unbound Variable Error - Fixed script failure with proper null-safe parameter expansion (2025-11-09)
+- **LATEST RESOLUTION**: NPM Registry Binary Linking Issue - Fixed package binary configuration to link to shell wrapper instead of CLI (2025-11-09)
 - **PREVIOUSLY RESOLVED**: Juno-Code Branding Consistency Update - Complete rebranding from "juno-task" to "juno-code" (807/808 tests passing)
 - **PREVIOUSLY RESOLVED**: Environment Variables Renaming - JUNO_TASK_* → JUNO_CODE_* with full backward compatibility
 - **PREVIOUSLY RESOLVED**: Test Command Testing Framework - Fixed missing logger mock exports (all 5/5 tests passing)
@@ -30,7 +30,16 @@
 
 
 **Recently Resolved on 2025-11-09:**
-1. **VIRTUAL_ENV Unbound Variable Error** ✅:
+1. **NPM Registry Binary Linking Issue** ✅:
+   - ✅ Fixed package-variants/juno-code.json bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh"
+   - ✅ Regenerated package with npm run variants:generate to apply binary linking changes
+   - ✅ Tested with npm link - symlink now correctly points to juno-code.sh wrapper instead of cli.mjs
+   - ✅ Users installing from npm registry now get proper Python environment setup via shell wrapper
+   - ✅ Bootstrap shell wrapper executes before CLI for virtual environment management
+   - ✅ Package generation and linking process working correctly for npm registry deployment
+   - ✅ Files Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
+
+2. **VIRTUAL_ENV Unbound Variable Error** ✅:
    - ✅ Fixed script failure at lines 216 and 220 with "VIRTUAL_ENV: unbound variable" error
    - ✅ Changed all unsafe `$VIRTUAL_ENV` references to null-safe `${VIRTUAL_ENV:-}` parameter expansion
    - ✅ Script now works reliably when VIRTUAL_ENV is unset or null in strict bash environments
