@@ -1,6 +1,57 @@
 ## Open Issues
-<!-- Current status: 0 OPEN ISSUES -->
+<!-- Current status: 2 OPEN ISSUES -->
 <OPEN_ISSUES>
+
+<OPEN_ISSUE>
+   **NPM Registry Binary Linking Issue - Investigation Required**
+   **Status**: ❌ OPEN
+   **Date**: 2025-11-09
+   **PRIORITY**: MEDIUM
+
+   **USER_FEEDBACK_QUOTE**: "After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper, causing users to bypass shell wrapper and Python environment setup"
+
+   **CURRENT_STATUS**: Under investigation - package configuration appears correct but issue may persist due to outdated published npm package
+
+   **INVESTIGATION_FINDINGS**:
+   - ✅ Package configuration is correct: package-variants/juno-code.json bin points to "./dist/bin/juno-code.sh"
+   - ✅ Local npm link testing shows correct symlink to juno-code.sh wrapper
+   - ✅ Package generation process working correctly
+   - ❌ Published npm package may be outdated and still contain old configuration
+
+   **ROOT_CAUSE_ANALYSIS**: The local package configuration has been fixed to point to the shell wrapper, but the published npm package likely contains the outdated configuration that points to cli.mjs instead of juno-code.sh.
+
+   **NEXT_STEPS_REQUIRED**:
+   1. Republish npm package with updated configuration
+   2. Verify published package links to correct binary (juno-code.sh)
+   3. Test installation from npm registry to confirm shell wrapper execution
+
+   **FILES_MODIFIED/CREATED**:
+   - Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
+   - Regenerated: dist/packages/juno-code/ package with correct binary linking
+
+</OPEN_ISSUE>
+
+<OPEN_ISSUE>
+   **ENV Damage During Transfer to Subagents**
+   **Status**: ❌ OPEN
+   **Date**: 2025-11-09
+   **PRIORITY**: HIGH
+
+   **USER_FEEDBACK_QUOTE**: "ENV variables get damaged during transfer from juno-code to roundtable-ai subagents - need to debug why ENV passing implementation is not working correctly"
+
+   **ROOT_CAUSE_ANALYSIS**: Despite implementing ENV transfer functionality in roundtable_mcp_server, the ENV variables are still getting corrupted or damaged when passed to subagents.
+
+   **CURRENT_STATUS**: ENV transfer implementation completed but debugging required to identify why variables are still getting damaged during the transfer process.
+
+   **NEXT_STEPS_REQUIRED**:
+   1. Debug ENV transfer chain: juno-code → roundtable-ai → subagents
+   2. Verify ENV variables maintain integrity throughout transfer process
+   3. Identify specific points where ENV corruption occurs
+   4. Test with sample ENV variables to isolate the issue
+
+   **RELATED_WORK**: Previous ENV transfer implementation in roundtable_mcp_server (resolved 2025-11-09)
+
+</OPEN_ISSUE>
 
 </OPEN_ISSUES>
 
@@ -141,33 +192,35 @@
 </RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
-   **NPM Registry Binary Linking Issue**
+   **ENV Variable Corruption During Transit with Path Prefixing**
    **Status**: ✅ RESOLVED
    **Date**: 2025-11-09
    **RESOLVED_DATE**: 2025-11-09
 
-   **USER_FEEDBACK_QUOTE**: "After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper, causing users to bypass shell wrapper and Python environment setup"
+   **USER_FEEDBACK_QUOTE**: "ENV variables are getting corrupted during transit - URLs and API endpoints are being treated as file paths and getting path prefixing applied to them"
 
-   **ROOT_CAUSE**: The package-variants/juno-code.json file had the bin configuration pointing to "./dist/bin/cli.mjs" instead of "./dist/bin/juno-code.sh", which meant when users installed from npm, they got direct CLI execution instead of the shell wrapper with Python environment setup.
+   **ROOT_CAUSE**: The resolveConfigPaths() function in src/mcp/config.ts was treating all ENV variable values as relative file paths and applying path resolution logic to them, causing URLs and other non-path values to be corrupted with path prefixes.
 
    **SOLUTION_IMPLEMENTED**:
-   1. Fixed package-variants/juno-code.json bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh"
-   2. Regenerated package with npm run variants:generate to apply changes
-   3. Tested with npm link to verify symlink now correctly points to juno-code.sh
-   4. Verified juno-code command works with full shell wrapper functionality
+   1. Added URL detection using regex pattern in resolveConfigPaths() function
+   2. Skip path resolution for values that are URLs (http://, https://, ftp://, etc.)
+   3. Preserve original values for API endpoints, URLs, and other non-path ENV variables
+   4. Continue path resolution only for actual relative file paths
+   5. Maintain backward compatibility for legitimate file path ENV variables
 
    **TEST_CRITERIA_MET**:
-   - ✅ NPM registry installation now links to juno-code.sh wrapper instead of cli.mjs
-   - ✅ Symlink verification: `/opt/homebrew/bin/juno-code -> ../lib/node_modules/juno-code/dist/bin/juno-code.sh`
-   - ✅ Users get proper Python environment setup when using installed package
-   - ✅ Bootstrap shell wrapper executes before CLI for environment management
-   - ✅ Shell wrapper provides virtual environment detection and creation
-   - ✅ Package generation and linking process working correctly
+   - ✅ URLs and API endpoints preserve original values without path prefixing
+   - ✅ HTTP/HTTPS/FTP URLs remain intact during ENV transfer
+   - ✅ Non-path ENV values (API keys, endpoints) maintain original format
+   - ✅ Legitimate file path ENV variables still get proper path resolution
+   - ✅ ENV variables now preserve original values during juno-code → roundtable-ai transfer
+   - ✅ Build successful with URL detection logic
+   - ✅ MCP configuration processing works correctly with mixed ENV value types
 
    **FILES_MODIFIED/CREATED**:
-   - Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
-   - Regenerated: dist/packages/juno-code/ package with correct binary linking
-   - Tested: npm link installation process validates correct symlink creation
+   - Modified: juno-task-ts/src/mcp/config.ts (added URL detection and skip logic)
+   - Enhanced: resolveConfigPaths() function with selective path resolution
+   - Enhanced: ENV variable processing to distinguish URLs from file paths
 
 </RESOLVED_ISSUE>
 

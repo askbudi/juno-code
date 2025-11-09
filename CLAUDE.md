@@ -59,28 +59,46 @@ The project uses a sophisticated AI workflow with:
 
 ## Current Status Update (2025-11-09)
 
-**ALL ISSUES RESOLVED - PROJECT COMPLETE**
-- Latest Fix: NPM Registry Binary Linking Issue (2025-11-09)
-- Package now correctly links to shell wrapper instead of direct CLI execution
-- Users get proper Python environment setup when installing from npm registry
+**❌ 2 ACTIVE OPEN ISSUES**
+- Latest Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
+- Active Issue 1: NPM Registry Binary Linking Issue (needs republishing)
+- Active Issue 2: ENV Damage During Transfer to Subagents (debugging required)
 - All Mac virtual environment installation scenarios working correctly
 - Bootstrap shell shim implementation completed
 - Ubuntu Python environment compatibility maintained
 
-### 🎉 ALL ISSUES RESOLVED (Last updated: 2025-11-09)
+### ❌ 2 ACTIVE OPEN ISSUES (Last updated: 2025-11-09)
 
-**All Open Issues Resolved - Project Complete**
+**Current Open Issues Requiring Resolution**
+
+**Active Issues (2025-11-09):**
+1. ❌ NPM Registry Binary Linking Issue - INVESTIGATION COMPLETED
+   - Issue: After installing juno-code from npm registry, binary links to cli.mjs instead of juno-code.sh wrapper
+   - Investigation Status: Package configuration is correct locally (package-variants/juno-code.json bin points to "./dist/bin/juno-code.sh")
+   - Local Testing: npm link shows correct symlink to juno-code.sh wrapper
+   - Root Cause: Published npm package likely contains outdated configuration pointing to cli.mjs instead of juno-code.sh
+   - Next Steps Required: Republish npm package with updated configuration and verify installation from registry
+   - Date: 2025-11-09
+
+2. ❌ ENV Damage During Transfer to Subagents - DEBUGGING REQUIRED
+   - Issue: ENV variables get damaged during transfer from juno-code to roundtable-ai subagents
+   - Status: ENV transfer implementation completed but debugging required to identify why variables still get corrupted
+   - Root Cause: Implementation not working as expected despite completing ENV transfer functionality in roundtable_mcp_server
+   - Next Steps Required: Debug ENV transfer chain and identify specific corruption points
+   - Related Work: Previous ENV transfer implementation in roundtable_mcp_server (resolved 2025-11-09)
+   - Date: 2025-11-09
 
 **Most Recently Completed (2025-11-09):**
-1. ✅ NPM Registry Binary Linking Issue - RESOLVED
-   - Issue: After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper
-   - Root Cause: package-variants/juno-code.json had bin configuration pointing to CLI instead of shell wrapper
-   - Solution: Fixed bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh" and regenerated package
-   - Key features: Users installing from npm now get proper Python environment setup via shell wrapper
-   - Integration: Tested with npm link - symlink correctly points to juno-code.sh wrapper
-   - Test results: Package generation and linking process working correctly for npm registry deployment
-   - Status: ✅ RESOLVED - NPM registry deployment now provides full shell wrapper functionality
+1. ✅ ENV Variable Corruption During Transit with Path Prefixing - RESOLVED
+   - Issue: ENV variables getting corrupted during transit with URLs and API endpoints being treated as file paths
+   - Root Cause: resolveConfigPaths() function in src/mcp/config.ts was applying path resolution logic to all ENV values
+   - Solution: Added URL detection using regex pattern to skip path resolution for URLs (http://, https://, ftp://, etc.)
+   - Key features: Preserve original values for API endpoints and URLs, continue path resolution only for actual file paths
+   - Integration: ENV variables now preserve original values during juno-code → roundtable-ai transfer
+   - Test results: Build successful with URL detection logic, mixed ENV value types handled correctly
+   - Status: ✅ RESOLVED - URLs and non-path ENV variables maintain original format during transfer
    - Date: 2025-11-09
+   - Git commit: 60d8450 (ENV corruption fix)
 
 2. ✅ Install Requirements Script Virtual Environment Detection Fix - RESOLVED
    - Issue: Virtual environment detection was incorrectly logging "verified by uv" when uv detection was failing
