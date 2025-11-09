@@ -213,7 +213,7 @@ install_with_uv() {
     local need_venv=true
 
     # Check if we're already inside .venv_juno
-    if [ -n "${VIRTUAL_ENV:-}" ] && [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
+    if [ -n "${VIRTUAL_ENV:-}" ] && ( [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]] ); then
         log_info "Already inside .venv_juno virtual environment"
         need_venv=false
     # Check if we're in .venv_juno by checking the activate script path
