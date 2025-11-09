@@ -65,8 +65,7 @@
     "deploy": "bash scripts/publish-all.sh patch",
     "deploy:minor": "bash scripts/publish-all.sh minor",
     "deploy:major": "bash scripts/publish-all.sh major",
-    "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run",
-    "variants:generate": "node scripts/generate-variants.js"
+    "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

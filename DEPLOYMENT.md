@@ -9,11 +9,10 @@ This project is published to NPM as **`juno-code`**, providing the `juno-code` c
 
 ## Package Strategy
 
-We use a **focused single-package strategy**:
+We use a **direct deployment strategy**:
 1. Single codebase in this repository
 2. Build artifacts generated once
-3. Single package variant (`juno-code`) created from the build
-4. Published to NPM as `juno-code`
+3. Published directly to NPM as `juno-code`
 
 This simplified approach eliminates binary command conflicts and provides a clean installation experience.
 
@@ -97,26 +96,17 @@ The `scripts/publish-all.sh` script automates the entire deployment workflow:
    - Builds the project (`npm run build`)
    - Copies template scripts to dist directory
 
-4. **Package Variant Generation**
-   - Runs `node scripts/generate-variants.js`
-   - Creates juno-code package in `dist/packages/juno-code/`
-   - Package includes:
-     - All build artifacts
-     - Template scripts (clean_logs_folder.sh, install_requirements.sh)
-     - README.md
-     - juno-code-specific package.json with only the `juno-code` binary
-
-5. **Publishing**
-   - Publishes juno-code package to NPM
+4. **Publishing**
+   - Publishes directly from main directory to NPM
    - Published with `--access public`
 
-6. **Git Operations**
+5. **Git Operations**
    - Commits version bump changes
-   - Creates git tag (`v1.0.1`, etc.)
+   - Creates git tag (`v1.0.1`, etc.) with clean version strings (no ANSI color codes)
    - Optionally pushes to remote repository
 
-7. **Cleanup**
-   - Removes temporary package variant directories
+6. **Cleanup**
+   - No cleanup needed (publishes directly from main directory)
 
 ## Manual Deployment (Step by Step)
 
@@ -126,58 +116,48 @@ If you need more control, you can run each step manually:
 # 1. Build the project
 npm run build
 
-# 2. Generate package variants
-npm run variants:generate
-
-# 3. Verify generated packages
-ls -la dist/packages/
-cat dist/packages/juno-agent/package.json
-
-# 4. Test package locally (optional)
-cd dist/packages/juno-code
+# 2. Test package locally (optional)
 npm pack --dry-run
 
-# 5. Publish package
-cd dist/packages/juno-code && npm publish --access public
+# 3. Publish package
+npm publish --access public
 
-# 6. Create git tag
+# 4. Create git tag
 git tag -a v1.0.1 -m "Release v1.0.1"
 git push && git push --tags
 ```
 
-## Package Variant Configuration
+## Package Configuration
 
-The package variant is defined in `package-variants/juno-code.json`:
+The package is defined directly in the main `package.json`:
 
 ```json
 {
   "name": "juno-code",
-  "description": "AI Subagent Orchestration CLI - Code-focused package...",
-  "keywords": [...],
+  "description": "TypeScript CLI tool for AI subagent orchestration with code automation",
   "bin": {
-    "juno-code": "./dist/bin/cli.mjs"
+    "juno-code": "./dist/bin/juno-code.sh",
+    "juno-collect-feedback": "./dist/bin/feedback-collector.mjs"
   }
 }
 ```
 
 Key features:
-- **Single binary**: Only installs the `juno-code` command
-- **No conflicts**: Won't conflict with other juno packages
-- **Clean install**: Simple, focused installation
-
-The `scripts/generate-variants.js` merges this configuration with the base `package.json`.
+- **Direct deployment**: No package variants needed
+- **Single binary focus**: Primary `juno-code` command with feedback collector
+- **No conflicts**: Simple, focused installation
 
 ## Template Scripts Inclusion
 
-The deployment process ensures that template scripts are included in all published packages:
+The deployment process ensures that template scripts are included in the published package:
 
 - `dist/templates/scripts/clean_logs_folder.sh`
 - `dist/templates/scripts/install_requirements.sh`
 
 These scripts are automatically:
 1. Built from `src/templates/scripts/` during `npm run build`
-2. Copied to each package variant in `dist/packages/*/dist/templates/scripts/`
-3. Included in the published NPM packages
+2. Copied to `dist/templates/scripts/`
+3. Included in the published NPM package
 
 ## Version Management
 
@@ -289,8 +269,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
       - run: npm run build
-      - run: npm run variants:generate
-      - run: npm publish dist/packages/juno-code --access public
+      - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
 ```

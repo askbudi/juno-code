@@ -8,9 +8,9 @@
 # Features:
 # - Automated version bumping (patch/minor/major)
 # - Builds the project once
-# - Generates juno-code package variant
-# - Publishes to NPM
+# - Publishes directly to NPM (no package variants)
 # - Includes template scripts in package
+# - Clean git tagging without ANSI color codes
 #
 # Usage:
 #   ./scripts/publish-all.sh [patch|minor|major] [--dry-run]
@@ -34,7 +34,7 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PACKAGES_DIR="$ROOT_DIR/dist/packages"
+DIST_DIR="$ROOT_DIR/dist"
 
 # Default values
 VERSION_TYPE="${1:-patch}"
@@ -130,13 +130,13 @@ bump_version() {
   print_success "Current version: $current_version"
 
   if [[ "$DRY_RUN" == false ]]; then
-    # Bump version using npm version
-    npm version "$VERSION_TYPE" --no-git-tag-version
+    # Bump version using npm version (suppress output to avoid ANSI codes)
+    npm version "$VERSION_TYPE" --no-git-tag-version > /dev/null 2>&1
 
     local new_version=$(node -p "require('./package.json').version")
     print_success "New version: $new_version"
 
-    # Return new version
+    # Return new version (clean, no ANSI codes)
     echo "$new_version"
   else
     print_warning "DRY RUN: Would bump version from $current_version"
@@ -158,48 +158,31 @@ build_project() {
   print_success "Build complete"
 }
 
-generate_variants() {
-  print_step "Generating package variants..."
-
-  cd "$ROOT_DIR"
-
-  # Run the variant generation script
-  node scripts/generate-variants.js
-
-  print_success "Package variants generated"
-}
 
 ###############################################################################
 # Publishing Functions
 ###############################################################################
 
 publish_package() {
-  local package_name=$1
-  local package_dir="$PACKAGES_DIR/$package_name"
+  print_step "Publishing juno-code..."
 
-  print_step "Publishing $package_name..."
-
-  cd "$package_dir"
+  cd "$ROOT_DIR"
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_warning "DRY RUN: Would publish $package_name"
+    print_warning "DRY RUN: Would publish juno-code"
     npm pack --dry-run
   else
     # Publish to NPM
     npm publish --access public
-    print_success "Published $package_name"
+    print_success "Published juno-code"
   fi
 }
 
 publish_all_variants() {
   print_step "Publishing juno-code package..."
 
-  # Only publish juno-code as requested by user
-  local variants=("juno-code")
-
-  for variant in "${variants[@]}"; do
-    publish_package "$variant"
-  done
+  # Publish directly from main directory
+  publish_package
 
   print_success "juno-code package published"
 }
@@ -250,15 +233,8 @@ cleanup() {
 
   cd "$ROOT_DIR"
 
-  # Keep the packages directory for inspection in dry-run mode
-  if [[ "$DRY_RUN" == false ]]; then
-    if [[ -d "$PACKAGES_DIR" ]]; then
-      rm -rf "$PACKAGES_DIR"
-      print_success "Cleaned up package variants"
-    fi
-  else
-    print_warning "DRY RUN: Keeping packages in $PACKAGES_DIR for inspection"
-  fi
+  # No cleanup needed since we publish directly from main directory
+  print_success "No temporary files to clean up"
 }
 
 ###############################################################################
@@ -287,9 +263,8 @@ main() {
   # Version bump
   new_version=$(bump_version)
 
-  # Build and generate
+  # Build project
   build_project
-  generate_variants
 
   # Publish
   if [[ "$DRY_RUN" == false ]]; then
@@ -328,8 +303,8 @@ main() {
   else
     echo -e "\n${YELLOW}DRY RUN Summary:${NC}"
     echo "  • Would bump version: $VERSION_TYPE"
-    echo "  • Would publish juno-code package only"
-    echo "  • Package variant available in: $PACKAGES_DIR/juno-code"
+    echo "  • Would publish juno-code package directly from main directory"
+    echo "  • Package available in: $ROOT_DIR"
     echo ""
     echo "Run without --dry-run to actually publish"
   fi

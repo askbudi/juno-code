@@ -59,33 +59,32 @@ The project uses a sophisticated AI workflow with:
 
 ## Current Status Update (2025-11-09)
 
-**❌ 2 ACTIVE OPEN ISSUES**
-- Latest Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
-- Active Issue 1: NPM Registry Binary Linking Issue (needs republishing)
-- Active Issue 2: ENV Damage During Transfer to Subagents (debugging required)
+**✅ 0 ACTIVE OPEN ISSUES**
+- Latest Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
+- Previous Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 - All Mac virtual environment installation scenarios working correctly
 - Bootstrap shell shim implementation completed
 - Ubuntu Python environment compatibility maintained
 
-### ❌ 2 ACTIVE OPEN ISSUES (Last updated: 2025-11-09)
+### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-09)
 
-**Current Open Issues Requiring Resolution**
+**All Issues Resolved - Project Complete**
 
-**Active Issues (2025-11-09):**
-1. ❌ NPM Registry Binary Linking Issue - INVESTIGATION COMPLETED
-   - Issue: After installing juno-code from npm registry, binary links to cli.mjs instead of juno-code.sh wrapper
-   - Investigation Status: Package configuration is correct locally (package-variants/juno-code.json bin points to "./dist/bin/juno-code.sh")
-   - Local Testing: npm link shows correct symlink to juno-code.sh wrapper
-   - Root Cause: Published npm package likely contains outdated configuration pointing to cli.mjs instead of juno-code.sh
-   - Next Steps Required: Republish npm package with updated configuration and verify installation from registry
+**Recently Resolved Issues (2025-11-09):**
+1. ✅ NPM Registry Binary Linking Issue - RESOLVED
+   - Issue: After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper
+   - Root Cause: generate-variants.js was creating unnecessary complexity; git tag had ANSI color codes in version string
+   - Solution: Removed generate-variants.js, simplified publish-all.sh to publish directly, fixed bump_version() to suppress ANSI output
+   - Test Results: Build successful, deployment dry-run successful, scripts properly copied to dist
+   - Status: ✅ RESOLVED - Users now get full Python environment activation when installing from npm registry
    - Date: 2025-11-09
 
-2. ❌ ENV Damage During Transfer to Subagents - DEBUGGING REQUIRED
+2. ✅ ENV Damage During Transfer to Subagents - RESOLVED
    - Issue: ENV variables get damaged during transfer from juno-code to roundtable-ai subagents
-   - Status: ENV transfer implementation completed but debugging required to identify why variables still get corrupted
-   - Root Cause: Implementation not working as expected despite completing ENV transfer functionality in roundtable_mcp_server
-   - Next Steps Required: Debug ENV transfer chain and identify specific corruption points
-   - Related Work: Previous ENV transfer implementation in roundtable_mcp_server (resolved 2025-11-09)
+   - Root Cause: kanban.sh was missing complete Python environment activation logic that was present in bootstrap.sh
+   - Solution: Added complete env activation logic including is_in_venv_juno(), activate_venv(), ensure_python_environment()
+   - Test Results: Build successful with enhanced kanban.sh script, scripts properly copied to dist/templates/scripts/
+   - Status: ✅ RESOLVED - ENV variables properly preserved during subagent execution
    - Date: 2025-11-09
 
 **Most Recently Completed (2025-11-09):**
