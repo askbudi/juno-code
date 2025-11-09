@@ -23,6 +23,11 @@
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
 
+# DEBUG OUTPUT: Show that install_requirements.sh is being executed
+# User feedback: "Add a one line printing from .sh file as well so we could debug it"
+echo "[DEBUG] install_requirements.sh is being executed from: $(pwd)" >&2
+echo "[DEBUG] .venv_juno will be created in: $(pwd)/.venv_juno" >&2
+
 # Color output for better readability
 RED='\033[0;31m'
 GREEN='\033[0;32m'

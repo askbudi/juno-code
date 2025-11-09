@@ -1088,9 +1088,13 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
       // Execute the install_requirements.sh script
       try {
+        // CRITICAL: Run the script from project root (process.cwd()), not from .juno_task
+        // This ensures .venv_juno is created in the project root directory, not inside .juno_task/
+        // User feedback: "when running juno-code init, it says install requirments.sh done correctly,
+        // but i cant find .venv_juno folder it should get created in the cwd the command is getting called"
         // Run the script and capture output
         const output = execSync(installScript, {
-          cwd: junoTaskDir,
+          cwd: process.cwd(), // FIXED: Run from project root, not .juno_task
           encoding: 'utf8',
           stdio: 'pipe' // Capture output instead of inheriting
         });
