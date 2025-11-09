@@ -18,7 +18,19 @@
 set -euo pipefail
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# IMPORTANT: Resolve symlinks first (npm creates symlinks in /usr/local/bin or /opt/homebrew/bin)
+# We need the real path to find cli.mjs in the same directory
+if [ -L "${BASH_SOURCE[0]}" ]; then
+    # Follow the symlink to get the real script location
+    REAL_SCRIPT="$(readlink "${BASH_SOURCE[0]}")"
+    # If it's a relative symlink, make it absolute relative to the symlink location
+    if [[ "$REAL_SCRIPT" != /* ]]; then
+        REAL_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd "$(dirname "$REAL_SCRIPT")" && pwd)/$(basename "$REAL_SCRIPT")"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # Path to the actual CLI entrypoint (Node.js)
 CLI_ENTRYPOINT="${SCRIPT_DIR}/cli.mjs"
