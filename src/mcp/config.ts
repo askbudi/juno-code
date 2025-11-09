@@ -198,7 +198,11 @@ export class MCPConfigLoader {
       // Resolve environment variable paths
       if (serverConfig.env) {
         for (const [envKey, envValue] of Object.entries(serverConfig.env)) {
-          if (envValue.includes('/') && !path.isAbsolute(envValue)) {
+          // Skip URL values (http://, https://, etc.) - they are not file paths
+          const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(envValue);
+
+          // Only resolve relative file paths, not URLs or absolute paths
+          if (!isUrl && envValue.includes('/') && !path.isAbsolute(envValue)) {
             serverConfig.env[envKey] = path.resolve(configDir, '..', envValue);
           }
         }
