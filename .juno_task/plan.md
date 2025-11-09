@@ -2,11 +2,11 @@
 
 ## 📊 EXECUTIVE SUMMARY
 
-**🎯 CURRENT STATUS** ✅ **ALL ISSUES RESOLVED**
-- **Active Open Issues**: 0 (all issues completed including install requirements script fix)
+**🎯 CURRENT STATUS** ❌ **2 ACTIVE OPEN ISSUES**
+- **Active Open Issues**: 2 (NPM Registry Binary Linking, ENV Damage During Transfer to Subagents)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: VIRTUAL_ENV Unbound Variable Error fix completed (2025-11-09)
+- **Latest Achievement**: ENV Variable Corruption During Transit with Path Prefixing fix completed (2025-11-09)
 
 ---
 
@@ -17,8 +17,10 @@
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
 **Last Updated**: 2025-11-09
 
-**✅ ALL ISSUES RESOLVED** (2025-11-09)
-- **LATEST RESOLUTION**: NPM Registry Binary Linking Issue - Fixed package binary configuration to link to shell wrapper instead of CLI (2025-11-09)
+**❌ 2 ACTIVE OPEN ISSUES** (2025-11-09)
+- **ACTIVE ISSUE 1**: NPM Registry Binary Linking Issue - Investigation completed, republishing required (2025-11-09)
+- **ACTIVE ISSUE 2**: ENV Damage During Transfer to Subagents - Debugging required (2025-11-09)
+- **LATEST RESOLUTION**: ENV Variable Corruption During Transit with Path Prefixing - Fixed path resolution logic to preserve URLs (2025-11-09)
 - **PREVIOUSLY RESOLVED**: Juno-Code Branding Consistency Update - Complete rebranding from "juno-task" to "juno-code" (807/808 tests passing)
 - **PREVIOUSLY RESOLVED**: Environment Variables Renaming - JUNO_TASK_* → JUNO_CODE_* with full backward compatibility
 - **PREVIOUSLY RESOLVED**: Test Command Testing Framework - Fixed missing logger mock exports (all 5/5 tests passing)
@@ -30,14 +32,30 @@
 
 
 **Recently Resolved on 2025-11-09:**
-1. **NPM Registry Binary Linking Issue** ✅:
-   - ✅ Fixed package-variants/juno-code.json bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh"
-   - ✅ Regenerated package with npm run variants:generate to apply binary linking changes
-   - ✅ Tested with npm link - symlink now correctly points to juno-code.sh wrapper instead of cli.mjs
-   - ✅ Users installing from npm registry now get proper Python environment setup via shell wrapper
-   - ✅ Bootstrap shell wrapper executes before CLI for virtual environment management
-   - ✅ Package generation and linking process working correctly for npm registry deployment
-   - ✅ Files Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
+1. **ENV Variable Corruption During Transit with Path Prefixing** ✅:
+   - ✅ Fixed resolveConfigPaths() function in src/mcp/config.ts treating all ENV values as file paths
+   - ✅ Added URL detection using regex pattern to skip path resolution for URLs
+   - ✅ Preserve original values for API endpoints, URLs, and other non-path ENV variables
+   - ✅ Continue path resolution only for actual relative file paths
+   - ✅ ENV variables now preserve original values during juno-code → roundtable-ai transfer
+   - ✅ Build successful with URL detection logic
+   - ✅ Files Modified: juno-task-ts/src/mcp/config.ts (added URL detection and skip logic)
+   - ✅ Git commit: 60d8450 (ENV corruption fix)
+
+**Currently Open Issues (requiring resolution):**
+1. **NPM Registry Binary Linking Issue** ❌:
+   - Investigation Status: Package configuration is correct locally (package-variants/juno-code.json bin points to "./dist/bin/juno-code.sh")
+   - Local Testing: npm link shows correct symlink to juno-code.sh wrapper
+   - Root Cause: Published npm package likely contains outdated configuration pointing to cli.mjs instead of juno-code.sh
+   - Next Steps Required: Republish npm package with updated configuration and verify installation from registry
+   - Files Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
+
+2. **ENV Damage During Transfer to Subagents** ❌:
+   - Status: ENV transfer implementation completed but debugging required
+   - Issue: ENV variables get damaged during transfer from juno-code to roundtable-ai subagents
+   - Root Cause: Implementation not working as expected despite completing ENV transfer functionality
+   - Next Steps Required: Debug ENV transfer chain and identify corruption points
+   - Related Work: Previous ENV transfer implementation in roundtable_mcp_server (resolved 2025-11-09)
 
 2. **VIRTUAL_ENV Unbound Variable Error** ✅:
    - ✅ Fixed script failure at lines 216 and 220 with "VIRTUAL_ENV: unbound variable" error
@@ -163,10 +181,10 @@
 
 ## 📋 RECENTLY COMPLETED PRIORITIES (from USER_FEEDBACK.md)
 
-### **✅ ALL ISSUES RESOLVED** - PROJECT COMPLETE
-- **Status**: ALL ISSUES RESOLVED
-- **Latest Achievement**: implement.md template addition completed (2025-11-07)
-- **Current Status**: All template and configuration issues resolved
+### **❌ 2 ACTIVE OPEN ISSUES** - RESOLUTION REQUIRED
+- **Status**: 2 ACTIVE OPEN ISSUES
+- **Latest Resolution**: ENV Variable Corruption During Transit with Path Prefixing fix completed (2025-11-09)
+- **Current Priority**: NPM Registry Binary Linking republishing and ENV damage debugging
 - **Technical Achievement**: 867/868 tests passing (99.9% pass rate), build successful
 - **Feature Parity**: TypeScript version has ALL Python features plus significant enhancements
 
@@ -174,10 +192,10 @@
 
 ## ✅ COMPLETED ACTION PLAN
 
-### ✅ ALL ISSUES RESOLVED
-**Status**: ALL ISSUES RESOLVED
-**Latest Achievement**: implement.md template addition completed (2025-11-07)
-**Current Status**: All template and configuration systems working correctly
+### ❌ 2 ACTIVE OPEN ISSUES
+**Status**: 2 ACTIVE OPEN ISSUES
+**Latest Resolution**: ENV Variable Corruption During Transit with Path Prefixing fix completed (2025-11-09)
+**Current Priority**: NPM Registry Binary Linking republishing and ENV damage debugging required
 
 ---
 
@@ -311,7 +329,7 @@
 ## 📊 ACTUAL PROJECT STATUS
 
 ### Current Reality (Based on USER_FEEDBACK.md):
-- **Open Issues**: 0 - all issues resolved ✅
+- **Open Issues**: 2 - NPM Registry Binary Linking, ENV Damage During Transfer to Subagents ❌
 - **Core Functionality**: Working (CLI commands, feedback, file management) ✅
 - **Interactive Features**: Working (feedback command interactive mode, all UX issues resolved) ✅
 - **Automated Monitoring**: Working (preflight tests with environment variable support) ✅
@@ -335,9 +353,19 @@
 
 ## 🎯 PROJECT STATUS UPDATE
 
-### **✅ ALL ISSUES RESOLVED - PROJECT COMPLETE** ✅
+### **❌ 2 ACTIVE OPEN ISSUES - RESOLUTION REQUIRED** ❌
 
-**Latest Achievements (2025-11-08):**
+**Latest Achievement (2025-11-09):**
+1. **ENV Variable Corruption During Transit with Path Prefixing** ✅:
+   - ✅ Fixed resolveConfigPaths() function treating all ENV values as file paths
+   - ✅ Added URL detection using regex pattern to skip path resolution for URLs
+   - ✅ Preserve original values for API endpoints, URLs, and other non-path ENV variables
+   - ✅ ENV variables now preserve original values during juno-code → roundtable-ai transfer
+   - ✅ Build successful with URL detection logic
+   - ✅ Files Modified: juno-task-ts/src/mcp/config.ts (added URL detection and skip logic)
+   - ✅ Git commit: 60d8450 (ENV corruption fix)
+
+**Previous Achievements (2025-11-08):**
 1. **Juno-Code Branding Consistency Update** ✅:
    - ✅ Renamed package from "juno-task-ts" to "juno-code" in package.json
    - ✅ Updated all CLI help text and branding throughout the codebase
@@ -500,7 +528,7 @@
 
 **Current USER_FEEDBACK.md <OPEN_ISSUES> status on 2025-10-18:**
 
-✅ **ALL ISSUES RESOLVED**
+❌ **2 ACTIVE OPEN ISSUES**
 
 **Recent Resolutions (moved to RESOLVED_ISSUE section in USER_FEEDBACK.md):**
 - Preflight File Size Monitoring - Fixed by removing iteration restriction in engine.ts
