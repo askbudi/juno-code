@@ -141,6 +141,37 @@
 </RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
+   **NPM Registry Binary Linking Issue**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-09
+   **RESOLVED_DATE**: 2025-11-09
+
+   **USER_FEEDBACK_QUOTE**: "After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper, causing users to bypass shell wrapper and Python environment setup"
+
+   **ROOT_CAUSE**: The package-variants/juno-code.json file had the bin configuration pointing to "./dist/bin/cli.mjs" instead of "./dist/bin/juno-code.sh", which meant when users installed from npm, they got direct CLI execution instead of the shell wrapper with Python environment setup.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Fixed package-variants/juno-code.json bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh"
+   2. Regenerated package with npm run variants:generate to apply changes
+   3. Tested with npm link to verify symlink now correctly points to juno-code.sh
+   4. Verified juno-code command works with full shell wrapper functionality
+
+   **TEST_CRITERIA_MET**:
+   - ✅ NPM registry installation now links to juno-code.sh wrapper instead of cli.mjs
+   - ✅ Symlink verification: `/opt/homebrew/bin/juno-code -> ../lib/node_modules/juno-code/dist/bin/juno-code.sh`
+   - ✅ Users get proper Python environment setup when using installed package
+   - ✅ Bootstrap shell wrapper executes before CLI for environment management
+   - ✅ Shell wrapper provides virtual environment detection and creation
+   - ✅ Package generation and linking process working correctly
+
+   **FILES_MODIFIED/CREATED**:
+   - Modified: juno-task-ts/package-variants/juno-code.json (bin configuration updated)
+   - Regenerated: dist/packages/juno-code/ package with correct binary linking
+   - Tested: npm link installation process validates correct symlink creation
+
+</RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
    **Juno-Code Branding Consistency Update (juno-task → juno-code)**
    **Status**: ✅ RESOLVED
    **Date**: 2025-11-08

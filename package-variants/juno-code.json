@@ -17,7 +17,7 @@
     "coding"
   ],
   "bin": {
-    "juno-code": "./dist/bin/cli.mjs"
+    "juno-code": "./dist/bin/juno-code.sh"
   },
   "repository": {
     "type": "git",

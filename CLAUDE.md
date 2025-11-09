@@ -60,8 +60,10 @@ The project uses a sophisticated AI workflow with:
 ## Current Status Update (2025-11-09)
 
 **ALL ISSUES RESOLVED - PROJECT COMPLETE**
-- Latest Fix: Install Requirements Script Virtual Environment Detection (2025-11-09)
-- All Mac virtual environment installation scenarios now working correctly
+- Latest Fix: NPM Registry Binary Linking Issue (2025-11-09)
+- Package now correctly links to shell wrapper instead of direct CLI execution
+- Users get proper Python environment setup when installing from npm registry
+- All Mac virtual environment installation scenarios working correctly
 - Bootstrap shell shim implementation completed
 - Ubuntu Python environment compatibility maintained
 
@@ -70,7 +72,17 @@ The project uses a sophisticated AI workflow with:
 **All Open Issues Resolved - Project Complete**
 
 **Most Recently Completed (2025-11-09):**
-1. ✅ Install Requirements Script Virtual Environment Detection Fix - RESOLVED
+1. ✅ NPM Registry Binary Linking Issue - RESOLVED
+   - Issue: After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper
+   - Root Cause: package-variants/juno-code.json had bin configuration pointing to CLI instead of shell wrapper
+   - Solution: Fixed bin configuration from "./dist/bin/cli.mjs" to "./dist/bin/juno-code.sh" and regenerated package
+   - Key features: Users installing from npm now get proper Python environment setup via shell wrapper
+   - Integration: Tested with npm link - symlink correctly points to juno-code.sh wrapper
+   - Test results: Package generation and linking process working correctly for npm registry deployment
+   - Status: ✅ RESOLVED - NPM registry deployment now provides full shell wrapper functionality
+   - Date: 2025-11-09
+
+2. ✅ Install Requirements Script Virtual Environment Detection Fix - RESOLVED
    - Issue: Virtual environment detection was incorrectly logging "verified by uv" when uv detection was failing
    - Root Cause: Script used flawed detection logic without actually testing if uv would work with the environment
    - Solution: Added comprehensive find_best_python() function (lines 105-151) and enhanced install_with_uv() function (lines 153-230) with real uv compatibility testing
