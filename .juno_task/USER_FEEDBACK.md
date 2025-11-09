@@ -76,6 +76,39 @@
 </RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
+   **VIRTUAL_ENV Unbound Variable Error**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-09
+   **RESOLVED_DATE**: 2025-11-09
+
+   **USER_FEEDBACK_QUOTE**: "install_requirements.sh failing with 'VIRTUAL_ENV: unbound variable' error at line 216 due to script mixing null-safe and unsafe parameter expansion syntax"
+
+   **ROOT_CAUSE**: The install_requirements.sh script was using both null-safe `${VIRTUAL_ENV:-}` syntax and unsafe `$VIRTUAL_ENV` references in conditional statements. When VIRTUAL_ENV was unset or null, the unsafe references caused "unbound variable" errors in strict bash environments.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Changed all unsafe `$VIRTUAL_ENV` references to null-safe `${VIRTUAL_ENV:-}` syntax
+   2. Updated line 216 condition: `[[ "$VIRTUAL_ENV" == *"/.venv_juno" ]]` → `[[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]]`
+   3. Updated line 216 second condition: `[[ "$VIRTUAL_ENV" == *".venv_juno"* ]]` → `[[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]`
+   4. Updated line 220 basename usage: `basename "$VIRTUAL_ENV"` → `basename "${VIRTUAL_ENV:-}"`
+   5. Ensured consistent null-safe parameter expansion throughout entire script
+
+   **TEST_CRITERIA_MET**:
+   - ✅ All VIRTUAL_ENV references use null-safe parameter expansion `${VIRTUAL_ENV:-}`
+   - ✅ No more "unbound variable" errors in strict bash mode
+   - ✅ Script works correctly when VIRTUAL_ENV is unset or null
+   - ✅ Proper null checking before value usage in conditionals
+   - ✅ Compatible with various shell configurations and set -u mode
+   - ✅ Build successful, script deployed to dist/templates/scripts/
+   - ✅ Bash syntax validation passed (`bash -n install_requirements.sh`)
+
+   **FILES_MODIFIED/CREATED**:
+   - Modified: src/templates/scripts/install_requirements.sh (lines 216, 220)
+   - Enhanced: Null-safe parameter expansion for VIRTUAL_ENV variable
+   - Enhanced: Bash strict mode compatibility
+
+</RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
    **Python 3.8.19 Version Issue**
    **Status**: ✅ RESOLVED
    **Date**: 2025-11-09

@@ -204,23 +204,27 @@ install_with_uv() {
 
     local uv_flags="--quiet"
 
-    # CRITICAL FIX: Check if we're truly in a venv that uv recognizes
+    # CRITICAL FIX: Properly detect if uv will work in the current environment
     # User feedback: "Maybe the way you are verifying being inside venv by uv is not correct !!!"
-    # Solution: Actually test if uv pip install will work by checking for venv
+    # Previous approach failed because uv pip list doesn't reliably indicate venv compatibility
+    # NEW APPROACH: Always create .venv_juno unless we're already inside it
 
-    # Test if uv recognizes current environment as a venv
-    local uv_venv_check=false
-    if uv pip list &>/dev/null 2>&1; then
-        # uv pip list succeeded - we're in a venv that uv recognizes
-        uv_venv_check=true
-        log_info "Detected virtual environment (verified by uv) - installing into venv"
+    local venv_path=".venv_juno"
+    local need_venv=true
+
+    # Check if we're already inside .venv_juno
+    if [ -n "${VIRTUAL_ENV:-}" ] && [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
+        log_info "Already inside .venv_juno virtual environment"
+        need_venv=false
+    # Check if we're in .venv_juno by checking the activate script path
+    elif [ -n "${VIRTUAL_ENV:-}" ] && [ "$(basename "${VIRTUAL_ENV:-}")" = ".venv_juno" ]; then
+        log_info "Already inside .venv_juno virtual environment"
+        need_venv=false
     fi
 
-    # If uv doesn't recognize a venv, we need to create one
-    if [ "$uv_venv_check" = false ]; then
-        # Not in a venv that uv recognizes - create .venv_juno
-        # This handles both: (1) no venv at all, (2) conda/other venvs that uv doesn't recognize
-        log_info "uv requires a proper virtual environment - creating .venv_juno..."
+    # If we need a venv, create and activate .venv_juno
+    if [ "$need_venv" = true ]; then
+        log_info "Creating/using .venv_juno virtual environment for reliable uv installation..."
 
         # Find best Python version (3.10-3.13, preferably 3.13)
         local python_cmd
@@ -237,7 +241,6 @@ install_with_uv() {
         log_info "Using Python $version for virtual environment"
 
         # Create a project-local venv if it doesn't exist
-        local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
             log_info "Creating virtual environment with $python_cmd..."
             if ! $python_cmd -m venv "$venv_path" 2>/dev/null; then
@@ -256,7 +259,7 @@ install_with_uv() {
         # shellcheck disable=SC1091
         if [ -f "$venv_path/bin/activate" ]; then
             source "$venv_path/bin/activate"
-            log_success "Activated virtual environment"
+            log_success "Activated virtual environment - uv will now install into .venv_juno"
         else
             log_error "Virtual environment activation script not found"
             return 1
