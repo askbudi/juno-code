@@ -156,19 +156,16 @@ install_with_uv() {
 
     local uv_flags="--quiet"
 
-    # CRITICAL FIX: uv doesn't recognize conda environments or some other Python environments
-    # We need to test if uv actually sees a venv, not just rely on Python's detection
-    # This fixes the issue where script says "Detected virtual environment" but uv disagrees
-    local uv_sees_venv=false
-    if uv pip list &>/dev/null; then
-        # uv successfully listed packages, meaning it recognizes a venv
-        uv_sees_venv=true
-    fi
+    # CRITICAL FIX: The only reliable way to know if uv will accept installation
+    # is to check for VIRTUAL_ENV environment variable (standard venv indicator)
+    # uv pip list doesn't verify venv status - it can succeed even outside a venv
+    # User feedback: "Maybe the way you are verifying being inside venv by uv is not correct !!!"
 
-    # Determine installation strategy based on uv's detection (most reliable for uv)
-    if $uv_sees_venv; then
-        # uv recognizes the virtual environment - safe to install normally
-        log_info "Detected virtual environment (verified by uv) - installing into venv"
+    # Check if we're actually in a virtual environment that uv will recognize
+    # uv ONLY works with proper venv (VIRTUAL_ENV set) or needs --system flag
+    if [ -n "${VIRTUAL_ENV:-}" ]; then
+        # We're in a proper virtual environment - uv will work without --system
+        log_info "Detected virtual environment (VIRTUAL_ENV set) - installing into venv"
     elif is_externally_managed_python; then
         # Externally managed Python (Ubuntu/Debian PEP 668) - must use venv
         log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
@@ -189,11 +186,11 @@ install_with_uv() {
         # shellcheck disable=SC1091
         source "$venv_path/bin/activate"
         log_success "Activated virtual environment"
-    elif is_in_virtualenv; then
-        # Python thinks we're in a venv, but uv doesn't recognize it (e.g., conda base env)
+    else
+        # Not in a proper virtual environment (VIRTUAL_ENV not set)
+        # User request: "we want to always do it if we are not inside a virtual environment already"
         # Create a proper venv that uv will recognize
-        log_info "Python environment detected, but not recognized by uv (possibly conda)"
-        log_info "Creating uv-compatible virtual environment for installation..."
+        log_info "Not in a virtual environment - creating .venv_juno for installation..."
 
         # Create a project-local venv if it doesn't exist
         local venv_path=".venv_juno"
@@ -210,10 +207,6 @@ install_with_uv() {
         # shellcheck disable=SC1091
         source "$venv_path/bin/activate"
         log_success "Activated virtual environment"
-    else
-        # Not in any venv and not externally managed - use system-wide installation
-        log_info "Not in a virtual environment - using --system flag for system-wide installation"
-        uv_flags="--quiet --system"
     fi
 
     local failed_packages=()
