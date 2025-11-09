@@ -50,26 +50,27 @@ log_error() {
     echo -e "${RED}[BOOTSTRAP]${NC} $1"
 }
 
-# Function to check if we're inside a virtual environment
-is_in_virtualenv() {
-    # Check for VIRTUAL_ENV environment variable (most common indicator)
+# Function to check if we're inside .venv_juno specifically
+# CRITICAL FIX: Don't just check for ANY venv - check if we're in .venv_juno
+# User feedback: "bootstrap.sh has the issues that install_requirements.sh used to have.
+# the detection of virtual enviroment is not correct."
+# Previous approach was too permissive - accepted ANY venv (conda, other venvs)
+# NEW APPROACH: Only return success if we're in .venv_juno specifically
+is_in_venv_juno() {
+    # Check if VIRTUAL_ENV is set and points to .venv_juno
     if [ -n "${VIRTUAL_ENV:-}" ]; then
-        return 0  # Inside venv
-    fi
+        # Check if VIRTUAL_ENV path contains .venv_juno
+        if [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
+            return 0  # Inside .venv_juno
+        fi
 
-    # Check for CONDA_DEFAULT_ENV (conda environments)
-    if [ -n "${CONDA_DEFAULT_ENV:-}" ]; then
-        return 0  # Inside conda env
-    fi
-
-    # Check if sys.prefix != sys.base_prefix (Python way to detect venv)
-    if command -v python3 &> /dev/null; then
-        if python3 -c "import sys; exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
-            return 0  # Inside venv
+        # Check if the basename is .venv_juno
+        if [ "$(basename "${VIRTUAL_ENV:-}")" = ".venv_juno" ]; then
+            return 0  # Inside .venv_juno
         fi
     fi
 
-    return 1  # Not inside venv
+    return 1  # Not inside .venv_juno (or not in any venv)
 }
 
 # Function to activate virtual environment
@@ -97,13 +98,18 @@ activate_venv() {
 ensure_python_environment() {
     log_info "Checking Python environment..."
 
-    # Step 1: Check if we're already in a virtual environment
-    if is_in_virtualenv; then
-        log_success "Already inside a virtual environment"
+    # CRITICAL FIX: Check if we're specifically in .venv_juno, not just ANY venv
+    # User feedback: "the detection of virtual enviroment is not correct"
+    # Previous logic accepted ANY venv (conda, other venvs) which was wrong
+    # NEW LOGIC: Only accept .venv_juno specifically
+
+    # Step 1: Check if we're already in .venv_juno specifically
+    if is_in_venv_juno; then
+        log_success "Already inside .venv_juno virtual environment"
         return 0
     fi
 
-    # Step 2: Check if .venv_juno exists in project root
+    # Step 2: Not in .venv_juno - check if .venv_juno exists in project root
     if [ -d "$VENV_DIR" ]; then
         log_info "Found existing virtual environment: $VENV_DIR"
 
