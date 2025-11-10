@@ -98,6 +98,88 @@ You can override these by providing the same config key with `-c`:
 ~/.juno_code/services/codex.py -p "Safe operation" -c sandbox_mode=safe
 ```
 
+### claude.py
+
+A wrapper for Anthropic Claude CLI with configurable options.
+
+#### Features
+
+- Automatic claude installation check
+- Support for inline prompts or prompt files
+- Configurable model selection (sonnet, opus, or full model names)
+- Auto-instruction prepending
+- Tool access control
+- Permission mode configuration
+- JSON output support
+- Verbose mode for debugging
+- Conversation continuation support
+
+#### Usage
+
+```bash
+# Basic usage with inline prompt
+~/.juno_code/services/claude.py -p "Write a hello world function"
+
+# Using a prompt file
+~/.juno_code/services/claude.py -pp /path/to/prompt.txt
+
+# Specify project directory
+~/.juno_code/services/claude.py -p "Add tests" --cd /path/to/project
+
+# Override default model
+~/.juno_code/services/claude.py -p "Refactor code" -m claude-opus-4-20250514
+
+# Use model aliases
+~/.juno_code/services/claude.py -p "Fix bugs" -m sonnet
+
+# Custom auto-instruction
+~/.juno_code/services/claude.py -p "Fix bugs" --auto-instruction "You are a debugging expert"
+
+# Specify allowed tools
+~/.juno_code/services/claude.py -p "Write code" --tool Bash --tool Edit --tool Write
+
+# Change permission mode
+~/.juno_code/services/claude.py -p "Review code" --permission-mode plan
+
+# Continue previous conversation
+~/.juno_code/services/claude.py -p "Continue working" --continue
+
+# Enable verbose output
+~/.juno_code/services/claude.py -p "Analyze code" --verbose
+
+# JSON output
+~/.juno_code/services/claude.py -p "Generate function" --json
+```
+
+#### Arguments
+
+- `-p, --prompt <text>`: Prompt text to send to claude (required, mutually exclusive with --prompt-file)
+- `-pp, --prompt-file <path>`: Path to file containing the prompt (required, mutually exclusive with --prompt)
+- `--cd <path>`: Project path (absolute path). Default: current directory
+- `-m, --model <name>`: Model name (e.g. 'sonnet', 'opus', or full name). Default: claude-sonnet-4-20250514
+- `--auto-instruction <text>`: Auto instruction to prepend to prompt
+- `--tool <name>`: Allowed tools (can be used multiple times, e.g. 'Bash' 'Edit')
+- `--permission-mode <mode>`: Permission mode: acceptEdits, bypassPermissions, default, or plan. Default: bypassPermissions
+- `--json`: Output in JSON format
+- `--verbose`: Enable verbose output
+- `-c, --continue`: Continue the most recent conversation
+- `--additional-args <args>`: Additional claude arguments as a space-separated string
+
+#### Default Configuration
+
+The script comes with these default allowed tools:
+- Read, Write, Edit, MultiEdit
+- Bash, Glob, Grep
+- WebFetch, WebSearch
+- TodoWrite
+
+You can override these by providing the `--tool` argument:
+
+```bash
+# Use only specific tools
+~/.juno_code/services/claude.py -p "Safe operation" --tool Read --tool Write
+```
+
 ## Customization
 
 All service scripts installed in `~/.juno_code/services/` can be modified to suit your needs. This directory is designed for user customization.
@@ -155,6 +237,7 @@ These service scripts are part of juno-code's extensibility model. In future ver
 Service scripts require Python 3.6+ to be installed on your system. Individual services may have additional requirements:
 
 - **codex.py**: Requires OpenAI Codex CLI to be installed
+- **claude.py**: Requires Anthropic Claude CLI to be installed (see https://docs.anthropic.com/en/docs/agents-and-tools/claude-code)
 
 ## Troubleshooting
 
