@@ -1337,6 +1337,21 @@ export async function initCommandHandler(
     const generator = new SimpleProjectGenerator(context);
     await generator.generate();
 
+    // Install service scripts automatically
+    try {
+      console.log(chalk.blue('\n📦 Installing service scripts...'));
+      const { ServiceInstaller } = await import('../../utils/service-installer.js');
+      await ServiceInstaller.install();
+      console.log(chalk.green('✓ Service scripts installed successfully'));
+      console.log(chalk.dim(`  Location: ${ServiceInstaller.getServicesDir()}`));
+    } catch (serviceError) {
+      // Don't fail initialization if service installation fails, just warn
+      console.log(chalk.yellow('⚠️  Service installation skipped'));
+      if (options.verbose) {
+        console.log(chalk.gray(`  ${serviceError instanceof Error ? serviceError.message : String(serviceError)}`));
+      }
+    }
+
     // Ensure the process exits cleanly after successful initialization to avoid
     // lingering interactive sessions waiting for manual quit keys.
     // This makes automated TUI runs finish without requiring 'q'.

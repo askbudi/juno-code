@@ -2,12 +2,72 @@
 <!-- Current status: 0 OPEN ISSUES -->
 <OPEN_ISSUES>
 
-<!-- All issues have been resolved as of 2025-11-09 -->
+<!-- All issues have been resolved as of 2025-11-10 -->
 <!-- See RESOLVED_ISSUES section for details -->
 
 </OPEN_ISSUES>
 
 ## Resolved Issues - VALIDATED FIXES ONLY
+
+<RESOLVED_ISSUE>
+   **Shell Script Services System Implementation**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-10
+   **RESOLVED_DATE**: 2025-11-10
+
+   **USER_FEEDBACK_QUOTE**: "Implement shell script services system that allows juno-code to install and manage external tool wrapper scripts, starting with codex.py script for codex CLI integration"
+
+   **ROOT_CAUSE**: juno-code needed a system to install and manage external tool wrapper scripts to provide seamless integration with third-party CLI tools.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. Created src/templates/services/ directory structure with codex.py Python script
+   2. Implemented comprehensive codex.py script with all required features:
+      - Checks if 'codex' is installed and available
+      - Executes codex command with configurable options
+      - Supports -p/--prompt and -pp/--prompt-file arguments
+      - Supports --cd for project path
+      - Allows arg overrides for default command (model, auto_instruction, etc.)
+      - Reserved args implemented: prompt, working-dir, auto_instruction, model_name
+      - Uses Python with subprocess for execution
+      - Reports stderr/stdout back to user
+   3. Updated package.json to include services in build process (build:copy-services)
+   4. Created ServiceInstaller utility class in src/utils/service-installer.ts
+   5. Created services CLI command in src/cli/commands/services.ts with subcommands:
+      - install: Install services to ~/.juno_code/services/
+      - list/ls: List installed services
+      - status: Check installation status
+      - path: Show services directory path
+      - uninstall: Remove services
+   6. Integrated services command into main CLI (src/bin/cli.ts)
+   7. Auto-install services during 'juno-code init' command
+   8. Created comprehensive README.md in services directory
+
+   **TEST_CRITERIA_MET**:
+   - ✅ Services directory created and included in npm package
+   - ✅ Scripts copied to ~/.juno_code/services/ during installation
+   - ✅ codex.py script checks for codex installation
+   - ✅ codex.py supports all required arguments (-p, -pp, --cd, -m, --auto-instruction, -c)
+   - ✅ codex.py uses Python with subprocess
+   - ✅ Reserved args work correctly (prompt, working-dir, auto_instruction, model_name)
+   - ✅ Additional args can override or extend default command
+   - ✅ CLI command 'juno-code services' provides management functionality
+   - ✅ Build successful - services copied to dist/templates/services/
+   - ✅ CLI Command successful - 'juno-code services --help' works
+   - ✅ Installation successful - 'juno-code services install' installs to ~/.juno_code/services/
+   - ✅ Status Check successful - 'juno-code services status' shows correct status
+   - ✅ Script Execution successful - codex.py is executable and checks for codex installation
+   - ✅ Help System successful - codex.py --help shows proper usage
+
+   **FILES_MODIFIED/CREATED**:
+   - Created: src/templates/services/codex.py (main wrapper script)
+   - Created: src/templates/services/README.md (documentation)
+   - Created: src/utils/service-installer.ts (utility class)
+   - Created: src/cli/commands/services.ts (CLI command)
+   - Modified: src/bin/cli.ts (integrated services command)
+   - Modified: src/cli/commands/init.ts (auto-install services)
+   - Modified: package.json (added build:copy-services)
+
+</RESOLVED_ISSUE>
 
 <RESOLVED_ISSUE>
    **NPM Registry Binary Linking Issue**
