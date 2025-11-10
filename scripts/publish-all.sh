@@ -121,25 +121,26 @@ validate_git_state() {
 ###############################################################################
 
 bump_version() {
-  print_step "Bumping version ($VERSION_TYPE)..."
+  # Redirect all colored output to stderr to keep stdout clean for version capture
+  print_step "Bumping version ($VERSION_TYPE)..." >&2
 
   cd "$ROOT_DIR"
 
   # Get current version
   local current_version=$(node -p "require('./package.json').version")
-  print_success "Current version: $current_version"
+  print_success "Current version: $current_version" >&2
 
   if [[ "$DRY_RUN" == false ]]; then
     # Bump version using npm version (suppress output to avoid ANSI codes)
     npm version "$VERSION_TYPE" --no-git-tag-version > /dev/null 2>&1
 
     local new_version=$(node -p "require('./package.json').version")
-    print_success "New version: $new_version"
+    print_success "New version: $new_version" >&2
 
-    # Return new version (clean, no ANSI codes)
+    # Return new version (clean, no ANSI codes) to stdout
     echo "$new_version"
   else
-    print_warning "DRY RUN: Would bump version from $current_version"
+    print_warning "DRY RUN: Would bump version from $current_version" >&2
     echo "$current_version"
   fi
 }
