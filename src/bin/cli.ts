@@ -21,6 +21,7 @@ import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
 import { configureLogsCommand } from '../cli/commands/logs.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
 import { setupConfigCommand } from '../cli/commands/config.js';
+import { createServicesCommand } from '../cli/commands/services.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Version information
@@ -428,6 +429,7 @@ async function main(): Promise<void> {
   configureLogsCommand(program);
   configureHelpCommand(program);
   setupConfigCommand(program);
+  program.addCommand(createServicesCommand());
 
   // Setup completion
   setupCompletion(program);
