@@ -562,7 +562,8 @@ export class ShellBackend implements Backend {
     let content: string;
     const metadata: Record<string, any> = {};
 
-    // If outputRawJson is enabled, output the full JSON instead of simplified messages
+    // If outputRawJson is enabled, format into MCP-style human-readable display
+    // Extract key fields and present them in a structured format similar to MCP backend
     if (this.config?.outputRawJson) {
       // Determine event type based on Claude CLI format
       switch (event.type) {
@@ -579,10 +580,9 @@ export class ShellBackend implements Backend {
           type = 'thinking';
       }
 
-      // Use the original JSON line if available to preserve exact formatting
-      // This ensures we output the exact JSON from claude.py without any re-processing
-      content = originalLine || JSON.stringify(event);
-      metadata.rawJson = true;
+      // Format into MCP-style human-readable format
+      content = this.formatClaudeEventMCPStyle(event);
+      metadata.mcpStyleFormat = true;
       metadata.originalType = event.type;
 
       return {
@@ -657,6 +657,88 @@ export class ShellBackend implements Backend {
       content,
       metadata
     };
+  }
+
+  /**
+   * Format Claude CLI event into MCP-style human-readable format
+   * Extracts key fields like num_turns, result, type, subtype, is_error and formats them
+   */
+  private formatClaudeEventMCPStyle(event: any): string {
+    const parts: string[] = [];
+
+    switch (event.type) {
+      case 'system':
+        // System initialization event
+        parts.push(`type=${event.type}`);
+        if (event.subtype) parts.push(`subtype=${event.subtype}`);
+        if (event.session_id) parts.push(`session=${event.session_id}`);
+        if (event.model) parts.push(`model=${event.model}`);
+        if (event.cwd) parts.push(`cwd=${event.cwd}`);
+        if (event.tools && Array.isArray(event.tools)) {
+          parts.push(`tools=[${event.tools.join(', ')}]`);
+        }
+        break;
+
+      case 'assistant':
+        // Assistant message event
+        parts.push(`type=${event.type}`);
+        if (event.num_turns !== undefined) parts.push(`num_turns=${event.num_turns}`);
+        if (event.message?.id) parts.push(`message_id=${event.message.id}`);
+        if (event.message?.model) parts.push(`model=${event.message.model}`);
+
+        // Extract and show the actual message content
+        if (event.message?.content && Array.isArray(event.message.content)) {
+          const textContent = event.message.content.find((c: any) => c.type === 'text');
+          if (textContent?.text) {
+            const preview = textContent.text.length > 100
+              ? textContent.text.substring(0, 100) + '...'
+              : textContent.text;
+            parts.push(`content="${preview}"`);
+          }
+        }
+
+        // Show usage/token information if available
+        if (event.message?.usage) {
+          const usage = event.message.usage;
+          parts.push(`tokens=${usage.input_tokens || 0}/${usage.output_tokens || 0}`);
+        }
+        break;
+
+      case 'result':
+        // Result event
+        parts.push(`type=${event.type}`);
+        if (event.subtype) parts.push(`subtype=${event.subtype}`);
+        if (event.num_turns !== undefined) parts.push(`num_turns=${event.num_turns}`);
+        if (event.is_error !== undefined) parts.push(`is_error=${event.is_error}`);
+
+        // Show result/error content
+        if (event.result) {
+          const resultPreview = event.result.length > 150
+            ? event.result.substring(0, 150) + '...'
+            : event.result;
+          parts.push(`result="${resultPreview}"`);
+        }
+
+        // Show performance metrics
+        if (event.duration_ms !== undefined) parts.push(`duration=${event.duration_ms}ms`);
+        if (event.total_cost_usd !== undefined) parts.push(`cost=$${event.total_cost_usd.toFixed(6)}`);
+
+        // Show usage summary if available
+        if (event.usage) {
+          const usage = event.usage;
+          parts.push(`total_tokens=${usage.input_tokens || 0}+${usage.output_tokens || 0}`);
+        }
+        break;
+
+      default:
+        // Fallback for unknown event types
+        parts.push(`type=${event.type}`);
+        // Show a preview of the full JSON for debugging
+        const jsonPreview = JSON.stringify(event).substring(0, 100) + '...';
+        parts.push(`data=${jsonPreview}`);
+    }
+
+    return parts.join(' | ');
   }
 
   /**
