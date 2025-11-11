@@ -562,9 +562,9 @@ export class ShellBackend implements Backend {
     let content: string;
     const metadata: Record<string, any> = {};
 
-    // If outputRawJson is enabled, format into MCP-style human-readable display
-    // Extract key fields and present them in a structured format similar to MCP backend
-    if (this.config?.outputRawJson) {
+    // If outputRawJson is enabled, pass the original JSON line for jq-style formatting
+    // This allows the progress display to format it with colors and indentation
+    if (this.config?.outputRawJson && originalLine) {
       // Determine event type based on Claude CLI format
       switch (event.type) {
         case 'system':
@@ -580,10 +580,11 @@ export class ShellBackend implements Backend {
           type = 'thinking';
       }
 
-      // Format into MCP-style human-readable format
-      content = this.formatClaudeEventMCPStyle(event);
-      metadata.mcpStyleFormat = true;
+      // Pass the raw JSON for jq-style formatting in the display layer
+      content = originalLine;
+      metadata.rawJsonOutput = true;
       metadata.originalType = event.type;
+      metadata.parsedEvent = event; // Keep parsed version for metadata access
 
       return {
         sessionId,
