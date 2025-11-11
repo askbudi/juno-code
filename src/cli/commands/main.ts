@@ -21,6 +21,7 @@ import React from 'react';
 import { loadConfig } from '../../core/config.js';
 import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import { createBackendManager } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
@@ -364,28 +365,17 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Create MCP client using proper configuration from .juno_task/mcp.json
-    const mcpClient = await createMCPClientFromConfig(
-      this.config.mcpServerName,
-      request.workingDirectory,
-      {
-        timeout: this.config.mcpTimeout,
-        retries: this.config.mcpRetries,
-        debug: this.config.verbose,
-        enableProgressStreaming: true,
-        sessionId: request.requestId,
-        progressCallback: async (event: any) => {
-          // Route MCP progress events to the progress display (always show progress)
-          this.progressDisplay.onProgress(event);
-        }
-      }
-    );
+    // Create backend manager (uses MCP backend by default)
+    const backendManager = createBackendManager();
 
     // Create execution engine
-    const engine = createExecutionEngine(this.config, mcpClient);
+    const engine = createExecutionEngine(this.config, backendManager);
 
-    // Note: Progress callbacks are handled by MCP client progressCallback above
-    // This prevents duplicate progress messages in verbose mode
+    // Set up progress callback
+    engine.onProgress(async (event: any) => {
+      // Route progress events to the progress display (always show progress)
+      this.progressDisplay.onProgress(event);
+    });
 
     // Set up event handlers
     engine.on('iteration:start', ({ iterationNumber }) => {
@@ -404,9 +394,6 @@ class MainExecutionCoordinator {
     });
 
     try {
-      // Connect to MCP server
-      await mcpClient.connect();
-
       // Start progress display
       this.progressDisplay.start(request);
 
@@ -435,8 +422,8 @@ class MainExecutionCoordinator {
 
       // Cleanup
       try {
-        await mcpClient.disconnect();
         await engine.shutdown();
+        await backendManager.cleanup();
       } catch (cleanupError) {
         console.warn(chalk.yellow(`Warning: Cleanup error: ${cleanupError}`));
       }

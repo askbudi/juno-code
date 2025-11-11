@@ -724,7 +724,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" >/**<span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" ></span></span></span>
-<span class="cstat-no" title="statement not covered" > * Shell Detection Utility for juno-task-ts</span>
+<span class="cstat-no" title="statement not covered" > * Shell Detection Utility for juno-code</span>
 <span class="cstat-no" title="statement not covered" > *</span>
 <span class="cstat-no" title="statement not covered" > * Detects available shells and manages shell-specific configuration paths.</span>
 <span class="cstat-no" title="statement not covered" > * Supports bash, zsh, fish, and other common shells.</span>
@@ -862,19 +862,19 @@
 <span class="cstat-no" title="statement not covered" >      case 'bash':</span>
 <span class="cstat-no" title="statement not covered" >        // Use user completion directory</span>
 <span class="cstat-no" title="statement not covered" >        if (process.platform === 'darwin') {</span>
-<span class="cstat-no" title="statement not covered" >          return path.join('/usr/local/etc/bash_completion.d', 'juno-ts-task');</span>
+<span class="cstat-no" title="statement not covered" >          return path.join('/usr/local/etc/bash_completion.d', 'juno-code');</span>
 <span class="cstat-no" title="statement not covered" >        }</span>
-<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'juno-ts-task');</span>
+<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'juno-code');</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'zsh':</span>
 <span class="cstat-no" title="statement not covered" >        // Use user site-functions directory</span>
-<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_juno-ts-task');</span>
+<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_juno-code');</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'fish':</span>
-<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.config', 'fish', 'completions', 'juno-ts-task.fish');</span>
+<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.config', 'fish', 'completions', 'juno-code.fish');</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'powershell':</span>
-<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.config', 'powershell', 'completions', 'juno-ts-task.ps1');</span>
+<span class="cstat-no" title="statement not covered" >        return path.join(homeDir, '.config', 'powershell', 'completions', 'juno-code.ps1');</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      default:</span>
 <span class="cstat-no" title="statement not covered" >        throw new Error(`Unsupported shell: ${shell}`);</span>
@@ -899,19 +899,19 @@
 <span class="cstat-no" title="statement not covered" >  getSourceCommand(shell: ShellType, completionPath: string): string {</span>
 <span class="cstat-no" title="statement not covered" >    switch (shell) {</span>
 <span class="cstat-no" title="statement not covered" >      case 'bash':</span>
-<span class="cstat-no" title="statement not covered" >        return `# juno-ts-task completion\n[ -f "${completionPath}" ] &amp;&amp; source "${completionPath}"`;</span>
+<span class="cstat-no" title="statement not covered" >        return `# juno-code completion\n[ -f "${completionPath}" ] &amp;&amp; source "${completionPath}"`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'zsh':</span>
 <span class="cstat-no" title="statement not covered" >        // Add to fpath and enable completion</span>
 <span class="cstat-no" title="statement not covered" >        const zshDir = path.dirname(completionPath);</span>
-<span class="cstat-no" title="statement not covered" >        return `# juno-ts-task completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit &amp;&amp; compinit`;</span>
+<span class="cstat-no" title="statement not covered" >        return `# juno-code completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit &amp;&amp; compinit`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'fish':</span>
 <span class="cstat-no" title="statement not covered" >        // Fish automatically loads completions from ~/.config/fish/completions/</span>
-<span class="cstat-no" title="statement not covered" >        return `# juno-ts-task completion (automatically loaded)`;</span>
+<span class="cstat-no" title="statement not covered" >        return `# juno-code completion (automatically loaded)`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      case 'powershell':</span>
-<span class="cstat-no" title="statement not covered" >        return `# juno-ts-task completion\n. "${completionPath}"`;</span>
+<span class="cstat-no" title="statement not covered" >        return `# juno-code completion\n. "${completionPath}"`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      default:</span>
 <span class="cstat-no" title="statement not covered" >        throw new Error(`Unsupported shell: ${shell}`);</span>
@@ -929,7 +929,7 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >      const content = await fs.readFile(configPath, 'utf-8');</span>
 <span class="cstat-no" title="statement not covered" >      // Check for the marker comment</span>
-<span class="cstat-no" title="statement not covered" >      return content.includes('juno-ts-task completion');</span>
+<span class="cstat-no" title="statement not covered" >      return content.includes('juno-code completion');</span>
 <span class="cstat-no" title="statement not covered" >    } catch {</span>
 <span class="cstat-no" title="statement not covered" >      return false;</span>
 <span class="cstat-no" title="statement not covered" >    }</span>
@@ -1060,7 +1060,7 @@
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:09.959Z
+                at 2025-11-11T02:23:56.918Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

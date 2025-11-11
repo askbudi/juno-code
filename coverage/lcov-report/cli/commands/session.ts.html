@@ -1214,7 +1214,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
- * Session command implementation for juno-task-ts CLI
+ * Session command implementation for juno-code CLI
  *
  * Provides comprehensive session management including list, info, remove, and clean
  * operations with detailed statistics, filtering, and cleanup capabilities.
@@ -1544,8 +1544,8 @@ async function handleSessionInfo(
 &nbsp;
   if (!sessionId) {
     console.log(chalk.red('Session ID is required'));
-    console.log(chalk.gray('Usage: juno-task session info &lt;session-id&gt;'));
-    console.log(chalk.gray('Use "juno-task session list" to see available sessions'));
+    console.log(chalk.gray('Usage: juno-code session info &lt;session-id&gt;'));
+    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
     return;
   }
 &nbsp;
@@ -1553,7 +1553,7 @@ async function handleSessionInfo(
 &nbsp;
   if (!session) {
     console.log(chalk.red(`Session not found: ${sessionId}`));
-    console.log(chalk.gray('Use "juno-task session list" to see available sessions'));
+    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
     return;
   }
 &nbsp;
@@ -1573,7 +1573,7 @@ async function handleSessionRemove(
 &nbsp;
   if (sessionIds.length === 0) {
     console.log(chalk.red('At least one session ID is required'));
-    console.log(chalk.gray('Usage: juno-task session remove &lt;session-id&gt; [session-id...]'));
+    console.log(chalk.gray('Usage: juno-code session remove &lt;session-id&gt; [session-id...]'));
     process.exit(1);
   }
 &nbsp;
@@ -1769,15 +1769,15 @@ export <span class="fstat-no" title="function not covered" >function configureSe
 <span class="cstat-no" title="statement not covered" >  clean, cleanup              Clean up old/empty sessions</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Examples:</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session                                 # List all sessions</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session list --limit 10                # Show 10 most recent</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session list --subagent claude         # Filter by subagent</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session list --status completed failed # Filter by status</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session info abc123                    # Show session details</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session remove abc123 def456           # Remove sessions</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session remove abc123 --force          # Skip confirmation</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session clean --days 30                # Remove sessions &gt;30 days</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task session clean --empty --force          # Remove empty sessions</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session                                 # List all sessions</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session list --limit 10                # Show 10 most recent</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session list --subagent claude         # Filter by subagent</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session list --status completed failed # Filter by status</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session info abc123                    # Show session details</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session remove abc123 def456           # Remove sessions</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session remove abc123 --force          # Skip confirmation</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session clean --days 30                # Remove sessions &gt;30 days</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code session clean --empty --force          # Remove empty sessions</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Environment Variables:</span>
 <span class="cstat-no" title="statement not covered" >  JUNO_TASK_SESSION_DIR      Session storage directory</span>
@@ -1795,7 +1795,7 @@ export <span class="fstat-no" title="function not covered" >function configureSe
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/464</span>
+                <span class='fraction'>0/467</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/464</span>
+                <span class='fraction'>0/467</span>
             </div>
         
             
@@ -526,7 +526,13 @@
 <a name='L461'></a><a href='#L461'>461</a>
 <a name='L462'></a><a href='#L462'>462</a>
 <a name='L463'></a><a href='#L463'>463</a>
-<a name='L464'></a><a href='#L464'>464</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
+<a name='L464'></a><a href='#L464'>464</a>
+<a name='L465'></a><a href='#L465'>465</a>
+<a name='L466'></a><a href='#L466'>466</a>
+<a name='L467'></a><a href='#L467'>467</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -990,7 +996,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" >/**<span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" ></span></span></span>
-<span class="cstat-no" title="statement not covered" > * Help command implementation for juno-task-ts CLI</span>
+<span class="cstat-no" title="statement not covered" > * Help command implementation for juno-code CLI</span>
 <span class="cstat-no" title="statement not covered" > *</span>
 <span class="cstat-no" title="statement not covered" > * Enhanced help system with interactive tutorials, contextual assistance,</span>
 <span class="cstat-no" title="statement not covered" > * and comprehensive documentation access.</span>
@@ -1047,22 +1053,22 @@
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'init',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Initialize new project',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task init [--interactive]'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code init [--interactive]'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'start',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Execute task',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task start [--max-iterations N]'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code start [--max-iterations N]'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'logs',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'View application logs',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task logs [--interactive]'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code logs [--interactive]'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'session',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Manage execution sessions',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task session &lt;list|info|remove&gt;'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code session &lt;list|info|remove&gt;'</span>
 <span class="cstat-no" title="statement not covered" >      }</span>
 <span class="cstat-no" title="statement not covered" >    ]</span>
 <span class="cstat-no" title="statement not covered" >  },</span>
@@ -1072,22 +1078,22 @@
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'claude',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Execute with Claude subagent',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task claude "task description"'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code claude "task description"'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'cursor',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Execute with Cursor subagent',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task cursor "task description"'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code cursor "task description"'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'codex',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Execute with Codex subagent',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task codex "task description"'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code codex "task description"'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'gemini',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Execute with Gemini subagent',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task gemini "task description"'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code gemini "task description"'</span>
 <span class="cstat-no" title="statement not covered" >      }</span>
 <span class="cstat-no" title="statement not covered" >    ]</span>
 <span class="cstat-no" title="statement not covered" >  },</span>
@@ -1097,22 +1103,22 @@
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'feedback',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Collect user feedback',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task feedback [--interactive]'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code feedback [--interactive]'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'setup-git',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Initialize Git repository',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task setup-git &lt;repository-url&gt;'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code setup-git &lt;repository-url&gt;'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'completion',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Shell completion setup',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task completion &lt;install|uninstall&gt;'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code completion &lt;install|uninstall&gt;'</span>
 <span class="cstat-no" title="statement not covered" >      },</span>
 <span class="cstat-no" title="statement not covered" >      {</span>
 <span class="cstat-no" title="statement not covered" >        name: 'help',</span>
 <span class="cstat-no" title="statement not covered" >        description: 'Show help information',</span>
-<span class="cstat-no" title="statement not covered" >        usage: 'juno-task help [--interactive]'</span>
+<span class="cstat-no" title="statement not covered" >        usage: 'juno-code help [--interactive]'</span>
 <span class="cstat-no" title="statement not covered" >      }</span>
 <span class="cstat-no" title="statement not covered" >    ]</span>
 <span class="cstat-no" title="statement not covered" >  }</span>
@@ -1132,15 +1138,15 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >**Solutions**:</span>
 <span class="cstat-no" title="statement not covered" >1. Install MCP server (e.g., roundtable-mcp-server)</span>
-<span class="cstat-no" title="statement not covered" >2. Check configuration: \`juno-task init --interactive\`</span>
+<span class="cstat-no" title="statement not covered" >2. Check configuration: \`juno-code init --interactive\`</span>
 <span class="cstat-no" title="statement not covered" >3. Verify server path: \`which roundtable-mcp-server\`</span>
-<span class="cstat-no" title="statement not covered" >4. Test connection: \`juno-task start --verbose\`</span>
+<span class="cstat-no" title="statement not covered" >4. Test connection: \`juno-code start --verbose\`</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >### 📁 File System Issues</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >**Issue**: "init.md not found"</span>
 <span class="cstat-no" title="statement not covered" >**Cause**: No project initialized in current directory</span>
-<span class="cstat-no" title="statement not covered" >**Solution**: Run \`juno-task init\` to create project structure</span>
+<span class="cstat-no" title="statement not covered" >**Solution**: Run \`juno-code init\` to create project structure</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >**Issue**: "Permission denied"</span>
 <span class="cstat-no" title="statement not covered" >**Cause**: Insufficient file permissions</span>
@@ -1168,19 +1174,19 @@
 <span class="cstat-no" title="statement not covered" >Get detailed debug information:</span>
 <span class="cstat-no" title="statement not covered" >\`\`\`bash</span>
 <span class="cstat-no" title="statement not covered" ># Verbose execution with debug logging</span>
-<span class="cstat-no" title="statement not covered" >juno-task start --verbose --log-level debug</span>
+<span class="cstat-no" title="statement not covered" >juno-code start --verbose --log-level debug</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" ># View recent error logs</span>
-<span class="cstat-no" title="statement not covered" >juno-task logs --level error --tail 50</span>
+<span class="cstat-no" title="statement not covered" >juno-code logs --level error --tail 50</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" ># Export logs for analysis</span>
-<span class="cstat-no" title="statement not covered" >juno-task logs --export debug.json --level debug</span>
+<span class="cstat-no" title="statement not covered" >juno-code logs --export debug.json --level debug</span>
 <span class="cstat-no" title="statement not covered" >\`\`\`</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >## Getting More Help</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >1. **Interactive Help**: \`juno-task help --interactive\`</span>
-<span class="cstat-no" title="statement not covered" >2. **View Logs**: \`juno-task logs --interactive\`</span>
+<span class="cstat-no" title="statement not covered" >1. **Interactive Help**: \`juno-code help --interactive\`</span>
+<span class="cstat-no" title="statement not covered" >2. **View Logs**: \`juno-code logs --interactive\`</span>
 <span class="cstat-no" title="statement not covered" >3. **Check Configuration**: Review .juno_task/config.json</span>
 <span class="cstat-no" title="statement not covered" >4. **Test MCP Connection**: Use --verbose flag with any command</span>
 <span class="cstat-no" title="statement not covered" >5. **Report Issues**: Include debug logs when reporting problems</span>
@@ -1189,9 +1195,13 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Useful for debugging:</span>
 <span class="cstat-no" title="statement not covered" >\`\`\`bash</span>
+<span class="cstat-no" title="statement not covered" >export JUNO_CODE_VERBOSE=true</span>
+<span class="cstat-no" title="statement not covered" >export JUNO_CODE_LOG_LEVEL=debug</span>
+<span class="cstat-no" title="statement not covered" >export NO_COLOR=true  # Disable colors for log analysis</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" ># Legacy variables (still supported for backward compatibility)</span>
 <span class="cstat-no" title="statement not covered" >export JUNO_TASK_VERBOSE=true</span>
 <span class="cstat-no" title="statement not covered" >export JUNO_TASK_LOG_LEVEL=debug</span>
-<span class="cstat-no" title="statement not covered" >export NO_COLOR=true  # Disable colors for log analysis</span>
 <span class="cstat-no" title="statement not covered" >\`\`\`</span>
 <span class="cstat-no" title="statement not covered" >`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -1204,9 +1214,9 @@
 <span class="cstat-no" title="statement not covered" > */</span>
 <span class="cstat-no" title="statement not covered" >function displayQuickReference(formatter: RichFormatter): void {</span>
 <span class="cstat-no" title="statement not covered" >  console.log(formatter.panel(</span>
-<span class="cstat-no" title="statement not covered" >    'Welcome to juno-task! This quick reference shows the most commonly used commands.',</span>
+<span class="cstat-no" title="statement not covered" >    'Welcome to juno-code! This quick reference shows the most commonly used commands.',</span>
 <span class="cstat-no" title="statement not covered" >    {</span>
-<span class="cstat-no" title="statement not covered" >      title: '🚀 juno-task Quick Reference',</span>
+<span class="cstat-no" title="statement not covered" >      title: '🚀 juno-code Quick Reference',</span>
 <span class="cstat-no" title="statement not covered" >      border: 'rounded',</span>
 <span class="cstat-no" title="statement not covered" >      style: 'success',</span>
 <span class="cstat-no" title="statement not covered" >      padding: 1</span>
@@ -1225,7 +1235,7 @@
 <span class="cstat-no" title="statement not covered" >  });</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >  console.log(formatter.panel(</span>
-<span class="cstat-no" title="statement not covered" >    `Use ${chalk.cyan('juno-task help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-task &lt;command&gt; --help')} for detailed command information.`,</span>
+<span class="cstat-no" title="statement not covered" >    `Use ${chalk.cyan('juno-code help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-code &lt;command&gt; --help')} for detailed command information.`,</span>
 <span class="cstat-no" title="statement not covered" >    {</span>
 <span class="cstat-no" title="statement not covered" >      title: '💡 Next Steps',</span>
 <span class="cstat-no" title="statement not covered" >      border: 'rounded',</span>
@@ -1283,8 +1293,8 @@
 <span class="cstat-no" title="statement not covered" >    console.log(`${icon} ${chalk.cyan(topic.id.padEnd(20))} ${topic.title}`);</span>
 <span class="cstat-no" title="statement not covered" >  });</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-task help --topic &lt;id&gt;')} to view a specific topic`));</span>
-<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`Use ${chalk.cyan('juno-task help --interactive')} for full interactive help`));</span>
+<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic &lt;id&gt;')} to view a specific topic`));</span>
+<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`Use ${chalk.cyan('juno-code help --interactive')} for full interactive help`));</span>
 <span class="cstat-no" title="statement not covered" >}</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >/**</span>
@@ -1311,7 +1321,7 @@
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.cyan(`• ${topicId}`));</span>
 <span class="cstat-no" title="statement not covered" >  });</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-task help --topic &lt;id&gt;')} to view details`));</span>
+<span class="cstat-no" title="statement not covered" >  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic &lt;id&gt;')} to view details`));</span>
 <span class="cstat-no" title="statement not covered" >}</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >// ============================================================================</span>
@@ -1412,12 +1422,12 @@
 <span class="cstat-no" title="statement not covered" >    })</span>
 <span class="cstat-no" title="statement not covered" >    .addHelpText('after', `</span>
 <span class="cstat-no" title="statement not covered" >Examples:</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help                                    # Quick reference guide</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help --interactive                      # Interactive help system</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help --topic quickstart                 # Specific topic</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help --search "mcp"                     # Search topics</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help --list                             # List all topics</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task help --troubleshooting                  # Troubleshooting guide</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help                                    # Quick reference guide</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help --interactive                      # Interactive help system</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help --topic quickstart                 # Specific topic</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help --search "mcp"                     # Search topics</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help --list                             # List all topics</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code help --troubleshooting                  # Troubleshooting guide</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Interactive Help Features:</span>
 <span class="cstat-no" title="statement not covered" >  - Browse help by category</span>
@@ -1434,7 +1444,6 @@
 <span class="cstat-no" title="statement not covered" >  sessions            Session management</span>
 <span class="cstat-no" title="statement not covered" >  templates           Template system</span>
 <span class="cstat-no" title="statement not covered" >  troubleshooting     Common issues and solutions</span>
-<span class="cstat-no" title="statement not covered" >  preflight-tests     Automated file size monitoring</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Navigation (Interactive Mode):</span>
 <span class="cstat-no" title="statement not covered" >  ↑↓ or j/k          Navigate items</span>
@@ -1447,7 +1456,7 @@
 <span class="cstat-no" title="statement not covered" >Notes:</span>
 <span class="cstat-no" title="statement not covered" >  - Interactive help provides the most comprehensive assistance</span>
 <span class="cstat-no" title="statement not covered" >  - Use --verbose with any command for detailed output</span>
-<span class="cstat-no" title="statement not covered" >  - Check logs with 'juno-task logs' for debugging</span>
+<span class="cstat-no" title="statement not covered" >  - Check logs with 'juno-code logs' for debugging</span>
 <span class="cstat-no" title="statement not covered" >  - All help content is searchable and cross-referenced</span>
 <span class="cstat-no" title="statement not covered" >    `);</span>
 <span class="cstat-no" title="statement not covered" >}</span>
@@ -1459,7 +1468,7 @@
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

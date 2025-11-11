@@ -12,6 +12,7 @@ import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
+import { createBackendManager } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
@@ -276,37 +277,23 @@ Focus on ${request.intelligence === 'basic' ? 'basic functionality' :
       maxIterations: 3
     });
 
-    // Execute with MCP integration
-    const mcpClient = await createMCPClientFromConfig(
-      this.config.mcpServerName,
-      request.workingDirectory,
-      {
-        retries: this.config.mcpRetries,
-        debug: this.config.verbose,
-        enableProgressStreaming: true,
-        sessionId: executionRequest.requestId,
-        progressCallback: async (event: any) => {
-          this.progressDisplay.onProgress(event);
-        }
-      }
-    );
-
-    const engine = createExecutionEngine(this.config, mcpClient);
+    // Execute with backend manager (MCP backend by default)
+    const backendManager = createBackendManager();
+    const engine = createExecutionEngine(this.config, backendManager);
 
     engine.onProgress(async (event: ProgressEvent) => {
       this.progressDisplay.onProgress(event);
     });
 
     try {
-      await mcpClient.connect();
       const result = await engine.execute(executionRequest);
-      await mcpClient.disconnect();
       await engine.shutdown();
+      await backendManager.cleanup();
 
       return result;
     } catch (error) {
-      await mcpClient.disconnect();
       await engine.shutdown();
+      await backendManager.cleanup();
       throw error;
     }
   }

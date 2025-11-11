@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">23.71% </span>
+                <span class="strong">20.19% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>74/312</span>
+                <span class='fraction'>63/312</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">50% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>1/2</span>
+                <span class='fraction'>0/0</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">20% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>1/5</span>
+                <span class='fraction'>0/5</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">23.71% </span>
+                <span class="strong">20.19% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>74/312</span>
+                <span class='fraction'>63/312</span>
             </div>
         
             
@@ -661,13 +661,6 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -682,10 +675,17 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span>
-<span class="cline-any cline-yes">2x</span></td><td class="text"><pre class="prettyprint lang-js">/**
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
  * File Compaction Utility for {configFile}.md files (CLAUDE.md/AGENTS.md)
  *
  * Compacts large configuration files by removing historical/resolved content
@@ -972,13 +972,13 @@ export <span class="fstat-no" title="function not covered" >function formatFileS
 /**
  * Check if a file needs compaction based on size or age
  */
-export async function shouldCompactFile(
-  filePath: string,
-  sizeThresholdKB: number = 50,
-  ageThresholdDays: number = 30
-): Promise&lt;boolean&gt; {
-  try {
-    const stats = await fs.stat(filePath<span class="branch-0 cbranch-no" title="branch not covered" >);</span>
+<span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >export async function shouldCompactFile(</span></span>
+<span class="cstat-no" title="statement not covered" >  filePath: string,</span>
+<span class="cstat-no" title="statement not covered" >  sizeThresholdKB: number = 50,</span>
+<span class="cstat-no" title="statement not covered" >  ageThresholdDays: number = 30</span>
+<span class="cstat-no" title="statement not covered" >): Promise&lt;boolean&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  try {</span>
+<span class="cstat-no" title="statement not covered" >    const stats = await fs.stat(filePath);</span>
 <span class="cstat-no" title="statement not covered" >    const sizeKB = stats.size / 1024;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    // Check size threshold</span>
@@ -993,17 +993,17 @@ export async function shouldCompactFile(
 <span class="cstat-no" title="statement not covered" >    }</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    return false;</span>
-  } catch (error) {
-    return false; // File doesn't exist or can't be accessed
-  }
-}</pre></td></tr></table></pre>
+<span class="cstat-no" title="statement not covered" >  } catch (error) {</span>
+<span class="cstat-no" title="statement not covered" >    return false; // File doesn't exist or can't be accessed</span>
+<span class="cstat-no" title="statement not covered" >  }</span>
+<span class="cstat-no" title="statement not covered" >}</span></pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->
             </div><!-- /wrapper -->
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../prettify.js"></script>
         <script>

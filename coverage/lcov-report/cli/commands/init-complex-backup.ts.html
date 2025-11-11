@@ -1456,7 +1456,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" >/**<span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" ></span></span></span>
-<span class="cstat-no" title="statement not covered" > * Init command implementation for juno-task-ts CLI</span>
+<span class="cstat-no" title="statement not covered" > * Init command implementation for juno-code CLI</span>
 <span class="cstat-no" title="statement not covered" > *</span>
 <span class="cstat-no" title="statement not covered" > * Provides interactive project initialization with template generation,</span>
 <span class="cstat-no" title="statement not covered" > * configuration setup, and directory structure creation. Includes both</span>
@@ -1825,7 +1825,7 @@
 <span class="cstat-no" title="statement not covered" >    if (!subagentResult.success) {</span>
 <span class="cstat-no" title="statement not covered" >      throw new ValidationError(</span>
 <span class="cstat-no" title="statement not covered" >        `Invalid subagent: ${subagent}. Must be one of: claude, cursor, codex, gemini`,</span>
-<span class="cstat-no" title="statement not covered" >        ['Use --subagent with a valid option', 'Run juno-task init --help for examples']</span>
+<span class="cstat-no" title="statement not covered" >        ['Use --subagent with a valid option', 'Run juno-code init --help for examples']</span>
 <span class="cstat-no" title="statement not covered" >      );</span>
 <span class="cstat-no" title="statement not covered" >    }</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -2026,13 +2026,13 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   2. Review and customize .juno_task/init.md with your specific requirements'));</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   3. Update .juno_task/plan.md with your project plan'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   4. Run: juno-task start'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   4. Run: juno-code start'));</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.blue('\n💡 Useful Commands:'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task start              # Start execution using init.md'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task session list       # View execution sessions'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task feedback           # Provide feedback to the AI'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task --help             # Show all available commands'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code start              # Start execution using init.md'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code session list       # View execution sessions'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code feedback           # Provide feedback to the AI'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code --help             # Show all available commands'));</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.gray('\n   Happy coding! 🚀'));</span>
 <span class="cstat-no" title="statement not covered" >  }</span>
@@ -2104,7 +2104,7 @@
 <span class="cstat-no" title="statement not covered" >export function configureInitCommand(program: Command): void {</span>
 <span class="cstat-no" title="statement not covered" >  program</span>
 <span class="cstat-no" title="statement not covered" >    .command('init')</span>
-<span class="cstat-no" title="statement not covered" >    .description('Initialize new juno-task project with template files')</span>
+<span class="cstat-no" title="statement not covered" >    .description('Initialize new juno-code project with template files')</span>
 <span class="cstat-no" title="statement not covered" >    .argument('[directory]', 'Target directory (default: current directory)')</span>
 <span class="cstat-no" title="statement not covered" >    .option('-f, --force', 'Force overwrite existing files')</span>
 <span class="cstat-no" title="statement not covered" >    .option('-t, --task &lt;description&gt;', 'Main task description')</span>
@@ -2138,12 +2138,12 @@
 <span class="cstat-no" title="statement not covered" >    })</span>
 <span class="cstat-no" title="statement not covered" >    .addHelpText('after', `</span>
 <span class="cstat-no" title="statement not covered" >Examples:</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init                                    # Initialize in current directory</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init my-project                         # Initialize in ./my-project</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init --interactive                      # Use interactive setup</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init --force --subagent claude          # Force overwrite with Claude</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init --task "Build a web scraper"       # Set specific task</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task init --git-url https://github.com/me/repo # Set repository URL</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init                                    # Initialize in current directory</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init my-project                         # Initialize in ./my-project</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init --interactive                      # Use interactive setup</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init --force --subagent claude          # Force overwrite with Claude</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init --task "Build a web scraper"       # Set specific task</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code init --git-url https://github.com/me/repo # Set repository URL</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Environment Variables:</span>
 <span class="cstat-no" title="statement not covered" >  JUNO_TASK_SUBAGENT         Default subagent to use</span>
@@ -2158,7 +2158,7 @@
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

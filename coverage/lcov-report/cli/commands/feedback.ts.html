@@ -1230,7 +1230,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
- * Simplified Feedback command implementation for juno-task-ts CLI
+ * Simplified Feedback command implementation for juno-code CLI
  *
  * Simple feedback collection with minimal interface.
  * Removes complex features: structured data, metadata, categorization, etc.
@@ -1474,7 +1474,7 @@ class EnhancedFeedbackFileManager {
 export <span class="fstat-no" title="function not covered" >function configureFeedbackCommand(program: Command): void {</span>
 <span class="cstat-no" title="statement not covered" >  program</span>
 <span class="cstat-no" title="statement not covered" >    .command('feedback')</span>
-<span class="cstat-no" title="statement not covered" >    .description('Submit feedback about juno-task (enhanced interface)')</span>
+<span class="cstat-no" title="statement not covered" >    .description('Submit feedback about juno-code (enhanced interface)')</span>
 <span class="cstat-no" title="statement not covered" >    .argument('[feedback...]', 'Feedback text or issue description')</span>
 <span class="cstat-no" title="statement not covered" >    .option('-f, --file &lt;path&gt;', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')</span>
 <span class="cstat-no" title="statement not covered" >    .option('--interactive', 'Launch simple interactive feedback form')</span>
@@ -1507,18 +1507,18 @@ export <span class="fstat-no" title="function not covered" >function configureFe
 <span class="cstat-no" title="statement not covered" >    })</span>
 <span class="cstat-no" title="statement not covered" >    .addHelpText('after', `</span>
 <span class="cstat-no" title="statement not covered" >Examples:</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback                                    # Interactive feedback form</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback "Issue with command"              # Direct feedback text</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback --interactive                     # Use interactive form</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback --description "UI issue" --test "Should be intuitive"             # Alternative form</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback archive                                                       # Archive resolved issues to keep file lean</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback compact                                                        # Compact CLAUDE.md and AGENTS.md</span>
-<span class="cstat-no" title="statement not covered" >  $ juno-task feedback compact CLAUDE.md                                             # Compact specific file</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback                                    # Interactive feedback form</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback "Issue with command"              # Direct feedback text</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback --interactive                     # Use interactive form</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback --description "UI issue" --test "Should be intuitive"             # Alternative form</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback archive                                                       # Archive resolved issues to keep file lean</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback compact                                                        # Compact CLAUDE.md and AGENTS.md</span>
+<span class="cstat-no" title="statement not covered" >  $ juno-code feedback compact CLAUDE.md                                             # Compact specific file</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >Enhanced Features:</span>
 <span class="cstat-no" title="statement not covered" >  1. Issue Description → Structured feedback with optional test criteria</span>
@@ -1571,7 +1571,7 @@ export <span class="fstat-no" title="function not covered" >function configureFe
 <span class="cstat-no" title="statement not covered" >    if (filesToCompact.length === 0) {</span>
 <span class="cstat-no" title="statement not covered" >      console.log(chalk.yellow('📄 No config files found to compact'));</span>
 <span class="cstat-no" title="statement not covered" >      console.log(chalk.gray('   Looking for: CLAUDE.md, AGENTS.md'));</span>
-<span class="cstat-no" title="statement not covered" >      console.log(chalk.gray('   Usage: juno-task feedback compact [file1] [file2]'));</span>
+<span class="cstat-no" title="statement not covered" >      console.log(chalk.gray('   Usage: juno-code feedback compact [file1] [file2]'));</span>
 <span class="cstat-no" title="statement not covered" >      return;</span>
 <span class="cstat-no" title="statement not covered" >    }</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -1717,7 +1717,7 @@ export <span class="fstat-no" title="function not covered" >function configureFe
 <span class="cstat-no" title="statement not covered" >      if (!issueText.trim()) {</span>
 <span class="cstat-no" title="statement not covered" >        throw new ValidationError(</span>
 <span class="cstat-no" title="statement not covered" >          'Issue description is required when using --issue/-is/--detail/--description or --test/-tc flags',</span>
-<span class="cstat-no" title="statement not covered" >          ['Use: juno-task feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"']</span>
+<span class="cstat-no" title="statement not covered" >          ['Use: juno-code feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"']</span>
 <span class="cstat-no" title="statement not covered" >        );</span>
 <span class="cstat-no" title="statement not covered" >      }</span>
 <span class="cstat-no" title="statement not covered" >      const feedbackFile = getFeedbackFile(options);</span>
@@ -1786,10 +1786,10 @@ export <span class="fstat-no" title="function not covered" >function configureFe
 <span class="cstat-no" title="statement not covered" >            } else {</span>
 <span class="cstat-no" title="statement not covered" >              console.log(chalk.yellow('Use --interactive mode, --issue/-is/--detail/--description flag, or provide feedback text'));</span>
 <span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('Examples:'));</span>
-<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-task feedback --issue "Bug description"'));</span>
-<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-task feedback -is "Issue" -t "Test criteria"'));</span>
-<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-task feedback --detail "Bug description"'));</span>
-<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-task feedback -d "Issue" -t "Test criteria"'));</span>
+<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-code feedback --issue "Bug description"'));</span>
+<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-code feedback -is "Issue" -t "Test criteria"'));</span>
+<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-code feedback --detail "Bug description"'));</span>
+<span class="cstat-no" title="statement not covered" >              console.log(chalk.gray('  juno-code feedback -d "Issue" -t "Test criteria"'));</span>
 <span class="cstat-no" title="statement not covered" >            }</span>
 <span class="cstat-no" title="statement not covered" >            break;</span>
 <span class="cstat-no" title="statement not covered" >        }</span>
@@ -1819,7 +1819,7 @@ export <span class="fstat-no" title="function not covered" >function configureFe
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../../prettify.js"></script>
         <script>
