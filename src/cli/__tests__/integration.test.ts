@@ -24,6 +24,7 @@ vi.mock('../../core/config.js', () => ({
     defaultMaxIterations: 5,
     defaultModel: 'test-model',
     defaultSubagent: 'claude',
+    defaultBackend: 'mcp',
     mcpServerPath: '/test/mcp',
     mcpTimeout: 30000,
     mcpRetries: 3,

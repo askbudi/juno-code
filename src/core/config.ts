@@ -30,6 +30,7 @@ import { getDefaultHooks } from '../templates/default-hooks.js';
 export const ENV_VAR_MAPPING = {
   // Core settings
   JUNO_CODE_DEFAULT_SUBAGENT: 'defaultSubagent',
+  JUNO_CODE_DEFAULT_BACKEND: 'defaultBackend',
   JUNO_CODE_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
   JUNO_CODE_DEFAULT_MODEL: 'defaultModel',
 
@@ -61,6 +62,7 @@ export const ENV_VAR_MAPPING = {
 export const LEGACY_ENV_VAR_MAPPING = {
   // Core settings
   JUNO_TASK_DEFAULT_SUBAGENT: 'defaultSubagent',
+  JUNO_TASK_DEFAULT_BACKEND: 'defaultBackend',
   JUNO_TASK_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
   JUNO_TASK_DEFAULT_MODEL: 'defaultModel',
 
@@ -89,6 +91,11 @@ export const LEGACY_ENV_VAR_MAPPING = {
  * Zod schema for validating subagent types
  */
 const SubagentTypeSchema = z.enum(['claude', 'cursor', 'codex', 'gemini']);
+
+/**
+ * Zod schema for validating backend types
+ */
+const BackendTypeSchema = z.enum(['mcp', 'shell']);
 
 /**
  * Zod schema for validating log levels
@@ -121,6 +128,9 @@ export const JunoTaskConfigSchema = z.object({
   // Core settings
   defaultSubagent: SubagentTypeSchema
     .describe('Default subagent to use for task execution'),
+
+  defaultBackend: BackendTypeSchema
+    .describe('Default backend to use for task execution'),
 
   defaultMaxIterations: z.number()
     .int()
@@ -195,6 +205,7 @@ export const JunoTaskConfigSchema = z.object({
 export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Core settings
   defaultSubagent: 'claude',
+  defaultBackend: 'mcp',
   defaultMaxIterations: 50,
 
   // Logging settings

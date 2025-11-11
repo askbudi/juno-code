@@ -68,6 +68,7 @@ describe('Configuration Module', () => {
     it('should validate valid configuration', () => {
       const validConfig: JunoTaskConfig = {
         defaultSubagent: 'claude',
+        defaultBackend: 'mcp',
         defaultMaxIterations: 25,
         logLevel: 'debug',
         verbose: true,
@@ -77,7 +78,8 @@ describe('Configuration Module', () => {
         interactive: false,
         headlessMode: true,
         workingDirectory: '/test/path',
-        sessionDirectory: '/test/sessions'
+        sessionDirectory: '/test/sessions',
+        hooks: {}
       };
 
       const result = validateConfig(validConfig);

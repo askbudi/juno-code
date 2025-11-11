@@ -25,6 +25,8 @@ vi.mock('../../core/config.js', () => ({
     defaultMaxIterations: 5,
     defaultModel: 'test-model',
     defaultSubagent: 'claude',
+    defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
     mcpServerPath: '/test/mcp',
     mcpTimeout: 30000,
     mcpRetries: 3,
@@ -153,6 +155,14 @@ vi.mock('chalk', () => {
   };
 });
 
+vi.mock('../../core/backend-manager.js', () => ({
+  createBackendManager: vi.fn().mockReturnValue({
+    cleanup: vi.fn().mockResolvedValue(undefined)
+  }),
+  determineBackendType: vi.fn().mockReturnValue('mcp'),
+  getBackendDisplayName: vi.fn().mockReturnValue('MCP Backend')
+}));
+
 // Mock the start command handler by dynamically importing
 let startCommandHandler: any;
 let loadConfig: any;
@@ -204,6 +214,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -253,6 +265,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -295,6 +309,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -337,6 +353,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -380,6 +398,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -510,6 +530,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -564,6 +586,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -619,6 +643,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -681,6 +707,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -776,6 +804,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -838,6 +868,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -937,6 +969,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -970,6 +1004,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 5,
           defaultModel: 'gpt-4',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1009,6 +1045,8 @@ describe('Start Command', () => {
           defaultMaxIterations: -1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1049,6 +1087,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1089,6 +1129,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1133,6 +1175,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1238,6 +1282,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1336,6 +1382,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1435,6 +1483,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1539,6 +1589,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1600,14 +1652,12 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        // Set up MCP client mock
-        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
-        const mockMCPClient = {
-          connect: vi.fn().mockResolvedValue(undefined),
-          disconnect: vi.fn().mockResolvedValue(undefined),
-          execute: vi.fn().mockResolvedValue(undefined)
+        // Set up backend manager mock
+        const { createBackendManager } = await import('../../core/backend-manager.js');
+        const mockBackendManager = {
+          cleanup: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
+        vi.mocked(createBackendManager).mockReturnValueOnce(mockBackendManager);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1620,7 +1670,7 @@ describe('Start Command', () => {
         await startCommandHandler([], options, mockCommand);
 
         // Verify cleanup was called
-        expect(mockMCPClient.disconnect).toHaveBeenCalled();
+        expect(mockBackendManager.cleanup).toHaveBeenCalled();
         expect(mockEngine.shutdown).toHaveBeenCalled();
       });
 
@@ -1632,6 +1682,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1674,14 +1726,12 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        // Set up MCP client mock
-        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
-        const mockMCPClient = {
-          connect: vi.fn().mockResolvedValue(undefined),
-          disconnect: vi.fn().mockResolvedValue(undefined),
-          execute: vi.fn().mockResolvedValue(undefined)
+        // Set up backend manager mock
+        const { createBackendManager } = await import('../../core/backend-manager.js');
+        const mockBackendManager = {
+          cleanup: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockMCPClient);
+        vi.mocked(createBackendManager).mockReturnValueOnce(mockBackendManager);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1697,7 +1747,7 @@ describe('Start Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(99);
 
         // Verify cleanup was called even on error
-        expect(mockMCPClient.disconnect).toHaveBeenCalled();
+        expect(mockBackendManager.cleanup).toHaveBeenCalled();
         expect(mockEngine.shutdown).toHaveBeenCalled();
       });
 
@@ -1711,6 +1761,8 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1771,13 +1823,12 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
-        const mockClient = {
-          connect: vi.fn(),
-          disconnect: vi.fn().mockRejectedValue(new Error('Disconnect failed')),
-          execute: vi.fn()
+        // Set up backend manager mock that fails during cleanup
+        const { createBackendManager } = await import('../../core/backend-manager.js');
+        const mockBackendManager = {
+          cleanup: vi.fn().mockRejectedValue(new Error('Cleanup failed'))
         };
-        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockClient);
+        vi.mocked(createBackendManager).mockReturnValueOnce(mockBackendManager);
 
         const options: StartCommandOptions = {
           directory: '/project',
@@ -1832,40 +1883,12 @@ describe('Start Command', () => {
           defaultMaxIterations: 1,
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
+          defaultBackend: 'mcp',
+    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
           verbose: false
-        });
-
-        const { createExecutionEngine, createExecutionRequest, ExecutionStatus } = await import('../../core/engine.js');
-        const mockEngine = {
-          execute: vi.fn().mockResolvedValue({
-            status: ExecutionStatus.COMPLETED,
-            iterations: [],
-            statistics: {
-              totalIterations: 0,
-              successfulIterations: 0,
-              failedIterations: 0,
-              averageIterationDuration: 0,
-              totalToolCalls: 0,
-              rateLimitEncounters: 0,
-              rateLimitWaitTime: 0,
-              errorBreakdown: {}
-            }
-          }),
-          onProgress: vi.fn(),
-          on: vi.fn(),
-          shutdown: vi.fn().mockResolvedValue(undefined)
-        };
-        vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
-        vi.mocked(createExecutionRequest).mockReturnValueOnce({
-          requestId: 'test-request-mcp',
-          instruction: 'Test task content',
-          subagent: 'claude',
-          workingDirectory: '/project',
-          maxIterations: 1,
-          model: 'test-model'
         });
 
         // Set up session manager mock
@@ -1887,16 +1910,26 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        const { createMCPClientFromConfig } = await import('../../mcp/client.js');
+        // Mock the execution engine to throw an MCPError during execution
+        const { createExecutionEngine, createExecutionRequest } = await import('../../core/engine.js');
         const { MCPError } = await import('../types.js');
         const mcpError = new MCPError('MCP connection failed', ['Check MCP server']);
 
-        const mockClient = {
-          connect: vi.fn().mockRejectedValue(mcpError),
-          disconnect: vi.fn(),
-          execute: vi.fn()
+        const mockEngine = {
+          execute: vi.fn().mockRejectedValue(mcpError),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined)
         };
-        vi.mocked(createMCPClientFromConfig).mockResolvedValueOnce(mockClient);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
+        vi.mocked(createExecutionRequest).mockReturnValueOnce({
+          requestId: 'test-request-mcp',
+          instruction: 'Test task content',
+          subagent: 'claude',
+          workingDirectory: '/project',
+          maxIterations: 1,
+          model: 'test-model'
+        });
 
         const options: StartCommandOptions = {
           directory: '/project',

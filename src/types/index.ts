@@ -5,6 +5,9 @@
 // Subagent types
 export type SubagentType = 'claude' | 'cursor' | 'codex' | 'gemini';
 
+// Backend types for execution
+export type BackendType = 'mcp' | 'shell';
+
 // Session status
 export type SessionStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -31,6 +34,7 @@ export interface JunoTaskConfig {
   defaultSubagent: SubagentType;
   defaultMaxIterations: number;
   defaultModel?: string;
+  defaultBackend: BackendType;
 
   // Logging settings
   logLevel: LogLevel;
@@ -42,6 +46,7 @@ export interface JunoTaskConfig {
   mcpTimeout: number;
   mcpRetries: number;
   mcpServerPath?: string;
+  mcpServerName?: string;
 
   // TUI settings
   interactive: boolean;
