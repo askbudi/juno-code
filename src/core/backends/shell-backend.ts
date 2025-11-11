@@ -353,6 +353,11 @@ export class ShellBackend implements Backend {
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
+      // Close stdin immediately - we don't need it and it prevents the subprocess from waiting
+      if (child.stdin) {
+        child.stdin.end();
+      }
+
       let stdout = '';
       let stderr = '';
       let isProcessKilled = false;
