@@ -54,7 +54,7 @@ Examples:
         )
 
         # Core arguments
-        prompt_group = parser.add_mutually_exclusive_group(required=True)
+        prompt_group = parser.add_mutually_exclusive_group(required=False)
         prompt_group.add_argument(
             "-p", "--prompt",
             type=str,
@@ -214,6 +214,18 @@ Examples:
 
     def run(self) -> int:
         """Main execution flow"""
+        # Parse arguments first to handle --help
+        args = self.parse_arguments()
+
+        # Check if prompt is provided
+        if not args.prompt and not args.prompt_file:
+            print(
+                "Error: Either -p/--prompt or -pp/--prompt-file is required.",
+                file=sys.stderr
+            )
+            print("\nRun 'codex.py --help' for usage information.", file=sys.stderr)
+            return 1
+
         # Check if codex is installed
         if not self.check_codex_installed():
             print(
@@ -225,9 +237,6 @@ Examples:
                 file=sys.stderr
             )
             return 1
-
-        # Parse arguments
-        args = self.parse_arguments()
 
         # Set configuration from arguments
         self.project_path = os.path.abspath(args.cd)
