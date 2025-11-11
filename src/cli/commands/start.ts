@@ -135,12 +135,21 @@ class ProgressDisplay {
     const backend = event.backend ? `[${event.backend}]` : '';
     const toolId = event.toolId ? `{${event.toolId.split('_')[0]}}` : '';
 
+    // If this is a raw JSON event (from shell backend with outputRawJson=true),
+    // output the full JSON content without reformatting
+    if (event.metadata?.rawJson) {
+      // Output raw JSON using process.stderr.write to avoid console.error's util.inspect truncation
+      // Format: [timestamp] type: JSON
+      process.stderr.write(`[${timestamp}] ${event.type}: ${event.content}\n`);
+      return;
+    }
+
     // Extract tool name from metadata if available
     const toolName = event.metadata?.toolName || 'unknown';
     const phase = event.metadata?.phase || '';
     const duration = event.metadata?.duration;
 
-    // Format message based on event type
+    // Format message based on event type (original behavior)
     let formattedMessage = event.content;
     let icon = '';
     let color = chalk.gray;

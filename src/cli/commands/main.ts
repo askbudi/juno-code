@@ -252,6 +252,21 @@ class MainProgressDisplay {
 
   onProgress(event: ProgressEvent): void {
     const timestamp = event.timestamp.toLocaleTimeString();
+
+    // If this is a raw JSON event (from shell backend with outputRawJson=true),
+    // output the full JSON content without truncation
+    if (event.metadata?.rawJson) {
+      if (this.verbose) {
+        // Output full JSON in verbose mode
+        process.stderr.write(`[${timestamp}] ${event.type}: ${event.content}\n`);
+      } else {
+        // Non-verbose: still show full JSON for jq piping
+        process.stderr.write(`${event.content}\n`);
+      }
+      return;
+    }
+
+    // Original behavior for non-JSON events: truncate to 100 chars
     const content = event.content.length > 100
       ? event.content.substring(0, 100) + '...'
       : event.content;
