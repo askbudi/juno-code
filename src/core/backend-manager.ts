@@ -146,7 +146,9 @@ export class BackendManager {
         workingDirectory: options.workingDirectory,
         servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
         debug: options.config.verbose,
-        timeout: options.config.mcpTimeout || 30000,
+        timeout: options.config.mcpTimeout || 300000,
+        enableJsonStreaming: true,
+        environment: process.env,
         ...options.additionalOptions
       });
     }

@@ -454,6 +454,7 @@ export class ShellBackend implements Backend {
 
   /**
    * Parse JSON streaming events from script output
+   * Handles both generic StreamingEvent format and Claude CLI specific format
    */
   private parseAndEmitStreamingEvents(data: string, sessionId: string): void {
     // Handle partial JSON objects by maintaining a buffer
@@ -473,18 +474,32 @@ export class ShellBackend implements Backend {
       if (!trimmedLine) continue;
 
       try {
-        const event: StreamingEvent = JSON.parse(trimmedLine);
+        const jsonEvent = JSON.parse(trimmedLine);
 
-        // Convert to progress event format
-        const progressEvent: ProgressEvent = {
-          sessionId,
-          timestamp: event.timestamp ? new Date(event.timestamp) : new Date(),
-          backend: 'shell',
-          count: ++this.eventCounter,
-          type: event.type as any,
-          content: event.content,
-          metadata: event.metadata
-        };
+        // Detect format: Claude CLI or generic StreamingEvent
+        let progressEvent: ProgressEvent;
+
+        if (this.isClaudeCliEvent(jsonEvent)) {
+          // Handle Claude CLI specific format
+          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId);
+        } else if (this.isGenericStreamingEvent(jsonEvent)) {
+          // Handle generic StreamingEvent format
+          progressEvent = {
+            sessionId,
+            timestamp: jsonEvent.timestamp ? new Date(jsonEvent.timestamp) : new Date(),
+            backend: 'shell',
+            count: ++this.eventCounter,
+            type: jsonEvent.type as any,
+            content: jsonEvent.content,
+            metadata: jsonEvent.metadata
+          };
+        } else {
+          // Unknown format, skip or emit as thinking
+          if (this.config?.debug) {
+            engineLogger.debug(`Unknown JSON format: ${trimmedLine}`);
+          }
+          continue;
+        }
 
         // Emit the progress event
         this.emitProgressEvent(progressEvent).catch(error => {
@@ -512,6 +527,92 @@ export class ShellBackend implements Backend {
         }
       }
     }
+  }
+
+  /**
+   * Check if JSON event is Claude CLI format
+   */
+  private isClaudeCliEvent(event: any): boolean {
+    return event && typeof event === 'object' &&
+           event.type && ['system', 'assistant', 'result'].includes(event.type);
+  }
+
+  /**
+   * Check if JSON event is generic StreamingEvent format
+   */
+  private isGenericStreamingEvent(event: any): boolean {
+    return event && typeof event === 'object' &&
+           event.type && event.content !== undefined;
+  }
+
+  /**
+   * Convert Claude CLI event to ProgressEvent format
+   */
+  private convertClaudeEventToProgress(event: any, sessionId: string): ProgressEvent {
+    let type: ProgressEvent['type'];
+    let content: string;
+    const metadata: Record<string, any> = {};
+
+    switch (event.type) {
+      case 'system':
+        // System/init event
+        type = 'tool_start';
+        content = `Initializing Claude session`;
+        metadata.subtype = event.subtype;
+        metadata.sessionId = event.session_id;
+        metadata.model = event.model;
+        metadata.tools = event.tools;
+        metadata.cwd = event.cwd;
+        break;
+
+      case 'assistant':
+        // Assistant message event
+        type = 'thinking';
+        // Extract content from message.content array
+        if (event.message?.content && Array.isArray(event.message.content)) {
+          const textContent = event.message.content.find((c: any) => c.type === 'text');
+          content = textContent?.text || 'Processing...';
+        } else {
+          content = 'Processing...';
+        }
+        metadata.messageId = event.message?.id;
+        metadata.model = event.message?.model;
+        metadata.usage = event.message?.usage;
+        metadata.sessionId = event.session_id;
+        break;
+
+      case 'result':
+        // Result event
+        if (event.is_error || event.subtype === 'error') {
+          type = 'error';
+          content = event.result || event.error || 'Execution failed';
+        } else {
+          type = 'tool_result';
+          content = event.result || 'Execution completed';
+        }
+        metadata.subtype = event.subtype;
+        metadata.duration = event.duration_ms;
+        metadata.cost = event.total_cost_usd;
+        metadata.usage = event.usage;
+        metadata.sessionId = event.session_id;
+        break;
+
+      default:
+        // Fallback to thinking
+        type = 'thinking';
+        content = JSON.stringify(event);
+        metadata.unknownType = event.type;
+    }
+
+    return {
+      sessionId,
+      timestamp: new Date(),
+      backend: 'shell',
+      count: ++this.eventCounter,
+      type,
+      content,
+      metadata
+    };
   }
 
   /**
