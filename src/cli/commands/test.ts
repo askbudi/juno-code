@@ -129,6 +129,20 @@ class TestProgressDisplay {
   }
 
   onProgress(event: ProgressEvent): void {
+    // If this is an MCP-style formatted event, display it using MCP-style format
+    if (event.metadata?.mcpStyleFormat) {
+      const timestamp = event.timestamp.toLocaleTimeString();
+      const backend = event.backend ? `[${event.backend}]` : '';
+      const typeColor = this.getEventTypeColor(event.type);
+
+      if (this.verbose) {
+        console.log(`${chalk.gray(timestamp)} ${backend} ${typeColor(event.type)}: ${event.content}`);
+      } else {
+        console.log(`${backend} ${typeColor(event.type)}: ${event.content}`);
+      }
+      return;
+    }
+
     if (this.verbose) {
       const timestamp = event.timestamp.toLocaleTimeString();
       const content = event.content.length > 100
@@ -192,6 +206,25 @@ class TestProgressDisplay {
 
   showError(error: Error): void {
     console.log(chalk.red(`\n❌ Test operation failed: ${error.message}`));
+  }
+
+  /**
+   * Get color for event type (MCP-style)
+   */
+  private getEventTypeColor(type: string): typeof chalk.green {
+    switch (type) {
+      case 'tool_start':
+        return chalk.blue;
+      case 'tool_result':
+        return chalk.green;
+      case 'thinking':
+        return chalk.yellow;
+      case 'error':
+        return chalk.red;
+      case 'info':
+      default:
+        return chalk.white;
+    }
   }
 
   private getElapsedTime(): string {

@@ -135,12 +135,12 @@ class ProgressDisplay {
     const backend = event.backend ? `[${event.backend}]` : '';
     const toolId = event.toolId ? `{${event.toolId.split('_')[0]}}` : '';
 
-    // If this is a raw JSON event (from shell backend with outputRawJson=true),
-    // output the full JSON content without reformatting
-    if (event.metadata?.rawJson) {
-      // Output raw JSON using process.stderr.write to avoid console.error's util.inspect truncation
-      // Format: [timestamp] type: JSON
-      process.stderr.write(`[${timestamp}] ${event.type}: ${event.content}\n`);
+    // If this is an MCP-style formatted event (from shell backend with outputRawJson=true),
+    // display it using MCP-style format
+    if (event.metadata?.mcpStyleFormat) {
+      const typeColor = this.getEventTypeColor(event.type);
+      // Output MCP-style formatted content
+      writeTerminalProgress(`${chalk.gray(timestamp)} ${backend}${toolId} ${typeColor(event.type)}: ${event.content}\n`);
       return;
     }
 
@@ -217,6 +217,25 @@ class ProgressDisplay {
       // Fallback to dots for other events
       const dots = '.'.repeat((this.currentIteration % 3) + 1);
       writeTerminalProgress(chalk.gray(`\r   Processing${dots}   `));
+    }
+  }
+
+  /**
+   * Get color for event type (MCP-style)
+   */
+  private getEventTypeColor(type: string): typeof chalk.green {
+    switch (type) {
+      case 'tool_start':
+        return chalk.blue;
+      case 'tool_result':
+        return chalk.green;
+      case 'thinking':
+        return chalk.yellow;
+      case 'error':
+        return chalk.red;
+      case 'info':
+      default:
+        return chalk.white;
     }
   }
 

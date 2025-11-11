@@ -253,20 +253,23 @@ class MainProgressDisplay {
   onProgress(event: ProgressEvent): void {
     const timestamp = event.timestamp.toLocaleTimeString();
 
-    // If this is a raw JSON event (from shell backend with outputRawJson=true),
-    // output the full JSON content without truncation
-    if (event.metadata?.rawJson) {
+    // If this is an MCP-style formatted event (from shell backend with outputRawJson=true),
+    // display it using MCP-style format with timestamp and backend info
+    if (event.metadata?.mcpStyleFormat) {
+      const backend = event.backend ? `[${event.backend}]` : '';
+      const typeColor = this.getEventTypeColor(event.type);
+
       if (this.verbose) {
-        // Output full JSON in verbose mode
-        process.stderr.write(`[${timestamp}] ${event.type}: ${event.content}\n`);
+        // Verbose mode: Show MCP-style formatted output with full details
+        console.log(`${chalk.gray(timestamp)} ${backend} ${typeColor(event.type)}: ${event.content}`);
       } else {
-        // Non-verbose: still show full JSON for jq piping
-        process.stderr.write(`${event.content}\n`);
+        // Non-verbose mode: Still show MCP-style formatted output but without timestamp
+        console.log(`${backend} ${typeColor(event.type)}: ${event.content}`);
       }
       return;
     }
 
-    // Original behavior for non-JSON events: truncate to 100 chars
+    // Original behavior for non-MCP-formatted events: truncate to 100 chars
     const content = event.content.length > 100
       ? event.content.substring(0, 100) + '...'
       : event.content;
@@ -277,6 +280,25 @@ class MainProgressDisplay {
     } else {
       // Non-verbose mode: Show meaningful progress messages (always display progress callbacks)
       console.log(chalk.blue(`📡 ${event.type}: ${content}`));
+    }
+  }
+
+  /**
+   * Get color for event type (MCP-style)
+   */
+  private getEventTypeColor(type: string): typeof chalk.green {
+    switch (type) {
+      case 'tool_start':
+        return chalk.blue;
+      case 'tool_result':
+        return chalk.green;
+      case 'thinking':
+        return chalk.yellow;
+      case 'error':
+        return chalk.red;
+      case 'info':
+      default:
+        return chalk.white;
     }
   }
 
