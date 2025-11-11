@@ -21,7 +21,7 @@ import React from 'react';
 import { loadConfig } from '../../core/config.js';
 import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
-import { createBackendManager } from '../../core/backend-manager.js';
+import { createBackendManager, determineBackendType, getBackendDisplayName } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
@@ -365,8 +365,27 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Create backend manager (uses MCP backend by default)
-    const backendManager = createBackendManager();
+    // Determine backend type from request
+    const selectedBackend = determineBackendType(
+      request.backend,
+      process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
+      this.config.defaultBackend || 'mcp'
+    );
+
+    // Log backend selection if verbose
+    if (this.config.verbose) {
+      console.log(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
+    }
+
+    // Create backend manager with selected backend
+    const backendManager = createBackendManager({
+      defaultBackend: selectedBackend,
+      availableBackends: ['mcp', 'shell'],
+      backendConfigs: {
+        mcp: {},
+        shell: {}
+      }
+    });
 
     // Create execution engine
     const engine = createExecutionEngine(this.config, backendManager);
@@ -469,10 +488,23 @@ export async function mainCommandHandler(
     const promptProcessor = new PromptProcessor(options);
     const instruction = await promptProcessor.processPrompt();
 
+    // Determine backend type from options, environment variable, or config default
+    const selectedBackend = determineBackendType(
+      options.backend,
+      process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
+      config.defaultBackend || 'mcp'
+    );
+
+    // Log backend selection if verbose
+    if (options.verbose) {
+      console.log(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
+    }
+
     // Create execution request
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: options.subagent,
+      backend: selectedBackend,
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations || config.defaultMaxIterations,
       model: options.model || config.defaultModel

@@ -121,6 +121,7 @@ function setupMainCommand(program: Command): void {
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
+    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
     .action(async (options, command) => {
@@ -241,6 +242,7 @@ function setupAliases(program: Command): void {
       .argument('[prompt...]', 'Prompt text or file path')
       .option('-i, --max-iterations <number>', 'Maximum iterations', parseInt)
       .option('-m, --model <name>', 'Model to use')
+      .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
       .option('-w, --cwd <path>', 'Working directory')
       .action(async (prompt, options, command) => {
         try {

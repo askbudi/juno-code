@@ -12,6 +12,49 @@ No open issues at this time.
 ## Resolved Issues - VALIDATED FIXES ONLY
 
 <RESOLVED_ISSUE>
+   **Backend Integration CLI Option Missing**
+   **Status**: ✅ RESOLVED
+   **Date**: 2025-11-11
+   **RESOLVED_DATE**: 2025-11-11
+
+   **USER_FEEDBACK_QUOTE**: "The CLI integration for backend selection was broken. Both -b/--backend flag and JUNO_CODE_AGENT environment variable were not working properly."
+
+   **ROOT_CAUSE**: The main command handler (used when running without 'start' subcommand) was NOT implementing backend selection. It was only implemented in the start command, leaving the main execution path without backend support.
+
+   **SOLUTION_IMPLEMENTED**:
+   1. **Main Command Backend Integration**: Updated main.ts to import and use determineBackendType function
+      - Added backend selection logic to MainExecutionCoordinator.execute() method
+      - Added backend parameter to createExecutionRequest in mainCommandHandler
+      - Integrated backend parameter throughout main execution flow
+   2. **CLI Option Enhancement**: Added -b/--backend option to main command in cli.ts (line 124)
+      - Added -b/--backend option to subagent alias commands in cli.ts (line 245)
+      - Enhanced help text to document backend selection for all command types
+   3. **Type System Updates**: Updated MainCommandOptions interface to include backend field
+      - Enhanced type safety for backend parameter passing
+      - Maintained consistency with StartCommandOptions interface
+   4. **Environment Variable Support**: Ensured JUNO_CODE_AGENT environment variable works for all command types
+      - Both main command and start command now support environment variable
+      - CLI flag takes precedence over environment variable for both command types
+
+   **TEST_CRITERIA_MET**:
+   - ✅ Environment variable test: `JUNO_CODE_AGENT=shell ./dist/bin/cli.mjs -s claude -m sonnet-4.5 -i 1 -v` - WORKING (shows "Backend: Shell Scripts")
+   - ✅ CLI flag test: `./dist/bin/cli.mjs -s claude -m sonnet-4.5 -i 1 -b shell -v` - WORKING (shows "Backend: Shell Scripts")
+   - ✅ Start command with env var: `JUNO_CODE_AGENT=shell ./dist/bin/cli.mjs start -s claude -m sonnet-4.5 -i 1 -v --dry-run` - WORKING
+   - ✅ Start command with flag: `./dist/bin/cli.mjs start -s claude -m sonnet-4.5 -i 1 -b shell -v --dry-run` - WORKING
+   - ✅ Help system: `./dist/bin/cli.mjs --help` shows -b/--backend option documented
+   - ✅ Backend selection working for both main command and start subcommand
+   - ✅ Build successful: npm run build completed without errors
+   - ✅ Tests: 790 tests passed (2 unrelated test failures from existing issues)
+
+   **FILES_MODIFIED/CREATED**:
+   - Modified: src/cli/commands/main.ts (added backend support to main command handler)
+   - Modified: src/bin/cli.ts (added -b/--backend option to main command and subagent aliases)
+   - Modified: src/cli/types.ts (updated MainCommandOptions interface to include backend field)
+   - Enhanced: CLI help system with backend option documentation for all command types
+
+</RESOLVED_ISSUE>
+
+<RESOLVED_ISSUE>
    **Backend Integration System Implementation (Issue #6)**
    **Status**: ✅ RESOLVED
    **Date**: 2025-11-11
