@@ -57,20 +57,31 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-09)
+## Current Status Update (2025-11-11)
 
 **✅ 0 ACTIVE OPEN ISSUES**
-- Latest Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
+- Latest Resolution: Claude Shell Script Permission and Help Text Issues (2025-11-11)
+- Previous Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - Previous Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 - All Mac virtual environment installation scenarios working correctly
 - Bootstrap shell shim implementation completed
 - Ubuntu Python environment compatibility maintained
 
-### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-09)
+### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-11)
 
 **All Issues Resolved - Project Complete**
 
-**Recently Resolved Issues (2025-11-09):**
+**Recently Resolved Issues (2025-11-11):**
+1. ✅ Claude Shell Script Permission and Help Text Issues - RESOLVED
+   - Issue: claude.py had permission denied errors and both claude.py/codex.py didn't show help text when run without arguments
+   - Root Cause: claude.py was not executable and both scripts had prompt argument as required=True preventing help display
+   - Solution: Made claude.py executable with chmod +x, changed prompt argument to optional with manual validation
+   - Key Features: Scripts display help with --help, show helpful error without args, execute normally with prompt
+   - Test Results: All scenarios validated - help text works, no arguments shows message, execution successful
+   - Status: ✅ RESOLVED - All permission and help text issues resolved
+   - Date: 2025-11-11
+
+**Previously Resolved Issues (2025-11-09):**
 1. ✅ NPM Registry Binary Linking Issue - RESOLVED
    - Issue: After installing juno-code from npm registry, binary was linking to cli.mjs instead of juno-code.sh wrapper
    - Root Cause: generate-variants.js was creating unnecessary complexity; git tag had ANSI color codes in version string
