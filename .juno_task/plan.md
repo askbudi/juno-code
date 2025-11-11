@@ -3,10 +3,10 @@
 ## 📊 EXECUTIVE SUMMARY
 
 **🎯 CURRENT STATUS** ✅ **0 ACTIVE OPEN ISSUES**
-- **Active Open Issues**: 0 (All issues resolved as of 2025-11-10)
+- **Active Open Issues**: 0 (All issues resolved as of 2025-11-11)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Shell Script Services System Implementation completed (2025-11-10)
+- **Latest Achievement**: Claude Shell Script Permission and Help Text Issues resolved (2025-11-11)
 
 ---
 
@@ -15,11 +15,12 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-10
+**Last Updated**: 2025-11-11
 
-**✅ 0 ACTIVE OPEN ISSUES** (2025-11-10)
-- **ALL ISSUES RESOLVED**: Shell Script Services System implementation completed (2025-11-10)
-- **LATEST RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
+**✅ 0 ACTIVE OPEN ISSUES** (2025-11-11)
+- **ALL ISSUES RESOLVED**: Claude Shell Script Permission and Help Text Issues resolved (2025-11-11)
+- **LATEST RESOLUTION**: Claude Shell Script Permission and Help Text Issues (2025-11-11)
+- **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
 - **PREVIOUS RESOLUTIONS**: NPM Registry Binary Linking and ENV Damage During Transfer to Subagents (2025-11-09)
 - **PREVIOUS RESOLUTION**: ENV Variable Corruption During Transit with Path Prefixing - Fixed path resolution logic to preserve URLs (2025-11-09)
 - **PREVIOUSLY RESOLVED**: Juno-Code Branding Consistency Update - Complete rebranding from "juno-task" to "juno-code" (807/808 tests passing)
@@ -31,6 +32,16 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-11-11:**
+1. **Claude Shell Script Permission and Help Text Issues** ✅:
+   - ✅ Root Cause Identified: claude.py was not executable and both scripts had required=True for prompt preventing help display
+   - ✅ Solution: Made claude.py executable with chmod +x, changed prompt argument to optional with manual validation
+   - ✅ Scripts now properly display help text when run with --help flag
+   - ✅ Scripts show helpful error message when run without arguments instead of argparse errors
+   - ✅ Build system properly makes scripts executable in dist directory
+   - ✅ All test scenarios validated: --help works, no arguments shows helpful message, with arguments executes normally
+   - ✅ Files Modified: src/templates/services/claude.py and codex.py (prompt argument optional, manual validation added)
 
 **Recently Resolved on 2025-11-10:**
 1. **Shell Script Services System Implementation** ✅:
