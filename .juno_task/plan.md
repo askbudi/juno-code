@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-11)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Claude Shell Script Permission and Help Text Issues resolved (2025-11-11)
+- **Latest Achievement**: Claude Shell Script Flag Format Issue resolved (2025-11-11)
 
 ---
 
@@ -18,8 +18,8 @@
 **Last Updated**: 2025-11-11
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-11)
-- **ALL ISSUES RESOLVED**: Claude Shell Script Permission and Help Text Issues resolved (2025-11-11)
-- **LATEST RESOLUTION**: Claude Shell Script Permission and Help Text Issues (2025-11-11)
+- **ALL ISSUES RESOLVED**: Claude Shell Script Flag Format Issue resolved (2025-11-11)
+- **LATEST RESOLUTION**: Claude Shell Script Flag Format Issue (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
 - **PREVIOUS RESOLUTIONS**: NPM Registry Binary Linking and ENV Damage During Transfer to Subagents (2025-11-09)
 - **PREVIOUS RESOLUTION**: ENV Variable Corruption During Transit with Path Prefixing - Fixed path resolution logic to preserve URLs (2025-11-09)
@@ -34,14 +34,13 @@
 
 
 **Recently Resolved on 2025-11-11:**
-1. **Claude Shell Script Permission and Help Text Issues** ✅:
-   - ✅ Root Cause Identified: claude.py was not executable and both scripts had required=True for prompt preventing help display
-   - ✅ Solution: Made claude.py executable with chmod +x, changed prompt argument to optional with manual validation
-   - ✅ Scripts now properly display help text when run with --help flag
-   - ✅ Scripts show helpful error message when run without arguments instead of argparse errors
-   - ✅ Build system properly makes scripts executable in dist directory
-   - ✅ All test scenarios validated: --help works, no arguments shows helpful message, with arguments executes normally
-   - ✅ Files Modified: src/templates/services/claude.py and codex.py (prompt argument optional, manual validation added)
+1. **Claude Shell Script Flag Format Issue** ✅:
+   - ✅ Root Cause Identified: claude.py had argument ordering issue where prompt was added after --allowed-tools flag
+   - ✅ Solution: Fixed command argument ordering in build_claude_command method, moved prompt before --allowed-tools
+   - ✅ Claude CLI now properly recognizes prompt argument instead of treating it as tool name
+   - ✅ All existing functionality maintained while fixing the ordering issue
+   - ✅ All test scenarios validated: claude.py -p works, help text displays, scripts execute normally
+   - ✅ Files Modified: juno-task-ts/src/templates/services/claude.py (fixed command argument ordering in build_claude_command method)
 
 **Recently Resolved on 2025-11-10:**
 1. **Shell Script Services System Implementation** ✅:

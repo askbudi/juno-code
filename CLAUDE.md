@@ -60,7 +60,7 @@ The project uses a sophisticated AI workflow with:
 ## Current Status Update (2025-11-11)
 
 **✅ 0 ACTIVE OPEN ISSUES**
-- Latest Resolution: Claude Shell Script Permission and Help Text Issues (2025-11-11)
+- Latest Resolution: Claude Shell Script Flag Format Issue (2025-11-11)
 - Previous Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - Previous Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 - All Mac virtual environment installation scenarios working correctly
@@ -72,13 +72,13 @@ The project uses a sophisticated AI workflow with:
 **All Issues Resolved - Project Complete**
 
 **Recently Resolved Issues (2025-11-11):**
-1. ✅ Claude Shell Script Permission and Help Text Issues - RESOLVED
-   - Issue: claude.py had permission denied errors and both claude.py/codex.py didn't show help text when run without arguments
-   - Root Cause: claude.py was not executable and both scripts had prompt argument as required=True preventing help display
-   - Solution: Made claude.py executable with chmod +x, changed prompt argument to optional with manual validation
-   - Key Features: Scripts display help with --help, show helpful error without args, execute normally with prompt
-   - Test Results: All scenarios validated - help text works, no arguments shows message, execution successful
-   - Status: ✅ RESOLVED - All permission and help text issues resolved
+1. ✅ Claude Shell Script Flag Format Issue - RESOLVED
+   - Issue: claude.py -p 'prompt text' not working correctly due to argument ordering issue
+   - Root Cause: Prompt was being added after --allowed-tools flag, causing Claude CLI to treat prompt as tool name
+   - Solution: Fixed command argument ordering in build_claude_command method, moved prompt before --allowed-tools
+   - Key Features: claude.py -p works correctly, proper argument parsing by Claude CLI
+   - Test Results: All scenarios validated - claude.py -p works, help text displays, scripts execute normally
+   - Status: ✅ RESOLVED - Command argument ordering issue fixed
    - Date: 2025-11-11
 
 **Previously Resolved Issues (2025-11-09):**

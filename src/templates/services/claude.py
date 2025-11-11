@@ -151,7 +151,13 @@ Examples:
             "--permission-mode", args.permission_mode,
         ]
 
-        # Add allowed tools if specified
+        # Build the full prompt (auto_instruction + user prompt)
+        # IMPORTANT: Prompt must come BEFORE --allowed-tools
+        # because --allowed-tools consumes all following arguments as tool names
+        full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"
+        cmd.append(full_prompt)
+
+        # Add allowed tools if specified (AFTER the prompt)
         if args.allowed_tools:
             cmd.append("--allowed-tools")
             cmd.extend(args.allowed_tools)
@@ -177,12 +183,6 @@ Examples:
         if args.additional_args:
             additional = args.additional_args.split()
             cmd.extend(additional)
-
-        # Build the full prompt (auto_instruction + user prompt)
-        full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"
-
-        # Add the prompt as the final argument
-        cmd.append(full_prompt)
 
         return cmd
 
