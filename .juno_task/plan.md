@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-11)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Backend Integration System Implementation (Issue #6) resolved (2025-11-11)
+- **Latest Achievement**: Backend Integration CLI Option Missing resolved (2025-11-11)
 
 ---
 
@@ -18,8 +18,8 @@
 **Last Updated**: 2025-11-11
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-11)
-- **ALL ISSUES RESOLVED**: Backend Integration System Implementation (Issue #6) resolved (2025-11-11)
-- **LATEST RESOLUTION**: Backend Integration System Implementation (Issue #6) (2025-11-11)
+- **ALL ISSUES RESOLVED**: Backend Integration CLI Option Missing resolved (2025-11-11)
+- **LATEST RESOLUTION**: Backend Integration CLI Option Missing (2025-11-11)
 - **PREVIOUS RESOLUTION**: Claude Shell Script Flag Format Issue (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
 - **PREVIOUS RESOLUTIONS**: NPM Registry Binary Linking and ENV Damage During Transfer to Subagents (2025-11-09)
@@ -35,7 +35,14 @@
 
 
 **Recently Resolved on 2025-11-11:**
-1. **Backend Integration System Implementation (Issue #6)** ✅:
+1. **Backend Integration CLI Option Missing** ✅:
+   - ✅ Root Cause: The main command handler was NOT implementing backend selection, leaving main execution path without backend support
+   - ✅ Solution: Updated main.ts to add backend selection logic, added -b/--backend CLI option to main command and subagent aliases
+   - ✅ Test Results: All 4 test scenarios passing - environment variable and CLI flag work for both main command and start subcommand
+   - ✅ Files Modified: main.ts, cli.ts, types.ts - enhanced CLI help system with backend option documentation
+   - ✅ Backend selection working for all command types: main command and start subcommand
+
+2. **Backend Integration System Implementation (Issue #6)** ✅:
    - ✅ Root Need: juno-code needed flexible backend system for both MCP servers and shell script execution
    - ✅ Solution: Comprehensive backend integration system with manager, shell backend, and CLI integration
    - ✅ Backend Manager: Created src/core/backend-manager.ts with support for 'mcp' and 'shell' backends

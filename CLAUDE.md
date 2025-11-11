@@ -107,7 +107,16 @@ The project uses a sophisticated AI workflow with:
 - Test coverage must include both backend types and CLI integration
 
 **Recently Resolved Issues (2025-11-11):**
-1. ✅ Backend Integration System Implementation (Issue #6) - RESOLVED
+1. ✅ Backend Integration CLI Option Missing - RESOLVED
+   - Issue: CLI integration for backend selection was broken - both -b/--backend flag and JUNO_CODE_AGENT environment variable were not working properly
+   - Root Cause: Main command handler was NOT implementing backend selection, only start command had backend support
+   - Solution: Updated main.ts to add backend selection logic, added -b/--backend CLI option to main command and subagent aliases, updated MainCommandOptions interface
+   - Test Results: All 4 test scenarios passing - environment variable and CLI flag work for both main command and start subcommand, 790 tests passed
+   - Files Modified: main.ts, cli.ts, types.ts
+   - Status: ✅ RESOLVED - Backend selection working for all command types
+   - Date: 2025-11-11
+
+2. ✅ Backend Integration System Implementation (Issue #6) - RESOLVED
    - Issue: juno-code needed flexible backend system to support both MCP servers and shell script execution
    - Root Cause: System was limited to MCP backend only, needed support for alternative execution methods
    - Solution: Comprehensive backend integration system with manager, shell backend, and CLI integration

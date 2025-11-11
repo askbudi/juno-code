@@ -129,6 +129,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   maxIterations?: number;
   /** Model to use (subagent-specific) */
   model?: string;
+  /** Backend to use (mcp, shell) */
+  backend?: 'mcp' | 'shell';
   /** Interactive mode for typing prompts */
   interactive?: boolean;
   /** Launch TUI prompt editor */
