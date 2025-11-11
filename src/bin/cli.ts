@@ -6,6 +6,11 @@
  * headless support, comprehensive error handling, and real-time progress tracking.
  */
 
+// Configure util.inspect to not truncate long strings in JSON output
+import { inspect } from 'node:util';
+inspect.defaultOptions.maxStringLength = Infinity;
+inspect.defaultOptions.breakLength = Infinity;
+
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from '../core/config.js';

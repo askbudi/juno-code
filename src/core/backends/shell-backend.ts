@@ -37,6 +37,9 @@ export interface ShellBackendConfig {
 
   /** Enable JSON streaming parsing */
   enableJsonStreaming?: boolean;
+
+  /** Output full JSON format instead of simplified messages (for verbose mode) */
+  outputRawJson?: boolean;
 }
 
 /**
@@ -486,7 +489,8 @@ export class ShellBackend implements Backend {
 
         if (this.isClaudeCliEvent(jsonEvent)) {
           // Handle Claude CLI specific format
-          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId);
+          // Pass the original trimmedLine for raw JSON output mode
+          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, trimmedLine);
         } else if (this.isGenericStreamingEvent(jsonEvent)) {
           // Handle generic StreamingEvent format
           progressEvent = {
@@ -553,11 +557,46 @@ export class ShellBackend implements Backend {
   /**
    * Convert Claude CLI event to ProgressEvent format
    */
-  private convertClaudeEventToProgress(event: any, sessionId: string): ProgressEvent {
+  private convertClaudeEventToProgress(event: any, sessionId: string, originalLine?: string): ProgressEvent {
     let type: ProgressEvent['type'];
     let content: string;
     const metadata: Record<string, any> = {};
 
+    // If outputRawJson is enabled, output the full JSON instead of simplified messages
+    if (this.config?.outputRawJson) {
+      // Determine event type based on Claude CLI format
+      switch (event.type) {
+        case 'system':
+          type = 'tool_start';
+          break;
+        case 'assistant':
+          type = 'thinking';
+          break;
+        case 'result':
+          type = event.is_error || event.subtype === 'error' ? 'error' : 'tool_result';
+          break;
+        default:
+          type = 'thinking';
+      }
+
+      // Use the original JSON line if available to preserve exact formatting
+      // This ensures we output the exact JSON from claude.py without any re-processing
+      content = originalLine || JSON.stringify(event);
+      metadata.rawJson = true;
+      metadata.originalType = event.type;
+
+      return {
+        sessionId,
+        timestamp: new Date(),
+        backend: 'shell',
+        count: ++this.eventCounter,
+        type,
+        content,
+        metadata
+      };
+    }
+
+    // Original simplified format (when outputRawJson is false/undefined)
     switch (event.type) {
       case 'system':
         // System/init event

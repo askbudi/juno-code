@@ -148,6 +148,7 @@ export class BackendManager {
         debug: options.config.verbose,
         timeout: options.config.mcpTimeout || 300000,
         enableJsonStreaming: true,
+        outputRawJson: options.config.verbose, // Output full JSON in verbose mode
         environment: process.env,
         ...options.additionalOptions
       });

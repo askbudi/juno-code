@@ -363,7 +363,13 @@ export class ProgressEventFormatter {
     const backend = event.backend ? `[${event.backend}]` : '';
     const toolId = event.toolId ? `{${event.toolId}}` : '';
 
-    return `${chalk.gray(timestamp)} ${backend}${toolId} ${typeColor(event.type)}: ${event.content}`;
+    // If this is a raw JSON event (from shell backend with outputRawJson=true),
+    // output the full content without truncation
+    const content = event.metadata?.rawJson
+      ? event.content  // Full JSON output
+      : event.content; // Original content (already formatted)
+
+    return `${chalk.gray(timestamp)} ${backend}${toolId} ${typeColor(event.type)}: ${content}`;
   }
 
   /**
