@@ -964,7 +964,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" >/**<span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" ></span></span></span>
-<span class="cstat-no" title="statement not covered" > * Simplified Init command implementation for juno-task-ts CLI</span>
+<span class="cstat-no" title="statement not covered" > * Simplified Init command implementation for juno-code CLI</span>
 <span class="cstat-no" title="statement not covered" > *</span>
 <span class="cstat-no" title="statement not covered" > * Minimal flow: Project Root → Main Task → Editor Selection → Git Setup → Save</span>
 <span class="cstat-no" title="statement not covered" > * Removes all complex features: token counting, cost calculation, character limits, etc.</span>
@@ -1021,7 +1021,7 @@
 <span class="cstat-no" title="statement not covered" >   * Simplified gather method implementing the minimal flow</span>
 <span class="cstat-no" title="statement not covered" >   */</span>
 <span class="cstat-no" title="statement not covered" >  async gather(): Promise&lt;InitializationContext&gt; {</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.blue.bold('\n🚀 Juno Task Project Initialization\n'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.blue.bold('\n🚀 Juno Code Project Initialization\n'));</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    // 1. Project Root</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.yellow('📁 Step 1: Project Directory'));</span>
@@ -1220,8 +1220,8 @@
 <span class="cstat-no" title="statement not covered" >## Next Steps</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >1. Review the main task above</span>
-<span class="cstat-no" title="statement not covered" >2. Run \`juno-task start\` to begin execution</span>
-<span class="cstat-no" title="statement not covered" >3. Or run \`juno-task -s claude\` to use the main command</span>
+<span class="cstat-no" title="statement not covered" >2. Run \`juno-code start\` to begin execution</span>
+<span class="cstat-no" title="statement not covered" >3. Or run \`juno-code -s claude\` to use the main command</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >${variables.GIT_URL ? `\n## Git Repository\n${variables.GIT_URL}` : ''}</span>
 <span class="cstat-no" title="statement not covered" >`;</span>
@@ -1242,8 +1242,8 @@
 <span class="cstat-no" title="statement not covered" >### Getting Started</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >1. Review the main task above</span>
-<span class="cstat-no" title="statement not covered" >2. Use \`juno-task start\` to execute with this task</span>
-<span class="cstat-no" title="statement not covered" >3. Use \`juno-task -s claude\` for quick execution</span>
+<span class="cstat-no" title="statement not covered" >2. Use \`juno-code start\` to execute with this task</span>
+<span class="cstat-no" title="statement not covered" >3. Use \`juno-code -s claude\` for quick execution</span>
 <span class="cstat-no" title="statement not covered" >`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);</span>
@@ -1255,21 +1255,21 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >## Getting Started</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >This project uses juno-task for AI-powered development.</span>
+<span class="cstat-no" title="statement not covered" >This project uses juno-code for AI-powered development.</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >### Prerequisites</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >- Node.js installed</span>
-<span class="cstat-no" title="statement not covered" >- juno-task CLI installed</span>
+<span class="cstat-no" title="statement not covered" >- juno-code CLI installed</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >### Quick Start</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >\`\`\`bash</span>
 <span class="cstat-no" title="statement not covered" ># Start task execution</span>
-<span class="cstat-no" title="statement not covered" >juno-task start</span>
+<span class="cstat-no" title="statement not covered" >juno-code start</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" ># Or use main command</span>
-<span class="cstat-no" title="statement not covered" >juno-task -s claude</span>
+<span class="cstat-no" title="statement not covered" >juno-code -s claude</span>
 <span class="cstat-no" title="statement not covered" >\`\`\`</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >### Project Structure</span>
@@ -1290,7 +1290,7 @@
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >---</span>
 <span class="cstat-no" title="statement not covered" ></span>
-<span class="cstat-no" title="statement not covered" >Created with juno-task on ${variables.CURRENT_DATE}</span>
+<span class="cstat-no" title="statement not covered" >Created with juno-code on ${variables.CURRENT_DATE}</span>
 <span class="cstat-no" title="statement not covered" >`;</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    await fs.writeFile(path.join(targetDirectory, 'README.md'), readmeContent);</span>
@@ -1302,11 +1302,11 @@
 <span class="cstat-no" title="statement not covered" >  private printNextSteps(targetDirectory: string): void {</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.blue('\n🎯 Next Steps:'));</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.white(`   cd ${targetDirectory}`));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task start           # Start task execution'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-task -s claude       # Quick execution with Claude'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code start           # Start task execution'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.white('   juno-code -s claude       # Quick execution with Claude'));</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.gray('\n💡 Tips:'));</span>
 <span class="cstat-no" title="statement not covered" >    console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.gray('   - Use "juno-task --help" to see all available commands'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.gray('   - Use "juno-code --help" to see all available commands'));</span>
 <span class="cstat-no" title="statement not covered" >  }</span>
 <span class="cstat-no" title="statement not covered" >}</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -1365,7 +1365,7 @@
 <span class="cstat-no" title="statement not covered" >  command: Command</span>
 <span class="cstat-no" title="statement not covered" >): Promise&lt;void&gt; {</span>
 <span class="cstat-no" title="statement not covered" >  try {</span>
-<span class="cstat-no" title="statement not covered" >    console.log(chalk.blue.bold('🎯 Juno Task - Simplified Initialization'));</span>
+<span class="cstat-no" title="statement not covered" >    console.log(chalk.blue.bold('🎯 Juno Code - Simplified Initialization'));</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >    let context: InitializationContext;</span>
 <span class="cstat-no" title="statement not covered" ></span>
@@ -1420,7 +1420,7 @@
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

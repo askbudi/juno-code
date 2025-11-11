@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">81.25% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>39/48</span>
+                <span class='fraction'>0/48</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">42.85% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>3/7</span>
+                <span class='fraction'>0/1</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">60% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>3/5</span>
+                <span class='fraction'>0/1</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">81.25% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>39/48</span>
+                <span class='fraction'>0/48</span>
             </div>
         
             
@@ -61,7 +61,7 @@
             </div>
         </template>
     </div>
-    <div class='status-line medium'></div>
+    <div class='status-line low'></div>
     <pre><table class="coverage">
 <tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
 <a name='L2'></a><a href='#L2'>2</a>
@@ -110,44 +110,7 @@
 <a name='L45'></a><a href='#L45'>45</a>
 <a name='L46'></a><a href='#L46'>46</a>
 <a name='L47'></a><a href='#L47'>47</a>
-<a name='L48'></a><a href='#L48'>48</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
+<a name='L48'></a><a href='#L48'>48</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -157,44 +120,81 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-yes">1x</span></td><td class="text"><pre class="prettyprint lang-js">/**
- * CLI Error Classes
- */
-&nbsp;
-import { JunoTaskError, RecoveryAction, RecoveryActionType } from './base';
-import { ErrorCategory } from './categories';
-import { ErrorCode } from './codes';
-import type { ErrorContext } from './context';
-&nbsp;
-export abstract class CLIError extends JunoTaskError {
-  public abstract readonly code: ErrorCode;
-  public readonly category = ErrorCategory.CLI;
-}
-&nbsp;
-export class CommandNotFoundError extends CLIError {
-  public readonly code = ErrorCode.CLI_COMMAND_NOT_FOUND;
-&nbsp;
-  constructor(command: string, availableCommands?: readonly string[], options?: { context?: Partial&lt;ErrorContext&gt;; cause?: Error }) {
-    let message = `Command not found: ${command}`;
-    if (availableCommands?.length) {
-      message += `. Available commands: ${availableCommands.join(', ')}`;
-    }
-&nbsp;
-    super(message, {
-      code: ErrorCode.CLI_COMMAND_NOT_FOUND,
-      context: { ...<span class="branch-0 cbranch-no" title="branch not covered" >options?.context, m</span>etadata: { command, availableCommands, ...<span class="branch-0 cbranch-no" title="branch not covered" >options?.context?.metadata }</span>},
-      cause: <span class="branch-0 cbranch-no" title="branch not covered" >options?.cause,</span>
-      recoveryActions: [
-        { id: 'suggest_similar_command', description: 'Suggest similar commands', type: RecoveryActionType.FALLBACK, canAutomate: true, successProbability: 0.7 }
-      ]
-    });
-  }
-}
-&nbsp;
-export class InvalidArgumentsError extends CLIError {
-  public readonly <span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >code = ErrorCode.CLI_INVALID_ARGUMENTS;</span></span>
-&nbsp;
-<span class="fstat-no" title="function not covered" >  constructor(command: string, invalidArgs: readonly string[], options?: { context?: Partial&lt;ErrorContext&gt;; cause?: Error }) {</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >/**</span></span></span>
+<span class="cstat-no" title="statement not covered" > * CLI Error Classes</span>
+<span class="cstat-no" title="statement not covered" > */</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >import { JunoTaskError, RecoveryAction, RecoveryActionType } from './base';</span>
+<span class="cstat-no" title="statement not covered" >import { ErrorCategory } from './categories';</span>
+<span class="cstat-no" title="statement not covered" >import { ErrorCode } from './codes';</span>
+<span class="cstat-no" title="statement not covered" >import type { ErrorContext } from './context';</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >export abstract class CLIError extends JunoTaskError {</span>
+<span class="cstat-no" title="statement not covered" >  public abstract readonly code: ErrorCode;</span>
+<span class="cstat-no" title="statement not covered" >  public readonly category = ErrorCategory.CLI;</span>
+<span class="cstat-no" title="statement not covered" >}</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >export class CommandNotFoundError extends CLIError {</span>
+<span class="cstat-no" title="statement not covered" >  public readonly code = ErrorCode.CLI_COMMAND_NOT_FOUND;</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >  constructor(command: string, availableCommands?: readonly string[], options?: { context?: Partial&lt;ErrorContext&gt;; cause?: Error }) {</span>
+<span class="cstat-no" title="statement not covered" >    let message = `Command not found: ${command}`;</span>
+<span class="cstat-no" title="statement not covered" >    if (availableCommands?.length) {</span>
+<span class="cstat-no" title="statement not covered" >      message += `. Available commands: ${availableCommands.join(', ')}`;</span>
+<span class="cstat-no" title="statement not covered" >    }</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >    super(message, {</span>
+<span class="cstat-no" title="statement not covered" >      code: ErrorCode.CLI_COMMAND_NOT_FOUND,</span>
+<span class="cstat-no" title="statement not covered" >      context: { ...options?.context, metadata: { command, availableCommands, ...options?.context?.metadata }},</span>
+<span class="cstat-no" title="statement not covered" >      cause: options?.cause,</span>
+<span class="cstat-no" title="statement not covered" >      recoveryActions: [</span>
+<span class="cstat-no" title="statement not covered" >        { id: 'suggest_similar_command', description: 'Suggest similar commands', type: RecoveryActionType.FALLBACK, canAutomate: true, successProbability: 0.7 }</span>
+<span class="cstat-no" title="statement not covered" >      ]</span>
+<span class="cstat-no" title="statement not covered" >    });</span>
+<span class="cstat-no" title="statement not covered" >  }</span>
+<span class="cstat-no" title="statement not covered" >}</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >export class InvalidArgumentsError extends CLIError {</span>
+<span class="cstat-no" title="statement not covered" >  public readonly code = ErrorCode.CLI_INVALID_ARGUMENTS;</span>
+<span class="cstat-no" title="statement not covered" ></span>
+<span class="cstat-no" title="statement not covered" >  constructor(command: string, invalidArgs: readonly string[], options?: { context?: Partial&lt;ErrorContext&gt;; cause?: Error }) {</span>
 <span class="cstat-no" title="statement not covered" >    super(`Invalid arguments for command '${command}': ${invalidArgs.join(', ')}`, {</span>
 <span class="cstat-no" title="statement not covered" >      code: ErrorCode.CLI_INVALID_ARGUMENTS,</span>
 <span class="cstat-no" title="statement not covered" >      context: { ...options?.context, metadata: { command, invalidArgs, ...options?.context?.metadata }},</span>
@@ -204,14 +204,14 @@ export class InvalidArgumentsError extends CLIError {
 <span class="cstat-no" title="statement not covered" >      ]</span>
 <span class="cstat-no" title="statement not covered" >    });</span>
 <span class="cstat-no" title="statement not covered" >  }</span>
-}</pre></td></tr></table></pre>
+<span class="cstat-no" title="statement not covered" >}</span></pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->
             </div><!-- /wrapper -->
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../prettify.js"></script>
         <script>

@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">72.82% </span>
+                <span class="strong">72.23% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>493/677</span>
+                <span class='fraction'>489/677</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">78.26% </span>
+                <span class="strong">80% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>54/69</span>
+                <span class='fraction'>56/70</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">64.28% </span>
+                <span class="strong">75% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>18/28</span>
+                <span class='fraction'>21/28</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">72.82% </span>
+                <span class="strong">72.23% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>493/677</span>
+                <span class='fraction'>489/677</span>
             </div>
         
             
@@ -857,13 +857,13 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">28x</span>
-<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-yes">28x</span>
 <span class="cline-any cline-yes">28x</span>
 <span class="cline-any cline-yes">28x</span>
@@ -999,10 +999,10 @@
 <span class="cline-any cline-yes">254x</span>
 <span class="cline-any cline-yes">254x</span>
 <span class="cline-any cline-yes">56x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
@@ -1416,7 +1416,7 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span></td><td class="text"><pre class="prettyprint lang-js">/**
- * CLI Framework Module for juno-task-ts
+ * CLI Framework Module for juno-code
  *
  * Comprehensive CLI framework implementation providing command registration,
  * routing, validation, error handling, and execution management. This module
@@ -1474,23 +1474,23 @@ export class CLIFramework {
         flags: '-v, --verbose',
         description: 'Enable verbose output with detailed progress',
         defaultValue: false,
-        env: 'JUNO_TASK_VERBOSE'
+        env: 'JUNO_CODE_VERBOSE'
       },
       {
         flags: '-q, --quiet',
         description: 'Disable rich formatting, use plain text',
         defaultValue: false,
-        env: 'JUNO_TASK_QUIET'
+        env: 'JUNO_CODE_QUIET'
       },
       {
         flags: '-c, --config &lt;path&gt;',
         description: 'Configuration file path (.json, .toml, pyproject.toml)',
-        env: 'JUNO_TASK_CONFIG'
+        env: 'JUNO_CODE_CONFIG'
       },
       {
         flags: '--log-file &lt;path&gt;',
         description: 'Log file path (auto-generated if not specified)',
-        env: 'JUNO_TASK_LOG_FILE'
+        env: 'JUNO_CODE_LOG_FILE'
       },
       {
         flags: '--no-color',
@@ -1501,24 +1501,24 @@ export class CLIFramework {
         description: 'Log level for output (error, warn, info, debug, trace)',
         defaultValue: 'info',
         choices: ['error', 'warn', 'info', 'debug', 'trace'],
-        env: 'JUNO_TASK_LOG_LEVEL'
+        env: 'JUNO_CODE_LOG_LEVEL'
       },
       {
         flags: '-s, --subagent &lt;type&gt;',
         description: 'Subagent to use',
-        env: 'JUNO_TASK_SUBAGENT'
+        env: 'JUNO_CODE_SUBAGENT'
       },
       {
         flags: '--max-iterations &lt;number&gt;',
         description: 'Maximum iterations (-1 for unlimited)',
         defaultValue: undefined,
-        env: 'JUNO_TASK_MAX_ITERATIONS'
+        env: 'JUNO_CODE_MAX_ITERATIONS'
       },
       {
         flags: '--mcp-timeout &lt;number&gt;',
         description: 'MCP server timeout in milliseconds',
         defaultValue: undefined,
-        env: 'JUNO_TASK_MCP_TIMEOUT'
+        env: 'JUNO_CODE_MCP_TIMEOUT'
       }
     ];
 &nbsp;
@@ -1545,9 +1545,9 @@ export class CLIFramework {
     // Configure help formatting
     this.program.configureHelp({
       sortSubcommands: true,
-      subcommandTerm: <span class="fstat-no" title="function not covered" >(cmd) =&gt; cmd.name() + ' ' + cmd.usage(),</span>
-      commandUsage: <span class="fstat-no" title="function not covered" >(cmd) =&gt; cmd.name() + ' ' + cmd.usage(),</span>
-      commandDescription: <span class="fstat-no" title="function not covered" >(cmd) =&gt; cmd.description(),</span>
+      subcommandTerm: (cmd) =&gt; cmd.name() + ' ' + cmd.usage(),
+      commandUsage: (cmd) =&gt; cmd.name() + ' ' + cmd.usage(),
+      commandDescription: (cmd) =&gt; cmd.description(),
     });
   }
 &nbsp;
@@ -1675,10 +1675,10 @@ export class CLIFramework {
     // Add parser for numeric options
     if (option.flags.includes('--max-iterations') || option.flags.includes('--mcp-timeout') || option.flags.includes('--mcp-retries')) {
       opt.argParser((value: string) =&gt; {
-        const num = parseInt(value, 10);
-        if (isNaN(num)) {
-          throw new Error(`Invalid number: ${value}`);
-<span class="branch-0 cbranch-no" title="branch not covered" >        }</span>
+<span class="cstat-no" title="statement not covered" >        const num = parseInt(value, 10);</span>
+<span class="cstat-no" title="statement not covered" >        if (isNaN(num)) {</span>
+<span class="cstat-no" title="statement not covered" >          throw new Error(`Invalid number: ${value}`);</span>
+<span class="cstat-no" title="statement not covered" >        }</span>
 <span class="cstat-no" title="statement not covered" >        return num;</span>
       });
     }
@@ -1844,7 +1844,7 @@ export class CLIFramework {
 <span class="cstat-no" title="statement not covered" >        }</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >        if (error.showHelp) {</span>
-<span class="cstat-no" title="statement not covered" >          console.error(chalk.gray(`\n   Use 'juno-task ${commandName} --help' for usage information`));</span>
+<span class="cstat-no" title="statement not covered" >          console.error(chalk.gray(`\n   Use 'juno-code ${commandName} --help' for usage information`));</span>
 <span class="cstat-no" title="statement not covered" >        }</span>
 <span class="cstat-no" title="statement not covered" ></span>
 <span class="cstat-no" title="statement not covered" >        const exitCode = Object.values(EXIT_CODES).includes((error as any).code)</span>
@@ -1911,7 +1911,7 @@ export class CLIFramework {
     try {
       await this.program.parseAsync(argv<span class="branch-0 cbranch-no" title="branch not covered" >);</span>
     } catch (error) {
-      await this.handleCommandError(error, 'juno-task', {});
+      await this.handleCommandError(error, 'juno-code', {});
     }
   }
 &nbsp;
@@ -2098,7 +2098,7 @@ export const defaultCLIFramework = new CLIFramework();</pre></td></tr></table></
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-28T21:18:10.071Z
+                at 2025-11-11T02:23:57.042Z
             </div>
         <script src="../prettify.js"></script>
         <script>
