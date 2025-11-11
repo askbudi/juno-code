@@ -44,9 +44,20 @@ export interface ConfigSchema {
 }
 
 /**
- * Standard JSON configuration files to validate
+ * Backend type for conditional validation
  */
-const CONFIG_SCHEMAS: ConfigSchema[] = [
+type BackendType = 'mcp' | 'shell';
+
+/**
+ * Standard JSON configuration files to validate
+ * Note: MCP configuration is only required for MCP backend
+ */
+function getConfigSchemas(backendType: BackendType): ConfigSchema[] {
+  const schemas: ConfigSchema[] = [];
+
+  // Only add MCP configuration validation if using MCP backend
+  if (backendType === 'mcp') {
+    schemas.push(
   {
     file: '.juno_task/mcp.json',
     required: true,
@@ -98,8 +109,11 @@ const CONFIG_SCHEMAS: ConfigSchema[] = [
         return { isValid: errors.length === 0, errors, warnings };
       }
     }
-  },
-  {
+    });
+  }
+
+  // Always add project configuration validation regardless of backend
+  schemas.push({
     file: '.juno_task/config.json',
     required: false,
     schema: {
@@ -131,8 +145,10 @@ const CONFIG_SCHEMAS: ConfigSchema[] = [
         return { isValid: errors.length === 0, errors, warnings };
       }
     }
-  }
-];
+  });
+
+  return schemas;
+}
 
 /**
  * Validate a single JSON file
@@ -290,12 +306,15 @@ async function validateJSONFile(configSchema: ConfigSchema, baseDir: string): Pr
 /**
  * Validate all JSON configuration files
  */
-export async function validateJSONConfigs(baseDir: string = process.cwd()): Promise<ValidationResult> {
+export async function validateJSONConfigs(baseDir: string = process.cwd(), backendType: BackendType = 'mcp'): Promise<ValidationResult> {
   const allErrors: ValidationError[] = [];
   const allWarnings: ValidationWarning[] = [];
 
+  // Get schemas based on backend type
+  const configSchemas = getConfigSchemas(backendType);
+
   // Validate each configuration file
-  for (const configSchema of CONFIG_SCHEMAS) {
+  for (const configSchema of configSchemas) {
     const result = await validateJSONFile(configSchema, baseDir);
     allErrors.push(...result.errors);
     allWarnings.push(...result.warnings);
@@ -423,8 +442,36 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
   }
 
   try {
+    // Determine backend type from CLI arguments and environment variables
+    // This logic mirrors the backend determination in the CLI
+    let backendType: BackendType = 'mcp'; // default
+
+    // Check CLI arguments for backend flag
+    const backendArgIndex = process.argv.findIndex(arg => arg === '-b' || arg === '--backend');
+    if (backendArgIndex !== -1 && process.argv[backendArgIndex + 1]) {
+      const cliBackend = process.argv[backendArgIndex + 1].toLowerCase().trim();
+      if (cliBackend === 'shell' || cliBackend === 'mcp') {
+        backendType = cliBackend as BackendType;
+      }
+    }
+
+    // Check environment variables if no CLI backend specified
+    if (backendType === 'mcp') { // only override default if not set via CLI
+      const envBackend = process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND || process.env.JUNO_TASK_BACKEND;
+      if (envBackend) {
+        const normalized = envBackend.toLowerCase().trim();
+        if (normalized === 'shell' || normalized === 'mcp') {
+          backendType = normalized as BackendType;
+        }
+      }
+    }
+
+    if (verbose) {
+      console.log(chalk.gray(`   Backend: ${backendType} (${backendType === 'mcp' ? 'validating MCP configuration' : 'skipping MCP configuration'})`));
+    }
+
     // Run validation
-    const result = await validateJSONConfigs(baseDir);
+    const result = await validateJSONConfigs(baseDir, backendType);
 
     // Display results to console
     displayValidationResults(result);

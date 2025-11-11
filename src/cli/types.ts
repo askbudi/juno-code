@@ -6,7 +6,7 @@
  */
 
 import { Command } from 'commander';
-import { SubagentType, SessionStatus, LogLevel, JunoTaskConfig } from '../types/index';
+import { SubagentType, SessionStatus, LogLevel, BackendType, JunoTaskConfig } from '../types/index';
 
 // ============================================================================
 // Command Structure Types
@@ -163,6 +163,8 @@ export interface InitCommandOptions extends GlobalCLIOptions {
 export interface StartCommandOptions extends GlobalCLIOptions {
   /** Subagent to use (optional override of config default) */
   subagent?: SubagentType;
+  /** Backend to use (mcp or shell) */
+  backend?: BackendType;
   /** Maximum iterations */
   maxIterations?: number;
   /** Model to use */
@@ -552,6 +554,8 @@ export class TemplateError extends CLIError {
 export const ENVIRONMENT_MAPPINGS = {
   // Core options (new JUNO_CODE_* names)
   JUNO_CODE_SUBAGENT: 'subagent',
+  JUNO_CODE_AGENT: 'backend',
+  JUNO_CODE_BACKEND: 'backend',
   JUNO_CODE_PROMPT: 'prompt',
   JUNO_CODE_CWD: 'cwd',
   JUNO_CODE_MAX_ITERATIONS: 'maxIterations',

@@ -397,6 +397,7 @@ describe('Configuration Validation', () => {
     it('should validate complete configuration', () => {
       const config = {
         defaultSubagent: 'claude',
+        defaultBackend: 'mcp',
         defaultMaxIterations: 50,
         logLevel: 'info',
         verbose: false,

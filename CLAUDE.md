@@ -60,7 +60,8 @@ The project uses a sophisticated AI workflow with:
 ## Current Status Update (2025-11-11)
 
 **✅ 0 ACTIVE OPEN ISSUES**
-- Latest Resolution: Claude Shell Script Flag Format Issue (2025-11-11)
+- Latest Resolution: Backend Integration System Implementation (Issue #6) (2025-11-11)
+- Previous Resolution: Claude Shell Script Flag Format Issue (2025-11-11)
 - Previous Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - Previous Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 - All Mac virtual environment installation scenarios working correctly
@@ -71,8 +72,58 @@ The project uses a sophisticated AI workflow with:
 
 **All Issues Resolved - Project Complete**
 
+## Backend Integration System Learnings (2025-11-11)
+
+### **Critical Patterns & Architecture**
+
+**Backend Manager Pattern:**
+- CRITICAL: Use factory pattern with lazy loading for backend implementations
+- Abstract Backend interface enforces consistent API across all backend types
+- Resource cleanup must be implemented in all backends to prevent memory leaks
+- Backend availability checking prevents runtime failures
+
+**Shell Backend Implementation:**
+- Process management requires timeout handling and proper signal cleanup
+- JSON streaming requires buffering for partial objects - use line-by-line parsing
+- Environment variable passing pattern: JUNO_* prefix for all script variables
+- Script discovery follows priority: specific scripts → generic scripts → error
+
+**CLI Integration Pattern:**
+- CLI arguments take precedence over environment variables over defaults
+- Help text must document all options with examples for user clarity
+- Validate backend types early to provide clear error messages
+- Support both long and short forms: `-b` and `--backend`
+
+**JSON Streaming Architecture:**
+- Buffer incomplete JSON lines to handle streaming output properly
+- Convert shell script JSON events to internal progress event format
+- Emit thinking events for non-JSON output to maintain visibility
+- Use event counter for ordering and debugging
+
+**Critical Implementation Notes:**
+- Backend interface must support progress callbacks for real-time feedback
+- Shell backend requires both Python and shell script support
+- Error handling should provide specific guidance (script not found, permissions, etc.)
+- Test coverage must include both backend types and CLI integration
+
 **Recently Resolved Issues (2025-11-11):**
-1. ✅ Claude Shell Script Flag Format Issue - RESOLVED
+1. ✅ Backend Integration System Implementation (Issue #6) - RESOLVED
+   - Issue: juno-code needed flexible backend system to support both MCP servers and shell script execution
+   - Root Cause: System was limited to MCP backend only, needed support for alternative execution methods
+   - Solution: Comprehensive backend integration system with manager, shell backend, and CLI integration
+   - Key Features:
+     * Backend Manager (src/core/backend-manager.ts) with 'mcp' and 'shell' backend support
+     * Shell Backend (src/core/backends/shell-backend.ts) for executing scripts from ~/.juno_code/services/
+     * CLI Integration with -b/--backend option for backend selection
+     * Environment variable support (JUNO_CODE_AGENT) for default backend configuration
+     * Dynamic script detection (subagent-specific and fallback scripts)
+     * JSON streaming support with progress event conversion
+   - Integration: Enhanced start command, engine integration, comprehensive help documentation
+   - Test Results: Build successful, 755 tests passed, CLI help documents all backend options
+   - Status: ✅ RESOLVED - Full backend integration system operational
+   - Date: 2025-11-11
+
+2. ✅ Claude Shell Script Flag Format Issue - RESOLVED
    - Issue: claude.py -p 'prompt text' not working correctly due to argument ordering issue
    - Root Cause: Prompt was being added after --allowed-tools flag, causing Claude CLI to treat prompt as tool name
    - Solution: Fixed command argument ordering in build_claude_command method, moved prompt before --allowed-tools

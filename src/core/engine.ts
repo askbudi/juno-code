@@ -17,6 +17,7 @@ import type {
   JunoTaskConfig,
   SubagentType,
   ProgressEventType,
+  BackendType,
 } from '../types/index';
 import type {
   MCPClient,
@@ -32,6 +33,7 @@ import {
 } from '../mcp/errors';
 import { executeHook } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
+import { BackendManager, type Backend, determineBackendType } from './backend-manager.js';
 
 // =============================================================================
 // Type Definitions
@@ -49,6 +51,9 @@ export interface ExecutionRequest {
 
   /** Subagent to use for execution */
   readonly subagent: SubagentType;
+
+  /** Backend to use for execution */
+  readonly backend: BackendType;
 
   /** Working directory for execution */
   readonly workingDirectory: string;
@@ -70,6 +75,9 @@ export interface ExecutionRequest {
 
   /** Request priority level */
   readonly priority?: 'low' | 'normal' | 'high';
+
+  /** MCP server name (for MCP backend) */
+  readonly mcpServerName?: string;
 }
 
 /**
@@ -262,8 +270,8 @@ export interface ExecutionEngineConfig {
   /** Base configuration */
   readonly config: JunoTaskConfig;
 
-  /** MCP client instance */
-  readonly mcpClient: MCPClient;
+  /** Backend manager instance */
+  readonly backendManager: BackendManager;
 
   /** Error recovery configuration */
   readonly errorRecovery: ErrorRecoveryConfig;
@@ -599,10 +607,7 @@ export class ExecutionEngine extends EventEmitter {
    * Setup error handling for the engine
    */
   private setupErrorHandling(): void {
-    this.engineConfig.mcpClient.on('connection:error', (error: Error) => {
-      this.emit('engine:error', error);
-    });
-
+    // Backend-agnostic error handling
     process.on('uncaughtException', (error) => {
       this.emit('engine:uncaught-exception', error);
     });
@@ -616,7 +621,27 @@ export class ExecutionEngine extends EventEmitter {
    * Setup progress tracking for the engine
    */
   private setupProgressTracking(): void {
-    this.engineConfig.mcpClient.onProgress(async (event: ProgressEvent) => {
+    // Progress tracking will be set up when backend is initialized
+    // The backend manager will handle progress callbacks
+  }
+
+  /**
+   * Initialize backend for execution request
+   */
+  private async initializeBackend(request: ExecutionRequest): Promise<void> {
+    const backend = await this.engineConfig.backendManager.selectBackend({
+      type: request.backend,
+      config: this.engineConfig.config,
+      workingDirectory: request.workingDirectory,
+      mcpServerName: request.mcpServerName || this.engineConfig.config.mcpServerName,
+      additionalOptions: {
+        sessionId: request.requestId,
+        timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout,
+      }
+    });
+
+    // Set up progress tracking for the selected backend
+    backend.onProgress(async (event: ProgressEvent) => {
       try {
         // Process through configured processors
         for (const processor of this.engineConfig.progressConfig.processors) {
@@ -633,6 +658,8 @@ export class ExecutionEngine extends EventEmitter {
         this.emit('progress:error', { event, error });
       }
     });
+
+    engineLogger.info(`Initialized ${backend.name} backend for execution`);
   }
 
   /**
@@ -749,6 +776,9 @@ export class ExecutionEngine extends EventEmitter {
     context.status = ExecutionStatus.RUNNING;
     context.sessionContext = { ...context.sessionContext, state: 'active' as any };
 
+    // Initialize backend for this execution request
+    await this.initializeBackend(context.request);
+
     // Execute START_RUN hook
     try {
       if (this.engineConfig.config.hooks) {
@@ -760,6 +790,7 @@ export class ExecutionEngine extends EventEmitter {
             sessionId: context.sessionContext.sessionId,
             requestId: context.request.requestId,
             subagent: context.request.subagent,
+            backend: context.request.backend,
             maxIterations: context.request.maxIterations,
             instruction: context.request.instruction,
           }
@@ -896,7 +927,7 @@ export class ExecutionEngine extends EventEmitter {
       };
 
     try {
-      const toolResult = await this.engineConfig.mcpClient.callTool(toolRequest);
+      const toolResult = await this.engineConfig.backendManager.execute(toolRequest);
 
       const iterationEnd = new Date();
       const duration = iterationEnd.getTime() - iterationStart.getTime();
@@ -1411,16 +1442,16 @@ interface ExecutionContext {
  * Create an execution engine with default configuration
  *
  * @param config - Base juno-task configuration
- * @param mcpClient - MCP client instance
+ * @param backendManager - Backend manager instance
  * @returns Configured execution engine
  */
 export function createExecutionEngine(
   config: JunoTaskConfig,
-  mcpClient: MCPClient
+  backendManager: BackendManager
 ): ExecutionEngine {
   return new ExecutionEngine({
     config,
-    mcpClient,
+    backendManager,
     errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
     rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
     progressConfig: DEFAULT_PROGRESS_CONFIG,
@@ -1436,21 +1467,28 @@ export function createExecutionEngine(
 export function createExecutionRequest(options: {
   instruction: string;
   subagent?: SubagentType;
+  backend?: BackendType;
   workingDirectory?: string;
   maxIterations?: number;
   model?: string;
   requestId?: string;
+  mcpServerName?: string;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     instruction: options.instruction,
     subagent: options.subagent || 'claude',
+    backend: options.backend || 'mcp',
     workingDirectory: options.workingDirectory || process.cwd(),
     maxIterations: options.maxIterations || 50,
   };
 
   if (options.model !== undefined) {
     (result as any).model = options.model;
+  }
+
+  if (options.mcpServerName !== undefined) {
+    (result as any).mcpServerName = options.mcpServerName;
   }
 
   return result;

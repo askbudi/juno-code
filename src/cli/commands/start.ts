@@ -14,6 +14,7 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { createMCPClientFromConfig } from '../../mcp/client.js';
+import { createBackendManager, determineBackendType, getBackendDisplayName } from '../../core/backend-manager.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, mcpLogger, engineLogger, sessionLogger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
@@ -361,7 +362,7 @@ class ExecutionCoordinator {
     });
 
     // Declare variables at function scope for cleanup access
-    let mcpClient: any = null;
+    let backendManager: any = null;
     let engine: any = null;
 
     try {
@@ -376,33 +377,20 @@ class ExecutionCoordinator {
           requestId: request.requestId,
           workingDirectory: request.workingDirectory,
           maxIterations: request.maxIterations,
-          model: request.model
+          model: request.model,
+          backend: request.backend
         }
       });
       this.performanceIntegration.endTiming(request.requestId, 'session_creation');
 
-      // Create MCP client using proper configuration from .juno_task/mcp.json
-      this.performanceIntegration.startTiming(request.requestId, 'mcp_client_creation');
-      mcpClient = await createMCPClientFromConfig(
-        this.config.mcpServerName,
-        request.workingDirectory,
-        {
-          timeout: this.config.mcpTimeout,
-          retries: this.config.mcpRetries,
-          debug: this.config.verbose,
-          enableProgressStreaming: true,
-          sessionId: request.requestId,
-          progressCallback: async (event: any) => {
-            // Route MCP progress events to the progress display (always active)
-            this.progressDisplay.onProgress(event);
-          }
-        }
-      );
-      this.performanceIntegration.endTiming(request.requestId, 'mcp_client_creation');
+      // Create backend manager
+      this.performanceIntegration.startTiming(request.requestId, 'backend_manager_creation');
+      backendManager = createBackendManager();
+      this.performanceIntegration.endTiming(request.requestId, 'backend_manager_creation');
 
       // Create execution engine
       this.performanceIntegration.startTiming(request.requestId, 'engine_creation');
-      engine = createExecutionEngine(this.config, mcpClient);
+      engine = createExecutionEngine(this.config, backendManager);
       this.performanceIntegration.endTiming(request.requestId, 'engine_creation');
 
     // Set up progress callbacks
@@ -441,11 +429,6 @@ class ExecutionCoordinator {
       engine.on('execution:error', ({ error }) => {
         this.progressDisplay.onError(error);
       });
-
-      // Connect to MCP server
-      this.performanceIntegration.startTiming(request.requestId, 'mcp_connection');
-      await mcpClient.connect();
-      this.performanceIntegration.endTiming(request.requestId, 'mcp_connection');
 
       // Start progress display
       this.progressDisplay.start(request);
@@ -505,8 +488,8 @@ class ExecutionCoordinator {
           }
         }
 
-        if (mcpClient) {
-          await mcpClient.disconnect();
+        if (backendManager) {
+          await backendManager.cleanup();
         }
         if (engine) {
           await engine.shutdown();
@@ -622,15 +605,27 @@ export async function startCommandHandler(
       }
     }
 
-    // Create execution request with subagent override
+    // Determine backend type from CLI option, environment variable, or config default
+    const selectedBackend = determineBackendType(
+      allOptions.backend,
+      process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
+      config.defaultBackend || 'mcp'
+    );
+
+    // Log backend selection
+    writeTerminalProgress(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`) + '\n');
+
+    // Create execution request with subagent and backend override
     const selectedSubagent = allOptions.subagent || config.defaultSubagent;
 
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: selectedSubagent,
+      backend: selectedBackend,
       workingDirectory: config.workingDirectory,
       maxIterations: allOptions.maxIterations || config.defaultMaxIterations,
-      model: allOptions.model || config.defaultModel
+      model: allOptions.model || config.defaultModel,
+      mcpServerName: config.mcpServerName
     });
 
     // Apply command-line overrides
@@ -758,6 +753,7 @@ export function configureStartCommand(program: Command): void {
     .command('start')
     .description('Start execution using .juno_task/init.md as prompt')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
+    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
     .option('-d, --directory <path>', 'Project directory (default: current)')
@@ -781,6 +777,8 @@ Examples:
   $ juno-code start                                   # Start execution in current directory
   $ juno-code start -s claude                        # Use claude subagent
   $ juno-code start --subagent cursor                # Use cursor subagent
+  $ juno-code start -b shell                         # Use shell backend
+  $ juno-code start --backend mcp                    # Use MCP backend (default)
   $ juno-code start -s codex --max-iterations 10     # Use codex with 10 iterations
   $ juno-code start --model sonnet-4                 # Use specific model
   $ juno-code start --directory ./my-project         # Execute in specific directory
@@ -807,7 +805,9 @@ Performance Options:
   --metrics-file <path>         Custom metrics file path
 
 Environment Variables:
-  JUNO_CODE_MAX_ITERATIONS      Default maximum iterations
+  JUNO_CODE_AGENT              Backend to use (mcp, shell)
+  JUNO_CODE_BACKEND            Backend to use (mcp, shell)
+  JUNO_CODE_MAX_ITERATIONS     Default maximum iterations
   JUNO_CODE_MODEL              Default model to use
   JUNO_CODE_MCP_SERVER_PATH    Path to MCP server executable
   JUNO_CODE_MCP_TIMEOUT        MCP operation timeout (ms)
@@ -819,5 +819,12 @@ Notes:
   - Performance metrics are collected automatically
   - Use --enable-feedback to submit feedback while execution is running
   - Use Ctrl+C to cancel execution gracefully
+
+Backend Options:
+  mcp                          Use MCP (Model Context Protocol) backend (default)
+                               Connects to MCP servers for AI subagent communication
+  shell                        Use shell script backend
+                               Executes scripts from ~/.juno_code/services/
+                               Supports subagent.py, subagent.sh, or subagent-specific scripts
     `);
 }

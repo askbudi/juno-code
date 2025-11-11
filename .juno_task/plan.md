@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-11)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Claude Shell Script Flag Format Issue resolved (2025-11-11)
+- **Latest Achievement**: Backend Integration System Implementation (Issue #6) resolved (2025-11-11)
 
 ---
 
@@ -18,8 +18,9 @@
 **Last Updated**: 2025-11-11
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-11)
-- **ALL ISSUES RESOLVED**: Claude Shell Script Flag Format Issue resolved (2025-11-11)
-- **LATEST RESOLUTION**: Claude Shell Script Flag Format Issue (2025-11-11)
+- **ALL ISSUES RESOLVED**: Backend Integration System Implementation (Issue #6) resolved (2025-11-11)
+- **LATEST RESOLUTION**: Backend Integration System Implementation (Issue #6) (2025-11-11)
+- **PREVIOUS RESOLUTION**: Claude Shell Script Flag Format Issue (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
 - **PREVIOUS RESOLUTIONS**: NPM Registry Binary Linking and ENV Damage During Transfer to Subagents (2025-11-09)
 - **PREVIOUS RESOLUTION**: ENV Variable Corruption During Transit with Path Prefixing - Fixed path resolution logic to preserve URLs (2025-11-09)
@@ -34,7 +35,19 @@
 
 
 **Recently Resolved on 2025-11-11:**
-1. **Claude Shell Script Flag Format Issue** ✅:
+1. **Backend Integration System Implementation (Issue #6)** ✅:
+   - ✅ Root Need: juno-code needed flexible backend system for both MCP servers and shell script execution
+   - ✅ Solution: Comprehensive backend integration system with manager, shell backend, and CLI integration
+   - ✅ Backend Manager: Created src/core/backend-manager.ts with support for 'mcp' and 'shell' backends
+   - ✅ Shell Backend: Created src/core/backends/shell-backend.ts for script execution from ~/.juno_code/services/
+   - ✅ CLI Integration: Added -b/--backend option to start command with 'mcp' and 'shell' support
+   - ✅ Environment Variables: JUNO_CODE_AGENT controls default backend type
+   - ✅ Script Detection: Automatic discovery of subagent scripts (claude.py, codex.py) with fallbacks
+   - ✅ JSON Streaming: Shell backend processes JSON output and converts to progress events
+   - ✅ Test Results: Build successful, 755 tests passed, CLI help documents backend options
+   - ✅ Files Created: backend-manager.ts, shell-backend.ts, mcp-backend.ts, enhanced start.ts
+
+2. **Claude Shell Script Flag Format Issue** ✅:
    - ✅ Root Cause Identified: claude.py had argument ordering issue where prompt was added after --allowed-tools flag
    - ✅ Solution: Fixed command argument ordering in build_claude_command method, moved prompt before --allowed-tools
    - ✅ Claude CLI now properly recognizes prompt argument instead of treating it as tool name
