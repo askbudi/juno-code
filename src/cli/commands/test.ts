@@ -129,18 +129,28 @@ class TestProgressDisplay {
   }
 
   onProgress(event: ProgressEvent): void {
-    // If this is an MCP-style formatted event, display it using MCP-style format
-    if (event.metadata?.mcpStyleFormat) {
-      const timestamp = event.timestamp.toLocaleTimeString();
-      const backend = event.backend ? `[${event.backend}]` : '';
-      const typeColor = this.getEventTypeColor(event.type);
+    // If this is raw JSON output from shell backend (jq-style formatting)
+    // Display it with colors and indentation like `claude.py | jq .`
+    if (event.metadata?.rawJsonOutput) {
+      try {
+        // Parse and re-format with indentation
+        const jsonObj = JSON.parse(event.content);
+        const formattedJson = this.colorizeJson(jsonObj);
+        const backend = event.backend ? chalk.cyan(`[${event.backend}]`) : '';
+        const timestamp = event.timestamp.toLocaleTimeString();
 
-      if (this.verbose) {
-        console.log(`${chalk.gray(timestamp)} ${backend} ${typeColor(event.type)}: ${event.content}`);
-      } else {
-        console.log(`${backend} ${typeColor(event.type)}: ${event.content}`);
+        if (this.verbose) {
+          console.log(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
+        } else {
+          console.log(`${backend} ${formattedJson}`);
+        }
+        return;
+      } catch (error) {
+        // If JSON parsing fails, fall back to raw output
+        const backend = event.backend ? `[${event.backend}]` : '';
+        console.log(`${backend} ${event.content}`);
+        return;
       }
-      return;
     }
 
     if (this.verbose) {
@@ -206,6 +216,26 @@ class TestProgressDisplay {
 
   showError(error: Error): void {
     console.log(chalk.red(`\n❌ Test operation failed: ${error.message}`));
+  }
+
+  /**
+   * Colorize JSON object for pretty terminal output (jq-style)
+   */
+  private colorizeJson(obj: any): string {
+    const json = JSON.stringify(obj, null, 2);
+
+    // Apply colors to different JSON elements
+    let colored = json
+      // Keys (property names)
+      .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
+      // String values
+      .replace(/: "([^"]*)"/g, (match, value) => `: ${chalk.green(`"${value}"`)}`)
+      // Numbers
+      .replace(/: (\d+\.?\d*)/g, (match, num) => `: ${chalk.yellow(num)}`)
+      // Booleans and null
+      .replace(/: (true|false|null)/g, (match, val) => `: ${chalk.magenta(val)}`);
+
+    return colored;
   }
 
   /**

@@ -135,13 +135,21 @@ class ProgressDisplay {
     const backend = event.backend ? `[${event.backend}]` : '';
     const toolId = event.toolId ? `{${event.toolId.split('_')[0]}}` : '';
 
-    // If this is an MCP-style formatted event (from shell backend with outputRawJson=true),
-    // display it using MCP-style format
-    if (event.metadata?.mcpStyleFormat) {
-      const typeColor = this.getEventTypeColor(event.type);
-      // Output MCP-style formatted content
-      writeTerminalProgress(`${chalk.gray(timestamp)} ${backend}${toolId} ${typeColor(event.type)}: ${event.content}\n`);
-      return;
+    // If this is raw JSON output from shell backend (jq-style formatting)
+    // Display it with colors and indentation like `claude.py | jq .`
+    if (event.metadata?.rawJsonOutput) {
+      try {
+        // Parse and re-format with indentation
+        const jsonObj = JSON.parse(event.content);
+        const formattedJson = this.colorizeJson(jsonObj);
+        // Output with timestamp and backend prefix, similar to MCP backend style
+        writeTerminalProgress(`${chalk.gray(timestamp)} ${chalk.cyan(backend)} ${formattedJson}\n`);
+        return;
+      } catch (error) {
+        // If JSON parsing fails, fall back to raw output
+        writeTerminalProgress(`${chalk.gray(timestamp)} ${chalk.cyan(backend)} ${event.content}\n`);
+        return;
+      }
     }
 
     // Extract tool name from metadata if available
@@ -218,6 +226,27 @@ class ProgressDisplay {
       const dots = '.'.repeat((this.currentIteration % 3) + 1);
       writeTerminalProgress(chalk.gray(`\r   Processing${dots}   `));
     }
+  }
+
+  /**
+   * Colorize JSON object for pretty terminal output (jq-style)
+   */
+  private colorizeJson(obj: any, indent: number = 2): string {
+    const spaces = ' '.repeat(indent);
+    const json = JSON.stringify(obj, null, 2);
+
+    // Apply colors to different JSON elements
+    let colored = json
+      // Keys (property names)
+      .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
+      // String values
+      .replace(/: "([^"]*)"/g, (match, value) => `: ${chalk.green(`"${value}"`)}`)
+      // Numbers
+      .replace(/: (\d+\.?\d*)/g, (match, num) => `: ${chalk.yellow(num)}`)
+      // Booleans and null
+      .replace(/: (true|false|null)/g, (match, val) => `: ${chalk.magenta(val)}`);
+
+    return colored;
   }
 
   /**
