@@ -17,7 +17,7 @@ class ClaudeService:
     """Service wrapper for Anthropic Claude CLI"""
 
     # Default configuration
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
     DEFAULT_AUTO_INSTRUCTION = """You are Claude Code, an AI coding assistant. Follow the instructions provided and generate high-quality code."""
 
     def __init__(self):
@@ -105,7 +105,8 @@ Examples:
         parser.add_argument(
             "--json",
             action="store_true",
-            help="Output in JSON format"
+            default=True,
+            help="Output in JSON format (default: True)"
         )
 
         parser.add_argument(
@@ -146,7 +147,7 @@ Examples:
         # Start with base command
         cmd = [
             "claude",
-            "--print",  # Non-interactive mode
+            "--print",  # Non-interactive mode 
             "--model", self.model_name,
             "--permission-mode", args.permission_mode,
         ]
@@ -176,8 +177,9 @@ Examples:
             cmd.append("--continue")
 
         # Add output format if JSON requested
+        # Note: stream-json requires --verbose when using --print mode
         if args.json:
-            cmd.extend(["--output-format", "json"])
+            cmd.extend(["--output-format", "stream-json", "--verbose"])
 
         # Add any additional arguments
         if args.additional_args:
@@ -198,19 +200,22 @@ Examples:
             os.chdir(self.project_path)
 
             # Run the command and stream output
+            # Use line buffering (bufsize=1) to ensure each JSON line is output immediately
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1,
+                bufsize=1,  # Line buffering for immediate output
                 universal_newlines=True
             )
 
-            # Stream stdout
+            # Stream stdout line by line (each line is a JSON object when using stream-json)
+            # This allows users to pipe to jq and see output as it streams
             if process.stdout:
                 for line in process.stdout:
-                    print(line, end='')
+                    # Flush immediately to ensure streaming works with pipes like jq
+                    print(line, end='', flush=True)
 
             # Wait for process to complete
             process.wait()
