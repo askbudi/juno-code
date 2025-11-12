@@ -1,6 +1,6 @@
 {
   "name": "juno-code",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "TypeScript CLI tool for AI subagent orchestration with code automation",
   "keywords": [
     "ai",
