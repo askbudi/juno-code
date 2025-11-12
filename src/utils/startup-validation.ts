@@ -332,45 +332,45 @@ export async function validateJSONConfigs(baseDir: string = process.cwd(), backe
  */
 export function displayValidationResults(result: ValidationResult): void {
   if (result.isValid && result.warnings.length === 0) {
-    console.log(chalk.green('✅ All configuration files are valid\n'));
+    console.error(chalk.green('✅ All configuration files are valid\n'));
     return;
   }
 
   if (result.errors.length > 0) {
-    console.log(chalk.red.bold('\n❌ Configuration Validation Errors:\n'));
+    console.error(chalk.red.bold('\n❌ Configuration Validation Errors:\n'));
 
     for (const error of result.errors) {
-      console.log(chalk.red(`   📄 ${error.file}`));
-      console.log(chalk.red(`      ${error.message}`));
+      console.error(chalk.red(`   📄 ${error.file}`));
+      console.error(chalk.red(`      ${error.message}`));
 
       if (error.details) {
-        console.log(chalk.gray(`      Details: ${error.details}`));
+        console.error(chalk.gray(`      Details: ${error.details}`));
       }
 
       if (error.suggestions?.length) {
-        console.log(chalk.yellow('      Suggestions:'));
+        console.error(chalk.yellow('      Suggestions:'));
         for (const suggestion of error.suggestions) {
-          console.log(chalk.yellow(`      • ${suggestion}`));
+          console.error(chalk.yellow(`      • ${suggestion}`));
         }
       }
-      console.log();
+      console.error();
     }
   }
 
   if (result.warnings.length > 0) {
-    console.log(chalk.yellow.bold('\n⚠️  Configuration Warnings:\n'));
+    console.error(chalk.yellow.bold('\n⚠️  Configuration Warnings:\n'));
 
     for (const warning of result.warnings) {
-      console.log(chalk.yellow(`   📄 ${warning.file}`));
-      console.log(chalk.yellow(`      ${warning.message}`));
+      console.error(chalk.yellow(`   📄 ${warning.file}`));
+      console.error(chalk.yellow(`      ${warning.message}`));
 
       if (warning.suggestions?.length) {
-        console.log(chalk.gray('      Suggestions:'));
+        console.error(chalk.gray('      Suggestions:'));
         for (const suggestion of warning.suggestions) {
-          console.log(chalk.gray(`      • ${suggestion}`));
+          console.error(chalk.gray(`      • ${suggestion}`));
         }
       }
-      console.log();
+      console.error();
     }
   }
 }
@@ -438,7 +438,7 @@ export async function logValidationResults(result: ValidationResult, baseDir: st
  */
 export async function validateStartupConfigs(baseDir: string = process.cwd(), verbose: boolean = false): Promise<boolean> {
   if (verbose) {
-    console.log(chalk.blue('🔍 Validating JSON configuration files...\n'));
+    console.error(chalk.blue('🔍 Validating JSON configuration files...\n'));
   }
 
   try {
@@ -467,7 +467,7 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
     }
 
     if (verbose) {
-      console.log(chalk.gray(`   Backend: ${backendType} (${backendType === 'mcp' ? 'validating MCP configuration' : 'skipping MCP configuration'})`));
+      console.error(chalk.gray(`   Backend: ${backendType} (${backendType === 'mcp' ? 'validating MCP configuration' : 'skipping MCP configuration'})`));
     }
 
     // Run validation
@@ -480,14 +480,14 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
     const logFile = await logValidationResults(result, baseDir);
 
     if (result.errors.length > 0) {
-      console.log(chalk.red(`❌ Configuration validation failed. See details in:`));
-      console.log(chalk.gray(`   ${logFile}\n`));
+      console.error(chalk.red(`❌ Configuration validation failed. See details in:`));
+      console.error(chalk.gray(`   ${logFile}\n`));
       return false;
     }
 
     if (result.warnings.length > 0 && verbose) {
-      console.log(chalk.yellow(`⚠️  Configuration warnings logged to:`));
-      console.log(chalk.gray(`   ${logFile}\n`));
+      console.error(chalk.yellow(`⚠️  Configuration warnings logged to:`));
+      console.error(chalk.gray(`   ${logFile}\n`));
     }
 
     return true;
@@ -501,9 +501,9 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
       // Ignore logging errors during validation
     }
 
-    console.log(chalk.red.bold('\n❌ Configuration validation system error'));
-    console.log(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
-    console.log(chalk.yellow('   Continuing with startup, but configuration may be invalid\n'));
+    console.error(chalk.red.bold('\n❌ Configuration validation system error'));
+    console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
+    console.error(chalk.yellow('   Continuing with startup, but configuration may be invalid\n'));
 
     return true; // Don't block startup for validation system errors
   }

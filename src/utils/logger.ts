@@ -97,9 +97,9 @@ export class JunoLogger {
     // Always write to log file
     await this.writeToLog(formattedMessage);
 
-    // Optionally write to console (for non-MCP logs)
+    // Optionally write to console (for non-MCP logs) - use stderr for logging
     if (this.enableConsoleLogging && writeToConsole) {
-      console.log(formattedMessage.trim());
+      console.error(formattedMessage.trim());
     }
   }
 

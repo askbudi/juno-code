@@ -613,8 +613,21 @@ export class ShellBackend implements Backend {
       case 'assistant':
         // Assistant message event
         type = 'thinking';
-        // Extract content from message.content array
-        if (event.message?.content && Array.isArray(event.message.content)) {
+        // Check if this is pretty-formatted JSON from claude.py
+        if (!event.message && (event.content !== undefined || event.tool_use !== undefined)) {
+          // Pretty-formatted: { "type": "assistant", "datetime": "...", "content": "...", "counter": "..." }
+          // or with tool_use: { "type": "assistant", "datetime": "...", "tool_use": {...}, "counter": "..." }
+          if (event.content && typeof event.content === 'string') {
+            content = event.content;
+          } else if (event.tool_use) {
+            // For tool_use, show the tool name and input
+            content = `Tool: ${event.tool_use.name}`;
+            metadata.tool_use = event.tool_use; // Preserve tool_use data in metadata
+          } else {
+            content = ''; // Empty content (content was explicitly set to undefined/empty)
+          }
+        } else if (event.message?.content && Array.isArray(event.message.content)) {
+          // Original format: Extract content from message.content array
           const textContent = event.message.content.find((c: any) => c.type === 'text');
           content = textContent?.text || 'Processing...';
         } else {
@@ -624,6 +637,8 @@ export class ShellBackend implements Backend {
         metadata.model = event.message?.model;
         metadata.usage = event.message?.usage;
         metadata.sessionId = event.session_id;
+        metadata.datetime = event.datetime; // Preserve datetime from pretty format
+        metadata.counter = event.counter; // Preserve counter from pretty format
         break;
 
       case 'result':

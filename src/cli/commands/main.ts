@@ -66,7 +66,7 @@ class PromptProcessor {
         // Try default prompt file: .juno_task/prompt.md
         const defaultPromptPath = path.join(process.cwd(), '.juno_task', 'prompt.md');
         if (await fs.pathExists(defaultPromptPath)) {
-          console.log(chalk.blue(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
+          console.error(chalk.blue(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
           return await this.loadPromptFromFile(defaultPromptPath);
         } else {
           throw new ValidationError(
@@ -118,7 +118,7 @@ class PromptProcessor {
         );
       }
 
-      console.log(chalk.blue(`📄 Loaded prompt from: ${chalk.cyan(path.relative(process.cwd(), resolvedPath))}`));
+      console.error(chalk.blue(`📄 Loaded prompt from: ${chalk.cyan(path.relative(process.cwd(), resolvedPath))}`));
       return content.trim();
     } catch (error) {
       if (error instanceof FileSystemError) {
@@ -137,7 +137,7 @@ class PromptProcessor {
       // Dynamic import to avoid loading TUI in headless environments
       const { launchPromptEditor, isTUISupported, safeTUIExecution } = await import('../../tui/index.js');
 
-      console.log(chalk.blue.bold('\n🎨 Launching TUI Prompt Editor...\n'));
+      console.error(chalk.blue.bold('\n🎨 Launching TUI Prompt Editor...\n'));
 
       return await safeTUIExecution(
         // TUI function
@@ -159,7 +159,7 @@ class PromptProcessor {
         },
         // Fallback function
         async () => {
-          console.log(chalk.yellow('TUI not available, falling back to interactive mode...'));
+          console.error(chalk.yellow('TUI not available, falling back to interactive mode...'));
           return await this.collectInteractivePrompt();
         }
       );
@@ -181,9 +181,9 @@ class PromptProcessor {
   }
 
   private async collectInteractivePrompt(): Promise<string> {
-    console.log(chalk.blue.bold('\n✏️  Interactive Prompt Mode\n'));
-    console.log(chalk.yellow('Enter your prompt (press Ctrl+D when finished):'));
-    console.log(chalk.gray('You can type multiple lines. End with Ctrl+D (Unix) or Ctrl+Z (Windows).\n'));
+    console.error(chalk.blue.bold('\n✏️  Interactive Prompt Mode\n'));
+    console.error(chalk.yellow('Enter your prompt (press Ctrl+D when finished):'));
+    console.error(chalk.gray('You can type multiple lines. End with Ctrl+D (Unix) or Ctrl+Z (Windows).\n'));
 
     return new Promise((resolve, reject) => {
       let input = '';
@@ -224,6 +224,7 @@ class MainProgressDisplay {
   private startTime: Date = new Date();
   private currentIteration: number = 0;
   private verbose: boolean;
+  private hasStreamedJsonOutput: boolean = false; // Track if we streamed JSON output via progress events
 
   constructor(verbose: boolean = false) {
     this.verbose = verbose;
@@ -231,23 +232,23 @@ class MainProgressDisplay {
 
   start(request: ExecutionRequest): void {
     this.startTime = new Date();
-    console.log(chalk.blue.bold('\n🚀 Executing with ' + request.subagent.charAt(0).toUpperCase() + request.subagent.slice(1)));
+    console.error(chalk.blue.bold('\n🚀 Executing with ' + request.subagent.charAt(0).toUpperCase() + request.subagent.slice(1)));
 
     if (this.verbose) {
-      console.log(chalk.gray(`   Request ID: ${request.requestId}`));
-      console.log(chalk.gray(`   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`));
-      console.log(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
+      console.error(chalk.gray(`   Request ID: ${request.requestId}`));
+      console.error(chalk.gray(`   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`));
+      console.error(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
       if (request.model) {
-        console.log(chalk.gray(`   Model: ${request.model}`));
+        console.error(chalk.gray(`   Model: ${request.model}`));
       }
     }
 
-    console.log(chalk.blue('\n📋 Task:'));
+    console.error(chalk.blue('\n📋 Task:'));
     const preview = request.instruction.length > 200
       ? request.instruction.substring(0, 200) + '...'
       : request.instruction;
-    console.log(chalk.white(`   ${preview}`));
-    console.log('');
+    console.error(chalk.white(`   ${preview}`));
+    console.error('');
   }
 
   onProgress(event: ProgressEvent): void {
@@ -256,6 +257,9 @@ class MainProgressDisplay {
     // If this is raw JSON output from shell backend (jq-style formatting)
     // Display it with colors and indentation like `claude.py | jq .`
     if (event.metadata?.rawJsonOutput) {
+      // Mark that we're streaming JSON output - this means we should NOT print the accumulated result later
+      this.hasStreamedJsonOutput = true;
+
       try {
         // Parse and re-format with indentation
         const jsonObj = JSON.parse(event.content);
@@ -263,17 +267,18 @@ class MainProgressDisplay {
         const backend = event.backend ? chalk.cyan(`[${event.backend}]`) : '';
 
         if (this.verbose) {
-          // Verbose mode: Show JSON with timestamp and backend prefix
-          console.log(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
+          // Verbose mode: Show pretty formatted JSON with timestamp and backend prefix on STDERR
+          // Raw JSON is already printed by stdout (shell backend streams it directly)
+          console.error(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
         } else {
-          // Non-verbose mode: Still show JSON with backend prefix
-          console.log(`${backend} ${formattedJson}`);
+          // Non-verbose mode: Show JSON with backend prefix on STDERR
+          console.error(`${backend} ${formattedJson}`);
         }
         return;
       } catch (error) {
         // If JSON parsing fails, fall back to raw output
         const backend = event.backend ? `[${event.backend}]` : '';
-        console.log(`${chalk.gray(timestamp)} ${backend} ${event.content}`);
+        console.error(`${chalk.gray(timestamp)} ${backend} ${event.content}`);
         return;
       }
     }
@@ -284,11 +289,11 @@ class MainProgressDisplay {
       : event.content;
 
     if (this.verbose) {
-      // Verbose mode: Show detailed progress with timestamps and types
-      console.log(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
+      // Verbose mode: Show detailed progress with timestamps and types on STDERR
+      console.error(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
     } else {
-      // Non-verbose mode: Show meaningful progress messages (always display progress callbacks)
-      console.log(chalk.blue(`📡 ${event.type}: ${content}`));
+      // Non-verbose mode: Show meaningful progress messages on STDERR
+      console.error(chalk.blue(`📡 ${event.type}: ${content}`));
     }
   }
 
@@ -334,24 +339,24 @@ class MainProgressDisplay {
   onIterationStart(iteration: number): void {
     this.currentIteration = iteration;
     if (!this.verbose) {
-      process.stdout.write(chalk.yellow(`\n🔄 Iteration ${iteration} `));
+      process.stderr.write(chalk.yellow(`\n🔄 Iteration ${iteration} `));
     } else {
       const elapsed = this.getElapsedTime();
-      console.log(chalk.yellow(`\n🔄 Iteration ${iteration} started (${elapsed})`));
+      console.error(chalk.yellow(`\n🔄 Iteration ${iteration} started (${elapsed})`));
     }
   }
 
   onIterationComplete(success: boolean, duration: number): void {
     if (!this.verbose) {
       const icon = success ? chalk.green('✓') : chalk.red('✗');
-      console.log(` ${icon}`);
+      console.error(` ${icon}`);
     } else {
       const elapsed = this.getElapsedTime();
       const durationText = `${duration.toFixed(0)}ms`;
       if (success) {
-        console.log(chalk.green(`✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`));
+        console.error(chalk.green(`✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`));
       } else {
-        console.log(chalk.red(`❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`));
+        console.error(chalk.red(`❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`));
       }
     }
   }
@@ -359,37 +364,41 @@ class MainProgressDisplay {
   complete(result: ExecutionResult): void {
     const elapsed = this.getElapsedTime();
 
+    // Send completion status to STDERR (progress messages)
     if (result.status === ExecutionStatus.COMPLETED) {
-      console.log(chalk.green.bold(`\n✅ Execution completed successfully! (${elapsed})`));
+      console.error(chalk.green.bold(`\n✅ Execution completed successfully! (${elapsed})`));
     } else {
-      console.log(chalk.red.bold(`\n❌ Execution failed (${elapsed})`));
+      console.error(chalk.red.bold(`\n❌ Execution failed (${elapsed})`));
     }
 
-    // Show final result
+    // Show final result heading on STDERR, actual result content on STDOUT
+    // NOTE: If we streamed JSON output via progress events (hasStreamedJsonOutput=true),
+    // skip printing the accumulated toolResult.content to avoid duplication
     const lastIteration = result.iterations[result.iterations.length - 1];
-    if (lastIteration && lastIteration.toolResult.content) {
-      console.log(chalk.blue('\n📄 Result:'));
-      console.log(chalk.white(lastIteration.toolResult.content));
+    if (lastIteration && lastIteration.toolResult.content && !this.hasStreamedJsonOutput) {
+      console.error(chalk.blue('\n📄 Result:'));
+      // Final result goes to STDOUT for variable capture
+      console.log(lastIteration.toolResult.content);
     }
 
-    // Show statistics if verbose
+    // Show statistics on STDERR if verbose
     if (this.verbose) {
       const stats = result.statistics;
-      console.log(chalk.blue('\n📊 Statistics:'));
-      console.log(chalk.white(`   Total Iterations: ${stats.totalIterations}`));
-      console.log(chalk.white(`   Successful: ${stats.successfulIterations}`));
-      console.log(chalk.white(`   Failed: ${stats.failedIterations}`));
-      console.log(chalk.white(`   Average Duration: ${stats.averageIterationDuration.toFixed(0)}ms`));
-      console.log(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
+      console.error(chalk.blue('\n📊 Statistics:'));
+      console.error(chalk.white(`   Total Iterations: ${stats.totalIterations}`));
+      console.error(chalk.white(`   Successful: ${stats.successfulIterations}`));
+      console.error(chalk.white(`   Failed: ${stats.failedIterations}`));
+      console.error(chalk.white(`   Average Duration: ${stats.averageIterationDuration.toFixed(0)}ms`));
+      console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
 
       if (stats.rateLimitEncounters > 0) {
-        console.log(chalk.yellow(`   Rate Limits: ${stats.rateLimitEncounters}`));
+        console.error(chalk.yellow(`   Rate Limits: ${stats.rateLimitEncounters}`));
       }
     }
   }
 
   onError(error: Error): void {
-    console.log(chalk.red(`\n❌ Execution error: ${error.message}`));
+    console.error(chalk.red(`\n❌ Execution error: ${error.message}`));
   }
 
   private getElapsedTime(): string {
@@ -440,7 +449,7 @@ class MainExecutionCoordinator {
 
     // Log backend selection if verbose
     if (this.config.verbose) {
-      console.log(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
+      console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
     }
 
     // Create backend manager with selected backend
@@ -563,7 +572,7 @@ export async function mainCommandHandler(
 
     // Log backend selection if verbose
     if (options.verbose) {
-      console.log(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
+      console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
     }
 
     // Create execution request
