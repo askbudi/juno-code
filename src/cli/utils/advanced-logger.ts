@@ -578,7 +578,7 @@ export class AdvancedLogger {
    */
   private output(formatted: string): void {
     if (this.options.output === 'console' || this.options.output === 'both') {
-      console.log(formatted);
+      console.error(formatted);  // Use stderr for logging
     }
 
     if (this.options.output === 'file' || this.options.output === 'both') {

@@ -28,6 +28,7 @@ class ClaudeService:
         self.prompt = ""
         self.additional_args: List[str] = []
         self.message_counter = 0
+        self.verbose = False
 
     def check_claude_installed(self) -> bool:
         """Check if claude CLI is installed and available"""
@@ -204,6 +205,8 @@ Examples:
         For type=assistant: show datetime, message content, and counter
         For other types: show full message with datetime and counter
         Returns None if line should be skipped
+
+        IMPORTANT: Always preserve the 'type' field so shell backend can parse events
         """
         try:
             data = json.loads(json_line)
@@ -217,22 +220,41 @@ Examples:
                 message = data.get("message", {})
                 content_list = message.get("content", [])
 
-                # Extract text content from content array
+                # Extract text content or tool_use from content array
                 text_content = ""
-                for item in content_list:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text_content = item.get("text", "")
-                        break
+                tool_use_data = None
 
-                # Create simplified output with datetime, content, and counter
+                for item in content_list:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text_content = item.get("text", "")
+                            break
+                        elif item.get("type") == "tool_use":
+                            # Extract tool name and input for tool_use
+                            tool_use_data = {
+                                "name": item.get("name", ""),
+                                "input": item.get("input", {})
+                            }
+                            break
+
+                # Create simplified output with datetime, content/tool_use, and counter
+                # KEEP the 'type' field for shell backend compatibility
                 simplified = {
+                    "type": "assistant",
                     "datetime": now,
-                    "content": text_content,
                     "counter": f"#{self.message_counter}"
                 }
+
+                # Add either content or tool_use data
+                if tool_use_data:
+                    simplified["tool_use"] = tool_use_data
+                else:
+                    simplified["content"] = text_content
+
                 return json.dumps(simplified)
             else:
                 # For other message types, show full message with datetime and counter
+                # Type field is already present in data, so it's preserved
                 output = {
                     "datetime": now,
                     "counter": f"#{self.message_counter}",
@@ -361,6 +383,7 @@ Examples:
         # Build and execute command
         cmd = self.build_claude_command(args)
         pretty = args.pretty == "true"
+        self.verbose = args.verbose
         return self.run_claude(cmd, verbose=args.verbose, pretty=pretty)
 
 

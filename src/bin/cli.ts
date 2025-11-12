@@ -213,10 +213,10 @@ function setupMainCommand(program: Command): void {
  */
 function displayBanner(verbose: boolean = false): void {
   if (verbose) {
-    console.log(chalk.blue.bold(`\n🎯 Juno Code v${VERSION} - TypeScript CLI`));
-    console.log(chalk.gray(`   Node.js ${process.version} on ${process.platform}`));
-    console.log(chalk.gray(`   Working directory: ${process.cwd()}`));
-    console.log('');
+    console.error(chalk.blue.bold(`\n🎯 Juno Code v${VERSION} - TypeScript CLI`));
+    console.error(chalk.gray(`   Node.js ${process.version} on ${process.platform}`));
+    console.error(chalk.gray(`   Working directory: ${process.cwd()}`));
+    console.error('');
   }
 }
 
