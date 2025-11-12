@@ -63,11 +63,13 @@ vi.mock('../logger.js', () => ({
 
 describe('startup-validation', () => {
   const testBaseDir = '/test/project';
-  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Setup default mocks
     vi.mocked(fs.ensureDir).mockResolvedValue(undefined);
@@ -76,7 +78,8 @@ describe('startup-validation', () => {
   });
 
   afterEach(() => {
-    consoleSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   });
 
   describe('validateJSONConfigs', () => {
@@ -294,7 +297,7 @@ describe('startup-validation', () => {
 
       displayValidationResults(result);
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('All configuration files are valid'));
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('All configuration files are valid'));
     });
 
     it('should display errors with suggestions', () => {
@@ -311,9 +314,9 @@ describe('startup-validation', () => {
 
       displayValidationResults(result);
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration Validation Errors'));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid JSON syntax'));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Check for missing commas'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration Validation Errors'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid JSON syntax'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Check for missing commas'));
     });
 
     it('should display warnings', () => {
@@ -330,8 +333,8 @@ describe('startup-validation', () => {
 
       displayValidationResults(result);
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration Warnings'));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Unusual subagent value'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration Warnings'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Unusual subagent value'));
     });
   });
 
@@ -413,7 +416,7 @@ describe('startup-validation', () => {
       const result = await validateStartupConfigs(testBaseDir, false);
 
       expect(result).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation failed'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation failed'));
     });
 
     it('should handle validation system errors gracefully', async () => {
@@ -422,7 +425,7 @@ describe('startup-validation', () => {
       const result = await validateStartupConfigs(testBaseDir, false);
 
       expect(result).toBe(true); // Should not block startup for system errors
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation system error'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation system error'));
     });
 
     it('should show verbose output when requested', async () => {
@@ -437,7 +440,7 @@ describe('startup-validation', () => {
 
       await validateStartupConfigs(testBaseDir, true);
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Validating JSON configuration files'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Validating JSON configuration files'));
     });
   });
 });
