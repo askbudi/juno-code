@@ -386,9 +386,17 @@ async function main(): Promise<void> {
   // This ensures users always have the latest service scripts after npm upgrade
   try {
     const { ServiceInstaller } = await import('../utils/service-installer.js');
-    await ServiceInstaller.autoUpdate();
-  } catch {
-    // Silent failure - don't break CLI if update fails
+    const updated = await ServiceInstaller.autoUpdate();
+
+    // Show update message in verbose mode
+    if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+      console.error('[DEBUG] Service scripts auto-updated to latest version');
+    }
+  } catch (error) {
+    // Log error in debug mode, but don't break CLI
+    if (process.env.JUNO_CODE_DEBUG === '1') {
+      console.error('[DEBUG] Service auto-update failed:', error instanceof Error ? error.message : String(error));
+    }
   }
 
   // Basic program setup

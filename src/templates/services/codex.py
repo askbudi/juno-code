@@ -156,8 +156,10 @@ Examples:
         # Add exec command with prompt
         cmd.extend(["exec", full_prompt])
 
-        # Note: We do NOT add --json flag. Codex will output text format by default.
-        # This allows streaming text updates to work correctly with shell backend.
+        # Add --json flag for streaming support
+        # This is CRITICAL for codex to output streaming responses
+        # Without this flag, codex will not stream progress updates
+        cmd.append("--json")
 
         return cmd
 

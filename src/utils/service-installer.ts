@@ -87,7 +87,49 @@ export class ServiceInstaller {
       }
 
       // Compare versions using semver
-      return semver.gt(packageVersion, installedVersion);
+      // If package version is greater, definitely needs update
+      if (semver.gt(packageVersion, installedVersion)) {
+        return true;
+      }
+
+      // If versions are equal, check if service files actually exist
+      // This handles the case where npm install happened but service scripts
+      // weren't properly installed (or user deleted them)
+      if (semver.eq(packageVersion, installedVersion)) {
+        const codexExists = await fs.pathExists(path.join(this.SERVICES_DIR, 'codex.py'));
+        const claudeExists = await fs.pathExists(path.join(this.SERVICES_DIR, 'claude.py'));
+
+        // If either service file is missing, force update
+        if (!codexExists || !claudeExists) {
+          return true;
+        }
+
+        // Check if package services directory has files
+        // This ensures we have source files to copy from
+        try {
+          const packageServicesDir = this.getPackageServicesDir();
+          const packageCodex = path.join(packageServicesDir, 'codex.py');
+          const packageClaude = path.join(packageServicesDir, 'claude.py');
+
+          // If package has services but installed doesn't match, force update
+          // This catches cases where code changed but version stayed the same (development/testing)
+          const packageCodexExists = await fs.pathExists(packageCodex);
+          const packageClaudeExists = await fs.pathExists(packageClaude);
+
+          if (packageCodexExists || packageClaudeExists) {
+            // In development, always update to get latest changes
+            // In production (npm install), versions match so this is safe
+            const isDevelopment = packageServicesDir.includes('/src/');
+            if (isDevelopment) {
+              return true;
+            }
+          }
+        } catch {
+          // Ignore errors checking package directory
+        }
+      }
+
+      return false;
     } catch {
       // On any error, assume update is needed
       return true;
@@ -161,13 +203,35 @@ export class ServiceInstaller {
    */
   static async autoUpdate(): Promise<boolean> {
     try {
+      const debug = process.env.JUNO_CODE_DEBUG === '1';
+
+      if (debug) {
+        const packageVersion = this.getPackageVersion();
+        const installedVersion = await this.getInstalledVersion();
+        console.error(`[DEBUG] Package version: ${packageVersion}, Installed version: ${installedVersion || 'not found'}`);
+      }
+
       const needsUpdate = await this.needsUpdate();
+
+      if (debug) {
+        console.error(`[DEBUG] Needs update: ${needsUpdate}`);
+      }
+
       if (needsUpdate) {
         await this.install(true);
+
+        if (debug) {
+          console.error(`[DEBUG] Service scripts updated successfully`);
+        }
+
         return true;
       }
       return false;
-    } catch {
+    } catch (error) {
+      // Log error in debug mode
+      if (process.env.JUNO_CODE_DEBUG === '1') {
+        console.error('[DEBUG] autoUpdate error:', error instanceof Error ? error.message : String(error));
+      }
       // Silent failure - don't break CLI if update fails
       return false;
     }
