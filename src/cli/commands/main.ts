@@ -283,17 +283,33 @@ class MainProgressDisplay {
       }
     }
 
-    // Original behavior for non-MCP-formatted events: truncate to 100 chars
-    const content = event.content.length > 100
-      ? event.content.substring(0, 100) + '...'
-      : event.content;
+    // Try to parse content as JSON for jq-style formatting
+    // This handles codex output which sends TEXT format but contains JSON
+    try {
+      const jsonObj = JSON.parse(event.content);
+      const formattedJson = this.colorizeJson(jsonObj);
+      const backend = event.backend ? chalk.cyan(`[${event.backend}]`) : '';
 
-    if (this.verbose) {
-      // Verbose mode: Show detailed progress with timestamps and types on STDERR
-      console.error(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
-    } else {
-      // Non-verbose mode: Show meaningful progress messages on STDERR
-      console.error(chalk.blue(`📡 ${event.type}: ${content}`));
+      if (this.verbose) {
+        // Verbose mode: Show pretty formatted JSON with timestamp and backend prefix on STDERR
+        console.error(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
+      } else {
+        // Non-verbose mode: Show JSON with backend prefix on STDERR
+        console.error(`${backend} ${formattedJson}`);
+      }
+      return;
+    } catch (error) {
+      // Not JSON - show full content without truncation
+      // User explicitly wants full output for codex responses
+      const backend = event.backend ? `[${event.backend}]` : '';
+
+      if (this.verbose) {
+        // Verbose mode: Show detailed progress with timestamps and types on STDERR
+        console.error(chalk.gray(`[${timestamp}] ${backend} ${event.type}: ${event.content}`));
+      } else {
+        // Non-verbose mode: Show full content with backend prefix on STDERR
+        console.error(`${backend} ${chalk.blue(`${event.type}:`)} ${event.content}`);
+      }
     }
   }
 
