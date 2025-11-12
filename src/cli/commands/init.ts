@@ -17,6 +17,7 @@ import { getDefaultHooks } from '../../templates/default-hooks.js';
 import type { InitCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
 import type { TemplateVariables } from '../../templates/types.js';
+import { TemplateEngine } from '../../templates/engine.js';
 
 interface InitializationContext {
   targetDirectory: string;
@@ -230,223 +231,61 @@ class SimpleProjectGenerator {
 
     console.log(chalk.blue('📄 Creating production-ready project files...'));
 
-    // Create comprehensive prompt.md with production template
-    const promptContent = `0a. study @.juno_task/specs/* to learn about the specifications
-0b. **ALWAYS check @.juno_task/USER_FEEDBACK.md first** - read user feedback, integrate it into the plan, update status of feedback items, and remove completed/resolved items. This is the primary mechanism for user input.
+    // Use templates from engine.ts instead of inline content
+    const templateEngine = new TemplateEngine();
+    const promptTemplate = templateEngine.getBuiltInTemplate('prompt.md');
+    const initTemplate = templateEngine.getBuiltInTemplate('init.md');
+    const implementTemplate = templateEngine.getBuiltInTemplate('implement.md');
 
+    if (!promptTemplate || !initTemplate || !implementTemplate) {
+      throw new ValidationError(
+        'Required templates not found in engine.ts',
+        ['Ensure engine.ts contains prompt.md, init.md, and implement.md templates']
+      );
+    }
 
-0c. study @.juno_task/plan.md.
+    // Create template context for rendering
+    const templateContext = await templateEngine.createContext(
+      {
+        ...variables,
+        PROJECT_ROOT: targetDirectory,
+        PROJECT_PATH: targetDirectory,
+        VENV_PATH: path.join(targetDirectory, '.venv_juno'),
+        main_task: variables.TASK,
+        SUBAGENT: variables.EDITOR,
+        GIT_URL: variables.GIT_URL || 'Not specified',
+        TIMESTAMP: new Date().toISOString(),
+        AGENT_DOC_FILE: variables.AGENTMD || (variables.EDITOR === 'claude' ? 'CLAUDE.md' : 'AGENTS.md')
+      },
+      targetDirectory,
+      { includeGitInfo: false, includeEnvironment: false }
+    );
 
+    // Render templates using engine
+    const promptContent = await templateEngine.render(promptTemplate, templateContext);
+    const initContent = await templateEngine.render(initTemplate, templateContext);
+    const implementContent = await templateEngine.render(implementTemplate, templateContext);
 
-0d. Based on USER FEEDBACK reflect on @.juno_task/plan.md and keep it up-to-date.
-0g. User Feedback has higher priority that test results. maybe the test results hasn't follow the use cases. IT is very important to focus on it.
-
-0f. After reviwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
-it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
-
-0h. Assign a subagent to do steps of 0b to 0f and when it is done. And the files has reflected the reality.
-then do 0b, 0c youself (So your actual planning and thinking would be based on latest state of those KEY files.) and continue with the task.
-
-0f. The source code of the project is in ${targetDirectory}
-
-1. Your task is to ${variables.TASK}
-
-Test the implementation under the virtual environment: ${targetDirectory}
-virtual environment not necessarly has been created.!
-
-Using parallel subagents. Follow the @.juno_task/plan.md and choose the most important 1 things. Before making changes search codebase (don't assume not implemented) using subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
-
-Explicitly inform build/tests subagent to activate virtual environment at: ${targetDirectory}
-
-2. After implementing functionality or resolving problems, run the tests for that unit of code that was improved. If functionality is missing then it's your job to add it as per the application specifications. Think hard.
-
-2. When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update @.juno_task/plan.md with your findings using a ${variables.EDITOR} subagent. When the issue is resolved, update @.juno_task/plan.md and remove the item using a ${variables.EDITOR} subagent.
-
-3. When the tests pass update the @.juno_task/plan.md, then add changed code and @.juno_task/plan.md with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
-
-999. Important: When authoring documentation capture the why tests and the backing implementation is important.
-
-9999. Important: We want single sources of truth, no migrations/adapters. If tests unrelated to your work fail then it's your job to resolve these tests as part of the increment of change.
-
-999999. As soon as there are no build or test errors create a git tag. If there are no git tags start at 0.0.0 and increment patch by 1 for example 0.0.1 if 0.0.0 does not exist.
-
-999999999. You may add extra logging if required to be able to debug the issues.
-
-9999999999. ALWAYS KEEP @.juno_task/plan.md up to date with your learnings using a ${variables.EDITOR} subagent. Especially after wrapping up/finishing your turn.
-
-99999999999. **CRITICAL**: At start of each iteration, read @.juno_task/USER_FEEDBACK.md and integrate feedback into @.juno_task/plan.md. Update feedback status and remove resolved items from @.juno_task/USER_FEEDBACK.md using a ${variables.EDITOR} subagent.
-
-99999999999. When you learn something new about how to run the app or examples make sure you update @${variables.AGENTMD} using a ${variables.EDITOR} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
-
-999999999999. IMPORTANT when you discover a bug resolve it using ${variables.EDITOR} subagents even if it is unrelated to the current piece of work after documenting it in @.juno_task/plan.md
-
-9999999999999999999. Keep @${variables.AGENTMD} up to date with information on how to build the app and your learnings to optimize the build/test loop using a ${variables.EDITOR} subagent.
-
-999999999999999999999. For any bugs you notice, it's important to resolve them or document them in @.juno_task/plan.md to be resolved using a ${variables.EDITOR} subagent.
-
-99999999999999999999999. When authoring the missing features you may author multiple standard libraries at once using up to 1000 parallel subagents
-
-99999999999999999999999999. When @.juno_task/plan.md becomes large periodically clean out the items that are completed from the file using a ${variables.EDITOR} subagent.
-
-99999999999999999999999999. If you find inconsistencies in the specs/* then use the oracle and then update the specs. Specifically around types and lexical tokens.
-
-9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
-
-9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @${variables.AGENTMD}
-
-99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or @${variables.AGENTMD} as resolved. You should update it to reflect that the issue is not resolved.
-it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
-Plan , USER_FEEDBACK and @${variables.AGENTMD} should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
-`;
-
+    // Write rendered template files
     await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), promptContent);
-
-    // Create comprehensive init.md with production template
-    const initContent = `# Main Task
-${variables.TASK}
-
-### Task 1
-First task is to study @.juno_task/plan.md  (it may be incorrect) and is to use up to 500 subagents to study existing project
-and study what is needed to achieve the main task.
-From that create/update a @.juno_task/plan.md  which is a bullet point list sorted in priority of the items which have yet to be implemeneted. Think extra hard.
-Study @.juno_task/plan.md to determine starting point for research and keep it up to date with items considered complete/incomplete using subagents.
-
-### Task 2
-Second Task is to understand the task, create a spec for process to follow, plan to execute, scripts to create, virtual enviroment that we need, things that we need to be aware of, how to test the scripts and follow progress.
-Think hard and plan/create spec for every step of this task
-and for each part create a seperate .md file under @.juno_task/spec/*
-
-## ULTIMATE Goal
-We want to achieve the main Task with respect to the Constraints section
-Consider missing steps and plan. If the step is missing then author the specification at @.juno_task/spec/FILENAME.md (do NOT assume that it does not exist, search before creating). The naming of the module should be GenZ named and not conflict with another module name. If you create a new step then document the plan to implement in @.juno_task/plan.md
-
-### Constraints
-**Preferred Subagent**: ${variables.EDITOR}
-**Repository URL**: ${variables.GIT_URL || 'Not specified'}
-
-## Environment Setup
-[Empty]
-
-### 2. Package Installation
-[Empty]
-
-### 3. Test Installation
-[Empty]
-`;
-
     await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);
 
-    // Create USER_FEEDBACK.md
-    const userFeedbackContent = `## OPEN ISSUES
-<OPEN_ISSUES>
-<ISSUE>
-</ISSUE>
-...
-</OPEN_ISSUES>
-
-
-
-
-## Past Issues
-Agent Response to previously reported issues.
-(There could be mistakes in the agent response, agent could report an issue resolved while the error hasn't been resolved, Look at them, as a source of understanding agent thinking, and files that it touched. Not as a source of truth.)
-
-
-<REPORTED_ISSUES>
-<ISSUE_RESPONSE>
-</ISSUE_RESPONSE>
-...
-</REPORTED_ISSUES>
-
-`;
-
-    await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), userFeedbackContent);
-
-    // Create plan.md
-    const planContent = `# Juno-Task Implementation Plan
-
-## 🎯 CURRENT PRIORITIES
-
-### 1. Study Existing Project
-Analyze current codebase and identify what needs to be implemented for the main task.
-
-### 2. Create Specifications
-Create detailed specifications for each component needed to achieve the main task.
-
-## 📋 TASK BREAKDOWN
-
-Items will be added here as we discover what needs to be implemented.
-
-## ✅ COMPLETED
-
-- Project initialization complete
-- Basic file structure created
-- Task defined: ${variables.TASK}
-`;
-
-    await fs.writeFile(path.join(junoTaskDir, 'plan.md'), planContent);
-
-    // Create implement.md
-    const implementContent = `# Implementation Guide
-
-## Current Focus
-
-**Main Task**: ${variables.TASK}
-
-## Implementation Steps
-
-### Step 1: Analysis and Planning
-- [ ] Review existing codebase structure
-- [ ] Identify key components and dependencies
-- [ ] Document current state in @.juno_task/plan.md
-- [ ] Create detailed specifications in @.juno_task/specs/
-
-### Step 2: Design and Architecture
-- [ ] Define system architecture
-- [ ] Design data models and APIs
-- [ ] Plan integration points
-- [ ] Document architecture decisions
-
-### Step 3: Implementation
-- [ ] Implement core functionality
-- [ ] Write comprehensive tests
-- [ ] Ensure code quality and documentation
-- [ ] Follow coding standards and best practices
-
-### Step 4: Testing and Validation
-- [ ] Unit tests with >90% coverage
-- [ ] Integration tests
-- [ ] Performance testing
-- [ ] Security review
-
-### Step 5: Documentation and Deployment
-- [ ] Update all documentation
-- [ ] Create deployment guides
-- [ ] Version control and tagging
-- [ ] Final review and sign-off
-
-## Current Tasks
-
-Update this section with specific tasks for the current iteration:
-
-1. **Task 1**: Study existing codebase and create specifications
-   - Status: Not Started
-   - Owner: ${variables.EDITOR}
-   - Priority: High
-
-## Notes and Considerations
-
-- Keep this file updated as implementation progresses
-- Document any blockers or issues encountered
-- Reference related specs and plan items
-- Track progress and update status regularly
-
----
-*Last updated: ${variables.CURRENT_DATE}*
-*Primary subagent: ${variables.EDITOR}*
-`;
-
+    // Render and write implement.md
     await fs.writeFile(path.join(junoTaskDir, 'implement.md'), implementContent);
+
+    // Get and render USER_FEEDBACK.md template
+    const userFeedbackTemplate = templateEngine.getBuiltInTemplate('USER_FEEDBACK.md');
+    if (userFeedbackTemplate) {
+      const userFeedbackContent = await templateEngine.render(userFeedbackTemplate, templateContext);
+      await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), userFeedbackContent);
+    }
+
+    // Get and render plan.md template
+    const planTemplate = templateEngine.getBuiltInTemplate('plan.md');
+    if (planTemplate) {
+      const planContent = await templateEngine.render(planTemplate, templateContext);
+      await fs.writeFile(path.join(junoTaskDir, 'plan.md'), planContent);
+    }
 
     // Create specs directory and files
     const specsDir = path.join(junoTaskDir, 'specs');
