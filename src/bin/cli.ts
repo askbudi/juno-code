@@ -29,8 +29,16 @@ import { setupConfigCommand } from '../cli/commands/config.js';
 import { createServicesCommand } from '../cli/commands/services.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
-// Version information
-const VERSION = '1.0.0';
+// Import version from package.json
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
+const packageJson = require(join(__dirname, '../../package.json'));
+const VERSION = packageJson.version;
 
 /** Determine if an error is a transient connection/pipe error. */
 function isConnectionLikeError(err: unknown): boolean {
