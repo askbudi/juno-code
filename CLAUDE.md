@@ -62,6 +62,7 @@ The project uses a sophisticated AI workflow with:
 **✅ 0 ACTIVE OPEN ISSUES** - All systems operational
 
 **Recent Resolutions (2025-11-12):**
+- Codex shell backend streaming support
 - Dynamic version from package.json
 - Documentation cleanup
 - Test suite stability (logger routing, batch ordering)
@@ -114,7 +115,15 @@ The project uses a sophisticated AI workflow with:
 - Test coverage must include both backend types and CLI integration
 
 **Recently Resolved Issues (2025-11-12):**
-1. ✅ Juno-code --version Dynamic Package.json Version - RESOLVED
+1. ✅ Codex Shell Backend Streaming Support - RESOLVED
+   - Issue: codex.py was missing JSON streaming features that claude.py already had, preventing real-time streaming output
+   - Root Cause: codex.py lacked stream_and_format_output() method and progress event support
+   - Solution: Enhanced codex.py with JSON streaming support (--stream flag, progress events, detailed thinking output)
+   - Test Results: Codex shell backend now provides same streaming experience as claude.py
+   - Status: ✅ RESOLVED - Feature parity achieved between codex and claude shell backends
+   - Date: 2025-11-12
+
+2. ✅ Juno-code --version Dynamic Package.json Version - RESOLVED
    - Issue: juno-code --version displayed hardcoded "1.0.0" instead of actual package.json version "1.0.17"
    - Root Cause: Hardcoded VERSION constant in cli.ts line 33 (VERSION = '1.0.0')
    - Solution: Updated cli.ts to dynamically import package.json using createRequire and read version from packageJson.version
@@ -122,7 +131,7 @@ The project uses a sophisticated AI workflow with:
    - Status: ✅ RESOLVED - Version automatically matches package.json, no manual updates needed
    - Date: 2025-11-12
 
-2. ✅ Test Suite Stability - Logger Output and Batch Command Ordering - RESOLVED
+3. ✅ Test Suite Stability - Logger Output and Batch Command Ordering - RESOLVED
    - Issue: Two test failures - logger routing INFO to console.error and batch command ordering issues
    - Root Cause: AdvancedLogger was using incorrect console methods and runBatch sorting algorithm had ordering issues
    - Solution: Fixed AdvancedLogger to use correct console methods (INFO→console.log, ERROR→console.error) and fixed runBatch sorting algorithm
