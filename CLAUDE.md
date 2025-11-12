@@ -59,10 +59,10 @@ The project uses a sophisticated AI workflow with:
 
 ## Current Status Update (2025-11-12)
 
-**✅ 0 ACTIVE OPEN ISSUES** - All systems operational
+**✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
 
 **Recent Resolutions (2025-11-12):**
-- Codex shell backend streaming support
+- Codex shell backend streaming support - Dual-format JSON/TEXT streaming (commit e7aec56)
 - Dynamic version from package.json
 - Documentation cleanup
 - Test suite stability (logger routing, batch ordering)
@@ -76,9 +76,7 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-12)
-
-**All Issues Resolved - Project Complete**
+### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-12)
 
 ## Backend Integration System Learnings (2025-11-11)
 
@@ -116,12 +114,16 @@ The project uses a sophisticated AI workflow with:
 
 **Recently Resolved Issues (2025-11-12):**
 1. ✅ Codex Shell Backend Streaming Support - RESOLVED
-   - Issue: codex.py was missing JSON streaming features that claude.py already had, preventing real-time streaming output
-   - Root Cause: codex.py lacked stream_and_format_output() method and progress event support
-   - Solution: Enhanced codex.py with JSON streaming support (--stream flag, progress events, detailed thinking output)
-   - Test Results: Codex shell backend now provides same streaming experience as claude.py
-   - Status: ✅ RESOLVED - Feature parity achieved between codex and claude shell backends
+   - Issue: codex.py was missing streaming features, preventing real-time streaming output
+   - Previous Failed Attempt: Enhanced codex.py with JSON streaming support like claude.py (--json flag, --pretty flag, pretty_format_json()), which FAILED because codex returns TEXT-based updates, NOT JSON
+   - Root Cause: codex.py was forcing JSON output when Codex CLI outputs TEXT format by default; shell backend only handled JSON parsing, not TEXT streaming
+   - Solution:
+     1. Updated codex.py to remove JSON formatting (removed --json/--pretty flags, removed pretty_format_json(), simplified run_codex() to stream text as-is)
+     2. Updated shell-backend.ts to handle both JSON (Claude) and TEXT (Codex) formats - try JSON parsing first, fall back to TEXT mode
+   - Test Results: Real-time streaming works for both codex and claude with shell backend, dual-format support operational
+   - Status: ✅ RESOLVED - Shell backend now supports both JSON and TEXT streaming formats
    - Date: 2025-11-12
+   - Commit: e7aec56
 
 2. ✅ Juno-code --version Dynamic Package.json Version - RESOLVED
    - Issue: juno-code --version displayed hardcoded "1.0.0" instead of actual package.json version "1.0.17"

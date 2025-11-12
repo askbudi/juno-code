@@ -5,13 +5,10 @@ This script provides a wrapper around OpenAI Codex CLI with configurable options
 """
 
 import argparse
-import json
 import os
 import subprocess
 import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import List
 
 
 class CodexService:
@@ -27,7 +24,6 @@ class CodexService:
         self.project_path = os.getcwd()
         self.prompt = ""
         self.additional_args: List[str] = []
-        self.message_counter = 0
         self.verbose = False
 
     def check_codex_installed(self) -> bool:
@@ -98,21 +94,6 @@ Examples:
         )
 
         parser.add_argument(
-            "--json",
-            action="store_true",
-            default=True,
-            help="Output in JSON format (default: True)"
-        )
-
-        parser.add_argument(
-            "--pretty",
-            type=str,
-            default=os.environ.get("CODEX_PRETTY", "true").lower(),
-            choices=["true", "false"],
-            help="Pretty print JSON output (default: true, env: CODEX_PRETTY)"
-        )
-
-        parser.add_argument(
             "--verbose",
             action="store_true",
             help="Enable verbose output"
@@ -175,84 +156,12 @@ Examples:
         # Add exec command with prompt
         cmd.extend(["exec", full_prompt])
 
-        # Add JSON flag if requested (enables streaming JSON output)
-        if args.json:
-            cmd.append("--json")
+        # Note: We do NOT add --json flag. Codex will output text format by default.
+        # This allows streaming text updates to work correctly with shell backend.
 
         return cmd
 
-    def pretty_format_json(self, json_line: str) -> Optional[str]:
-        """
-        Format JSON line for pretty output.
-        For type=assistant: show datetime, message content, and counter
-        For other types: show full message with datetime and counter
-        Returns None if line should be skipped
-
-        IMPORTANT: Always preserve the 'type' field so shell backend can parse events
-        """
-        try:
-            data = json.loads(json_line)
-            self.message_counter += 1
-
-            # Get current datetime in readable format
-            now = datetime.now().strftime("%I:%M:%S %p")
-
-            # For assistant messages, show simplified output
-            if data.get("type") == "assistant":
-                message = data.get("message", {})
-                content_list = message.get("content", [])
-
-                # Extract text content or tool_use from content array
-                text_content = ""
-                tool_use_data = None
-
-                for item in content_list:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text":
-                            text_content = item.get("text", "")
-                            break
-                        elif item.get("type") == "tool_use":
-                            # Extract tool name and input for tool_use
-                            tool_use_data = {
-                                "name": item.get("name", ""),
-                                "input": item.get("input", {})
-                            }
-                            break
-
-                # Create simplified output with datetime, content/tool_use, and counter
-                # KEEP the 'type' field for shell backend compatibility
-                simplified = {
-                    "type": "assistant",
-                    "datetime": now,
-                    "counter": f"#{self.message_counter}"
-                }
-
-                # Add either content or tool_use data
-                if tool_use_data:
-                    simplified["tool_use"] = tool_use_data
-                else:
-                    simplified["content"] = text_content
-
-                return json.dumps(simplified)
-            else:
-                # For other message types, show full message with datetime and counter
-                # Type field is already present in data, so it's preserved
-                output = {
-                    "datetime": now,
-                    "counter": f"#{self.message_counter}",
-                    **data
-                }
-                return json.dumps(output)
-
-        except json.JSONDecodeError:
-            # If not valid JSON, return as-is
-            return json_line
-        except Exception as e:
-            # On any error, return original line
-            print(f"Warning: Error formatting JSON: {e}", file=sys.stderr)
-            return json_line
-
-    def run_codex(self, cmd: List[str], verbose: bool = False, pretty: bool = True) -> int:
+    def run_codex(self, cmd: List[str], verbose: bool = False) -> int:
         """Execute the codex command and stream output"""
         if verbose:
             print(f"Executing: {' '.join(cmd)}", file=sys.stderr)
@@ -270,18 +179,12 @@ Examples:
                 universal_newlines=True
             )
 
-            # Stream stdout line by line (each line is a JSON object when using --json)
-            # This allows users to pipe to jq and see output as it streams
+            # Stream stdout line by line
+            # Codex outputs text format by default (not JSON), so we just pass it through
             if process.stdout:
                 for line in process.stdout:
-                    # Apply pretty formatting if enabled
-                    if pretty:
-                        formatted_line = self.pretty_format_json(line.strip())
-                        if formatted_line:
-                            print(formatted_line, flush=True)
-                    else:
-                        # Raw output without formatting
-                        print(line, end='', flush=True)
+                    # Output text as-is with immediate flush for real-time streaming
+                    print(line, end='', flush=True)
 
             # Wait for process to complete
             process.wait()
@@ -351,9 +254,8 @@ Examples:
 
         # Build and execute command
         cmd = self.build_codex_command(args)
-        pretty = args.pretty == "true"
         self.verbose = args.verbose
-        return self.run_codex(cmd, verbose=args.verbose, pretty=pretty)
+        return self.run_codex(cmd, verbose=args.verbose)
 
 
 def main():
