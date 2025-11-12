@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-12)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Dynamic version from package.json (2025-11-12)
+- **Latest Achievement**: Codex shell backend streaming support (2025-11-12)
 
 ---
 
@@ -15,11 +15,11 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-11
+**Last Updated**: 2025-11-12
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-12)
-- **ALL ISSUES RESOLVED**: Dynamic version from package.json resolved (2025-11-12)
-- **LATEST RESOLUTION**: Dynamic version from package.json (2025-11-12)
+- **ALL ISSUES RESOLVED**: Codex shell backend streaming support resolved (2025-11-12)
+- **LATEST RESOLUTION**: Codex shell backend streaming support (2025-11-12)
 - **PREVIOUS RESOLUTION**: Shell Backend Pretty JSON Output Format (2025-11-12)
 - **PREVIOUS RESOLUTION**: Backend Integration CLI Option Missing (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
@@ -36,21 +36,29 @@
 
 
 **Recently Resolved on 2025-11-12:**
-1. **Juno-code --version Dynamic Package.json Version** ✅:
+1. **Codex Shell Backend Streaming Support** ✅:
+   - ✅ Root Cause: codex.py was missing JSON streaming features that claude.py already had, preventing real-time streaming output
+   - ✅ Solution: Enhanced codex.py with JSON streaming support (--stream flag, progress events, detailed thinking output)
+   - ✅ Implementation: Added stream_and_format_output() method with real-time JSON streaming, event counter, and detailed formatting
+   - ✅ Test Results: Codex shell backend now has same streaming capabilities as claude.py, real-time progress events working
+   - ✅ Files Modified: src/templates/services/codex.py - added streaming support matching claude.py features
+   - ✅ Feature parity achieved between codex and claude shell backends
+
+2. **Juno-code --version Dynamic Package.json Version** ✅:
    - ✅ Root Cause: cli.ts had hardcoded VERSION = '1.0.0' on line 33 instead of reading dynamically from package.json
    - ✅ Solution: Updated cli.ts to use createRequire to import package.json and read version dynamically (VERSION = packageJson.version)
    - ✅ Test Results: juno-code --version now displays "1.0.17" matching package.json, automatic version updates working
    - ✅ Files Modified: src/bin/cli.ts - replaced hardcoded version with dynamic package.json import using createRequire
    - ✅ No manual version updates needed in cli.ts anymore
 
-2. **Shell Backend Pretty JSON Output Format** ✅:
+3. **Shell Backend Pretty JSON Output Format** ✅:
    - ✅ Root Cause: Shell backend verbose mode was showing pipe-separated format instead of jq-friendly JSON with colors and indentation
    - ✅ Solution: Added --pretty flag to claude.py with default=true, added CLAUDE_PRETTY ENV variable support, implemented pretty_format_json() method
    - ✅ Test Results: All test criteria met - JSON output with colors preserved, human-readable indentation, jq-compatible structure
    - ✅ Files Modified: claude.py - enhanced JSON formatting with selective field display and color preservation
    - ✅ User requested claude.py-style output format achieved with jq-friendly formatting
 
-2. **Test Suite Stability - Logger Output and Batch Command Ordering** ✅:
+4. **Test Suite Stability - Logger Output and Batch Command Ordering** ✅:
    - ✅ Root Cause: Two test failures - logger routing INFO to console.error and batch command ordering issues
    - ✅ Solution: Fixed AdvancedLogger to use correct console methods (INFO→console.log, ERROR→console.error) and fixed runBatch sorting algorithm
    - ✅ Test Results: start.test.ts and command-executor.test.ts failures resolved, all tests passing
@@ -433,7 +441,14 @@
 ### **✅ ALL SYSTEMS WORKING - 0 ACTIVE OPEN ISSUES** ✅
 
 **Latest Achievements (2025-11-12):**
-1. **Shell Backend Pretty JSON Output Format** ✅:
+1. **Codex Shell Backend Streaming Support** ✅:
+   - ✅ Root Need: codex.py needed JSON streaming capabilities matching claude.py for real-time progress output
+   - ✅ Solution: Enhanced codex.py with stream_and_format_output() method, --stream flag, and progress event support
+   - ✅ Implementation: Added real-time JSON streaming, event counter, detailed thinking output formatting
+   - ✅ Test Results: Codex shell backend now provides same streaming experience as claude.py
+   - ✅ User Impact: Feature parity achieved between codex and claude shell backends for consistent user experience
+
+2. **Shell Backend Pretty JSON Output Format** ✅:
    - ✅ Root Need: User wanted shell backend verbose mode to show claude.py-style jq-friendly JSON formatting with colors and indentation
    - ✅ Solution: Added --pretty flag to claude.py with default=true, CLAUDE_PRETTY environment variable support
    - ✅ Implementation: Created pretty_format_json() method for selective field display with color preservation
