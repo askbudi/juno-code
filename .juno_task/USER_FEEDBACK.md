@@ -1,152 +1,60 @@
 ## Open Issues
 <!-- Current status: 0 OPEN ISSUES -->
 <OPEN_ISSUES>
-
 </OPEN_ISSUES>
 
-## Resolved Issues - VALIDATED FIXES ONLY
+## Recently Resolved Issues (2025-11-12)
 
-<!-- Older resolved issues have been archived to preserve space -->
-<!-- Check .juno_task/archives/ for historical resolved issues -->
+**1. Documentation Cleanup** - ✅ RESOLVED (2025-11-12)
+- Cleaned up USER_FEEDBACK.md and CLAUDE.md to remove detailed implementation artifacts and keep essential information only
 
-**10. Shell Backend Verbose JSON Output Format - jq-Style Formatting** (Date: 2025-11-11, Resolved: 2025-11-11)
+**2. Test Suite Stability - Logger Output and Batch Command Ordering** - ✅ RESOLVED (2025-11-12)
+- Fixed AdvancedLogger console method routing (INFO→console.log, ERROR→console.error)
+- Fixed runBatch sorting algorithm for proper command ordering
+- Files: advanced-logger.ts, command-executor.ts
 
-**Issue:**
-Shell backend verbose mode was showing pipe-separated format instead of human-readable JSON format with colors and indentation like `claude.py | jq .` output.
+**3. Init Command Template System** - ✅ RESOLVED (2025-11-12)
+- Refactored init.ts to use TemplateEngine and load templates from engine.ts
+- Templates properly loaded with variable population
 
-**User Report:**
-```
-Now -b shell shows progress in this format:
-6:37:37 PM [shell] thinking: type=assistant | message_id=msg_01W5v2PyYWCjSXdmhY4Mjksx | model=claude-sonnet-4-20250514 | tokens=3/1
+**4. Message Duplication and Tool_use Empty Content** - ✅ RESOLVED (2025-11-12)
+- Fixed shell backend duplicate output issues
+- Enhanced tool_use content extraction in claude.py
 
-It is not a correct format
-I want to see progress in human readable json format.
-I want to see the progress similar to doing this: claude.py {args...} | jq .
+**5. Claude.py --pretty Flag Customization** - ✅ RESOLVED (2025-11-12)
+- Implemented --pretty flag with default=true and ENV variable support (CLAUDE_PRETTY)
+- Selective field display for assistant messages
+- File: claude.py
 
-juno-code -b shell -v
-should have the same output format as mcp backend of juno-code, when json streaming response is getting printed on screen with the right colors and indention and it is human readable.
-```
+## Recently Resolved Issues (2025-11-11)
 
-<PREVIOUS_AGENT_ATTEMPT>
-**INCOMPLETE RESOLUTION (2025-11-11):**
-Previous agent implemented MCP-style pipe-separated formatting (type=X | subtype=Y | ...), but user wanted jq-style JSON output with proper indentation and colors, not pipe-separated text. The user specifically requested the same format as `claude.py | jq .` output.
-</PREVIOUS_AGENT_ATTEMPT>
+**6. Shell Backend Verbose JSON Output Format - jq-Style Formatting** - ✅ RESOLVED (2025-11-11)
+- Implemented jq-style JSON output with proper indentation and syntax highlighting
+- Files: shell-backend.ts, start.ts, main.ts, test.ts
 
-**Root Cause:**
-Shell backend was formatting events into pipe-separated text format instead of preserving and colorizing the raw JSON output with proper indentation.
+**7. Shell Backend Real-Time Updates** - ✅ RESOLVED (2025-11-11)
+- Fixed stdin handling (added child.stdin.end()) for proper subprocess execution
+- Real-time streaming now works correctly
 
-**Solution Implemented:**
-1. Updated shell-backend.ts convertClaudeEventToProgress() to pass raw JSON line when outputRawJson=true
-2. Changed metadata flag from mcpStyleFormat to rawJsonOutput to indicate jq-style formatting needed
-3. Created colorizeJson() helper method in all progress display classes (ProgressDisplay, MainProgressDisplay, TestProgressDisplay)
-4. Implemented JSON syntax highlighting with colors: blue for keys, green for strings, yellow for numbers, magenta for booleans
-5. Added proper JSON formatting with 2-space indentation using JSON.stringify(obj, null, 2)
-6. Maintained timestamp and backend prefix format: `[timestamp] [backend] {formatted_json}`
+**8. Backend Integration** - ✅ RESOLVED (2025-11-11)
+- Implemented -b/--backend flag and JUNO_CODE_AGENT env variable support
+- Created BackendManager, ShellBackend, MCPBackend classes
 
-**Test Criteria:**
-✅ Shell backend outputs raw JSON with proper indentation
-✅ JSON is colorized with syntax highlighting (keys, strings, numbers, booleans)
-✅ Format matches `claude.py | jq .` style output
-✅ Timestamp and backend prefix are preserved
-✅ Real-time streaming maintains JSON format integrity
-✅ Build succeeds without errors
+**9. Claude Shell Script** - ✅ RESOLVED (2025-11-11)
+- Created claude.py shell script with full Claude CLI argument support
+- File: claude.py
 
-**Test Results:**
-✅ Build: Successful compilation
-✅ Real CLI Test: `./dist/bin/cli.mjs -s claude -m sonnet-4.5 -i 1 -b shell -v -p "echo hello world"` works perfectly
-✅ JSON Format: Output shows properly formatted JSON with 2-space indentation:
-    ```
-    6:51:00 PM [shell] {
-      "type": "assistant",
-      "message": {
-        "model": "claude-sonnet-4-5-20250929",
-        ...
-      }
-    }
-    ```
-✅ Colors: JSON keys in blue, strings in green, numbers in yellow, booleans in magenta
-✅ Human Readable: Format is clean, indented, and easy to read (matches jq style)
-✅ Streaming: Each JSON event appears in real-time with proper formatting
-✅ Backend Prefix: Timestamp and [shell] prefix maintained for context
+## Recently Resolved Issues (2025-11-10)
 
-**Files Modified:**
-- juno-task-ts/src/core/backends/shell-backend.ts (updated convertClaudeEventToProgress to pass raw JSON, changed metadata flag)
-- juno-task-ts/src/cli/commands/start.ts (added colorizeJson method, updated displayVerboseProgress to handle rawJsonOutput)
-- juno-task-ts/src/cli/commands/main.ts (added colorizeJson method, updated onProgress to handle rawJsonOutput)
-- juno-task-ts/src/cli/commands/test.ts (added colorizeJson method, updated onProgress to handle rawJsonOutput)
+**10. Backend Manager Runtime Error** - ✅ RESOLVED (2025-11-10)
+- Fixed createExecutionEngine() to use BackendManager instance instead of mcpClient
 
-**Status:** ✅ RESOLVED - Shell backend now outputs jq-style formatted JSON with colors and proper indentation
+**11. Shell Script Services System** - ✅ RESOLVED (2025-11-10)
+- Created src/templates/services/ directory with codex.py and claude.py
+- Implemented ServiceInstaller utility and 'juno-code services' CLI command
 
-**11. Shell Backend Pretty JSON Output Format Enhancement** (Date: 2025-11-11, Resolved: 2025-11-12)
+**12. Deploy Script Git Tag Error** - ✅ RESOLVED (2025-11-10)
+- Fixed ANSI color codes contaminating version string in bump_version()
+- Added >&2 redirects to print functions
 
-**Issue:**
-User wanted ability to customize JSON output from claude.py script with a --pretty flag that defaults to True, allowing selective display of fields and hiding verbose information like usage and stop_reason.
-
-**Root Cause:**
-User wanted ability to customize JSON output from claude.py script with a --pretty flag that defaults to True, allowing selective display of fields and hiding verbose information like usage and stop_reason.
-
-**Solution Implemented:**
-1. Added `--pretty` flag to claude.py with default value "true" (accepts "true"/"false")
-2. Added ENV variable support (CLAUDE_PRETTY) for controlling pretty output without CLI arg
-3. Implemented `pretty_format_json()` method that:
-   - For "type=assistant" messages: shows only datetime, content, and counter
-   - For other message types: shows full message with datetime and counter prepended
-   - Adds message counter (#1, #2, #3...) to track streaming messages
-4. Pretty formatting is applied during streaming output, maintaining real-time display
-5. When --pretty=false: outputs raw streaming JSON (original behavior)
-6. When --pretty=true (default): outputs formatted JSON with selected fields
-
-**Test Criteria:**
-✅ --pretty flag added with default=true
-✅ --pretty true shows formatted output (datetime, content for assistant, full message for others)
-✅ --pretty false shows raw JSON output
-✅ ENV variable CLAUDE_PRETTY=true/false works correctly
-✅ Message counter (#1, #2, #3) increments correctly
-✅ jq piping works with pretty output
-✅ Build succeeds without errors
-✅ Streaming output maintains real-time display
-
-**Test Results:**
-✅ Help Text: `claude.py --help` shows `--pretty {true,false}` option with ENV var note
-✅ Pretty True: `python3 claude.py -p "say hello" --pretty true` outputs formatted JSON with datetime and counter
-✅ Pretty False: `python3 claude.py -p "say hi" --pretty false` outputs raw JSON (original format)
-✅ ENV Variable: `env CLAUDE_PRETTY=false python3 claude.py -p "test"` respects ENV setting
-✅ Assistant Messages: Simplified to show only {"datetime": "...", "content": "...", "counter": "#N"}
-✅ Other Messages: Full message with {"datetime": "...", "counter": "#N", ...original fields}
-✅ jq Piping: `python3 claude.py -p "test" --pretty true | jq -c '.counter'` extracts fields correctly
-✅ Message Counter: Increments correctly (#1, #2, #3) across all message types
-✅ Build: Successfully compiled and copied to dist/templates/services/
-
-**Files Modified:**
-- juno-task-ts/src/templates/services/claude.py (added --pretty flag, CLAUDE_PRETTY ENV support, pretty_format_json method, message counter)
-
-**Status:** ✅ RESOLVED - Pretty JSON output formatting implemented with --pretty flag and ENV variable support
-
-**12. Test Suite Stability - Logger Output and Batch Command Ordering** (Date: 2025-11-12, Resolved: 2025-11-12)
-
-**Issue:**
-Two test failures were occurring: logger routing INFO to console.error and batch command ordering issues.
-
-**Root Cause:**
-AdvancedLogger was using incorrect console methods (INFO messages routed to console.error) and runBatch sorting algorithm had ordering issues.
-
-**Solution Implemented:**
-1. Fixed AdvancedLogger to use correct console methods (INFO→console.log, ERROR→console.error)
-2. Fixed runBatch sorting algorithm for proper command ordering
-
-**Test Criteria:**
-✅ start.test.ts "should handle failed execution" passes
-✅ command-executor.test.ts "should execute multiple commands in batch" passes
-✅ All test suite runs without failures
-
-**Test Results:**
-✅ Logger Routing: Fixed INFO messages to console.log instead of console.error
-✅ Batch Ordering: Fixed sorting algorithm for command execution order
-✅ Test Stability: Both test failures resolved
-✅ Build: Successful compilation
-
-**Files Modified:**
-- juno-task-ts/src/utils/advanced-logger.ts (fixed console method routing)
-- juno-task-ts/src/utils/command-executor.ts (fixed runBatch sorting algorithm)
-
-**Status:** ✅ RESOLVED - Test suite stability issues fixed with proper logger output and batch command ordering
+<!-- Historical resolved issues archived - check git history for full details -->
