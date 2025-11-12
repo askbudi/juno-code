@@ -121,3 +121,32 @@ User wanted ability to customize JSON output from claude.py script with a --pret
 - juno-task-ts/src/templates/services/claude.py (added --pretty flag, CLAUDE_PRETTY ENV support, pretty_format_json method, message counter)
 
 **Status:** ✅ RESOLVED - Pretty JSON output formatting implemented with --pretty flag and ENV variable support
+
+**12. Test Suite Stability - Logger Output and Batch Command Ordering** (Date: 2025-11-12, Resolved: 2025-11-12)
+
+**Issue:**
+Two test failures were occurring: logger routing INFO to console.error and batch command ordering issues.
+
+**Root Cause:**
+AdvancedLogger was using incorrect console methods (INFO messages routed to console.error) and runBatch sorting algorithm had ordering issues.
+
+**Solution Implemented:**
+1. Fixed AdvancedLogger to use correct console methods (INFO→console.log, ERROR→console.error)
+2. Fixed runBatch sorting algorithm for proper command ordering
+
+**Test Criteria:**
+✅ start.test.ts "should handle failed execution" passes
+✅ command-executor.test.ts "should execute multiple commands in batch" passes
+✅ All test suite runs without failures
+
+**Test Results:**
+✅ Logger Routing: Fixed INFO messages to console.log instead of console.error
+✅ Batch Ordering: Fixed sorting algorithm for command execution order
+✅ Test Stability: Both test failures resolved
+✅ Build: Successful compilation
+
+**Files Modified:**
+- juno-task-ts/src/utils/advanced-logger.ts (fixed console method routing)
+- juno-task-ts/src/utils/command-executor.ts (fixed runBatch sorting algorithm)
+
+**Status:** ✅ RESOLVED - Test suite stability issues fixed with proper logger output and batch command ordering

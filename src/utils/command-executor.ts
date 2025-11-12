@@ -475,8 +475,9 @@ export class CommandExecutor {
     batchOptions: Partial<BatchOptions> = {}
   ): Promise<CommandResult[]> {
     const { concurrency = 3, stopOnError = false, onProgress } = batchOptions;
-    const results: CommandResult[] = [];
-    const queue = [...commands];
+    const results: Array<{ result: CommandResult; originalIndex: number }> = [];
+    // Create queue with original indices
+    const queue = commands.map((cmd, index) => ({ ...cmd, originalIndex: index }));
     let completed = 0;
 
     const executeBatch = async (): Promise<CommandResult[]> => {
@@ -492,7 +493,7 @@ export class CommandExecutor {
             ...cmd.options,
           });
 
-          results.push(result);
+          results.push({ result, originalIndex: cmd.originalIndex });
           completed++;
 
           if (stopOnError && !result.success) {
@@ -503,16 +504,10 @@ export class CommandExecutor {
       });
 
       await Promise.all(workers);
-      return results.sort((a, b) => {
-        // Sort by original order (using command as identifier)
-        const aIndex = commands.findIndex(cmd =>
-          results.indexOf(a) === commands.indexOf(cmd)
-        );
-        const bIndex = commands.findIndex(cmd =>
-          results.indexOf(b) === commands.indexOf(cmd)
-        );
-        return aIndex - bIndex;
-      });
+      // Sort by original order and extract just the results
+      return results
+        .sort((a, b) => a.originalIndex - b.originalIndex)
+        .map(item => item.result);
     };
 
     return executeBatch();

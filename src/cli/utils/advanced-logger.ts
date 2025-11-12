@@ -400,7 +400,7 @@ export class AdvancedLogger {
 
     // Format and output
     const formatted = this.formatter.format(entry, this.options);
-    this.output(formatted);
+    this.output(formatted, level);
   }
 
   /**
@@ -440,7 +440,7 @@ export class AdvancedLogger {
 
       this.addEntry(entry);
       const formatted = this.formatter.format(entry, this.options);
-      this.output(formatted);
+      this.output(formatted, level);
     }
 
     return duration;
@@ -469,7 +469,7 @@ export class AdvancedLogger {
 
     this.addEntry(entry);
     const formatted = this.formatter.format(entry, this.options);
-    this.output(formatted);
+    this.output(formatted, level);
   }
 
   /**
@@ -495,7 +495,7 @@ export class AdvancedLogger {
 
     this.addEntry(entry);
     const formatted = this.formatter.format(entry, this.options);
-    this.output(formatted);
+    this.output(formatted, level);
   }
 
   /**
@@ -576,9 +576,14 @@ export class AdvancedLogger {
   /**
    * Output formatted log
    */
-  private output(formatted: string): void {
+  private output(formatted: string, level: LogLevel): void {
     if (this.options.output === 'console' || this.options.output === 'both') {
-      console.error(formatted);  // Use stderr for logging
+      // Use console.log for INFO level and below, console.error for WARN and above
+      if (level >= LogLevel.WARN) {
+        console.error(formatted);
+      } else {
+        console.log(formatted);
+      }
     }
 
     if (this.options.output === 'file' || this.options.output === 'both') {
