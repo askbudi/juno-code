@@ -5,6 +5,20 @@
 
 ## Recently Resolved Issues (2025-11-12)
 
+**0. Juno-code --version Dynamic Package.json Version** - ✅ RESOLVED (2025-11-12)
+- Issue: juno-code --version displayed hardcoded "1.0.0" instead of actual package.json version "1.0.17"
+- Root Cause: Hardcoded VERSION constant in cli.ts line 33 (VERSION = '1.0.0')
+- Solution: Updated cli.ts to dynamically import package.json using createRequire and read version from packageJson.version
+- Implementation Details:
+  - Added createRequire import from 'module' to enable CommonJS require in ESM
+  - Created require function with import.meta.url as base
+  - Replaced hardcoded VERSION with const VERSION = packageJson.version
+- Test Criteria:
+  ✅ juno-code --version displays "1.0.17"
+  ✅ Version automatically matches package.json version
+  ✅ No manual version updates needed in cli.ts
+- File Modified: src/bin/cli.ts
+
 **1. Documentation Cleanup** - ✅ RESOLVED (2025-11-12)
 - Cleaned up USER_FEEDBACK.md and CLAUDE.md to remove detailed implementation artifacts and keep essential information only
 

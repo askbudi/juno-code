@@ -57,18 +57,25 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-11)
+## Current Status Update (2025-11-12)
 
-**✅ 0 ACTIVE OPEN ISSUES**
-- Latest Resolution: Backend Integration System Implementation (Issue #6) (2025-11-11)
-- Previous Resolution: Claude Shell Script Flag Format Issue (2025-11-11)
-- Previous Resolutions: NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
-- Previous Resolution: ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
-- All Mac virtual environment installation scenarios working correctly
-- Bootstrap shell shim implementation completed
-- Ubuntu Python environment compatibility maintained
+**✅ 0 ACTIVE OPEN ISSUES** - All systems operational
 
-### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-11)
+**Recent Resolutions (2025-11-12):**
+- Dynamic version from package.json
+- Documentation cleanup
+- Test suite stability (logger routing, batch ordering)
+- Init command template system
+- Message duplication and tool_use content
+- Claude.py --pretty flag
+
+**Previous Resolutions (2025-11-11):**
+- Backend Integration System Implementation (Issue #6)
+- Claude Shell Script Flag Format Issue
+- NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
+- ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
+
+### ✅ 0 ACTIVE OPEN ISSUES (Last updated: 2025-11-12)
 
 **All Issues Resolved - Project Complete**
 
@@ -107,7 +114,15 @@ The project uses a sophisticated AI workflow with:
 - Test coverage must include both backend types and CLI integration
 
 **Recently Resolved Issues (2025-11-12):**
-1. ✅ Test Suite Stability - Logger Output and Batch Command Ordering - RESOLVED
+1. ✅ Juno-code --version Dynamic Package.json Version - RESOLVED
+   - Issue: juno-code --version displayed hardcoded "1.0.0" instead of actual package.json version "1.0.17"
+   - Root Cause: Hardcoded VERSION constant in cli.ts line 33 (VERSION = '1.0.0')
+   - Solution: Updated cli.ts to dynamically import package.json using createRequire and read version from packageJson.version
+   - Test Results: juno-code --version now displays "1.0.17" matching package.json
+   - Status: ✅ RESOLVED - Version automatically matches package.json, no manual updates needed
+   - Date: 2025-11-12
+
+2. ✅ Test Suite Stability - Logger Output and Batch Command Ordering - RESOLVED
    - Issue: Two test failures - logger routing INFO to console.error and batch command ordering issues
    - Root Cause: AdvancedLogger was using incorrect console methods and runBatch sorting algorithm had ordering issues
    - Solution: Fixed AdvancedLogger to use correct console methods (INFO→console.log, ERROR→console.error) and fixed runBatch sorting algorithm

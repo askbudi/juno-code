@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-12)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Shell Backend Pretty JSON Output Format resolved (2025-11-12)
+- **Latest Achievement**: Dynamic version from package.json (2025-11-12)
 
 ---
 
@@ -18,8 +18,9 @@
 **Last Updated**: 2025-11-11
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-12)
-- **ALL ISSUES RESOLVED**: Shell Backend Pretty JSON Output Format resolved (2025-11-12)
-- **LATEST RESOLUTION**: Shell Backend Pretty JSON Output Format (2025-11-12)
+- **ALL ISSUES RESOLVED**: Dynamic version from package.json resolved (2025-11-12)
+- **LATEST RESOLUTION**: Dynamic version from package.json (2025-11-12)
+- **PREVIOUS RESOLUTION**: Shell Backend Pretty JSON Output Format (2025-11-12)
 - **PREVIOUS RESOLUTION**: Backend Integration CLI Option Missing (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
 - **PREVIOUS RESOLUTIONS**: NPM Registry Binary Linking and ENV Damage During Transfer to Subagents (2025-11-09)
@@ -35,7 +36,14 @@
 
 
 **Recently Resolved on 2025-11-12:**
-1. **Shell Backend Pretty JSON Output Format** ✅:
+1. **Juno-code --version Dynamic Package.json Version** ✅:
+   - ✅ Root Cause: cli.ts had hardcoded VERSION = '1.0.0' on line 33 instead of reading dynamically from package.json
+   - ✅ Solution: Updated cli.ts to use createRequire to import package.json and read version dynamically (VERSION = packageJson.version)
+   - ✅ Test Results: juno-code --version now displays "1.0.17" matching package.json, automatic version updates working
+   - ✅ Files Modified: src/bin/cli.ts - replaced hardcoded version with dynamic package.json import using createRequire
+   - ✅ No manual version updates needed in cli.ts anymore
+
+2. **Shell Backend Pretty JSON Output Format** ✅:
    - ✅ Root Cause: Shell backend verbose mode was showing pipe-separated format instead of jq-friendly JSON with colors and indentation
    - ✅ Solution: Added --pretty flag to claude.py with default=true, added CLAUDE_PRETTY ENV variable support, implemented pretty_format_json() method
    - ✅ Test Results: All test criteria met - JSON output with colors preserved, human-readable indentation, jq-compatible structure
