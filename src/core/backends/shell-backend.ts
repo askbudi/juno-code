@@ -365,7 +365,7 @@ export class ShellBackend implements Backend {
       let stderr = '';
       let isProcessKilled = false;
 
-      // Handle stdout (JSON streaming or regular output)
+      // Handle stdout (JSON streaming or TEXT streaming)
       child.stdout?.on('data', (chunk: Buffer) => {
         const data = chunk.toString();
         stdout += data;
@@ -374,13 +374,13 @@ export class ShellBackend implements Backend {
           engineLogger.debug(`Script stdout chunk: ${data.length} bytes`);
         }
 
-        // Try to parse as JSON streaming events
+        // Try to parse and emit streaming events (handles both JSON and TEXT formats)
         if (this.config!.enableJsonStreaming !== false) {
           try {
             this.parseAndEmitStreamingEvents(data, request.metadata?.sessionId as string || 'unknown');
           } catch (error) {
             if (this.config!.debug) {
-              engineLogger.warn(`JSON streaming parse error: ${error instanceof Error ? error.message : String(error)}`);
+              engineLogger.warn(`Streaming parse error: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
         }
@@ -461,11 +461,16 @@ export class ShellBackend implements Backend {
   }
 
   /**
-   * Parse JSON streaming events from script output
-   * Handles both generic StreamingEvent format and Claude CLI specific format
+   * Parse streaming events from script output
+   * Handles both JSON format (Claude) and TEXT format (Codex)
+   *
+   * Strategy:
+   * 1. Try to parse each line as JSON first (for Claude)
+   * 2. If JSON parsing fails, treat as TEXT streaming (for Codex and other text-based subagents)
+   * 3. Emit all non-empty lines as progress events for real-time display
    */
   private parseAndEmitStreamingEvents(data: string, sessionId: string): void {
-    // Handle partial JSON objects by maintaining a buffer
+    // Handle partial lines by maintaining a buffer
     if (!this.jsonBuffer) {
       this.jsonBuffer = '';
     }
@@ -481,6 +486,8 @@ export class ShellBackend implements Backend {
       const trimmedLine = line.trim();
       if (!trimmedLine) continue;
 
+      // Try JSON parsing first (for Claude and other JSON-outputting subagents)
+      let isJsonParsed = false;
       try {
         const jsonEvent = JSON.parse(trimmedLine);
 
@@ -491,6 +498,7 @@ export class ShellBackend implements Backend {
           // Handle Claude CLI specific format
           // Pass the original trimmedLine for raw JSON output mode
           progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, trimmedLine);
+          isJsonParsed = true;
         } else if (this.isGenericStreamingEvent(jsonEvent)) {
           // Handle generic StreamingEvent format
           progressEvent = {
@@ -502,38 +510,47 @@ export class ShellBackend implements Backend {
             content: jsonEvent.content,
             metadata: jsonEvent.metadata
           };
+          isJsonParsed = true;
         } else {
-          // Unknown format, skip or emit as thinking
+          // Unknown JSON format, treat as text below
           if (this.config?.debug) {
-            engineLogger.debug(`Unknown JSON format: ${trimmedLine}`);
+            engineLogger.debug(`Unknown JSON format, treating as text: ${trimmedLine}`);
           }
-          continue;
         }
 
-        // Emit the progress event
-        this.emitProgressEvent(progressEvent).catch(error => {
-          if (this.config?.debug) {
-            engineLogger.warn(`Failed to emit progress event: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        });
-
-      } catch (error) {
-        // Not JSON, might be regular output - emit as thinking event if it looks meaningful
-        if (trimmedLine.length > 0 && !trimmedLine.startsWith('#')) {
-          this.emitProgressEvent({
-            sessionId,
-            timestamp: new Date(),
-            backend: 'shell',
-            count: ++this.eventCounter,
-            type: 'thinking',
-            content: trimmedLine,
-            metadata: { raw: true, parseError: true }
-          }).catch(error => {
+        // Emit the progress event if JSON was successfully parsed
+        if (isJsonParsed) {
+          this.emitProgressEvent(progressEvent!).catch(error => {
             if (this.config?.debug) {
-              engineLogger.warn(`Failed to emit thinking event: ${error instanceof Error ? error.message : String(error)}`);
+              engineLogger.warn(`Failed to emit progress event: ${error instanceof Error ? error.message : String(error)}`);
             }
           });
         }
+
+      } catch (error) {
+        // Not JSON - this is expected for text-based subagents like Codex
+        // Treat as TEXT streaming and emit as thinking event
+        isJsonParsed = false;
+      }
+
+      // If not JSON, handle as TEXT streaming (for Codex and other text-based outputs)
+      if (!isJsonParsed && trimmedLine.length > 0) {
+        this.emitProgressEvent({
+          sessionId,
+          timestamp: new Date(),
+          backend: 'shell',
+          count: ++this.eventCounter,
+          type: 'thinking',
+          content: trimmedLine,
+          metadata: {
+            format: 'text',
+            raw: true
+          }
+        }).catch(error => {
+          if (this.config?.debug) {
+            engineLogger.warn(`Failed to emit text streaming event: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        });
       }
     }
   }
