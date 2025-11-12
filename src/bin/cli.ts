@@ -382,6 +382,15 @@ async function main(): Promise<void> {
   // Configure environment
   configureEnvironment();
 
+  // Auto-update service scripts if package version changed (silent operation)
+  // This ensures users always have the latest service scripts after npm upgrade
+  try {
+    const { ServiceInstaller } = await import('../utils/service-installer.js');
+    await ServiceInstaller.autoUpdate();
+  } catch {
+    // Silent failure - don't break CLI if update fails
+  }
+
   // Basic program setup
   program
     .name('juno-code')

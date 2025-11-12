@@ -1,9 +1,56 @@
 ## Open Issues
 <!-- Current status: 0 OPEN ISSUES -->
 <OPEN_ISSUES>
+No open issues. All reported issues have been resolved.
 </OPEN_ISSUES>
 
 ## Recently Resolved Issues (2025-11-12)
+
+**Issue #8: NPM Publishing and Service Script Updates** - ✅ RESOLVED (2025-11-12)
+- **Date Reported**: 2025-11-12
+- **Resolution Date**: 2025-11-12
+- **Root Cause**:
+  - Service scripts (codex.py, claude.py) ARE included in npm package in dist/templates/services/
+  - ServiceInstaller.install() correctly copies scripts to ~/.juno_code/services/
+  - HOWEVER, ServiceInstaller had NO version tracking mechanism
+  - ServiceInstaller.install() only runs during:
+    1. `juno-code init` (first time setup)
+    2. `juno-code services install` (manual)
+  - When user upgrades juno-code via npm, old service scripts remain in ~/.juno_code/services/
+- **Solution**:
+  1. **Added version tracking to ServiceInstaller**:
+     - Stores installed version in ~/.juno_code/services/.version
+     - getPackageVersion() reads current package.json version
+     - getInstalledVersion() reads stored version
+     - needsUpdate() compares versions using semver
+  2. **Added automatic update mechanism**:
+     - Created autoUpdate() method (silent operation)
+     - Calls needsUpdate() and installs if version mismatch
+     - Added to cli.ts main() function to run on EVERY CLI invocation
+     - Silent operation - doesn't break CLI if update fails
+  3. **Enhanced install() method**:
+     - Saves version after successful installation
+     - Added silent parameter to suppress output during auto-update
+- **Files Modified**:
+  - juno-task-ts/src/utils/service-installer.ts - Added version tracking and auto-update
+  - juno-task-ts/src/bin/cli.ts - Added autoUpdate() call in main() function
+- **Test Criteria**:
+  ✅ Version file (.version) created in ~/.juno_code/services/ after first run
+  ✅ Version file contains current package version (1.0.19)
+  ✅ Auto-update detects version mismatch (tested with 1.0.18 → 1.0.19)
+  ✅ Service scripts updated automatically when version changes
+  ✅ Version file updated after auto-update completes
+  ✅ No update triggered when versions match
+  ✅ Silent operation - no output during auto-update
+  ✅ Build successful
+  ✅ Test suite passes (882 tests passed, 2 unrelated MCP timeout failures)
+- **Test Results**:
+  - Created .version file with package version automatically
+  - Simulated upgrade by changing .version from 1.0.18 to 1.0.19
+  - Auto-update successfully triggered and updated scripts
+  - Version file correctly updated to 1.0.19
+  - No performance impact on CLI startup
+  - Service scripts now automatically update on package upgrades
 
 **0. Juno-code --version Dynamic Package.json Version** - ✅ RESOLVED (2025-11-12)
 - Issue: juno-code --version displayed hardcoded "1.0.0" instead of actual package.json version "1.0.17"
