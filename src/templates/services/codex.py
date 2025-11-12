@@ -15,7 +15,7 @@ class CodexService:
     """Service wrapper for OpenAI Codex CLI"""
 
     # Default configuration
-    DEFAULT_MODEL = "gpt-4"
+    DEFAULT_MODEL = "gpt-5-codex"
     DEFAULT_AUTO_INSTRUCTION = """You are an AI coding assistant. Follow the instructions provided and generate high-quality code."""
 
     def __init__(self):
