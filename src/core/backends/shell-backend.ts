@@ -8,6 +8,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import fsExtra from 'fs-extra';
 import type { Backend } from '../backend-manager.js';
 import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback } from '../../mcp/types.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';
@@ -78,6 +79,7 @@ export class ShellBackend implements Backend {
   private progressCallbacks: ProgressCallback[] = [];
   private eventCounter = 0;
   private jsonBuffer = ''; // Buffer for handling partial JSON objects
+  private logFilePath: string | null = null; // Path to current log file
 
   /**
    * Configure the shell backend
@@ -117,6 +119,18 @@ export class ShellBackend implements Backend {
     const startTime = Date.now();
     const toolId = `shell_${request.toolName}_${startTime}`;
 
+    // Extract subagent name and create log file
+    const subagentType = this.extractSubagentFromToolName(request.toolName);
+    try {
+      this.logFilePath = await this.createLogFile(subagentType);
+    } catch (error) {
+      // Log creation failed - continue without file logging
+      if (this.config.debug) {
+        engineLogger.warn(`Failed to create log file, continuing without file logging: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      this.logFilePath = null;
+    }
+
     // Emit tool start event
     await this.emitProgressEvent({
       sessionId: request.metadata?.sessionId as string || 'unknown',
@@ -134,8 +148,7 @@ export class ShellBackend implements Backend {
     });
 
     try {
-      // Find appropriate script for the subagent
-      const subagentType = this.extractSubagentFromToolName(request.toolName);
+      // Find appropriate script for the subagent (already extracted above)
       const scriptPath = await this.findScriptForSubagent(subagentType);
 
       // Execute the script
@@ -243,6 +256,65 @@ export class ShellBackend implements Backend {
   // =============================================================================
   // Private Implementation Methods
   // =============================================================================
+
+  /**
+   * Create log file path and ensure log directory exists
+   */
+  private async createLogFile(subagentName: string): Promise<string> {
+    // Format timestamp as YYYYMMDD_HHMMSS
+    const now = new Date();
+    const timestamp = now.getFullYear().toString() +
+      (now.getMonth() + 1).toString().padStart(2, '0') +
+      now.getDate().toString().padStart(2, '0') +
+      '_' +
+      now.getHours().toString().padStart(2, '0') +
+      now.getMinutes().toString().padStart(2, '0') +
+      now.getSeconds().toString().padStart(2, '0');
+
+    // Create log directory path
+    const logDir = path.join(this.config!.workingDirectory, '.juno_task', 'logs');
+
+    // Ensure log directory exists
+    try {
+      await fsExtra.ensureDir(logDir);
+    } catch (error) {
+      if (this.config?.debug) {
+        engineLogger.warn(`Failed to create log directory: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      throw new Error(`Failed to create log directory: ${logDir}`);
+    }
+
+    // Create log file path
+    const logFileName = `${subagentName}_shell_${timestamp}.log`;
+    const logFilePath = path.join(logDir, logFileName);
+
+    if (this.config?.debug) {
+      engineLogger.debug(`Created log file path: ${logFilePath}`);
+    }
+
+    return logFilePath;
+  }
+
+  /**
+   * Write log entry to file
+   */
+  private async writeToLogFile(message: string): Promise<void> {
+    if (!this.logFilePath) {
+      return; // No log file configured
+    }
+
+    try {
+      // Append to log file with timestamp
+      const timestamp = new Date().toISOString();
+      const logEntry = `[${timestamp}] ${message}\n`;
+      await fsExtra.appendFile(this.logFilePath, logEntry, 'utf-8');
+    } catch (error) {
+      // Don't throw - just log the error if debug is enabled
+      if (this.config?.debug) {
+        engineLogger.warn(`Failed to write to log file: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
 
   /**
    * Extract subagent type from tool name
@@ -778,6 +850,13 @@ export class ShellBackend implements Backend {
    * Emit progress event to all callbacks
    */
   private async emitProgressEvent(event: ProgressEvent): Promise<void> {
+    // Write to log file first
+    if (this.logFilePath) {
+      const logMessage = `[${event.type}] ${event.content}${event.metadata ? ' | metadata: ' + JSON.stringify(event.metadata) : ''}`;
+      await this.writeToLogFile(logMessage);
+    }
+
+    // Then emit to callbacks for screen display
     for (const callback of this.progressCallbacks) {
       try {
         await callback(event);
