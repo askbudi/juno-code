@@ -152,6 +152,22 @@ class ProgressDisplay {
       }
     }
 
+    // Handle TEXT format events from shell backend (e.g., codex output)
+    // Try to parse content as JSON for jq-style formatting
+    // This handles codex output which sends TEXT format but contains JSON
+    if (event.metadata?.format === 'text') {
+      try {
+        const jsonObj = JSON.parse(event.content);
+        const formattedJson = this.colorizeJson(jsonObj);
+        writeTerminalProgress(`${chalk.gray(timestamp)} ${chalk.cyan(backend)} ${formattedJson}\n`);
+        return;
+      } catch (error) {
+        // Not JSON - show full content without truncation
+        writeTerminalProgress(chalk.gray(`[${timestamp}] ${backend} ${event.type}: ${event.content}\n`));
+        return;
+      }
+    }
+
     // Extract tool name from metadata if available
     const toolName = event.metadata?.toolName || 'unknown';
     const phase = event.metadata?.phase || '';
