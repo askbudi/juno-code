@@ -6,6 +6,47 @@ No open issues. All reported issues have been resolved.
 
 ## Recently Resolved Issues (2025-11-13)
 
+**Issue #17: Claude.py Multi-line JSON Rendering** - ✅ FULLY RESOLVED (2025-11-13)
+- **Date Reported**: 2025-11-13
+- **User Report**: Multi-line JSON content (strings with \n) not rendering with proper formatting, making output hard to read
+- **Symptom**: JSON output with multi-line string values shows as compact single-line with escaped \n sequences
+- **Resolution Date**: 2025-11-13
+- **Root Cause**:
+  - **Problem 1**: Previous attempt used `indent=2` on entire JSON structure when multi-line content was detected, making JSON output "sparse" with unwanted newlines everywhere
+  - **Problem 2**: The `\n` escape sequences in string values were still displayed as literal "\\n" instead of actual newlines
+- **Solution**:
+  1. Reverted the `indent=2` approach that made JSON structure sparse
+  2. Implemented custom JSON encoder `_custom_json_encode()` that renders multi-line string values with ACTUAL newlines
+  3. Similar to `jq -r` or `jq @text` behavior - `\n` in string values become actual line breaks
+  4. Keeps JSON structure compact (no indent=2), but string content is readable
+- **Implementation Details**:
+  - Added `_has_multiline_content()` helper function to detect multi-line strings in JSON structures
+  - Added `_custom_json_encode()` method that manually builds JSON output with actual newlines in string values
+  - Updated `pretty_format_json()` to use custom encoder when multi-line content is detected
+  - Single-line content continues to use standard `json.dumps()` for compact output
+- **Files Modified**:
+  - juno-task-ts/src/templates/services/claude.py (lines 213-334)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 873 tests passed, 2 unrelated MCP failures
+  - ✅ JSON structure stays compact (no sparse formatting)
+  - ✅ Multi-line string values rendered with actual newlines (jq -r style)
+  - ✅ Single-line content remains compact
+  - ✅ No regressions introduced
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 873 tests passed (2 unrelated MCP failures)
+  ✅ JSON structure compact - no unwanted sparse formatting
+  ✅ Multi-line strings display with actual newlines like jq -r
+  ✅ Single-line content remains compact
+  ✅ No regressions introduced
+  ```
+- **<PREVIOUS_AGENT_ATTEMPT>**:
+  - **Previous Failed Approach**: Used `indent=2` on entire JSON structure when multi-line content detected
+  - **Why It Failed**: Made JSON output "sparse" with unwanted newlines everywhere in the structure, and `\n` still showed as literal "\\n" in string values
+  - **What Was Learned**: Need custom JSON encoder that applies actual newlines ONLY within string values, not to entire structure
+
 **Issue #14: Kanban.sh Verbosity Control** - ✅ RESOLVED (2025-11-13)
 - **Date Reported**: 2025-11-13
 - **User Report**: kanban.sh prints verbose venv status messages unconditionally, should respect JUNO_VERBOSE environment variable

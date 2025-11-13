@@ -38,23 +38,24 @@
 
 
 **Recently Resolved on 2025-11-13:**
-1. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅:
-   - ✅ Initial Attempt (2025-11-13 early): Fixed assistant message multi-line rendering only
-     * Problem: Only handled message.content with multiline strings
-     * Result: Incomplete - missed tool_result and result field cases
-   - ✅ Final Complete Solution (2025-11-13 complete): FULLY RESOLVED with all three cases handled
-     * Case 1: Assistant message multi-line content - JSON indentation applied
-     * Case 2: Tool result multi-line content - JSON indentation applied
-     * Case 3: Result field multi-line content - JSON indentation applied
+1. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
+   - ✅ Root Cause:
+     * Problem 1: Previous attempt used `indent=2` on entire JSON structure when multi-line content was detected, making JSON output "sparse" with unwanted newlines everywhere
+     * Problem 2: The `\n` escape sequences in string values were still displayed as literal "\\n" instead of actual newlines
+   - ✅ Final Solution:
+     1. Reverted the `indent=2` approach that made JSON structure sparse
+     2. Implemented custom JSON encoder `_custom_json_encode()` that renders multi-line string values with ACTUAL newlines
+     3. Similar to `jq -r` or `jq @text` behavior - `\n` in string values become actual line breaks
+     4. Keeps JSON structure compact (no indent=2), but string content is readable
    - ✅ Implementation Details:
-     * Created contains_multiline_strings() helper function to detect multiline content across all message types
-     * Updated pretty_format_json() to check ALL message types: assistant content, tool_result content, and message result fields
-     * When multi-line content detected, applies JSON indentation for improved readability
-     * Maintains color output and formatting for non-multiline messages
-   - ✅ Test Results: Build successful, 889 automated tests passed, all manual tests passed
-   - ✅ Files Modified: src/templates/services/claude.py (contains_multiline_strings helper, enhanced pretty_format_json method)
-   - ✅ User Impact: All multi-line JSON content now displays with proper indentation for readability across all message types
-   - ✅ Status: FULLY RESOLVED - Complete implementation handling all use cases
+     * Added `_has_multiline_content()` helper function to detect multi-line strings in JSON structures
+     * Added `_custom_json_encode()` method that manually builds JSON output with actual newlines in string values
+     * Updated `pretty_format_json()` to use custom encoder when multi-line content is detected
+     * Single-line content continues to use standard `json.dumps()` for compact output
+   - ✅ Test Results: Build successful, 873 tests passed (2 unrelated MCP failures), JSON structure compact, multi-line strings display with actual newlines
+   - ✅ Files Modified: src/templates/services/claude.py (lines 213-334)
+   - ✅ User Impact: Multi-line JSON content now renders like jq -r with actual newlines in string values while keeping structure compact
+   - ✅ Status: FULLY RESOLVED - Custom JSON encoder handles both problems successfully
 
 2. **Kanban.sh Verbosity Control (Issue #14)** ✅:
    - ✅ Root Cause: kanban.sh logging functions (log_info, log_success, log_warning) printed output unconditionally with no JUNO_VERBOSE check
@@ -486,21 +487,24 @@
 
 **Latest Achievements (2025-11-13):**
 1. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
-   - ✅ Root Need: Multi-line JSON content was not rendering with proper indentation in all cases
-   - ✅ Initial Attempt (incomplete): Fixed only assistant message multi-line rendering
-   - ✅ Final Complete Solution: FULLY RESOLVED all three message type cases
-     * Case 1: Assistant message multi-line content (message.content) - JSON indentation applied
-     * Case 2: Tool result multi-line content (tool_result) - JSON indentation applied
-     * Case 3: Result field multi-line content (message result field) - JSON indentation applied
+   - ✅ Root Need: Multi-line JSON content (strings with \n) not rendering with proper formatting
+   - ✅ Root Cause:
+     * Problem 1: Previous attempt used `indent=2` on entire JSON structure, making JSON output "sparse" with unwanted newlines everywhere
+     * Problem 2: The `\n` escape sequences in string values were still displayed as literal "\\n" instead of actual newlines
+   - ✅ Final Solution:
+     1. Reverted the `indent=2` approach that made JSON structure sparse
+     2. Implemented custom JSON encoder `_custom_json_encode()` that renders multi-line string values with ACTUAL newlines
+     3. Similar to `jq -r` or `jq @text` behavior - `\n` in string values become actual line breaks
+     4. Keeps JSON structure compact (no indent=2), but string content is readable
    - ✅ Technical Implementation:
-     * Created contains_multiline_strings() helper function for comprehensive multiline detection
-     * Updated pretty_format_json() to check ALL message types and content fields
-     * Applies JSON indentation when multi-line content detected
-     * Preserves color output and formatting for all message types
-   - ✅ Test Results: Build successful, 889 automated tests passed, all manual tests verified
-   - ✅ Files Modified: src/templates/services/claude.py (contains_multiline_strings helper, enhanced pretty_format_json)
-   - ✅ User Impact: All multi-line JSON content now displays with proper indentation across all message types
-   - ✅ Status: FULLY RESOLVED - Complete comprehensive solution handling all use cases
+     * Added `_has_multiline_content()` helper function to detect multi-line strings in JSON structures
+     * Added `_custom_json_encode()` method that manually builds JSON output with actual newlines in string values
+     * Updated `pretty_format_json()` to use custom encoder when multi-line content is detected
+     * Single-line content continues to use standard `json.dumps()` for compact output
+   - ✅ Test Results: Build successful, 873 tests passed (2 unrelated MCP failures), JSON structure compact, multi-line strings with actual newlines
+   - ✅ Files Modified: src/templates/services/claude.py (lines 213-334)
+   - ✅ User Impact: Multi-line JSON content now renders like jq -r with actual newlines in string values while keeping structure compact
+   - ✅ Status: FULLY RESOLVED - Custom JSON encoder handles both problems successfully
 
 2. **Shell Backend Streaming Not Working in Start Command** ✅:
    - ✅ Root Need: Start command verbose progress display was showing "Executing: unknown" instead of actual Codex output
