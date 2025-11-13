@@ -255,10 +255,15 @@ class MainProgressDisplay {
     const timestamp = event.timestamp.toLocaleTimeString();
 
     // If this is raw JSON output from shell backend (jq-style formatting)
+    // OR if this is TEXT format streaming from shell backend (codex.py)
+    // Mark that we're streaming output - this means we should NOT print the accumulated result later
+    if (event.metadata?.rawJsonOutput || (event.metadata?.format === 'text' && event.metadata?.raw === true)) {
+      this.hasStreamedJsonOutput = true;
+    }
+
+    // If this is raw JSON output from shell backend (jq-style formatting)
     // Display it with colors and indentation like `claude.py | jq .`
     if (event.metadata?.rawJsonOutput) {
-      // Mark that we're streaming JSON output - this means we should NOT print the accumulated result later
-      this.hasStreamedJsonOutput = true;
 
       try {
         // Parse and re-format with indentation
