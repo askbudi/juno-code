@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 (All issues resolved as of 2025-11-13)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Shell backend streaming fix in start command (2025-11-13)
+- **Latest Achievement**: Kanban.sh verbosity control respects JUNO_VERBOSE environment variable (2025-11-13)
 
 ---
 
@@ -18,8 +18,9 @@
 **Last Updated**: 2025-11-13
 
 **✅ 0 ACTIVE OPEN ISSUES** (2025-11-13)
-- **ALL ISSUES RESOLVED**: Shell backend streaming not working in start command resolved (2025-11-13)
-- **LATEST RESOLUTION**: Shell backend streaming fix in start command (2025-11-13)
+- **ALL ISSUES RESOLVED**: Kanban.sh verbosity control respects JUNO_VERBOSE environment variable (2025-11-13)
+- **LATEST RESOLUTION**: Kanban.sh verbosity control fix (2025-11-13)
+- **PREVIOUS RESOLUTION**: Shell backend streaming fix in start command (2025-11-13)
 - **PREVIOUS RESOLUTION**: Codex shell backend streaming support (2025-11-12)
 - **PREVIOUS RESOLUTION**: Shell Backend Pretty JSON Output Format (2025-11-12)
 - **PREVIOUS RESOLUTION**: Backend Integration CLI Option Missing (2025-11-11)
@@ -37,7 +38,15 @@
 
 
 **Recently Resolved on 2025-11-13:**
-1. **Shell Backend Streaming Not Working in Start Command** ✅:
+1. **Kanban.sh Verbosity Control (Issue #14)** ✅:
+   - ✅ Root Cause: kanban.sh logging functions (log_info, log_success, log_warning) printed output unconditionally with no JUNO_VERBOSE check
+   - ✅ Solution: Added conditional checks to logging functions using `if [ "${JUNO_VERBOSE:-false}" = "true" ]` pattern
+   - ✅ Implementation: Modified log_info(), log_success(), log_warning() to only print when JUNO_VERBOSE=true, left log_error() to always print
+   - ✅ Test Results: Build successful, 873 tests passed, kanban.sh now respects JUNO_VERBOSE environment variable
+   - ✅ Files Modified: src/templates/scripts/kanban.sh (lines 18-58) - logging functions
+   - ✅ User Impact: Verbose output only shown when explicitly enabled via JUNO_VERBOSE environment variable
+
+2. **Shell Backend Streaming Not Working in Start Command** ✅:
    - ✅ Root Cause: Start command incorrectly assumed ALL `thinking` type events contain a `toolName` in their metadata, breaking for TEXT format events from shell backend (Codex output)
    - ✅ Solution: Updated ProgressDisplay.displayVerboseProgress() in start.ts to handle TEXT format events correctly - check for format='text', attempt JSON parsing first, fall back to displaying raw content
    - ✅ Implementation: Added text format detection, JSON parsing attempt, fallback content display matching robust pattern from main.ts

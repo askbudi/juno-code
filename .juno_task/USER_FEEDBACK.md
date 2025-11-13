@@ -6,6 +6,41 @@ No open issues. All reported issues have been resolved.
 
 ## Recently Resolved Issues (2025-11-13)
 
+**Issue #14: Kanban.sh Verbosity Control** - ✅ RESOLVED (2025-11-13)
+- **Date Reported**: 2025-11-13
+- **User Report**: kanban.sh prints verbose venv status messages unconditionally, should respect JUNO_VERBOSE environment variable
+- **Symptom**: venv status output shows regardless of JUNO_VERBOSE setting (only shown when JUNO_VERBOSE=true)
+- **Resolution Date**: 2025-11-13
+- **Root Cause**: kanban.sh logging functions (log_info, log_success, log_warning) printed output unconditionally with no check for JUNO_VERBOSE environment variable. DEBUG output also printed unconditionally.
+- **Solution**: Updated kanban.sh logging functions to add conditional checks:
+  1. Modified log_info(): only prints when JUNO_VERBOSE=true
+  2. Modified log_success(): only prints when JUNO_VERBOSE=true
+  3. Modified log_warning(): only prints when JUNO_VERBOSE=true
+  4. Modified DEBUG output: conditional on JUNO_VERBOSE=true
+  5. Left log_error(): always prints (errors should always be visible)
+  6. Pattern used: `if [ "${JUNO_VERBOSE:-false}" = "true" ]; then`
+- **Files Modified**:
+  - juno-task-ts/src/templates/scripts/kanban.sh (lines 18-58, logging functions)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 873 tests passed
+  - ✅ kanban.sh respects JUNO_VERBOSE environment variable
+  - ✅ log_info() only prints when JUNO_VERBOSE=true
+  - ✅ log_success() only prints when JUNO_VERBOSE=true
+  - ✅ log_warning() only prints when JUNO_VERBOSE=true
+  - ✅ log_error() always prints (errors always visible)
+  - ✅ DEBUG output conditional on JUNO_VERBOSE=true
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 873 tests passed
+  ✅ kanban.sh now respects JUNO_VERBOSE environment variable
+  ✅ Verbose output only shown when explicitly enabled
+  ✅ No regressions introduced
+  ```
+
+## Previously Resolved Issues (2025-11-13)
+
 **Issue #10: Shell Backend Streaming Not Working in Start Command** - ✅ RESOLVED (2025-11-13)
 - **Date Reported**: 2025-11-13
 - **User Report**: `juno-code start -b shell -s codex -v` keeps showing "[shell] executing: unkown"
