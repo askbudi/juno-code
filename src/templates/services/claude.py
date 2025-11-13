@@ -19,10 +19,12 @@ class ClaudeService:
 
     # Default configuration
     DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+    DEFAULT_PERMISSION_MODE = "default"
     DEFAULT_AUTO_INSTRUCTION = """You are Claude Code, an AI coding assistant. Follow the instructions provided and generate high-quality code."""
 
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
+        self.permission_mode = self.DEFAULT_PERMISSION_MODE
         self.auto_instruction = self.DEFAULT_AUTO_INSTRUCTION
         self.project_path = os.getcwd()
         self.prompt = ""
@@ -72,22 +74,22 @@ Examples:
         parser.add_argument(
             "--cd",
             type=str,
-            default=os.getcwd(),
-            help="Project path (absolute path). Default: current directory"
+            default=os.environ.get("CLAUDE_PROJECT_PATH", os.getcwd()),
+            help="Project path (absolute path). Default: current directory (env: CLAUDE_PROJECT_PATH)"
         )
 
         parser.add_argument(
             "-m", "--model",
             type=str,
-            default=self.DEFAULT_MODEL,
-            help=f"Model name (e.g. 'sonnet', 'opus', or full name). Default: {self.DEFAULT_MODEL}"
+            default=os.environ.get("CLAUDE_MODEL", self.DEFAULT_MODEL),
+            help=f"Model name (e.g. 'sonnet', 'opus', or full name). Default: {self.DEFAULT_MODEL} (env: CLAUDE_MODEL)"
         )
 
         parser.add_argument(
             "--auto-instruction",
             type=str,
-            default=self.DEFAULT_AUTO_INSTRUCTION,
-            help="Auto instruction to prepend to prompt"
+            default=os.environ.get("CLAUDE_AUTO_INSTRUCTION", self.DEFAULT_AUTO_INSTRUCTION),
+            help="Auto instruction to prepend to prompt (env: CLAUDE_AUTO_INSTRUCTION)"
         )
 
         parser.add_argument(
@@ -100,9 +102,9 @@ Examples:
         parser.add_argument(
             "--permission-mode",
             type=str,
-            choices=["acceptEdits", "bypassPermissions", "default", "plan"],
-            default="bypassPermissions",
-            help="Permission mode for the session. Default: bypassPermissions"
+            choices=["acceptEdits", "bypassPermissions", "default", "plan", "skip"],
+            default=os.environ.get("CLAUDE_PERMISSION_MODE", self.DEFAULT_PERMISSION_MODE),
+            help=f"Permission mode for the session. Default: {self.DEFAULT_PERMISSION_MODE} (env: CLAUDE_PERMISSION_MODE)"
         )
 
         parser.add_argument(
@@ -123,7 +125,8 @@ Examples:
         parser.add_argument(
             "--verbose",
             action="store_true",
-            help="Enable verbose output"
+            default=os.environ.get("CLAUDE_VERBOSE", "false").lower() == "true",
+            help="Enable verbose output (env: CLAUDE_VERBOSE)"
         )
 
         parser.add_argument(
