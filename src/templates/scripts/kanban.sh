@@ -15,8 +15,10 @@
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
 
-# DEBUG OUTPUT: Show that kanban.sh is being executed
-echo "[DEBUG] kanban.sh is being executed from: $(pwd)" >&2
+# DEBUG OUTPUT: Show that kanban.sh is being executed (only if JUNO_VERBOSE=true)
+if [ "${JUNO_VERBOSE:-false}" = "true" ]; then
+    echo "[DEBUG] kanban.sh is being executed from: $(pwd)" >&2
+fi
 
 # Color output for better readability
 RED='\033[0;31m'
@@ -32,18 +34,28 @@ INSTALL_SCRIPT="${SCRIPTS_DIR}/install_requirements.sh"
 
 # Logging functions
 log_info() {
-    echo -e "${BLUE}[KANBAN]${NC} $1"
+    # Only print if JUNO_VERBOSE is set to true
+    if [ "${JUNO_VERBOSE:-false}" = "true" ]; then
+        echo -e "${BLUE}[KANBAN]${NC} $1"
+    fi
 }
 
 log_success() {
-    echo -e "${GREEN}[KANBAN]${NC} $1"
+    # Only print if JUNO_VERBOSE is set to true
+    if [ "${JUNO_VERBOSE:-false}" = "true" ]; then
+        echo -e "${GREEN}[KANBAN]${NC} $1"
+    fi
 }
 
 log_warning() {
-    echo -e "${YELLOW}[KANBAN]${NC} $1"
+    # Only print if JUNO_VERBOSE is set to true
+    if [ "${JUNO_VERBOSE:-false}" = "true" ]; then
+        echo -e "${YELLOW}[KANBAN]${NC} $1"
+    fi
 }
 
 log_error() {
+    # Always print errors regardless of JUNO_VERBOSE
     echo -e "${RED}[KANBAN]${NC} $1"
 }
 
