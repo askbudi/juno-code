@@ -55,6 +55,14 @@ Examples:
   %(prog)s -p "Write a hello world function"
   %(prog)s -pp prompt.txt --cd /path/to/project
   %(prog)s -p "Add tests" -m claude-opus-4-20250514 --tool "Bash Edit"
+
+Environment Variables:
+  CLAUDE_PROJECT_PATH      Project path (default: current directory)
+  CLAUDE_MODEL             Model name (default: claude-sonnet-4-5-20250929)
+  CLAUDE_AUTO_INSTRUCTION  Auto instruction to prepend to prompt
+  CLAUDE_PERMISSION_MODE   Permission mode (default: default)
+  CLAUDE_PRETTY            Pretty print JSON output (default: true)
+  CLAUDE_VERBOSE           Enable verbose output (default: false)
             """
         )
 
@@ -350,6 +358,13 @@ Examples:
                 file=sys.stderr
             )
             print("\nRun 'claude.py --help' for usage information.", file=sys.stderr)
+            print("\nAvailable Environment Variables:", file=sys.stderr)
+            print("  CLAUDE_PROJECT_PATH      Project path (default: current directory)", file=sys.stderr)
+            print("  CLAUDE_MODEL             Model name (default: claude-sonnet-4-5-20250929)", file=sys.stderr)
+            print("  CLAUDE_AUTO_INSTRUCTION  Auto instruction to prepend to prompt", file=sys.stderr)
+            print("  CLAUDE_PERMISSION_MODE   Permission mode (default: default)", file=sys.stderr)
+            print("  CLAUDE_PRETTY            Pretty print JSON output (default: true)", file=sys.stderr)
+            print("  CLAUDE_VERBOSE           Enable verbose output (default: false)", file=sys.stderr)
             return 1
 
         # Check if claude is installed
