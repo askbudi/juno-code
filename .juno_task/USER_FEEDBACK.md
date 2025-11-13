@@ -4,6 +4,35 @@
 No open issues. All reported issues have been resolved.
 </OPEN_ISSUES>
 
+## Recently Resolved Issues (2025-11-13)
+
+**Issue #10: Shell Backend Streaming Not Working in Start Command** - ✅ RESOLVED (2025-11-13)
+- **Date Reported**: 2025-11-13
+- **User Report**: `juno-code start -b shell -s codex -v` keeps showing "[shell] executing: unkown"
+- **Symptom**: The streaming progress works on the main entrypoint but NOT on start command
+- **Resolution Date**: 2025-11-13
+- **Root Cause**: The start command incorrectly assumed that ALL `thinking` type events contain a `toolName` in their metadata. This assumption broke for TEXT format events from the shell backend (Codex output). The shell backend emits TEXT events with `metadata: { format: 'text', raw: true }` (NO toolName), causing the code to default to 'unknown' and display "Executing: unknown" instead of the actual content.
+- **Solution**: Updated `ProgressDisplay.displayVerboseProgress()` in start.ts to:
+  1. Check for TEXT format events: `if (event.metadata?.format === 'text')`
+  2. Attempt JSON parsing first (handles Codex JSON output)
+  3. Fall back to displaying raw content with event type for non-JSON content
+  4. This matches the robust pattern already working in main.ts
+- **Files Modified**:
+  - juno-task-ts/src/cli/commands/start.ts (lines 155-169)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 855 tests passed (1 unrelated test failure)
+  - ✅ TEXT format events are now handled correctly in start command
+  - ✅ JSON parsing attempted for Codex output
+  - ✅ No more "unkown" messages displayed
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 855 tests passed
+  ✅ Only 1 unrelated test failure (MCP Timeout Functionality)
+  ✅ No regressions introduced
+  ```
+
 ## Recently Resolved Issues (2025-11-12)
 
 **Issue #8: NPM Publishing and Service Script Updates** - ✅ RESOLVED (2025-11-12)

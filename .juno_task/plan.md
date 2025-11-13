@@ -3,10 +3,10 @@
 ## 📊 EXECUTIVE SUMMARY
 
 **🎯 CURRENT STATUS** ✅ **0 ACTIVE OPEN ISSUES**
-- **Active Open Issues**: 0 (All issues resolved as of 2025-11-12)
+- **Active Open Issues**: 0 (All issues resolved as of 2025-11-13)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Codex shell backend streaming support (2025-11-12)
+- **Latest Achievement**: Shell backend streaming fix in start command (2025-11-13)
 
 ---
 
@@ -15,11 +15,12 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-12
+**Last Updated**: 2025-11-13
 
-**✅ 0 ACTIVE OPEN ISSUES** (2025-11-12)
-- **ALL ISSUES RESOLVED**: Codex shell backend streaming support resolved (2025-11-12)
-- **LATEST RESOLUTION**: Codex shell backend streaming support (2025-11-12)
+**✅ 0 ACTIVE OPEN ISSUES** (2025-11-13)
+- **ALL ISSUES RESOLVED**: Shell backend streaming not working in start command resolved (2025-11-13)
+- **LATEST RESOLUTION**: Shell backend streaming fix in start command (2025-11-13)
+- **PREVIOUS RESOLUTION**: Codex shell backend streaming support (2025-11-12)
 - **PREVIOUS RESOLUTION**: Shell Backend Pretty JSON Output Format (2025-11-12)
 - **PREVIOUS RESOLUTION**: Backend Integration CLI Option Missing (2025-11-11)
 - **PREVIOUS RESOLUTION**: Shell Script Services System Implementation (2025-11-10)
@@ -34,6 +35,15 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-11-13:**
+1. **Shell Backend Streaming Not Working in Start Command** ✅:
+   - ✅ Root Cause: Start command incorrectly assumed ALL `thinking` type events contain a `toolName` in their metadata, breaking for TEXT format events from shell backend (Codex output)
+   - ✅ Solution: Updated ProgressDisplay.displayVerboseProgress() in start.ts to handle TEXT format events correctly - check for format='text', attempt JSON parsing first, fall back to displaying raw content
+   - ✅ Implementation: Added text format detection, JSON parsing attempt, fallback content display matching robust pattern from main.ts
+   - ✅ Test Results: Build successful, 855 tests passed, TEXT format events now handled correctly in start command, no more "unkown" messages
+   - ✅ Files Modified: src/cli/commands/start.ts (lines 155-169) - enhanced verbose progress display to handle TEXT format events
+   - ✅ Feature parity achieved: start command now has same streaming capabilities as main entrypoint
 
 **Recently Resolved on 2025-11-12:**
 1. **Codex Shell Backend Streaming Support** ✅:
@@ -265,11 +275,12 @@
 
 ### **✅ 0 ACTIVE OPEN ISSUES** - ALL RESOLVED
 - **Status**: ALL ISSUES RESOLVED
-- **Latest Resolution**: Shell Backend Pretty JSON Output Format resolved (2025-11-12)
-- **Previous Resolution**: Shell Script Services System Implementation completed (2025-11-10)
+- **Latest Resolution**: Shell backend streaming fix in start command resolved (2025-11-13)
+- **Previous Resolution**: Codex shell backend streaming support completed (2025-11-12)
 - **Technical Achievement**: All CLI features working with 99.9% test pass rate, build successful
 - **Feature Parity**: TypeScript version has ALL Python features plus significant enhancements
 - **Shell Script Services System**: FULLY IMPLEMENTED and TESTED
+- **Backend Streaming**: Full feature parity between main and start commands (2025-11-13)
 
 ---
 
@@ -277,8 +288,8 @@
 
 ### ✅ ALL ISSUES RESOLVED - PROJECT COMPLETE
 **Status**: ALL ISSUES RESOLVED
-**Latest Resolution**: Shell Backend Pretty JSON Output Format resolved (2025-11-12)
-**Previous Resolution**: Shell Script Services System Implementation completed (2025-11-10)
+**Latest Resolution**: Shell backend streaming fix in start command resolved (2025-11-13)
+**Previous Resolution**: Codex shell backend streaming support completed (2025-11-12)
 **Current Status**: FULLY FUNCTIONAL - All core systems operational, all issues resolved
 
 ---
@@ -440,7 +451,15 @@
 
 ### **✅ ALL SYSTEMS WORKING - 0 ACTIVE OPEN ISSUES** ✅
 
-**Latest Achievements (2025-11-12):**
+**Latest Achievements (2025-11-13):**
+1. **Shell Backend Streaming Not Working in Start Command** ✅:
+   - ✅ Root Need: Start command verbose progress display was showing "Executing: unknown" instead of actual Codex output
+   - ✅ Solution: Enhanced ProgressDisplay.displayVerboseProgress() to handle TEXT format events correctly, attempt JSON parsing first, fall back to displaying raw content
+   - ✅ Implementation: Added format detection check, JSON parsing attempt, and fallback content display matching main.ts pattern
+   - ✅ Test Results: Build successful, 855 tests passed, TEXT format events now handled correctly, feature parity with main command achieved
+   - ✅ User Impact: Shell backend streaming now works consistently in both main and start commands
+
+**Previous Achievements (2025-11-12):**
 1. **Codex Shell Backend Streaming Support** ✅:
    - ✅ Root Need: codex.py needed JSON streaming capabilities matching claude.py for real-time progress output
    - ✅ Solution: Enhanced codex.py with stream_and_format_output() method, --stream flag, and progress event support
