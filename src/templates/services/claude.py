@@ -210,47 +210,6 @@ Environment Variables:
 
         return cmd
 
-    def _has_multiline_content(self, obj: Any) -> bool:
-        """Check if any string value contains newlines"""
-        if isinstance(obj, str):
-            return '\n' in obj
-        elif isinstance(obj, dict):
-            return any(self._has_multiline_content(v) for v in obj.values())
-        elif isinstance(obj, list):
-            return any(self._has_multiline_content(item) for item in obj)
-        return False
-
-    def _custom_json_encode(self, obj: Any, multiline_mode: bool = False) -> str:
-        """
-        Custom JSON encoder that renders multiline strings with actual newlines.
-        Similar to jq -r behavior where \\n in strings become actual line breaks.
-        """
-        if isinstance(obj, str):
-            if multiline_mode and '\n' in obj:
-                # For multi-line strings, output them with actual newlines
-                # Start with quote, then content with actual newlines, then end quote
-                lines = obj.split('\n')
-                result = '"' + lines[0]
-                for line in lines[1:]:
-                    result += '\n' + line
-                result += '"'
-                return result
-            else:
-                # Normal JSON encoding
-                return json.dumps(obj, ensure_ascii=False)
-        elif isinstance(obj, dict):
-            parts = []
-            for key, value in obj.items():
-                key_str = json.dumps(key, ensure_ascii=False)
-                value_str = self._custom_json_encode(value, multiline_mode)
-                parts.append(f'{key_str}:{value_str}')
-            return '{' + ','.join(parts) + '}'
-        elif isinstance(obj, list):
-            parts = [self._custom_json_encode(item, multiline_mode) for item in obj]
-            return '[' + ','.join(parts) + ']'
-        else:
-            return json.dumps(obj, ensure_ascii=False)
-
     def pretty_format_json(self, json_line: str) -> Optional[str]:
         """
         Format JSON line for pretty output.
@@ -260,9 +219,10 @@ Environment Variables:
 
         IMPORTANT: Always preserve the 'type' field so shell backend can parse events
 
-        MULTI-LINE HANDLING: When content contains \\n escape sequences, they are
-        rendered as actual newlines (similar to jq -r or @text), while keeping the
-        JSON structure compact (no indent=2 on the whole object).
+        MULTI-LINE HANDLING: When content/result fields contain \\n escape sequences,
+        the output shows the JSON metadata on one line, then the actual content/result
+        value is printed below with newlines properly rendered (similar to jq -r or @text).
+        This keeps JSON structure compact while making multi-line strings readable.
         """
         try:
             data = json.loads(json_line)
@@ -304,15 +264,26 @@ Environment Variables:
                 # Add either content or tool_use data
                 if tool_use_data:
                     simplified["tool_use"] = tool_use_data
-                else:
-                    simplified["content"] = text_content
-
-                # Check if we have multi-line content and use custom encoder
-                has_multiline = self._has_multiline_content(simplified)
-                if has_multiline:
-                    return self._custom_json_encode(simplified, multiline_mode=True)
-                else:
+                    # Normal JSON output for tool_use
                     return json.dumps(simplified, ensure_ascii=False)
+                else:
+                    # For content, check if it has newlines
+                    if '\n' in text_content:
+                        # Multi-line content: print JSON metadata, then raw content
+                        metadata = {
+                            "type": "assistant",
+                            "datetime": now,
+                            "counter": f"#{self.message_counter}"
+                        }
+                        # Print metadata as compact JSON on first line
+                        output = json.dumps(metadata, ensure_ascii=False)
+                        # Then print content label and raw multi-line text
+                        output += "\ncontent:\n" + text_content
+                        return output
+                    else:
+                        # Single-line content: normal JSON
+                        simplified["content"] = text_content
+                        return json.dumps(simplified, ensure_ascii=False)
             else:
                 # For other message types, show full message with datetime and counter
                 # Type field is already present in data, so it's preserved
@@ -322,11 +293,16 @@ Environment Variables:
                     **data
                 }
 
-                # Check if we have multi-line content and use custom encoder
-                has_multiline = self._has_multiline_content(output)
-                if has_multiline:
-                    return self._custom_json_encode(output, multiline_mode=True)
+                # Check if 'result' field has multi-line content
+                if "result" in output and isinstance(output["result"], str) and '\n' in output["result"]:
+                    # Multi-line result: separate metadata from content
+                    result_value = output.pop("result")
+                    # Print metadata as compact JSON
+                    metadata_json = json.dumps(output, ensure_ascii=False)
+                    # Then print result label and raw multi-line text
+                    return metadata_json + "\nresult:\n" + result_value
                 else:
+                    # Normal JSON output
                     return json.dumps(output, ensure_ascii=False)
 
         except json.JSONDecodeError:
