@@ -210,6 +210,19 @@ Environment Variables:
 
         return cmd
 
+    def contains_multiline_strings(self, obj: Any) -> bool:
+        """
+        Recursively check if any string value in a JSON structure contains newlines.
+        Returns True if any multi-line strings are found.
+        """
+        if isinstance(obj, str):
+            return '\n' in obj
+        elif isinstance(obj, dict):
+            return any(self.contains_multiline_strings(v) for v in obj.values())
+        elif isinstance(obj, list):
+            return any(self.contains_multiline_strings(item) for item in obj)
+        return False
+
     def pretty_format_json(self, json_line: str) -> Optional[str]:
         """
         Format JSON line for pretty output.
@@ -218,6 +231,9 @@ Environment Variables:
         Returns None if line should be skipped
 
         IMPORTANT: Always preserve the 'type' field so shell backend can parse events
+
+        MULTI-LINE HANDLING: If any string value in the JSON contains newlines,
+        the entire output will be formatted with indentation for readability.
         """
         try:
             data = json.loads(json_line)
@@ -260,18 +276,13 @@ Environment Variables:
                 if tool_use_data:
                     simplified["tool_use"] = tool_use_data
                 else:
-                    # For multi-line content, render it in a readable format
-                    # Check if content contains newline characters
-                    if text_content and '\n' in text_content:
-                        # Split into lines and create a readable multi-line representation
-                        simplified["content"] = text_content
-                        # Return a custom formatted output for multi-line content
-                        # that preserves the structure but makes it readable
-                        return json.dumps(simplified, indent=2, ensure_ascii=False)
-                    else:
-                        simplified["content"] = text_content
+                    simplified["content"] = text_content
 
-                return json.dumps(simplified)
+                # Check if the simplified output contains multi-line strings
+                if self.contains_multiline_strings(simplified):
+                    return json.dumps(simplified, indent=2, ensure_ascii=False)
+                else:
+                    return json.dumps(simplified)
             else:
                 # For other message types, show full message with datetime and counter
                 # Type field is already present in data, so it's preserved
@@ -280,7 +291,12 @@ Environment Variables:
                     "counter": f"#{self.message_counter}",
                     **data
                 }
-                return json.dumps(output)
+
+                # Check if the output contains multi-line strings and format accordingly
+                if self.contains_multiline_strings(output):
+                    return json.dumps(output, indent=2, ensure_ascii=False)
+                else:
+                    return json.dumps(output)
 
         except json.JSONDecodeError:
             # If not valid JSON, return as-is
