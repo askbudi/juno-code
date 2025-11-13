@@ -260,7 +260,16 @@ Environment Variables:
                 if tool_use_data:
                     simplified["tool_use"] = tool_use_data
                 else:
-                    simplified["content"] = text_content
+                    # For multi-line content, render it in a readable format
+                    # Check if content contains newline characters
+                    if text_content and '\n' in text_content:
+                        # Split into lines and create a readable multi-line representation
+                        simplified["content"] = text_content
+                        # Return a custom formatted output for multi-line content
+                        # that preserves the structure but makes it readable
+                        return json.dumps(simplified, indent=2, ensure_ascii=False)
+                    else:
+                        simplified["content"] = text_content
 
                 return json.dumps(simplified)
             else:
