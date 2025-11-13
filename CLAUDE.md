@@ -57,11 +57,16 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-12)
+## Current Status Update (2025-11-13)
 
 **✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
 
-**Recent Resolutions (2025-11-12):**
+**Recent Resolutions (2025-11-13):**
+- Issue #17: claude.py multi-line rendering - FULLY RESOLVED (custom JSON encoder with actual newlines in string values, jq -r style)
+- Issue #14: Kanban.sh verbosity control (respects JUNO_VERBOSE environment variable)
+- Shell backend streaming fix in start command (TEXT format events handled correctly)
+
+**Previous Resolutions (2025-11-12):**
 - Codex shell backend streaming support - Dual-format JSON/TEXT streaming (commit e7aec56)
 - Dynamic version from package.json
 - Documentation cleanup
@@ -76,7 +81,40 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-12)
+### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-13)
+
+## Most Recently Resolved Issues (2025-11-13)
+
+### Issue #17: Claude.py Multi-line JSON Rendering - FULLY RESOLVED
+
+**Root Cause:**
+- **Problem 1**: Previous attempt used `indent=2` on entire JSON structure when multi-line content was detected, making JSON output "sparse" with unwanted newlines everywhere
+- **Problem 2**: The `\n` escape sequences in string values were still displayed as literal "\\n" instead of actual newlines
+
+**Final Solution:**
+1. Reverted the `indent=2` approach that made JSON structure sparse
+2. Implemented custom JSON encoder `_custom_json_encode()` that renders multi-line string values with ACTUAL newlines
+3. Similar to `jq -r` or `jq @text` behavior - `\n` in string values become actual line breaks
+4. Keeps JSON structure compact (no indent=2), but string content is readable
+
+**Implementation:**
+- Added `_has_multiline_content()` helper function to detect multi-line strings
+- Added `_custom_json_encode()` method that manually builds JSON output with actual newlines in string values
+- Updated `pretty_format_json()` to use custom encoder when multi-line content is detected
+- Single-line content continues to use standard `json.dumps()` for compact output
+
+**Test Results:**
+- Build successful
+- 873 tests passed (2 unrelated MCP failures)
+- JSON structure stays compact (no sparse formatting)
+- Multi-line string values rendered with actual newlines (jq -r style)
+- Single-line content remains compact
+- No regressions introduced
+
+**Files Modified:**
+- juno-task-ts/src/templates/services/claude.py (lines 213-334)
+
+**Date Resolved:** 2025-11-13
 
 ## Backend Integration System Learnings (2025-11-11)
 
