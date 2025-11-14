@@ -214,6 +214,7 @@ Environment Variables:
         """
         Format JSON line for pretty output.
         For type=assistant: show datetime, message content, and counter
+        For type=user: show datetime, message content (truncated to 4 lines if longer), and counter
         For other types: show full message with datetime and counter
         Returns None if line should be skipped
 
@@ -223,6 +224,9 @@ Environment Variables:
         the output shows the JSON metadata on one line, then the actual content/result
         value is printed below with newlines properly rendered (similar to jq -r or @text).
         This keeps JSON structure compact while making multi-line strings readable.
+
+        USER MESSAGE TRUNCATION: User messages with more than 4 lines are truncated to 4 lines
+        with a [Truncated...] indicator. This only applies to user messages in pretty mode.
         """
         try:
             data = json.loads(json_line)
@@ -231,8 +235,51 @@ Environment Variables:
             # Get current datetime in readable format
             now = datetime.now().strftime("%I:%M:%S %p")
 
+            # For user messages, show simplified output with truncation
+            if data.get("type") == "user":
+                message = data.get("message", {})
+                content_list = message.get("content", [])
+
+                # Extract text content
+                text_content = ""
+                for item in content_list:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_content = item.get("text", "")
+                        break
+
+                # Apply 4-line truncation for user messages
+                lines = text_content.split('\n')
+                if len(lines) > 4:
+                    # Truncate to 4 lines and add indicator
+                    text_content = '\n'.join(lines[:4]) + '\n[Truncated...]'
+
+                # Create simplified output with datetime, content, and counter
+                simplified = {
+                    "type": "user",
+                    "datetime": now,
+                    "counter": f"#{self.message_counter}"
+                }
+
+                # Check if content has newlines after potential truncation
+                if '\n' in text_content:
+                    # Multi-line content: print JSON metadata, then raw content
+                    metadata = {
+                        "type": "user",
+                        "datetime": now,
+                        "counter": f"#{self.message_counter}"
+                    }
+                    # Print metadata as compact JSON on first line
+                    output = json.dumps(metadata, ensure_ascii=False)
+                    # Then print content label and raw multi-line text
+                    output += "\ncontent:\n" + text_content
+                    return output
+                else:
+                    # Single-line content: normal JSON
+                    simplified["content"] = text_content
+                    return json.dumps(simplified, ensure_ascii=False)
+
             # For assistant messages, show simplified output
-            if data.get("type") == "assistant":
+            elif data.get("type") == "assistant":
                 message = data.get("message", {})
                 content_list = message.get("content", [])
 
