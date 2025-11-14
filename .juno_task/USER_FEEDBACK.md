@@ -4,6 +4,47 @@
 No open issues. All reported issues have been resolved.
 </OPEN_ISSUES>
 
+## Recently Resolved Issues (2025-11-14)
+
+**Issue #20: Multiline Format Should Support Nested Messages** - ✅ FULLY RESOLVED (2025-11-14)
+- **Date Reported**: 2025-11-14
+- **User Report**: Multiline format should support nested messages (specifically tool_result type content)
+- **Symptom**: Messages with nested content like `message.content[{type: "tool_result", content: "..."}]` displayed the entire nested structure instead of flattening it
+- **Resolution Date**: 2025-11-14
+- **Root Cause**: The pretty_format_json() function in claude.py didn't handle nested message structures properly
+- **Solution**:
+  1. Enhanced pretty_format_json() to detect and flatten nested tool_result messages
+  2. Checks if a message has nested content arrays
+  3. Detects tool_result type items within those arrays
+  4. Flattens the structure by pulling nested fields (tool_use_id, type, content) to the top level
+  5. Removes unnecessary wrapper fields (message, parent_tool_use_id, session_id, uuid)
+  6. Applies multiline text rendering to the flattened content field
+- **Implementation Details**:
+  - Added nested message detection in pretty_format_json()
+  - Implemented flattening logic for tool_result type content
+  - Preserved multiline rendering for flattened content
+  - Maintained backward compatibility with non-nested messages
+- **Files Modified**:
+  - juno-task-ts/src/templates/services/claude.py (lines 287-320)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 862 tests passed (1 unrelated MCP timeout test failure)
+  - ✅ Nested tool_result messages properly flattened
+  - ✅ Multiline content displayed with actual newlines
+  - ✅ Non-tool_result messages unchanged
+  - ✅ No regressions introduced
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ Comprehensive test suite created (test_nested_format.py)
+  ✅ All 3 test cases pass:
+     * Nested tool_result with multiline content: PASS
+     * Single-line tool_result content: PASS
+     * Non-tool_result messages (should not be flattened): PASS
+  ✅ Full test suite: 862 tests passed
+  ✅ No regressions introduced
+  ```
+
 ## Recently Resolved Issues (2025-11-13)
 
 **Issue #18 & #19: Shell Backend Message Formatting** - ✅ FULLY RESOLVED (2025-11-13)

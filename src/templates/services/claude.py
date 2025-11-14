@@ -285,6 +285,40 @@ Environment Variables:
                         simplified["content"] = text_content
                         return json.dumps(simplified, ensure_ascii=False)
             else:
+                # For other message types, check if there's nested content to flatten
+                message = data.get("message", {})
+                content_list = message.get("content", [])
+
+                # Check if this is a message with nested tool_result or similar content
+                if content_list and isinstance(content_list, list) and len(content_list) > 0:
+                    nested_item = content_list[0]
+                    if isinstance(nested_item, dict) and nested_item.get("type") in ["tool_result"]:
+                        # Flatten the nested structure by pulling nested fields to top level
+                        flattened = {
+                            "datetime": now,
+                            "counter": f"#{self.message_counter}",
+                        }
+
+                        # Add tool_use_id if present
+                        if "tool_use_id" in nested_item:
+                            flattened["tool_use_id"] = nested_item["tool_use_id"]
+
+                        # Add type from nested item
+                        flattened["type"] = nested_item["type"]
+
+                        # Handle content field with multiline support
+                        nested_content = nested_item.get("content", "")
+                        if isinstance(nested_content, str) and '\n' in nested_content:
+                            # Multi-line content: separate metadata from content
+                            # Print metadata as compact JSON
+                            metadata_json = json.dumps(flattened, ensure_ascii=False)
+                            # Then print content label and raw multi-line text
+                            return metadata_json + "\ncontent:\n" + nested_content
+                        else:
+                            # Single-line content: normal JSON
+                            flattened["content"] = nested_content
+                            return json.dumps(flattened, ensure_ascii=False)
+
                 # For other message types, show full message with datetime and counter
                 # Type field is already present in data, so it's preserved
                 output = {
