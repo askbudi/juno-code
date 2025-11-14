@@ -62,6 +62,7 @@ The project uses a sophisticated AI workflow with:
 **✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
 
 **Recent Resolutions (2025-11-13):**
+- Issues #18 & #19: Shell backend message formatting - FULLY RESOLVED (removed all prefix clutter from TEXT format output)
 - Issue #17: claude.py multi-line rendering - FULLY RESOLVED (custom JSON encoder with actual newlines in string values, jq -r style)
 - Issue #14: Kanban.sh verbosity control (respects JUNO_VERBOSE environment variable)
 - Shell backend streaming fix in start command (TEXT format events handled correctly)
@@ -84,6 +85,41 @@ The project uses a sophisticated AI workflow with:
 ### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-13)
 
 ## Most Recently Resolved Issues (2025-11-13)
+
+### Issues #18 & #19: Shell Backend Message Formatting - FULLY RESOLVED
+
+**Root Cause:**
+- start.ts line 166 and main.ts lines 296-301 were adding `[timestamp] [backend] [event.type]:` prefix to every line of TEXT format output
+- Gray color styling was applied to all TEXT format messages
+- This made output cluttered and unreadable with repeated `[shell] thinking:` prefixes
+
+**Solution:**
+1. **start.ts (lines 155-169)**: Removed all prefixes, timestamps, and gray coloring from TEXT format events
+   - JSON content: Shows clean formatted JSON without prefix
+   - Non-JSON content: Shows raw content without prefix
+2. **main.ts (lines 291-302)**: Removed all prefixes, timestamps, backend labels, and event type labels
+   - JSON content: Shows clean formatted JSON
+   - Non-JSON content: Shows raw content
+
+**Implementation:**
+- Updated displayVerboseProgress() in start.ts to display TEXT content directly without formatting
+- Updated main command verbose handler to display TEXT content without any prefixes
+- Preserved JSON parsing logic for structured output
+- Maintained clean, readable output for both JSON and TEXT formats
+
+**Test Results:**
+- Build successful
+- 853 tests passed (1 unrelated test failure)
+- Clean output format verified
+- No prefix clutter in TEXT format output
+- JSON content displays cleanly
+- No gray color styling on TEXT messages
+
+**Files Modified:**
+- juno-task-ts/src/cli/commands/start.ts (lines 155-169)
+- juno-task-ts/src/cli/commands/main.ts (lines 291-302)
+
+**Date Resolved:** 2025-11-13
 
 ### Issue #17: Claude.py Multi-line JSON Rendering - FULLY RESOLVED
 

@@ -293,28 +293,12 @@ class MainProgressDisplay {
     try {
       const jsonObj = JSON.parse(event.content);
       const formattedJson = this.colorizeJson(jsonObj);
-      const backend = event.backend ? chalk.cyan(`[${event.backend}]`) : '';
-
-      if (this.verbose) {
-        // Verbose mode: Show pretty formatted JSON with timestamp and backend prefix on STDERR
-        console.error(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
-      } else {
-        // Non-verbose mode: Show JSON with backend prefix on STDERR
-        console.error(`${backend} ${formattedJson}`);
-      }
+      // Show clean JSON output without prefixes (user wants clean output)
+      console.error(formattedJson);
       return;
     } catch (error) {
-      // Not JSON - show full content without truncation
-      // User explicitly wants full output for codex responses
-      const backend = event.backend ? `[${event.backend}]` : '';
-
-      if (this.verbose) {
-        // Verbose mode: Show detailed progress with timestamps and types on STDERR
-        console.error(chalk.gray(`[${timestamp}] ${backend} ${event.type}: ${event.content}`));
-      } else {
-        // Non-verbose mode: Show full content with backend prefix on STDERR
-        console.error(`${backend} ${chalk.blue(`${event.type}:`)} ${event.content}`);
-      }
+      // Not JSON - show raw content without prefix (user wants clean output)
+      console.error(event.content);
     }
   }
 
