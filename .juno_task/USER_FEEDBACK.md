@@ -6,6 +6,74 @@ No open issues. All reported issues have been resolved.
 
 ## Recently Resolved Issues (2025-11-14)
 
+**Issue #23: CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE Environment Variable** - ✅ FULLY RESOLVED (2025-11-14)
+- **Date Reported**: 2025-11-14
+- **User Report**: Need environment variable to control user message truncation behavior in claude.py pretty mode
+- **Symptom**: User message truncation was hardcoded to 4 lines with no way to configure or disable
+- **Resolution Date**: 2025-11-14
+- **Root Cause**: claude.py used hardcoded 4-line truncation limit for user messages with no configuration support
+- **Solution**:
+  1. Added CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE environment variable (default=4, -1=no truncation)
+  2. Updated truncation logic to use configurable value instead of hardcoded 4
+  3. Updated --help text to document the new environment variable
+  4. Updated error message to include the new environment variable
+- **Implementation Details**:
+  - Read CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE from environment (default=4)
+  - Use configured value in user message truncation logic
+  - Support -1 to disable truncation completely
+  - Updated help and error messages with new ENV variable
+- **Files Modified**:
+  - juno-task-ts/src/templates/services/claude.py
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 854 tests passed (1 unrelated failure)
+  - ✅ All 7 custom tests PASSED (truncation behavior verified)
+  - ✅ Environment variable controls truncation
+  - ✅ Default behavior unchanged (4 lines)
+  - ✅ -1 value disables truncation
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ All 7 custom tests PASSED
+  ✅ 854 main test suite tests PASSED
+  ✅ Environment variable support working
+  ✅ No regressions introduced
+  ```
+
+**Issue #22: Claude.py Pretty Mode User Message Truncation** - ✅ FULLY RESOLVED (2025-11-14)
+- **Date Reported**: 2025-11-14
+- **User Report**: User messages in claude.py pretty mode need truncation to prevent excessive output
+- **Symptom**: Long user messages were displayed in full, making output verbose and hard to read
+- **Resolution Date**: 2025-11-14
+- **Root Cause**: claude.py pretty mode displayed full user message content without any truncation
+- **Solution**:
+  1. Implemented user message truncation with configurable limit (via CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE)
+  2. Show first N lines of user messages with [Truncated...] indicator
+  3. Configurable via environment variable (default=4 lines)
+  4. Support -1 to disable truncation
+- **Implementation Details**:
+  - Added truncation logic to user message formatting
+  - Display first N lines followed by [Truncated...] indicator
+  - Configurable limit via CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE environment variable
+  - Default 4-line limit maintains readability
+- **Files Modified**:
+  - juno-task-ts/src/templates/services/claude.py
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 854 tests passed (1 unrelated failure)
+  - ✅ All 7 custom tests PASSED
+  - ✅ User messages truncated to configured limit
+  - ✅ [Truncated...] indicator shown when truncated
+  - ✅ Environment variable support working
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ All 7 custom tests PASSED
+  ✅ 854 main test suite tests PASSED
+  ✅ User message truncation working as expected
+  ✅ No regressions introduced
+  ```
+
 **Issue #20: Multiline Format Should Support Nested Messages** - ✅ FULLY RESOLVED (2025-11-14)
 - **Date Reported**: 2025-11-14
 - **User Report**: Multiline format should support nested messages (specifically tool_result type content)
