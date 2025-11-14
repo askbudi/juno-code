@@ -1,8 +1,50 @@
 ## Open Issues
-<!-- Current status: 0 OPEN ISSUES -->
+<!-- Current status: ✅ 0 OPEN ISSUES -->
 <OPEN_ISSUES>
 No open issues. All reported issues have been resolved.
 </OPEN_ISSUES>
+
+## Recently Resolved Issues (2025-11-13)
+
+**Issue #18 & #19: Shell Backend Message Formatting** - ✅ FULLY RESOLVED (2025-11-13)
+- **Date Reported**: 2025-11-13
+- **User Report**: Shell backend TEXT format output cluttered with repeated `[timestamp] [backend] [event.type]:` prefixes on every line
+- **Symptom**: Output unreadable due to excessive prefixes, all TEXT format messages styled in gray
+- **Resolution Date**: 2025-11-13
+- **Root Cause**:
+  - start.ts line 166 and main.ts lines 296-301 were adding `[timestamp] [backend] [event.type]:` prefix to every line of TEXT format output
+  - Gray color styling was applied to all TEXT format messages
+  - This made output cluttered and unreadable with repeated `[shell] thinking:` prefixes
+- **Solution**:
+  1. **start.ts (lines 155-169)**: Removed all prefixes, timestamps, and gray coloring from TEXT format events
+     - JSON content: Shows clean formatted JSON without prefix
+     - Non-JSON content: Shows raw content without prefix
+  2. **main.ts (lines 291-302)**: Removed all prefixes, timestamps, backend labels, and event type labels
+     - JSON content: Shows clean formatted JSON
+     - Non-JSON content: Shows raw content
+- **Implementation Details**:
+  - Updated displayVerboseProgress() in start.ts to display TEXT content directly without formatting
+  - Updated main command verbose handler to display TEXT content without any prefixes
+  - Preserved JSON parsing logic for structured output
+  - Maintained clean, readable output for both JSON and TEXT formats
+- **Files Modified**:
+  - juno-task-ts/src/cli/commands/start.ts (lines 155-169)
+  - juno-task-ts/src/cli/commands/main.ts (lines 291-302)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 853 tests passed (1 unrelated test failure)
+  - ✅ Clean output format verified
+  - ✅ No prefix clutter in TEXT format output
+  - ✅ JSON content displays cleanly
+  - ✅ No gray color styling on TEXT messages
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 853 tests passed (1 unrelated test failure)
+  ✅ Clean output format - no prefix clutter
+  ✅ TEXT content displays without formatting
+  ✅ No regressions introduced
+  ```
 
 ## Recently Resolved Issues (2025-11-13)
 

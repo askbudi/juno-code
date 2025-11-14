@@ -159,11 +159,11 @@ class ProgressDisplay {
       try {
         const jsonObj = JSON.parse(event.content);
         const formattedJson = this.colorizeJson(jsonObj);
-        writeTerminalProgress(`${chalk.gray(timestamp)} ${chalk.cyan(backend)} ${formattedJson}\n`);
+        writeTerminalProgress(`${formattedJson}\n`);
         return;
       } catch (error) {
-        // Not JSON - show full content without truncation
-        writeTerminalProgress(chalk.gray(`[${timestamp}] ${backend} ${event.type}: ${event.content}\n`));
+        // Not JSON - show raw content without prefix (user wants clean output)
+        writeTerminalProgress(`${event.content}\n`);
         return;
       }
     }

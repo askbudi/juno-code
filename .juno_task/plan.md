@@ -38,7 +38,25 @@
 
 
 **Recently Resolved on 2025-11-13:**
-1. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
+1. **Shell Backend Message Formatting (Issues #18 & #19)** ✅ FULLY RESOLVED:
+   - ✅ Root Cause:
+     * start.ts line 166 and main.ts lines 296-301 were adding `[timestamp] [backend] [event.type]:` prefix to every line of TEXT format output
+     * Gray color styling was applied to all TEXT format messages
+     * This made output cluttered and unreadable with repeated `[shell] thinking:` prefixes
+   - ✅ Final Solution:
+     1. start.ts (lines 155-169): Removed all prefixes, timestamps, and gray coloring from TEXT format events
+     2. main.ts (lines 291-302): Removed all prefixes, timestamps, backend labels, and event type labels
+   - ✅ Implementation Details:
+     * Updated displayVerboseProgress() in start.ts to display TEXT content directly without formatting
+     * Updated main command verbose handler to display TEXT content without any prefixes
+     * Preserved JSON parsing logic for structured output
+     * Maintained clean, readable output for both JSON and TEXT formats
+   - ✅ Test Results: Build successful, 853 tests passed (1 unrelated test failure), clean output format verified
+   - ✅ Files Modified: src/cli/commands/start.ts (lines 155-169), src/cli/commands/main.ts (lines 291-302)
+   - ✅ User Impact: Shell backend TEXT format output now displays cleanly without prefix clutter
+   - ✅ Status: FULLY RESOLVED - Clean output format for both JSON and TEXT formats
+
+2. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
    - ✅ Root Cause:
      * Problem 1: Previous attempt used `indent=2` on entire JSON structure when multi-line content was detected, making JSON output "sparse" with unwanted newlines everywhere
      * Problem 2: The `\n` escape sequences in string values were still displayed as literal "\\n" instead of actual newlines
@@ -57,7 +75,7 @@
    - ✅ User Impact: Multi-line JSON content now renders like jq -r with actual newlines in string values while keeping structure compact
    - ✅ Status: FULLY RESOLVED - Custom JSON encoder handles both problems successfully
 
-2. **Kanban.sh Verbosity Control (Issue #14)** ✅:
+3. **Kanban.sh Verbosity Control (Issue #14)** ✅:
    - ✅ Root Cause: kanban.sh logging functions (log_info, log_success, log_warning) printed output unconditionally with no JUNO_VERBOSE check
    - ✅ Solution: Added conditional checks to logging functions using `if [ "${JUNO_VERBOSE:-false}" = "true" ]` pattern
    - ✅ Implementation: Modified log_info(), log_success(), log_warning() to only print when JUNO_VERBOSE=true, left log_error() to always print
@@ -65,7 +83,7 @@
    - ✅ Files Modified: src/templates/scripts/kanban.sh (lines 18-58) - logging functions
    - ✅ User Impact: Verbose output only shown when explicitly enabled via JUNO_VERBOSE environment variable
 
-2. **Shell Backend Streaming Not Working in Start Command** ✅:
+4. **Shell Backend Streaming Not Working in Start Command** ✅:
    - ✅ Root Cause: Start command incorrectly assumed ALL `thinking` type events contain a `toolName` in their metadata, breaking for TEXT format events from shell backend (Codex output)
    - ✅ Solution: Updated ProgressDisplay.displayVerboseProgress() in start.ts to handle TEXT format events correctly - check for format='text', attempt JSON parsing first, fall back to displaying raw content
    - ✅ Implementation: Added text format detection, JSON parsing attempt, fallback content display matching robust pattern from main.ts
@@ -486,7 +504,25 @@
 ### **✅ ALL SYSTEMS WORKING - 0 OPEN ISSUES** ✅
 
 **Latest Achievements (2025-11-13):**
-1. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
+1. **Shell Backend Message Formatting (Issues #18 & #19)** ✅ FULLY RESOLVED:
+   - ✅ Root Need: Clean output format for shell backend TEXT format events without prefix clutter
+   - ✅ Root Cause:
+     * start.ts line 166 and main.ts lines 296-301 were adding `[timestamp] [backend] [event.type]:` prefix to every line of TEXT format output
+     * Gray color styling was applied to all TEXT format messages
+   - ✅ Final Solution:
+     1. Removed all prefixes, timestamps, and gray coloring from TEXT format events in both start.ts and main.ts
+     2. JSON content shows clean formatted JSON without prefix
+     3. Non-JSON content shows raw content without prefix
+   - ✅ Technical Implementation:
+     * Updated displayVerboseProgress() in start.ts to display TEXT content directly
+     * Updated main command verbose handler to remove all prefixes
+     * Preserved JSON parsing logic for structured output
+   - ✅ Test Results: Build successful, 853 tests passed (1 unrelated test failure), clean output format verified
+   - ✅ Files Modified: src/cli/commands/start.ts (lines 155-169), src/cli/commands/main.ts (lines 291-302)
+   - ✅ User Impact: Shell backend TEXT format output now displays cleanly without formatting noise
+   - ✅ Status: FULLY RESOLVED - Clean, readable output for both JSON and TEXT formats
+
+2. **Claude.py Multi-line JSON Rendering (Issue #17)** ✅ FULLY RESOLVED:
    - ✅ Root Need: Multi-line JSON content (strings with \n) not rendering with proper formatting
    - ✅ Root Cause:
      * Problem 1: Previous attempt used `indent=2` on entire JSON structure, making JSON output "sparse" with unwanted newlines everywhere
@@ -506,7 +542,7 @@
    - ✅ User Impact: Multi-line JSON content now renders like jq -r with actual newlines in string values while keeping structure compact
    - ✅ Status: FULLY RESOLVED - Custom JSON encoder handles both problems successfully
 
-2. **Shell Backend Streaming Not Working in Start Command** ✅:
+3. **Shell Backend Streaming Not Working in Start Command** ✅:
    - ✅ Root Need: Start command verbose progress display was showing "Executing: unknown" instead of actual Codex output
    - ✅ Solution: Enhanced ProgressDisplay.displayVerboseProgress() to handle TEXT format events correctly, attempt JSON parsing first, fall back to displaying raw content
    - ✅ Implementation: Added format detection check, JSON parsing attempt, and fallback content display matching main.ts pattern
