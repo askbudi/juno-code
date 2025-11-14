@@ -10,13 +10,19 @@
 # Usage: ./.juno_task/scripts/kanban.sh [juno-kanban arguments]
 # Example: ./.juno_task/scripts/kanban.sh list --limit 5
 #
+# Environment Variables:
+#   JUNO_DEBUG=true    - Show [DEBUG] diagnostic messages
+#   JUNO_VERBOSE=true  - Show [KANBAN] informational messages
+#   (Both default to false for silent operation)
+#
 # Created by: juno-code init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
 
-# DEBUG OUTPUT: Show that kanban.sh is being executed (only if JUNO_VERBOSE=true)
-if [ "${JUNO_VERBOSE:-false}" = "true" ]; then
+# DEBUG OUTPUT: Show that kanban.sh is being executed (only if JUNO_DEBUG=true)
+# Note: JUNO_DEBUG is separate from JUNO_VERBOSE for fine-grained control
+if [ "${JUNO_DEBUG:-false}" = "true" ]; then
     echo "[DEBUG] kanban.sh is being executed from: $(pwd)" >&2
 fi
 
