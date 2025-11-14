@@ -18,6 +18,14 @@ import type {
   StartCommandOptions
 } from '../types.js';
 
+// Mock mainCommandHandler since start now delegates to it
+vi.mock('../commands/main.js', () => ({
+  mainCommandHandler: vi.fn().mockImplementation(async (args, options, command) => {
+    // Mock a successful execution
+    process.exit(0);
+  })
+}));
+
 // Mock external dependencies
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockImplementation((opts) => Promise.resolve({
@@ -25,7 +33,6 @@ vi.mock('../../core/config.js', () => ({
     defaultMaxIterations: 5,
     defaultModel: 'test-model',
     defaultSubagent: 'claude',
-    defaultBackend: 'mcp',
     defaultBackend: 'mcp',
     mcpServerPath: '/test/mcp',
     mcpTimeout: 30000,
@@ -243,11 +250,14 @@ describe('Start Command', () => {
           'utf-8'
         );
 
-        const { createExecutionRequest } = await import('../../core/engine.js');
-        expect(createExecutionRequest).toHaveBeenCalledWith(
+        const { mainCommandHandler } = await import('../commands/main.js');
+        expect(mainCommandHandler).toHaveBeenCalledWith(
+          [],
           expect.objectContaining({
-            instruction: 'Build a comprehensive TypeScript CLI tool'
-          })
+            prompt: 'Build a comprehensive TypeScript CLI tool',
+            subagent: 'claude'
+          }),
+          mockCommand
         );
 
         // Restore process.exit
