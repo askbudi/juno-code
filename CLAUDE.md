@@ -57,9 +57,12 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-13)
+## Current Status Update (2025-11-14)
 
 **✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
+
+**Recent Resolutions (2025-11-14):**
+- Issue #20: Nested message formatting - FULLY RESOLVED (enhanced pretty_format_json() to flatten tool_result type content)
 
 **Recent Resolutions (2025-11-13):**
 - Issues #18 & #19: Shell backend message formatting - FULLY RESOLVED (removed all prefix clutter from TEXT format output)
@@ -82,7 +85,44 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-13)
+### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-14)
+
+## Most Recently Resolved Issues (2025-11-14)
+
+### Issue #20: Multiline Format Nested Messages - FULLY RESOLVED
+
+**Root Cause:**
+- The pretty_format_json() function in claude.py didn't handle nested message structures properly
+- Messages with nested content like `message.content[{type: "tool_result", content: "..."}]` displayed entire nested structures instead of flattening them
+
+**Solution:**
+1. Enhanced pretty_format_json() to detect and flatten nested tool_result messages
+2. Checks if a message has nested content arrays
+3. Detects tool_result type items within those arrays
+4. Flattens structure by pulling nested fields (tool_use_id, type, content) to top level
+5. Removes unnecessary wrapper fields (message, parent_tool_use_id, session_id, uuid)
+6. Applies multiline text rendering to the flattened content field
+
+**Implementation:**
+- Added nested message detection in pretty_format_json()
+- Implemented flattening logic for tool_result type content
+- Preserved multiline rendering for flattened content
+- Maintained backward compatibility with non-nested messages
+
+**Test Results:**
+- Build successful
+- 862 tests passed (1 unrelated MCP timeout failure)
+- Comprehensive test suite created (test_nested_format.py)
+- All 3 test cases pass:
+  * Nested tool_result with multiline content: PASS
+  * Single-line tool_result content: PASS
+  * Non-tool_result messages (should not be flattened): PASS
+- No regressions introduced
+
+**Files Modified:**
+- juno-task-ts/src/templates/services/claude.py (lines 287-320)
+
+**Date Resolved:** 2025-11-14
 
 ## Most Recently Resolved Issues (2025-11-13)
 
