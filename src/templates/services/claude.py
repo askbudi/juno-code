@@ -31,6 +31,8 @@ class ClaudeService:
         self.additional_args: List[str] = []
         self.message_counter = 0
         self.verbose = False
+        # User message truncation: -1 = no truncation, N = truncate to N lines
+        self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
 
     def check_claude_installed(self) -> bool:
         """Check if claude CLI is installed and available"""
@@ -57,12 +59,13 @@ Examples:
   %(prog)s -p "Add tests" -m claude-opus-4-20250514 --tool "Bash Edit"
 
 Environment Variables:
-  CLAUDE_PROJECT_PATH      Project path (default: current directory)
-  CLAUDE_MODEL             Model name (default: claude-sonnet-4-5-20250929)
-  CLAUDE_AUTO_INSTRUCTION  Auto instruction to prepend to prompt
-  CLAUDE_PERMISSION_MODE   Permission mode (default: default)
-  CLAUDE_PRETTY            Pretty print JSON output (default: true)
-  CLAUDE_VERBOSE           Enable verbose output (default: false)
+  CLAUDE_PROJECT_PATH                  Project path (default: current directory)
+  CLAUDE_MODEL                         Model name (default: claude-sonnet-4-5-20250929)
+  CLAUDE_AUTO_INSTRUCTION              Auto instruction to prepend to prompt
+  CLAUDE_PERMISSION_MODE               Permission mode (default: default)
+  CLAUDE_PRETTY                        Pretty print JSON output (default: true)
+  CLAUDE_VERBOSE                       Enable verbose output (default: false)
+  CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE  Max lines for user messages in pretty mode (default: 4, -1: no truncation)
             """
         )
 
@@ -214,7 +217,7 @@ Environment Variables:
         """
         Format JSON line for pretty output.
         For type=assistant: show datetime, message content, and counter
-        For type=user: show datetime, message content (truncated to 4 lines if longer), and counter
+        For type=user: show datetime, message content (truncated based on env var), and counter
         For other types: show full message with datetime and counter
         Returns None if line should be skipped
 
@@ -225,8 +228,9 @@ Environment Variables:
         value is printed below with newlines properly rendered (similar to jq -r or @text).
         This keeps JSON structure compact while making multi-line strings readable.
 
-        USER MESSAGE TRUNCATION: User messages with more than 4 lines are truncated to 4 lines
-        with a [Truncated...] indicator. This only applies to user messages in pretty mode.
+        USER MESSAGE TRUNCATION: User messages are truncated based on CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE
+        environment variable (default: 4 lines, -1: no truncation). When truncated, a [Truncated...]
+        indicator is added. This only applies to user messages in pretty mode.
         """
         try:
             data = json.loads(json_line)
@@ -247,11 +251,13 @@ Environment Variables:
                         text_content = item.get("text", "")
                         break
 
-                # Apply 4-line truncation for user messages
-                lines = text_content.split('\n')
-                if len(lines) > 4:
-                    # Truncate to 4 lines and add indicator
-                    text_content = '\n'.join(lines[:4]) + '\n[Truncated...]'
+                # Apply truncation for user messages based on CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE
+                # -1 means no truncation, otherwise truncate to N lines
+                if self.user_message_truncate != -1:
+                    lines = text_content.split('\n')
+                    if len(lines) > self.user_message_truncate:
+                        # Truncate to N lines and add indicator
+                        text_content = '\n'.join(lines[:self.user_message_truncate]) + '\n[Truncated...]'
 
                 # Create simplified output with datetime, content, and counter
                 simplified = {
@@ -472,12 +478,13 @@ Environment Variables:
             )
             print("\nRun 'claude.py --help' for usage information.", file=sys.stderr)
             print("\nAvailable Environment Variables:", file=sys.stderr)
-            print("  CLAUDE_PROJECT_PATH      Project path (default: current directory)", file=sys.stderr)
-            print("  CLAUDE_MODEL             Model name (default: claude-sonnet-4-5-20250929)", file=sys.stderr)
-            print("  CLAUDE_AUTO_INSTRUCTION  Auto instruction to prepend to prompt", file=sys.stderr)
-            print("  CLAUDE_PERMISSION_MODE   Permission mode (default: default)", file=sys.stderr)
-            print("  CLAUDE_PRETTY            Pretty print JSON output (default: true)", file=sys.stderr)
-            print("  CLAUDE_VERBOSE           Enable verbose output (default: false)", file=sys.stderr)
+            print("  CLAUDE_PROJECT_PATH                  Project path (default: current directory)", file=sys.stderr)
+            print("  CLAUDE_MODEL                         Model name (default: claude-sonnet-4-5-20250929)", file=sys.stderr)
+            print("  CLAUDE_AUTO_INSTRUCTION              Auto instruction to prepend to prompt", file=sys.stderr)
+            print("  CLAUDE_PERMISSION_MODE               Permission mode (default: default)", file=sys.stderr)
+            print("  CLAUDE_PRETTY                        Pretty print JSON output (default: true)", file=sys.stderr)
+            print("  CLAUDE_VERBOSE                       Enable verbose output (default: false)", file=sys.stderr)
+            print("  CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE  Max lines for user messages in pretty mode (default: 4, -1: no truncation)", file=sys.stderr)
             return 1
 
         # Check if claude is installed
