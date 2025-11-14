@@ -316,9 +316,29 @@ Environment Variables:
 
                 # Add either content or tool_use data
                 if tool_use_data:
-                    simplified["tool_use"] = tool_use_data
-                    # Normal JSON output for tool_use
-                    return json.dumps(simplified, ensure_ascii=False)
+                    # Check if prompt field in tool_use.input has multi-line content
+                    tool_input = tool_use_data.get("input", {})
+                    prompt_field = tool_input.get("prompt", "")
+
+                    if isinstance(prompt_field, str) and '\n' in prompt_field:
+                        # Multi-line prompt: extract it and render separately
+                        # Create a copy of tool_use_data with prompt removed
+                        tool_use_copy = {
+                            "name": tool_use_data.get("name", ""),
+                            "input": {k: v for k, v in tool_input.items() if k != "prompt"}
+                        }
+
+                        simplified["tool_use"] = tool_use_copy
+
+                        # Print metadata as compact JSON on first line
+                        output = json.dumps(simplified, ensure_ascii=False)
+                        # Then print prompt label and raw multi-line text
+                        output += "\nprompt:\n" + prompt_field
+                        return output
+                    else:
+                        # No multi-line prompt: normal JSON output for tool_use
+                        simplified["tool_use"] = tool_use_data
+                        return json.dumps(simplified, ensure_ascii=False)
                 else:
                     # For content, check if it has newlines
                     if '\n' in text_content:
