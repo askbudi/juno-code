@@ -167,12 +167,16 @@ export function configureStartCommand(program: Command): void {
     .option('--metrics-file <path>', 'Specify custom path for metrics file')
     .option('--dry-run', 'Validate configuration and exit without executing')
     .action(async (options, command) => {
+      // Merge global options with command-specific options
+      // Global options include: -v/--verbose, -q/--quiet, -c/--config, etc.
+      const allOptions = command.optsWithGlobals ? command.optsWithGlobals() : { ...command.opts(), ...options };
+
       // Set default metrics file if save-metrics is used without value
-      if (options.saveMetrics === true) {
-        options.saveMetrics = true;
-        options.metricsFile = options.metricsFile || '.juno_task/metrics.json';
+      if (allOptions.saveMetrics === true) {
+        allOptions.saveMetrics = true;
+        allOptions.metricsFile = allOptions.metricsFile || '.juno_task/metrics.json';
       }
-      await startCommandHandler([], options, command);
+      await startCommandHandler([], allOptions, command);
     })
     .addHelpText('after', `
 Examples:
