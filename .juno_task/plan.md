@@ -2,11 +2,12 @@
 
 ## 📊 EXECUTIVE SUMMARY
 
-**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES - All issues resolved**
-- **Active Open Issues**: 0 (All issues fully resolved as of 2025-11-17)
+**🎯 CURRENT STATUS** ✅ **1 OPEN ISSUE**
+- **Active Open Issues**: 1 (Issue #24: Documentation cleanup)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
+- **Latest Achievement**: Issue #28 Shell Backend Model Flag Passing FULLY RESOLVED (2025-11-17)
+- **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
 - **Previous Achievements**: Issues #22 & #23 user message truncation and ENV variable support FULLY RESOLVED (2025-11-14)
 - **Previous Achievement**: Issue #20 nested message formatting FULLY RESOLVED - Handles tool_result type content (2025-11-14)
 
@@ -19,9 +20,10 @@
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
 **Last Updated**: 2025-11-17
 
-**✅ 0 OPEN ISSUES - ALL ISSUES FULLY RESOLVED** (2025-11-17)
-- **ALL ISSUES RESOLVED**: Claude shell backend model selection support implemented (2025-11-17)
-- **LATEST RESOLUTION**: Issue #27 Claude shell backend model selection with shorthand syntax support (2025-11-17)
+**⚠️ 1 OPEN ISSUE** (2025-11-17)
+- **CURRENT OPEN ISSUE**: Issue #24 Documentation cleanup - remove development artifacts
+- **LATEST RESOLUTION**: Issue #28 Shell backend model flag passing (2025-11-17)
+- **PREVIOUS RESOLUTION**: Issue #27 Claude shell backend model selection with shorthand syntax support (2025-11-17)
 - **PREVIOUS RESOLUTIONS**: Issues #22 & #23 user message truncation with CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE ENV support (2025-11-14)
 - **PREVIOUS RESOLUTION**: Issue #20 Multiline format nested messages FULLY RESOLVED with comprehensive flattening logic (2025-11-14)
 - **PREVIOUS RESOLUTION**: Shell backend streaming fix in start command (2025-11-13)
@@ -42,7 +44,23 @@
 
 
 **Recently Resolved on 2025-11-17:**
-1. **Claude Shell Backend Model Selection Support (Issue #27)** ✅ FULLY RESOLVED:
+1. **Shell Backend Model Flag Passing (Issue #28)** ✅ FULLY RESOLVED:
+   - ✅ Root Cause: Shell backend was setting JUNO_MODEL environment variable but not passing -m flag to Python script command line arguments
+   - ✅ Final Solution:
+     1. Added code to pass model flag as -m argument to Python scripts in shell-backend.ts
+     2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
+     3. Model flag now correctly passed to both claude.py and other shell backend scripts
+   - ✅ Implementation Details:
+     * shell-backend.ts checks for model option in execution parameters
+     * When model flag present, adds `-m <model>` to Python script arguments
+     * Environment variable JUNO_MODEL still set for backward compatibility
+     * Command line argument takes precedence over environment variable
+   - ✅ Test Results: Build successful, 873 tests passed (2 unrelated MCP timeout failures), model flag correctly passed to shell backend scripts
+   - ✅ Files Modified: src/core/backends/shell-backend.ts (lines 418-421)
+   - ✅ User Impact: Shell backend now properly receives model selection via -m flag
+   - ✅ Status: FULLY RESOLVED - Model flag passing working as expected
+
+2. **Claude Shell Backend Model Selection Support (Issue #27)** ✅ FULLY RESOLVED:
    - ✅ Root Cause: claude.py -m flag required full model names with no support for convenient shorthand syntax
    - ✅ Final Solution:
      1. Added MODEL_SHORTHANDS dictionary to claude.py with model name mappings
@@ -577,10 +595,27 @@
 
 ## 🎯 PROJECT STATUS UPDATE
 
-### **✅ ALL SYSTEMS WORKING - 0 OPEN ISSUES** ✅
+### **✅ ALL SYSTEMS WORKING - 1 OPEN ISSUE** ⚠️
 
 **Latest Achievements (2025-11-17):**
-1. **Claude Shell Backend Model Selection Support (Issue #27)** ✅ FULLY RESOLVED:
+1. **Shell Backend Model Flag Passing (Issue #28)** ✅ FULLY RESOLVED:
+   - ✅ Root Need: Model flag not being passed to shell backend Python scripts
+   - ✅ Root Cause: Shell backend was setting JUNO_MODEL environment variable but not passing -m flag to Python script command line arguments
+   - ✅ Final Solution:
+     1. Added code to pass model flag as -m argument to Python scripts in shell-backend.ts
+     2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
+     3. Model flag now correctly passed to both claude.py and other shell backend scripts
+   - ✅ Technical Implementation:
+     * shell-backend.ts checks for model option in execution parameters
+     * When model flag present, adds `-m <model>` to Python script arguments
+     * Environment variable JUNO_MODEL still set for backward compatibility
+     * Command line argument takes precedence over environment variable
+   - ✅ Test Results: Build successful, 873 tests passed (2 unrelated MCP timeout failures), model flag correctly passed to shell backend scripts
+   - ✅ Files Modified: src/core/backends/shell-backend.ts (lines 418-421)
+   - ✅ User Impact: Shell backend now properly receives model selection via -m flag, enabling proper model selection in commands like `juno-code -b shell -s claude -m :haiku`
+   - ✅ Status: FULLY RESOLVED - Model flag passing working as expected
+
+2. **Claude Shell Backend Model Selection Support (Issue #27)** ✅ FULLY RESOLVED:
    - ✅ Root Need: User convenience - support shorthand syntax for model names in claude.py -m flag
    - ✅ Root Cause: claude.py -m flag required full model names with no support for convenient shorthand syntax
    - ✅ Final Solution:

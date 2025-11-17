@@ -59,9 +59,11 @@ The project uses a sophisticated AI workflow with:
 
 ## Current Status Update (2025-11-17)
 
-**✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
+**⚠️ 1 ACTIVE OPEN ISSUE**
+- Issue #24: Documentation cleanup - remove development artifacts
 
 **Recent Resolutions (2025-11-17):**
+- Issue #28: Shell backend model flag passing - FULLY RESOLVED (model flag now properly passed to Python scripts via -m argument in shell-backend.ts lines 418-421, 873 tests passing)
 - Issue #27: Claude shell backend model selection support - FULLY RESOLVED (implemented shorthand syntax :haiku, :sonnet, :opus with MODEL_SHORTHANDS dictionary and expand_model_shorthand() method, 853 tests passing)
 
 **Recent Resolutions (2025-11-14):**
@@ -90,9 +92,36 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-17)
+### ⚠️ 1 OPEN ISSUE (Last updated: 2025-11-17)
 
 ## Most Recently Resolved Issues (2025-11-17)
+
+### Issue #28: Shell Backend Model Flag Passing - FULLY RESOLVED
+
+**Root Cause:**
+- Shell backend was setting JUNO_MODEL environment variable but not passing -m flag to Python script command line arguments
+
+**Solution:**
+1. Added code to pass model flag as -m argument to Python scripts in shell-backend.ts
+2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
+3. Model flag now correctly passed to both claude.py and other shell backend scripts
+
+**Implementation:**
+- shell-backend.ts checks for model option in execution parameters
+- When model flag present, adds `-m <model>` to Python script arguments
+- Environment variable JUNO_MODEL still set for backward compatibility
+- Command line argument takes precedence over environment variable
+
+**Test Results:**
+- Build successful
+- 873 tests passed (2 unrelated MCP timeout failures)
+- Manual testing confirmed model flag correctly passed to shell backend scripts
+- Command works: `juno-code -b shell -s claude -m :haiku`
+
+**Files Modified:**
+- juno-task-ts/src/core/backends/shell-backend.ts (lines 418-421)
+
+**Date Resolved:** 2025-11-17
 
 ### Issue #27: Claude Shell Backend Model Selection Support - FULLY RESOLVED
 

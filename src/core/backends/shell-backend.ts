@@ -415,6 +415,11 @@ export class ShellBackend implements Backend {
         args.push('-p', request.arguments.instruction);
       }
 
+      // For Python scripts, add the model as -m argument if provided
+      if (isPython && request.arguments?.model) {
+        args.push('-m', request.arguments.model);
+      }
+
       if (this.config!.debug) {
         engineLogger.debug(`Executing script: ${command} ${args.join(' ')}`);
         engineLogger.debug(`Working directory: ${this.config!.workingDirectory}`);

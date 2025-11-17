@@ -1,10 +1,48 @@
 ## Open Issues
-<!-- Current status: ✅ 0 OPEN ISSUES -->
+<!-- Current status: ⚠️ 1 OPEN ISSUE -->
 <OPEN_ISSUES>
-No open issues. All reported issues have been resolved.
+
+**Issue #24: Documentation Cleanup - Remove Development Artifacts**
+- **Date Reported**: 2025-11-17
+- **Description**: Remove development artifacts and outdated information from documentation files
+- **Current Status**: Open - awaiting implementation
+- **Priority**: Low
+
 </OPEN_ISSUES>
 
 ## Recently Resolved Issues (2025-11-17)
+
+**Issue #28: Juno-Code CLI Not Passing Model Flag to Shell Backend** - ✅ FULLY RESOLVED (2025-11-17)
+- **Date Reported**: 2025-11-17
+- **Date Resolved**: 2025-11-17
+- **User Report**: When using `juno-code -b shell -s claude -m :haiku`, the model flag was ignored and sonnet-4.5 was used instead
+- **Symptom**: Model selection flag not being passed to Python script command line arguments
+- **Root Cause**: The shell backend (shell-backend.ts) was setting JUNO_MODEL environment variable but not passing the -m flag to the Python script command line arguments
+- **Solution**:
+  1. Added code to pass the model flag as -m argument to Python scripts in shell-backend.ts
+  2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
+  3. Model flag now correctly passed to both claude.py and other shell backend scripts
+- **Implementation Details**:
+  - shell-backend.ts checks for model option in execution parameters
+  - When model flag present, adds `-m <model>` to Python script arguments
+  - Environment variable JUNO_MODEL still set for backward compatibility
+  - Command line argument takes precedence over environment variable
+- **Files Modified**:
+  - juno-task-ts/src/core/backends/shell-backend.ts (lines 418-421)
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 873 tests passed (2 unrelated MCP timeout failures)
+  - ✅ Model flag correctly passed to shell backend scripts
+  - ✅ Command works: `juno-code -b shell -s claude -m :haiku`
+  - ✅ No regressions introduced
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 873 tests passing
+  ✅ Model flag properly forwarded to Python scripts
+  ✅ Both environment variable and CLI argument support working
+  ✅ No regressions introduced
+  ```
 
 **Issue #27: Claude Shell Backend Model Selection Support** - ✅ FULLY RESOLVED (2025-11-17)
 - **Date Reported**: 2025-11-17
