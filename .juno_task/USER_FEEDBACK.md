@@ -4,6 +4,48 @@
 No open issues. All reported issues have been resolved.
 </OPEN_ISSUES>
 
+## Recently Resolved Issues (2025-11-17)
+
+**Issue #27: Claude Shell Backend Model Selection Support** - ✅ FULLY RESOLVED (2025-11-17)
+- **Date Reported**: 2025-11-17
+- **User Report**: Need to support model selection with shorthand syntax for claude.py -m flag
+- **Symptom**: No shorthand support for model names (e.g., :haiku, :sonnet, :opus) in -m flag
+- **Resolution Date**: 2025-11-17
+- **Root Cause**: claude.py -m flag required full model names, no support for convenient shorthand syntax
+- **Solution**:
+  1. Added MODEL_SHORTHANDS dictionary to claude.py with model name mappings
+  2. Implemented expand_model_shorthand() method that expands shorthand names
+  3. Updated run() method to call expand_model_shorthand() when setting self.model_name
+  4. Updated help text to document shorthand syntax with examples
+- **Implementation Details**:
+  - MODEL_SHORTHANDS maps shorthand names to full model identifiers:
+    - :haiku -> claude-haiku-4-5-20251001
+    - :sonnet -> claude-sonnet-4-5-20250929
+    - :opus -> claude-opus-4-20250514
+    - :claude-haiku-4-5 -> claude-haiku-4-5-20251001
+    - :claude-sonnet-4-5 -> claude-sonnet-4-5-20250929
+    - :claude-opus-4 -> claude-opus-4-20250514
+  - expand_model_shorthand() checks for ":" prefix and maps to full name
+  - Full model names pass through unchanged
+  - Help text documents all supported shorthands
+- **Files Modified**:
+  - juno-task-ts/src/templates/services/claude.py
+- **Test Criteria**:
+  - ✅ Build successful
+  - ✅ 853 tests passed (1 unrelated failure)
+  - ✅ Manual testing: all shorthand expansions work correctly
+  - ✅ Full model names continue to work
+  - ✅ Help text updated with shorthand examples
+- **Test Results**:
+  ```
+  ✅ Build successful
+  ✅ 853 tests passing
+  ✅ All shorthand mappings verified: :haiku, :sonnet, :opus
+  ✅ Extended shorthands work: :claude-haiku-4-5, :claude-sonnet-4-5, :claude-opus-4
+  ✅ Full model names pass through unchanged
+  ✅ No regressions introduced
+  ```
+
 ## Recently Resolved Issues (2025-11-14)
 
 **Issue #23: CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE Environment Variable** - ✅ FULLY RESOLVED (2025-11-14)
