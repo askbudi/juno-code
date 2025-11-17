@@ -22,6 +22,16 @@ class ClaudeService:
     DEFAULT_PERMISSION_MODE = "default"
     DEFAULT_AUTO_INSTRUCTION = """You are Claude Code, an AI coding assistant. Follow the instructions provided and generate high-quality code."""
 
+    # Model shorthand mappings (colon-prefixed names expand to full model IDs)
+    MODEL_SHORTHANDS = {
+        ":claude-haiku-4-5": "claude-haiku-4-5-20251001",
+        ":claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
+        ":claude-opus-4": "claude-opus-4-20250514",
+        ":haiku": "claude-haiku-4-5-20251001",
+        ":sonnet": "claude-sonnet-4-5-20250929",
+        ":opus": "claude-opus-4-20250514",
+    }
+
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
         self.permission_mode = self.DEFAULT_PERMISSION_MODE
@@ -33,6 +43,22 @@ class ClaudeService:
         self.verbose = False
         # User message truncation: -1 = no truncation, N = truncate to N lines
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
+
+    def expand_model_shorthand(self, model: str) -> str:
+        """
+        Expand model shorthand names to full model IDs.
+
+        If the model starts with ':', look it up in MODEL_SHORTHANDS.
+        Otherwise, return the model name as-is.
+
+        Examples:
+            :claude-haiku-4-5 -> claude-haiku-4-5-20251001
+            :haiku -> claude-haiku-4-5-20251001
+            claude-sonnet-4-5-20250929 -> claude-sonnet-4-5-20250929 (unchanged)
+        """
+        if model.startswith(':'):
+            return self.MODEL_SHORTHANDS.get(model, model)
+        return model
 
     def check_claude_installed(self) -> bool:
         """Check if claude CLI is installed and available"""
@@ -56,7 +82,9 @@ class ClaudeService:
 Examples:
   %(prog)s -p "Write a hello world function"
   %(prog)s -pp prompt.txt --cd /path/to/project
-  %(prog)s -p "Add tests" -m claude-opus-4-20250514 --tool "Bash Edit"
+  %(prog)s -p "Add tests" -m :opus --tool "Bash Edit"
+  %(prog)s -p "Quick task" -m :haiku
+  %(prog)s -p "Complex task" -m claude-opus-4-20250514
 
 Environment Variables:
   CLAUDE_PROJECT_PATH                  Project path (default: current directory)
@@ -93,7 +121,7 @@ Environment Variables:
             "-m", "--model",
             type=str,
             default=os.environ.get("CLAUDE_MODEL", self.DEFAULT_MODEL),
-            help=f"Model name (e.g. 'sonnet', 'opus', or full name). Default: {self.DEFAULT_MODEL} (env: CLAUDE_MODEL)"
+            help=f"Model name. Supports shorthand (e.g., ':haiku', ':sonnet', ':opus', ':claude-haiku-4-5') or full model ID (e.g., 'claude-haiku-4-5-20251001'). Default: {self.DEFAULT_MODEL} (env: CLAUDE_MODEL)"
         )
 
         parser.add_argument(
@@ -521,7 +549,8 @@ Environment Variables:
 
         # Set configuration from arguments
         self.project_path = os.path.abspath(args.cd)
-        self.model_name = args.model
+        # Expand model shorthand (e.g., :haiku -> claude-haiku-4-5-20251001)
+        self.model_name = self.expand_model_shorthand(args.model)
         self.auto_instruction = args.auto_instruction
 
         # Get prompt from file or argument

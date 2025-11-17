@@ -57,9 +57,12 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-14)
+## Current Status Update (2025-11-17)
 
 **✅ 0 ACTIVE OPEN ISSUES** - All issues resolved
+
+**Recent Resolutions (2025-11-17):**
+- Issue #27: Claude shell backend model selection support - FULLY RESOLVED (implemented shorthand syntax :haiku, :sonnet, :opus with MODEL_SHORTHANDS dictionary and expand_model_shorthand() method, 853 tests passing)
 
 **Recent Resolutions (2025-11-14):**
 - Issue #23: CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE environment variable - FULLY RESOLVED (configurable truncation support, default=4, -1=no truncation)
@@ -87,7 +90,42 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-14)
+### ✅ ALL ISSUES RESOLVED (Last updated: 2025-11-17)
+
+## Most Recently Resolved Issues (2025-11-17)
+
+### Issue #27: Claude Shell Backend Model Selection Support - FULLY RESOLVED
+
+**Root Cause:**
+- claude.py -m flag required full model names with no support for convenient shorthand syntax
+
+**Solution:**
+1. Added MODEL_SHORTHANDS dictionary to claude.py with model name mappings
+2. Implemented expand_model_shorthand() method that expands shorthand names
+3. Updated run() method to call expand_model_shorthand() when setting self.model_name
+4. Updated help text to document shorthand syntax with examples
+
+**Implementation:**
+- MODEL_SHORTHANDS maps shorthand names to full model identifiers:
+  - :haiku -> claude-haiku-4-5-20251001
+  - :sonnet -> claude-sonnet-4-5-20250929
+  - :opus -> claude-opus-4-20250514
+  - :claude-haiku-4-5 -> claude-haiku-4-5-20251001
+  - :claude-sonnet-4-5 -> claude-sonnet-4-5-20250929
+  - :claude-opus-4 -> claude-opus-4-20250514
+- expand_model_shorthand() checks for ":" prefix and maps to full name
+- Full model names pass through unchanged for backward compatibility
+
+**Test Results:**
+- Build successful
+- 853 tests passed (1 unrelated failure)
+- Manual testing confirmed all shorthand expansions work correctly
+- Help text updated with shorthand examples
+
+**Files Modified:**
+- juno-task-ts/src/templates/services/claude.py
+
+**Date Resolved:** 2025-11-17
 
 ## Most Recently Resolved Issues (2025-11-14)
 
