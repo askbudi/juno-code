@@ -580,6 +580,11 @@ export async function mainCommandHandler(
       console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
     }
 
+    // Check if --agents flag is used with non-shell backend
+    if (options.agents && selectedBackend !== 'shell') {
+      console.error(chalk.yellow('\n⚠️  Note: --agents flag is only supported with shell backend and will be ignored'));
+    }
+
     // Create execution request
     const executionRequest = createExecutionRequest({
       instruction,
@@ -587,7 +592,8 @@ export async function mainCommandHandler(
       backend: selectedBackend,
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations || config.defaultMaxIterations,
-      model: options.model || config.defaultModel
+      model: options.model || config.defaultModel,
+      agents: options.agents
     });
 
     // Execute

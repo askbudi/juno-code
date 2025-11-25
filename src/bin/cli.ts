@@ -134,6 +134,7 @@ function setupMainCommand(program: Command): void {
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
+    .option('--agents <agents>', 'Agents configuration (forwarded to claude.py when using shell backend)')
     .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
@@ -141,7 +142,12 @@ function setupMainCommand(program: Command): void {
       try {
         // Get global options from program
         const globalOptions = program.opts();
-        const allOptions = { ...options, ...globalOptions };
+        // Merge options with command options taking precedence over global options
+        // Only merge defined global options to avoid overwriting command options with undefined
+        const definedGlobalOptions = Object.fromEntries(
+          Object.entries(globalOptions).filter(([_, v]) => v !== undefined)
+        );
+        const allOptions = { ...definedGlobalOptions, ...options };
 
         // Check if we should auto-detect project configuration
         if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
