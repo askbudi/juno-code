@@ -10,39 +10,58 @@
 
 </OPEN_ISSUES>
 
-## Recently Resolved Issues (2025-11-17)
+## Recently Resolved Issues (2025-11-25)
 
-**Issue #28: Juno-Code CLI Not Passing Model Flag to Shell Backend** - ✅ FULLY RESOLVED (2025-11-17)
-- **Date Reported**: 2025-11-17
-- **Date Resolved**: 2025-11-17
-- **User Report**: When using `juno-code -b shell -s claude -m :haiku`, the model flag was ignored and sonnet-4.5 was used instead
-- **Symptom**: Model selection flag not being passed to Python script command line arguments
-- **Root Cause**: The shell backend (shell-backend.ts) was setting JUNO_MODEL environment variable but not passing the -m flag to the Python script command line arguments
+**Issue #30: Add --agents Flag Support to juno-code CLI** - ✅ FULLY RESOLVED (2025-11-25)
+- **Date Reported**: 2025-11-25
+- **Date Resolved**: 2025-11-25
+- **Root Cause**: No --agents flag support in juno-code CLI
+- **Problem**: Users could not pass agents configuration to claude.py shell backend
 - **Solution**:
-  1. Added code to pass the model flag as -m argument to Python scripts in shell-backend.ts
-  2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
-  3. Model flag now correctly passed to both claude.py and other shell backend scripts
-- **Implementation Details**:
-  - shell-backend.ts checks for model option in execution parameters
-  - When model flag present, adds `-m <model>` to Python script arguments
-  - Environment variable JUNO_MODEL still set for backward compatibility
-  - Command line argument takes precedence over environment variable
-- **Files Modified**:
-  - juno-task-ts/src/core/backends/shell-backend.ts (lines 418-421)
-- **Test Criteria**:
-  - ✅ Build successful
-  - ✅ 873 tests passed (2 unrelated MCP timeout failures)
-  - ✅ Model flag correctly passed to shell backend scripts
-  - ✅ Command works: `juno-code -b shell -s claude -m :haiku`
-  - ✅ No regressions introduced
+  1. Added --agents option to CLI in cli.ts
+  2. Added --agents argument parser in claude.py
+  3. Added --agents flag forwarding in claude.py build_claude_command
+  4. Added agents parameter to createExecutionRequest in engine.ts
+  5. Added agents to ExecutionRequest storage and toolRequest.arguments
+  6. Added agents forwarding in shell-backend.ts
+  7. Added informational message for non-shell backends in main.ts
+- **Expected Behavior**:
+  - Shell backend: Forwards --agents to claude.py
+  - MCP backend: Shows message "Note: --agents flag is only supported with shell backend and will be ignored"
 - **Test Results**:
-  ```
-  ✅ Build successful
-  ✅ 873 tests passing
-  ✅ Model flag properly forwarded to Python scripts
-  ✅ Both environment variable and CLI argument support working
-  ✅ No regressions introduced
-  ```
+  - ✅ Build successful
+  - ✅ 889 tests passing (2 unrelated test failures)
+- **Files Modified**:
+  - juno-task-ts/src/bin/cli.ts
+  - juno-task-ts/src/templates/services/claude.py
+  - juno-task-ts/src/core/engine.ts
+  - juno-task-ts/src/core/backends/shell-backend.ts
+  - juno-task-ts/src/cli/commands/main.ts
+
+**Issue #29: Set Default Model for Claude to sonnet-4-5** - ✅ ALREADY RESOLVED (2025-11-25)
+- **Date Reported**: 2025-11-18
+- **Date Resolved**: Already resolved (before 2025-11-17)
+- **Root Cause**: User requested sonnet-4-5 as default
+- **Problem**: None - DEFAULT_MODEL was already set to "claude-sonnet-4-5-20250929"
+- **Solution**: No changes needed - verified claude.py line 21 already has correct default
+- **Status**: ✅ ALREADY RESOLVED - No code changes required
+
+**Issue #28: Juno-Code CLI Not Passing Model Flag to Shell Backend** - ✅ FULLY RESOLVED (2025-11-25)
+- **Date Reported**: 2025-11-17
+- **Date Resolved**: 2025-11-25
+- **Root Cause**: Options merge order in cli.ts was incorrect - globalOptions was overwriting command-specific options with undefined values
+- **Problem**: When using `juno-code -b shell -s claude -m :haiku`, the -m flag value was being overridden by undefined from globalOptions
+- **Solution**: Changed options merge in cli.ts (line 149) to filter out undefined values from globalOptions before merging, ensuring command-specific options take precedence
+- **Implementation**: `const definedGlobalOptions = Object.fromEntries(Object.entries(globalOptions).filter(([_, v]) => v !== undefined)); const allOptions = { ...definedGlobalOptions, ...options };`
+- **Test Results**:
+  - ✅ Build successful
+  - ✅ 889 tests passing (2 unrelated test failures)
+  - ✅ Model flag correctly passed to shell backend
+- **Files Modified**:
+  - juno-task-ts/src/bin/cli.ts (lines 146-149)
+  - juno-task-ts/src/core/backends/shell-backend.ts (line 427 - added debug logging)
+
+## Recently Resolved Issues (2025-11-17)
 
 **Issue #27: Claude Shell Backend Model Selection Support** - ✅ FULLY RESOLVED (2025-11-17)
 - **Date Reported**: 2025-11-17

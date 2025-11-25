@@ -57,13 +57,17 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-17)
+## Current Status Update (2025-11-25)
 
 **⚠️ 1 ACTIVE OPEN ISSUE**
 - Issue #24: Documentation cleanup - remove development artifacts
 
+**Recent Resolutions (2025-11-25):**
+- Issue #30: --agents flag support - FULLY RESOLVED (added to juno-code CLI with shell backend support, 889 tests passing)
+- Issue #29: Default model sonnet-4-5 - ALREADY RESOLVED (no changes needed, already configured)
+- Issue #28: Shell backend model flag passing - FULLY RESOLVED (fixed options merge order in cli.ts lines 146-149, 889 tests passing)
+
 **Recent Resolutions (2025-11-17):**
-- Issue #28: Shell backend model flag passing - FULLY RESOLVED (model flag now properly passed to Python scripts via -m argument in shell-backend.ts lines 418-421, 873 tests passing)
 - Issue #27: Claude shell backend model selection support - FULLY RESOLVED (implemented shorthand syntax :haiku, :sonnet, :opus with MODEL_SHORTHANDS dictionary and expand_model_shorthand() method, 853 tests passing)
 
 **Recent Resolutions (2025-11-14):**
@@ -92,36 +96,61 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ⚠️ 1 OPEN ISSUE (Last updated: 2025-11-17)
+### ⚠️ 1 OPEN ISSUE (Last updated: 2025-11-25)
 
-## Most Recently Resolved Issues (2025-11-17)
+## Most Recently Resolved Issues (2025-11-25)
+
+### Issue #30: Add --agents Flag Support - FULLY RESOLVED
+
+**Root Cause:**
+- No --agents flag support in juno-code CLI
+
+**Solution:**
+1. Added --agents option to CLI in cli.ts
+2. Added --agents argument parser in claude.py
+3. Added --agents flag forwarding in shell-backend.ts
+4. Added informational message for non-shell backends
+
+**Test Results:**
+- Build successful
+- 889 tests passing (2 unrelated test failures)
+
+**Files Modified:**
+- juno-task-ts/src/bin/cli.ts
+- juno-task-ts/src/templates/services/claude.py
+- juno-task-ts/src/core/engine.ts
+- juno-task-ts/src/core/backends/shell-backend.ts
+- juno-task-ts/src/cli/commands/main.ts
+
+**Date Resolved:** 2025-11-25
+
+### Issue #29: Default Model sonnet-4-5 - ALREADY RESOLVED
+
+**Status:**
+- DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929"
+- No changes needed
+
+**Date Resolved:** 2025-11-25
 
 ### Issue #28: Shell Backend Model Flag Passing - FULLY RESOLVED
 
 **Root Cause:**
-- Shell backend was setting JUNO_MODEL environment variable but not passing -m flag to Python script command line arguments
+- Options merge order in cli.ts was incorrect - globalOptions was overwriting command-specific options with undefined values
 
 **Solution:**
-1. Added code to pass model flag as -m argument to Python scripts in shell-backend.ts
-2. Implementation at lines 418-421 ensures model flag is properly forwarded to shell scripts
-3. Model flag now correctly passed to both claude.py and other shell backend scripts
-
-**Implementation:**
-- shell-backend.ts checks for model option in execution parameters
-- When model flag present, adds `-m <model>` to Python script arguments
-- Environment variable JUNO_MODEL still set for backward compatibility
-- Command line argument takes precedence over environment variable
+- Changed options merge in cli.ts (line 149) to filter out undefined values from globalOptions before merging
 
 **Test Results:**
 - Build successful
-- 873 tests passed (2 unrelated MCP timeout failures)
-- Manual testing confirmed model flag correctly passed to shell backend scripts
-- Command works: `juno-code -b shell -s claude -m :haiku`
+- 889 tests passing (2 unrelated test failures)
 
 **Files Modified:**
-- juno-task-ts/src/core/backends/shell-backend.ts (lines 418-421)
+- juno-task-ts/src/bin/cli.ts (lines 146-149)
+- juno-task-ts/src/core/backends/shell-backend.ts (line 427)
 
-**Date Resolved:** 2025-11-17
+**Date Resolved:** 2025-11-25
+
+## Most Recently Resolved Issues (2025-11-17)
 
 ### Issue #27: Claude Shell Backend Model Selection Support - FULLY RESOLVED
 

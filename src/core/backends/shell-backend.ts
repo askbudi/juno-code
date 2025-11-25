@@ -420,10 +420,16 @@ export class ShellBackend implements Backend {
         args.push('-m', request.arguments.model);
       }
 
+      // For Python scripts, add the agents configuration if provided
+      if (isPython && request.arguments?.agents) {
+        args.push('--agents', request.arguments.agents);
+      }
+
       if (this.config!.debug) {
         engineLogger.debug(`Executing script: ${command} ${args.join(' ')}`);
         engineLogger.debug(`Working directory: ${this.config!.workingDirectory}`);
         engineLogger.debug(`Environment variables: ${Object.keys(env).filter(k => k.startsWith('JUNO_')).join(', ')}`);
+        engineLogger.debug(`Request arguments: ${JSON.stringify(request.arguments)}`);
       }
 
       // Spawn the process

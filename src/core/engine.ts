@@ -911,6 +911,7 @@ export class ExecutionEngine extends EventEmitter {
           instruction: context.request.instruction,
           project_path: context.request.workingDirectory,
           ...(context.request.model !== undefined && { model: context.request.model }),
+          ...(context.request.agents !== undefined && { agents: context.request.agents }),
           iteration: iterationNumber,
         },
         timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
@@ -1471,6 +1472,7 @@ export function createExecutionRequest(options: {
   workingDirectory?: string;
   maxIterations?: number;
   model?: string;
+  agents?: string;
   requestId?: string;
   mcpServerName?: string;
 }): ExecutionRequest {
@@ -1485,6 +1487,10 @@ export function createExecutionRequest(options: {
 
   if (options.model !== undefined) {
     (result as any).model = options.model;
+  }
+
+  if (options.agents !== undefined) {
+    (result as any).agents = options.agents;
   }
 
   if (options.mcpServerName !== undefined) {

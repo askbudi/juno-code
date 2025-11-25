@@ -176,6 +176,12 @@ Environment Variables:
         )
 
         parser.add_argument(
+            "--agents",
+            type=str,
+            help="Agents configuration (forwarded to Claude CLI --agents flag)"
+        )
+
+        parser.add_argument(
             "--additional-args",
             type=str,
             help="Additional claude arguments as a space-separated string"
@@ -228,6 +234,10 @@ Environment Variables:
         # Add continue flag if specified
         if args.continue_conversation:
             cmd.append("--continue")
+
+        # Add agents configuration if specified
+        if args.agents:
+            cmd.extend(["--agents", args.agents])
 
         # Add output format if JSON requested
         # Note: stream-json requires --verbose when using --print mode
