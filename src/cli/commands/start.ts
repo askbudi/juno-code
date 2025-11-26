@@ -106,6 +106,7 @@ export async function startCommandHandler(
       backend: options.backend,
       maxIterations: options.maxIterations,
       model: options.model,
+      agents: options.agents,
       directory: options.directory,
       verbose: options.verbose,
       quiet: options.quiet,
@@ -158,6 +159,7 @@ export function configureStartCommand(program: Command): void {
     .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
+    .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
     .option('-d, --directory <path>', 'Project directory (default: current)')
     .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
     .option('--show-metrics', 'Display performance metrics summary after execution')
