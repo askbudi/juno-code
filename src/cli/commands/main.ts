@@ -711,6 +711,11 @@ export function createMainCommand(): CLICommand {
         env: 'JUNO_CODE_MODEL'
       }),
       createOption({
+        flags: '--agents <config>',
+        description: 'Agents configuration (forwarded to shell backend, ignored for MCP)',
+        env: 'JUNO_CODE_AGENTS'
+      }),
+      createOption({
         flags: '-I, --interactive',
         description: 'Interactive mode for typing/pasting prompts',
         defaultValue: false,

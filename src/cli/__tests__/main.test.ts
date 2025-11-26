@@ -166,7 +166,7 @@ describe('Main Command', () => {
 
       expect(command.name).toBe('main');
       expect(command.description).toContain('Execute subagents in a loop');
-      expect(command.options).toHaveLength(7);
+      expect(command.options).toHaveLength(8); // Updated for --agents option
       expect(command.examples).toHaveLength(4);
       expect(command.handler).toBe(mainCommandHandler);
     });

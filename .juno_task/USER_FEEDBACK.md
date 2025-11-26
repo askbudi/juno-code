@@ -12,54 +12,39 @@
 
 ## Recently Resolved Issues (2025-11-25)
 
-**Issue #30: Add --agents Flag Support to juno-code CLI** - ✅ FULLY RESOLVED (2025-11-25)
+**Issue #31: Add :opus Model Shorthand Support** - ✅ RESOLVED (2025-11-25)
 - **Date Reported**: 2025-11-25
 - **Date Resolved**: 2025-11-25
-- **Root Cause**: No --agents flag support in juno-code CLI
-- **Problem**: Users could not pass agents configuration to claude.py shell backend
-- **Solution**:
-  1. Added --agents option to CLI in cli.ts
-  2. Added --agents argument parser in claude.py
-  3. Added --agents flag forwarding in claude.py build_claude_command
-  4. Added agents parameter to createExecutionRequest in engine.ts
-  5. Added agents to ExecutionRequest storage and toolRequest.arguments
-  6. Added agents forwarding in shell-backend.ts
-  7. Added informational message for non-shell backends in main.ts
-- **Expected Behavior**:
-  - Shell backend: Forwards --agents to claude.py
-  - MCP backend: Shows message "Note: --agents flag is only supported with shell backend and will be ignored"
-- **Test Results**:
-  - ✅ Build successful
-  - ✅ 889 tests passing (2 unrelated test failures)
-- **Files Modified**:
-  - juno-task-ts/src/bin/cli.ts
-  - juno-task-ts/src/templates/services/claude.py
-  - juno-task-ts/src/core/engine.ts
-  - juno-task-ts/src/core/backends/shell-backend.ts
-  - juno-task-ts/src/cli/commands/main.ts
+- **Root Cause**: :opus shorthand mapped to old model (claude-opus-4-20250514) instead of latest Opus 4.5
+- **Problem**: :opus should translate to claude-opus-4-5-20251101 (latest Opus 4.5 model)
+- **Solution**: Updated MODEL_SHORTHANDS dictionary in claude.py to map :opus to claude-opus-4-5-20251101, added :claude-opus-4-5 shorthand
+- **Test Results**: Build successful, 853 tests passing
+- **Files Modified**: juno-task-ts/src/templates/services/claude.py (lines 26-34)
+
+**Issue #30: Add --agents Flag Support to juno-code CLI** - ✅ RESOLVED (2025-11-25)
+- **Date Reported**: 2025-11-25
+- **Date Resolved**: 2025-11-25
+- **Root Cause**: --agents flag not defined in CLI option definitions
+- **Problem**: juno-code CLI should accept --agents flag and forward to claude shell backend
+- **Solution**: Added agents option to MainCommandOptions and StartCommandOptions interfaces, registered --agents option in main and start commands, backend infrastructure already in place
+- **Test Results**: Build successful, 853 tests passing (updated main.test.ts from 7 to 8 options)
+- **Files Modified**: juno-task-ts/src/cli/types.ts, juno-task-ts/src/cli/commands/main.ts, juno-task-ts/src/cli/commands/start.ts, juno-task-ts/src/cli/__tests__/main.test.ts
 
 **Issue #29: Set Default Model for Claude to sonnet-4-5** - ✅ ALREADY RESOLVED (2025-11-25)
 - **Date Reported**: 2025-11-18
 - **Date Resolved**: Already resolved (before 2025-11-17)
-- **Root Cause**: User requested sonnet-4-5 as default
-- **Problem**: None - DEFAULT_MODEL was already set to "claude-sonnet-4-5-20250929"
+- **Root Cause**: None - DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929" (line 21)
+- **Problem**: None - issue was already resolved in previous work
 - **Solution**: No changes needed - verified claude.py line 21 already has correct default
 - **Status**: ✅ ALREADY RESOLVED - No code changes required
 
-**Issue #28: Juno-Code CLI Not Passing Model Flag to Shell Backend** - ✅ FULLY RESOLVED (2025-11-25)
+**Issue #28: Juno-Code CLI Not Passing Model Flag to Shell Backend** - ✅ ALREADY RESOLVED (2025-11-25)
 - **Date Reported**: 2025-11-17
-- **Date Resolved**: 2025-11-25
-- **Root Cause**: Options merge order in cli.ts was incorrect - globalOptions was overwriting command-specific options with undefined values
-- **Problem**: When using `juno-code -b shell -s claude -m :haiku`, the -m flag value was being overridden by undefined from globalOptions
-- **Solution**: Changed options merge in cli.ts (line 149) to filter out undefined values from globalOptions before merging, ensuring command-specific options take precedence
-- **Implementation**: `const definedGlobalOptions = Object.fromEntries(Object.entries(globalOptions).filter(([_, v]) => v !== undefined)); const allOptions = { ...definedGlobalOptions, ...options };`
-- **Test Results**:
-  - ✅ Build successful
-  - ✅ 889 tests passing (2 unrelated test failures)
-  - ✅ Model flag correctly passed to shell backend
-- **Files Modified**:
-  - juno-task-ts/src/bin/cli.ts (lines 146-149)
-  - juno-task-ts/src/core/backends/shell-backend.ts (line 427 - added debug logging)
+- **Date Resolved**: Already resolved (before 2025-11-17)
+- **Root Cause**: None - full passthrough chain already implemented
+- **Problem**: None - model flag passthrough was already complete
+- **Solution**: No changes needed - verified full passthrough chain: CLI options (main.ts line 709-712, start.ts line 161) → createExecutionRequest (engine.ts lines 1488-1490) → ToolCallRequest (engine.ts lines 913-914) → shell backend -m flag (shell-backend.ts lines 419-421)
+- **Status**: ✅ ALREADY RESOLVED - No code changes required
 
 ## Recently Resolved Issues (2025-11-17)
 

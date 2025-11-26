@@ -129,6 +129,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   maxIterations?: number;
   /** Model to use (subagent-specific) */
   model?: string;
+  /** Agents configuration (forwarded to shell backend --agents flag) */
+  agents?: string;
   /** Backend to use (mcp, shell) */
   backend?: 'mcp' | 'shell';
   /** Interactive mode for typing prompts */
@@ -171,6 +173,8 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   maxIterations?: number;
   /** Model to use */
   model?: string;
+  /** Agents configuration (forwarded to shell backend --agents flag) */
+  agents?: string;
   /** Project directory */
   directory?: string;
   /** Display performance metrics summary after execution */

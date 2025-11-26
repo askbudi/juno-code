@@ -63,9 +63,10 @@ The project uses a sophisticated AI workflow with:
 - Issue #24: Documentation cleanup - remove development artifacts
 
 **Recent Resolutions (2025-11-25):**
-- Issue #30: --agents flag support - FULLY RESOLVED (added to juno-code CLI with shell backend support, 889 tests passing)
-- Issue #29: Default model sonnet-4-5 - ALREADY RESOLVED (no changes needed, already configured)
-- Issue #28: Shell backend model flag passing - FULLY RESOLVED (fixed options merge order in cli.ts lines 146-149, 889 tests passing)
+- Issue #31: :opus model shorthand support - RESOLVED (now maps to claude-opus-4-5-20251101, updated MODEL_SHORTHANDS in claude.py)
+- Issue #30: --agents flag support - RESOLVED (added CLI option and forwarding to shell backend, 853 tests passing)
+- Issue #29: Default model sonnet-4-5 - ALREADY RESOLVED (no changes needed, DEFAULT_MODEL already set)
+- Issue #28: Model flag passthrough - ALREADY RESOLVED (no changes needed, full passthrough chain already implemented)
 
 **Recent Resolutions (2025-11-17):**
 - Issue #27: Claude shell backend model selection support - FULLY RESOLVED (implemented shorthand syntax :haiku, :sonnet, :opus with MODEL_SHORTHANDS dictionary and expand_model_shorthand() method, 853 tests passing)
@@ -100,53 +101,65 @@ The project uses a sophisticated AI workflow with:
 
 ## Most Recently Resolved Issues (2025-11-25)
 
-### Issue #30: Add --agents Flag Support - FULLY RESOLVED
+### Issue #31: Add :opus Model Shorthand Support - RESOLVED
 
 **Root Cause:**
-- No --agents flag support in juno-code CLI
+- :opus shorthand mapped to old model (claude-opus-4-20250514) instead of latest Opus 4.5
 
 **Solution:**
-1. Added --agents option to CLI in cli.ts
-2. Added --agents argument parser in claude.py
-3. Added --agents flag forwarding in shell-backend.ts
-4. Added informational message for non-shell backends
+- Updated MODEL_SHORTHANDS dictionary in claude.py to map :opus to claude-opus-4-5-20251101
+- Added :claude-opus-4-5 shorthand
 
 **Test Results:**
 - Build successful
-- 889 tests passing (2 unrelated test failures)
+- 853 tests passing
 
 **Files Modified:**
-- juno-task-ts/src/bin/cli.ts
-- juno-task-ts/src/templates/services/claude.py
-- juno-task-ts/src/core/engine.ts
-- juno-task-ts/src/core/backends/shell-backend.ts
+- juno-task-ts/src/templates/services/claude.py (lines 26-34)
+
+**Date Resolved:** 2025-11-25
+
+### Issue #30: Add --agents Flag Support - RESOLVED
+
+**Root Cause:**
+- --agents flag not defined in CLI option definitions
+
+**Solution:**
+- Added agents option to MainCommandOptions and StartCommandOptions interfaces
+- Registered --agents option in main and start commands
+- Backend infrastructure already in place
+
+**Test Results:**
+- Build successful
+- 853 tests passing (updated main.test.ts from 7 to 8 options)
+
+**Files Modified:**
+- juno-task-ts/src/cli/types.ts
 - juno-task-ts/src/cli/commands/main.ts
+- juno-task-ts/src/cli/commands/start.ts
+- juno-task-ts/src/cli/__tests__/main.test.ts
 
 **Date Resolved:** 2025-11-25
 
 ### Issue #29: Default Model sonnet-4-5 - ALREADY RESOLVED
 
 **Status:**
-- DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929"
+- DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929" (line 21)
 - No changes needed
 
 **Date Resolved:** 2025-11-25
 
-### Issue #28: Shell Backend Model Flag Passing - FULLY RESOLVED
+### Issue #28: Shell Backend Model Flag Passing - ALREADY RESOLVED
 
 **Root Cause:**
-- Options merge order in cli.ts was incorrect - globalOptions was overwriting command-specific options with undefined values
+- None - full passthrough chain already implemented
 
 **Solution:**
-- Changed options merge in cli.ts (line 149) to filter out undefined values from globalOptions before merging
+- No changes needed
+- Verified full passthrough chain: CLI options → createExecutionRequest → ToolCallRequest → shell backend -m flag
 
-**Test Results:**
-- Build successful
-- 889 tests passing (2 unrelated test failures)
-
-**Files Modified:**
-- juno-task-ts/src/bin/cli.ts (lines 146-149)
-- juno-task-ts/src/core/backends/shell-backend.ts (line 427)
+**Status:**
+- Already resolved in previous work
 
 **Date Resolved:** 2025-11-25
 

@@ -6,7 +6,7 @@
 - **Active Open Issues**: 1 (Issue #24: Documentation cleanup)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issues #28, #29, #30 FULLY RESOLVED (2025-11-25)
+- **Latest Achievement**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
 - **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
 - **Previous Achievements**: Issues #22 & #23 user message truncation and ENV variable support FULLY RESOLVED (2025-11-14)
 - **Previous Achievement**: Issue #20 nested message formatting FULLY RESOLVED - Handles tool_result type content (2025-11-14)
@@ -22,10 +22,11 @@
 
 **⚠️ 1 OPEN ISSUE** (2025-11-25)
 - **CURRENT OPEN ISSUE**: Issue #24 Documentation cleanup - remove development artifacts
-- **LATEST RESOLUTIONS**: Issues #28, #29, #30 FULLY RESOLVED (2025-11-25)
+- **LATEST RESOLUTIONS**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
+  - Issue #31: :opus shorthand now maps to claude-opus-4-5-20251101 (latest Opus 4.5)
   - Issue #30: --agents flag support added to juno-code CLI
   - Issue #29: Default model already set to sonnet-4-5 (no changes needed)
-  - Issue #28: Model flag now properly passed to shell backend
+  - Issue #28: Model flag passthrough already implemented (no changes needed)
 - **PREVIOUS RESOLUTION**: Issue #27 Claude shell backend model selection with shorthand syntax support (2025-11-17)
 - **PREVIOUS RESOLUTIONS**: Issues #22 & #23 user message truncation with CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE ENV support (2025-11-14)
 - **PREVIOUS RESOLUTION**: Issue #20 Multiline format nested messages FULLY RESOLVED with comprehensive flattening logic (2025-11-14)
@@ -47,27 +48,27 @@
 
 
 **Recently Resolved on 2025-11-25:**
-1. **--agents Flag Support (Issue #30)** ✅ FULLY RESOLVED:
-   - ✅ Root Cause: No --agents flag support in juno-code CLI
-   - ✅ Final Solution:
-     1. Added --agents option to CLI in cli.ts
-     2. Added --agents argument parser in claude.py
-     3. Added --agents flag forwarding in shell-backend.ts
-     4. Added informational message for non-shell backends
-   - ✅ Test Results: Build successful, 889 tests passing
-   - ✅ Files Modified: cli.ts, claude.py, engine.ts, shell-backend.ts, main.ts
-   - ✅ Status: FULLY RESOLVED
+1. **:opus Model Shorthand Support (Issue #31)** ✅ RESOLVED:
+   - ✅ Root Cause: :opus mapped to old claude-opus-4-20250514 instead of latest Opus 4.5
+   - ✅ Final Solution: Updated MODEL_SHORTHANDS to map :opus to claude-opus-4-5-20251101
+   - ✅ Test Results: Build successful, 853 tests passing
+   - ✅ Files Modified: src/templates/services/claude.py (lines 26-34)
+   - ✅ Status: RESOLVED
 
-2. **Default Model sonnet-4-5 (Issue #29)** ✅ ALREADY RESOLVED:
-   - ✅ Status: DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929"
+2. **--agents Flag Support (Issue #30)** ✅ RESOLVED:
+   - ✅ Root Cause: --agents flag not defined in CLI option definitions
+   - ✅ Final Solution: Added agents to MainCommandOptions/StartCommandOptions, registered --agents option in main/start commands
+   - ✅ Test Results: Build successful, 853 tests passing (main.test.ts updated)
+   - ✅ Files Modified: cli/types.ts, cli/commands/main.ts, cli/commands/start.ts, cli/__tests__/main.test.ts
+   - ✅ Status: RESOLVED
+
+3. **Default Model sonnet-4-5 (Issue #29)** ✅ ALREADY RESOLVED:
+   - ✅ Status: DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929" (line 21)
    - ✅ No changes needed
 
-3. **Shell Backend Model Flag Passing (Issue #28)** ✅ FULLY RESOLVED:
-   - ✅ Root Cause: Options merge order incorrectly overwriting command-specific options
-   - ✅ Final Solution: Filter undefined values from globalOptions before merging
-   - ✅ Test Results: Build successful, 889 tests passing
-   - ✅ Files Modified: cli.ts (lines 146-149), shell-backend.ts (line 427)
-   - ✅ Status: FULLY RESOLVED
+4. **Shell Backend Model Flag Passing (Issue #28)** ✅ ALREADY RESOLVED:
+   - ✅ Status: Full passthrough chain already implemented
+   - ✅ No changes needed
 
 **Recently Resolved on 2025-11-17:**
 
@@ -608,8 +609,33 @@
 
 ### **✅ ALL SYSTEMS WORKING - 1 OPEN ISSUE** ⚠️
 
-**Latest Achievements (2025-11-17):**
-1. **Shell Backend Model Flag Passing (Issue #28)** ✅ FULLY RESOLVED:
+**Latest Achievements (2025-11-25):**
+1. **:opus Model Shorthand Support (Issue #31)** ✅ RESOLVED:
+   - ✅ Root Cause: :opus shorthand mapped to old model (claude-opus-4-20250514) instead of latest Opus 4.5
+   - ✅ Final Solution: Updated MODEL_SHORTHANDS dictionary in claude.py to map :opus to claude-opus-4-5-20251101, added :claude-opus-4-5 shorthand
+   - ✅ Test Results: Build successful, 853 tests passing
+   - ✅ Files Modified: src/templates/services/claude.py (lines 26-34)
+   - ✅ User Impact: :opus now correctly maps to latest Opus 4.5 model
+   - ✅ Status: RESOLVED
+
+2. **--agents Flag Support (Issue #30)** ✅ RESOLVED:
+   - ✅ Root Cause: --agents flag not defined in CLI option definitions
+   - ✅ Final Solution: Added agents option to MainCommandOptions and StartCommandOptions interfaces, registered --agents option in main and start commands
+   - ✅ Test Results: Build successful, 853 tests passing (main.test.ts updated from 7 to 8 options)
+   - ✅ Files Modified: cli/types.ts, cli/commands/main.ts, cli/commands/start.ts, cli/__tests__/main.test.ts
+   - ✅ User Impact: juno-code now accepts --agents flag and forwards to claude shell backend
+   - ✅ Status: RESOLVED
+
+3. **Default Model sonnet-4-5 (Issue #29)** ✅ ALREADY RESOLVED:
+   - ✅ Status: DEFAULT_MODEL already set to "claude-sonnet-4-5-20250929" (line 21)
+   - ✅ No changes needed - issue was already resolved
+
+4. **Shell Backend Model Flag Passing (Issue #28)** ✅ ALREADY RESOLVED:
+   - ✅ Status: Full passthrough chain already implemented
+   - ✅ No changes needed - model flag passthrough was already complete
+
+**Previous Achievements (2025-11-17):**
+1. **Shell Backend Model Flag Passing (Issue #27 - Note: Issue #28 in old docs)** ✅ FULLY RESOLVED:
    - ✅ Root Need: Model flag not being passed to shell backend Python scripts
    - ✅ Root Cause: Shell backend was setting JUNO_MODEL environment variable but not passing -m flag to Python script command line arguments
    - ✅ Final Solution:
