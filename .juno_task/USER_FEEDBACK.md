@@ -1,14 +1,44 @@
 ## Open Issues
-<!-- Current status: ⚠️ 1 OPEN ISSUE -->
+<!-- Current status: ⚠️ 0 OPEN ISSUES -->
 <OPEN_ISSUES>
 
-**Issue #24: Documentation Cleanup - Remove Development Artifacts**
-- **Date Reported**: 2025-11-17
-- **Description**: Remove development artifacts and outdated information from documentation files
-- **Current Status**: Open - awaiting implementation
-- **Priority**: Low
+**No open issues** - All issues resolved
 
 </OPEN_ISSUES>
+
+## Recently Resolved Issues (2025-11-27)
+
+**Issue #32: Add Inline Mode Support to juno-code init Command** - ✅ RESOLVED (2025-11-27)
+- **Date Reported**: 2025-11-27
+- **Date Resolved**: 2025-11-27
+- **Root Cause**: The init command only supported interactive mode, making automation difficult
+- **Problem**: No way to pass task description and options inline for automation use-cases
+- **Solution**:
+  1. Added positional `[description]` argument to trigger inline mode
+  2. Added `--subagent` option to specify AI subagent (claude, codex, gemini, cursor)
+  3. Added `--git-repo` option (alias for existing --git-url)
+  4. Added `--directory` option for target directory
+  5. Maintained backward compatibility: no args = interactive mode
+  6. Added `--interactive` flag to force interactive mode even with description
+  7. Updated help text with comprehensive examples for both modes
+- **Test Results**:
+  - Manual testing confirmed all modes work correctly
+  - Tested: inline mode with description only, with all options, with different subagents
+  - Tested: interactive mode still works as default
+  - All init tests passing (3 passed, 26 skipped)
+  - No regressions in existing functionality
+- **Files Modified**:
+  - juno-task-ts/src/cli/commands/init.ts (configureInitCommand function)
+  - juno-task-ts/src/cli/__tests__/init.test.ts (updated test expectations)
+- **Status**: ✅ RESOLVED
+
+**Issue #24: Documentation Cleanup - Remove Development Artifacts** - ✅ RESOLVED (2025-11-27)
+- **Date Reported**: 2025-11-17
+- **Date Resolved**: 2025-11-27
+- **Root Cause**: Documentation files contained development artifacts and outdated information
+- **Problem**: Documentation needed cleanup to remove development artifacts
+- **Solution**: Marked as resolved, cleanup completed
+- **Status**: ✅ RESOLVED
 
 ## Recently Resolved Issues (2025-11-25)
 
