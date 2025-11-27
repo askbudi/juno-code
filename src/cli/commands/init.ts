@@ -1236,18 +1236,25 @@ export async function initCommandHandler(
 export function configureInitCommand(program: Command): void {
   program
     .command('init')
-    .description('Initialize new juno-code project with simple setup')
-    .argument('[directory]', 'Target directory (default: current directory)')
+    .description('Initialize new juno-code project - supports both interactive and inline modes')
+    .argument('[description]', 'Task description for inline mode (optional - triggers inline mode if provided)')
+    .option('-s, --subagent <name>', 'AI subagent to use (claude, codex, gemini, cursor)')
+    .option('-g, --git-repo <url>', 'Git repository URL')
+    .option('-d, --directory <path>', 'Target directory (default: current directory)')
     .option('-f, --force', 'Force overwrite existing files')
-    .option('-t, --task <description>', 'Main task description')
-    .option('-g, --git-url <url>', 'Git repository URL')
-    .option('-i, --interactive', 'Launch simple interactive setup')
-    .action(async (directory, options, command) => {
+    .option('-i, --interactive', 'Force interactive mode (even if description is provided)')
+    .option('--git-url <url>', 'Git repository URL (alias for --git-repo)')
+    .option('-t, --task <description>', 'Task description (alias for positional description)')
+    .action(async (description, options, command) => {
+      // Determine task description from multiple possible sources
+      // Priority: positional argument > --task option > interactive mode
+      const taskDescription = description || options.task;
+
       const initOptions: InitCommandOptions = {
-        directory,
+        directory: options.directory,
         force: options.force,
-        task: options.task,
-        gitUrl: options.gitUrl,
+        task: taskDescription,
+        gitUrl: options.gitRepo || options.gitUrl,
         subagent: options.subagent,
         interactive: options.interactive,
         // Global options
@@ -1261,12 +1268,35 @@ export function configureInitCommand(program: Command): void {
       await initCommandHandler([], initOptions, command);
     })
     .addHelpText('after', `
-Examples:
-  $ juno-code init                                    # Initialize in current directory
-  $ juno-code init my-project                         # Initialize in ./my-project
-  $ juno-code init --interactive                      # Use simple interactive setup
+Modes:
+  Interactive Mode (default):
+    $ juno-code init                                    # Opens interactive TUI
+    $ juno-code init --interactive                      # Force interactive mode
 
-Simplified Interactive Flow:
+  Inline Mode (for automation):
+    $ juno-code init "Build a REST API"                 # Minimal inline mode
+    $ juno-code init "Build a REST API" --subagent claude --git-repo https://github.com/owner/repo
+    $ juno-code init "Build a REST API" --subagent codex --directory ./my-project
+
+Examples:
+  # Interactive mode (default)
+  $ juno-code init                                    # Initialize in current directory with TUI
+  $ juno-code init --directory my-project             # Initialize in ./my-project with TUI
+
+  # Inline mode (automation-friendly)
+  $ juno-code init "Create a TypeScript library"      # Quick init with inline description
+  $ juno-code init "Build web app" --subagent claude  # Specify AI subagent
+  $ juno-code init "API server" --git-repo https://github.com/me/repo
+
+Arguments & Options:
+  [description]              Task description (optional - triggers inline mode)
+  -s, --subagent <name>      AI subagent: claude, codex, gemini, cursor (default: claude)
+  -g, --git-repo <url>       Git repository URL
+  -d, --directory <path>     Target directory (default: current directory)
+  -f, --force                Force overwrite existing files
+  -i, --interactive          Force interactive mode
+
+Interactive Flow:
   1. Project Root → Specify target directory
   2. Main Task → Multi-line description (no character limits)
   3. Subagent Selection → Choose from Claude, Codex, Gemini, Cursor
@@ -1274,9 +1304,9 @@ Simplified Interactive Flow:
   5. Save → Handle existing files with override/cancel options
 
 Notes:
+  - All inline mode arguments are optional
+  - Defaults: directory=cwd, subagent=claude, no git repo
   - No prompt cost calculation or token counting
   - No character limits on task descriptions
-  - Simple file structure with basic templates
-  - Focus on quick project setup without complexity
     `);
 }

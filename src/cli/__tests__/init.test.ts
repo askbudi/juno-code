@@ -136,8 +136,12 @@ describe('Init Command', () => {
       expect(options.some(opt => opt.flags.includes('--git-url'))).toBe(true);
       expect(options.some(opt => opt.flags.includes('--interactive'))).toBe(true);
 
+      // Issue #32: Added back --subagent and --git-repo for inline mode support
+      expect(options.some(opt => opt.flags.includes('--subagent'))).toBe(true);
+      expect(options.some(opt => opt.flags.includes('--git-repo'))).toBe(true);
+      expect(options.some(opt => opt.flags.includes('--directory'))).toBe(true);
+
       // Removed options during simplification
-      expect(options.some(opt => opt.flags.includes('--subagent'))).toBe(false);
       expect(options.some(opt => opt.flags.includes('--template'))).toBe(false);
       expect(options.some(opt => opt.flags.includes('--var'))).toBe(false);
     });

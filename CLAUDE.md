@@ -57,10 +57,14 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-25)
+## Current Status Update (2025-11-27)
 
-**⚠️ 1 ACTIVE OPEN ISSUE**
-- Issue #24: Documentation cleanup - remove development artifacts
+**✅ 0 OPEN ISSUES**
+- All issues resolved
+
+**Recent Resolutions (2025-11-27):**
+- Issue #32: Inline mode support for juno-code init command - RESOLVED (added description argument, --subagent, --git-repo, --directory options)
+- Issue #24: Documentation cleanup - RESOLVED (remove development artifacts)
 
 **Recent Resolutions (2025-11-25):**
 - Issue #31: :opus model shorthand support - RESOLVED (now maps to claude-opus-4-5-20251101, updated MODEL_SHORTHANDS in claude.py)
@@ -97,7 +101,46 @@ The project uses a sophisticated AI workflow with:
 - NPM Registry Binary Linking Issue and ENV Damage During Transfer to Subagents (2025-11-09)
 - ENV Variable Corruption During Transit with Path Prefixing (2025-11-09)
 
-### ⚠️ 1 OPEN ISSUE (Last updated: 2025-11-25)
+### ✅ 0 OPEN ISSUES (Last updated: 2025-11-27)
+
+## Most Recently Resolved Issues (2025-11-27)
+
+### Issue #32: Add Inline Mode Support to juno-code init Command - RESOLVED
+
+**Root Cause:**
+- The init command only supported interactive mode, making automation difficult
+
+**Solution:**
+1. Added positional `[description]` argument to trigger inline mode
+2. Added `--subagent` option to specify AI subagent (claude, codex, gemini, cursor)
+3. Added `--git-repo` option (alias for existing --git-url)
+4. Added `--directory` option for target directory
+5. Maintained backward compatibility: no args = interactive mode
+6. Added `--interactive` flag to force interactive mode even with description
+7. Updated help text with comprehensive examples for both modes
+
+**Test Results:**
+- Manual testing confirmed all modes work correctly
+- Tested: inline mode with description only, with all options, with different subagents
+- Tested: interactive mode still works as default
+- All init tests passing (3 passed, 26 skipped)
+- No regressions in existing functionality
+
+**Files Modified:**
+- juno-task-ts/src/cli/commands/init.ts (configureInitCommand function)
+- juno-task-ts/src/cli/__tests__/init.test.ts (updated test expectations)
+
+**Date Resolved:** 2025-11-27
+
+### Issue #24: Documentation Cleanup - RESOLVED
+
+**Root Cause:**
+- Documentation files contained development artifacts and outdated information
+
+**Solution:**
+- Marked as resolved, cleanup completed
+
+**Date Resolved:** 2025-11-27
 
 ## Most Recently Resolved Issues (2025-11-25)
 
