@@ -129,16 +129,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/owner/juno-code.git"
+    "url": "https://github.com/askbudi/juno-code.git"
   },
   "bugs": {
-    "url": "https://github.com/owner/juno-code/issues"
+    "url": "https://github.com/askbudi/juno-code/issues"
   },
-  "homepage": "https://github.com/owner/juno-code#readme",
+  "homepage": "https://askbudi.ai/juno-code#readme",
   "license": "MIT",
   "author": {
-    "name": "Development Team",
-    "email": "dev@example.com"
+    "name": "Juno AI INC.",
+    "email": "golchin@askdev.ai"
   },
   "publishConfig": {
     "access": "public"
