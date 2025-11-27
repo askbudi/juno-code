@@ -101,6 +101,9 @@ function setupGlobalOptions(program: Command): void {
     .option('--no-color', 'Disable colored output')
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
+    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
+    .option('-m, --model <name>', 'Model to use (subagent-specific)')
+    .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
 
@@ -133,9 +136,6 @@ function setupMainCommand(program: Command): void {
     .option('-p, --prompt <text>', 'Prompt input (file path or inline text)')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
-    .option('-m, --model <name>', 'Model to use (subagent-specific)')
-    .option('--agents <agents>', 'Agents configuration (forwarded to claude.py when using shell backend)')
-    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
     .action(async (options, command) => {
@@ -260,14 +260,15 @@ function setupAliases(program: Command): void {
       .description(`Execute with ${subagent} subagent`)
       .argument('[prompt...]', 'Prompt text or file path')
       .option('-i, --max-iterations <number>', 'Maximum iterations', parseInt)
-      .option('-m, --model <name>', 'Model to use')
-      .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
       .option('-w, --cwd <path>', 'Working directory')
       .action(async (prompt, options, command) => {
         try {
           const { mainCommandHandler } = await import('../cli/commands/main.js');
           const promptText = Array.isArray(prompt) ? prompt.join(' ') : prompt;
+          // Get global options and merge with command options
+          const globalOptions = program.opts();
           await mainCommandHandler([], {
+            ...globalOptions,
             ...options,
             subagent,
             prompt: promptText
