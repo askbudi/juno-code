@@ -6,7 +6,7 @@
 - **Active Open Issues**: 0 - All issues resolved
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issue #33 RESOLVED (2025-11-28) - Full tool argument passthrough
+- **Latest Achievement**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
 - **Previous Achievements**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
 - **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
@@ -52,7 +52,17 @@
 
 
 **Recently Resolved on 2025-11-28:**
-1. **--disallowedTools Support and CLI Argument Passthrough (Issue #33)** ✅ RESOLVED:
+1. **Default Model for Shell Backend Using Deprecated Model Name (Issue #34)** ✅ RESOLVED:
+   - ✅ Date Reported: 2025-11-28
+   - ✅ Date Resolved: 2025-11-28
+   - ✅ Root Cause: getDefaultModelForSubagent() in init.ts had deprecated 'sonnet-4' instead of shorthand ':sonnet'
+   - ✅ Final Solution: Changed line 825 in juno-task-ts/src/cli/commands/init.ts from `claude: 'sonnet-4'` to `claude: ':sonnet'`
+   - ✅ Test Results: 853 tests passing, build successful
+   - ✅ Files Modified: juno-task-ts/src/cli/commands/init.ts
+   - ✅ User Impact: Shell backend now uses ':sonnet' shorthand as default model instead of deprecated 'sonnet-4'
+   - ✅ Status: RESOLVED
+
+2. **--disallowedTools Support and CLI Argument Passthrough (Issue #33)** ✅ RESOLVED:
    - ✅ Date Reported: 2025-11-28
    - ✅ Date Resolved: 2025-11-28
    - ✅ Root Cause: claude.py lacked --disallowed-tool support, and juno-code CLI didn't pass through tool-related arguments to shell backend

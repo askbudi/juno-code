@@ -822,7 +822,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
   private getDefaultModelForSubagent(subagent: string): string {
     const modelDefaults = {
-      claude: 'sonnet-4',
+      claude: ':sonnet',
       codex: 'gpt-5',
       gemini: 'gemini-2.5-pro',
       cursor: 'auto'
