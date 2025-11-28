@@ -131,6 +131,10 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   model?: string;
   /** Agents configuration (forwarded to shell backend --agents flag) */
   agents?: string;
+  /** Allowed tools for Claude (forwarded to shell backend --tool flag) */
+  tools?: string[];
+  /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
+  disallowedTools?: string[];
   /** Backend to use (mcp, shell) */
   backend?: 'mcp' | 'shell';
   /** Interactive mode for typing prompts */
@@ -175,6 +179,10 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   model?: string;
   /** Agents configuration (forwarded to shell backend --agents flag) */
   agents?: string;
+  /** Allowed tools for Claude (forwarded to shell backend --tool flag) */
+  tools?: string[];
+  /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
+  disallowedTools?: string[];
   /** Project directory */
   directory?: string;
   /** Display performance metrics summary after execution */

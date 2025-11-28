@@ -83,9 +83,9 @@ class ClaudeService:
 Examples:
   %(prog)s -p "Write a hello world function"
   %(prog)s -pp prompt.txt --cd /path/to/project
-  %(prog)s -p "Add tests" -m :opus --tool "Bash Edit"
-  %(prog)s -p "Quick task" -m :haiku
-  %(prog)s -p "Complex task" -m claude-opus-4-20250514
+  %(prog)s -p "Add tests" -m :opus --tool Bash --tool Edit
+  %(prog)s -p "Quick task" -m :haiku --disallowed-tool Bash
+  %(prog)s -p "Complex task" -m claude-opus-4-20250514 --tool Read --tool Write
 
 Environment Variables:
   CLAUDE_PROJECT_PATH                  Project path (default: current directory)
@@ -137,6 +137,13 @@ Environment Variables:
             action="append",
             dest="allowed_tools",
             help="Allowed tools (can be used multiple times, e.g. 'Bash' 'Edit')"
+        )
+
+        parser.add_argument(
+            "--disallowed-tool",
+            action="append",
+            dest="disallowed_tools",
+            help="Disallowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Default: empty"
         )
 
         parser.add_argument(
@@ -231,6 +238,11 @@ Environment Variables:
             ]
             cmd.append("--allowed-tools")
             cmd.extend(default_tools)
+
+        # Add disallowed tools if specified (AFTER the prompt)
+        if args.disallowed_tools:
+            cmd.append("--disallowed-tools")
+            cmd.extend(args.disallowed_tools)
 
         # Add continue flag if specified
         if args.continue_conversation:

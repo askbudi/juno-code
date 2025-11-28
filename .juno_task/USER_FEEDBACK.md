@@ -6,6 +6,31 @@
 
 </OPEN_ISSUES>
 
+## Recently Resolved Issues (2025-11-28)
+
+**Issue #33: Add --disallowedTools Support and CLI Argument Passthrough** - ✅ RESOLVED (2025-11-28)
+- **Date Reported**: 2025-11-28
+- **Date Resolved**: 2025-11-28
+- **Root Cause**: claude.py lacked --disallowed-tool support, and juno-code CLI didn't pass through tool-related arguments to shell backend
+- **Solution**:
+  1. Added --disallowed-tool argument to claude.py argparse (line 142-147)
+  2. Implemented disallowed-tools parameter in build_claude_command() method (line 242-245)
+  3. Added --tools and --disallowed-tools as global options in cli.ts (line 107-108)
+  4. Updated TypeScript types (MainCommandOptions and StartCommandOptions) to include tools and disallowedTools
+  5. Implemented argument passthrough in shell-backend.ts (line 428-440)
+  6. Updated main.ts and start.ts to pass these options through createExecutionRequest
+  7. Updated help text in both claude.py and juno-code CLI
+- **Test Results**: 871 tests passing, build successful, help text verified
+- **Files Modified**:
+  * src/templates/services/claude.py
+  * src/bin/cli.ts
+  * src/cli/types.ts
+  * src/core/backends/shell-backend.ts
+  * src/cli/commands/main.ts
+  * src/cli/commands/start.ts
+  * src/core/engine.ts
+- **Status**: ✅ RESOLVED - Full tool argument passthrough implemented
+
 ## Recently Resolved Issues (2025-11-27)
 
 **Issue #32: Add Inline Mode Support to juno-code init Command** - ✅ RESOLVED (2025-11-27)

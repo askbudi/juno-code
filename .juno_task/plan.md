@@ -6,7 +6,8 @@
 - **Active Open Issues**: 0 - All issues resolved
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issues #24, #32 RESOLVED (2025-11-27)
+- **Latest Achievement**: Issue #33 RESOLVED (2025-11-28) - Full tool argument passthrough
+- **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
 - **Previous Achievements**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
 - **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
 - **Previous Achievements**: Issues #22 & #23 user message truncation and ENV variable support FULLY RESOLVED (2025-11-14)
@@ -19,11 +20,12 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-27
+**Last Updated**: 2025-11-28
 
-**✅ 0 OPEN ISSUES** (2025-11-27)
+**✅ 0 OPEN ISSUES** (2025-11-28)
 - **ALL ISSUES RESOLVED**: Project is in fully functional state
-- **LATEST RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
+- **LATEST RESOLUTION**: Issue #33 RESOLVED (2025-11-28) - Full tool argument passthrough
+- **PREVIOUS RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
 - **PREVIOUS RESOLUTIONS**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
   - Issue #31: :opus shorthand now maps to claude-opus-4-5-20251101 (latest Opus 4.5)
   - Issue #30: --agents flag support added to juno-code CLI
@@ -48,6 +50,31 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-11-28:**
+1. **--disallowedTools Support and CLI Argument Passthrough (Issue #33)** ✅ RESOLVED:
+   - ✅ Date Reported: 2025-11-28
+   - ✅ Date Resolved: 2025-11-28
+   - ✅ Root Cause: claude.py lacked --disallowed-tool support, and juno-code CLI didn't pass through tool-related arguments to shell backend
+   - ✅ Final Solution:
+     1. Added --disallowed-tool argument to claude.py argparse
+     2. Implemented disallowed-tools parameter in build_claude_command() method
+     3. Added --tools and --disallowed-tools as global options in cli.ts
+     4. Updated TypeScript types (MainCommandOptions and StartCommandOptions) to include tools and disallowedTools
+     5. Implemented argument passthrough in shell-backend.ts
+     6. Updated main.ts and start.ts to pass these options through createExecutionRequest
+     7. Updated help text in both claude.py and juno-code CLI
+   - ✅ Test Results: 871 tests passing, build successful
+   - ✅ Files Modified:
+     * src/templates/services/claude.py
+     * src/bin/cli.ts
+     * src/cli/types.ts
+     * src/core/backends/shell-backend.ts
+     * src/cli/commands/main.ts
+     * src/cli/commands/start.ts
+     * src/core/engine.ts
+   - ✅ User Impact: Full tool argument passthrough implemented, users can now specify allowed and disallowed tools
+   - ✅ Status: RESOLVED
 
 **Recently Resolved on 2025-11-25:**
 1. **:opus Model Shorthand Support (Issue #31)** ✅ RESOLVED:

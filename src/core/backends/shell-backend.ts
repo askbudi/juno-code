@@ -425,6 +425,20 @@ export class ShellBackend implements Backend {
         args.push('--agents', request.arguments.agents);
       }
 
+      // For Python scripts, add allowed tools if provided
+      if (isPython && request.arguments?.tools && Array.isArray(request.arguments.tools)) {
+        for (const tool of request.arguments.tools) {
+          args.push('--tool', tool);
+        }
+      }
+
+      // For Python scripts, add disallowed tools if provided
+      if (isPython && request.arguments?.disallowedTools && Array.isArray(request.arguments.disallowedTools)) {
+        for (const tool of request.arguments.disallowedTools) {
+          args.push('--disallowed-tool', tool);
+        }
+      }
+
       if (this.config!.debug) {
         engineLogger.debug(`Executing script: ${command} ${args.join(' ')}`);
         engineLogger.debug(`Working directory: ${this.config!.workingDirectory}`);

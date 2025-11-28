@@ -107,6 +107,8 @@ export async function startCommandHandler(
       maxIterations: options.maxIterations,
       model: options.model,
       agents: options.agents,
+      tools: options.tools,
+      disallowedTools: options.disallowedTools,
       directory: options.directory,
       verbose: options.verbose,
       quiet: options.quiet,
