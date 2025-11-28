@@ -8,6 +8,15 @@
 
 ## Recently Resolved Issues (2025-11-28)
 
+**Issue #34: Default Model for Shell Backend Using Deprecated Model Name** - ✅ RESOLVED (2025-11-28)
+- **Date Reported**: 2025-11-28
+- **Date Resolved**: 2025-11-28
+- **Root Cause**: getDefaultModelForSubagent() in init.ts had deprecated 'sonnet-4' instead of shorthand ':sonnet'
+- **Solution**: Changed line 825 in juno-task-ts/src/cli/commands/init.ts from `claude: 'sonnet-4'` to `claude: ':sonnet'`
+- **Test Results**: 853 tests passing, build successful
+- **Files Modified**: juno-task-ts/src/cli/commands/init.ts
+- **Status**: ✅ RESOLVED - Shell backend now uses ':sonnet' shorthand as default model
+
 **Issue #33: Add --disallowedTools Support and CLI Argument Passthrough** - ✅ RESOLVED (2025-11-28)
 - **Date Reported**: 2025-11-28
 - **Date Resolved**: 2025-11-28

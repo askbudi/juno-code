@@ -63,6 +63,7 @@ The project uses a sophisticated AI workflow with:
 - All issues resolved
 
 **Recent Resolutions (2025-11-28):**
+- Issue #34: Default model for shell backend using deprecated model name - RESOLVED (changed from 'sonnet-4' to ':sonnet' in init.ts line 825)
 - Issue #33: --disallowedTools support and CLI argument passthrough - RESOLVED (full tool argument passthrough implemented, 871 tests passing)
 
 **Recent Resolutions (2025-11-27):**
