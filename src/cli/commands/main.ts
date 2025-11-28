@@ -585,6 +585,11 @@ export async function mainCommandHandler(
       console.error(chalk.yellow('\n⚠️  Note: --agents flag is only supported with shell backend and will be ignored'));
     }
 
+    // Check if --tools or --disallowed-tools flags are used with non-shell backend
+    if ((options.tools || options.disallowedTools) && selectedBackend !== 'shell') {
+      console.error(chalk.yellow('\n⚠️  Note: --tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
+    }
+
     // Create execution request
     const executionRequest = createExecutionRequest({
       instruction,
@@ -593,7 +598,9 @@ export async function mainCommandHandler(
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations || config.defaultMaxIterations,
       model: options.model || config.defaultModel,
-      agents: options.agents
+      agents: options.agents,
+      tools: options.tools,
+      disallowedTools: options.disallowedTools
     });
 
     // Execute

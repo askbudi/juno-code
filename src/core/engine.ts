@@ -1473,6 +1473,8 @@ export function createExecutionRequest(options: {
   maxIterations?: number;
   model?: string;
   agents?: string;
+  tools?: string[];
+  disallowedTools?: string[];
   requestId?: string;
   mcpServerName?: string;
 }): ExecutionRequest {
@@ -1491,6 +1493,14 @@ export function createExecutionRequest(options: {
 
   if (options.agents !== undefined) {
     (result as any).agents = options.agents;
+  }
+
+  if (options.tools !== undefined) {
+    (result as any).tools = options.tools;
+  }
+
+  if (options.disallowedTools !== undefined) {
+    (result as any).disallowedTools = options.disallowedTools;
   }
 
   if (options.mcpServerName !== undefined) {

@@ -57,10 +57,13 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-27)
+## Current Status Update (2025-11-28)
 
 **✅ 0 OPEN ISSUES**
 - All issues resolved
+
+**Recent Resolutions (2025-11-28):**
+- Issue #33: --disallowedTools support and CLI argument passthrough - RESOLVED (full tool argument passthrough implemented, 871 tests passing)
 
 **Recent Resolutions (2025-11-27):**
 - Issue #32: Inline mode support for juno-code init command - RESOLVED (added description argument, --subagent, --git-repo, --directory options)
