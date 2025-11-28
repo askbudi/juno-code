@@ -912,6 +912,8 @@ export class ExecutionEngine extends EventEmitter {
           project_path: context.request.workingDirectory,
           ...(context.request.model !== undefined && { model: context.request.model }),
           ...(context.request.agents !== undefined && { agents: context.request.agents }),
+          ...((context.request as any).tools !== undefined && { tools: (context.request as any).tools }),
+          ...((context.request as any).disallowedTools !== undefined && { disallowedTools: (context.request as any).disallowedTools }),
           iteration: iterationNumber,
         },
         timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,

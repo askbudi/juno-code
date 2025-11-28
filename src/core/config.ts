@@ -752,10 +752,29 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
     } else {
       // Read existing config and ensure hooks field exists with all hook types
       const existingConfig = await fs.readJson(configPath);
+      let needsUpdate = false;
 
       // If hooks field doesn't exist, add it with all hook types
       if (!existingConfig.hooks) {
         existingConfig.hooks = allHookTypes;
+        needsUpdate = true;
+      }
+
+      // Migration: Add defaultModel if missing (for configs created before this feature)
+      if (!existingConfig.defaultModel) {
+        // Determine default model based on defaultSubagent
+        const subagent = existingConfig.defaultSubagent || 'claude';
+        const modelDefaults: Record<string, string> = {
+          claude: ':sonnet',
+          codex: 'gpt-5',
+          gemini: 'gemini-2.5-pro',
+          cursor: 'auto'
+        };
+        existingConfig.defaultModel = modelDefaults[subagent] || ':sonnet';
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
         await fs.writeJson(configPath, existingConfig, { spaces: 2 });
       }
     }
