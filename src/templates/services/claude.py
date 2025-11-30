@@ -33,6 +33,13 @@ class ClaudeService:
         ":opus": "claude-opus-4-5-20251101",
     }
 
+    # Default allowed tools (used with --append-allowed-tools)
+    DEFAULT_ALLOWED_TOOLS = [
+        "Task", "Bash", "Glob", "Grep", "ExitPlanMode", "Read", "Edit", "Write",
+        "NotebookEdit", "WebFetch", "TodoWrite", "WebSearch", "BashOutput",
+        "KillShell", "Skill", "SlashCommand", "EnterPlanMode"
+    ]
+
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
         self.permission_mode = self.DEFAULT_PERMISSION_MODE
@@ -160,6 +167,13 @@ Environment Variables:
         )
 
         parser.add_argument(
+            "--appendAllowedTools", "--append-allowed-tools",
+            action="append",
+            dest="append_allowed_tools",
+            help="Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Accepts both --appendAllowedTools and --append-allowed-tools."
+        )
+
+        parser.add_argument(
             "--permission-mode",
             type=str,
             choices=["acceptEdits", "bypassPermissions", "default", "plan", "skip"],
@@ -245,12 +259,22 @@ Environment Variables:
             cmd.extend(args.tools)
         # No else block: By default Claude enables all tools
 
-        # Add permission-based allowed tools if specified (AFTER the prompt)
-        # Note: claude CLI expects camelCase --allowedTools (not kebab-case --allowed-tools)
+        # Handle allowed tools (either --allowed-tools or --append-allowed-tools, but not both)
+        # These are mutually exclusive - validation already done above
+        # When neither is specified, use the default allowed-tools list
         if args.allowed_tools:
+            # Use the explicitly specified allowed tools (replaces default)
             cmd.append("--allowedTools")
             cmd.extend(args.allowed_tools)
-        # No else block: By default Claude enables all tools, no need to specify defaults
+        elif args.append_allowed_tools:
+            # Append specified tools to the default list
+            combined_tools = self.DEFAULT_ALLOWED_TOOLS + args.append_allowed_tools
+            cmd.append("--allowedTools")
+            cmd.extend(combined_tools)
+        else:
+            # Use default allowed-tools list when no explicit list is provided
+            cmd.append("--allowedTools")
+            cmd.extend(self.DEFAULT_ALLOWED_TOOLS)
 
         # Add disallowed tools if specified (AFTER the prompt)
         # Note: claude CLI expects camelCase --disallowedTools (not kebab-case --disallowed-tools)
@@ -554,6 +578,14 @@ Environment Variables:
         """Main execution flow"""
         # Parse arguments first to handle --help
         args = self.parse_arguments()
+
+        # Validate that --allowed-tools and --append-allowed-tools are mutually exclusive
+        if args.allowed_tools and args.append_allowed_tools:
+            print(
+                "Error: --allowed-tools and --append-allowed-tools are mutually exclusive. Use one or the other.",
+                file=sys.stderr
+            )
+            return 1
 
         # Check if prompt is provided
         if not args.prompt and not args.prompt_file:

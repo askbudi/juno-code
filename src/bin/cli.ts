@@ -107,6 +107,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--tools <tools...>', 'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read"). Passed to shell backend, ignored for MCP.')
     .option('--allowed-tools <tools...>', 'Permission-based filtering of specific tool instances (e.g. "Bash(git:*) Edit"). Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode. Passed to shell backend, ignored for MCP.')
     .option('--disallowed-tools <tools...>', 'Disallowed tools for Claude (passed to shell backend, ignored for MCP). By default, no tools are disallowed')
+    .option('--append-allowed-tools <tools...>', 'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Passed to shell backend, ignored for MCP.')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
 
