@@ -1,5 +1,5 @@
 ## Open Issues
-<!-- Current status: ⚠️ 0 OPEN ISSUES -->
+<!-- Current status: ⚠️ 0 OPEN ISSUES (Last updated: 2025-11-30) -->
 <OPEN_ISSUES>
 
 **No open issues** - All issues resolved
@@ -7,6 +7,36 @@
 </OPEN_ISSUES>
 
 ## Recently Resolved Issues (2025-11-30)
+
+**Issue #37: --tools and --allowedTools Are Two Different Parameters** - ✅ RESOLVED (2025-11-30)
+- **Date Reported**: 2025-11-30
+- **Date Resolved**: 2025-11-30
+- **Root Cause**: Issue #36 incorrectly treated --tools and --allowed-tools as aliases when they should be TWO DIFFERENT parameters per Claude CLI specification
+- **Problem**:
+  1. --tools controls which built-in Claude tools are available (only works with --print mode)
+  2. --allowedTools is permission-based filtering of specific tool instances
+  3. They serve different purposes and should both be supported independently
+- **Solution**:
+  1. Updated cli.ts help text to clarify the difference
+  2. Added allowedTools field to TypeScript types (separate from tools)
+  3. Updated main.ts and start.ts to pass both parameters separately
+  4. Updated engine.ts ExecutionRequest interface to include tools, allowedTools, disallowedTools, agents
+  5. Updated createExecutionRequest to accept and assign allowedTools
+  6. Updated ToolCallRequest creation to pass both tools and allowedTools (removed type assertions)
+  7. Updated shell-backend.ts to build command with both --tools and --allowedTools flags
+  8. Updated claude.py to support both --tools and --allowedTools argument parsers
+  9. Updated claude.py command building to pass both to Claude CLI
+- **Test Results**: Build successful, 851 tests passing (1 unrelated test failure)
+- **Files Modified**:
+  * juno-task-ts/src/bin/cli.ts (help text)
+  * juno-task-ts/src/cli/types.ts (added allowedTools field)
+  * juno-task-ts/src/cli/commands/main.ts (pass both parameters)
+  * juno-task-ts/src/cli/commands/start.ts (pass both parameters)
+  * juno-task-ts/src/core/engine.ts (ExecutionRequest interface, createExecutionRequest, ToolCallRequest creation)
+  * juno-task-ts/src/core/backends/shell-backend.ts (command building for both flags)
+  * juno-task-ts/src/templates/services/claude.py (argument parsers and command building)
+- **Status**: ✅ RESOLVED - Full passthrough chain now working for both --tools and --allowedTools as separate parameters
+- **Commit**: d5febc2
 
 **Issue #36: Add --allowed-tools Flag Support to juno-code CLI** - ✅ RESOLVED (2025-11-30)
 - **Date Reported**: 2025-11-30
