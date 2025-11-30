@@ -89,6 +89,10 @@ Examples:
   %(prog)s -p "Multi-tool task" --allowed-tools Bash Edit Read Write
   %(prog)s -p "Restricted task" --disallowed-tools Bash WebSearch
 
+Default Tools (enabled by default when no --allowed-tools specified):
+  Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit,
+  WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode
+
 Environment Variables:
   CLAUDE_PROJECT_PATH                  Project path (default: current directory)
   CLAUDE_MODEL                         Model name (default: claude-sonnet-4-5-20250929)
@@ -138,14 +142,14 @@ Environment Variables:
             "--tool", "--allowed-tools",
             action="append",
             dest="allowed_tools",
-            help="Allowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --tool and --allowed-tools"
+            help="Allowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --tool and --allowed-tools. Default tools: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode"
         )
 
         parser.add_argument(
             "--disallowed-tool", "--disallowed-tools",
             action="append",
             dest="disallowed_tools",
-            help="Disallowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --disallowed-tool and --disallowed-tools. Default: empty"
+            help="Disallowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --disallowed-tool and --disallowed-tools. By default, no tools are disallowed"
         )
 
         parser.add_argument(
@@ -228,22 +232,16 @@ Environment Variables:
         cmd.append(full_prompt)
 
         # Add allowed tools if specified (AFTER the prompt)
+        # Note: claude CLI expects camelCase --allowedTools (not kebab-case --allowed-tools)
         if args.allowed_tools:
-            cmd.append("--allowed-tools")
+            cmd.append("--allowedTools")
             cmd.extend(args.allowed_tools)
-        else:
-            # Default allowed tools similar to claude_code.py
-            default_tools = [
-                "Read", "Write", "Edit", "MultiEdit",
-                "Bash", "Glob", "Grep", "WebFetch",
-                "WebSearch", "TodoWrite"
-            ]
-            cmd.append("--allowed-tools")
-            cmd.extend(default_tools)
+        # No else block: By default Claude enables all tools, no need to specify defaults
 
         # Add disallowed tools if specified (AFTER the prompt)
+        # Note: claude CLI expects camelCase --disallowedTools (not kebab-case --disallowed-tools)
         if args.disallowed_tools:
-            cmd.append("--disallowed-tools")
+            cmd.append("--disallowedTools")
             cmd.extend(args.disallowed_tools)
 
         # Add continue flag if specified

@@ -2,11 +2,11 @@
 
 ## 📊 EXECUTIVE SUMMARY
 
-**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES**
+**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES** (Last updated: 2025-11-29)
 - **Active Open Issues**: 0 - All issues resolved
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issue #36 RESOLVED (2025-11-30) - Added --allowed-tools alias support
+- **Latest Achievement**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support
 - **Previous Achievements**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
 - **Previous Achievements**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
@@ -21,11 +21,11 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-30
+**Last Updated**: 2025-11-29
 
-**✅ 0 OPEN ISSUES** (2025-11-30)
+**✅ 0 OPEN ISSUES** (2025-11-29)
 - **ALL ISSUES RESOLVED**: Project is in fully functional state
-- **LATEST RESOLUTION**: Issue #36 RESOLVED (2025-11-30) - Added --allowed-tools alias support
+- **LATEST RESOLUTION**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support (camelCase naming)
 - **PREVIOUS RESOLUTION**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **PREVIOUS RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
 - **PREVIOUS RESOLUTIONS**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
@@ -53,10 +53,10 @@
 - Build successful, all systems operational
 
 
-**Recently Resolved on 2025-11-30:**
+**Recently Resolved on 2025-11-29:**
 1. **Add --allowed-tools Flag Support to juno-code CLI (Issue #36)** ✅ RESOLVED:
-   - ✅ Date Reported: 2025-11-30
-   - ✅ Date Resolved: 2025-11-30
+   - ✅ Date Reported: 2025-11-29
+   - ✅ Date Resolved: 2025-11-29
    - ✅ Root Cause: Naming clarity issue - --tools already existed and supported multiple values via action="append", but users wanted --allowed-tools (plural) to match --disallowed-tools (plural) for consistency
    - ✅ Final Solution:
      1. Added --allowed-tools as alias to --tool in claude.py (line 136) using argparse action="append"
