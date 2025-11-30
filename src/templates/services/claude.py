@@ -139,17 +139,24 @@ Environment Variables:
         )
 
         parser.add_argument(
-            "--tool", "--allowed-tools",
+            "--tools",
             action="append",
-            dest="allowed_tools",
-            help="Allowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --tool and --allowed-tools. Default tools: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode"
+            dest="tools",
+            help="Specify the list of available tools from the built-in set (only works with --print mode). Use \"\" to disable all tools, \"default\" to use all tools, or specify tool names (e.g. \"Bash\" \"Edit\" \"Read\"). Forwarded to claude CLI."
         )
 
         parser.add_argument(
-            "--disallowed-tool", "--disallowed-tools",
+            "--allowedTools", "--allowed-tools",
+            action="append",
+            dest="allowed_tools",
+            help="Permission-based filtering of specific tool instances (e.g. 'Bash(git:*)' 'Edit'). Accepts both --allowedTools and --allowed-tools. Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode"
+        )
+
+        parser.add_argument(
+            "--disallowedTools", "--disallowed-tools",
             action="append",
             dest="disallowed_tools",
-            help="Disallowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --disallowed-tool and --disallowed-tools. By default, no tools are disallowed"
+            help="Disallowed tools (can be used multiple times, e.g. 'Bash' 'Edit'). Accepts both --disallowedTools and --disallowed-tools. By default, no tools are disallowed"
         )
 
         parser.add_argument(
@@ -226,12 +233,19 @@ Environment Variables:
         ]
 
         # Build the full prompt (auto_instruction + user prompt)
-        # IMPORTANT: Prompt must come BEFORE --allowed-tools
-        # because --allowed-tools consumes all following arguments as tool names
+        # IMPORTANT: Prompt must come BEFORE tool-related flags
+        # because some flags consume all following arguments
         full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"
         cmd.append(full_prompt)
 
-        # Add allowed tools if specified (AFTER the prompt)
+        # Add available tools from built-in set if specified (AFTER the prompt)
+        # Note: --tools controls which built-in Claude tools are available (only works with --print mode)
+        if args.tools:
+            cmd.append("--tools")
+            cmd.extend(args.tools)
+        # No else block: By default Claude enables all tools
+
+        # Add permission-based allowed tools if specified (AFTER the prompt)
         # Note: claude CLI expects camelCase --allowedTools (not kebab-case --allowed-tools)
         if args.allowed_tools:
             cmd.append("--allowedTools")
