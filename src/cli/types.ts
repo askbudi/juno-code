@@ -131,8 +131,10 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   model?: string;
   /** Agents configuration (forwarded to shell backend --agents flag) */
   agents?: string;
-  /** Allowed tools for Claude (forwarded to shell backend --tool flag) */
+  /** Available tools from built-in set (only works with --print mode, forwarded to shell backend --tools flag) */
   tools?: string[];
+  /** Permission-based filtering of specific tool instances (forwarded to shell backend --allowedTools flag) */
+  allowedTools?: string[];
   /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
   disallowedTools?: string[];
   /** Backend to use (mcp, shell) */
@@ -179,8 +181,10 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   model?: string;
   /** Agents configuration (forwarded to shell backend --agents flag) */
   agents?: string;
-  /** Allowed tools for Claude (forwarded to shell backend --tool flag) */
+  /** Available tools from built-in set (only works with --print mode, forwarded to shell backend --tools flag) */
   tools?: string[];
+  /** Permission-based filtering of specific tool instances (forwarded to shell backend --allowedTools flag) */
+  allowedTools?: string[];
   /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
   disallowedTools?: string[];
   /** Project directory */

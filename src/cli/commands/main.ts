@@ -585,15 +585,13 @@ export async function mainCommandHandler(
       console.error(chalk.yellow('\n⚠️  Note: --agents flag is only supported with shell backend and will be ignored'));
     }
 
-    // Check if --tools/--allowed-tools or --disallowed-tools flags are used with non-shell backend
-    if ((options.tools || (options as any).allowedTools || options.disallowedTools) && selectedBackend !== 'shell') {
-      console.error(chalk.yellow('\n⚠️  Note: --tools/--allowed-tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
+    // Check if --tools, --allowed-tools or --disallowed-tools flags are used with non-shell backend
+    if ((options.tools || options.allowedTools || options.disallowedTools) && selectedBackend !== 'shell') {
+      console.error(chalk.yellow('\n⚠️  Note: --tools, --allowed-tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
     }
 
     // Create execution request
-    // Handle both --tools and --allowed-tools (they're aliases)
-    const allowedTools = (options as any).allowedTools || options.tools;
-
+    // Pass both --tools and --allowed-tools as separate parameters
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: options.subagent,
@@ -602,7 +600,8 @@ export async function mainCommandHandler(
       maxIterations: options.maxIterations || config.defaultMaxIterations,
       model: options.model || config.defaultModel,
       agents: options.agents,
-      tools: allowedTools,
+      tools: options.tools,
+      allowedTools: options.allowedTools,
       disallowedTools: options.disallowedTools
     });
 

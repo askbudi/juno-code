@@ -78,6 +78,18 @@ export interface ExecutionRequest {
 
   /** MCP server name (for MCP backend) */
   readonly mcpServerName?: string;
+
+  /** Available tools from built-in set (only works with --print mode, forwarded to shell backend) */
+  readonly tools?: string[];
+
+  /** Permission-based filtering of specific tool instances (forwarded to shell backend) */
+  readonly allowedTools?: string[];
+
+  /** Disallowed tools (forwarded to shell backend) */
+  readonly disallowedTools?: string[];
+
+  /** Agents configuration (forwarded to shell backend) */
+  readonly agents?: string;
 }
 
 /**
@@ -912,8 +924,9 @@ export class ExecutionEngine extends EventEmitter {
           project_path: context.request.workingDirectory,
           ...(context.request.model !== undefined && { model: context.request.model }),
           ...(context.request.agents !== undefined && { agents: context.request.agents }),
-          ...((context.request as any).tools !== undefined && { tools: (context.request as any).tools }),
-          ...((context.request as any).disallowedTools !== undefined && { disallowedTools: (context.request as any).disallowedTools }),
+          ...(context.request.tools !== undefined && { tools: context.request.tools }),
+          ...(context.request.allowedTools !== undefined && { allowedTools: context.request.allowedTools }),
+          ...(context.request.disallowedTools !== undefined && { disallowedTools: context.request.disallowedTools }),
           iteration: iterationNumber,
         },
         timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
@@ -1476,6 +1489,7 @@ export function createExecutionRequest(options: {
   model?: string;
   agents?: string;
   tools?: string[];
+  allowedTools?: string[];
   disallowedTools?: string[];
   requestId?: string;
   mcpServerName?: string;
@@ -1499,6 +1513,10 @@ export function createExecutionRequest(options: {
 
   if (options.tools !== undefined) {
     (result as any).tools = options.tools;
+  }
+
+  if (options.allowedTools !== undefined) {
+    (result as any).allowedTools = options.allowedTools;
   }
 
   if (options.disallowedTools !== undefined) {
