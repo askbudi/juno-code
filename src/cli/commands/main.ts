@@ -585,9 +585,15 @@ export async function mainCommandHandler(
       console.error(chalk.yellow('\n⚠️  Note: --agents flag is only supported with shell backend and will be ignored'));
     }
 
-    // Check if --tools, --allowed-tools or --disallowed-tools flags are used with non-shell backend
-    if ((options.tools || options.allowedTools || options.disallowedTools) && selectedBackend !== 'shell') {
-      console.error(chalk.yellow('\n⚠️  Note: --tools, --allowed-tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
+    // Check if --tools, --allowed-tools, --append-allowed-tools or --disallowed-tools flags are used with non-shell backend
+    if ((options.tools || options.allowedTools || options.appendAllowedTools || options.disallowedTools) && selectedBackend !== 'shell') {
+      console.error(chalk.yellow('\n⚠️  Note: --tools, --allowed-tools, --append-allowed-tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
+    }
+
+    // Check if --allowed-tools and --append-allowed-tools are used together (mutually exclusive)
+    if (options.allowedTools && options.appendAllowedTools) {
+      console.error(chalk.red('\n❌ Error: --allowed-tools and --append-allowed-tools are mutually exclusive. Use one or the other.'));
+      process.exit(1);
     }
 
     // Create execution request
@@ -602,6 +608,7 @@ export async function mainCommandHandler(
       agents: options.agents,
       tools: options.tools,
       allowedTools: options.allowedTools,
+      appendAllowedTools: options.appendAllowedTools,
       disallowedTools: options.disallowedTools
     });
 

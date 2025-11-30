@@ -88,6 +88,9 @@ export interface ExecutionRequest {
   /** Disallowed tools (forwarded to shell backend) */
   readonly disallowedTools?: string[];
 
+  /** Append tools to default allowed-tools list (forwarded to shell backend) */
+  readonly appendAllowedTools?: string[];
+
   /** Agents configuration (forwarded to shell backend) */
   readonly agents?: string;
 }
@@ -926,6 +929,7 @@ export class ExecutionEngine extends EventEmitter {
           ...(context.request.agents !== undefined && { agents: context.request.agents }),
           ...(context.request.tools !== undefined && { tools: context.request.tools }),
           ...(context.request.allowedTools !== undefined && { allowedTools: context.request.allowedTools }),
+          ...(context.request.appendAllowedTools !== undefined && { appendAllowedTools: context.request.appendAllowedTools }),
           ...(context.request.disallowedTools !== undefined && { disallowedTools: context.request.disallowedTools }),
           iteration: iterationNumber,
         },
@@ -1490,6 +1494,7 @@ export function createExecutionRequest(options: {
   agents?: string;
   tools?: string[];
   allowedTools?: string[];
+  appendAllowedTools?: string[];
   disallowedTools?: string[];
   requestId?: string;
   mcpServerName?: string;
@@ -1517,6 +1522,10 @@ export function createExecutionRequest(options: {
 
   if (options.allowedTools !== undefined) {
     (result as any).allowedTools = options.allowedTools;
+  }
+
+  if (options.appendAllowedTools !== undefined) {
+    (result as any).appendAllowedTools = options.appendAllowedTools;
   }
 
   if (options.disallowedTools !== undefined) {

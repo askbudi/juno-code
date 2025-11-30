@@ -437,6 +437,12 @@ export class ShellBackend implements Backend {
         args.push(...request.arguments.allowedTools);
       }
 
+      // For Python scripts, add append allowed tools if provided (--appendAllowedTools)
+      if (isPython && request.arguments?.appendAllowedTools && Array.isArray(request.arguments.appendAllowedTools)) {
+        args.push('--appendAllowedTools');
+        args.push(...request.arguments.appendAllowedTools);
+      }
+
       // For Python scripts, add disallowed tools if provided (--disallowedTools)
       if (isPython && request.arguments?.disallowedTools && Array.isArray(request.arguments.disallowedTools)) {
         args.push('--disallowedTools');

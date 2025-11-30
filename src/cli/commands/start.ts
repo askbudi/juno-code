@@ -109,6 +109,7 @@ export async function startCommandHandler(
       agents: options.agents,
       tools: options.tools,
       allowedTools: options.allowedTools,
+      appendAllowedTools: options.appendAllowedTools,
       disallowedTools: options.disallowedTools,
       directory: options.directory,
       verbose: options.verbose,

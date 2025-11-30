@@ -137,6 +137,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   allowedTools?: string[];
   /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
   disallowedTools?: string[];
+  /** Append tools to default allowed-tools list (mutually exclusive with --allowed-tools, forwarded to shell backend --appendAllowedTools flag) */
+  appendAllowedTools?: string[];
   /** Backend to use (mcp, shell) */
   backend?: 'mcp' | 'shell';
   /** Interactive mode for typing prompts */
@@ -187,6 +189,8 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   allowedTools?: string[];
   /** Disallowed tools for Claude (forwarded to shell backend --disallowed-tool flag) */
   disallowedTools?: string[];
+  /** Append tools to default allowed-tools list (mutually exclusive with --allowed-tools, forwarded to shell backend --appendAllowedTools flag) */
+  appendAllowedTools?: string[];
   /** Project directory */
   directory?: string;
   /** Display performance metrics summary after execution */
