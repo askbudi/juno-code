@@ -6,7 +6,8 @@
 - **Active Open Issues**: 0 - All issues resolved
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
+- **Latest Achievement**: Issue #36 RESOLVED (2025-11-30) - Added --allowed-tools alias support
+- **Previous Achievements**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
 - **Previous Achievements**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
 - **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
@@ -20,11 +21,12 @@
 **Primary Source**: USER_FEEDBACK.md (user-reported issues and feedback)
 **Validation Method**: Real CLI binary execution testing
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-11-30
 
-**✅ 0 OPEN ISSUES** (2025-11-28)
+**✅ 0 OPEN ISSUES** (2025-11-30)
 - **ALL ISSUES RESOLVED**: Project is in fully functional state
-- **LATEST RESOLUTION**: Issue #33 RESOLVED (2025-11-28) - Full tool argument passthrough
+- **LATEST RESOLUTION**: Issue #36 RESOLVED (2025-11-30) - Added --allowed-tools alias support
+- **PREVIOUS RESOLUTION**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **PREVIOUS RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
 - **PREVIOUS RESOLUTIONS**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
   - Issue #31: :opus shorthand now maps to claude-opus-4-5-20251101 (latest Opus 4.5)
@@ -50,6 +52,27 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-11-30:**
+1. **Add --allowed-tools Flag Support to juno-code CLI (Issue #36)** ✅ RESOLVED:
+   - ✅ Date Reported: 2025-11-30
+   - ✅ Date Resolved: 2025-11-30
+   - ✅ Root Cause: Naming clarity issue - --tools already existed and supported multiple values via action="append", but users wanted --allowed-tools (plural) to match --disallowed-tools (plural) for consistency
+   - ✅ Final Solution:
+     1. Added --allowed-tools as alias to --tool in claude.py (line 136) using argparse action="append"
+     2. Added --disallowed-tools as alias to --disallowed-tool in claude.py (line 143)
+     3. Added --allowed-tools as CLI option in cli.ts (line 108) that maps to existing tools field
+     4. Updated main.ts to handle both allowedTools and tools options (lines 589-590, 595)
+     5. Added examples showing both --tool and --allowed-tools usage in claude.py help
+     6. Full passthrough chain: CLI → ExecutionRequest → ToolCallRequest → shell-backend → claude.py
+   - ✅ Test Results: Build successful, 871 tests passing
+   - ✅ Files Modified:
+     * src/templates/services/claude.py (lines 136, 143)
+     * src/bin/cli.ts (line 108)
+     * src/cli/commands/main.ts (lines 589-590, 595)
+   - ✅ User Impact: Both --tool/--allowed-tools and --disallowed-tool/--disallowed-tools now work as aliases
+   - ✅ Status: RESOLVED
+   - ✅ <PREVIOUS_AGENT_ATTEMPT>: User thought --tool only supported one tool at a time, but it already supported multiple tools via argparse action="append". The real issue was naming consistency - users wanted --allowed-tools (plural) to match --disallowed-tools (plural). Solution was to add aliases for better UX while keeping existing functionality intact.
 
 **Recently Resolved on 2025-11-28:**
 1. **Default Model for Shell Backend Using Deprecated Model Name (Issue #34)** ✅ RESOLVED:
