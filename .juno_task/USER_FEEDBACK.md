@@ -6,6 +6,26 @@
 
 </OPEN_ISSUES>
 
+## Recently Resolved Issues (2025-11-30)
+
+**Issue #36: Add --allowed-tools Flag Support to juno-code CLI** - ✅ RESOLVED (2025-11-30)
+- **Date Reported**: 2025-11-30
+- **Date Resolved**: 2025-11-30
+- **Root Cause**: Naming clarity issue - --tools already existed and supported multiple values, but users wanted --allowed-tools (plural) to match --disallowed-tools (plural) for consistency
+- **Solution**:
+  1. Added --allowed-tools as alias to --tool in claude.py (line 136) using argparse action="append"
+  2. Added --disallowed-tools as alias to --disallowed-tool in claude.py (line 143)
+  3. Added --allowed-tools as CLI option in cli.ts (line 108) that maps to existing tools field
+  4. Updated main.ts to handle both allowedTools and tools options (lines 589-590, 595)
+  5. Added examples showing both --tool and --allowed-tools usage in claude.py help
+  6. Full passthrough chain: CLI → ExecutionRequest → ToolCallRequest → shell-backend → claude.py
+- **Test Results**: Build successful, 871 tests passing
+- **Files Modified**:
+  * juno-task-ts/src/templates/services/claude.py (lines 136, 143)
+  * juno-task-ts/src/bin/cli.ts (line 108)
+  * juno-task-ts/src/cli/commands/main.ts (lines 589-590, 595)
+- **Status**: ✅ RESOLVED - Both --tool/--allowed-tools and --disallowed-tool/--disallowed-tools now work as aliases
+
 ## Recently Resolved Issues (2025-11-28)
 
 **Issue #34: Default Model for Shell Backend Using Deprecated Model Name** - ✅ RESOLVED (2025-11-28)

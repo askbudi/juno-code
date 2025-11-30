@@ -105,6 +105,7 @@ function setupGlobalOptions(program: Command): void {
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
     .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
     .option('--tools <tools...>', 'Allowed tools for Claude (passed to shell backend, ignored for MCP)')
+    .option('--allowed-tools <tools...>', 'Alias for --tools')
     .option('--disallowed-tools <tools...>', 'Disallowed tools for Claude (passed to shell backend, ignored for MCP)')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
