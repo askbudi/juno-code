@@ -413,7 +413,9 @@ export class CommandExecutor {
     result.getStdout = () => stdoutBuffer;
     result.getStderr = () => stderrBuffer;
 
-    // Send input if provided
+    // Handle stdin: write input if provided and end stdin
+    // Note: For streaming commands with interactive input, the caller should
+    // use result.send() for additional input and manually close stdin when done
     if (opts.input && childProcess.stdin) {
       childProcess.stdin.write(opts.input);
       childProcess.stdin.end();
@@ -569,9 +571,12 @@ export class CommandExecutor {
         });
       });
 
-      // Send input if provided
-      if (options.input && child.stdin) {
-        child.stdin.write(options.input);
+      // Handle stdin: write input if provided, otherwise close immediately
+      // to prevent blocking when parent process has piped input
+      if (child.stdin) {
+        if (options.input) {
+          child.stdin.write(options.input);
+        }
         child.stdin.end();
       }
     });
@@ -653,9 +658,12 @@ export class CommandExecutor {
         resolve(this.createErrorResult(startTime, error));
       });
 
-      // Send input if provided
-      if (options.input && child.stdin) {
-        child.stdin.write(options.input);
+      // Handle stdin: write input if provided, otherwise close immediately
+      // to prevent blocking when parent process has piped input
+      if (child.stdin) {
+        if (options.input) {
+          child.stdin.write(options.input);
+        }
         child.stdin.end();
       }
     });
