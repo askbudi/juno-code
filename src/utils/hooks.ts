@@ -230,10 +230,19 @@ export async function executeHook(
       };
 
       // Execute command with timeout and proper working directory
-      // IMPORTANT: stdin is set to 'ignore' to prevent blocking when juno-code
-      // is invoked with piped input (e.g., `echo "data" | juno-code start`).
-      // Without this, hook subprocesses inherit parent's stdin and may block
-      // indefinitely waiting for EOF on the inherited stdin stream.
+      //
+      // IMPORTANT: We use stdin: 'inherit' with the shell to allow internal pipe
+      // commands (like `A | B`) to work correctly. The shell manages its own
+      // stdin/stdout for internal pipes between subcommands.
+      //
+      // Previous approach (Issue #40) used stdin: 'ignore' which prevented
+      // blocking on piped input to juno-code, but broke internal pipe commands
+      // because the shell couldn't manage stdin for the second command in pipes.
+      //
+      // New approach: Use stdin: 'pipe' (default execa behavior) which gives
+      // the shell its own stdin file descriptor that isn't connected to
+      // the parent's stdin. This allows internal pipes to work while
+      // preventing the subprocess from inheriting juno-code's stdin.
       const result = await execa(command, {
         shell: true,
         timeout: commandTimeout,
@@ -242,7 +251,8 @@ export async function executeHook(
         // Capture both stdout and stderr
         all: true,
         reject: false, // Don't throw on non-zero exit codes
-        stdin: 'ignore', // Prevent stdin inheritance to avoid blocking on piped input
+        // Use 'pipe' mode (default) - provides stdin fd for shell's internal pipes
+        // but doesn't connect to parent's stdin, preventing inheritance issues
       });
 
       const duration = Date.now() - commandStartTime;
