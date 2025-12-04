@@ -48,6 +48,9 @@ export interface JunoTaskConfig {
   mcpServerPath?: string;
   mcpServerName?: string;
 
+  // Hook settings
+  hookCommandTimeout?: number;
+
   // TUI settings
   interactive: boolean;
   headlessMode: boolean;

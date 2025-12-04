@@ -809,6 +809,8 @@ export class ExecutionEngine extends EventEmitter {
             maxIterations: context.request.maxIterations,
             instruction: context.request.instruction,
           }
+        }, {
+          commandTimeout: this.engineConfig.config.hookCommandTimeout,
         });
       }
     } catch (error) {
@@ -846,6 +848,8 @@ export class ExecutionEngine extends EventEmitter {
             duration: context.endTime ? context.endTime.getTime() - context.startTime.getTime() : 0,
             success: context.status === ExecutionStatus.COMPLETED,
           }
+        }, {
+          commandTimeout: this.engineConfig.config.hookCommandTimeout,
         });
       }
     } catch (error) {
@@ -910,6 +914,8 @@ export class ExecutionEngine extends EventEmitter {
             maxIterations: context.request.maxIterations,
             subagent: context.request.subagent,
           }
+        }, {
+          commandTimeout: this.engineConfig.config.hookCommandTimeout,
         });
       }
     } catch (error) {
@@ -985,6 +991,8 @@ export class ExecutionEngine extends EventEmitter {
               duration: iterationResult.duration,
               toolCallStatus: iterationResult.toolResult.status,
             }
+          }, {
+            commandTimeout: this.engineConfig.config.hookCommandTimeout,
           });
         }
       } catch (error) {
@@ -1039,6 +1047,8 @@ export class ExecutionEngine extends EventEmitter {
               error: mcpError.message,
               errorType: mcpError.type,
             }
+          }, {
+            commandTimeout: this.engineConfig.config.hookCommandTimeout,
           });
         }
       } catch (hookError) {

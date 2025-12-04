@@ -46,6 +46,9 @@ export const ENV_VAR_MAPPING = {
   JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
   JUNO_CODE_MCP_SERVER_NAME: 'mcpServerName',
 
+  // Hook settings
+  JUNO_CODE_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
+
   // TUI settings
   JUNO_CODE_INTERACTIVE: 'interactive',
   JUNO_CODE_HEADLESS_MODE: 'headlessMode',
@@ -77,6 +80,9 @@ export const LEGACY_ENV_VAR_MAPPING = {
   JUNO_TASK_MCP_RETRIES: 'mcpRetries',
   JUNO_TASK_MCP_SERVER_PATH: 'mcpServerPath',
   JUNO_TASK_MCP_SERVER_NAME: 'mcpServerName',
+
+  // Hook settings
+  JUNO_TASK_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
 
   // TUI settings
   JUNO_TASK_INTERACTIVE: 'interactive',
@@ -178,6 +184,14 @@ export const JunoTaskConfigSchema = z.object({
   mcpServerName: z.string()
     .optional()
     .describe('Named MCP server to connect to (e.g., "roundtable-ai")'),
+
+  // Hook settings
+  hookCommandTimeout: z.number()
+    .int()
+    .min(1000)
+    .max(3600000) // up to 1 hour
+    .optional()
+    .describe('Timeout for individual hook commands in milliseconds (default: 300000 = 5 minutes)'),
 
   // TUI settings
   interactive: z.boolean()
