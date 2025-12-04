@@ -230,6 +230,10 @@ export async function executeHook(
       };
 
       // Execute command with timeout and proper working directory
+      // IMPORTANT: stdin is set to 'ignore' to prevent blocking when juno-code
+      // is invoked with piped input (e.g., `echo "data" | juno-code start`).
+      // Without this, hook subprocesses inherit parent's stdin and may block
+      // indefinitely waiting for EOF on the inherited stdin stream.
       const result = await execa(command, {
         shell: true,
         timeout: commandTimeout,
@@ -238,6 +242,7 @@ export async function executeHook(
         // Capture both stdout and stderr
         all: true,
         reject: false, // Don't throw on non-zero exit codes
+        stdin: 'ignore', // Prevent stdin inheritance to avoid blocking on piped input
       });
 
       const duration = Date.now() - commandStartTime;
