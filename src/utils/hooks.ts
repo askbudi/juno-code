@@ -231,18 +231,26 @@ export async function executeHook(
 
       // Execute command with timeout and proper working directory
       //
-      // IMPORTANT: We use stdin: 'inherit' with the shell to allow internal pipe
-      // commands (like `A | B`) to work correctly. The shell manages its own
-      // stdin/stdout for internal pipes between subcommands.
+      // CRITICAL: Using `input: ''` to properly close stdin
       //
-      // Previous approach (Issue #40) used stdin: 'ignore' which prevented
-      // blocking on piped input to juno-code, but broke internal pipe commands
-      // because the shell couldn't manage stdin for the second command in pipes.
+      // History of stdin handling issues:
+      // - Issue #40: Added stdin: 'ignore' - fixed blocking but broke internal pipes
+      // - Issue #41: Removed stdin: 'ignore', used default 'pipe' - allowed internal
+      //   pipes to work but caused commands to hang indefinitely when subprocess
+      //   tried to read stdin (because the stdin pipe was never closed)
+      // - Issue #42 (current): Commands like `juno-kanban ... | grep -q "..."` would
+      //   hang for 5 minutes (timeout) because the shell's stdin pipe was never closed,
+      //   causing subprocesses to block waiting for EOF on stdin.
       //
-      // New approach: Use stdin: 'pipe' (default execa behavior) which gives
-      // the shell its own stdin file descriptor that isn't connected to
-      // the parent's stdin. This allows internal pipes to work while
-      // preventing the subprocess from inheriting juno-code's stdin.
+      // Solution: Use `input: ''` which:
+      // 1. Provides empty input to the subprocess
+      // 2. Properly closes stdin (sends EOF)
+      // 3. Allows internal pipes to work (shell manages its own pipes)
+      // 4. Prevents commands from hanging waiting for stdin
+      //
+      // The key insight: `input: ''` tells execa to write an empty string to stdin
+      // and then close it, which signals EOF to the subprocess. This is different
+      // from `stdin: 'pipe'` (default) which leaves the pipe open indefinitely.
       const result = await execa(command, {
         shell: true,
         timeout: commandTimeout,
@@ -251,8 +259,10 @@ export async function executeHook(
         // Capture both stdout and stderr
         all: true,
         reject: false, // Don't throw on non-zero exit codes
-        // Use 'pipe' mode (default) - provides stdin fd for shell's internal pipes
-        // but doesn't connect to parent's stdin, preventing inheritance issues
+        // Use input: '' to provide empty stdin and properly close it (sends EOF)
+        // This prevents commands from hanging waiting for stdin while still
+        // allowing internal pipe operations to work correctly
+        input: '',
       });
 
       const duration = Date.now() - commandStartTime;
