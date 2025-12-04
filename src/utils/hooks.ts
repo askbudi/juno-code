@@ -90,7 +90,7 @@ export interface HookExecutionResult {
  * Hook execution options
  */
 export interface HookExecutionOptions {
-  /** Maximum timeout per command in milliseconds (default: 30000) */
+  /** Maximum timeout per command in milliseconds (default: 300000 = 5 minutes) */
   commandTimeout?: number;
   /** Environment variables to pass to commands */
   env?: Record<string, string>;
@@ -146,7 +146,7 @@ export async function executeHook(
 ): Promise<HookExecutionResult> {
   const startTime = Date.now();
   const {
-    commandTimeout = 30000,
+    commandTimeout = 300000, // 5 minutes default (increased from 30s to support long-running hook scripts)
     env = {},
     continueOnError = true,
     logContext = LogContext.SYSTEM,
