@@ -93,6 +93,12 @@ export interface ExecutionRequest {
 
   /** Agents configuration (forwarded to shell backend) */
   readonly agents?: string;
+
+  /** Resume a conversation by session ID (forwarded to shell backend) */
+  readonly resume?: string;
+
+  /** Continue the most recent conversation (forwarded to shell backend) */
+  readonly continueConversation?: boolean;
 }
 
 /**
@@ -937,6 +943,8 @@ export class ExecutionEngine extends EventEmitter {
           ...(context.request.allowedTools !== undefined && { allowedTools: context.request.allowedTools }),
           ...(context.request.appendAllowedTools !== undefined && { appendAllowedTools: context.request.appendAllowedTools }),
           ...(context.request.disallowedTools !== undefined && { disallowedTools: context.request.disallowedTools }),
+          ...(context.request.resume !== undefined && { resume: context.request.resume }),
+          ...(context.request.continueConversation !== undefined && { continueConversation: context.request.continueConversation }),
           iteration: iterationNumber,
         },
         timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,

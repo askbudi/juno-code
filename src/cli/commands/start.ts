@@ -111,6 +111,8 @@ export async function startCommandHandler(
       allowedTools: options.allowedTools,
       appendAllowedTools: options.appendAllowedTools,
       disallowedTools: options.disallowedTools,
+      resume: options.resume,
+      continue: options.continue,
       directory: options.directory,
       verbose: options.verbose,
       quiet: options.quiet,

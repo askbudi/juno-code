@@ -110,6 +110,8 @@ function setupGlobalOptions(program: Command): void {
     .option('--append-allowed-tools <tools...>', 'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Passed to shell backend, ignored for MCP.')
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
+    .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
+    .option('--continue', 'Continue the most recent conversation (shell backend only)')
 
   // Global error handling
   program.exitOverride((err) => {
