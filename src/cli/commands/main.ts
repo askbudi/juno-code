@@ -609,7 +609,9 @@ export async function mainCommandHandler(
       tools: options.tools,
       allowedTools: options.allowedTools,
       appendAllowedTools: options.appendAllowedTools,
-      disallowedTools: options.disallowedTools
+      disallowedTools: options.disallowedTools,
+      resume: options.resume,
+      continueConversation: options.continue
     });
 
     // Execute

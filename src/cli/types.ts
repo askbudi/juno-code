@@ -145,6 +145,10 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   interactive?: boolean;
   /** Launch TUI prompt editor */
   interactivePrompt?: boolean;
+  /** Resume a conversation by session ID (shell backend only) */
+  resume?: string;
+  /** Continue the most recent conversation (shell backend only) */
+  continue?: boolean;
 }
 
 /**
@@ -191,6 +195,10 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   disallowedTools?: string[];
   /** Append tools to default allowed-tools list (mutually exclusive with --allowed-tools, forwarded to shell backend --appendAllowedTools flag) */
   appendAllowedTools?: string[];
+  /** Resume a conversation by session ID (shell backend only) */
+  resume?: string;
+  /** Continue the most recent conversation (shell backend only) */
+  continue?: boolean;
   /** Project directory */
   directory?: string;
   /** Display performance metrics summary after execution */

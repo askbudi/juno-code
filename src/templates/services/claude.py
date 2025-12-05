@@ -95,6 +95,8 @@ Examples:
   %(prog)s -p "Complex task" -m claude-opus-4-20250514 --tool Read --tool Write
   %(prog)s -p "Multi-tool task" --allowed-tools Bash Edit Read Write
   %(prog)s -p "Restricted task" --disallowed-tools Bash WebSearch
+  %(prog)s --continue -p "Continue previous conversation"
+  %(prog)s --resume abc123 -p "Resume session abc123"
 
 Default Tools (enabled by default when no --allowed-tools specified):
   Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit,
@@ -211,6 +213,14 @@ Environment Variables:
         )
 
         parser.add_argument(
+            "-r", "--resume",
+            type=str,
+            dest="resume_session",
+            metavar="SESSION_ID",
+            help="Resume a conversation by session ID (e.g., claude --resume abc123)"
+        )
+
+        parser.add_argument(
             "--agents",
             type=str,
             help="Agents configuration (forwarded to Claude CLI --agents flag)"
@@ -285,6 +295,10 @@ Environment Variables:
         # Add continue flag if specified
         if args.continue_conversation:
             cmd.append("--continue")
+
+        # Add resume flag if specified
+        if args.resume_session:
+            cmd.extend(["--resume", args.resume_session])
 
         # Add agents configuration if specified
         if args.agents:

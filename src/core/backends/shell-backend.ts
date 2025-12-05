@@ -449,6 +449,16 @@ export class ShellBackend implements Backend {
         args.push(...request.arguments.disallowedTools);
       }
 
+      // For Python scripts, add resume flag if provided (--resume SESSION_ID)
+      if (isPython && request.arguments?.resume) {
+        args.push('--resume', request.arguments.resume);
+      }
+
+      // For Python scripts, add continue flag if provided (--continue)
+      if (isPython && request.arguments?.continueConversation) {
+        args.push('--continue');
+      }
+
       if (this.config!.debug) {
         engineLogger.debug(`Executing script: ${command} ${args.join(' ')}`);
         engineLogger.debug(`Working directory: ${this.config!.workingDirectory}`);
