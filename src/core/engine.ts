@@ -1516,6 +1516,8 @@ export function createExecutionRequest(options: {
   disallowedTools?: string[];
   requestId?: string;
   mcpServerName?: string;
+  resume?: string;
+  continueConversation?: boolean;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1552,6 +1554,14 @@ export function createExecutionRequest(options: {
 
   if (options.mcpServerName !== undefined) {
     (result as any).mcpServerName = options.mcpServerName;
+  }
+
+  if (options.resume !== undefined) {
+    (result as any).resume = options.resume;
+  }
+
+  if (options.continueConversation !== undefined) {
+    (result as any).continueConversation = options.continueConversation;
   }
 
   return result;
