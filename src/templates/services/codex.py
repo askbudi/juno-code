@@ -198,6 +198,7 @@ Environment Variables:
         - agent_message: render 'message' field as multi-line text
         - agent_reasoning: render 'text' field as multi-line text
         - exec_command_end: only output 'formatted_output' (suppress other fields)
+        - token_count: fully suppressed (no final summary emission)
 
         Returns a string to print, or None to fall back to raw printing.
         """
@@ -253,6 +254,7 @@ Environment Variables:
                 parts = [p.strip() for p in env_val.split(",") if p.strip()]
                 hide_types.update(parts)
 
+        # We fully suppress all token_count events (do not emit even at end)
         last_token_count = None
 
         try:
@@ -283,8 +285,8 @@ Environment Variables:
                             msg_type = (msg.get("type") or "").strip()
 
                             if msg_type == "token_count":
-                                # Buffer latest token_count; do not print now
-                                last_token_count = obj
+                                # Suppress token_count entirely
+                                last_token_count = obj  # kept for potential future use, but never printed
                                 continue
 
                             if msg_type and msg_type in hide_types:
@@ -307,13 +309,7 @@ Environment Variables:
             # Wait for process completion
             process.wait()
 
-            # After completion, emit the last token_count if available
-            if last_token_count is not None:
-                try:
-                    print(json.dumps(last_token_count), flush=True)
-                except Exception:
-                    # Ignore if serialization fails
-                    pass
+            # Do not emit token_count summary; fully suppressed per user feedback
 
             # Print stderr if there were errors
             if process.stderr and process.returncode != 0:
