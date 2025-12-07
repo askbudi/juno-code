@@ -8,7 +8,9 @@ import argparse
 import os
 import subprocess
 import sys
-from typing import List
+import json
+from datetime import datetime
+from typing import List, Optional
 
 
 class CodexService:
@@ -188,8 +190,55 @@ Environment Variables:
 
         return cmd
 
+    def _format_msg_pretty(self, obj: dict) -> Optional[str]:
+        """
+        Pretty format for specific msg types to be human readable while
+        preserving a compact JSON header line that includes the msg.type.
+
+        - agent_message: render 'message' field as multi-line text
+        - agent_reasoning: render 'text' field as multi-line text
+        - exec_command_end: only output 'formatted_output' (suppress other fields)
+
+        Returns a string to print, or None to fall back to raw printing.
+        """
+        try:
+            msg = obj.get("msg") or {}
+            msg_type = (msg.get("type") or "").strip()
+            now = datetime.now().strftime("%I:%M:%S %p")
+
+            # agent_message → show 'message' human-readable
+            if msg_type == "agent_message":
+                content = msg.get("message", "")
+                header = {"type": msg_type, "datetime": now}
+                if "\n" in content:
+                    return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content
+                header["message"] = content
+                return json.dumps(header, ensure_ascii=False)
+
+            # agent_reasoning → show 'text' human-readable
+            if msg_type == "agent_reasoning":
+                content = msg.get("text", "")
+                header = {"type": msg_type, "datetime": now}
+                if "\n" in content:
+                    return json.dumps(header, ensure_ascii=False) + "\ntext:\n" + content
+                header["text"] = content
+                return json.dumps(header, ensure_ascii=False)
+
+            # exec_command_end → only show 'formatted_output'
+            if msg_type == "exec_command_end":
+                formatted_output = msg.get("formatted_output", "")
+                header = {"type": msg_type, "datetime": now}
+                if "\n" in formatted_output:
+                    return json.dumps(header, ensure_ascii=False) + "\nformatted_output:\n" + formatted_output
+                header["formatted_output"] = formatted_output
+                return json.dumps(header, ensure_ascii=False)
+
+            return None
+        except Exception:
+            return None
+
     def run_codex(self, cmd: List[str], verbose: bool = False) -> int:
-        """Execute the codex command and stream output with filtering"""
+        """Execute the codex command and stream output with filtering and pretty-printing"""
         if verbose:
             print(f"Executing: {' '.join(cmd)}", file=sys.stderr)
             print("-" * 80, file=sys.stderr)
@@ -228,19 +277,26 @@ Environment Variables:
                         # Some CLIs may print extra spaces; be robust
                         s = line.strip()
                         if s.startswith("{") and s.endswith("}"):
-                            obj = __import__("json").loads(s)
+                            obj = json.loads(s)
                         if isinstance(obj, dict):
                             msg = obj.get("msg") or {}
                             msg_type = (msg.get("type") or "").strip()
+
                             if msg_type == "token_count":
                                 # Buffer latest token_count; do not print now
                                 last_token_count = obj
                                 continue
+
                             if msg_type and msg_type in hide_types:
                                 # Suppressed type
                                 continue
-                            # Print the JSON line as-is
-                            print(s, flush=True)
+
+                            # Pretty-print select message types; otherwise, pass through
+                            pretty_line = self._format_msg_pretty(obj)
+                            if pretty_line is not None:
+                                print(pretty_line, flush=True)
+                            else:
+                                print(s, flush=True)
                         else:
                             # Not JSON; pass through
                             print(raw_line, end="", flush=True)
@@ -254,7 +310,7 @@ Environment Variables:
             # After completion, emit the last token_count if available
             if last_token_count is not None:
                 try:
-                    print(__import__("json").dumps(last_token_count), flush=True)
+                    print(json.dumps(last_token_count), flush=True)
                 except Exception:
                     # Ignore if serialization fails
                     pass
