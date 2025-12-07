@@ -15,8 +15,15 @@ class CodexService:
     """Service wrapper for OpenAI Codex CLI"""
 
     # Default configuration
-    DEFAULT_MODEL = "gpt-5-codex"
+    DEFAULT_MODEL = "codex-5.1-max"
     DEFAULT_AUTO_INSTRUCTION = """You are an AI coding assistant. Follow the instructions provided and generate high-quality code."""
+
+    # Model shorthand mappings (colon-prefixed names expand to full model IDs)
+    MODEL_SHORTHANDS = {
+        ":codex": "codex-5.1-codex-max",
+        ":gpt-5": "gpt-5",
+        ":mini": "gpt-5-codex-mini",
+    }
 
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
@@ -25,6 +32,17 @@ class CodexService:
         self.prompt = ""
         self.additional_args: List[str] = []
         self.verbose = False
+
+    def expand_model_shorthand(self, model: str) -> str:
+        """
+        Expand model shorthand names to full model IDs.
+
+        If the model starts with ':', look it up in MODEL_SHORTHANDS.
+        Otherwise, return the model name as-is.
+        """
+        if model.startswith(":"):
+            return self.MODEL_SHORTHANDS.get(model, model)
+        return model
 
     def check_codex_installed(self) -> bool:
         """Check if codex CLI is installed and available"""
@@ -49,6 +67,13 @@ Examples:
   %(prog)s -p "Write a hello world function"
   %(prog)s -pp prompt.txt --cd /path/to/project
   %(prog)s -p "Add tests" -m gpt-4 -c custom_arg=value
+  %(prog)s -p "Optimize code" -m :codex  # uses codex-5.1-codex-max
+
+Environment Variables:
+  CODEX_MODEL                Model name (supports shorthand, default: codex-5.1-max)
+  CODEX_HIDE_STREAM_TYPES    Comma-separated list of streaming msg types to hide
+                             Default: turn_diff,token_count,exec_command_output_delta
+  JUNO_CODE_HIDE_STREAM_TYPES Same as CODEX_HIDE_STREAM_TYPES (alias)
             """
         )
 
@@ -75,8 +100,8 @@ Examples:
         parser.add_argument(
             "-m", "--model",
             type=str,
-            default=self.DEFAULT_MODEL,
-            help=f"Model name. Default: {self.DEFAULT_MODEL}"
+            default=os.environ.get("CODEX_MODEL", self.DEFAULT_MODEL),
+            help=f"Model name. Supports shorthand (e.g., ':codex', ':gpt-5', ':mini') or full model ID. Default: {self.DEFAULT_MODEL} (env: CODEX_MODEL)"
         )
 
         parser.add_argument(
@@ -164,32 +189,75 @@ Examples:
         return cmd
 
     def run_codex(self, cmd: List[str], verbose: bool = False) -> int:
-        """Execute the codex command and stream output"""
+        """Execute the codex command and stream output with filtering"""
         if verbose:
             print(f"Executing: {' '.join(cmd)}", file=sys.stderr)
             print("-" * 80, file=sys.stderr)
 
+        # Resolve hidden stream types (ENV configurable)
+        default_hidden = {"turn_diff", "token_count", "exec_command_output_delta"}
+        env_hide_1 = os.environ.get("CODEX_HIDE_STREAM_TYPES", "")
+        env_hide_2 = os.environ.get("JUNO_CODE_HIDE_STREAM_TYPES", "")
+        hide_types = set(default_hidden)
+        for env_val in (env_hide_1, env_hide_2):
+            if env_val:
+                parts = [p.strip() for p in env_val.split(",") if p.strip()]
+                hide_types.update(parts)
+
+        last_token_count = None
+
         try:
             # Run the command and stream output
-            # Use line buffering (bufsize=1) to ensure each JSON line is output immediately
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1,  # Line buffering for immediate output
+                bufsize=1,
                 universal_newlines=True
             )
 
-            # Stream stdout line by line
-            # Codex outputs text format by default (not JSON), so we just pass it through
             if process.stdout:
-                for line in process.stdout:
-                    # Output text as-is with immediate flush for real-time streaming
-                    print(line, end='', flush=True)
+                for raw_line in process.stdout:
+                    line = raw_line.rstrip("\n")
+                    if not line:
+                        continue
+                    # Try to parse NDJSON and filter by msg.type
+                    try:
+                        obj = None
+                        # Some CLIs may print extra spaces; be robust
+                        s = line.strip()
+                        if s.startswith("{") and s.endswith("}"):
+                            obj = __import__("json").loads(s)
+                        if isinstance(obj, dict):
+                            msg = obj.get("msg") or {}
+                            msg_type = (msg.get("type") or "").strip()
+                            if msg_type == "token_count":
+                                # Buffer latest token_count; do not print now
+                                last_token_count = obj
+                                continue
+                            if msg_type and msg_type in hide_types:
+                                # Suppressed type
+                                continue
+                            # Print the JSON line as-is
+                            print(s, flush=True)
+                        else:
+                            # Not JSON; pass through
+                            print(raw_line, end="", flush=True)
+                    except Exception:
+                        # On parsing error, pass through raw line
+                        print(raw_line, end="", flush=True)
 
-            # Wait for process to complete
+            # Wait for process completion
             process.wait()
+
+            # After completion, emit the last token_count if available
+            if last_token_count is not None:
+                try:
+                    print(__import__("json").dumps(last_token_count), flush=True)
+                except Exception:
+                    # Ignore if serialization fails
+                    pass
 
             # Print stderr if there were errors
             if process.stderr and process.returncode != 0:
@@ -201,9 +269,11 @@ Examples:
 
         except KeyboardInterrupt:
             print("\nInterrupted by user", file=sys.stderr)
-            if process:
+            try:
                 process.terminate()
                 process.wait()
+            except Exception:
+                pass
             return 130
         except Exception as e:
             print(f"Error executing codex: {e}", file=sys.stderr)
@@ -237,7 +307,8 @@ Examples:
 
         # Set configuration from arguments
         self.project_path = os.path.abspath(args.cd)
-        self.model_name = args.model
+        # Expand model shorthand
+        self.model_name = self.expand_model_shorthand(args.model)
         self.auto_instruction = args.auto_instruction
 
         # Get prompt from file or argument
