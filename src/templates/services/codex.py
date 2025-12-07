@@ -239,7 +239,13 @@ Environment Variables:
             return None
 
     def run_codex(self, cmd: List[str], verbose: bool = False) -> int:
-        """Execute the codex command and stream output with filtering and pretty-printing"""
+        """Execute the codex command and stream output with filtering and pretty-printing
+
+        Robustness improvements:
+        - Attempts to parse JSON even if the line has extra prefix/suffix noise
+        - Falls back to string suppression for known noisy types if JSON parsing fails
+        - Never emits token_count or exec_command_output_delta even on malformed lines
+        """
         if verbose:
             print(f"Executing: {' '.join(cmd)}", file=sys.stderr)
             print("-" * 80, file=sys.stderr)
@@ -276,34 +282,143 @@ Environment Variables:
                     # Try to parse NDJSON and filter by msg.type
                     try:
                         obj = None
-                        # Some CLIs may print extra spaces; be robust
                         s = line.strip()
+
+                        # Direct JSON line
                         if s.startswith("{") and s.endswith("}"):
-                            obj = json.loads(s)
-                        if isinstance(obj, dict):
-                            msg = obj.get("msg") or {}
-                            msg_type = (msg.get("type") or "").strip()
+                            try:
+                                obj = json.loads(s)
+                            except Exception:
+                                obj = None
 
-                            if msg_type == "token_count":
-                                # Suppress token_count entirely
-                                last_token_count = obj  # kept for potential future use, but never printed
-                                continue
+                        # Attempt to extract JSON object substring if noise surrounds it
+                        if obj is None:
+                            lbrace = s.find("{")
+                            rbrace = s.rfind("}")
+                            if lbrace != -1 and rbrace != -1 and rbrace > lbrace:
+                                candidate = s[lbrace:rbrace + 1]
+                                try:
+                                    obj = json.loads(candidate)
+                                    s = candidate  # normalized JSON text
+                                except Exception:
+                                    obj = None
 
-                            if msg_type and msg_type in hide_types:
-                                # Suppressed type
-                                continue
+                        def handle_obj(obj_dict: dict):
+                            nonlocal last_token_count
+                            msg = obj_dict.get("msg") or {}
+                            msg_type_inner = (msg.get("type") or "").strip()
 
-                            # Pretty-print select message types; otherwise, pass through
-                            pretty_line = self._format_msg_pretty(obj)
-                            if pretty_line is not None:
-                                print(pretty_line, flush=True)
+                            if msg_type_inner == "token_count":
+                                last_token_count = obj_dict
+                                return  # suppress
+
+                            if msg_type_inner and msg_type_inner in hide_types:
+                                return  # suppress
+
+                            pretty_line_inner = self._format_msg_pretty(obj_dict)
+                            if pretty_line_inner is not None:
+                                print(pretty_line_inner, flush=True)
                             else:
-                                print(s, flush=True)
+                                # print normalized JSON
+                                print(json.dumps(obj_dict, ensure_ascii=False), flush=True)
+
+                        if isinstance(obj, dict):
+                            handle_obj(obj)
+                            continue
+                        
+                        # If line appears to contain multiple concatenated JSON objects,
+                        # split by top-level brace balancing while respecting strings
+                        def split_concatenated_json(text: str):
+                            objs = []
+                            buf = []
+                            depth = 0
+                            in_str = False
+                            esc = False
+                            started = False
+                            for ch in text:
+                                if in_str:
+                                    buf.append(ch)
+                                    if esc:
+                                        esc = False
+                                    elif ch == '\\':
+                                        esc = True
+                                    elif ch == '"':
+                                        in_str = False
+                                    continue
+                                # not in string
+                                if ch == '"':
+                                    in_str = True
+                                    buf.append(ch)
+                                    continue
+                                if ch == '{':
+                                    depth += 1
+                                    started = True
+                                    buf.append(ch)
+                                    continue
+                                if ch == '}':
+                                    depth -= 1
+                                    buf.append(ch)
+                                    if started and depth == 0:
+                                        candidate = ''.join(buf).strip().strip("'\"")
+                                        if candidate:
+                                            objs.append(candidate)
+                                        buf = []
+                                        started = False
+                                    continue
+                                # accumulate only if currently collecting an object
+                                if started:
+                                    buf.append(ch)
+                            return objs
+
+                        parts = split_concatenated_json(s)
+                        if parts:
+                            for part in parts:
+                                try:
+                                    sub = json.loads(part)
+                                    if isinstance(sub, dict):
+                                        handle_obj(sub)
+                                    else:
+                                        low = part.lower()
+                                        if (
+                                            '"token_count"' in low
+                                            or '"exec_command_output_delta"' in low
+                                            or '"turn_diff"' in low
+                                        ):
+                                            continue
+                                        print(part, flush=True)
+                                except Exception:
+                                    low = part.lower()
+                                    if (
+                                        '"token_count"' in low
+                                        or '"exec_command_output_delta"' in low
+                                        or '"turn_diff"' in low
+                                    ):
+                                        continue
+                                    print(part, flush=True)
+                            continue
                         else:
-                            # Not JSON; pass through
+                            # If not valid JSON, suppress known noisy tokens by string search
+                            lower = s.lower()
+                            if (
+                                '"type"' in lower
+                                and (
+                                    '"token_count"' in lower
+                                    or '"exec_command_output_delta"' in lower
+                                    or '"turn_diff"' in lower
+                                )
+                            ):
+                                # Best-effort suppression for malformed lines containing noisy types
+                                continue
+                            # Not JSON and not noisy → passthrough
                             print(raw_line, end="", flush=True)
                     except Exception:
-                        # On parsing error, pass through raw line
+                        # On parsing error, last-gasp suppression by substring match
+                        if (
+                            '"token_count"' in raw_line
+                            or '"exec_command_output_delta"' in raw_line
+                            or '"turn_diff"' in raw_line
+                        ):
+                            continue
                         print(raw_line, end="", flush=True)
 
             # Wait for process completion
