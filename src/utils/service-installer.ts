@@ -96,36 +96,55 @@ export class ServiceInstaller {
       // This handles the case where npm install happened but service scripts
       // weren't properly installed (or user deleted them)
       if (semver.eq(packageVersion, installedVersion)) {
-        const codexExists = await fs.pathExists(path.join(this.SERVICES_DIR, 'codex.py'));
-        const claudeExists = await fs.pathExists(path.join(this.SERVICES_DIR, 'claude.py'));
+        const installedCodex = path.join(this.SERVICES_DIR, 'codex.py');
+        const installedClaude = path.join(this.SERVICES_DIR, 'claude.py');
+
+        const codexExists = await fs.pathExists(installedCodex);
+        const claudeExists = await fs.pathExists(installedClaude);
 
         // If either service file is missing, force update
         if (!codexExists || !claudeExists) {
           return true;
         }
 
-        // Check if package services directory has files
-        // This ensures we have source files to copy from
+        // Compare contents with package versions; update if mismatch
         try {
           const packageServicesDir = this.getPackageServicesDir();
           const packageCodex = path.join(packageServicesDir, 'codex.py');
           const packageClaude = path.join(packageServicesDir, 'claude.py');
 
-          // If package has services but installed doesn't match, force update
-          // This catches cases where code changed but version stayed the same (development/testing)
           const packageCodexExists = await fs.pathExists(packageCodex);
           const packageClaudeExists = await fs.pathExists(packageClaude);
 
-          if (packageCodexExists || packageClaudeExists) {
-            // In development, always update to get latest changes
-            // In production (npm install), versions match so this is safe
-            const isDevelopment = packageServicesDir.includes('/src/');
-            if (isDevelopment) {
+          // Only compare files that exist in package
+          if (packageCodexExists) {
+            const [pkg, inst] = await Promise.all([
+              fs.readFile(packageCodex, 'utf-8'),
+              fs.readFile(installedCodex, 'utf-8'),
+            ]);
+            if (pkg !== inst) {
               return true;
             }
           }
+
+          if (packageClaudeExists) {
+            const [pkg, inst] = await Promise.all([
+              fs.readFile(packageClaude, 'utf-8'),
+              fs.readFile(installedClaude, 'utf-8'),
+            ]);
+            if (pkg !== inst) {
+              return true;
+            }
+          }
+
+          // In development, always update to get latest changes to other files
+          const isDevelopment = packageServicesDir.includes('/src/');
+          if (isDevelopment) {
+            return true;
+          }
         } catch {
-          // Ignore errors checking package directory
+          // On any comparison error, err on the side of updating
+          return true;
         }
       }
 
