@@ -12,11 +12,12 @@ export function createServicesCommand(): Command {
     .description('Manage juno-code service scripts')
     .addHelpText('after', `
 Examples:
-  $ juno-code services install       Install service scripts to ~/.juno_code/services/
-  $ juno-code services list          List installed service scripts
-  $ juno-code services status        Check installation status
-  $ juno-code services uninstall     Remove all service scripts
-  $ juno-code services path          Show services directory path
+  $ juno-code services install            Install service scripts to ~/.juno_code/services/
+  $ juno-code services install --force    Reinstall/refresh service scripts (codex.py/claude.py)
+  $ juno-code services list               List installed service scripts
+  $ juno-code services status             Check installation status
+  $ juno-code services uninstall          Remove all service scripts
+  $ juno-code services path               Show services directory path
 
 Service scripts are Python/shell scripts that provide additional functionality
 and can be customized by users. They are installed to ~/.juno_code/services/

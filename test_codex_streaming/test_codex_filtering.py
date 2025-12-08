@@ -21,20 +21,53 @@ def _build_ndjson_stream():
     return "\\n".join(lines) + "\\n"
 
 
-def test_codex_stream_filters_suppressed_types():
+def _build_item_schema_stream():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_4",
+                "type": "command_execution",
+                "command": "/bin/zsh -lc cat .juno_task/implement.md",
+                "aggregated_output": "---\nexample:\n  value: 1\n",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_20",
+                "type": "reasoning",
+                "text": "**Identifying data-model as key resource**\n\nLine two.",
+            },
+        },
+        {
+            "type": "item.started",
+            "item": {
+                "id": "item_42",
+                "type": "command_execution",
+                "command": "/bin/zsh -lc ./scripts/kanban.sh help",
+                "status": "in_progress",
+            },
+        },
+    ]
+    lines = [json.dumps(e) for e in events]
+    return "\\n".join(lines) + "\\n"
+
+
+def _load_codex_service():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
     # When running from repo root, adjust path
     if not os.path.isdir(services_dir):
         services_dir = os.path.abspath(os.path.join(here, "..", "..", "src", "templates", "services"))
-    sys.path.insert(0, services_dir)
-    try:
-        from codex import CodexService  # type: ignore
-    finally:
-        # Keep path for potential further imports
-        pass
+    if services_dir not in sys.path:
+        sys.path.insert(0, services_dir)
+    from codex import CodexService  # type: ignore
+    return CodexService()
 
-    svc = CodexService()
+
+def test_codex_stream_filters_suppressed_types():
+    svc = _load_codex_service()
 
     ndjson = _build_ndjson_stream()
     cmd = [
@@ -62,3 +95,33 @@ def test_codex_stream_filters_suppressed_types():
     assert '"type": "agent_reasoning"' in out and 'text:\nThink\nMore' in out
     assert '"type": "exec_command_end"' in out and 'formatted_output:\nDone\nOK' in out
 
+
+def test_codex_stream_handles_item_schema():
+    svc = _load_codex_service()
+
+    ndjson = _build_item_schema_stream()
+    cmd = [
+        "bash",
+        "-lc",
+        f"printf '%s' '{ndjson}'",
+    ]
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = svc.run_codex(cmd, verbose=False)
+
+    out = buf.getvalue()
+
+    assert code == 0
+
+    # command_execution output (item.completed) pretty printed with aggregated_output block
+    assert '"type": "item.completed"' in out
+    assert '"item_type": "command_execution"' in out
+    assert "aggregated_output:\n---\nexample:\n  value: 1" in out
+
+    # reasoning output (item.completed) pretty printed with text block
+    assert "text:\n**Identifying data-model as key resource**\n\nLine two." in out
+
+    # item.started events are surfaced with header context
+    assert '"type": "item.started"' in out
+    assert "kanban.sh help" in out

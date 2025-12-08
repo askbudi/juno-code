@@ -190,7 +190,12 @@ Environment Variables:
 
         return cmd
 
-    def _format_msg_pretty(self, obj: dict) -> Optional[str]:
+    def _format_msg_pretty(
+        self,
+        msg_type: str,
+        payload: dict,
+        outer_type: str = "",
+    ) -> Optional[str]:
         """
         Pretty format for specific msg types to be human readable while
         preserving a compact JSON header line that includes the msg.type.
@@ -203,13 +208,25 @@ Environment Variables:
         Returns a string to print, or None to fall back to raw printing.
         """
         try:
-            msg = obj.get("msg") or {}
-            msg_type = (msg.get("type") or "").strip()
             now = datetime.now().strftime("%I:%M:%S %p")
+            msg_type = (msg_type or "").strip()
+            header_type = (outer_type or msg_type).strip()
+            header = {"type": header_type or msg_type or "message", "datetime": now}
+
+            if outer_type and msg_type and outer_type != msg_type:
+                header["item_type"] = msg_type
+
+            if isinstance(payload, dict):
+                if payload.get("command"):
+                    header["command"] = payload.get("command")
+                if payload.get("status"):
+                    header["status"] = payload.get("status")
+                if payload.get("state") and not header.get("status"):
+                    header["status"] = payload.get("state")
 
             # agent_message → show 'message' human-readable
             if msg_type == "agent_message":
-                content = msg.get("message", "")
+                content = payload.get("message", "") if isinstance(payload, dict) else ""
                 header = {"type": msg_type, "datetime": now}
                 if "\n" in content:
                     return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content
@@ -217,9 +234,11 @@ Environment Variables:
                 return json.dumps(header, ensure_ascii=False)
 
             # agent_reasoning → show 'text' human-readable
-            if msg_type == "agent_reasoning":
-                content = msg.get("text", "")
-                header = {"type": msg_type, "datetime": now}
+            if msg_type in {"agent_reasoning", "reasoning"}:
+                content = payload.get("text", "") if isinstance(payload, dict) else ""
+                header = {"type": header_type or msg_type, "datetime": now}
+                if outer_type and msg_type and outer_type != msg_type:
+                    header["item_type"] = msg_type
                 if "\n" in content:
                     return json.dumps(header, ensure_ascii=False) + "\ntext:\n" + content
                 header["text"] = content
@@ -227,16 +246,50 @@ Environment Variables:
 
             # exec_command_end → only show 'formatted_output'
             if msg_type == "exec_command_end":
-                formatted_output = msg.get("formatted_output", "")
+                formatted_output = payload.get("formatted_output", "") if isinstance(payload, dict) else ""
                 header = {"type": msg_type, "datetime": now}
                 if "\n" in formatted_output:
                     return json.dumps(header, ensure_ascii=False) + "\nformatted_output:\n" + formatted_output
                 header["formatted_output"] = formatted_output
                 return json.dumps(header, ensure_ascii=False)
 
+            # item.* schema → command_execution blocks
+            if msg_type == "command_execution":
+                aggregated_output = ""
+                if isinstance(payload, dict):
+                    aggregated_output = payload.get("aggregated_output", "") or payload.get("output", "")
+                if "\n" in aggregated_output:
+                    return json.dumps(header, ensure_ascii=False) + "\naggregated_output:\n" + aggregated_output
+                if aggregated_output:
+                    header["aggregated_output"] = aggregated_output
+                    return json.dumps(header, ensure_ascii=False)
+                # No output (likely item.started) – still show header if it carries context
+                if header_type:
+                    return json.dumps(header, ensure_ascii=False)
+
             return None
         except Exception:
             return None
+
+    def _normalize_event(self, obj_dict: dict):
+        """
+        Normalize legacy (msg-based) and new item.* schemas into a common tuple.
+        Returns (msg_type, payload_dict, outer_type).
+        """
+        msg = obj_dict.get("msg") if isinstance(obj_dict.get("msg"), dict) else {}
+        outer_type = (obj_dict.get("type") or "").strip()
+        item = obj_dict.get("item") if isinstance(obj_dict.get("item"), dict) else None
+
+        msg_type = (msg.get("type") or "").strip() if isinstance(msg, dict) else ""
+        payload = msg if isinstance(msg, dict) else {}
+
+        if not msg_type and item is not None:
+            msg_type = (item.get("type") or "").strip() or outer_type
+            payload = item
+        elif not msg_type:
+            msg_type = outer_type
+
+        return msg_type, payload, outer_type
 
     def run_codex(self, cmd: List[str], verbose: bool = False) -> int:
         """Execute the codex command and stream output with filtering and pretty-printing
@@ -305,8 +358,7 @@ Environment Variables:
 
                         def handle_obj(obj_dict: dict):
                             nonlocal last_token_count
-                            msg = obj_dict.get("msg") or {}
-                            msg_type_inner = (msg.get("type") or "").strip()
+                            msg_type_inner, payload_inner, outer_type_inner = self._normalize_event(obj_dict)
 
                             if msg_type_inner == "token_count":
                                 last_token_count = obj_dict
@@ -315,7 +367,7 @@ Environment Variables:
                             if msg_type_inner and msg_type_inner in hide_types:
                                 return  # suppress
 
-                            pretty_line_inner = self._format_msg_pretty(obj_dict)
+                            pretty_line_inner = self._format_msg_pretty(msg_type_inner, payload_inner, outer_type_inner)
                             if pretty_line_inner is not None:
                                 print(pretty_line_inner, flush=True)
                             else:

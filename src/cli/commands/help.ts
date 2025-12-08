@@ -119,6 +119,11 @@ const QUICK_REFERENCE: QuickReference[] = [
         usage: 'juno-code completion <install|uninstall>'
       },
       {
+        name: 'services',
+        description: 'Manage service scripts (use --force to refresh codex.py/claude.py)',
+        usage: 'juno-code services install --force'
+      },
+      {
         name: 'help',
         description: 'Show help information',
         usage: 'juno-code help [--interactive]'
