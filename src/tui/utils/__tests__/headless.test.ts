@@ -15,29 +15,35 @@ import {
   getEnvironmentType
 } from '../headless.js';
 
-// Mock dependencies
+// Mock dependencies (use inline factories to avoid hoist/TDZ issues)
 vi.mock('../../../utils/environment.js', () => ({
   isHeadlessEnvironment: vi.fn().mockReturnValue(false)
 }));
 
-// Mock readline
-const mockReadline = {
-  createInterface: vi.fn().mockReturnValue({
-    question: vi.fn(),
-    close: vi.fn()
-  })
-};
+// Mock readline with hoist-safe pattern
+var mockReadline: any;
+vi.mock('readline', () => {
+  const module = {
+    createInterface: vi.fn().mockReturnValue({
+      question: vi.fn(),
+      close: vi.fn()
+    })
+  };
+  mockReadline = module;
+  return module;
+});
 
-vi.mock('readline', () => mockReadline);
-
-// Mock chalk
-const mockChalk = {
-  bold: vi.fn((text) => `bold(${text})`),
-  red: vi.fn((text) => `red(${text})`),
-  green: vi.fn((text) => `green(${text})`)
-};
-
-vi.mock('chalk', () => mockChalk);
+// Mock chalk with hoist-safe pattern
+var mockChalk: any;
+vi.mock('chalk', () => {
+  const module = {
+    bold: vi.fn((text: string) => `bold(${text})`),
+    red: vi.fn((text: string) => `red(${text})`),
+    green: vi.fn((text: string) => `green(${text})`)
+  };
+  mockChalk = module;
+  return module;
+});
 
 describe.skip('Headless TUI Utilities', () => {
   // SKIP: Test infrastructure issue - process.exit mock or fs mock setup

@@ -5,12 +5,16 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createMCPClient } from '../src/mcp/client.js';
-import { MCPTimeoutError } from '../src/mcp/errors.js';
+import { createMCPClient } from '../../mcp/client.js';
+import { MCPTimeoutError } from '../../mcp/errors.js';
+import which from 'which';
 import fs from 'fs-extra';
 import path from 'node:path';
 
-describe('Simple MCP Timeout Test', () => {
+const hasRoundtableServer = Boolean(which.sync('roundtable-mcp-server', { nothrow: true }));
+const describeIf = hasRoundtableServer ? describe : describe.skip;
+
+describeIf('Simple MCP Timeout Test', () => {
   const TEST_TIMEOUT = 300000; // 5 minutes as specified
   let testDir: string;
 

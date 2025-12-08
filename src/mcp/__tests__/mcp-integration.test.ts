@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import which from 'which';
 import { JunoMCPClient, createMCPClient, type MCPClientOptions, type ToolCallRequest } from '../client.js';
 import { MCPConnectionError, MCPToolError } from '../errors.js';
 import * as fs from 'fs-extra';
@@ -31,6 +32,10 @@ let testDir: string;
 let mcpServerProcess: ChildProcess | null = null;
 let mcpServerReady = false;
 let testReportData: TestReport[] = [];
+
+// Detect server availability; skip suite if not installed in environment
+const hasRoundtableServer = Boolean(which.sync('roundtable-mcp-server', { nothrow: true }));
+const describeIf = hasRoundtableServer ? describe : describe.skip;
 
 interface TestReport {
   testName: string;
@@ -312,7 +317,7 @@ ${failedTests.length > 0 ? `
   console.log(`\n📊 MCP Integration Test Report generated: ${reportPath}`);
 }
 
-describe('MCP Integration Tests - Real Server Connection', () => {
+describeIf('MCP Integration Tests - Real Server Connection', () => {
   beforeAll(async () => {
     // Create test directory
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-integration-test-'));

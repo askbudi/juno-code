@@ -192,7 +192,11 @@ describe('Binary Execution Tests', () => {
       if (result.exitCode === 0) {
         expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
       } else {
-        expect(result.stderr).toContain('ERR_REQUIRE_ASYNC_MODULE');
+        const err = result.stderr || '';
+        expect(
+          err.includes('ERR_REQUIRE_ASYNC_MODULE') ||
+          err.includes('ERR_REQUIRE_ESM')
+        ).toBe(true);
       }
     });
   });

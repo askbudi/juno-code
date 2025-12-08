@@ -6,13 +6,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import which from 'which';
 import { JunoMCPClient, createMCPClient } from '../mcp/client.js';
 import { MCPTimeoutError, MCPConnectionError } from '../mcp/errors.js';
 import { execa } from 'execa';
 import path from 'node:path';
 import fs from 'fs-extra';
 
-describe('MCP Timeout Functionality Validation', () => {
+const hasRoundtableServer = Boolean(which.sync('roundtable-mcp-server', { nothrow: true }));
+const describeIf = hasRoundtableServer ? describe : describe.skip;
+
+describeIf('MCP Timeout Functionality Validation', () => {
   const TEST_TIMEOUT = 300000; // 5 minutes as specified
   const LONG_OPERATION_DURATION = 200000; // 3.33 minutes - should complete within timeout
   const EXCEED_TIMEOUT_DURATION = 400000; // 6.67 minutes - should timeout
