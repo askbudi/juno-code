@@ -79,6 +79,44 @@ def _build_pretty_item_schema_stream():
     return "\n".join(json.dumps(e, indent=2) for e in events) + "\n"
 
 
+def _build_nested_item_schema_stream():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_nested_out",
+                "type": "command_execution",
+                "command": "/bin/zsh -lc 'cat README.md'",
+                "result": {
+                    "aggregated_output": "line one\nline two\nline three\n",
+                    "exit_code": 0,
+                },
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_reason_nested",
+                "type": "reasoning",
+                "reasoning": {"text": "Nested reasoning text"},
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_message",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Final line one"},
+                    {"type": "output_text", "text": "Final line two"},
+                ],
+            },
+        },
+    ]
+    return "\\n".join(json.dumps(e) for e in events) + "\\n"
+
+
 def _load_codex_service():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
@@ -177,3 +215,31 @@ def test_codex_stream_handles_pretty_multiline_item_schema():
     assert "text:\n**Exploring database usage for backend scaffolding**\n\nI'm checking database session management in the backend core" in out
     # Ensure raw pretty-printed JSON object lines are not passed through verbatim
     assert '\n  "aggregated_output":' not in out
+
+
+def test_codex_stream_handles_nested_item_fields_and_message_content():
+    svc = _load_codex_service()
+
+    ndjson = _build_nested_item_schema_stream()
+    cmd = [
+        "bash",
+        "-lc",
+        f"printf '%s' '{ndjson}'",
+    ]
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = svc.run_codex(cmd, verbose=False)
+
+    out = buf.getvalue()
+
+    assert code == 0
+
+    # Aggregated output should render even when nested under result
+    assert "aggregated_output:\nline one\nline two\nline three\n" in out
+    # Nested reasoning text should render (even when nested under reasoning/result)
+    assert '"item_type": "reasoning"' in out
+    assert '"text": "Nested reasoning text"' in out
+    # Final assistant message content array should render as a message block
+    assert "message:\nFinal line one\nFinal line two" in out
+    assert '"item_type": "message"' in out

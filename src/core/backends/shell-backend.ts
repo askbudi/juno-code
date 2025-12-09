@@ -634,19 +634,23 @@ export class ShellBackend implements Backend {
     subagentType: string,
     result: ScriptExecutionResult
   ): { content: string; metadata?: ToolExecutionMetadata } {
-    if (subagentType === 'claude' && result.subAgentResponse) {
-      const claudeEvent = result.subAgentResponse;
-      const isError = claudeEvent?.is_error ?? !result.success;
+    if (subagentType === 'claude') {
+      const claudeEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
+      const isError = claudeEvent?.is_error ?? claudeEvent?.subtype === 'error' ?? !result.success;
+
       const structuredPayload = {
         type: 'result',
         subtype: claudeEvent?.subtype || (isError ? 'error' : 'success'),
         is_error: isError,
-        result: claudeEvent?.result ?? claudeEvent?.error ?? '',
+        result: claudeEvent?.result ?? claudeEvent?.error ?? claudeEvent?.content ?? result.output,
+        error: claudeEvent?.error,
+        stderr: result.error,
         datetime: claudeEvent?.datetime,
         counter: claudeEvent?.counter,
         session_id: claudeEvent?.session_id,
         num_turns: claudeEvent?.num_turns,
         duration_ms: claudeEvent?.duration_ms ?? result.duration,
+        exit_code: result.exitCode,
         total_cost_usd: claudeEvent?.total_cost_usd,
         usage: claudeEvent?.usage,
         modelUsage: claudeEvent?.modelUsage || claudeEvent?.model_usage || {},
@@ -656,7 +660,7 @@ export class ShellBackend implements Backend {
       };
 
       const metadata: ToolExecutionMetadata = {
-        subAgentResponse: claudeEvent,
+        ...(claudeEvent ? { subAgentResponse: claudeEvent } : undefined),
         structuredOutput: true,
         contentType: 'application/json',
         rawOutput: result.output
@@ -669,6 +673,30 @@ export class ShellBackend implements Backend {
     }
 
     return { content: result.output, metadata: result.metadata as ToolExecutionMetadata | undefined };
+  }
+
+  /**
+   * Extract the last valid JSON object from a script's stdout to use as a structured payload fallback.
+   */
+  private extractLastJsonEvent(output: string): any | null {
+    if (!output) {
+      return null;
+    }
+
+    const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(lines[i]);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch {
+        // Ignore parse failures and continue scanning earlier lines
+      }
+    }
+
+    return null;
   }
 
   /**
