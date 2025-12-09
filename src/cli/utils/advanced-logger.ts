@@ -576,14 +576,10 @@ export class AdvancedLogger {
   /**
    * Output formatted log
    */
-  private output(formatted: string, level: LogLevel): void {
+  private output(formatted: string, _level: LogLevel): void {
     if (this.options.output === 'console' || this.options.output === 'both') {
-      // Use console.log for INFO level and below, console.error for WARN and above
-      if (level >= LogLevel.WARN) {
-        console.error(formatted);
-      } else {
-        console.log(formatted);
-      }
+      // Send all log output to STDERR to keep STDOUT clean for structured results (e.g. jq piping)
+      console.error(formatted);
     }
 
     if (this.options.output === 'file' || this.options.output === 'both') {

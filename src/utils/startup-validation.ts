@@ -332,7 +332,7 @@ export async function validateJSONConfigs(baseDir: string = process.cwd(), backe
  */
 export function displayValidationResults(result: ValidationResult): void {
   if (result.isValid && result.warnings.length === 0) {
-    console.log(chalk.green('✅ All configuration files are valid\n'));
+    console.error(chalk.green('✅ All configuration files are valid\n'));
     return;
   }
 
