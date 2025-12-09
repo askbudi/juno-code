@@ -297,7 +297,8 @@ describe('startup-validation', () => {
 
       displayValidationResults(result);
 
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('All configuration files are valid'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('All configuration files are valid'));
+      expect(consoleLogSpy).not.toHaveBeenCalled();
     });
 
     it('should display errors with suggestions', () => {
