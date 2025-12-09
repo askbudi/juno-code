@@ -34,6 +34,7 @@ class CodexService:
         self.prompt = ""
         self.additional_args: List[str] = []
         self.verbose = False
+        self._item_counter = 0
 
     def expand_model_shorthand(self, model: str) -> str:
         """
@@ -199,6 +200,37 @@ Environment Variables:
             content_text,
         )
 
+    def _parse_item_number(self, item_id: str) -> Optional[int]:
+        """Return numeric component from item_{n} ids or None if unparseable."""
+        if not isinstance(item_id, str):
+            return None
+        item_id = item_id.strip()
+        if not item_id.startswith("item_"):
+            return None
+        try:
+            return int(item_id.split("item_", 1)[1])
+        except Exception:
+            return None
+
+    def _normalize_item_id(self, payload: dict, outer_type: str) -> Optional[str]:
+        """
+        Prefer the existing id on item.* payloads; otherwise synthesize sequential item_{n}.
+        Maintains a per-run counter so missing ids still expose turn counts.
+        """
+        item_id = payload.get("id") if isinstance(payload, dict) else None
+        if isinstance(item_id, str) and item_id.strip():
+            parsed = self._parse_item_number(item_id)
+            if parsed is not None and parsed + 1 > self._item_counter:
+                self._item_counter = parsed + 1
+            return item_id.strip()
+
+        if isinstance(outer_type, str) and outer_type.startswith("item."):
+            generated = f"item_{self._item_counter}"
+            self._item_counter += 1
+            return generated
+
+        return None
+
     def read_prompt_file(self, file_path: str) -> str:
         """Read prompt from a file"""
         try:
@@ -266,6 +298,7 @@ Environment Variables:
         msg_type: str,
         payload: dict,
         outer_type: str = "",
+        item_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Pretty format for specific msg types to be human readable while
@@ -282,12 +315,21 @@ Environment Variables:
             now = datetime.now().strftime("%I:%M:%S %p")
             msg_type = (msg_type or "").strip()
             header_type = (outer_type or msg_type).strip()
-            header = {"type": header_type or msg_type or "message", "datetime": now}
+            base_type = header_type or msg_type or "message"
 
-            if outer_type and msg_type and outer_type != msg_type:
-                header["item_type"] = msg_type
+            def make_header(type_value: str):
+                hdr = {"type": type_value, "datetime": now}
+                if item_id:
+                    hdr["id"] = item_id
+                if outer_type and msg_type and outer_type != msg_type:
+                    hdr["item_type"] = msg_type
+                return hdr
+
+            header = make_header(base_type)
 
             if isinstance(payload, dict):
+                if item_id and "id" not in payload:
+                    payload["id"] = item_id
                 if payload.get("command"):
                     header["command"] = payload.get("command")
                 if payload.get("status"):
@@ -298,9 +340,7 @@ Environment Variables:
             # agent_reasoning → show 'text' human-readable
             if msg_type in {"agent_reasoning", "reasoning"}:
                 content = self._extract_reasoning_text(payload)
-                header = {"type": header_type or msg_type, "datetime": now}
-                if outer_type and msg_type and outer_type != msg_type:
-                    header["item_type"] = msg_type
+                header = make_header(header_type or msg_type)
                 if "\n" in content:
                     return json.dumps(header, ensure_ascii=False) + "\ntext:\n" + content
                 header["text"] = content
@@ -308,9 +348,7 @@ Environment Variables:
 
             if msg_type in {"agent_message", "message", "assistant_message", "assistant"}:
                 content = self._extract_message_text(payload)
-                header = {"type": header_type or msg_type, "datetime": now}
-                if outer_type and msg_type and outer_type != msg_type:
-                    header["item_type"] = msg_type
+                header = make_header(header_type or msg_type)
                 if "\n" in content:
                     return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content
                 if content != "":
@@ -386,6 +424,9 @@ Environment Variables:
                 parts = [p.strip() for p in env_val.split(",") if p.strip()]
                 hide_types.update(parts)
 
+        # Reset per-run item counter for synthesized ids
+        self._item_counter = 0
+
         # We fully suppress all token_count events (do not emit even at end)
         last_token_count = None
 
@@ -444,6 +485,14 @@ Environment Variables:
             def handle_obj(obj_dict: dict):
                 nonlocal last_token_count
                 msg_type_inner, payload_inner, outer_type_inner = self._normalize_event(obj_dict)
+                item_id_inner = self._normalize_item_id(payload_inner, outer_type_inner)
+
+                if (
+                    item_id_inner
+                    and isinstance(obj_dict.get("item"), dict)
+                    and not obj_dict["item"].get("id")
+                ):
+                    obj_dict["item"]["id"] = item_id_inner
 
                 if msg_type_inner == "token_count":
                     last_token_count = obj_dict
@@ -452,7 +501,12 @@ Environment Variables:
                 if msg_type_inner and msg_type_inner in hide_types:
                     return  # suppress
 
-                pretty_line_inner = self._format_msg_pretty(msg_type_inner, payload_inner, outer_type_inner)
+                pretty_line_inner = self._format_msg_pretty(
+                    msg_type_inner,
+                    payload_inner,
+                    outer_type_inner,
+                    item_id=item_id_inner,
+                )
                 if pretty_line_inner is not None:
                     print(pretty_line_inner, flush=True)
                 else:
