@@ -271,7 +271,7 @@ Environment Variables:
         Pretty format for specific msg types to be human readable while
         preserving a compact JSON header line that includes the msg.type.
 
-        - agent_message: render 'message' field as multi-line text
+        - agent_message/message/assistant: render message text as multi-line block
         - agent_reasoning: render 'text' field as multi-line text
         - exec_command_end: only output 'formatted_output' (suppress other fields)
         - token_count: fully suppressed (no final summary emission)
@@ -295,15 +295,6 @@ Environment Variables:
                 if payload.get("state") and not header.get("status"):
                     header["status"] = payload.get("state")
 
-            # agent_message → show 'message' human-readable
-            if msg_type == "agent_message":
-                content = payload.get("message", "") if isinstance(payload, dict) else ""
-                header = {"type": msg_type, "datetime": now}
-                if "\n" in content:
-                    return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content
-                header["message"] = content
-                return json.dumps(header, ensure_ascii=False)
-
             # agent_reasoning → show 'text' human-readable
             if msg_type in {"agent_reasoning", "reasoning"}:
                 content = self._extract_reasoning_text(payload)
@@ -315,7 +306,7 @@ Environment Variables:
                 header["text"] = content
                 return json.dumps(header, ensure_ascii=False)
 
-            if msg_type in {"message", "assistant_message", "assistant"}:
+            if msg_type in {"agent_message", "message", "assistant_message", "assistant"}:
                 content = self._extract_message_text(payload)
                 header = {"type": header_type or msg_type, "datetime": now}
                 if outer_type and msg_type and outer_type != msg_type:
