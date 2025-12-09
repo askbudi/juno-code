@@ -8,9 +8,10 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import os from 'node:os';
 import fsExtra from 'fs-extra';
 import type { Backend } from '../backend-manager.js';
-import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback } from '../../mcp/types.js';
+import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback, ToolExecutionMetadata } from '../../mcp/types.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';
 
 // =============================================================================
@@ -52,6 +53,8 @@ interface ScriptExecutionResult {
   error?: string;
   exitCode: number;
   duration: number;
+  subAgentResponse?: any;
+  metadata?: Record<string, any>;
 }
 
 /**
@@ -152,7 +155,7 @@ export class ShellBackend implements Backend {
       const scriptPath = await this.findScriptForSubagent(subagentType);
 
       // Execute the script
-      const result = await this.executeScript(scriptPath, request, toolId);
+      const result = await this.executeScript(scriptPath, request, toolId, subagentType);
 
       const duration = Date.now() - startTime;
 
@@ -173,14 +176,17 @@ export class ShellBackend implements Backend {
         }
       });
 
+      const structuredResult = this.buildStructuredOutput(subagentType, result);
+
       return {
-        content: result.output,
+        content: structuredResult.content,
         status: result.success ? 'completed' : 'failed',
         startTime: new Date(startTime),
         endTime: new Date(),
         duration,
         error: result.error ? { type: 'shell_execution', message: result.error, timestamp: new Date() } : undefined,
         progressEvents: [], // Progress events are handled via callbacks
+        ...(structuredResult.metadata ? { metadata: structuredResult.metadata } : undefined),
         request
       };
 
@@ -388,9 +394,10 @@ export class ShellBackend implements Backend {
   private async executeScript(
     scriptPath: string,
     request: ToolCallRequest,
-    toolId: string
+    toolId: string,
+    subagentType: string
   ): Promise<ScriptExecutionResult> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const startTime = Date.now();
       const isPython = scriptPath.endsWith('.py');
 
@@ -405,6 +412,21 @@ export class ShellBackend implements Backend {
         JUNO_ITERATION: String(request.arguments?.iteration || 1),
         JUNO_TOOL_ID: toolId
       };
+
+      // Capture file for structured subagent responses (claude.py support)
+      let captureDir: string | null = null;
+      let capturePath: string | null = null;
+      if (subagentType === 'claude') {
+        try {
+          captureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-'));
+          capturePath = path.join(captureDir, `subagent_${toolId}.json`);
+          env.JUNO_SUBAGENT_CAPTURE_PATH = capturePath;
+        } catch (error) {
+          if (this.config?.debug) {
+            engineLogger.warn(`Failed to prepare subagent capture path: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
 
       // Build command arguments for the script
       const command = isPython ? 'python3' : 'bash';
@@ -515,23 +537,50 @@ export class ShellBackend implements Backend {
 
       // Handle process completion
       child.on('close', (exitCode) => {
-        if (isProcessKilled) return; // Prevent double resolution
+        void (async () => {
+          if (isProcessKilled) return; // Prevent double resolution
 
-        const duration = Date.now() - startTime;
-        const success = exitCode === 0;
+          const duration = Date.now() - startTime;
+          const success = exitCode === 0;
 
-        if (this.config!.debug) {
-          engineLogger.debug(`Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`);
-          engineLogger.debug(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
-        }
+          let subAgentResponse: any;
+          if (capturePath) {
+            try {
+              const captured = await fs.readFile(capturePath, 'utf-8');
+              if (captured.trim()) {
+                subAgentResponse = JSON.parse(captured);
+              }
+            } catch (error) {
+              if (this.config?.debug) {
+                engineLogger.warn(`Failed to read subagent capture: ${error instanceof Error ? error.message : String(error)}`);
+              }
+            } finally {
+              if (captureDir) {
+                try {
+                  await fs.rm(captureDir, { recursive: true, force: true });
+                } catch (cleanupError) {
+                  if (this.config?.debug) {
+                    engineLogger.warn(`Failed to clean capture directory: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+                  }
+                }
+              }
+            }
+          }
 
-        resolve({
-          success,
-          output: stdout,
-          error: stderr || undefined,
-          exitCode: exitCode || 0,
-          duration
-        });
+          if (this.config!.debug) {
+            engineLogger.debug(`Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`);
+            engineLogger.debug(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
+          }
+
+          resolve({
+            success,
+            output: stdout,
+            error: stderr || undefined,
+            exitCode: exitCode || 0,
+            duration,
+            ...(subAgentResponse ? { subAgentResponse } : undefined)
+          });
+        })();
       });
 
       // Handle process errors
@@ -575,6 +624,51 @@ export class ShellBackend implements Backend {
         clearTimeout(timer);
       });
     });
+  }
+
+  /**
+   * Build a structured, JSON-parsable result payload for programmatic capture while
+   * preserving the shell backend's existing on-screen streaming behavior.
+   */
+  private buildStructuredOutput(
+    subagentType: string,
+    result: ScriptExecutionResult
+  ): { content: string; metadata?: ToolExecutionMetadata } {
+    if (subagentType === 'claude' && result.subAgentResponse) {
+      const claudeEvent = result.subAgentResponse;
+      const isError = claudeEvent?.is_error ?? !result.success;
+      const structuredPayload = {
+        type: 'result',
+        subtype: claudeEvent?.subtype || (isError ? 'error' : 'success'),
+        is_error: isError,
+        result: claudeEvent?.result ?? claudeEvent?.error ?? '',
+        datetime: claudeEvent?.datetime,
+        counter: claudeEvent?.counter,
+        session_id: claudeEvent?.session_id,
+        num_turns: claudeEvent?.num_turns,
+        duration_ms: claudeEvent?.duration_ms ?? result.duration,
+        total_cost_usd: claudeEvent?.total_cost_usd,
+        usage: claudeEvent?.usage,
+        modelUsage: claudeEvent?.modelUsage || claudeEvent?.model_usage || {},
+        permission_denials: claudeEvent?.permission_denials || [],
+        uuid: claudeEvent?.uuid,
+        sub_agent_response: claudeEvent
+      };
+
+      const metadata: ToolExecutionMetadata = {
+        subAgentResponse: claudeEvent,
+        structuredOutput: true,
+        contentType: 'application/json',
+        rawOutput: result.output
+      };
+
+      return {
+        content: JSON.stringify(structuredPayload),
+        metadata
+      };
+    }
+
+    return { content: result.output, metadata: result.metadata as ToolExecutionMetadata | undefined };
   }
 
   /**
