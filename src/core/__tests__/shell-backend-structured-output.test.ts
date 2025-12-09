@@ -44,8 +44,11 @@ lines = [
   "}",
   "export function Header() {",
   "  const enabled = true;",
+  "\\tconst tabValue = enabled;",
   "    const nested = enabled;",
   "  return nested;",
+  "\\t\\t",
+  "    ",
   "}",
 ]
 
@@ -144,7 +147,10 @@ describe('ShellBackend structured output', () => {
 
     expect(thinkingLines).toContain('  onToggleSideMenu?: () => void;');
     expect(thinkingLines).toContain('  sticky?: boolean;');
+    expect(thinkingLines).toContain('\tconst tabValue = enabled;');
     expect(thinkingLines).toContain('    const nested = enabled;');
     expect(thinkingLines).toContain('  return nested;');
+    expect(thinkingLines).toContain('\t\t');
+    expect(thinkingLines).toContain('    ');
   });
 });
