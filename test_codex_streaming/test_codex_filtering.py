@@ -117,6 +117,20 @@ def _build_nested_item_schema_stream():
     return "\\n".join(json.dumps(e) for e in events) + "\\n"
 
 
+def _build_agent_message_text_stream():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_agent_text",
+                "type": "agent_message",
+                "text": "Yes, a README exists in the repository root.",
+            },
+        },
+    ]
+    return "\\n".join(json.dumps(e) for e in events) + "\\n"
+
+
 def _load_codex_service():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
@@ -243,3 +257,25 @@ def test_codex_stream_handles_nested_item_fields_and_message_content():
     # Final assistant message content array should render as a message block
     assert "message:\nFinal line one\nFinal line two" in out
     assert '"item_type": "message"' in out
+
+
+def test_codex_agent_message_text_field_renders_message():
+    svc = _load_codex_service()
+
+    ndjson = _build_agent_message_text_stream()
+    cmd = [
+        "bash",
+        "-lc",
+        f"printf '%s' '{ndjson}'",
+    ]
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = svc.run_codex(cmd, verbose=False)
+
+    out = buf.getvalue()
+
+    assert code == 0
+    assert '"type": "item.completed"' in out
+    assert '"item_type": "agent_message"' in out
+    assert "Yes, a README exists in the repository root." in out
