@@ -706,7 +706,7 @@ export class ShellBackend implements Backend {
    * Strategy:
    * 1. Try to parse each line as JSON first (for Claude)
    * 2. If JSON parsing fails, treat as TEXT streaming (for Codex and other text-based subagents)
-   * 3. Emit all non-empty lines as progress events for real-time display
+   * 3. Emit all text lines (including whitespace-only) as progress events for real-time display
    */
   private parseAndEmitStreamingEvents(data: string, sessionId: string): void {
     // Handle partial lines by maintaining a buffer
@@ -723,8 +723,32 @@ export class ShellBackend implements Backend {
     // Process complete lines
     for (const line of lines) {
       const rawLine = line.endsWith('\r') ? line.slice(0, -1) : line;
+      if (!rawLine) continue;
+
+      const hasNonWhitespace = rawLine.trim().length > 0;
+
+      // Preserve whitespace-only lines (tabs/spaces) as-is for accurate pretty output rendering
+      if (!hasNonWhitespace) {
+        this.emitProgressEvent({
+          sessionId,
+          timestamp: new Date(),
+          backend: 'shell',
+          count: ++this.eventCounter,
+          type: 'thinking',
+          content: rawLine,
+          metadata: {
+            format: 'text',
+            raw: true
+          }
+        }).catch(error => {
+          if (this.config?.debug) {
+            engineLogger.warn(`Failed to emit whitespace-only streaming event: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        });
+        continue;
+      }
+
       const trimmedLine = rawLine.trim();
-      if (!trimmedLine) continue;
 
       // Try JSON parsing first (for Claude and other JSON-outputting subagents)
       let isJsonParsed = false;
