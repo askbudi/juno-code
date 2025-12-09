@@ -131,6 +131,27 @@ def _build_agent_message_text_stream():
     return "\\n".join(json.dumps(e) for e in events) + "\\n"
 
 
+def _build_item_schema_stream_without_ids():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "aggregated_output": "first output\nline two\n",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "reasoning",
+                "text": "Second block of reasoning text.",
+            },
+        },
+    ]
+    lines = [json.dumps(e) for e in events]
+    return "\\n".join(lines) + "\\n"
+
+
 def _load_codex_service():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
@@ -194,9 +215,11 @@ def test_codex_stream_handles_item_schema():
     # command_execution output (item.completed) pretty printed with aggregated_output block
     assert '"type": "item.completed"' in out
     assert '"item_type": "command_execution"' in out
+    assert '"id": "item_4"' in out
     assert "aggregated_output:\n---\nexample:\n  value: 1" in out
 
     # reasoning output (item.completed) pretty printed with text block
+    assert '"id": "item_20"' in out
     assert "text:\n**Identifying data-model as key resource**\n\nLine two." in out
 
     # item.started events are surfaced with header context
@@ -227,6 +250,9 @@ def test_codex_stream_handles_pretty_multiline_item_schema():
     assert "aggregated_output:\n__init__.py\n__pycache__\napi\ncore\nintegration\nmanual_test_magic_filter.py\nmodels\nparity\nservices\nstreamlit_logic\n" in out
     # Should pretty render reasoning text block (no raw escaped \\n sequences)
     assert "text:\n**Exploring database usage for backend scaffolding**\n\nI'm checking database session management in the backend core" in out
+    # Should include ids in pretty headers
+    assert '"id": "item_122"' in out
+    assert '"id": "item_99"' in out
     # Ensure raw pretty-printed JSON object lines are not passed through verbatim
     assert '\n  "aggregated_output":' not in out
 
@@ -257,6 +283,10 @@ def test_codex_stream_handles_nested_item_fields_and_message_content():
     # Final assistant message content array should render as a message block
     assert "message:\nFinal line one\nFinal line two" in out
     assert '"item_type": "message"' in out
+    # ids should remain visible in headers
+    assert '"id": "item_nested_out"' in out
+    assert '"id": "item_reason_nested"' in out
+    assert '"id": "item_message"' in out
 
 
 def test_codex_agent_message_text_field_renders_message():
@@ -279,3 +309,27 @@ def test_codex_agent_message_text_field_renders_message():
     assert '"type": "item.completed"' in out
     assert '"item_type": "agent_message"' in out
     assert "Yes, a README exists in the repository root." in out
+    assert '"id": "item_agent_text"' in out
+
+
+def test_codex_stream_synthesizes_missing_item_ids():
+    svc = _load_codex_service()
+
+    ndjson = _build_item_schema_stream_without_ids()
+    cmd = [
+        "bash",
+        "-lc",
+        f"printf '%s' '{ndjson}'",
+    ]
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = svc.run_codex(cmd, verbose=False)
+
+    out = buf.getvalue()
+
+    assert code == 0
+    # Synthesized ids should appear and increment
+    assert '"id": "item_0"' in out
+    assert '"id": "item_1"' in out
+    assert out.index("item_0") < out.index("item_1")
