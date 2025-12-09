@@ -54,6 +54,31 @@ def _build_item_schema_stream():
     return "\\n".join(lines) + "\\n"
 
 
+def _build_pretty_item_schema_stream():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_122",
+                "type": "command_execution",
+                "command": "/bin/zsh -lc 'ls backend/tests'",
+                "aggregated_output": "__init__.py\n__pycache__\napi\ncore\nintegration\nmanual_test_magic_filter.py\nmodels\nparity\nservices\nstreamlit_logic\n",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item_99",
+                "type": "reasoning",
+                "text": "**Exploring database usage for backend scaffolding**\n\nI'm checking database session management in the backend core and investigating how existing features like shop_summary interact with the database to guide implementing data fetch services for wrap data. This will inform scaffolding a service that reads from the existing database, potentially via Supabase.",
+            },
+        },
+    ]
+    return "\n".join(json.dumps(e, indent=2) for e in events) + "\n"
+
+
 def _load_codex_service():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
@@ -125,3 +150,30 @@ def test_codex_stream_handles_item_schema():
     # item.started events are surfaced with header context
     assert '"type": "item.started"' in out
     assert "kanban.sh help" in out
+
+
+def test_codex_stream_handles_pretty_multiline_item_schema():
+    svc = _load_codex_service()
+
+    pretty_stream = _build_pretty_item_schema_stream()
+    stream_literal = repr(pretty_stream)
+    cmd = [
+        "python",
+        "-c",
+        f"print({stream_literal}, end='')",
+    ]
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = svc.run_codex(cmd, verbose=False)
+
+    out = buf.getvalue()
+
+    assert code == 0
+
+    # Should pretty render aggregated_output from multi-line JSON objects
+    assert "aggregated_output:\n__init__.py\n__pycache__\napi\ncore\nintegration\nmanual_test_magic_filter.py\nmodels\nparity\nservices\nstreamlit_logic\n" in out
+    # Should pretty render reasoning text block (no raw escaped \\n sequences)
+    assert "text:\n**Exploring database usage for backend scaffolding**\n\nI'm checking database session management in the backend core" in out
+    # Ensure raw pretty-printed JSON object lines are not passed through verbatim
+    assert '\n  "aggregated_output":' not in out
