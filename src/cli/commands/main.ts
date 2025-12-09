@@ -380,7 +380,14 @@ class MainProgressDisplay {
     // NOTE: If we streamed JSON output via progress events (hasStreamedJsonOutput=true),
     // skip printing the accumulated toolResult.content to avoid duplication
     const lastIteration = result.iterations[result.iterations.length - 1];
-    if (lastIteration && lastIteration.toolResult.content && !this.hasStreamedJsonOutput) {
+    const structuredOutput = (lastIteration?.toolResult.metadata as any)?.structuredOutput === true;
+    const shouldPrintResult = Boolean(
+      lastIteration &&
+      lastIteration.toolResult.content &&
+      (!this.hasStreamedJsonOutput || structuredOutput)
+    );
+
+    if (shouldPrintResult) {
       console.error(chalk.blue('\n📄 Result:'));
       // Final result goes to STDOUT for variable capture
       console.log(lastIteration.toolResult.content);

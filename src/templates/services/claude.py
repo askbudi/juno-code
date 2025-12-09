@@ -51,6 +51,7 @@ class ClaudeService:
         self.verbose = False
         # User message truncation: -1 = no truncation, N = truncate to N lines
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
+        self.last_result_event: Optional[Dict[str, Any]] = None
 
     def expand_model_shorthand(self, model: str) -> str:
         """
@@ -529,6 +530,20 @@ Environment Variables:
             print(f"Executing: {' '.join(cmd)}", file=sys.stderr)
             print("-" * 80, file=sys.stderr)
 
+        capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+
+        def write_capture_file():
+            """Persist the final result event for programmatic capture without affecting screen output."""
+            if not capture_path or not self.last_result_event:
+                return
+            try:
+                Path(capture_path).write_text(
+                    json.dumps(self.last_result_event, ensure_ascii=False),
+                    encoding="utf-8"
+                )
+            except Exception as e:
+                print(f"Warning: Failed to write capture file: {e}", file=sys.stderr)
+
         try:
             # Change to project directory before running
             original_cwd = os.getcwd()
@@ -549,9 +564,19 @@ Environment Variables:
             # This allows users to pipe to jq and see output as it streams
             if process.stdout:
                 for line in process.stdout:
+                    raw_line = line.strip()
+                    # Capture the raw final result event for programmatic consumption
+                    try:
+                        parsed_raw = json.loads(raw_line)
+                        if isinstance(parsed_raw, dict) and parsed_raw.get("type") == "result":
+                            self.last_result_event = parsed_raw
+                    except json.JSONDecodeError:
+                        # Ignore non-JSON lines here; pretty formatter will handle them
+                        pass
+
                     # Apply pretty formatting if enabled
                     if pretty:
-                        formatted_line = self.pretty_format_json(line.strip())
+                        formatted_line = self.pretty_format_json(raw_line)
                         if formatted_line:
                             print(formatted_line, flush=True)
                     else:
@@ -567,6 +592,9 @@ Environment Variables:
                 if stderr_output:
                     print(stderr_output, file=sys.stderr)
 
+            # Persist the raw final result event for programmatic capture
+            write_capture_file()
+
             # Restore original working directory
             os.chdir(original_cwd)
 
@@ -577,12 +605,14 @@ Environment Variables:
             if process:
                 process.terminate()
                 process.wait()
+            write_capture_file()
             # Restore original working directory
             if 'original_cwd' in locals():
                 os.chdir(original_cwd)
             return 130
         except Exception as e:
             print(f"Error executing claude: {e}", file=sys.stderr)
+            write_capture_file()
             # Restore original working directory
             if 'original_cwd' in locals():
                 os.chdir(original_cwd)

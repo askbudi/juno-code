@@ -374,6 +374,18 @@ export interface ToolExecutionMetadata {
 
   /** Performance metrics */
   readonly performanceMetrics?: ToolPerformanceMetrics;
+
+  /** Raw subagent response payload (for programmatic capture / session resume) */
+  readonly subAgentResponse?: any;
+
+  /** Indicates the content string is structured (e.g., JSON) and safe to parse */
+  readonly structuredOutput?: boolean;
+
+  /** Content type for the tool output (e.g., application/json) */
+  readonly contentType?: string;
+
+  /** Original raw output emitted by the tool (pre-structuring) */
+  readonly rawOutput?: string;
 }
 
 /**
