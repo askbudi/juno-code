@@ -128,6 +128,77 @@ Environment Variables:
 
         return parser.parse_args()
 
+    def _first_nonempty_str(self, *values: Optional[str]) -> str:
+        """Return the first non-empty string value."""
+        for val in values:
+            if isinstance(val, str) and val != "":
+                return val
+        return ""
+
+    def _extract_content_text(self, payload: dict) -> str:
+        """Join text-like fields from content arrays (item.* schema)."""
+        content = payload.get("content") if isinstance(payload, dict) else None
+        parts: List[str] = []
+        if isinstance(content, list):
+            for entry in content:
+                if not isinstance(entry, dict):
+                    continue
+                text_val = (
+                    entry.get("text")
+                    or entry.get("message")
+                    or entry.get("output_text")
+                    or entry.get("input_text")
+                )
+                if isinstance(text_val, str) and text_val != "":
+                    parts.append(text_val)
+        return "\n".join(parts) if parts else ""
+
+    def _extract_command_output_text(self, payload: dict) -> str:
+        """Extract aggregated/command output from various item.* layouts."""
+        if not isinstance(payload, dict):
+            return ""
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else None
+        content_text = self._extract_content_text(payload)
+        return self._first_nonempty_str(
+            payload.get("aggregated_output"),
+            payload.get("output"),
+            payload.get("formatted_output"),
+            result.get("aggregated_output") if result else None,
+            result.get("output") if result else None,
+            result.get("formatted_output") if result else None,
+            content_text,
+        )
+
+    def _extract_reasoning_text(self, payload: dict) -> str:
+        """Extract reasoning text from legacy and item.* schemas."""
+        if not isinstance(payload, dict):
+            return ""
+        reasoning_obj = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else None
+        result_obj = payload.get("result") if isinstance(payload.get("result"), dict) else None
+        content_text = self._extract_content_text(payload)
+        return self._first_nonempty_str(
+            payload.get("text"),
+            payload.get("reasoning_text"),
+            reasoning_obj.get("text") if reasoning_obj else None,
+            result_obj.get("text") if result_obj else None,
+            content_text,
+        )
+
+    def _extract_message_text(self, payload: dict) -> str:
+        """Extract final/assistant message text from item.* schemas."""
+        if not isinstance(payload, dict):
+            return ""
+        result_obj = payload.get("result") if isinstance(payload.get("result"), dict) else None
+        content_text = self._extract_content_text(payload)
+        return self._first_nonempty_str(
+            payload.get("message"),
+            payload.get("text"),
+            payload.get("final"),
+            result_obj.get("message") if result_obj else None,
+            result_obj.get("text") if result_obj else None,
+            content_text,
+        )
+
     def read_prompt_file(self, file_path: str) -> str:
         """Read prompt from a file"""
         try:
@@ -235,7 +306,7 @@ Environment Variables:
 
             # agent_reasoning → show 'text' human-readable
             if msg_type in {"agent_reasoning", "reasoning"}:
-                content = payload.get("text", "") if isinstance(payload, dict) else ""
+                content = self._extract_reasoning_text(payload)
                 header = {"type": header_type or msg_type, "datetime": now}
                 if outer_type and msg_type and outer_type != msg_type:
                     header["item_type"] = msg_type
@@ -243,6 +314,19 @@ Environment Variables:
                     return json.dumps(header, ensure_ascii=False) + "\ntext:\n" + content
                 header["text"] = content
                 return json.dumps(header, ensure_ascii=False)
+
+            if msg_type in {"message", "assistant_message", "assistant"}:
+                content = self._extract_message_text(payload)
+                header = {"type": header_type or msg_type, "datetime": now}
+                if outer_type and msg_type and outer_type != msg_type:
+                    header["item_type"] = msg_type
+                if "\n" in content:
+                    return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content
+                if content != "":
+                    header["message"] = content
+                    return json.dumps(header, ensure_ascii=False)
+                if header_type:
+                    return json.dumps(header, ensure_ascii=False)
 
             # exec_command_end → only show 'formatted_output'
             if msg_type == "exec_command_end":
@@ -255,9 +339,7 @@ Environment Variables:
 
             # item.* schema → command_execution blocks
             if msg_type == "command_execution":
-                aggregated_output = ""
-                if isinstance(payload, dict):
-                    aggregated_output = payload.get("aggregated_output", "") or payload.get("output", "")
+                aggregated_output = self._extract_command_output_text(payload)
                 if "\n" in aggregated_output:
                     return json.dumps(header, ensure_ascii=False) + "\naggregated_output:\n" + aggregated_output
                 if aggregated_output:
