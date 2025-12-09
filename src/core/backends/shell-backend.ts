@@ -722,7 +722,8 @@ export class ShellBackend implements Backend {
 
     // Process complete lines
     for (const line of lines) {
-      const trimmedLine = line.trim();
+      const rawLine = line.endsWith('\r') ? line.slice(0, -1) : line;
+      const trimmedLine = rawLine.trim();
       if (!trimmedLine) continue;
 
       // Try JSON parsing first (for Claude and other JSON-outputting subagents)
@@ -736,7 +737,7 @@ export class ShellBackend implements Backend {
         if (this.isClaudeCliEvent(jsonEvent)) {
           // Handle Claude CLI specific format
           // Pass the original trimmedLine for raw JSON output mode
-          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, trimmedLine);
+          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, rawLine);
           isJsonParsed = true;
         } else if (this.isGenericStreamingEvent(jsonEvent)) {
           // Handle generic StreamingEvent format
@@ -780,7 +781,7 @@ export class ShellBackend implements Backend {
           backend: 'shell',
           count: ++this.eventCounter,
           type: 'thinking',
-          content: trimmedLine,
+          content: rawLine,
           metadata: {
             format: 'text',
             raw: true

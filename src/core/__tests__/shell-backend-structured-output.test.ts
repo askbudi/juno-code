@@ -27,6 +27,36 @@ print(json.dumps({"type": "result", "result": "done", "usage": {"input_tokens": 
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createStubTextService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-text-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'codex.py');
+  const scriptContent = `#!/usr/bin/env python3
+lines = [
+  "import Link from 'next/link';",
+  "export interface HeaderProps {",
+  "  onToggleSideMenu?: () => void;",
+  "  sticky?: boolean;",
+  "}",
+  "export function Header() {",
+  "  const enabled = true;",
+  "    const nested = enabled;",
+  "  return nested;",
+  "}",
+]
+
+for line in lines:
+  print(line)
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
 afterEach(async () => {
   await Promise.all(tempRoots.map(dir => fs.remove(dir)));
   tempRoots.length = 0;
@@ -74,5 +104,47 @@ describe('ShellBackend structured output', () => {
     const metadata = result.metadata as any;
     expect(metadata?.structuredOutput).toBe(true);
     expect(metadata?.rawOutput).toContain('"result": "done"');
+  });
+
+  it('preserves leading whitespace for text streaming outputs', async () => {
+    const { servicesDir, workingDir } = await createStubTextService();
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: workingDir,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const progressEvents: ProgressEvent[] = [];
+    const dispose = backend.onProgress(async (event) => {
+      progressEvents.push(event);
+    });
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        project_path: workingDir
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    await backend.execute(request);
+    dispose();
+
+    const thinkingLines = progressEvents
+      .filter(event => event.type === 'thinking')
+      .map(event => event.content);
+
+    expect(thinkingLines).toContain('  onToggleSideMenu?: () => void;');
+    expect(thinkingLines).toContain('  sticky?: boolean;');
+    expect(thinkingLines).toContain('    const nested = enabled;');
+    expect(thinkingLines).toContain('  return nested;');
   });
 });
