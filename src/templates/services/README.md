@@ -188,21 +188,25 @@ Headless wrapper for Gemini CLI with shorthand model support and JSON/text outpu
 
 - Headless execution via `--prompt/-p` or `--prompt-file`
 - Shorthand model aliases (`:pro`, `:flash`, `:pro-3`, `:flash-3`, `:pro-2.5`, `:flash-2.5`)
-- JSON output normalization for shell backend streaming
+- Streaming JSON output normalization (default `--output-format stream-json`)
 - Auto-approval for headless mode (defaults to `--yolo` when no approval mode is provided)
+- Fails fast when `GEMINI_API_KEY` is missing to prevent confusing CLI errors
 - Optional directory inclusion (`--include-directories`) and debug passthrough
 
 #### Usage
 
 ```bash
-# Basic headless run with shorthand model
-~/.juno_code/services/gemini.py -p "Summarize the README" -m :pro-3 --output-format json
+# Basic headless run with shorthand model (stream-json output is default)
+~/.juno_code/services/gemini.py -p "Summarize the README" -m :pro-3
 
 # Include project context and enable debug logging
 ~/.juno_code/services/gemini.py -p "Audit the project" --include-directories src,docs --debug
 
 # Auto-approve actions explicitly (default when no approval mode provided)
 ~/.juno_code/services/gemini.py -p "Refactor the code" --yolo
+
+# Emit non-streaming JSON if needed
+~/.juno_code/services/gemini.py -p "Quick JSON response" --output-format json
 ```
 
 #### Arguments
@@ -211,7 +215,7 @@ Headless wrapper for Gemini CLI with shorthand model support and JSON/text outpu
 - `-pp, --prompt-file <path>`: Path to prompt file (required if no --prompt)
 - `--cd <path>`: Project path (default: current directory)
 - `-m, --model <name>`: Gemini model (supports shorthand aliases)
-- `--output-format <json|text>`: Output format (default: json)
+- `--output-format <stream-json|json|text>`: Output format (default: stream-json)
 - `--include-directories <list>`: Comma-separated directories to include
 - `--approval-mode <mode>`: Approval mode (e.g., auto_edit). If omitted, `--yolo` is applied for headless automation.
 - `--yolo`: Auto-approve actions (non-interactive)
