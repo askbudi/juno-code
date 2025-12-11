@@ -59,4 +59,19 @@ describe('ServiceInstaller', () => {
 
     packageSpy.mockRestore();
   });
+
+  it('fails install when package services are missing required scripts', async () => {
+    const ServiceInstaller = await loadInstallerWithTempHome(tempHome);
+
+    const incompletePackageDir = path.join(tempHome, 'package-services-missing');
+    await fs.ensureDir(incompletePackageDir);
+    await fs.writeFile(path.join(incompletePackageDir, 'codex.py'), '# codex');
+    await fs.writeFile(path.join(incompletePackageDir, 'claude.py'), '# claude');
+
+    const packageSpy = vi.spyOn(ServiceInstaller as any, 'getPackageServicesDir').mockReturnValue(incompletePackageDir);
+
+    await expect(ServiceInstaller.install(true)).rejects.toThrow(/missing required service scripts/i);
+
+    packageSpy.mockRestore();
+  });
 });

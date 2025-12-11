@@ -11,8 +11,23 @@ import { createRequire } from 'node:module';
 import semver from 'semver';
 
 export class ServiceInstaller {
+  private static readonly REQUIRED_SCRIPTS = ['codex.py', 'claude.py', 'gemini.py'];
   private static readonly SERVICES_DIR = path.join(homedir(), '.juno_code', 'services');
   private static readonly VERSION_FILE = path.join(homedir(), '.juno_code', 'services', '.version');
+
+  private static missingScripts(baseDir: string): string[] {
+    return this.REQUIRED_SCRIPTS.filter(file => !fs.existsSync(path.join(baseDir, file)));
+  }
+
+  private static async missingScriptsAsync(baseDir: string): Promise<string[]> {
+    const results = await Promise.all(
+      this.REQUIRED_SCRIPTS.map(async file => ({
+        file,
+        exists: await fs.pathExists(path.join(baseDir, file)),
+      }))
+    );
+    return results.filter(result => !result.exists).map(result => result.file);
+  }
 
   /**
    * Get the current package version
@@ -96,55 +111,25 @@ export class ServiceInstaller {
       // This handles the case where npm install happened but service scripts
       // weren't properly installed (or user deleted them)
       if (semver.eq(packageVersion, installedVersion)) {
-        const installedCodex = path.join(this.SERVICES_DIR, 'codex.py');
-        const installedClaude = path.join(this.SERVICES_DIR, 'claude.py');
-        const installedGemini = path.join(this.SERVICES_DIR, 'gemini.py');
-
-        const codexExists = await fs.pathExists(installedCodex);
-        const claudeExists = await fs.pathExists(installedClaude);
-        const geminiExists = await fs.pathExists(installedGemini);
-
-        // If any service file is missing, force update
-        if (!codexExists || !claudeExists || !geminiExists) {
+        const missingInstalled = await this.missingScriptsAsync(this.SERVICES_DIR);
+        if (missingInstalled.length > 0) {
           return true;
         }
 
         // Compare contents with package versions; update if mismatch
         try {
           const packageServicesDir = this.getPackageServicesDir();
-          const packageCodex = path.join(packageServicesDir, 'codex.py');
-          const packageClaude = path.join(packageServicesDir, 'claude.py');
-          const packageGemini = path.join(packageServicesDir, 'gemini.py');
-
-          const packageCodexExists = await fs.pathExists(packageCodex);
-          const packageClaudeExists = await fs.pathExists(packageClaude);
-          const packageGeminiExists = await fs.pathExists(packageGemini);
-
-          // Only compare files that exist in package
-          if (packageCodexExists) {
-            const [pkg, inst] = await Promise.all([
-              fs.readFile(packageCodex, 'utf-8'),
-              fs.readFile(installedCodex, 'utf-8'),
-            ]);
-            if (pkg !== inst) {
-              return true;
-            }
+          const missingPackageScripts = this.missingScripts(packageServicesDir);
+          if (missingPackageScripts.length > 0) {
+            throw new Error(`Missing required service scripts: ${missingPackageScripts.join(', ')}`);
           }
 
-          if (packageClaudeExists) {
+          for (const script of this.REQUIRED_SCRIPTS) {
+            const packageScript = path.join(packageServicesDir, script);
+            const installedScript = path.join(this.SERVICES_DIR, script);
             const [pkg, inst] = await Promise.all([
-              fs.readFile(packageClaude, 'utf-8'),
-              fs.readFile(installedClaude, 'utf-8'),
-            ]);
-            if (pkg !== inst) {
-              return true;
-            }
-          }
-
-          if (packageGeminiExists) {
-            const [pkg, inst] = await Promise.all([
-              fs.readFile(packageGemini, 'utf-8'),
-              fs.readFile(installedGemini, 'utf-8'),
+              fs.readFile(packageScript, 'utf-8'),
+              fs.readFile(installedScript, 'utf-8'),
             ]);
             if (pkg !== inst) {
               return true;
@@ -176,19 +161,30 @@ export class ServiceInstaller {
     // This will work both in development and production
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-    // Try dist/templates/services first (production)
-    let servicesPath = path.join(__dirname, '..', '..', 'templates', 'services');
-    if (fs.existsSync(servicesPath)) {
-      return servicesPath;
+    const candidates = [
+      path.join(__dirname, '..', '..', 'templates', 'services'), // dist (production)
+      path.join(__dirname, '..', 'templates', 'services'), // src (development)
+    ];
+
+    for (const servicesPath of candidates) {
+      if (!fs.existsSync(servicesPath)) {
+        continue;
+      }
+
+      const missing = this.missingScripts(servicesPath);
+      if (missing.length === 0) {
+        return servicesPath;
+      }
+
+      if (process.env.JUNO_CODE_DEBUG === '1') {
+        console.error(`[DEBUG] Services path missing required scripts (${servicesPath}): ${missing.join(', ')}`);
+      }
     }
 
-    // Try src/templates/services (development)
-    servicesPath = path.join(__dirname, '..', 'templates', 'services');
-    if (fs.existsSync(servicesPath)) {
-      return servicesPath;
-    }
-
-    throw new Error('Could not find services directory in package');
+    throw new Error(
+      'Could not find services directory in package containing codex.py, claude.py, and gemini.py. ' +
+      'Try reinstalling juno-code or re-running npm run build to refresh service scripts.'
+    );
   }
 
   /**
@@ -208,6 +204,11 @@ export class ServiceInstaller {
         overwrite: true,
         preserveTimestamps: true,
       });
+
+      const missingAfterCopy = await this.missingScriptsAsync(this.SERVICES_DIR);
+      if (missingAfterCopy.length > 0) {
+        throw new Error(`Installed services missing required service scripts: ${missingAfterCopy.join(', ')}`);
+      }
 
       // Ensure scripts are executable
       const files = await fs.readdir(this.SERVICES_DIR);
