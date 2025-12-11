@@ -60,6 +60,31 @@ for line in lines:
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createStubGeminiService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-gemini-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'gemini.py');
+  const scriptContent = `#!/usr/bin/env python3
+import json
+import os
+import sys
+
+payload = {
+  "argv": sys.argv[1:],
+  "output_format_env": os.environ.get("GEMINI_OUTPUT_FORMAT")
+}
+
+print(json.dumps({"type": "result", "content": json.dumps(payload)}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
 afterEach(async () => {
   await Promise.all(tempRoots.map(dir => fs.remove(dir)));
   tempRoots.length = 0;
@@ -152,5 +177,52 @@ describe('ShellBackend structured output', () => {
     expect(thinkingLines).toContain('  return nested;');
     expect(thinkingLines).toContain('\t\t');
     expect(thinkingLines).toContain('    ');
+  });
+
+  it('forces stream-json output format when invoking gemini service scripts', async () => {
+    const originalOutputFormat = process.env.GEMINI_OUTPUT_FORMAT;
+    delete process.env.GEMINI_OUTPUT_FORMAT;
+
+    try {
+      const { servicesDir, workingDir } = await createStubGeminiService();
+
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: workingDir,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true
+      });
+      await backend.initialize();
+
+      const request: ToolCallRequest = {
+        toolName: 'gemini_subagent',
+        arguments: {
+          instruction: 'Show args',
+          model: 'gemini-2.5-pro',
+          project_path: workingDir
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1
+        }
+      };
+
+      const result = await backend.execute(request);
+      const firstLine = result.content.trim().split('\n')[0];
+      const parsed = JSON.parse(firstLine);
+      const payload = JSON.parse(parsed.content);
+
+      expect(payload.argv).toContain('--output-format');
+      expect(payload.argv).toContain('stream-json');
+      expect(payload.output_format_env).toBe('stream-json');
+    } finally {
+      if (originalOutputFormat !== undefined) {
+        process.env.GEMINI_OUTPUT_FORMAT = originalOutputFormat;
+      } else {
+        delete process.env.GEMINI_OUTPUT_FORMAT;
+      }
+    }
   });
 });
