@@ -98,12 +98,14 @@ export class ServiceInstaller {
       if (semver.eq(packageVersion, installedVersion)) {
         const installedCodex = path.join(this.SERVICES_DIR, 'codex.py');
         const installedClaude = path.join(this.SERVICES_DIR, 'claude.py');
+        const installedGemini = path.join(this.SERVICES_DIR, 'gemini.py');
 
         const codexExists = await fs.pathExists(installedCodex);
         const claudeExists = await fs.pathExists(installedClaude);
+        const geminiExists = await fs.pathExists(installedGemini);
 
-        // If either service file is missing, force update
-        if (!codexExists || !claudeExists) {
+        // If any service file is missing, force update
+        if (!codexExists || !claudeExists || !geminiExists) {
           return true;
         }
 
@@ -112,9 +114,11 @@ export class ServiceInstaller {
           const packageServicesDir = this.getPackageServicesDir();
           const packageCodex = path.join(packageServicesDir, 'codex.py');
           const packageClaude = path.join(packageServicesDir, 'claude.py');
+          const packageGemini = path.join(packageServicesDir, 'gemini.py');
 
           const packageCodexExists = await fs.pathExists(packageCodex);
           const packageClaudeExists = await fs.pathExists(packageClaude);
+          const packageGeminiExists = await fs.pathExists(packageGemini);
 
           // Only compare files that exist in package
           if (packageCodexExists) {
@@ -131,6 +135,16 @@ export class ServiceInstaller {
             const [pkg, inst] = await Promise.all([
               fs.readFile(packageClaude, 'utf-8'),
               fs.readFile(installedClaude, 'utf-8'),
+            ]);
+            if (pkg !== inst) {
+              return true;
+            }
+          }
+
+          if (packageGeminiExists) {
+            const [pkg, inst] = await Promise.all([
+              fs.readFile(packageGemini, 'utf-8'),
+              fs.readFile(installedGemini, 'utf-8'),
             ]);
             if (pkg !== inst) {
               return true;
