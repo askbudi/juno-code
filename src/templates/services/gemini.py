@@ -17,7 +17,8 @@ class GeminiService:
     """Service wrapper for Gemini CLI headless mode."""
 
     DEFAULT_MODEL = "gemini-2.5-pro"
-    DEFAULT_OUTPUT_FORMAT = "json"
+    DEFAULT_OUTPUT_FORMAT = "stream-json"
+    VALID_OUTPUT_FORMATS = ["stream-json", "json", "text"]
 
     # Common shorthand mappings (extendable as models evolve)
     MODEL_SHORTHANDS = {
@@ -59,6 +60,19 @@ class GeminiService:
         except Exception:
             return False
 
+    def ensure_api_key_present(self) -> bool:
+        """Validate that GEMINI_API_KEY is set for headless execution."""
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if isinstance(api_key, str) and api_key.strip():
+            return True
+
+        print(
+            "Error: GEMINI_API_KEY is not set. Export GEMINI_API_KEY before running gemini headless CLI.",
+            file=sys.stderr,
+        )
+        print("Example: export GEMINI_API_KEY=\"your-api-key\"", file=sys.stderr)
+        return False
+
     def parse_arguments(self) -> argparse.Namespace:
         """Parse command line arguments for the Gemini service."""
         parser = argparse.ArgumentParser(
@@ -66,7 +80,7 @@ class GeminiService:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  %(prog)s -p "Quick summary of README" --output-format json
+  %(prog)s -p "Quick summary of README" --output-format stream-json
   %(prog)s -pp prompt.txt --model :pro-3 --yolo
   %(prog)s -p "Refactor module" --include-directories src,docs
   %(prog)s -p "Audit code" --approval-mode auto_edit --debug
@@ -98,9 +112,9 @@ Examples:
         parser.add_argument(
             "--output-format",
             type=str,
-            choices=["json", "text"],
+            choices=self.VALID_OUTPUT_FORMATS,
             default=os.environ.get("GEMINI_OUTPUT_FORMAT", self.DEFAULT_OUTPUT_FORMAT),
-            help="Gemini output format (json/text). Default: json (env: GEMINI_OUTPUT_FORMAT)",
+            help="Gemini output format (stream-json/json/text). Default: stream-json (env: GEMINI_OUTPUT_FORMAT)",
         )
 
         parser.add_argument(
@@ -177,37 +191,59 @@ Examples:
         Ensures a `type` and `content` field exist so shell-backend can stream progress events.
         """
         try:
-            msg_type = (payload.get("type") or payload.get("event") or "message").strip()
+            raw_type = payload.get("type") or payload.get("event") or "message"
+            msg_type = str(raw_type).strip() or "message"
             now = datetime.now().strftime("%I:%M:%S %p")
 
             content = self._extract_content_text(payload)
             # If still empty, serialize result/output objects as JSON to keep content non-undefined
-            if content == "":
-                if isinstance(payload.get("result"), (dict, list)):
-                    content = json.dumps(payload.get("result"), ensure_ascii=False)
-                elif isinstance(payload.get("stats"), (dict, list)):
-                    content = json.dumps(payload.get("stats"), ensure_ascii=False)
-                elif payload.get("result"):
-                    content = str(payload.get("result"))
-
             header = {
-                "type": msg_type or "message",
+                "type": msg_type,
                 "datetime": now,
-                "content": content if content is not None else "",
-                "metadata": {
-                    "raw": payload,
-                    "role": payload.get("role"),
-                    "status": payload.get("status"),
-                    "tool": payload.get("tool_name") or payload.get("tool_id"),
-                },
             }
 
-            if msg_type in {"tool_use", "tool_result"}:
-                header["metadata"]["tool_use"] = payload.get("parameters") or payload.get("tool_use")
-                header["metadata"]["output"] = payload.get("output")
+            def copy_if_present(key: str, dest: Optional[str] = None):
+                val = payload.get(key)
+                if val not in (None, ""):
+                    header[dest or key] = val
+
+            copy_if_present("role")
+            copy_if_present("status")
+            copy_if_present("tool_name", "tool")
+            copy_if_present("tool_id", "tool_id")
+            copy_if_present("timestamp")
+            copy_if_present("session_id")
+            copy_if_present("model")
+            if payload.get("delta"):
+                header["delta"] = True
+
+            if msg_type == "tool_use" and not content:
+                tool_params = payload.get("parameters") or payload.get("tool_use") or payload.get("input")
+                if isinstance(tool_params, (dict, list)):
+                    header["parameters"] = tool_params
+                    content = json.dumps(tool_params, ensure_ascii=False)
+                elif tool_params:
+                    content = str(tool_params)
+
+            if msg_type == "tool_result" and not content:
+                tool_output = self._first_nonempty_str(payload.get("output"), payload.get("result"))
+                if tool_output:
+                    content = tool_output
+
+            if msg_type == "init" and not content:
+                init_summary = {k: payload.get(k) for k in ["session_id", "model"] if payload.get(k)}
+                if init_summary:
+                    content = json.dumps(init_summary, ensure_ascii=False)
+
+            if msg_type == "result" and not content:
+                if isinstance(payload.get("stats"), (dict, list)):
+                    content = json.dumps(payload.get("stats"), ensure_ascii=False)
 
             if content and "\n" in content:
-                return json.dumps({k: v for k, v in header.items() if k != "content"}, ensure_ascii=False) + "\ncontent:\n" + content
+                return json.dumps(header, ensure_ascii=False) + "\ncontent:\n" + content
+
+            if content != "":
+                header["content"] = content if content is not None else ""
 
             return json.dumps(header, ensure_ascii=False)
         except Exception:
@@ -401,6 +437,9 @@ Examples:
             print("Error: Gemini CLI is not available. Please install it: https://geminicli.com/docs/get-started/installation/", file=sys.stderr)
             return 1
 
+        if not self.ensure_api_key_present():
+            return 1
+
         self.project_path = os.path.abspath(args.cd)
         if not os.path.isdir(self.project_path):
             print(f"Error: Project path does not exist: {self.project_path}", file=sys.stderr)
@@ -408,6 +447,9 @@ Examples:
 
         self.model_name = self.expand_model_shorthand(args.model)
         self.output_format = args.output_format or self.DEFAULT_OUTPUT_FORMAT
+        if self.output_format not in self.VALID_OUTPUT_FORMATS:
+            print(f"Warning: Unsupported output format '{self.output_format}'. Falling back to {self.DEFAULT_OUTPUT_FORMAT}.", file=sys.stderr)
+            self.output_format = self.DEFAULT_OUTPUT_FORMAT
         self.debug = args.debug
         self.verbose = args.verbose
         self.approval_mode = args.approval_mode
