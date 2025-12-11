@@ -400,6 +400,7 @@ export class ShellBackend implements Backend {
     return new Promise(async (resolve, reject) => {
       const startTime = Date.now();
       const isPython = scriptPath.endsWith('.py');
+      const isGemini = subagentType === 'gemini';
 
       // Prepare environment variables
       const env = {
@@ -412,6 +413,10 @@ export class ShellBackend implements Backend {
         JUNO_ITERATION: String(request.arguments?.iteration || 1),
         JUNO_TOOL_ID: toolId
       };
+
+      if (isGemini) {
+        env.GEMINI_OUTPUT_FORMAT = env.GEMINI_OUTPUT_FORMAT || 'stream-json';
+      }
 
       // Capture file for structured subagent responses (claude.py support)
       let captureDir: string | null = null;
@@ -440,6 +445,11 @@ export class ShellBackend implements Backend {
       // For Python scripts, add the model as -m argument if provided
       if (isPython && request.arguments?.model) {
         args.push('-m', request.arguments.model);
+      }
+
+      // For Gemini, force stream-json output format by default to preserve headless parity
+      if (isPython && isGemini) {
+        args.push('--output-format', env.GEMINI_OUTPUT_FORMAT || 'stream-json');
       }
 
       // For Python scripts, add the agents configuration if provided
