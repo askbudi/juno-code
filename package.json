@@ -37,7 +37,7 @@
     "dev": "tsx src/bin/cli.ts",
     "build": "tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-wrapper",
     "build:copy-templates": "node -e \"require('fs-extra').copySync('src/templates/scripts', 'dist/templates/scripts', { recursive: true })\"",
-    "build:copy-services": "node -e \"const fs = require('fs-extra'); fs.copySync('src/templates/services', 'dist/templates/services', { recursive: true }); fs.chmodSync('dist/templates/services/codex.py', 0o755); fs.chmodSync('dist/templates/services/claude.py', 0o755);\"",
+    "build:copy-services": "node -e \"const fs = require('fs-extra'); fs.copySync('src/templates/services', 'dist/templates/services', { recursive: true }); fs.chmodSync('dist/templates/services/codex.py', 0o755); fs.chmodSync('dist/templates/services/claude.py', 0o755); fs.chmodSync('dist/templates/services/gemini.py', 0o755);\"",
     "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755);\"",
     "build:watch": "tsup --watch",
     "test": "vitest",

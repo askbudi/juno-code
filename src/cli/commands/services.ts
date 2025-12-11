@@ -13,7 +13,7 @@ export function createServicesCommand(): Command {
     .addHelpText('after', `
 Examples:
   $ juno-code services install            Install service scripts to ~/.juno_code/services/
-  $ juno-code services install --force    Reinstall/refresh service scripts (codex.py/claude.py)
+  $ juno-code services install --force    Reinstall/refresh service scripts (codex.py/claude.py/gemini.py)
   $ juno-code services list               List installed service scripts
   $ juno-code services status             Check installation status
   $ juno-code services uninstall          Remove all service scripts
