@@ -2,13 +2,13 @@
 
 ## 📊 EXECUTIVE SUMMARY
 
-**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES** (Last updated: 2025-11-30)
+**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES** (Last updated: 2025-12-12)
 - **Active Open Issues**: 0 - All issues resolved
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters
+- **Latest Achievement**: Issue #53 RESOLVED (2025-12-12) - run_until_completion.sh script with auto-install (1024 tests passing)
+- **Previous Achievement**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters
 - **Previous Achievement**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support
-- **Previous Achievements**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
 - **Previous Achievements**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
 - **Previous Achievements**: Issue #27 Claude Shell Backend Model Selection Support FULLY RESOLVED (2025-11-17)
@@ -24,11 +24,11 @@
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
 **Last Updated**: 2025-11-29
 
-**✅ 0 OPEN ISSUES** (2025-11-30)
+**✅ 0 OPEN ISSUES** (2025-12-12)
 - **ALL ISSUES RESOLVED**: Project is in fully functional state
-- **LATEST RESOLUTION**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters per Claude CLI spec
+- **LATEST RESOLUTION**: Issue #53 RESOLVED (2025-12-12) - run_until_completion.sh script with auto-install via ScriptInstaller
+- **PREVIOUS RESOLUTION**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters per Claude CLI spec
 - **PREVIOUS RESOLUTION**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support (camelCase naming)
-- **PREVIOUS RESOLUTION**: Issues #33, #34 RESOLVED (2025-11-28) - Full tool argument passthrough and default model fix
 - **PREVIOUS RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
 - **PREVIOUS RESOLUTIONS**: Issues #28, #29, #30, #31 RESOLVED (2025-11-25)
   - Issue #31: :opus shorthand now maps to claude-opus-4-5-20251101 (latest Opus 4.5)
@@ -54,6 +54,31 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-12-12:**
+1. **Add run_until_completion.sh Script with Auto-Install (Issue #53)** ✅ RESOLVED:
+   - ✅ Date Reported: 2025-12-12
+   - ✅ Date Resolved: 2025-12-12
+   - ✅ Root Cause: Users needed a script to repeatedly run juno-code until task completion, similar to codex run-until-complete
+   - ✅ Problem:
+     1. No built-in way to loop until completion_status='COMPLETED'
+     2. Manual retry loops required for complex tasks
+     3. Codex has this feature but juno-code lacked it
+   - ✅ Final Solution:
+     1. Created run_until_completion.sh in src/templates/scripts/
+     2. Created ScriptInstaller utility in src/utils/script-installer.ts
+     3. Added auto-install to CLI startup (cli.ts)
+     4. Added comprehensive tests for ScriptInstaller
+     5. Updated build:copy-templates to make .sh files executable
+   - ✅ Test Results: 1024 tests passing, all script installation tests pass
+   - ✅ Files Modified:
+     * src/templates/scripts/run_until_completion.sh (new)
+     * src/utils/script-installer.ts (new)
+     * src/utils/__tests__/script-installer.test.ts (new)
+     * src/bin/cli.ts (auto-install integration)
+     * package.json (build process)
+   - ✅ User Impact: Script auto-installed to ~/.juno_code/scripts/ on first run, enables looping until task completion
+   - ✅ Status: RESOLVED
 
 **Recently Resolved on 2025-11-30:**
 1. **--tools and --allowedTools Are Two Different Parameters (Issue #37)** ✅ RESOLVED:

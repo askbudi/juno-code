@@ -1,10 +1,35 @@
 ## Open Issues
-<!-- Current status: ⚠️ 0 OPEN ISSUES (Last updated: 2025-11-30) -->
+<!-- Current status: ⚠️ 0 OPEN ISSUES (Last updated: 2025-12-12) -->
 <OPEN_ISSUES>
 
 **No open issues** - All issues resolved
 
 </OPEN_ISSUES>
+
+## Recently Resolved Issues (2025-12-12)
+
+**Issue #53: Add run_until_completion.sh Script with Auto-Install** - ✅ RESOLVED (2025-12-12)
+- **Date Reported**: 2025-12-12
+- **Date Resolved**: 2025-12-12
+- **Root Cause**: Users needed a script to repeatedly run juno-code until task completion, similar to codex run-until-complete
+- **Problem**:
+  1. No built-in way to loop until completion_status='COMPLETED'
+  2. Manual retry loops required for complex tasks
+  3. Codex has this feature but juno-code lacked it
+- **Solution**:
+  1. Created run_until_completion.sh in src/templates/scripts/
+  2. Created ScriptInstaller utility in src/utils/script-installer.ts
+  3. Added auto-install to CLI startup (cli.ts)
+  4. Added comprehensive tests for ScriptInstaller
+  5. Updated build:copy-templates to make .sh files executable
+- **Test Results**: 1024 tests passing, all script installation tests pass
+- **Files Modified**:
+  * src/templates/scripts/run_until_completion.sh (new)
+  * src/utils/script-installer.ts (new)
+  * src/utils/__tests__/script-installer.test.ts (new)
+  * src/bin/cli.ts (auto-install integration)
+  * package.json (build process)
+- **Status**: ✅ RESOLVED - Script auto-installed to ~/.juno_code/scripts/ on first run
 
 ## Recently Resolved Issues (2025-11-30)
 

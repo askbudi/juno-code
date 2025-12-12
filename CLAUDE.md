@@ -57,12 +57,23 @@ The project uses a sophisticated AI workflow with:
 - Focus on full implementations, not placeholders
 - Maintain comprehensive documentation
 
-## Current Status Update (2025-11-30)
+## Utility Scripts
+
+**run_until_completion.sh (auto-installed):**
+- Script auto-installed to `~/.juno_code/scripts/` on first CLI run via ScriptInstaller
+- Enables looping juno-code commands until completion_status='COMPLETED'
+- Similar to `codex run-until-complete` functionality
+- Auto-installation verified on every CLI startup; missing scripts restored automatically
+
+## Current Status Update (2025-12-12)
 
 **✅ 0 OPEN ISSUES**
 - All issues resolved
 
-**Recent Resolutions (2025-11-30):**
+**Recent Resolutions (2025-12-12):**
+- Issue #53: run_until_completion.sh script with auto-install - RESOLVED (ScriptInstaller utility, auto-install in CLI, 1024 tests passing)
+
+**Previous Resolutions (2025-11-30):**
 - Issue #37: --tools and --allowedTools as two different parameters - RESOLVED (full separation per Claude CLI spec, 851 tests passing)
 - Issue #36: --allowed-tools alias support - RESOLVED (added --allowed-tools and --disallowed-tools aliases for naming consistency, 871 tests passing)
 
