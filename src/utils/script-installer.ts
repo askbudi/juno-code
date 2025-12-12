@@ -15,7 +15,15 @@ export class ScriptInstaller {
    * Scripts that should be auto-installed if missing
    * These are critical scripts that users expect to be available
    */
-  private static readonly REQUIRED_SCRIPTS = ['run_until_completion.sh', 'kanban.sh'];
+  /**
+   * Required scripts include both standalone scripts and their dependencies.
+   * kanban.sh depends on install_requirements.sh for Python venv setup.
+   */
+  private static readonly REQUIRED_SCRIPTS = [
+    'run_until_completion.sh',
+    'kanban.sh',
+    'install_requirements.sh', // Required by kanban.sh for Python venv creation
+  ];
 
   /**
    * Get the templates scripts directory from the package
