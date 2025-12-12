@@ -15,7 +15,7 @@ export class ScriptInstaller {
    * Scripts that should be auto-installed if missing
    * These are critical scripts that users expect to be available
    */
-  private static readonly REQUIRED_SCRIPTS = ['run_until_completion.sh'];
+  private static readonly REQUIRED_SCRIPTS = ['run_until_completion.sh', 'kanban.sh'];
 
   /**
    * Get the templates scripts directory from the package
