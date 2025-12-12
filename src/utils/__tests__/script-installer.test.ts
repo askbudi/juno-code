@@ -51,12 +51,15 @@ describe('ScriptInstaller', () => {
     it('should return all required scripts when .juno_task does not exist', async () => {
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toContain('run_until_completion.sh');
+      expect(missing).toContain('kanban.sh');
     });
 
     it('should return empty array when all required scripts exist', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
+      // Create all required scripts: run_until_completion.sh and kanban.sh
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
+      await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -115,6 +118,7 @@ describe('ScriptInstaller', () => {
 
       expect(list).toEqual([
         { name: 'run_until_completion.sh', installed: false },
+        { name: 'kanban.sh', installed: false },
       ]);
     });
 
@@ -122,11 +126,13 @@ describe('ScriptInstaller', () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
+      await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
       expect(list).toEqual([
         { name: 'run_until_completion.sh', installed: true },
+        { name: 'kanban.sh', installed: true },
       ]);
     });
   });
