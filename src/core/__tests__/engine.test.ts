@@ -172,7 +172,21 @@ describe.skip('ExecutionEngine', () => {
         maxIterations: 0
       };
 
-      expect(() => engine['validateRequest'](request)).toThrow('Max iterations must be positive or -1 for unlimited');
+      expect(() => engine['validateRequest'](request)).toThrow('Max iterations must be a positive number or -1 for unlimited');
+    });
+
+    it('should reject request with NaN iterations (Issue #57 fix)', () => {
+      // Issue #57: user passing "-i i" instead of "-i 1" results in parseInt("i") = NaN
+      // This should be rejected with a clear error message
+      const request: ExecutionRequest = {
+        requestId: 'test-request-123',
+        instruction: 'Test instruction',
+        subagent: 'claude',
+        workingDirectory: process.cwd(),
+        maxIterations: NaN
+      };
+
+      expect(() => engine['validateRequest'](request)).toThrow('Max iterations must be a positive number or -1 for unlimited');
     });
   });
 
