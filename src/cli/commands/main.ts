@@ -603,14 +603,24 @@ export async function mainCommandHandler(
       process.exit(1);
     }
 
+    // Validate maxIterations - check for NaN (e.g., from parseInt('invalid'))
+    // This must happen BEFORE the fallback logic, otherwise NaN || default = default (silent failure)
+    if (options.maxIterations !== undefined && Number.isNaN(options.maxIterations)) {
+      throw new ValidationError(
+        'Max iterations must be a valid number',
+        ['Use -1 for unlimited iterations', 'Use positive integers like 1, 5, or 10', 'Example: -i 5']
+      );
+    }
+
     // Create execution request
     // Pass both --tools and --allowed-tools as separate parameters
+    // Use nullish coalescing (??) instead of || to properly handle 0 or NaN values
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: options.subagent,
       backend: selectedBackend,
       workingDirectory: config.workingDirectory,
-      maxIterations: options.maxIterations || config.defaultMaxIterations,
+      maxIterations: options.maxIterations ?? config.defaultMaxIterations,
       model: options.model || config.defaultModel,
       agents: options.agents,
       tools: options.tools,

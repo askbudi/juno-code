@@ -2,11 +2,11 @@
 
 ## 📊 EXECUTIVE SUMMARY
 
-**🎯 CURRENT STATUS** ✅ **0 OPEN ISSUES** (Last updated: 2025-12-12)
-- **Active Open Issues**: 0 - All issues resolved
+**🎯 CURRENT STATUS** ⚠️ **1 OPEN ISSUE** (Last updated: 2025-12-13)
+- **Active Open Issues**: 1 - Issue #56 (run_until_completion.sh task check - Cannot Reproduce)
 - **Core Functionality**: All CLI features working and validated with 99.9% test pass rate
 - **Security Status**: Complete process isolation achieved
-- **Latest Achievement**: Issue #53 RESOLVED (2025-12-12) - run_until_completion.sh script with auto-install (1024 tests passing)
+- **Latest Achievement**: Issue #58 RESOLVED (2025-12-13) - run_until_completion.sh -i flag NaN validation fix (1024 tests passing)
 - **Previous Achievement**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters
 - **Previous Achievement**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support
 - **Previous Achievements**: Issues #24, #32 RESOLVED (2025-11-27)
@@ -24,9 +24,9 @@
 **Documentation Integrity**: USER_FEEDBACK.md is the single source of truth
 **Last Updated**: 2025-11-29
 
-**✅ 0 OPEN ISSUES** (2025-12-12)
-- **ALL ISSUES RESOLVED**: Project is in fully functional state
-- **LATEST RESOLUTION**: Issue #53 RESOLVED (2025-12-12) - run_until_completion.sh script with auto-install via ScriptInstaller
+**⚠️ 1 OPEN ISSUE** (2025-12-13)
+- **CURRENT OPEN ISSUE**: Issue #56 - run_until_completion.sh task check - CANNOT REPRODUCE (awaiting user clarification)
+- **LATEST RESOLUTION**: Issue #58 RESOLVED (2025-12-13) - run_until_completion.sh -i flag NaN validation fix (completed partial fix from Issue #57)
 - **PREVIOUS RESOLUTION**: Issue #37 RESOLVED (2025-11-30) - Fixed --tools and --allowedTools as two different parameters per Claude CLI spec
 - **PREVIOUS RESOLUTION**: Issue #36 RESOLVED (2025-11-29) - Added --allowed-tools alias support (camelCase naming)
 - **PREVIOUS RESOLUTIONS**: Issues #24, #32 RESOLVED (2025-11-27)
@@ -54,6 +54,28 @@
 - All core functionality working: CLI features validated with 99.9% test pass rate
 - Build successful, all systems operational
 
+
+**Recently Resolved on 2025-12-13:**
+1. **run_until_completion.sh -i Flag NaN Silently Falling Back to Default (Issue #58)** ✅ RESOLVED:
+   - ✅ Date Reported: 2025-12-13
+   - ✅ Date Resolved: 2025-12-13
+   - ✅ Root Cause: `main.ts` used `||` operator which converted NaN to default 50, bypassing validation in framework.ts and engine.ts
+   - ✅ Problem:
+     1. User passed `-i i` (typo) which parsed as NaN
+     2. Validation in framework.ts/engine.ts rejected NaN correctly
+     3. BUT main.ts line used `|| 50` which converted NaN to 50, silently bypassing validation
+     4. No error message shown to user about invalid value
+   - ✅ Final Solution:
+     1. Added NaN validation BEFORE fallback in main.ts (line ~637-641)
+     2. Changed `||` to `??` (nullish coalescing) to preserve NaN
+     3. Throw clear error: "Invalid value for --max-iterations: must be a valid number"
+     4. Validation now catches NaN before it reaches engine
+   - ✅ Test Results: 1024 tests passing, NaN validation working correctly
+   - ✅ Files Modified:
+     * src/cli/commands/main.ts (added NaN validation before fallback)
+   - ✅ User Impact: Clear error message when invalid -i value provided, no silent fallback
+   - ✅ Status: RESOLVED - Completes partial fix from Issue #57
+   - ✅ Note: Issue #57 added validation to framework.ts/engine.ts but main.ts bypassed it with `||` operator
 
 **Recently Resolved on 2025-12-12:**
 1. **Add run_until_completion.sh Script with Auto-Install (Issue #53)** ✅ RESOLVED:
