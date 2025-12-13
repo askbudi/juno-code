@@ -4,9 +4,11 @@
 #
 # Purpose: Continuously run juno-code until all kanban tasks are completed
 #
-# This script runs in a while loop, checking the kanban board for tasks
-# in backlog, todo, or in_progress status. If tasks exist, it runs juno-code
-# with the provided arguments. The loop continues until no tasks remain.
+# This script uses a do-while loop pattern: it runs juno-code at least once,
+# then checks the kanban board for tasks in backlog, todo, or in_progress status.
+# If tasks remain, it continues running juno-code. This ensures juno-code's
+# internal task management systems get a chance to operate even if kanban.sh
+# doesn't initially detect any tasks.
 #
 # Usage: ./.juno_task/scripts/run_until_completion.sh [juno-code arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
@@ -143,7 +145,9 @@ main() {
         log_warning "No arguments provided. Running juno-code with no arguments."
     fi
 
-    # Main loop
+    # Do-while loop pattern: Run juno-code at least once, then continue while tasks remain
+    # This ensures juno-code's internal task management systems get a chance to operate
+    # even if kanban.sh doesn't initially detect any tasks
     while true; do
         iteration=$((iteration + 1))
 
@@ -152,16 +156,7 @@ main() {
         log_status "Iteration $iteration"
         log_status "=========================================="
 
-        # Check for remaining tasks
-        if ! has_remaining_tasks; then
-            log_success ""
-            log_success "=========================================="
-            log_success "All tasks completed! Exiting after $iteration iteration(s)."
-            log_success "=========================================="
-            exit 0
-        fi
-
-        # Check max iterations limit
+        # Check max iterations limit BEFORE running (prevents exceeding limit)
         if [ "$max_iterations" -gt 0 ] && [ "$iteration" -gt "$max_iterations" ]; then
             log_warning ""
             log_warning "=========================================="
@@ -174,8 +169,7 @@ main() {
         log_status "------------------------------------------"
 
         # Run juno-code with all provided arguments
-        # We use exec to replace this process, but only if we're not in a loop
-        # Instead, we run it directly and capture its exit code
+        # We run juno-code FIRST (do-while pattern), then check for remaining tasks
         if juno-code "$@"; then
             log_success "juno-code completed successfully"
         else
@@ -190,6 +184,17 @@ main() {
 
         # Small delay to prevent rapid-fire execution and allow user to Ctrl+C if needed
         sleep 1
+
+        # Check for remaining tasks AFTER running juno-code (do-while pattern)
+        # This ensures juno-code runs at least once, allowing its internal task
+        # management systems to check kanban for updates
+        if ! has_remaining_tasks; then
+            log_success ""
+            log_success "=========================================="
+            log_success "All tasks completed! Exiting after $iteration iteration(s)."
+            log_success "=========================================="
+            exit 0
+        fi
     done
 }
 
