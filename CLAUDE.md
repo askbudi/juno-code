@@ -65,13 +65,17 @@ The project uses a sophisticated AI workflow with:
 - Similar to `codex run-until-complete` functionality
 - Auto-installation verified on every CLI startup; missing scripts restored automatically
 
-## Current Status Update (2025-12-12)
+## Current Status Update (2025-12-13)
 
-**✅ 0 OPEN ISSUES**
-- All issues resolved
+**⚠️ 1 OPEN ISSUE**
+- Issue #56: run_until_completion.sh task check - CANNOT REPRODUCE (awaiting user clarification)
 
-**Recent Resolutions (2025-12-12):**
+**Recent Resolutions (2025-12-13):**
+- Issue #58: run_until_completion.sh -i flag NaN validation fix - RESOLVED (added NaN validation in main.ts before fallback, changed `||` to `??`, completes partial fix from Issue #57, 1024 tests passing)
+
+**Previous Resolutions (2025-12-12):**
 - Issue #53: run_until_completion.sh script with auto-install - RESOLVED (ScriptInstaller utility, auto-install in CLI, 1024 tests passing)
+- Issue #57: run_until_completion.sh -i flag NaN validation - PARTIAL FIX (added validation to framework.ts/engine.ts but main.ts bypassed it with `||` operator; completed by Issue #58)
 
 **Previous Resolutions (2025-11-30):**
 - Issue #37: --tools and --allowedTools as two different parameters - RESOLVED (full separation per Claude CLI spec, 851 tests passing)
