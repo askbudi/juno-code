@@ -703,8 +703,8 @@ export class ExecutionEngine extends EventEmitter {
       throw new Error('Working directory is required');
     }
 
-    if (request.maxIterations < -1 || request.maxIterations === 0) {
-      throw new Error('Max iterations must be positive or -1 for unlimited');
+    if (Number.isNaN(request.maxIterations) || request.maxIterations < -1 || request.maxIterations === 0) {
+      throw new Error('Max iterations must be a positive number or -1 for unlimited');
     }
   }
 

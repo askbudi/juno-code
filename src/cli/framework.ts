@@ -387,6 +387,13 @@ export class CLIFramework {
 
     // Validate max iterations
     if (options.maxIterations !== undefined) {
+      // Check for NaN (e.g., from parseInt('invalid'))
+      if (Number.isNaN(options.maxIterations)) {
+        throw new ValidationError(
+          'Max iterations must be a valid number',
+          ['Use -1 for unlimited iterations', 'Use positive integers like 1, 5, or 10', 'Example: -i 5']
+        );
+      }
       if (options.maxIterations !== -1 && options.maxIterations < 1) {
         throw new ValidationError(
           'Max iterations must be -1 (unlimited) or a positive number',

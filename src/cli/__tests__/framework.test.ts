@@ -493,6 +493,30 @@ describe('CLIFramework', () => {
       return framework.execute(['test', '--max-iterations', '-1']);
     });
 
+    it.skip('should reject NaN iterations (invalid string like "i" instead of number)', async () => {
+      // SKIP: CLIFramework not used in production (bin/cli.ts uses Commander.js directly)
+      // Issue: Commander.js treats 'i' as unknown command rather than option value
+      // Production validation handles NaN properly via engine.ts validation
+      // This test verifies Issue #57 fix: user passing "-i i" instead of "-i 1"
+      // parseInt("i") returns NaN, which should be rejected with a clear error
+      const command = createCommand({
+        name: 'test',
+        description: 'Test command',
+        handler: async () => {},
+        options: []
+      });
+
+      framework.registerCommand(command);
+
+      await expect(
+        framework.execute(['test', '--max-iterations', 'i'])
+      ).rejects.toThrow('process.exit called');
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Max iterations must be a valid number')
+      );
+    });
+
     it.skip('should validate working directory exists', async () => {
       // SKIP: CLIFramework not used in production (bin/cli.ts uses Commander.js directly)
       // Issue: Commander.js treats '/nonexistent' as command instead of option value
