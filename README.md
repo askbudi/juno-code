@@ -90,7 +90,7 @@ juno-code -b shell -s claude -i -1
 | Service | Default Model | Shorthands |
 |---------|---------------|------------|
 | claude | `claude-sonnet-4-5-20250929` | `:haiku`, `:sonnet`, `:opus` |
-| codex | `codex-5.1-max` | `:codex`, `:gpt-5`, `:mini` |
+| codex | `codex-5.2-max` | `:codex`, `:gpt-5`, `:mini` |
 | gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
 
 ```bash
@@ -298,7 +298,7 @@ juno-code services install --force
 ```bash
 # Verify with verbose
 juno-code -v -b shell -s codex -m :codex -p "test"
-# Check stderr for: "Executing: python3 ~/.juno_code/services/codex.py ... -m codex-5.1-codex-max"
+# Check stderr for: "Executing: python3 ~/.juno_code/services/codex.py ... -m codex-5.2-codex-max"
 ```
 
 ### Kanban not finding tasks
