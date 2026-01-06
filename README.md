@@ -1,108 +1,316 @@
 # juno-code
 
-TypeScript CLI tool for AI subagent orchestration with code automation.
+**AI-powered iterative development CLI** - Inspired by the [Ralph Method](https://ghuntley.com/ralph/)
 
-## Overview
+juno-code brings structure and control to AI-driven development. Instead of endless loops or single-shot prompts, it combines task tracking, backend flexibility, and iteration control for production-ready AI workflows.
 
-juno-code is an AI-powered development CLI that orchestrates subagents (Claude, Cursor, Codex, Gemini) through MCP (Model Context Protocol) servers. It provides a modern TypeScript implementation with React INK TUI, comprehensive testing infrastructure, and automated feedback collection.
+## Why juno-code?
+
+The [Ralph Method](https://ghuntley.com/ralph/) showed that AI can deliver production software through iterative refinement - one engineer reportedly delivered a $50,000 project for $297. But Ralph runs forever until Ctrl+C. juno-code adds:
+
+- **Iteration control**: Run exactly N iterations with `-i`, not forever
+- **Task tracking**: Built-in kanban system via [juno-kanban](https://github.com/askbudi/juno-kanban) - run until tasks complete, not until you get tired
+- **Backend choice**: Switch between Claude, Codex, Gemini, or Cursor with one flag
+- **Full traceability**: Every task has a git commit, making time-travel debugging trivial
+- **Hooks system**: Run scripts at any lifecycle point without vendor lock-in
+- **Human-readable logs**: `-v` gives you structured, jq-friendly output instead of raw JSON dumps
 
 ## Installation
 
-This package is available on NPM under multiple names for flexibility:
-
 ```bash
-# Primary package (recommended)
 npm install -g juno-code
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- Node.js (v18 or higher)
-- Python 3.8+ (for dependency scripts)
-- Git for version control
-- NPM or UV package manager
-
-### Quick Start
+## Quick Start
 
 ```bash
-# Initialize a new project
-juno-code init --task "Your task" --subagent claude --git-url "https://github.com/user/repo"
+# Initialize in any project
+juno-code init --task "Add user authentication" --subagent claude
 
-# Start task execution
-juno-code start
+# Run with iteration limit
+juno-code -b shell -s claude -i 5 -v
 
-# Or use the juno-code command for all operations
-juno-code --help
-
-# Collect feedback during execution
-juno-collect-feedback
+# Or run until all kanban tasks complete
+./.juno_task/scripts/run_until_completion.sh -s claude -i 10 -v
 ```
 
-### Available Commands
+## Core Concepts
 
-The package installs these binary commands:
+### Task-Driven Development
 
-- `juno-code` - Main command (recommended)
-- `juno-collect-feedback` - Feedback collection utility
+juno-code initializes a `.juno_task/` directory with:
+- **init.md** - Your task breakdown and constraints
+- **prompt.md** - Production-ready AI instructions
+- **plan.md** - Dynamic tracking as work progresses
+- **USER_FEEDBACK.md** - Issue tracking and user input
+- **config.json** - Backend, model, and hook configuration
+- **scripts/** - Auto-installed utilities (kanban.sh, run_until_completion.sh)
+
+### Kanban Integration
+
+Unlike Ralph's infinite loop, juno-code integrates with juno-kanban for task management:
+
+```bash
+# List tasks
+./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
+
+# Run until all tasks complete
+./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
+```
+
+Each task gets a git commit, so you can:
+- See exactly what changed per task
+- Jump between commits to understand context
+- Efficiently search history with high token efficiency
+
+### Iteration Control
+
+No more overcooking (Ralph runs too long, adds features nobody asked for) or undercooking (stopping too early):
+
+```bash
+# Exactly 5 iterations
+juno-code -b shell -s claude -i 5
+
+# Unlimited (like Ralph)
+juno-code -b shell -s claude -i -1
+
+# Until kanban tasks complete
+./.juno_task/scripts/run_until_completion.sh -s claude
+```
+
+## Backends & Services
+
+### Available Backends
+
+- **shell** - Direct execution via service scripts (recommended for headless)
+- **mcp** - Model Context Protocol servers (full tool integration)
+
+### Supported Services
+
+| Service | Default Model | Shorthands |
+|---------|---------------|------------|
+| claude | `claude-sonnet-4-5-20250929` | `:haiku`, `:sonnet`, `:opus` |
+| codex | `codex-5.1-max` | `:codex`, `:gpt-5`, `:mini` |
+| gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
+
+```bash
+# Try different models with one flag
+juno-code -b shell -s claude -m :opus -p "complex task"
+juno-code -b shell -s codex -m :codex -p "same task"
+juno-code -b shell -s gemini -m :flash -p "same task"
+```
+
+### Custom Backends
+
+Service scripts live in `~/.juno_code/services/`. Each is a Python script that wraps the underlying CLI:
+
+```bash
+# View installed services
+juno-code services list
+
+# Force reinstall (get latest versions)
+juno-code services install --force
+```
+
+To add a custom backend:
+1. Create a Python script in `~/.juno_code/services/`
+2. Accept standard args: `-p/--prompt`, `-m/--model`, `-v/--verbose`
+3. Output JSON events to stdout for structured parsing
+
+## CLI Reference
+
+### Main Commands
+
+```bash
+# Initialize project
+juno-code init --task "description" --subagent claude
+
+# Start execution (uses .juno_task/init.md)
+juno-code start -b shell -s claude -i 5
+
+# Direct execution with prompt
+juno-code -p "your prompt" -b shell -s claude -i 3
+
+# Quick subagent shortcuts
+juno-code claude "your task"
+juno-code codex "your task"
+juno-code gemini "your task"
+
+# Feedback during execution
+juno-code feedback "found a bug in X"
+juno-code feedback --interactive
+
+# Session management
+juno-code session list
+juno-code --resume <sessionId> -p "continue work"
+juno-code --continue -p "continue most recent"
+```
+
+### Global Options
+
+| Flag | Description |
+|------|-------------|
+| `-b, --backend <type>` | Backend: `mcp`, `shell` |
+| `-s, --subagent <name>` | Service: `claude`, `codex`, `gemini`, `cursor` |
+| `-m, --model <name>` | Model (supports shorthands like `:opus`) |
+| `-i, --max-iterations <n>` | Iteration limit (-1 for unlimited) |
+| `-p, --prompt <text>` | Prompt text |
+| `-v, --verbose` | Human-readable verbose output |
+| `-r, --resume <id>` | Resume specific session |
+| `--continue` | Continue most recent session |
+| `--tools <list>` | Available tools |
+| `--allowed-tools <list>` | Permission-based tool filter |
+| `--disallowed-tools <list>` | Block specific tools |
+| `--append-allowed-tools <list>` | Add to default tools |
+
+### Environment Variables
+
+```bash
+# Primary configuration
+export JUNO_CODE_BACKEND=shell
+export JUNO_CODE_SUBAGENT=claude
+export JUNO_CODE_MODEL=:sonnet
+export JUNO_CODE_MAX_ITERATIONS=10
+
+# Service-specific
+export CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE=4  # -1 to disable
+export CODEX_HIDE_STREAM_TYPES="turn_diff,token_count"
+export GEMINI_API_KEY=your-key
+```
+
+## Hooks System
+
+Run scripts at any point in the execution lifecycle:
+
+```json
+// .juno_task/config.json
+{
+  "hooks": {
+    "START_RUN": { "commands": ["echo 'Starting run'"] },
+    "START_ITERATION": { "commands": ["./scripts/pre-check.sh"] },
+    "END_ITERATION": { "commands": ["./scripts/post-check.sh"] },
+    "END_RUN": { "commands": ["./scripts/cleanup.sh"] }
+  }
+}
+```
+
+Unlike Claude Code's built-in hooks, juno-code hooks work with any backend - no vendor lock-in.
+
+## Real-Time Feedback
+
+Provide feedback to the AI while it's running:
+
+```bash
+# Command-line
+juno-code feedback "please also add tests for edge cases"
+
+# Interactive form
+juno-code feedback --interactive
+
+# Enable concurrent feedback collection
+juno-code -b shell -s claude --enable-feedback -i 10
+```
+
+Feedback is stored in `.juno_task/USER_FEEDBACK.md` and automatically picked up by the agent.
 
 ## Project Structure
 
+After `juno-code init`:
+
 ```
-.
+your-project/
 ├── .juno_task/
-│   ├── prompt.md          # Production-ready AI instructions
-│   ├── init.md            # Task breakdown and constraints
-│   ├── plan.md            # Dynamic planning and tracking
-│   ├── USER_FEEDBACK.md   # User feedback and issue tracking
-│   └── specs/             # Comprehensive specifications
-│       ├── README.md      # Specs overview and guide
-│       ├── requirements.md # Detailed functional requirements
-│       └── architecture.md # System architecture and design
-├── CLAUDE.md              # Session documentation and learnings
-├── AGENTS.md              # AI agent selection and performance tracking
-└── README.md              # This file
+│   ├── init.md           # Task breakdown
+│   ├── prompt.md         # AI instructions
+│   ├── plan.md           # Progress tracking
+│   ├── USER_FEEDBACK.md  # Issue tracking
+│   ├── config.json       # Configuration
+│   ├── mcp.json          # MCP config
+│   ├── scripts/          # Auto-installed utilities
+│   │   ├── run_until_completion.sh
+│   │   ├── kanban.sh
+│   │   └── install_requirements.sh
+│   ├── specs/            # Specifications
+│   │   ├── requirements.md
+│   │   └── architecture.md
+│   └── tasks/            # Kanban tasks (ndjson)
+├── CLAUDE.md             # Session learnings
+└── AGENTS.md             # Agent performance
 ```
 
-## AI-Powered Development
+## Examples
 
-This project implements a sophisticated AI development workflow:
+### Migration Project
 
-1. **Task Analysis**: AI studies existing codebase and requirements
-2. **Specification Creation**: Detailed specs with parallel subagents
-3. **Implementation**: AI-assisted development (up to 500 parallel agents)
-4. **Testing**: Automated testing with dedicated subagents
-5. **Documentation**: Continuous documentation updates
-6. **Version Control**: Automated Git workflow with smart commits
+```bash
+# Initialize for large migration
+juno-code init --task "Migrate from JavaScript to TypeScript" --subagent claude
 
-## Key Features
+# Run in batches
+./.juno_task/scripts/run_until_completion.sh -s claude -i 20 -v
 
-- **Production-Ready Templates**: Comprehensive templates for AI guidance
-- **Parallel Processing**: Up to 500 parallel subagents for analysis
-- **Automated Workflows**: Git integration, tagging, and documentation
-- **Quality Enforcement**: Strict requirements against placeholder implementations
-- **User Feedback Integration**: Continuous feedback loop via USER_FEEDBACK.md
-- **Session Management**: Detailed tracking of development sessions
+# Switch to a different model if stuck
+juno-code -b shell -s codex -m :codex -p "Continue the migration"
+```
 
-## Configuration
+### Bug Investigation
 
-The project uses `claude` as the primary AI subagent with these settings:
-- **Parallel Agents**: Up to 500 for analysis, 1 for build/test
-- **Quality Standards**: Full implementations required
-- **Documentation**: Comprehensive and up-to-date
-- **Version Control**: Automated Git workflow
+```bash
+# Quick investigation with opus
+juno-code -b shell -s claude -m :opus -p "Investigate why tests fail in CI" -i 3
 
+# If it's a model-specific issue, try another
+juno-code -b shell -s gemini -m :pro -p "Same investigation" -i 3
+```
 
+### Iterative Feature Development
 
-## Development Workflow
+```bash
+# Add tasks to kanban
+./.juno_task/scripts/kanban.sh add "Implement user login"
+./.juno_task/scripts/kanban.sh add "Add password reset"
+./.juno_task/scripts/kanban.sh add "Write integration tests"
 
-1. **Review Task**: Check `.juno_task/init.md` for main task
-2. **Check Plan**: Review `.juno_task/plan.md` for current priorities
-3. **Provide Feedback**: Use `juno-code feedback` for issues or suggestions
-4. **Track Progress**: Monitor AI development through `.juno_task/prompt.md`
+# Run until done
+./.juno_task/scripts/run_until_completion.sh -s claude -i 10 -v
+```
 
----
+## Comparison with Ralph
 
-Created with juno-code on 2025-10-08
-using claude as primary AI subagent
+| Feature | Ralph | juno-code |
+|---------|-------|-----------|
+| Iteration Control | `while :; do` (infinite) | `-i N` (exact control) |
+| Task Tracking | None | Built-in kanban |
+| Git Integration | Manual | Auto-commit per task |
+| Multiple Backends | Single tool | Claude, Codex, Gemini, Cursor |
+| Hooks | Tool-specific | Backend-agnostic |
+| Feedback | None | Real-time during execution |
+| Verbose Mode | Raw JSON | Human-readable + jq-friendly |
+
+## Troubleshooting
+
+### Service scripts not updating
+```bash
+juno-code services install --force
+```
+
+### Model passthrough issues
+```bash
+# Verify with verbose
+juno-code -v -b shell -s codex -m :codex -p "test"
+# Check stderr for: "Executing: python3 ~/.juno_code/services/codex.py ... -m codex-5.1-codex-max"
+```
+
+### Kanban not finding tasks
+```bash
+# Check kanban directly
+./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
+```
+
+## Credits
+
+juno-code is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/) - the insight that AI can deliver production software through iterative refinement. juno-code adds the structure needed for sustainable, controlled AI-driven development.
+
+## License
+
+MIT
