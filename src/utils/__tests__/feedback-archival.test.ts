@@ -85,7 +85,8 @@ describe('Feedback Archival System', () => {
       // Verify results
       expect(result.archivedCount).toBe(2);
       expect(result.openIssuesCount).toBe(2);
-      expect(result.archiveFile).toContain('USER_FEEDBACK_archive_2025.md');
+      const currentYear = new Date().getFullYear();
+      expect(result.archiveFile).toContain(`USER_FEEDBACK_archive_${currentYear}.md`);
 
       // Verify archive file was created
       expect(await fs.pathExists(result.archiveFile)).toBe(true);
