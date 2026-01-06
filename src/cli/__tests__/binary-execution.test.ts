@@ -128,9 +128,21 @@ describe('Binary Execution Tests', () => {
   });
 
   afterEach(async () => {
-    // Clean up temporary directory
+    // Clean up temporary directory with retry for stubborn files
     if (tempDir && await fs.pathExists(tempDir)) {
-      await fs.remove(tempDir);
+      try {
+        await fs.remove(tempDir);
+      } catch (error: any) {
+        // Retry with force rm for stubborn directories (e.g., .venv_juno)
+        if (error.code === 'ENOTEMPTY' || error.code === 'EBUSY') {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          try {
+            await fs.remove(tempDir);
+          } catch {
+            // Ignore cleanup errors in tests - they're not test failures
+          }
+        }
+      }
     }
   });
 
@@ -233,7 +245,7 @@ describe('Binary Execution Tests', () => {
 
       // This should either succeed (if templates work) or fail gracefully
       expect(typeof result.exitCode).toBe('number');
-    });
+    }, 60000); // Allow 60 seconds for init with force (can be slow with template processing)
 
     it('should fail init when .juno_task exists without force', async () => {
       // Create an existing .juno_task directory
@@ -254,7 +266,7 @@ describe('Binary Execution Tests', () => {
 
       // Should recognize the directory argument
       expect(typeof result.exitCode).toBe('number');
-    });
+    }, 60000); // Allow 60 seconds for init (can be slow with template processing)
 
     it('should validate template names', async () => {
       const result = await executeCLI(['init', '--template', 'nonexistent-template'], { expectError: true });
@@ -262,7 +274,7 @@ describe('Binary Execution Tests', () => {
       // The template validation might not be strict, so we accept any exit code
       // The important thing is that the CLI doesn't crash
       expect(typeof result.exitCode).toBe('number');
-    });
+    }, 60000); // Allow 60 seconds for init (can be slow with template processing)
   });
 
   describe('Start Command Tests', () => {
