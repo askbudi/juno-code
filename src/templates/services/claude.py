@@ -20,7 +20,7 @@ class ClaudeService:
     # Default configuration
     DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
     DEFAULT_PERMISSION_MODE = "default"
-    DEFAULT_AUTO_INSTRUCTION = """You are Claude Code, an AI coding assistant. Follow the instructions provided and generate high-quality code."""
+    DEFAULT_AUTO_INSTRUCTION = """"""
 
     # Model shorthand mappings (colon-prefixed names expand to full model IDs)
     MODEL_SHORTHANDS = {
