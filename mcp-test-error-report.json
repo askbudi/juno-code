@@ -1,8 +1,0 @@
-{
-  "timestamp": "2025-10-07T19:06:15.446Z",
-  "workingDirectory": "/Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts",
-  "error": {
-    "message": "MCP configuration not found at /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task/mcp.json. Please run 'juno-task init' first.",
-    "stack": "Error: MCP configuration not found at /Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/.juno_task/mcp.json. Please run 'juno-task init' first.\n    at main (file:///Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test-mcp-standalone.mjs:48:13)\n    at file:///Users/mahdiyar/Code/denmark_insightfactory/playground_juputer/projects/.vibe_trees/budi_cli_ts/juno-task-ts/test-mcp-standalone.mjs:290:1"
-  }
-}

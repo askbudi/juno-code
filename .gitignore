@@ -1,1 +1,7 @@
 test-artifacts/
+.juno_task/
+.juno-task/
+.env
+dist/
+dist-test/
+
