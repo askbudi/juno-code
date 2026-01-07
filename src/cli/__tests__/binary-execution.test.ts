@@ -73,13 +73,27 @@ async function executeCLI(
       env: testEnv,
       timeout,
       input,
-      reject: !expectError, // Don't reject on non-zero exit codes if we expect an error
+      reject: false, // Never reject - we'll handle errors ourselves
       all: true // Capture both stdout and stderr
     });
+
+    // Ensure exitCode is always a number (can be undefined in edge cases)
+    if (result.exitCode === undefined) {
+      result.exitCode = result.timedOut ? 124 : (result.failed ? 1 : 0);
+    }
+
+    // If we don't expect an error but got one, throw it
+    if (!expectError && result.exitCode !== 0) {
+      throw result;
+    }
 
     return result;
   } catch (error: any) {
     if (expectError) {
+      // Ensure exitCode is set for timeout and other errors
+      if (error.exitCode === undefined) {
+        error.exitCode = error.timedOut ? 124 : 1; // 124 is standard timeout exit code
+      }
       return error;
     }
     throw error;
