@@ -1,10 +1,37 @@
 # juno-code
 
+<p align="center">
+  <img src="./Juno-code-icon.png" alt="juno-code logo" width="200" />
+</p>
+
+<p align="center">
+  <strong>AI-powered code automation with structured task management</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/juno-code"><img src="https://img.shields.io/npm/v/juno-code.svg" alt="npm version" /></a>
+  <a href="https://github.com/askbudi/juno-code"><img src="https://img.shields.io/github/stars/askbudi/juno-code?style=social" alt="GitHub stars" /></a>
+</p>
+
+## Installation
+
+```bash
+npm install -g juno-code
+```
+
+After installation, initialize your project:
+
+```bash
+juno-code init --task "Your task description" --subagent claude
+```
+
+---
+
+## The Ralph Method: Where It All Started
+
 ![Ralph Wiggum - The Simpsons](https://ghuntley.com/content/images/size/w1200/2025/06/3ea367ed-cae3-454a-840f-134531dea1fd.jpg)
 
 > *"I'm in danger!"* - Ralph Wiggum, every time you Ctrl+C a working AI loop too early
-
-## The Ralph Method: Where It All Started
 
 [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/) demonstrated something remarkable: AI can deliver production-quality software through iterative refinement. One engineer reportedly delivered a $50,000 project for $297 using this technique.
 
@@ -354,6 +381,27 @@ juno-code -v -b shell -s codex -m :codex -p "test"
 ## Credits
 
 juno-code is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/)—the insight that AI delivers production software through iterative refinement. juno-code adds the structure that makes Ralph sustainable for real development work.
+
+---
+
+## Get Started Now
+
+```bash
+# Install globally
+npm install -g juno-code
+
+# Initialize in your project
+cd your-project
+juno-code init --task "Your task description" --subagent claude
+
+# Start coding with AI
+juno-code start -b shell -s claude -i 5 -v
+```
+
+**Links:**
+- [npm package](https://www.npmjs.com/package/juno-code)
+- [GitHub repository](https://github.com/askbudi/juno-code)
+- [Report issues](https://github.com/askbudi/juno-code/issues)
 
 ## License
 
