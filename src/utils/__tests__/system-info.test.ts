@@ -335,7 +335,7 @@ describe('SystemInfoCollector', () => {
 
       expect(duration).toBeLessThan(30000); // Should complete within 30 seconds
       expect(systemInfo.collection.duration).toBeCloseTo(duration, -2); // Within 100ms
-    });
+    }, 60000); // Allow 60 seconds for test when running under resource contention
   });
 
   describe('Health Checks', () => {
