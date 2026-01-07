@@ -34,13 +34,13 @@ juno-code takes the Ralph insight—*AI works better in loops*—and adds the st
 ### Iteration Control: No More Overcooking
 ```bash
 # Exactly 5 iterations - cooked perfectly
-juno-code start -b shell -s claude -i 5
+juno-code -b shell -s claude -m :opus -i 5 -v
 
 # Until kanban tasks complete - cooked exactly right
-./.juno_task/scripts/run_until_completion.sh -s claude -i 10 -v
+./.juno_task/scripts/run_until_completion.sh -s claude -i 1 -v
 
 # Unlimited (like Ralph) - when you really want that
-juno-code start -b shell -s claude -i -1
+juno-code -b shell -s claude 
 ```
 
 ### Task Tracking: Remember What Matters
@@ -57,9 +57,9 @@ Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Each t
 Switch between Claude, Codex, Gemini, or Cursor with one flag:
 ```bash
 # Stuck on a bug? Try different models
-juno-code -b shell -s claude -m :opus -p "fix the auth bug"
-juno-code -b shell -s codex -m :codex -p "fix the auth bug"
-juno-code -b shell -s gemini -m :flash -p "fix the auth bug"
+juno-code -b shell -s claude -m :opus-i 1 -v
+juno-code -b shell -s codex -m :codex -i 1 -v
+juno-code -b shell -s gemini -m :flash -i 1 -v
 ```
 
 ### Full Traceability: Every Change Tracked
@@ -92,13 +92,16 @@ juno-code -b shell -s claude -i 5 -v
 npm install -g juno-code
 
 # Initialize project
-juno-code init --task "Add user authentication" --subagent claude
+juno-code init --task "Add user authentication..." --subagent claude
 
-# Start execution - uses .juno_task/prompt.md (optimized Ralph prompt)
-juno-code start -b shell -s claude -i 5 -v
+# Start execution - uses .juno_task/int.md (optimized Ralph prompt)
+juno-code start -b shell -s claude -i 1 -v
 
 # Or with a custom prompt
 juno-code -b shell -s claude -i 5 -p "Fix the login bug"
+
+# Default Ralph based on kanban , without -p , juno-code uses .juno_task/prompt.md as prompt
+juno-code -b shell -s claude -i 5 -v
 ```
 
 **Key insight**: Running `juno-code start` without `-p` uses `.juno_task/prompt.md`—a production-ready prompt template that implements the Ralph method with guard rails.
