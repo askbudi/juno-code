@@ -263,4 +263,139 @@ export class ScriptInstaller {
 
     return results;
   }
+
+  /**
+   * Get scripts that need updates based on content comparison
+   * @param projectDir - The project root directory
+   * @returns Array of script names that have different content from package version
+   */
+  static async getOutdatedScripts(projectDir: string): Promise<string[]> {
+    const outdated: string[] = [];
+
+    const packageScriptsDir = this.getPackageScriptsDir();
+    if (!packageScriptsDir) {
+      return outdated;
+    }
+
+    for (const script of this.REQUIRED_SCRIPTS) {
+      const sourcePath = path.join(packageScriptsDir, script);
+      const destPath = path.join(projectDir, '.juno_task', 'scripts', script);
+
+      // Skip if source doesn't exist
+      if (!await fs.pathExists(sourcePath)) {
+        continue;
+      }
+
+      // If destination doesn't exist, it's missing not outdated
+      if (!await fs.pathExists(destPath)) {
+        continue;
+      }
+
+      // Compare contents
+      try {
+        const [sourceContent, destContent] = await Promise.all([
+          fs.readFile(sourcePath, 'utf-8'),
+          fs.readFile(destPath, 'utf-8'),
+        ]);
+
+        if (sourceContent !== destContent) {
+          outdated.push(script);
+        }
+      } catch {
+        // On error, assume it needs update
+        outdated.push(script);
+      }
+    }
+
+    return outdated;
+  }
+
+  /**
+   * Check if any scripts need installation or update
+   * @param projectDir - The project root directory
+   * @returns true if any scripts need to be installed or updated
+   */
+  static async needsUpdate(projectDir: string): Promise<boolean> {
+    try {
+      // First check if .juno_task exists (project is initialized)
+      const junoTaskDir = path.join(projectDir, '.juno_task');
+      if (!await fs.pathExists(junoTaskDir)) {
+        return false;
+      }
+
+      const missing = await this.getMissingScripts(projectDir);
+      if (missing.length > 0) {
+        return true;
+      }
+
+      const outdated = await this.getOutdatedScripts(projectDir);
+      return outdated.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Automatically update scripts - installs missing AND updates outdated scripts
+   * Similar to ServiceInstaller.autoUpdate(), this ensures project scripts
+   * are always in sync with the package version.
+   *
+   * This should be called on every CLI run to ensure scripts are up-to-date.
+   * @param projectDir - The project root directory
+   * @param silent - If true, suppresses console output
+   * @returns true if any scripts were installed or updated
+   */
+  static async autoUpdate(projectDir: string, silent = true): Promise<boolean> {
+    try {
+      const debug = process.env.JUNO_CODE_DEBUG === '1';
+
+      // First check if .juno_task exists (project is initialized)
+      const junoTaskDir = path.join(projectDir, '.juno_task');
+      if (!await fs.pathExists(junoTaskDir)) {
+        return false;
+      }
+
+      const missing = await this.getMissingScripts(projectDir);
+      const outdated = await this.getOutdatedScripts(projectDir);
+
+      if (debug) {
+        if (missing.length > 0) {
+          console.error(`[DEBUG] ScriptInstaller: Missing scripts: ${missing.join(', ')}`);
+        }
+        if (outdated.length > 0) {
+          console.error(`[DEBUG] ScriptInstaller: Outdated scripts: ${outdated.join(', ')}`);
+        }
+      }
+
+      if (missing.length === 0 && outdated.length === 0) {
+        return false;
+      }
+
+      const scriptsToUpdate = [...new Set([...missing, ...outdated])];
+
+      let updatedAny = false;
+      for (const script of scriptsToUpdate) {
+        const installed = await this.installScript(projectDir, script, silent);
+        if (installed) {
+          updatedAny = true;
+        }
+      }
+
+      if (updatedAny) {
+        if (debug) {
+          console.error(`[DEBUG] ScriptInstaller: Updated ${scriptsToUpdate.length} script(s)`);
+        }
+        if (!silent) {
+          console.log(`✓ Updated ${scriptsToUpdate.length} script(s) in .juno_task/scripts/`);
+        }
+      }
+
+      return updatedAny;
+    } catch (error) {
+      if (process.env.JUNO_CODE_DEBUG === '1') {
+        console.error('[DEBUG] ScriptInstaller: autoUpdate error:', error);
+      }
+      return false;
+    }
+  }
 }

@@ -412,20 +412,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-install missing project scripts (e.g., run_until_completion.sh) to .juno_task/scripts/
-  // This ensures users have required scripts available without needing to re-run init
+  // Auto-update project scripts (e.g., run_until_completion.sh) in .juno_task/scripts/
+  // This ensures scripts are always in sync with the package version (installs missing + updates outdated)
   try {
     const { ScriptInstaller } = await import('../utils/script-installer.js');
-    const installed = await ScriptInstaller.autoInstallMissing(process.cwd(), true);
+    const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
 
     // Show update message in verbose mode
-    if (installed && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
-      console.error('[DEBUG] Project scripts auto-installed to .juno_task/scripts/');
+    if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+      console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
     if (process.env.JUNO_CODE_DEBUG === '1') {
-      console.error('[DEBUG] Script auto-install failed:', error instanceof Error ? error.message : String(error));
+      console.error('[DEBUG] Script auto-update failed:', error instanceof Error ? error.message : String(error));
     }
   }
 
