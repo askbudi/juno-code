@@ -10,16 +10,23 @@
 # internal task management systems get a chance to operate even if kanban.sh
 # doesn't initially detect any tasks.
 #
-# Usage: ./.juno_task/scripts/run_until_completion.sh [juno-code arguments]
+# Usage: ./.juno_task/scripts/run_until_completion.sh [options] [juno-code arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
 # Example: ./.juno_task/scripts/run_until_completion.sh -b shell -s claude -m :opus
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run "./slack/sync.sh" -s claude -i 5
 #
-# All arguments passed to this script will be forwarded to juno-code.
+# Options (for run_until_completion.sh):
+#   --pre-run <cmd>    - Execute command before entering the main loop
+#                        Can be specified multiple times for multiple commands
+#                        Commands are executed in order before juno-code starts
+#
+# All other arguments are forwarded to juno-code.
 # The script shows all stdout/stderr from juno-code in real-time.
 #
 # Environment Variables:
 #   JUNO_DEBUG=true    - Show [DEBUG] diagnostic messages
 #   JUNO_VERBOSE=true  - Show [RUN_UNTIL] informational messages
+#   JUNO_PRE_RUN       - Alternative way to specify pre-run command (env var)
 #   (Both default to false for silent operation)
 #
 # Created by: juno-code init command
@@ -43,6 +50,74 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPTS_DIR=".juno_task/scripts"
 KANBAN_SCRIPT="${SCRIPTS_DIR}/kanban.sh"
+
+# Arrays to store pre-run commands and juno-code arguments
+declare -a PRE_RUN_CMDS=()
+declare -a JUNO_ARGS=()
+
+# Parse arguments to extract --pre-run commands
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --pre-run)
+                if [[ -z "${2:-}" ]]; then
+                    echo "[ERROR] --pre-run requires a command argument" >&2
+                    exit 1
+                fi
+                PRE_RUN_CMDS+=("$2")
+                shift 2
+                ;;
+            *)
+                JUNO_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Also check JUNO_PRE_RUN environment variable
+    if [[ -n "${JUNO_PRE_RUN:-}" ]]; then
+        # Prepend env var command (runs first)
+        PRE_RUN_CMDS=("$JUNO_PRE_RUN" "${PRE_RUN_CMDS[@]}")
+    fi
+}
+
+# Execute all pre-run commands
+execute_pre_run_commands() {
+    local cmd_count=${#PRE_RUN_CMDS[@]}
+
+    if [[ $cmd_count -eq 0 ]]; then
+        return 0
+    fi
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Executing $cmd_count pre-run command(s)"
+    log_status "=========================================="
+
+    local idx=0
+    for cmd in "${PRE_RUN_CMDS[@]}"; do
+        idx=$((idx + 1))
+        log_status ""
+        log_status "Pre-run [$idx/$cmd_count]: $cmd"
+        log_status "------------------------------------------"
+
+        # Execute the command
+        if eval "$cmd"; then
+            log_success "Pre-run [$idx/$cmd_count] completed successfully"
+        else
+            local exit_code=$?
+            log_error "Pre-run [$idx/$cmd_count] failed with exit code $exit_code"
+            log_error "Command was: $cmd"
+            # Continue with next pre-run command even if one fails
+            # This allows partial execution like Slack sync failing but still running juno-code
+        fi
+    done
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Pre-run phase complete"
+    log_status "=========================================="
+}
 
 # Logging functions
 log_info() {
@@ -131,8 +206,14 @@ main() {
     local iteration=0
     local max_iterations="${JUNO_RUN_UNTIL_MAX_ITERATIONS:-0}"  # 0 = unlimited
 
+    # Parse arguments first to extract --pre-run commands
+    parse_arguments "$@"
+
     log_status "=== Run Until Completion ==="
-    log_status "Arguments to juno-code: $*"
+    if [[ ${#PRE_RUN_CMDS[@]} -gt 0 ]]; then
+        log_status "Pre-run commands: ${#PRE_RUN_CMDS[@]}"
+    fi
+    log_status "Arguments to juno-code: ${JUNO_ARGS[*]:-<none>}"
 
     if [ "$max_iterations" -gt 0 ]; then
         log_status "Maximum iterations: $max_iterations"
@@ -140,10 +221,13 @@ main() {
         log_status "Maximum iterations: unlimited"
     fi
 
-    # Check if we have any arguments
-    if [ $# -eq 0 ]; then
+    # Check if we have any arguments for juno-code
+    if [[ ${#JUNO_ARGS[@]} -eq 0 ]]; then
         log_warning "No arguments provided. Running juno-code with no arguments."
     fi
+
+    # Execute pre-run commands before entering the main loop
+    execute_pre_run_commands
 
     # Do-while loop pattern: Run juno-code at least once, then continue while tasks remain
     # This ensures juno-code's internal task management systems get a chance to operate
@@ -165,12 +249,12 @@ main() {
             exit 0
         fi
 
-        log_status "Running juno-code with args: $*"
+        log_status "Running juno-code with args: ${JUNO_ARGS[*]:-<none>}"
         log_status "------------------------------------------"
 
-        # Run juno-code with all provided arguments
+        # Run juno-code with parsed arguments (excluding --pre-run which was already processed)
         # We run juno-code FIRST (do-while pattern), then check for remaining tasks
-        if juno-code "$@"; then
+        if juno-code "${JUNO_ARGS[@]}"; then
             log_success "juno-code completed successfully"
         else
             local exit_code=$?
