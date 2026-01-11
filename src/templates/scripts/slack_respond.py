@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -122,20 +123,106 @@ def get_kanban_tasks(
         return []
 
 
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for comparison by removing Slack-specific formatting.
+
+    Handles:
+    - Slack link formatting: <url|label> -> label, <url> -> url
+    - Slack user/channel mentions: <@U123> -> @user, <#C123|channel> -> #channel
+    - Markdown formatting: *bold*, _italic_, ~strike~, `code`
+    - Multiple whitespace: collapses to single space
+    - JSON-like content: normalizes quotes and escapes
+    - Trailing/leading whitespace
+
+    Args:
+        text: The text to normalize
+
+    Returns:
+        Normalized text suitable for comparison
+    """
+    if not text:
+        return ''
+
+    # Remove Slack link formatting: <url|label> -> label
+    text = re.sub(r'<([^|>]+)\|([^>]+)>', r'\2', text)
+    # Remove bare Slack links: <url> -> url (remove angle brackets)
+    text = re.sub(r'<(https?://[^>]+)>', r'\1', text)
+    # Remove mailto links: <mailto:email|email> -> email
+    text = re.sub(r'<mailto:([^|>]+)\|([^>]+)>', r'\2', text)
+    text = re.sub(r'<mailto:([^>]+)>', r'\1', text)
+
+    # Remove Slack user mentions: <@U123ABC> -> @user
+    text = re.sub(r'<@[A-Z0-9]+>', '@user', text)
+    # Remove Slack channel mentions: <#C123|channel> -> #channel
+    text = re.sub(r'<#[A-Z0-9]+\|([^>]+)>', r'#\1', text)
+    text = re.sub(r'<#[A-Z0-9]+>', '#channel', text)
+
+    # Remove Slack markdown: *bold* -> bold, _italic_ -> italic
+    # Note: We don't remove backticks from code as they affect meaning
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+    text = re.sub(r'~([^~]+)~', r'\1', text)
+
+    # Normalize JSON-like content: handle escaped quotes
+    # This helps match when JSON is stored differently
+    text = text.replace('\\"', '"')
+    text = text.replace("\\'", "'")
+
+    # Normalize whitespace: collapse multiple spaces/newlines to single space
+    text = re.sub(r'\s+', ' ', text)
+
+    # Strip leading/trailing whitespace
+    text = text.strip()
+
+    return text
+
+
+def compute_text_similarity(text1: str, text2: str) -> float:
+    """
+    Compute similarity ratio between two texts.
+
+    Uses a simple character-based comparison that works well for
+    detecting if two texts are essentially the same with minor
+    formatting differences.
+
+    Args:
+        text1: First text
+        text2: Second text
+
+    Returns:
+        Similarity ratio between 0.0 and 1.0
+    """
+    if not text1 or not text2:
+        return 0.0
+
+    if text1 == text2:
+        return 1.0
+
+    # Use difflib for sequence matching
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, text1, text2).ratio()
+
+
 def find_matching_message(
     task: Dict[str, Any],
-    slack_state: SlackStateManager
+    slack_state: SlackStateManager,
+    similarity_threshold: float = 0.85
 ) -> Optional[Dict[str, Any]]:
     """
     Find the Slack message that corresponds to a kanban task.
 
-    Uses two strategies:
-    1. Look up by task_id in state (preferred)
-    2. Match by body text (fallback)
+    Uses multiple strategies with fallback:
+    1. Look up by task_id in state (preferred, exact match)
+    2. Exact text match (fast path)
+    3. Normalized text match (handles formatting differences)
+    4. Prefix match with normalization
+    5. Fuzzy match with similarity threshold (catches minor edits)
 
     Args:
         task: Kanban task dict
         slack_state: SlackStateManager with processed messages
+        similarity_threshold: Minimum similarity ratio for fuzzy matching (0.0-1.0)
 
     Returns:
         Message data dict or None if not found
@@ -143,24 +230,78 @@ def find_matching_message(
     task_id = task.get('id')
     task_body = task.get('body', '')
 
-    # Strategy 1: Look up by task_id
+    if not task_body:
+        logger.debug(f"Task {task_id} has empty body, skipping text match")
+        # Only try task_id lookup for empty body tasks
+        message = slack_state.get_message_for_task(task_id)
+        if message:
+            logger.debug(f"Found message for task {task_id} by task_id lookup (empty body)")
+            return message
+        return None
+
+    # Strategy 1: Look up by task_id (most reliable)
     message = slack_state.get_message_for_task(task_id)
     if message:
         logger.debug(f"Found message for task {task_id} by task_id lookup")
         return message
 
-    # Strategy 2: Match by body text
+    # Pre-compute normalized task body for comparison strategies
+    normalized_task_body = normalize_text(task_body)
+    normalized_task_body_short = normalized_task_body[:500] if len(normalized_task_body) > 500 else normalized_task_body
+
+    # Track best fuzzy match for Strategy 5
+    best_match: Optional[Dict[str, Any]] = None
+    best_similarity: float = 0.0
+
     for msg in slack_state.messages:
         msg_text = msg.get('text', '')
-        if msg_text and (
-            msg_text == task_body or
-            task_body.startswith(msg_text) or
-            msg_text.startswith(task_body[:500] if len(task_body) > 500 else task_body)
-        ):
-            logger.debug(f"Found message for task {task_id} by text match")
+        if not msg_text:
+            continue
+
+        # Strategy 2: Exact text match (fast path)
+        if msg_text == task_body:
+            logger.debug(f"Found message for task {task_id} by exact text match")
             return msg
 
+        # Strategy 3: Normalized text match
+        normalized_msg_text = normalize_text(msg_text)
+
+        if normalized_msg_text == normalized_task_body:
+            logger.debug(f"Found message for task {task_id} by normalized text match")
+            return msg
+
+        # Strategy 4: Prefix match with normalization
+        # Check if task body starts with message text (agent may have appended)
+        if normalized_task_body.startswith(normalized_msg_text):
+            logger.debug(f"Found message for task {task_id} by normalized prefix match (task starts with msg)")
+            return msg
+
+        # Check if message text starts with task body (message may be longer)
+        normalized_msg_short = normalized_msg_text[:500] if len(normalized_msg_text) > 500 else normalized_msg_text
+        if normalized_msg_text.startswith(normalized_task_body_short):
+            logger.debug(f"Found message for task {task_id} by normalized prefix match (msg starts with task)")
+            return msg
+
+        # Strategy 5: Fuzzy match - compute similarity for later
+        # Only compute if texts are reasonably close in length (within 2x)
+        len_ratio = len(normalized_msg_text) / max(len(normalized_task_body), 1)
+        if 0.5 <= len_ratio <= 2.0:
+            similarity = compute_text_similarity(normalized_msg_text, normalized_task_body)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = msg
+
+    # Strategy 5: Return best fuzzy match if above threshold
+    if best_match and best_similarity >= similarity_threshold:
+        logger.debug(
+            f"Found message for task {task_id} by fuzzy match "
+            f"(similarity={best_similarity:.2f}, threshold={similarity_threshold})"
+        )
+        return best_match
+
     logger.debug(f"No matching message found for task {task_id}")
+    if best_match:
+        logger.debug(f"  Best fuzzy match had similarity={best_similarity:.2f}, below threshold={similarity_threshold}")
     return None
 
 
