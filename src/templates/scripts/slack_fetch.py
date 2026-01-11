@@ -210,6 +210,31 @@ def fetch_channel_messages(
         return []
 
 
+def sanitize_tag(tag: str) -> str:
+    """
+    Sanitize a tag to be compatible with kanban validation.
+
+    Kanban tags only allow: letters, numbers, underscores (_), and hyphens (-).
+    This function replaces colons and other special characters with underscores.
+
+    Args:
+        tag: The raw tag string
+
+    Returns:
+        Sanitized tag compatible with kanban system
+    """
+    import re
+    # Replace spaces and colons with underscores
+    tag = tag.replace(' ', '_').replace(':', '_')
+    # Remove any remaining invalid characters (keep only alphanumeric, _, -)
+    tag = re.sub(r'[^a-zA-Z0-9_-]', '_', tag)
+    # Collapse multiple underscores
+    tag = re.sub(r'_+', '_', tag)
+    # Remove leading/trailing underscores
+    tag = tag.strip('_')
+    return tag
+
+
 def create_kanban_task(
     message_text: str,
     author_name: str,
@@ -338,7 +363,9 @@ def process_messages(
         logger.info(f"New message from {author_name}: {text[:50]}{'...' if len(text) > 50 else ''}")
 
         # Create kanban task
-        tags = ['slack-input', f'author:{author_name.replace(" ", "_")}']
+        # Create author tag with sanitization (colons not allowed in kanban tags)
+        author_tag = sanitize_tag(f'author_{author_name}')
+        tags = ['slack-input', author_tag]
         task_id = create_kanban_task(text, author_name, tags, kanban_script, dry_run)
 
         if task_id:
@@ -639,7 +666,7 @@ Environment Variables:
   LOG_LEVEL               DEBUG, INFO, WARNING, ERROR (default: INFO)
 
 Notes:
-  - Messages are tagged with 'slack-input' and 'author:{name}'
+  - Messages are tagged with 'slack-input' and 'author_<name>'
   - State is persisted to .juno_task/slack/slack.ndjson
   - Use Ctrl+C for graceful shutdown
         """
