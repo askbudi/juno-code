@@ -378,10 +378,118 @@ def find_kanban_script(project_dir: Path) -> Optional[str]:
     return None
 
 
+SLACK_TOKEN_DOCS_URL = "https://api.slack.com/tutorials/tracks/getting-a-token"
+
+
+def validate_slack_environment() -> tuple[Optional[str], Optional[str], list[str]]:
+    """
+    Validate Slack environment variables are properly configured.
+
+    Checks for SLACK_BOT_TOKEN in environment or .env file.
+    The token should start with 'xoxb-' for bot tokens.
+
+    Returns:
+        Tuple of (bot_token, channel, errors)
+        - bot_token: The Slack bot token if found, None otherwise
+        - channel: The Slack channel if found, None otherwise
+        - errors: List of error messages if validation failed
+    """
+    errors = []
+
+    # Check for bot token
+    bot_token = os.getenv('SLACK_BOT_TOKEN')
+    if not bot_token:
+        errors.append(
+            "SLACK_BOT_TOKEN not found.\n"
+            "  Set it via environment variable or in a .env file:\n"
+            "    export SLACK_BOT_TOKEN=xoxb-your-token-here\n"
+            "  Or add to .env file:\n"
+            "    SLACK_BOT_TOKEN=xoxb-your-token-here\n"
+            f"\n  To generate a Slack bot token, visit:\n"
+            f"    {SLACK_TOKEN_DOCS_URL}\n"
+            "\n  Required OAuth scopes for bot token:\n"
+            "    - channels:history (read messages from public channels)\n"
+            "    - channels:read (list public channels)\n"
+            "    - groups:history (read messages from private channels)\n"
+            "    - groups:read (list private channels)\n"
+            "    - users:read (get user info for message authors)\n"
+            "    - chat:write (optional, for slack_respond.py)"
+        )
+    elif not bot_token.startswith('xoxb-'):
+        errors.append(
+            f"SLACK_BOT_TOKEN appears invalid (should start with 'xoxb-').\n"
+            f"  Current value starts with: {bot_token[:10]}...\n"
+            f"  Bot tokens from Slack start with 'xoxb-'.\n"
+            f"  To generate a valid bot token, visit:\n"
+            f"    {SLACK_TOKEN_DOCS_URL}"
+        )
+
+    # Check for channel (optional at validation, but warn)
+    channel = os.getenv('SLACK_CHANNEL')
+
+    return bot_token, channel, errors
+
+
+def print_env_help() -> None:
+    """Print help message about configuring Slack environment variables."""
+    print("\n" + "=" * 70)
+    print("Slack Integration - Environment Configuration")
+    print("=" * 70)
+    print("""
+Required Environment Variables:
+  SLACK_BOT_TOKEN       Your Slack bot token (starts with xoxb-)
+
+Optional Environment Variables:
+  SLACK_CHANNEL         Default channel to monitor (can also use --channel flag)
+  CHECK_INTERVAL_SECONDS  Polling interval in seconds (default: 60)
+  LOG_LEVEL             DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+Configuration Methods:
+  1. Environment variables:
+     export SLACK_BOT_TOKEN=xoxb-your-token-here
+     export SLACK_CHANNEL=bug-reports
+
+  2. .env file (in project root):
+     SLACK_BOT_TOKEN=xoxb-your-token-here
+     SLACK_CHANNEL=bug-reports
+
+Generating a Slack Bot Token:
+  1. Go to https://api.slack.com/apps and create a new app
+  2. Under "OAuth & Permissions", add the required scopes:
+     - channels:history, channels:read (public channels)
+     - groups:history, groups:read (private channels)
+     - users:read (user info)
+     - chat:write (for slack_respond.py)
+  3. Install the app to your workspace
+  4. Copy the "Bot User OAuth Token" (starts with xoxb-)
+
+  Full tutorial: """ + SLACK_TOKEN_DOCS_URL + """
+
+Example .env file:
+  SLACK_BOT_TOKEN=xoxb-YOUR-BOT-TOKEN-HERE
+  SLACK_CHANNEL=bug-reports
+  CHECK_INTERVAL_SECONDS=120
+  LOG_LEVEL=INFO
+""")
+    print("=" * 70 + "\n")
+
+
 def main_loop(args: argparse.Namespace) -> int:
     """Main monitoring loop."""
-    # Load environment variables
+    # Load environment variables from .env file
+    # load_dotenv() looks for .env in current directory and parent directories
     load_dotenv()
+
+    # Also try loading from project root .env if running from a subdirectory
+    project_root = Path.cwd()
+    env_file = project_root / '.env'
+    if env_file.exists():
+        load_dotenv(env_file)
+
+    # Also check .juno_task/.env for project-specific config
+    juno_env_file = project_root / '.juno_task' / '.env'
+    if juno_env_file.exists():
+        load_dotenv(juno_env_file)
 
     # Setup logging
     setup_logging(verbose=args.verbose)
@@ -391,18 +499,19 @@ def main_loop(args: argparse.Namespace) -> int:
     logger.info("=" * 70)
 
     # Validate environment
-    bot_token = os.getenv('SLACK_BOT_TOKEN')
-    if not bot_token:
-        logger.error(
-            "SLACK_BOT_TOKEN not found in environment. "
-            "Please set it in .env file or environment."
-        )
+    bot_token, env_channel, errors = validate_slack_environment()
+
+    if errors:
+        for error in errors:
+            logger.error(error)
+        print_env_help()
         return 1
 
     # Get channel from args or env
-    channel = args.channel or os.getenv('SLACK_CHANNEL')
+    channel = args.channel or env_channel
     if not channel:
-        logger.error("No channel specified. Use --channel or set SLACK_CHANNEL")
+        logger.error("No channel specified. Use --channel or set SLACK_CHANNEL environment variable")
+        print("\nHint: Set SLACK_CHANNEL in your .env file or pass --channel flag")
         return 1
 
     # Find project root and kanban script

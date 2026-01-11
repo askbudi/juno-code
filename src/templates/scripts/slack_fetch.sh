@@ -167,6 +167,50 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 
 cd "$PROJECT_ROOT"
 
+# Show help for Slack environment setup
+show_env_help() {
+    echo ""
+    echo "========================================================================"
+    echo "Slack Integration - Environment Setup"
+    echo "========================================================================"
+    echo ""
+    echo "Required Environment Variables:"
+    echo "  SLACK_BOT_TOKEN       Your Slack bot token (starts with xoxb-)"
+    echo ""
+    echo "Optional Environment Variables:"
+    echo "  SLACK_CHANNEL         Default channel to monitor"
+    echo "  CHECK_INTERVAL_SECONDS  Polling interval (default: 60)"
+    echo "  LOG_LEVEL             DEBUG, INFO, WARNING, ERROR (default: INFO)"
+    echo ""
+    echo "Configuration Methods:"
+    echo "  1. Environment variables:"
+    echo "     export SLACK_BOT_TOKEN=xoxb-your-token-here"
+    echo "     export SLACK_CHANNEL=bug-reports"
+    echo ""
+    echo "  2. .env file (in project root):"
+    echo "     SLACK_BOT_TOKEN=xoxb-your-token-here"
+    echo "     SLACK_CHANNEL=bug-reports"
+    echo ""
+    echo "  3. .juno_task/.env file (project-specific):"
+    echo "     SLACK_BOT_TOKEN=xoxb-your-token-here"
+    echo "     SLACK_CHANNEL=bug-reports"
+    echo ""
+    echo "To generate a Slack bot token:"
+    echo "  1. Go to https://api.slack.com/apps and create a new app"
+    echo "  2. Under 'OAuth & Permissions', add these scopes:"
+    echo "     - channels:history, channels:read (public channels)"
+    echo "     - groups:history, groups:read (private channels)"
+    echo "     - users:read (user info)"
+    echo "     - chat:write (for slack_respond.py)"
+    echo "  3. Install the app to your workspace"
+    echo "  4. Copy the 'Bot User OAuth Token' (starts with xoxb-)"
+    echo ""
+    echo "  Full tutorial: https://api.slack.com/tutorials/tracks/getting-a-token"
+    echo ""
+    echo "========================================================================"
+    echo ""
+}
+
 # Main function
 main() {
     log_info "=== Slack Fetch Wrapper ==="
@@ -182,15 +226,40 @@ main() {
         exit 1
     fi
 
-    # Check for .env file
-    if [ ! -f ".env" ] && [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-        log_warning "No .env file found and SLACK_BOT_TOKEN not set"
-        log_info "Please create a .env file with:"
-        log_info "  SLACK_BOT_TOKEN=xoxb-your-token-here"
-        log_info "  SLACK_CHANNEL=your-channel-name"
+    # Load .env file if it exists
+    if [ -f ".env" ]; then
+        # shellcheck disable=SC1091
+        set -a
+        source .env
+        set +a
+        log_success "Loaded environment from .env"
+    fi
+
+    # Also check .juno_task/.env
+    if [ -f ".juno_task/.env" ]; then
+        # shellcheck disable=SC1091
+        set -a
+        source .juno_task/.env
+        set +a
+        log_success "Loaded environment from .juno_task/.env"
+    fi
+
+    # Check for SLACK_BOT_TOKEN
+    if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+        log_error "SLACK_BOT_TOKEN not set!"
+        show_env_help
+        exit 1
+    fi
+
+    # Validate token format
+    if [[ ! "${SLACK_BOT_TOKEN:-}" =~ ^xoxb- ]]; then
+        log_warning "SLACK_BOT_TOKEN does not start with 'xoxb-' - this may be an invalid bot token"
+        log_info "Bot tokens from Slack should start with 'xoxb-'"
+        log_info "To generate a valid token, visit: https://api.slack.com/tutorials/tracks/getting-a-token"
     fi
 
     log_success "Python environment ready!"
+    log_success "Slack token configured"
 
     # Execute slack_fetch.py
     log_info "Executing slack_fetch.py: $*"
