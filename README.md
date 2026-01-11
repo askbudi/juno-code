@@ -192,6 +192,176 @@ juno-code feedback --interactive
 juno-code start -b shell -s claude --enable-feedback -i 10
 ```
 
+## Slack Integration
+
+juno-code includes built-in Slack integration for team collaboration. The system monitors Slack channels and creates kanban tasks from messages, then posts agent responses as threaded replies.
+
+### How It Works
+
+1. **Fetch**: `slack_fetch.sh` monitors a Slack channel and creates kanban tasks from new messages
+2. **Process**: The AI agent processes tasks and records responses in the kanban
+3. **Respond**: `slack_respond.sh` sends agent responses back to Slack as threaded replies
+
+This enables a workflow where team members can submit tasks via Slack and receive AI-generated responses without leaving their chat interface.
+
+### Setup
+
+1. **Create a Slack App**:
+   - Go to https://api.slack.com/apps and create a new app
+   - Under "OAuth & Permissions", add these scopes:
+     - `channels:history`, `channels:read` (public channels)
+     - `groups:history`, `groups:read` (private channels)
+     - `users:read` (user info)
+     - `chat:write` (send messages)
+   - Install the app to your workspace
+   - Copy the "Bot User OAuth Token" (starts with `xoxb-`)
+
+2. **Configure Environment**:
+   ```bash
+   # In project root .env file
+   SLACK_BOT_TOKEN=xoxb-your-token-here
+   SLACK_CHANNEL=bug-reports
+   ```
+
+3. **Usage**:
+   ```bash
+   # Fetch messages from Slack and create tasks
+   ./.juno_task/scripts/slack_fetch.sh --channel bug-reports
+
+   # Continuous monitoring mode
+   ./.juno_task/scripts/slack_fetch.sh --channel feature-requests --continuous
+
+   # Send completed task responses back to Slack
+   ./.juno_task/scripts/slack_respond.sh --tag slack-input
+
+   # Dry run to preview what would be sent
+   ./.juno_task/scripts/slack_respond.sh --dry-run --verbose
+   ```
+
+### Automated Slack Workflow with Hooks
+
+Use the `--pre-run` flag to sync with Slack before each juno-code run:
+
+```bash
+# Fetch Slack messages before starting work
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run "./.juno_task/scripts/slack_fetch.sh --channel bug-reports" \
+  -s claude -i 5 -v
+```
+
+Or configure hooks in `.juno_task/config.json`:
+
+```json
+{
+  "hooks": {
+    "SLACK_SYNC": {
+      "commands": [
+        "./.juno_task/scripts/slack_fetch.sh --channel bug-reports",
+        "./.juno_task/scripts/slack_respond.sh --tag slack-input"
+      ]
+    }
+  }
+}
+```
+
+Then run with the hook:
+
+```bash
+./.juno_task/scripts/run_until_completion.sh --pre-run-hook SLACK_SYNC -s claude -i 5 -v
+```
+
+## run_until_completion.sh
+
+The `run_until_completion.sh` script continuously runs juno-code until all kanban tasks are completed. It uses a do-while loop pattern: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
+
+### Basic Usage
+
+```bash
+# Run until all tasks complete
+./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
+
+# With custom backend and model
+./.juno_task/scripts/run_until_completion.sh -b shell -s codex -m :codex -i 10
+```
+
+### Pre-run Commands (--pre-run)
+
+Execute commands before the main loop starts. Useful for syncing with external services, running linters, or preparing the environment.
+
+```bash
+# Single pre-run command
+./.juno_task/scripts/run_until_completion.sh --pre-run "./scripts/lint.sh" -s claude -i 5
+
+# Multiple pre-run commands (executed in order)
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run "./scripts/sync.sh" \
+  --pre-run "npm run build" \
+  -s claude -i 5 -v
+
+# Alternative: use environment variable
+JUNO_PRE_RUN="./scripts/prepare.sh" \
+  ./.juno_task/scripts/run_until_completion.sh -s claude -i 5
+```
+
+### Pre-run Hooks (--pre-run-hook)
+
+Execute named hooks defined in `.juno_task/config.json`. Hooks group multiple commands that run together.
+
+**Define hooks in config.json:**
+```json
+{
+  "hooks": {
+    "START_ITERATION": {
+      "commands": [
+        "./scripts/lint.sh",
+        "npm run typecheck"
+      ]
+    },
+    "SLACK_SYNC": {
+      "commands": [
+        "./.juno_task/scripts/slack_fetch.sh --channel bugs",
+        "./.juno_task/scripts/slack_respond.sh"
+      ]
+    }
+  }
+}
+```
+
+**Use hooks:**
+```bash
+# Single hook
+./.juno_task/scripts/run_until_completion.sh --pre-run-hook START_ITERATION -s claude -i 5
+
+# Multiple hooks (executed in order)
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run-hook SLACK_SYNC \
+  --pre-run-hook START_ITERATION \
+  -s claude -i 5
+
+# Alternative: use environment variable
+JUNO_PRE_RUN_HOOK="START_ITERATION" \
+  ./.juno_task/scripts/run_until_completion.sh -s claude -i 5
+```
+
+### Execution Order
+
+When both hooks and pre-run commands are specified, the execution order is:
+1. Hooks from `JUNO_PRE_RUN_HOOK` env var
+2. Hooks from `--pre-run-hook` flags (in order)
+3. Commands from `JUNO_PRE_RUN` env var
+4. Commands from `--pre-run` flags (in order)
+5. Main juno-code loop begins
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `JUNO_DEBUG=true` | Show debug diagnostic messages |
+| `JUNO_VERBOSE=true` | Show informational status messages |
+| `JUNO_PRE_RUN` | Pre-run command (runs before --pre-run flags) |
+| `JUNO_PRE_RUN_HOOK` | Pre-run hook name (runs before --pre-run-hook flags) |
+| `JUNO_RUN_UNTIL_MAX_ITERATIONS` | Maximum iterations (0 = unlimited) |
+
 ## Kanban Commands
 
 The kanban.sh script wraps juno-kanban. Here are the actual commands:
