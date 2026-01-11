@@ -38,6 +38,9 @@ NC='\033[0m' # No Color
 # Required packages
 REQUIRED_PACKAGES=("juno-kanban" "roundtable-ai")
 
+# Slack integration dependencies (optional, only installed when Slack scripts are used)
+SLACK_PACKAGES=("slack_sdk" "python-dotenv")
+
 # Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"

@@ -18,11 +18,18 @@ export class ScriptInstaller {
   /**
    * Required scripts include both standalone scripts and their dependencies.
    * kanban.sh depends on install_requirements.sh for Python venv setup.
+   * Slack integration scripts allow fetching tasks from Slack and responding.
    */
   private static readonly REQUIRED_SCRIPTS = [
     'run_until_completion.sh',
     'kanban.sh',
     'install_requirements.sh', // Required by kanban.sh for Python venv creation
+    // Slack integration scripts
+    'slack_state.py', // State management for Slack integration
+    'slack_fetch.py', // Core logic for fetching Slack messages
+    'slack_fetch.sh', // Wrapper script for Slack fetch
+    'slack_respond.py', // Core logic for sending responses to Slack
+    'slack_respond.sh', // Wrapper script for Slack respond
   ];
 
   /**

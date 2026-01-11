@@ -58,10 +58,16 @@ describe('ScriptInstaller', () => {
     it('should return empty array when all required scripts exist', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
-      // Create all required scripts including install_requirements.sh
+      // Create all required scripts including install_requirements.sh and Slack scripts
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
       await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      // Slack integration scripts
+      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
+      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -122,6 +128,12 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: false },
         { name: 'kanban.sh', installed: false },
         { name: 'install_requirements.sh', installed: false },
+        // Slack integration scripts
+        { name: 'slack_state.py', installed: false },
+        { name: 'slack_fetch.py', installed: false },
+        { name: 'slack_fetch.sh', installed: false },
+        { name: 'slack_respond.py', installed: false },
+        { name: 'slack_respond.sh', installed: false },
       ]);
     });
 
@@ -131,6 +143,12 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
       await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      // Slack integration scripts
+      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
+      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
+      await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -138,6 +156,12 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: true },
         { name: 'kanban.sh', installed: true },
         { name: 'install_requirements.sh', installed: true },
+        // Slack integration scripts
+        { name: 'slack_state.py', installed: true },
+        { name: 'slack_fetch.py', installed: true },
+        { name: 'slack_fetch.sh', installed: true },
+        { name: 'slack_respond.py', installed: true },
+        { name: 'slack_respond.sh', installed: true },
       ]);
     });
   });
