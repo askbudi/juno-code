@@ -21,6 +21,9 @@
 #                             Can be specified multiple times for multiple commands
 #                             Commands are executed in order before juno-code starts
 #   --pre-run-hook <name>   - Execute a named hook from .juno_task/config.json
+#   --pre-run-hooks <name>    (alias for --pre-run-hook)
+#   --run-pre-hook <name>     (alias for --pre-run-hook)
+#   --run-pre-hooks <name>    (alias for --pre-run-hook)
 #                             The hook should be defined in config.json under "hooks"
 #                             with a "commands" array. All commands in the hook are
 #                             executed before the main loop.
@@ -78,9 +81,9 @@ parse_arguments() {
                 PRE_RUN_CMDS+=("$2")
                 shift 2
                 ;;
-            --pre-run-hook)
+            --pre-run-hook|--pre-run-hooks|--run-pre-hook|--run-pre-hooks)
                 if [[ -z "${2:-}" ]]; then
-                    echo "[ERROR] --pre-run-hook requires a hook name argument" >&2
+                    echo "[ERROR] $1 requires a hook name argument" >&2
                     exit 1
                 fi
                 PRE_RUN_HOOKS+=("$2")
