@@ -71,7 +71,8 @@ def setup_logging(verbose: bool = False) -> None:
 def get_kanban_tasks(
     kanban_script: str,
     tag: Optional[str] = None,
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    limit: int = 10000
 ) -> List[Dict[str, Any]]:
     """
     Get kanban tasks from the kanban.sh script.
@@ -80,11 +81,12 @@ def get_kanban_tasks(
         kanban_script: Path to kanban.sh script
         tag: Optional tag to filter by
         status: Optional status to filter by
+        limit: Maximum number of tasks to retrieve (default: 10000 to ensure all tasks)
 
     Returns:
         List of task dicts
     """
-    cmd = [kanban_script, 'list']
+    cmd = [kanban_script, 'list', '--limit', str(limit)]
 
     if tag:
         cmd.extend(['--tag', tag])
