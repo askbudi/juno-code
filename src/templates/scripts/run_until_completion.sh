@@ -15,6 +15,8 @@
 # Example: ./.juno_task/scripts/run_until_completion.sh -b shell -s claude -m :opus
 # Example: ./.juno_task/scripts/run_until_completion.sh --pre-run "./slack/sync.sh" -s claude -i 5
 # Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook START_ITERATION -s claude -i 5
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook "SYNC_SLACK,VALIDATE" -s claude -i 5
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook "HOOK1|HOOK2|HOOK3" -s claude -i 5
 #
 # Options (for run_until_completion.sh):
 #   --pre-run <cmd>         - Execute command before entering the main loop
@@ -27,7 +29,10 @@
 #                             The hook should be defined in config.json under "hooks"
 #                             with a "commands" array. All commands in the hook are
 #                             executed before the main loop.
-#                             Can be specified multiple times for multiple hooks.
+#                             Multiple hooks can be specified by:
+#                               - Using the flag multiple times: --pre-run-hook A --pre-run-hook B
+#                               - Comma-separated: --pre-run-hook "A,B,C"
+#                               - Pipe-separated: --pre-run-hook "A|B|C"
 #
 # All other arguments are forwarded to juno-code.
 # The script shows all stdout/stderr from juno-code in real-time.
@@ -86,7 +91,24 @@ parse_arguments() {
                     echo "[ERROR] $1 requires a hook name argument" >&2
                     exit 1
                 fi
-                PRE_RUN_HOOKS+=("$2")
+                # Support multiple hooks via comma or pipe separator
+                # e.g., --pre-run-hook "HOOK1,HOOK2" or --pre-run-hook "HOOK1|HOOK2"
+                local hook_value="$2"
+                if [[ "$hook_value" == *","* ]] || [[ "$hook_value" == *"|"* ]]; then
+                    # Replace pipes with commas, then split on commas
+                    local normalized="${hook_value//|/,}"
+                    IFS=',' read -ra hook_names <<< "$normalized"
+                    for hook_name in "${hook_names[@]}"; do
+                        # Trim whitespace
+                        hook_name="${hook_name#"${hook_name%%[![:space:]]*}"}"
+                        hook_name="${hook_name%"${hook_name##*[![:space:]]}"}"
+                        if [[ -n "$hook_name" ]]; then
+                            PRE_RUN_HOOKS+=("$hook_name")
+                        fi
+                    done
+                else
+                    PRE_RUN_HOOKS+=("$hook_value")
+                fi
                 shift 2
                 ;;
             *)
@@ -103,9 +125,27 @@ parse_arguments() {
     fi
 
     # Also check JUNO_PRE_RUN_HOOK environment variable
+    # Supports comma or pipe separated hooks: JUNO_PRE_RUN_HOOK="HOOK1,HOOK2|HOOK3"
     if [[ -n "${JUNO_PRE_RUN_HOOK:-}" ]]; then
-        # Prepend env var hook (runs first)
-        PRE_RUN_HOOKS=("$JUNO_PRE_RUN_HOOK" "${PRE_RUN_HOOKS[@]}")
+        local env_hooks=()
+        local hook_value="${JUNO_PRE_RUN_HOOK}"
+        if [[ "$hook_value" == *","* ]] || [[ "$hook_value" == *"|"* ]]; then
+            # Replace pipes with commas, then split on commas
+            local normalized="${hook_value//|/,}"
+            IFS=',' read -ra hook_names <<< "$normalized"
+            for hook_name in "${hook_names[@]}"; do
+                # Trim whitespace
+                hook_name="${hook_name#"${hook_name%%[![:space:]]*}"}"
+                hook_name="${hook_name%"${hook_name##*[![:space:]]}"}"
+                if [[ -n "$hook_name" ]]; then
+                    env_hooks+=("$hook_name")
+                fi
+            done
+        else
+            env_hooks+=("$hook_value")
+        fi
+        # Prepend env var hooks (runs first)
+        PRE_RUN_HOOKS=("${env_hooks[@]}" "${PRE_RUN_HOOKS[@]}")
     fi
 }
 
