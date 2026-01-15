@@ -68,6 +68,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
+      // GitHub integration script
+      await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -134,6 +136,8 @@ describe('ScriptInstaller', () => {
         { name: 'slack_fetch.sh', installed: false },
         { name: 'slack_respond.py', installed: false },
         { name: 'slack_respond.sh', installed: false },
+        // GitHub integration script
+        { name: 'github.py', installed: false },
       ]);
     });
 
@@ -149,6 +153,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
+      // GitHub integration script
+      await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -162,6 +168,8 @@ describe('ScriptInstaller', () => {
         { name: 'slack_fetch.sh', installed: true },
         { name: 'slack_respond.py', installed: true },
         { name: 'slack_respond.sh', installed: true },
+        // GitHub integration script
+        { name: 'github.py', installed: true },
       ]);
     });
   });

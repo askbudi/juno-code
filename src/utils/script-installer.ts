@@ -30,6 +30,8 @@ export class ScriptInstaller {
     'slack_fetch.sh', // Wrapper script for Slack fetch
     'slack_respond.py', // Core logic for sending responses to Slack
     'slack_respond.sh', // Wrapper script for Slack respond
+    // GitHub integration script (single-file architecture)
+    'github.py', // Unified GitHub integration (fetch, respond, sync)
   ];
 
   /**
