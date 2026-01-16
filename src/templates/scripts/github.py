@@ -1162,7 +1162,7 @@ def handle_respond(args: argparse.Namespace) -> int:
         total_tasks += 1
 
         # Extract tag_id
-        tag_id = extract_github_tag(task.get('tags', []))
+        tag_id = extract_github_tag(task.get('feature_tags', []))
         if not tag_id:
             logger.debug(f"Task {task_id}: No GitHub tag_id, skipping")
             continue
