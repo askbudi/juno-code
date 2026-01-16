@@ -1338,6 +1338,7 @@ Notes:
     sync_parser.add_argument('--labels', help='Filter by labels (comma-separated)')
     sync_parser.add_argument('--assignee', help='Filter by assignee')
     sync_parser.add_argument('--state', default='open', choices=['open', 'closed', 'all'], help='Issue state (default: open)')
+    sync_parser.add_argument('--since', help='Only issues updated since timestamp (ISO 8601)')
     sync_parser.add_argument('--tag', default='github-input', help='Filter kanban tasks by tag (default: github-input)')
 
     sync_mode_group = sync_parser.add_mutually_exclusive_group()
