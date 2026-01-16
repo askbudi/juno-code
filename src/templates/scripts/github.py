@@ -952,7 +952,16 @@ def handle_fetch(args: argparse.Namespace) -> int:
         user_info = client.test_connection()
         logger.info(f"Connected to GitHub API (user: {user_info['login']})")
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Failed to connect to GitHub: {e}")
+        error_msg = f"Failed to connect to GitHub: {e}"
+        logger.error(error_msg)
+        print(f"\n❌ ERROR: {error_msg}", file=sys.stderr)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_detail = e.response.json()
+                print(f"   Details: {error_detail.get('message', 'No details available')}", file=sys.stderr)
+            except:
+                print(f"   HTTP Status: {e.response.status_code}", file=sys.stderr)
+        print("   Check your GITHUB_TOKEN permissions and validity", file=sys.stderr)
         return 1
 
     # Initialize state manager
@@ -1095,7 +1104,16 @@ def handle_respond(args: argparse.Namespace) -> int:
         user_info = client.test_connection()
         logger.info(f"Connected to GitHub API (user: {user_info['login']})")
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Failed to connect to GitHub: {e}")
+        error_msg = f"Failed to connect to GitHub: {e}"
+        logger.error(error_msg)
+        print(f"\n❌ ERROR: {error_msg}", file=sys.stderr)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_detail = e.response.json()
+                print(f"   Details: {error_detail.get('message', 'No details available')}", file=sys.stderr)
+            except:
+                print(f"   HTTP Status: {e.response.status_code}", file=sys.stderr)
+        print("   Check your GITHUB_TOKEN permissions and validity", file=sys.stderr)
         return 1
 
     # Initialize state managers
@@ -1189,6 +1207,10 @@ def handle_respond(args: argparse.Namespace) -> int:
         try:
             owner, repo_name = repo.split('/')
 
+            # Debug output to help troubleshoot
+            logger.debug(f"Posting comment to {owner}/{repo_name} issue #{issue_number}")
+            logger.debug(f"Comment preview: {comment_body[:100]}...")
+
             # Post comment
             comment = client.post_comment(owner, repo_name, issue_number, comment_body)
             logger.info(f"  ✓ Posted comment on issue #{issue_number}")
@@ -1198,7 +1220,21 @@ def handle_respond(args: argparse.Namespace) -> int:
                 client.close_issue(owner, repo_name, issue_number)
                 logger.info(f"  ✓ Closed issue #{issue_number}")
             except requests.exceptions.HTTPError as e:
-                logger.warning(f"  ⚠ Failed to close issue #{issue_number}: {e}")
+                warning_msg = f"  ⚠ Failed to close issue #{issue_number}: {e}"
+                logger.warning(warning_msg)
+                print(f"\n{warning_msg}", file=sys.stderr)
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_detail = e.response.json()
+                        detail_msg = f"     Details: {error_detail.get('message', 'No details available')}"
+                        logger.warning(detail_msg)
+                        print(detail_msg, file=sys.stderr)
+                    except:
+                        status_msg = f"     HTTP Status: {e.response.status_code}"
+                        logger.warning(status_msg)
+                        print(status_msg, file=sys.stderr)
+                print("     Note: Comment was posted successfully, but couldn't close the issue", file=sys.stderr)
+                print("     Check that GITHUB_TOKEN has 'repo' scope with write permissions", file=sys.stderr)
                 # Continue anyway - comment was posted successfully
 
             # Record response
@@ -1215,7 +1251,23 @@ def handle_respond(args: argparse.Namespace) -> int:
 
         except requests.exceptions.HTTPError as e:
             errors_count += 1
-            logger.error(f"  ✗ Failed to post comment: {e}")
+            error_msg = f"  ✗ Failed to post comment on issue #{issue_number}: {e}"
+            logger.error(error_msg)
+            print(f"\n{error_msg}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.json()
+                    detail_msg = f"     Details: {error_detail.get('message', 'No details available')}"
+                    logger.error(detail_msg)
+                    print(detail_msg, file=sys.stderr)
+                except:
+                    status_msg = f"     HTTP Status: {e.response.status_code}"
+                    logger.error(status_msg)
+                    print(status_msg, file=sys.stderr)
+            print("     Common causes:", file=sys.stderr)
+            print("     - Missing 'repo' or 'issues' scope in GITHUB_TOKEN", file=sys.stderr)
+            print("     - Token doesn't have write access to the repository", file=sys.stderr)
+            print("     - Token is expired or revoked", file=sys.stderr)
 
     # Summary
     logger.info("")
