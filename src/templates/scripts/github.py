@@ -488,6 +488,27 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()
 
+    def close_issue(self, owner: str, repo: str, issue_number: int) -> Dict[str, Any]:
+        """
+        Close an issue.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            issue_number: Issue number
+
+        Returns:
+            Updated issue dict
+
+        Raises:
+            requests.exceptions.HTTPError: If close fails
+        """
+        url = f"{self.api_url}/repos/{owner}/{repo}/issues/{issue_number}"
+        response = self.session.patch(url, json={'state': 'closed'}, timeout=30)
+        self._check_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
+
     def _check_rate_limit(self, response):
         """Check and log rate limit status."""
         remaining = response.headers.get('X-RateLimit-Remaining')
@@ -1118,6 +1139,7 @@ def handle_respond(args: argparse.Namespace) -> int:
     for task in tasks:
         task_id = task.get('id')
         agent_response = task.get('agent_response', '')
+        commit_hash = task.get('commit_hash', '')
 
         total_tasks += 1
 
@@ -1153,15 +1175,31 @@ def handle_respond(args: argparse.Namespace) -> int:
         # Format comment body
         comment_body = f"**Task ID: {task_id}**\n\n{agent_response}"
 
+        # Add commit hash if available
+        if commit_hash:
+            comment_body += f"\n\n**Commit:** {commit_hash}"
+
         if args.dry_run:
             logger.info(f"  [DRY RUN] Would post comment on issue #{issue_number}")
+            logger.info(f"  [DRY RUN] Would close issue #{issue_number}")
             logger.debug(f"  [DRY RUN] Comment: {comment_body[:200]}...")
             sent_responses += 1
             continue
 
         try:
             owner, repo_name = repo.split('/')
+
+            # Post comment
             comment = client.post_comment(owner, repo_name, issue_number, comment_body)
+            logger.info(f"  ✓ Posted comment on issue #{issue_number}")
+
+            # Close the issue
+            try:
+                client.close_issue(owner, repo_name, issue_number)
+                logger.info(f"  ✓ Closed issue #{issue_number}")
+            except requests.exceptions.HTTPError as e:
+                logger.warning(f"  ⚠ Failed to close issue #{issue_number}: {e}")
+                # Continue anyway - comment was posted successfully
 
             # Record response
             response_mgr.record_sent(
@@ -1174,7 +1212,6 @@ def handle_respond(args: argparse.Namespace) -> int:
             )
 
             sent_responses += 1
-            logger.info(f"  ✓ Posted comment on issue #{issue_number}")
 
         except requests.exceptions.HTTPError as e:
             errors_count += 1
