@@ -1173,7 +1173,7 @@ def handle_respond(args: argparse.Namespace) -> int:
         logger.info(f"Task {task_id}: Sending response to issue #{issue_number}")
 
         # Format comment body
-        comment_body = f"**Task ID: {task_id}**\n\n{agent_response}"
+        comment_body = f"Task ID **{task_id}**\n\n{agent_response}"
 
         # Add commit hash if available
         if commit_hash:
