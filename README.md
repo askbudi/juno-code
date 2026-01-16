@@ -270,6 +270,99 @@ Then run with the hook:
 ./.juno_task/scripts/run_until_completion.sh --pre-run-hook SLACK_SYNC -s claude -i 5 -v
 ```
 
+## GitHub Integration
+
+juno-code includes built-in GitHub integration for issue tracking and automated responses. The system monitors GitHub repositories, creates kanban tasks from issues, and posts agent responses as threaded comments with automatic issue closure.
+
+### How It Works
+
+1. **Fetch**: `github.py fetch` monitors a GitHub repository and creates kanban tasks from new issues
+2. **Process**: The AI agent processes tasks and records responses in the kanban
+3. **Respond**: `github.py respond` posts agent responses as comments on GitHub issues and closes them
+
+This enables a workflow where team members can submit tasks via GitHub issues and receive AI-generated responses with automatic issue closure.
+
+### Setup
+
+1. **Create a GitHub Personal Access Token**:
+   - Go to https://github.com/settings/tokens and create a new token (classic)
+   - Grant these permissions:
+     - `repo` (full control of private repositories)
+     - `public_repo` (access to public repositories)
+   - Copy the token (starts with `ghp_`)
+
+2. **Configure Environment**:
+   ```bash
+   # In project root .env file
+   GITHUB_TOKEN=ghp_your_token_here
+   GITHUB_REPO=owner/repo  # Optional default repository
+   GITHUB_LABELS=bug,priority  # Optional label filter
+   ```
+
+3. **Usage**:
+   ```bash
+   # Fetch issues from GitHub and create tasks
+   ./.juno_task/scripts/github.py fetch --repo owner/repo
+
+   # Filter by labels
+   ./.juno_task/scripts/github.py fetch --repo owner/repo --labels bug,priority
+
+   # Post completed task responses back to GitHub
+   ./.juno_task/scripts/github.py respond --tag github-issue
+
+   # Bidirectional sync (fetch + respond)
+   ./.juno_task/scripts/github.py sync --repo owner/repo
+
+   # Continuous sync mode with interval
+   ./.juno_task/scripts/github.py sync --repo owner/repo --continuous --interval 600
+
+   # One-time sync
+   ./.juno_task/scripts/github.py sync --repo owner/repo --once
+
+   # Dry run to preview what would be posted
+   ./.juno_task/scripts/github.py respond --dry-run --verbose
+   ```
+
+### Key Features
+
+- **Tag-based identification**: Uses `github_issue_owner_repo_123` format for O(1) lookups
+- **State tracking**: Maintains state in `.juno_task/github/state.ndjson` and `responses.ndjson`
+- **Automatic closure**: Issues are automatically closed after posting the agent response
+- **Commit linking**: Includes commit hash in comment if available
+- **Response format**: Posts `agent_response` field from completed kanban tasks
+
+### Automated GitHub Workflow with Hooks
+
+Use the `--pre-run` flag to sync with GitHub before each juno-code run:
+
+```bash
+# Fetch GitHub issues before starting work
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run "./.juno_task/scripts/github.py fetch --repo owner/repo" \
+  -s claude -i 5 -v
+```
+
+Or configure hooks in `.juno_task/config.json`:
+
+```json
+{
+  "hooks": {
+    "GITHUB_SYNC": {
+      "commands": [
+        "./.juno_task/scripts/github.py fetch --repo owner/repo --labels bug",
+        "./.juno_task/scripts/github.py respond --tag github-issue"
+      ]
+    }
+  }
+}
+```
+
+Then run with the hook:
+
+```bash
+./.juno_task/scripts/run_until_completion.sh --pre-run-hook GITHUB_SYNC -s claude -i 5 -v
+```
+
 ## run_until_completion.sh
 
 The `run_until_completion.sh` script continuously runs juno-code until all kanban tasks are completed. It uses a do-while loop pattern: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
