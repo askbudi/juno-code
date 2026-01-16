@@ -1348,6 +1348,7 @@ Notes:
     sync_parser.add_argument('--interval', type=int, help='Polling interval in seconds (default: 600)')
     sync_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making changes')
     sync_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
+    sync_parser.add_argument('--reset-tracker', action='store_true', help='Reset response tracker (WARNING: will re-send all responses)')
 
     args = parser.parse_args()
 
