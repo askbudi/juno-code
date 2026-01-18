@@ -611,6 +611,8 @@ def extract_github_tag(tags: List[str]) -> Optional[str]:
     Returns:
         Tag ID string or None if not found
     """
+    if tags is None:
+        return None
     for tag in tags:
         if tag.startswith('github_issue_'):
             return tag
