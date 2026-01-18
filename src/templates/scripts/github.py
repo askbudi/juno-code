@@ -1007,7 +1007,7 @@ def add_tag_to_kanban_task(kanban_script: str, task_id: str, tag: str) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    cmd = [kanban_script, 'tag', task_id, tag]
+    cmd = [kanban_script, 'update', task_id, '--tags', tag]
 
     logger.debug(f"Running: {' '.join(cmd)}")
 
@@ -1618,15 +1618,21 @@ def handle_push(args: argparse.Namespace) -> int:
                 logger.warning(f"  ⚠ Failed to tag task {task_id} (issue was created successfully)")
 
             # Record in state
-            state_mgr.add_issue(
-                tag_id=tag_id,
-                issue_number=issue_number,
-                repo=repo,
-                author=user_info['login'],
-                task_id=task_id,
-                url=issue_url,
-                title=issue_title
-            )
+            state_mgr.mark_processed({
+                'issue_number': issue_number,
+                'repo': repo,
+                'title': issue_title,
+                'body': issue_body,
+                'author': user_info['login'],
+                'author_id': user_info.get('id', 0),
+                'labels': labels if labels else [],
+                'assignees': [],
+                'state': issue.get('state', 'open'),
+                'created_at': issue.get('created_at', datetime.now(timezone.utc).isoformat()),
+                'updated_at': issue.get('updated_at', datetime.now(timezone.utc).isoformat()),
+                'issue_url': issue.get('url', ''),
+                'issue_html_url': issue_url
+            }, task_id)
 
             created_issues += 1
 
