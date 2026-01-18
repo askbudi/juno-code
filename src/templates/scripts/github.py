@@ -509,6 +509,34 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()
 
+    def create_issue(self, owner: str, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Create a new issue.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            title: Issue title
+            body: Issue body (markdown)
+            labels: Optional list of label names
+
+        Returns:
+            Created issue dict with number, url, etc.
+
+        Raises:
+            requests.exceptions.HTTPError: If issue creation fails
+        """
+        url = f"{self.api_url}/repos/{owner}/{repo}/issues"
+        payload = {'title': title, 'body': body}
+
+        if labels:
+            payload['labels'] = labels
+
+        response = self.session.post(url, json=payload, timeout=30)
+        self._check_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
+
     def _check_rate_limit(self, response):
         """Check and log rate limit status."""
         remaining = response.headers.get('X-RateLimit-Remaining')
@@ -905,6 +933,102 @@ def get_completed_tasks_with_responses(
     except Exception as e:
         logger.error(f"Error running kanban command: {e}")
         return []
+
+
+def get_all_kanban_tasks(
+    kanban_script: str,
+    tag_filter: Optional[str] = None,
+    status_filter: Optional[List[str]] = None,
+    limit: int = 10000
+) -> List[Dict[str, Any]]:
+    """
+    Get all kanban tasks.
+
+    Args:
+        kanban_script: Path to kanban.sh script
+        tag_filter: Optional tag to filter by
+        status_filter: Optional list of statuses to filter by
+        limit: Maximum number of tasks to retrieve
+
+    Returns:
+        List of task dicts
+    """
+    cmd = [kanban_script, 'list', '--limit', str(limit)]
+
+    if tag_filter:
+        cmd.extend(['--tag', tag_filter])
+
+    if status_filter:
+        cmd.extend(['--status'] + status_filter)
+
+    logger.debug(f"Running: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Kanban command failed: {result.stderr}")
+            return []
+
+        try:
+            tasks = json.loads(result.stdout)
+            if isinstance(tasks, list):
+                return tasks
+            logger.warning(f"Unexpected kanban output format: {type(tasks)}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse kanban output: {e}")
+            return []
+
+    except subprocess.TimeoutExpired:
+        logger.error("Kanban command timed out")
+        return []
+    except Exception as e:
+        logger.error(f"Error running kanban command: {e}")
+        return []
+
+
+def add_tag_to_kanban_task(kanban_script: str, task_id: str, tag: str) -> bool:
+    """
+    Add a tag to a kanban task.
+
+    Args:
+        kanban_script: Path to kanban.sh script
+        task_id: Task ID
+        tag: Tag to add
+
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = [kanban_script, 'tag', task_id, tag]
+
+    logger.debug(f"Running: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Failed to tag task {task_id}: {result.stderr}")
+            return False
+
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Tag command timed out for task {task_id}")
+        return False
+    except Exception as e:
+        logger.error(f"Error tagging task {task_id}: {e}")
+        return False
 
 
 # =============================================================================
@@ -1347,6 +1471,198 @@ def handle_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_push(args: argparse.Namespace) -> int:
+    """Handle 'push' subcommand - create GitHub issues from kanban tasks."""
+    logger.info("=" * 70)
+    logger.info("GitHub Push - Creating GitHub issues from kanban tasks")
+    logger.info("=" * 70)
+
+    # Validate environment
+    token, default_repo, errors = validate_github_environment()
+    if errors:
+        for error in errors:
+            logger.error(error)
+        print_env_help()
+        return 1
+
+    # Determine repository
+    repo = args.repo or default_repo
+    if not repo:
+        logger.error("No repository specified. Use --repo or set GITHUB_REPO environment variable")
+        return 1
+
+    # Parse owner/repo
+    try:
+        owner, repo_name = repo.split('/')
+    except ValueError:
+        logger.error(f"Invalid repository format: {repo}. Expected: owner/repo")
+        return 1
+
+    # Find project root and kanban script
+    project_dir = Path.cwd()
+    kanban_script = find_kanban_script(project_dir)
+    if not kanban_script:
+        logger.error("Cannot find kanban.sh script. Is the project initialized?")
+        return 1
+
+    # Initialize GitHub client
+    logger.info("Initializing GitHub client...")
+    api_url = os.getenv('GITHUB_API_URL', 'https://api.github.com')
+    client = GitHubClient(token, api_url)
+
+    # Test connection
+    try:
+        user_info = client.test_connection()
+        logger.info(f"Connected to GitHub API (user: {user_info['login']})")
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"Failed to connect to GitHub: {e}"
+        logger.error(error_msg)
+        print(f"\n❌ ERROR: {error_msg}", file=sys.stderr)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_detail = e.response.json()
+                print(f"   Details: {error_detail.get('message', 'No details available')}", file=sys.stderr)
+            except:
+                print(f"   HTTP Status: {e.response.status_code}", file=sys.stderr)
+        print("   Check your GITHUB_TOKEN permissions and validity", file=sys.stderr)
+        return 1
+
+    # Initialize state manager
+    state_dir = project_dir / '.juno_task' / 'github'
+    state_file = state_dir / 'state.ndjson'
+
+    logger.info(f"Loading GitHub issue state: {state_file}")
+    state_mgr = GitHubStateManager(str(state_file))
+
+    if args.dry_run:
+        logger.info("Running in DRY RUN mode - no issues will be created")
+
+    logger.info(f"Loaded {state_mgr.get_issue_count()} tracked issues")
+    logger.info("-" * 70)
+
+    # Get kanban tasks
+    status_filter = args.status if args.status else None
+    tasks = get_all_kanban_tasks(kanban_script, tag_filter=args.tag, status_filter=status_filter)
+    logger.info(f"Found {len(tasks)} kanban tasks")
+
+    # Filter tasks that don't have GitHub tags
+    tasks_without_github = []
+    for task in tasks:
+        task_id = task.get('id')
+        feature_tags = task.get('feature_tags', [])
+
+        # Check if task already has a GitHub tag
+        tag_id = extract_github_tag(feature_tags)
+        if not tag_id:
+            tasks_without_github.append(task)
+        else:
+            logger.debug(f"Task {task_id}: Already has GitHub tag {tag_id}, skipping")
+
+    logger.info(f"Found {len(tasks_without_github)} tasks without GitHub issues")
+
+    # Process tasks
+    total_tasks = 0
+    created_issues = 0
+    errors_count = 0
+
+    for task in tasks_without_github:
+        task_id = task.get('id')
+        task_body = task.get('body', '')
+        task_status = task.get('status', 'unknown')
+
+        total_tasks += 1
+
+        # Create issue title: Task ID + first 40 chars of body
+        # Remove markdown headers and extra whitespace from body for title
+        clean_body = re.sub(r'#\s+', '', task_body).strip()
+        clean_body = re.sub(r'\s+', ' ', clean_body)
+        title_suffix = clean_body[:40]
+        if len(clean_body) > 40:
+            title_suffix += "..."
+
+        issue_title = f"[{task_id}] {title_suffix}"
+
+        # Issue body is the complete task body
+        issue_body = task_body
+
+        # Add status metadata to issue body
+        issue_body += f"\n\n---\n**Kanban Task ID:** `{task_id}`\n**Status:** `{task_status}`"
+
+        logger.info(f"Task {task_id}: Creating GitHub issue")
+        logger.debug(f"  Title: {issue_title}")
+
+        if args.dry_run:
+            logger.info(f"  [DRY RUN] Would create issue: {issue_title}")
+            logger.debug(f"  [DRY RUN] Body preview: {issue_body[:200]}...")
+            created_issues += 1
+            continue
+
+        try:
+            # Create the issue
+            labels = args.labels.split(',') if args.labels else None
+            issue = client.create_issue(owner, repo_name, issue_title, issue_body, labels)
+            issue_number = issue['number']
+            issue_url = issue['html_url']
+
+            logger.info(f"  ✓ Created issue #{issue_number}: {issue_url}")
+
+            # Generate tag_id for this issue
+            tag_id = f"github_issue_{owner}_{repo_name}_{issue_number}".replace('-', '_').replace('.', '_')
+
+            # Tag the kanban task
+            if add_tag_to_kanban_task(kanban_script, task_id, tag_id):
+                logger.info(f"  ✓ Tagged task {task_id} with {tag_id}")
+            else:
+                logger.warning(f"  ⚠ Failed to tag task {task_id} (issue was created successfully)")
+
+            # Record in state
+            state_mgr.add_issue(
+                tag_id=tag_id,
+                issue_number=issue_number,
+                repo=repo,
+                author=user_info['login'],
+                task_id=task_id,
+                url=issue_url,
+                title=issue_title
+            )
+
+            created_issues += 1
+
+        except requests.exceptions.HTTPError as e:
+            errors_count += 1
+            error_msg = f"  ✗ Failed to create issue for task {task_id}: {e}"
+            logger.error(error_msg)
+            print(f"\n{error_msg}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.json()
+                    detail_msg = f"     Details: {error_detail.get('message', 'No details available')}"
+                    logger.error(detail_msg)
+                    print(detail_msg, file=sys.stderr)
+                except:
+                    status_msg = f"     HTTP Status: {e.response.status_code}"
+                    logger.error(status_msg)
+                    print(status_msg, file=sys.stderr)
+            print("     Common causes:", file=sys.stderr)
+            print("     - Missing 'repo' or 'issues' scope in GITHUB_TOKEN", file=sys.stderr)
+            print("     - Token doesn't have write access to the repository", file=sys.stderr)
+            print("     - Token is expired or revoked", file=sys.stderr)
+
+    # Summary
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("Summary:")
+    logger.info(f"  Total tasks processed: {total_tasks}")
+    logger.info(f"  Issues created: {created_issues}")
+    if errors_count > 0:
+        logger.error(f"  Errors: {errors_count}")
+
+    if args.dry_run:
+        logger.info("(Dry run mode - no issues were actually created)")
+
+    return 0 if errors_count == 0 else 1
+
+
 # =============================================================================
 # Main CLI
 # =============================================================================
@@ -1366,6 +1682,10 @@ Examples:
 
   # Respond to completed tasks
   %(prog)s respond --tag github-input
+
+  # Push kanban tasks to GitHub (create issues)
+  %(prog)s push --repo owner/repo
+  %(prog)s push --repo owner/repo --status backlog todo --labels enhancement
 
   # Full sync (fetch + respond)
   %(prog)s sync --repo owner/repo --once
@@ -1439,6 +1759,15 @@ Notes:
     sync_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
     sync_parser.add_argument('--reset-tracker', action='store_true', help='Reset response tracker (WARNING: will re-send all responses)')
 
+    # Push subcommand
+    push_parser = subparsers.add_parser('push', help='Create GitHub issues from kanban tasks without issues')
+    push_parser.add_argument('--repo', required=True, help='Repository (format: owner/repo)')
+    push_parser.add_argument('--tag', help='Filter kanban tasks by tag')
+    push_parser.add_argument('--status', nargs='+', help='Filter by status (e.g., backlog todo in_progress)')
+    push_parser.add_argument('--labels', help='Add labels to created issues (comma-separated)')
+    push_parser.add_argument('--dry-run', action='store_true', help='Show what would be created without making changes')
+    push_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
+
     args = parser.parse_args()
 
     if not args.subcommand:
@@ -1475,6 +1804,8 @@ Notes:
             return handle_respond(args)
         elif args.subcommand == 'sync':
             return handle_sync(args)
+        elif args.subcommand == 'push':
+            return handle_push(args)
         else:
             logger.error(f"Unknown subcommand: {args.subcommand}")
             return 1
