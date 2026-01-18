@@ -1608,8 +1608,8 @@ def handle_push(args: argparse.Namespace) -> int:
 
             logger.info(f"  ✓ Created issue #{issue_number}: {issue_url}")
 
-            # Generate tag_id for this issue
-            tag_id = f"github_issue_{owner}_{repo_name}_{issue_number}".replace('-', '_').replace('.', '_')
+            # Generate tag_id for this issue (use same method as fetch to ensure consistency)
+            tag_id = GitHubStateManager._make_tag_id(issue_number, repo)
 
             # Tag the kanban task
             if add_tag_to_kanban_task(kanban_script, task_id, tag_id):
