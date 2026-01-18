@@ -807,40 +807,33 @@ def create_kanban_task_from_issue(
     # Generate tag_id
     tag_id = GitHubStateManager._make_tag_id(issue_number, repo)
 
-    # Build task body
-    task_body = f"# GitHub Issue #{issue_number}: {issue['title']}\n\n"
-    task_body += f"**Repository:** {repo}\n"
-    task_body += f"**Author:** @{issue['user']['login']}\n"
-    task_body += f"**URL:** {issue['html_url']}\n"
-    task_body += f"**State:** {issue['state']}\n"
-    task_body += f"**Created:** {issue['created_at']}\n"
-    task_body += f"**Updated:** {issue['updated_at']}\n\n"
-
-    # Add labels if present
-    if issue.get('labels'):
-        labels_str = ', '.join([f"`{l['name']}`" for l in issue['labels']])
-        task_body += f"**Labels:** {labels_str}\n\n"
-
-    # Add assignees if present
-    if issue.get('assignees'):
-        assignees_str = ', '.join([f"@{a['login']}" for a in issue['assignees']])
-        task_body += f"**Assignees:** {assignees_str}\n\n"
-
-    task_body += "---\n\n"
+    # Build task body - optimized for token efficiency
+    # Start with just title and description
+    task_body = f"# {issue['title']}\n\n"
     task_body += issue['body'] or "(No description)"
 
-    # Build tags
+    # Build tags - all metadata goes here for token efficiency
     tags = [
         'github-input',
         f'repo_{sanitize_tag(owner)}_{sanitize_tag(repo_name)}',
-        f"author_{sanitize_tag(issue['user']['login'])}"
+        f"author_{sanitize_tag(issue['user']['login'])}",
+        f"issue_{issue_number}",
+        f"state_{issue['state']}"
     ]
 
     for label in issue.get('labels', []):
         tags.append(f"label_{sanitize_tag(label['name'])}")
 
+    for assignee in issue.get('assignees', []):
+        tags.append(f"assignee_{sanitize_tag(assignee['login'])}")
+
     # Add tag_id as a tag
     tags.append(tag_id)
+
+    # Add metadata as tags for AI agent access without token bloat
+    tags.append(f"url_{issue['html_url']}")
+    tags.append(f"created_{issue['created_at']}")
+    tags.append(f"updated_{issue['updated_at']}")
 
     if dry_run:
         logger.info(f"[DRY RUN] Would create task with tag_id: {tag_id}")
