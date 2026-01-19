@@ -10,17 +10,39 @@
 # internal task management systems get a chance to operate even if kanban.sh
 # doesn't initially detect any tasks.
 #
-# Usage: ./.juno_task/scripts/run_until_completion.sh [juno-code arguments]
+# Usage: ./.juno_task/scripts/run_until_completion.sh [options] [juno-code arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
 # Example: ./.juno_task/scripts/run_until_completion.sh -b shell -s claude -m :opus
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run "./slack/sync.sh" -s claude -i 5
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook START_ITERATION -s claude -i 5
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook "SYNC_SLACK,VALIDATE" -s claude -i 5
+# Example: ./.juno_task/scripts/run_until_completion.sh --pre-run-hook "HOOK1|HOOK2|HOOK3" -s claude -i 5
 #
-# All arguments passed to this script will be forwarded to juno-code.
+# Options (for run_until_completion.sh):
+#   --pre-run <cmd>         - Execute command before entering the main loop
+#                             Can be specified multiple times for multiple commands
+#                             Commands are executed in order before juno-code starts
+#   --pre-run-hook <name>   - Execute a named hook from .juno_task/config.json
+#   --pre-run-hooks <name>    (alias for --pre-run-hook)
+#   --run-pre-hook <name>     (alias for --pre-run-hook)
+#   --run-pre-hooks <name>    (alias for --pre-run-hook)
+#                             The hook should be defined in config.json under "hooks"
+#                             with a "commands" array. All commands in the hook are
+#                             executed before the main loop.
+#                             Multiple hooks can be specified by:
+#                               - Using the flag multiple times: --pre-run-hook A --pre-run-hook B
+#                               - Comma-separated: --pre-run-hook "A,B,C"
+#                               - Pipe-separated: --pre-run-hook "A|B|C"
+#
+# All other arguments are forwarded to juno-code.
 # The script shows all stdout/stderr from juno-code in real-time.
 #
 # Environment Variables:
-#   JUNO_DEBUG=true    - Show [DEBUG] diagnostic messages
-#   JUNO_VERBOSE=true  - Show [RUN_UNTIL] informational messages
-#   (Both default to false for silent operation)
+#   JUNO_DEBUG=true     - Show [DEBUG] diagnostic messages
+#   JUNO_VERBOSE=true   - Show [RUN_UNTIL] informational messages
+#   JUNO_PRE_RUN        - Alternative way to specify pre-run command (env var)
+#   JUNO_PRE_RUN_HOOK   - Alternative way to specify pre-run hook name (env var)
+#   (JUNO_DEBUG and JUNO_VERBOSE default to false for silent operation)
 #
 # Created by: juno-code init command
 # Date: Auto-generated during project initialization
@@ -43,6 +65,226 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPTS_DIR=".juno_task/scripts"
 KANBAN_SCRIPT="${SCRIPTS_DIR}/kanban.sh"
+
+# Arrays to store pre-run commands, hooks, and juno-code arguments
+declare -a PRE_RUN_CMDS=()
+declare -a PRE_RUN_HOOKS=()
+declare -a JUNO_ARGS=()
+
+# Configuration file path
+CONFIG_FILE=".juno_task/config.json"
+
+# Parse arguments to extract --pre-run and --pre-run-hook commands
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --pre-run)
+                if [[ -z "${2:-}" ]]; then
+                    echo "[ERROR] --pre-run requires a command argument" >&2
+                    exit 1
+                fi
+                PRE_RUN_CMDS+=("$2")
+                shift 2
+                ;;
+            --pre-run-hook|--pre-run-hooks|--run-pre-hook|--run-pre-hooks)
+                if [[ -z "${2:-}" ]]; then
+                    echo "[ERROR] $1 requires a hook name argument" >&2
+                    exit 1
+                fi
+                # Support multiple hooks via comma or pipe separator
+                # e.g., --pre-run-hook "HOOK1,HOOK2" or --pre-run-hook "HOOK1|HOOK2"
+                local hook_value="$2"
+                if [[ "$hook_value" == *","* ]] || [[ "$hook_value" == *"|"* ]]; then
+                    # Replace pipes with commas, then split on commas
+                    local normalized="${hook_value//|/,}"
+                    IFS=',' read -ra hook_names <<< "$normalized"
+                    for hook_name in "${hook_names[@]}"; do
+                        # Trim whitespace
+                        hook_name="${hook_name#"${hook_name%%[![:space:]]*}"}"
+                        hook_name="${hook_name%"${hook_name##*[![:space:]]}"}"
+                        if [[ -n "$hook_name" ]]; then
+                            PRE_RUN_HOOKS+=("$hook_name")
+                        fi
+                    done
+                else
+                    PRE_RUN_HOOKS+=("$hook_value")
+                fi
+                shift 2
+                ;;
+            *)
+                JUNO_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Also check JUNO_PRE_RUN environment variable
+    if [[ -n "${JUNO_PRE_RUN:-}" ]]; then
+        # Prepend env var command (runs first)
+        PRE_RUN_CMDS=("$JUNO_PRE_RUN" "${PRE_RUN_CMDS[@]}")
+    fi
+
+    # Also check JUNO_PRE_RUN_HOOK environment variable
+    # Supports comma or pipe separated hooks: JUNO_PRE_RUN_HOOK="HOOK1,HOOK2|HOOK3"
+    if [[ -n "${JUNO_PRE_RUN_HOOK:-}" ]]; then
+        local env_hooks=()
+        local hook_value="${JUNO_PRE_RUN_HOOK}"
+        if [[ "$hook_value" == *","* ]] || [[ "$hook_value" == *"|"* ]]; then
+            # Replace pipes with commas, then split on commas
+            local normalized="${hook_value//|/,}"
+            IFS=',' read -ra hook_names <<< "$normalized"
+            for hook_name in "${hook_names[@]}"; do
+                # Trim whitespace
+                hook_name="${hook_name#"${hook_name%%[![:space:]]*}"}"
+                hook_name="${hook_name%"${hook_name##*[![:space:]]}"}"
+                if [[ -n "$hook_name" ]]; then
+                    env_hooks+=("$hook_name")
+                fi
+            done
+        else
+            env_hooks+=("$hook_value")
+        fi
+        # Prepend env var hooks (runs first)
+        PRE_RUN_HOOKS=("${env_hooks[@]}" "${PRE_RUN_HOOKS[@]}")
+    fi
+}
+
+# Execute commands from a hook defined in config.json
+execute_hook_commands() {
+    local hook_name="$1"
+
+    # Check if config file exists
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_error "Config file not found: $CONFIG_FILE"
+        log_error "Cannot execute hook: $hook_name"
+        return 1
+    fi
+
+    # Check if jq is available
+    if ! command -v jq &> /dev/null; then
+        log_error "jq is required for --pre-run-hook but not installed"
+        log_error "Please install jq: brew install jq (macOS) or apt-get install jq (Linux)"
+        return 1
+    fi
+
+    # Check if hook exists in config
+    local hook_exists
+    hook_exists=$(jq -e ".hooks.\"$hook_name\"" "$CONFIG_FILE" 2>/dev/null)
+    if [[ $? -ne 0 ]] || [[ "$hook_exists" == "null" ]]; then
+        log_error "Hook '$hook_name' not found in $CONFIG_FILE"
+        log_error "Available hooks: $(jq -r '.hooks | keys | join(", ")' "$CONFIG_FILE" 2>/dev/null || echo "none")"
+        return 1
+    fi
+
+    # Get commands array from hook
+    local commands_json
+    commands_json=$(jq -r ".hooks.\"$hook_name\".commands // []" "$CONFIG_FILE" 2>/dev/null)
+
+    # Get number of commands
+    local num_commands
+    num_commands=$(echo "$commands_json" | jq 'length')
+
+    if [[ "$num_commands" -eq 0 ]]; then
+        log_warning "Hook '$hook_name' has no commands defined"
+        return 0
+    fi
+
+    log_status ""
+    log_status "Executing hook '$hook_name' ($num_commands command(s))"
+    log_status "------------------------------------------"
+
+    # Execute each command in the hook
+    local idx=0
+    while [[ $idx -lt $num_commands ]]; do
+        local cmd
+        cmd=$(echo "$commands_json" | jq -r ".[$idx]")
+        idx=$((idx + 1))
+
+        log_status "Hook command [$idx/$num_commands]: $cmd"
+
+        if eval "$cmd"; then
+            log_success "Hook command [$idx/$num_commands] completed successfully"
+        else
+            local exit_code=$?
+            log_error "Hook command [$idx/$num_commands] failed with exit code $exit_code"
+            log_error "Command was: $cmd"
+            # Continue with next command even if one fails
+        fi
+    done
+
+    return 0
+}
+
+# Execute all pre-run hooks
+execute_pre_run_hooks() {
+    local hook_count=${#PRE_RUN_HOOKS[@]}
+
+    if [[ $hook_count -eq 0 ]]; then
+        return 0
+    fi
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Executing $hook_count pre-run hook(s)"
+    log_status "=========================================="
+
+    local idx=0
+    for hook_name in "${PRE_RUN_HOOKS[@]}"; do
+        idx=$((idx + 1))
+        log_status ""
+        log_status "Pre-run hook [$idx/$hook_count]: $hook_name"
+
+        if execute_hook_commands "$hook_name"; then
+            log_success "Pre-run hook [$idx/$hook_count] '$hook_name' completed"
+        else
+            log_error "Pre-run hook [$idx/$hook_count] '$hook_name' had errors"
+            # Continue with next hook even if one fails
+        fi
+    done
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Pre-run hooks phase complete"
+    log_status "=========================================="
+}
+
+# Execute all pre-run commands
+execute_pre_run_commands() {
+    local cmd_count=${#PRE_RUN_CMDS[@]}
+
+    if [[ $cmd_count -eq 0 ]]; then
+        return 0
+    fi
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Executing $cmd_count pre-run command(s)"
+    log_status "=========================================="
+
+    local idx=0
+    for cmd in "${PRE_RUN_CMDS[@]}"; do
+        idx=$((idx + 1))
+        log_status ""
+        log_status "Pre-run [$idx/$cmd_count]: $cmd"
+        log_status "------------------------------------------"
+
+        # Execute the command
+        if eval "$cmd"; then
+            log_success "Pre-run [$idx/$cmd_count] completed successfully"
+        else
+            local exit_code=$?
+            log_error "Pre-run [$idx/$cmd_count] failed with exit code $exit_code"
+            log_error "Command was: $cmd"
+            # Continue with next pre-run command even if one fails
+            # This allows partial execution like Slack sync failing but still running juno-code
+        fi
+    done
+
+    log_status ""
+    log_status "=========================================="
+    log_status "Pre-run phase complete"
+    log_status "=========================================="
+}
 
 # Logging functions
 log_info() {
@@ -131,8 +373,17 @@ main() {
     local iteration=0
     local max_iterations="${JUNO_RUN_UNTIL_MAX_ITERATIONS:-0}"  # 0 = unlimited
 
+    # Parse arguments first to extract --pre-run commands
+    parse_arguments "$@"
+
     log_status "=== Run Until Completion ==="
-    log_status "Arguments to juno-code: $*"
+    if [[ ${#PRE_RUN_HOOKS[@]} -gt 0 ]]; then
+        log_status "Pre-run hooks: ${PRE_RUN_HOOKS[*]}"
+    fi
+    if [[ ${#PRE_RUN_CMDS[@]} -gt 0 ]]; then
+        log_status "Pre-run commands: ${#PRE_RUN_CMDS[@]}"
+    fi
+    log_status "Arguments to juno-code: ${JUNO_ARGS[*]:-<none>}"
 
     if [ "$max_iterations" -gt 0 ]; then
         log_status "Maximum iterations: $max_iterations"
@@ -140,10 +391,15 @@ main() {
         log_status "Maximum iterations: unlimited"
     fi
 
-    # Check if we have any arguments
-    if [ $# -eq 0 ]; then
+    # Check if we have any arguments for juno-code
+    if [[ ${#JUNO_ARGS[@]} -eq 0 ]]; then
         log_warning "No arguments provided. Running juno-code with no arguments."
     fi
+
+    # Execute pre-run hooks and commands before entering the main loop
+    # Hooks run first, then explicit commands
+    execute_pre_run_hooks
+    execute_pre_run_commands
 
     # Do-while loop pattern: Run juno-code at least once, then continue while tasks remain
     # This ensures juno-code's internal task management systems get a chance to operate
@@ -165,12 +421,12 @@ main() {
             exit 0
         fi
 
-        log_status "Running juno-code with args: $*"
+        log_status "Running juno-code with args: ${JUNO_ARGS[*]:-<none>}"
         log_status "------------------------------------------"
 
-        # Run juno-code with all provided arguments
+        # Run juno-code with parsed arguments (excluding --pre-run which was already processed)
         # We run juno-code FIRST (do-while pattern), then check for remaining tasks
-        if juno-code "$@"; then
+        if juno-code "${JUNO_ARGS[@]}"; then
             log_success "juno-code completed successfully"
         else
             local exit_code=$?

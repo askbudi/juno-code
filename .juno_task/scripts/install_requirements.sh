@@ -23,6 +23,22 @@
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
 
+# Handle --help early (before any debug output)
+for arg in "$@"; do
+    if [[ "$arg" == "-h" ]] || [[ "$arg" == "--help" ]]; then
+        echo "Usage: install_requirements.sh [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  --check-updates   Only check for updates without installing"
+        echo "  --force-update    Force update check and upgrade packages"
+        echo "  -h, --help        Show this help message"
+        echo ""
+        echo "Environment Variables:"
+        echo "  VERSION_CHECK_INTERVAL_HOURS   Hours between automatic update checks (default: 24)"
+        exit 0
+    fi
+done
+
 # DEBUG OUTPUT: Show that install_requirements.sh is being executed
 # User feedback: "Add a one line printing from .sh file as well so we could debug it"
 echo "[DEBUG] install_requirements.sh is being executed from: $(pwd)" >&2
@@ -40,6 +56,12 @@ REQUIRED_PACKAGES=("juno-kanban" "roundtable-ai")
 
 # Slack integration dependencies (optional, only installed when Slack scripts are used)
 SLACK_PACKAGES=("slack_sdk" "python-dotenv")
+
+# Version check cache configuration
+# This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)
+VERSION_CHECK_CACHE_DIR="${HOME}/.juno_code"
+VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
+VERSION_CHECK_INTERVAL_HOURS=24  # Check for updates once per day
 
 # Logging functions
 log_info() {
@@ -68,6 +90,205 @@ check_package_installed() {
     fi
 
     return 1  # Package not installed
+}
+
+# Function to get installed version of a package
+get_installed_version() {
+    local package_name="$1"
+    local version=""
+
+    # Try python3 first, then python
+    version=$(python3 -m pip show "$package_name" 2>/dev/null | grep -i "^Version:" | awk '{print $2}')
+    if [ -z "$version" ]; then
+        version=$(python -m pip show "$package_name" 2>/dev/null | grep -i "^Version:" | awk '{print $2}')
+    fi
+
+    echo "$version"
+}
+
+# Function to get latest version from PyPI
+get_pypi_latest_version() {
+    local package_name="$1"
+    local version=""
+
+    # Use curl to fetch from PyPI JSON API (lightweight and fast)
+    if command -v curl &>/dev/null; then
+        version=$(curl -s --max-time 5 "https://pypi.org/pypi/${package_name}/json" 2>/dev/null | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
+
+    echo "$version"
+}
+
+# Function to check if version check cache is stale
+is_version_check_stale() {
+    # Ensure cache directory exists
+    if [ ! -d "$VERSION_CHECK_CACHE_DIR" ]; then
+        mkdir -p "$VERSION_CHECK_CACHE_DIR"
+        return 0  # No cache, needs check
+    fi
+
+    # Check if cache file exists
+    if [ ! -f "$VERSION_CHECK_CACHE_FILE" ]; then
+        return 0  # No cache file, needs check
+    fi
+
+    # Get cache file modification time and current time
+    local cache_mtime
+    local current_time
+    local age_hours
+
+    # Cross-platform way to get file age
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        cache_mtime=$(stat -f %m "$VERSION_CHECK_CACHE_FILE" 2>/dev/null || echo 0)
+    else
+        # Linux and others
+        cache_mtime=$(stat -c %Y "$VERSION_CHECK_CACHE_FILE" 2>/dev/null || echo 0)
+    fi
+
+    current_time=$(date +%s)
+    age_hours=$(( (current_time - cache_mtime) / 3600 ))
+
+    if [ "$age_hours" -ge "$VERSION_CHECK_INTERVAL_HOURS" ]; then
+        return 0  # Cache is stale, needs check
+    fi
+
+    return 1  # Cache is fresh, no check needed
+}
+
+# Function to update version check cache
+update_version_check_cache() {
+    local package_name="$1"
+    local installed_version="$2"
+    local latest_version="$3"
+
+    # Ensure cache directory exists
+    mkdir -p "$VERSION_CHECK_CACHE_DIR"
+
+    # Update cache file with package info
+    local cache_line="${package_name}=${installed_version}:${latest_version}"
+
+    # Remove old entry for this package if exists, then add new entry
+    if [ -f "$VERSION_CHECK_CACHE_FILE" ]; then
+        grep -v "^${package_name}=" "$VERSION_CHECK_CACHE_FILE" > "${VERSION_CHECK_CACHE_FILE}.tmp" 2>/dev/null || true
+        mv "${VERSION_CHECK_CACHE_FILE}.tmp" "$VERSION_CHECK_CACHE_FILE"
+    fi
+
+    echo "$cache_line" >> "$VERSION_CHECK_CACHE_FILE"
+
+    # Touch the file to update modification time
+    touch "$VERSION_CHECK_CACHE_FILE"
+}
+
+# Function to check and upgrade a single package if needed
+check_and_upgrade_package() {
+    local package_name="$1"
+    local force_check="${2:-false}"
+
+    # Only check if cache is stale or force_check is true
+    if [ "$force_check" != "true" ] && ! is_version_check_stale; then
+        log_info "Version check cache is fresh (checked within ${VERSION_CHECK_INTERVAL_HOURS}h)"
+        return 0
+    fi
+
+    log_info "Checking for updates for: $package_name"
+
+    local installed_version
+    local latest_version
+
+    installed_version=$(get_installed_version "$package_name")
+
+    if [ -z "$installed_version" ]; then
+        log_warning "$package_name is not installed"
+        return 1  # Package not installed
+    fi
+
+    latest_version=$(get_pypi_latest_version "$package_name")
+
+    if [ -z "$latest_version" ]; then
+        log_warning "Could not fetch latest version for $package_name from PyPI"
+        return 0  # Can't check, assume OK
+    fi
+
+    # Update cache
+    update_version_check_cache "$package_name" "$installed_version" "$latest_version"
+
+    if [ "$installed_version" = "$latest_version" ]; then
+        log_success "$package_name is up-to-date (v$installed_version)"
+        return 0
+    fi
+
+    log_warning "$package_name update available: $installed_version -> $latest_version"
+    return 2  # Update available
+}
+
+# Function to upgrade packages
+upgrade_packages() {
+    local packages_to_upgrade=("$@")
+
+    if [ ${#packages_to_upgrade[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    log_info "Upgrading packages: ${packages_to_upgrade[*]}"
+
+    # Determine which package manager to use (prefer uv for speed)
+    if command -v uv &>/dev/null; then
+        for package in "${packages_to_upgrade[@]}"; do
+            log_info "Upgrading $package with uv..."
+            if uv pip install --upgrade "$package" --quiet 2>/dev/null; then
+                log_success "Upgraded: $package"
+            else
+                log_warning "Failed to upgrade $package with uv, trying pip..."
+                python3 -m pip install --upgrade "$package" --quiet 2>/dev/null || true
+            fi
+        done
+    elif command -v pipx &>/dev/null && is_externally_managed_python && ! is_in_virtualenv; then
+        for package in "${packages_to_upgrade[@]}"; do
+            log_info "Upgrading $package with pipx..."
+            if pipx upgrade "$package" 2>/dev/null; then
+                log_success "Upgraded: $package"
+            else
+                log_warning "Failed to upgrade $package"
+            fi
+        done
+    else
+        for package in "${packages_to_upgrade[@]}"; do
+            log_info "Upgrading $package with pip..."
+            if python3 -m pip install --upgrade "$package" --quiet 2>/dev/null; then
+                log_success "Upgraded: $package"
+            else
+                log_warning "Failed to upgrade $package"
+            fi
+        done
+    fi
+}
+
+# Function to check all packages for updates (periodic check)
+check_all_for_updates() {
+    local force_check="${1:-false}"
+    local packages_needing_upgrade=()
+
+    # Skip check if cache is fresh and not forcing
+    if [ "$force_check" != "true" ] && ! is_version_check_stale; then
+        return 0
+    fi
+
+    log_info "Performing periodic version check..."
+
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        check_and_upgrade_package "$package" "true"
+        local result=$?
+        if [ $result -eq 2 ]; then
+            packages_needing_upgrade+=("$package")
+        fi
+    done
+
+    if [ ${#packages_needing_upgrade[@]} -gt 0 ]; then
+        upgrade_packages "${packages_needing_upgrade[@]}"
+    else
+        log_success "All packages are up-to-date"
+    fi
 }
 
 # Function to check if all requirements are satisfied
@@ -366,9 +587,51 @@ install_with_pip() {
 
 # Main installation logic
 main() {
+    local force_update=false
+    local check_updates_only=false
+
+    # Parse command line arguments (--help is handled early, before debug output)
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --force-update)
+                force_update=true
+                shift
+                ;;
+            --check-updates)
+                check_updates_only=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     echo ""
     log_info "=== Python Requirements Installation ==="
     echo ""
+
+    # Handle --check-updates: just check and report, don't install
+    if [ "$check_updates_only" = true ]; then
+        log_info "Checking for updates..."
+        for package in "${REQUIRED_PACKAGES[@]}"; do
+            local installed_ver
+            local latest_ver
+            installed_ver=$(get_installed_version "$package")
+            latest_ver=$(get_pypi_latest_version "$package")
+
+            if [ -z "$installed_ver" ]; then
+                log_warning "$package is not installed"
+            elif [ -z "$latest_ver" ]; then
+                log_info "$package: v$installed_ver (could not check PyPI)"
+            elif [ "$installed_ver" = "$latest_ver" ]; then
+                log_success "$package: v$installed_ver (up-to-date)"
+            else
+                log_warning "$package: v$installed_ver -> v$latest_ver (update available)"
+            fi
+        done
+        exit 0
+    fi
 
     # Step 1: Check if all requirements are already satisfied
     log_info "Checking if requirements are already satisfied..."
@@ -378,9 +641,15 @@ main() {
         echo ""
         log_info "Installed packages:"
         for package in "${REQUIRED_PACKAGES[@]}"; do
-            echo "  ✓ $package"
+            local ver
+            ver=$(get_installed_version "$package")
+            echo "  ✓ $package (v$ver)"
         done
         echo ""
+
+        # Step 1b: Periodic update check (only when cache is stale, or forced)
+        # This ensures dependencies stay up-to-date without degrading performance
+        check_all_for_updates "$force_update"
         exit 0
     fi
 

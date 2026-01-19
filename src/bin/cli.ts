@@ -112,6 +112,8 @@ function setupGlobalOptions(program: Command): void {
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
     .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
+    .option('--til-completion', 'Run juno-code in a loop until all kanban tasks are complete')
+    .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
 
   // Global error handling
   program.exitOverride((err) => {
@@ -154,6 +156,58 @@ function setupMainCommand(program: Command): void {
           Object.entries(globalOptions).filter(([_, v]) => v !== undefined)
         );
         const allOptions = { ...definedGlobalOptions, ...options };
+
+        // Handle --til-completion flag: invoke run_until_completion.sh
+        if (allOptions.tilCompletion) {
+          const { spawn } = await import('node:child_process');
+          const path = await import('node:path');
+          const fs = await import('fs-extra');
+
+          const scriptPath = path.join(process.cwd(), '.juno_task', 'scripts', 'run_until_completion.sh');
+
+          // Check if script exists
+          if (!await fs.pathExists(scriptPath)) {
+            console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
+            console.error(chalk.red(`   Expected location: ${scriptPath}`));
+            console.error(chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'));
+            process.exit(1);
+          }
+
+          // Build arguments for run_until_completion.sh
+          const scriptArgs: string[] = [];
+
+          // Add --pre-run-hook arguments if provided
+          if (allOptions.preRunHook && Array.isArray(allOptions.preRunHook)) {
+            for (const hook of allOptions.preRunHook) {
+              scriptArgs.push('--pre-run-hook', hook);
+            }
+          }
+
+          // Forward all juno-code arguments (except --til-completion and --pre-run-hook)
+          const forwardedArgs = process.argv.slice(2).filter(arg =>
+            arg !== '--til-completion' &&
+            !arg.startsWith('--pre-run-hook')
+          );
+          scriptArgs.push(...forwardedArgs);
+
+          // Execute run_until_completion.sh
+          const child = spawn(scriptPath, scriptArgs, {
+            stdio: 'inherit',
+            cwd: process.cwd()
+          });
+
+          child.on('exit', (code) => {
+            process.exit(code || 0);
+          });
+
+          child.on('error', (error) => {
+            console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
+            console.error(chalk.red(`   ${error.message}`));
+            process.exit(1);
+          });
+
+          return;
+        }
 
         // Check if we should auto-detect project configuration
         if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {

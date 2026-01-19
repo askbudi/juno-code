@@ -183,8 +183,10 @@ main() {
     log_success "Python environment ready!"
 
     # Execute juno-kanban with all passed arguments from project root
+    # Close stdin (redirect from /dev/null) to prevent hanging when called from tools
+    # that don't provide stdin (similar to Issue #42 hook fix)
     log_info "Executing juno-kanban: $*"
-    exec juno-kanban "$@"
+    juno-kanban "$@" < /dev/null
 }
 
 # Run main function with all arguments
