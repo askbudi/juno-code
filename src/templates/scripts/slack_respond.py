@@ -330,7 +330,7 @@ def send_slack_response(
         Response message timestamp if sent, None if failed
     """
     # Format the response with task ID
-    formatted_response = f"**Task ID: {task_id}**\n\n{response_text}"
+    formatted_response = f"**[task_id]{task_id}[/task_id]**\n\n{response_text}"
 
     if dry_run:
         logger.info(f"[DRY RUN] Would send to channel {channel_id}, thread {thread_ts}:")
@@ -652,7 +652,7 @@ Environment Variables:
 Notes:
   - Only sends responses for tasks with non-empty agent_response
   - Matches tasks to Slack messages by task_id or body text
-  - Responses are prefixed with "**Task ID: {id}**"
+  - Responses are prefixed with "**[task_id]{id}[/task_id]**"
   - Tracks sent responses in .juno_task/slack/responses_sent.ndjson
         """
     )
