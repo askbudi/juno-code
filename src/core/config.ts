@@ -219,7 +219,7 @@ export const JunoTaskConfigSchema = z.object({
 export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Core settings
   defaultSubagent: 'claude',
-  defaultBackend: 'mcp',
+  defaultBackend: 'shell',
   defaultMaxIterations: 50,
 
   // Logging settings

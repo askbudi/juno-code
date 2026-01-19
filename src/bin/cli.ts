@@ -101,7 +101,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--no-color', 'Disable colored output')
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
-    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
+    .option('-b, --backend <type>', 'Backend to use (mcp, shell) - default: shell')
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
     .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
     .option('--tools <tools...>', 'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read"). Passed to shell backend, ignored for MCP.')
