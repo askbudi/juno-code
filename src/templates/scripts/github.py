@@ -1317,10 +1317,9 @@ def create_kanban_task_from_comment(
     comment_id = comment['id']
 
     # Generate tag_id for the comment (different from issue tag_id)
-    # Format: github_comment_owner_repo_issuenum_commentid
-    owner_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', owner)
-    repo_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', repo_name)
-    comment_tag_id = f"github_comment_{owner_sanitized}_{repo_sanitized}_{issue_number}_{comment_id}"
+    # Format: ghc_{comment_id} - shortened to stay under 50 char kanban tag limit
+    # Comment IDs are globally unique across GitHub, so no need for repo/issue in tag
+    comment_tag_id = f"ghc_{comment_id}"
 
     # Build task body
     # Start with the reply content
