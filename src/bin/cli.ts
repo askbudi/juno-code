@@ -510,8 +510,11 @@ ${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestrat
 
   program.addHelpText('afterAll', `
 ${chalk.blue.bold('Examples:')}
-  ${chalk.gray('# Initialize new project')}
+  ${chalk.gray('# Initialize new project (interactive mode)')}
   juno-code init
+
+  ${chalk.gray('# Initialize with inline mode (automation-friendly)')}
+  juno-code init "Build a REST API" --subagent claude --git-repo https://github.com/user/repo
 
   ${chalk.gray('# Start execution using .juno_task/init.md')}
   juno-code start
@@ -542,7 +545,7 @@ ${chalk.blue.bold('Examples:')}
   juno-code config create development
 
   ${chalk.gray('# Setup Git repository')}
-  juno-code setup-git https://github.com/owner/repo
+  juno-code setup-git https://github.com/askbudi/juno-code
 
 ${chalk.blue.bold('Environment Variables:')}
   JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini)
@@ -565,8 +568,9 @@ ${chalk.blue.bold('Configuration:')}
   4. Built-in defaults (lowest priority)
 
 ${chalk.blue.bold('Support:')}
-  Documentation: https://github.com/owner/juno-code#readme
-  Issues: https://github.com/owner/juno-code/issues
+  Documentation: https://github.com/askbudi/juno-code#readme
+  Issues: https://github.com/askbudi/juno-code/issues
+  Website: https://askbudi.ai
   License: MIT
 
 `);
