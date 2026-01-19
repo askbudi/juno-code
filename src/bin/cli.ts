@@ -11,7 +11,7 @@ import { inspect } from 'node:util';
 inspect.defaultOptions.maxStringLength = Infinity;
 inspect.defaultOptions.breakLength = Infinity;
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from '../core/config.js';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
@@ -112,7 +112,10 @@ function setupGlobalOptions(program: Command): void {
     .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
     .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
-    .option('--til-completion', 'Run juno-code in a loop until all kanban tasks are complete')
+    .option('--til-completion', 'Run juno-code in a loop until all kanban tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)')
+    .option('--until-completion', 'Alias for --til-completion')
+    .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
+    .addOption(new Option('--till-complete', 'Alias for --til-completion').hideHelp())
     .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
 
   // Global error handling
@@ -157,8 +160,8 @@ function setupMainCommand(program: Command): void {
         );
         const allOptions = { ...definedGlobalOptions, ...options };
 
-        // Handle --til-completion flag: invoke run_until_completion.sh
-        if (allOptions.tilCompletion) {
+        // Handle --til-completion flag and its synonyms: invoke run_until_completion.sh
+        if (allOptions.tilCompletion || allOptions.untilCompletion || allOptions.runUntilCompletion || allOptions.tillComplete) {
           const { spawn } = await import('node:child_process');
           const path = await import('node:path');
           const fs = await import('fs-extra');
@@ -183,9 +186,10 @@ function setupMainCommand(program: Command): void {
             }
           }
 
-          // Forward all juno-code arguments (except --til-completion and --pre-run-hook)
+          // Forward all juno-code arguments (except --til-completion and its synonyms, and --pre-run-hook)
+          const completionFlags = ['--til-completion', '--until-completion', '--run-until-completion', '--till-complete'];
           const forwardedArgs = process.argv.slice(2).filter(arg =>
-            arg !== '--til-completion' &&
+            !completionFlags.includes(arg) &&
             !arg.startsWith('--pre-run-hook')
           );
           scriptArgs.push(...forwardedArgs);
