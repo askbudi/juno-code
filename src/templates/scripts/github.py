@@ -809,6 +809,47 @@ def extract_github_tag(tags: List[str]) -> Optional[str]:
     return None
 
 
+def extract_parent_github_tag(tags: List[str]) -> Optional[str]:
+    """
+    Extract parent_github_issue_* tag from reply task tags.
+
+    Reply tasks (created from GitHub issue comments) have parent_github_issue_* tags
+    pointing to the original issue they should reply to.
+
+    Args:
+        tags: List of task tags
+
+    Returns:
+        Parent tag ID string (without 'parent_' prefix) or None if not found
+
+    Example:
+        tags = ['github-reply', 'parent_github_issue_owner_repo_123']
+        returns: 'github_issue_owner_repo_123'
+    """
+    if tags is None:
+        return None
+    for tag in tags:
+        if tag.startswith('parent_github_issue_'):
+            # Remove 'parent_' prefix to get the actual github_issue_* tag
+            return 'github_issue_' + tag[len('parent_github_issue_'):]
+    return None
+
+
+def is_reply_task(tags: List[str]) -> bool:
+    """
+    Check if a task is a reply task (created from a GitHub issue comment).
+
+    Args:
+        tags: List of task tags
+
+    Returns:
+        True if task has 'github-reply' tag, False otherwise
+    """
+    if tags is None:
+        return False
+    return 'github-reply' in tags
+
+
 def parse_tag_id(tag_id: str) -> Optional[Dict[str, Any]]:
     """
     Parse tag_id into components.
@@ -1776,11 +1817,23 @@ def handle_respond(args: argparse.Namespace) -> int:
         task_id = task.get('id')
         agent_response = task.get('agent_response', '')
         commit_hash = task.get('commit_hash', '')
+        feature_tags = task.get('feature_tags', [])
 
         total_tasks += 1
 
-        # Extract tag_id
-        tag_id = extract_github_tag(task.get('feature_tags', []))
+        # Extract tag_id - handle both regular issues and reply tasks
+        tag_id = None
+        is_reply = is_reply_task(feature_tags)
+
+        if is_reply:
+            # For reply tasks, extract parent issue tag
+            tag_id = extract_parent_github_tag(feature_tags)
+            if tag_id:
+                logger.debug(f"Task {task_id}: Reply task, using parent tag {tag_id}")
+        else:
+            # For regular issue tasks, extract github_issue_* tag
+            tag_id = extract_github_tag(feature_tags)
+
         if not tag_id:
             logger.debug(f"Task {task_id}: No GitHub tag_id, skipping")
             continue
