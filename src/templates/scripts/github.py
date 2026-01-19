@@ -830,11 +830,6 @@ def create_kanban_task_from_issue(
     # Add tag_id as a tag
     tags.append(tag_id)
 
-    # Add metadata as tags for AI agent access without token bloat
-    tags.append(f"url_{sanitize_tag(issue['html_url'])}")
-    tags.append(f"created_{sanitize_tag(issue['created_at'])}")
-    tags.append(f"updated_{sanitize_tag(issue['updated_at'])}")
-
     if dry_run:
         logger.info(f"[DRY RUN] Would create task with tag_id: {tag_id}")
         logger.debug(f"[DRY RUN] Body: {task_body[:200]}...")
