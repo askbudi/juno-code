@@ -336,6 +336,116 @@ class ResponseStateManager:
         logger.warning("Response state reset - all responses may be re-sent")
 
 
+class CommentStateManager:
+    """
+    Manages state for tracking processed comments (user replies).
+
+    Prevents duplicate processing by tracking which comments have been
+    converted to kanban tasks.
+    """
+
+    def __init__(self, state_file_path: str):
+        """
+        Initialize CommentStateManager.
+
+        Args:
+            state_file_path: Path to NDJSON state file
+        """
+        self.state_file = Path(state_file_path)
+        self.processed_comments: Dict[int, Dict[str, Any]] = {}  # Keyed by comment_id
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Load existing state from NDJSON file."""
+        if not self.state_file.exists():
+            logger.info(f"Comment state file does not exist, will create: {self.state_file}")
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.processed_comments = {}
+            return
+
+        try:
+            self.processed_comments = {}
+            with open(self.state_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        entry = json.loads(line)
+                        comment_id = entry.get('comment_id')
+                        if comment_id:
+                            self.processed_comments[comment_id] = entry
+
+            logger.info(f"Loaded {len(self.processed_comments)} processed comments from {self.state_file}")
+
+        except Exception as e:
+            logger.error(f"Error loading comment state from {self.state_file}: {e}")
+            self.processed_comments = {}
+
+    def is_comment_processed(self, comment_id: int) -> bool:
+        """
+        Check if a comment has already been processed.
+
+        Args:
+            comment_id: GitHub comment ID
+
+        Returns:
+            True if already processed, False otherwise
+        """
+        return comment_id in self.processed_comments
+
+    def mark_comment_processed(
+        self,
+        comment_id: int,
+        issue_number: int,
+        repo: str,
+        task_id: str,
+        related_task_ids: List[str]
+    ) -> bool:
+        """
+        Mark a comment as processed.
+
+        Args:
+            comment_id: GitHub comment ID
+            issue_number: GitHub issue number
+            repo: Repository in format "owner/repo"
+            task_id: Kanban task ID created for this comment
+            related_task_ids: List of previous task IDs found in the thread
+
+        Returns:
+            True if recorded, False if duplicate or error
+        """
+        if comment_id in self.processed_comments:
+            logger.debug(f"Comment {comment_id} already recorded")
+            return False
+
+        entry = {
+            'comment_id': comment_id,
+            'issue_number': issue_number,
+            'repo': repo,
+            'task_id': task_id,
+            'related_task_ids': related_task_ids,
+            'processed_at': datetime.now(timezone.utc).isoformat()
+        }
+
+        try:
+            # Append to file (atomic)
+            with open(self.state_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+            # Update in-memory state
+            self.processed_comments[comment_id] = entry
+
+            logger.debug(f"Recorded processed comment {comment_id} -> task_id={task_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error recording comment to {self.state_file}: {e}")
+            return False
+
+    def get_processed_count(self) -> int:
+        """Get total number of processed comments."""
+        return len(self.processed_comments)
+
+
 # =============================================================================
 # GitHub API Client
 # =============================================================================
@@ -537,6 +647,86 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()
 
+    def list_issue_comments(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        since: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all comments on an issue.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            issue_number: Issue number
+            since: Only comments updated after this timestamp (ISO 8601)
+
+        Returns:
+            List of comment dicts
+        """
+        url = f"{self.api_url}/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        params = {'per_page': 100}
+
+        if since:
+            params['since'] = since
+
+        comments = []
+        page = 1
+
+        while True:
+            params['page'] = page
+            logger.debug(f"Fetching comments page {page} for issue #{issue_number}...")
+
+            try:
+                response = self.session.get(url, params=params, timeout=30)
+                self._check_rate_limit(response)
+                response.raise_for_status()
+
+                page_comments = response.json()
+                if not page_comments:
+                    break
+
+                comments.extend(page_comments)
+                page += 1
+
+                # Check if there are more pages
+                link_header = response.headers.get('Link', '')
+                if 'rel="next"' not in link_header:
+                    break
+
+            except requests.exceptions.Timeout:
+                logger.error(f"Timeout fetching comments for issue #{issue_number}")
+                break
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error fetching comments: {e}")
+                break
+
+        logger.debug(f"Fetched {len(comments)} comments for issue #{issue_number}")
+        return comments
+
+    def reopen_issue(self, owner: str, repo: str, issue_number: int) -> Dict[str, Any]:
+        """
+        Reopen a closed issue.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            issue_number: Issue number
+
+        Returns:
+            Updated issue dict
+
+        Raises:
+            requests.exceptions.HTTPError: If reopen fails
+        """
+        url = f"{self.api_url}/repos/{owner}/{repo}/issues/{issue_number}"
+        response = self.session.patch(url, json={'state': 'open'}, timeout=30)
+        self._check_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
+
     def _check_rate_limit(self, response):
         """Check and log rate limit status."""
         remaining = response.headers.get('X-RateLimit-Remaining')
@@ -678,6 +868,85 @@ def validate_repo_format(repo: str) -> bool:
         return False
 
     return True
+
+
+def extract_task_ids_from_text(text: str) -> List[str]:
+    """
+    Extract task IDs from text using [task_id]...[/task_id] format.
+
+    Args:
+        text: Text to search for task IDs
+
+    Returns:
+        List of task IDs found (comma-separated values are split)
+    """
+    task_ids = []
+
+    # Pattern: [task_id]...[/task_id] (can contain comma-separated IDs)
+    pattern = r'\[task_id\]([^[]+)\[/task_id\]'
+    matches = re.findall(pattern, text, re.IGNORECASE)
+
+    for match in matches:
+        # Split by comma and strip whitespace
+        ids = [tid.strip() for tid in match.split(',') if tid.strip()]
+        task_ids.extend(ids)
+
+    return task_ids
+
+
+def is_agent_comment(comment_body: str) -> bool:
+    """
+    Detect if a comment was posted by our agent (not a user reply).
+
+    Agent comments contain [task_id]...[/task_id] at the beginning,
+    formatted as **[task_id]...[/task_id]**.
+
+    Args:
+        comment_body: Comment body text
+
+    Returns:
+        True if this is an agent-posted comment, False otherwise
+    """
+    # Agent comments start with **[task_id]...[/task_id]**
+    # User replies won't have this specific format at the start
+    agent_pattern = r'^\s*\*\*\[task_id\][^\[]+\[/task_id\]\*\*'
+
+    return bool(re.match(agent_pattern, comment_body.strip()))
+
+
+def collect_task_ids_from_thread(
+    issue_body: str,
+    comments: List[Dict[str, Any]]
+) -> List[str]:
+    """
+    Collect all task IDs from an issue thread (body + comments).
+
+    Args:
+        issue_body: The issue body text
+        comments: List of comment dicts
+
+    Returns:
+        Deduplicated list of task IDs found in the thread
+    """
+    all_task_ids = []
+
+    # Extract from issue body
+    all_task_ids.extend(extract_task_ids_from_text(issue_body or ''))
+
+    # Extract from all comments (both agent responses and user replies)
+    for comment in comments:
+        body = comment.get('body', '')
+        all_task_ids.extend(extract_task_ids_from_text(body))
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_ids = []
+    for tid in all_task_ids:
+        if tid not in seen:
+            seen.add(tid)
+            unique_ids.append(tid)
+
+    return unique_ids
 
 
 GITHUB_TOKEN_DOCS_URL = "https://github.com/settings/tokens"
@@ -1021,6 +1290,195 @@ def add_tag_to_kanban_task(kanban_script: str, task_id: str, tag: str) -> bool:
         return False
 
 
+def create_kanban_task_from_comment(
+    comment: Dict[str, Any],
+    issue: Dict[str, Any],
+    repo: str,
+    kanban_script: str,
+    related_task_ids: List[str],
+    dry_run: bool = False
+) -> Optional[str]:
+    """
+    Create kanban task from a GitHub issue comment (user reply).
+
+    Args:
+        comment: GitHub comment dict
+        issue: GitHub issue dict (parent issue)
+        repo: Repository in format "owner/repo"
+        kanban_script: Path to kanban.sh script
+        related_task_ids: List of previous task IDs from the thread
+        dry_run: If True, don't actually create the task
+
+    Returns:
+        Task ID if created, None if failed
+    """
+    owner, repo_name = repo.split('/')
+    issue_number = issue['number']
+    comment_id = comment['id']
+
+    # Generate tag_id for the comment (different from issue tag_id)
+    # Format: github_comment_owner_repo_issuenum_commentid
+    owner_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', owner)
+    repo_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', repo_name)
+    comment_tag_id = f"github_comment_{owner_sanitized}_{repo_sanitized}_{issue_number}_{comment_id}"
+
+    # Build task body
+    # Start with the reply content
+    task_body = f"# Reply to Issue #{issue_number}: {issue['title']}\n\n"
+    task_body += comment['body'] or "(No content)"
+
+    # Add previous task_id references if any
+    if related_task_ids:
+        task_body += f"\n\n[task_id]{','.join(related_task_ids)}[/task_id]"
+
+    # Build tags
+    tags = [
+        'github-input',
+        'github-reply',  # Mark as a reply specifically
+        f'repo_{sanitize_tag(owner)}_{sanitize_tag(repo_name)}',
+        f"author_{sanitize_tag(comment['user']['login'])}",
+        f"issue_{issue_number}",
+        f"comment_{comment_id}",
+    ]
+
+    # Add the issue's tag_id as a related tag (for O(1) lookup)
+    issue_tag_id = GitHubStateManager._make_tag_id(issue_number, repo)
+    tags.append(f"parent_{issue_tag_id}")
+
+    # Add comment tag_id
+    tags.append(comment_tag_id)
+
+    if dry_run:
+        logger.info(f"[DRY RUN] Would create task for comment #{comment_id} on issue #{issue_number}")
+        logger.debug(f"[DRY RUN] Body: {task_body[:200]}...")
+        logger.debug(f"[DRY RUN] Tags: {', '.join(tags)}")
+        logger.debug(f"[DRY RUN] Related task IDs: {related_task_ids}")
+        return "dry-run-task-id"
+
+    try:
+        # Execute kanban create command
+        cmd = [kanban_script, 'create', task_body, '--tags', ','.join(tags)]
+        logger.debug(f"Running: {' '.join(cmd[:3])}...")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0:
+            # Parse output to get task ID
+            try:
+                output = json.loads(result.stdout)
+                if isinstance(output, list) and len(output) > 0:
+                    task_id = output[0].get('id')
+                    logger.info(f"Created kanban task from comment: {task_id} (comment_id: {comment_id})")
+                    return task_id
+            except json.JSONDecodeError:
+                logger.warning(f"Could not parse kanban output: {result.stdout[:200]}")
+                return "unknown-task-id"
+        else:
+            logger.error(f"Failed to create kanban task from comment: {result.stderr}")
+            return None
+
+    except subprocess.TimeoutExpired:
+        logger.error("Kanban command timed out")
+        return None
+    except Exception as e:
+        logger.error(f"Error creating kanban task from comment: {e}")
+        return None
+
+
+def process_issue_comments(
+    client: 'GitHubClient',
+    issue: Dict[str, Any],
+    repo: str,
+    kanban_script: str,
+    comment_state_mgr: 'CommentStateManager',
+    dry_run: bool = False
+) -> Tuple[int, int]:
+    """
+    Process comments on an issue, creating kanban tasks for user replies.
+
+    This detects:
+    1. Agent comments (identified by **[task_id]...[/task_id]** format)
+    2. User replies (any comment that is NOT an agent comment)
+
+    For user replies, creates a kanban task with references to previous task_ids.
+
+    Args:
+        client: GitHub API client
+        issue: GitHub issue dict
+        repo: Repository in format "owner/repo"
+        kanban_script: Path to kanban.sh script
+        comment_state_mgr: CommentStateManager for tracking processed comments
+        dry_run: If True, don't actually create tasks
+
+    Returns:
+        Tuple of (processed_count, created_count)
+    """
+    owner, repo_name = repo.split('/')
+    issue_number = issue['number']
+
+    # Fetch all comments for this issue
+    comments = client.list_issue_comments(owner, repo_name, issue_number)
+
+    if not comments:
+        logger.debug(f"Issue #{issue_number}: No comments")
+        return 0, 0
+
+    logger.debug(f"Issue #{issue_number}: Found {len(comments)} comments")
+
+    processed = 0
+    created = 0
+
+    # Collect all task_ids from the thread for context
+    all_task_ids = collect_task_ids_from_thread(issue.get('body', ''), comments)
+
+    for comment in comments:
+        comment_id = comment['id']
+        comment_body = comment.get('body', '')
+        comment_author = comment['user']['login']
+
+        # Skip already processed comments
+        if comment_state_mgr.is_comment_processed(comment_id):
+            logger.debug(f"  Comment #{comment_id}: Already processed, skipping")
+            continue
+
+        # Skip agent comments (our own responses)
+        if is_agent_comment(comment_body):
+            logger.debug(f"  Comment #{comment_id}: Agent comment, skipping")
+            # Still mark as processed to avoid re-checking
+            if not dry_run:
+                comment_state_mgr.mark_comment_processed(
+                    comment_id, issue_number, repo, "agent-comment", []
+                )
+            continue
+
+        # This is a user reply - create a kanban task
+        logger.info(f"  Comment #{comment_id} (@{comment_author}): User reply detected")
+        processed += 1
+
+        task_id = create_kanban_task_from_comment(
+            comment, issue, repo, kanban_script, all_task_ids, dry_run
+        )
+
+        if task_id:
+            if not dry_run:
+                comment_state_mgr.mark_comment_processed(
+                    comment_id, issue_number, repo, task_id, all_task_ids
+                )
+            logger.info(f"    ✓ Created kanban task: {task_id}")
+            if all_task_ids:
+                logger.info(f"    ✓ Linked to previous task(s): {', '.join(all_task_ids)}")
+            created += 1
+        else:
+            logger.warning(f"    ✗ Failed to create task for comment #{comment_id}")
+
+    return processed, created
+
+
 # =============================================================================
 # Command Handlers
 # =============================================================================
@@ -1084,14 +1542,23 @@ def handle_fetch(args: argparse.Namespace) -> int:
     logger.info(f"Initializing state manager: {state_file}")
     state_mgr = GitHubStateManager(str(state_file))
 
+    # Initialize comment state manager for tracking processed comments/replies
+    comment_state_file = state_dir / 'comments.ndjson'
+    logger.info(f"Initializing comment state manager: {comment_state_file}")
+    comment_state_mgr = CommentStateManager(str(comment_state_file))
+
     # Determine --since for incremental fetch
     since = args.since or state_mgr.get_last_update_timestamp(repo)
+
+    # Check if we should include comments
+    include_comments = getattr(args, 'include_comments', True)  # Default to True
 
     if args.dry_run:
         logger.info("Running in DRY RUN mode - no tasks will be created")
 
     logger.info(f"Monitoring repository: {repo}")
     logger.info(f"Filters: labels={args.labels or 'None'} assignee={args.assignee or 'None'} state={args.state}")
+    logger.info(f"Include comments/replies: {include_comments}")
     logger.info(f"Mode: {'once' if args.once else 'continuous'}")
     if since:
         logger.info(f"Incremental sync since: {since}")
@@ -1107,6 +1574,8 @@ def handle_fetch(args: argparse.Namespace) -> int:
     # Main loop
     iteration = 0
     total_processed = 0
+    total_comments_processed = 0
+    total_replies_created = 0
 
     while not shutdown_requested:
         iteration += 1
@@ -1124,7 +1593,7 @@ def handle_fetch(args: argparse.Namespace) -> int:
                 since=since
             )
 
-            # Filter already processed
+            # Filter already processed issues (but we still need to check their comments)
             new_issues = [i for i in issues if not state_mgr.is_processed(i['number'], repo)]
 
             if new_issues:
@@ -1160,6 +1629,38 @@ def handle_fetch(args: argparse.Namespace) -> int:
             else:
                 logger.debug("No new issues")
 
+            # Process comments/replies on all issues (including already processed ones)
+            # This handles the case where a user replies to a closed issue and reopens it
+            if include_comments:
+                logger.info("Checking for new comments/replies on issues...")
+
+                # Fetch ALL issues to check for new comments (state='all' for reopened issues)
+                all_issues = client.list_issues(
+                    owner,
+                    repo_name,
+                    state='all',  # Include closed and reopened issues
+                    labels=labels,
+                    assignee=args.assignee,
+                    since=since
+                )
+
+                for issue in all_issues:
+                    # Process comments on this issue
+                    comments_processed, replies_created = process_issue_comments(
+                        client,
+                        issue,
+                        repo,
+                        kanban_script,
+                        comment_state_mgr,
+                        args.dry_run
+                    )
+
+                    if replies_created > 0:
+                        logger.info(f"Issue #{issue['number']}: Created {replies_created} task(s) from user replies")
+
+                    total_comments_processed += comments_processed
+                    total_replies_created += replies_created
+
             # Exit if --once mode
             if args.once:
                 logger.info("--once mode: exiting after single check")
@@ -1181,8 +1682,12 @@ def handle_fetch(args: argparse.Namespace) -> int:
 
     # Shutdown
     logger.info("-" * 70)
-    logger.info(f"Summary: Created {total_processed} kanban tasks from GitHub issues")
-    logger.info(f"Total processed issues: {state_mgr.get_issue_count()}")
+    logger.info("Summary:")
+    logger.info(f"  New issues processed: {total_processed}")
+    logger.info(f"  User replies processed: {total_comments_processed}")
+    logger.info(f"  Reply tasks created: {total_replies_created}")
+    logger.info(f"  Total tracked issues: {state_mgr.get_issue_count()}")
+    logger.info(f"  Total tracked comments: {comment_state_mgr.get_processed_count()}")
 
     return 0
 
@@ -1676,6 +2181,9 @@ Examples:
   # Fetch with filters
   %(prog)s fetch --repo owner/repo --labels bug,priority --assignee username
 
+  # Fetch without processing user replies/comments
+  %(prog)s fetch --repo owner/repo --no-comments
+
   # Respond to completed tasks
   %(prog)s respond --tag github-input
 
@@ -1699,8 +2207,12 @@ Environment Variables:
 Notes:
   - Issues are tagged with 'github-input', 'repo_*', 'author_*', 'label_*', and tag_id
   - Tag_id format: github_issue_owner_repo_123 (for O(1) lookup, no fuzzy matching)
+  - User replies/comments create tasks tagged with 'github-reply' and 'comment_*'
+  - Reply tasks include [task_id]...[/task_id] references to previous tasks in thread
+  - Agent comments (matching **[task_id]...[/task_id]**) are automatically detected and skipped
   - State is persisted to .juno_task/github/state.ndjson
   - Responses tracked in .juno_task/github/responses.ndjson
+  - Comments tracked in .juno_task/github/comments.ndjson
   - Use Ctrl+C for graceful shutdown
         """
     )
@@ -1728,6 +2240,8 @@ Notes:
     fetch_parser.add_argument('--interval', type=int, help='Polling interval in seconds (default: 300)')
     fetch_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without creating tasks')
     fetch_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
+    fetch_parser.add_argument('--include-comments', dest='include_comments', action='store_true', default=True, help='Include user replies/comments (default: True)')
+    fetch_parser.add_argument('--no-comments', dest='include_comments', action='store_false', help='Skip processing user replies/comments')
 
     # Respond subcommand
     respond_parser = subparsers.add_parser('respond', help='Post comments on GitHub issues for completed tasks')
@@ -1754,6 +2268,8 @@ Notes:
     sync_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making changes')
     sync_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
     sync_parser.add_argument('--reset-tracker', action='store_true', help='Reset response tracker (WARNING: will re-send all responses)')
+    sync_parser.add_argument('--include-comments', dest='include_comments', action='store_true', default=True, help='Include user replies/comments (default: True)')
+    sync_parser.add_argument('--no-comments', dest='include_comments', action='store_false', help='Skip processing user replies/comments')
 
     # Push subcommand
     push_parser = subparsers.add_parser('push', help='Create GitHub issues from kanban tasks without issues')
