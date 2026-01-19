@@ -414,7 +414,14 @@ describe('startup-validation', () => {
     it('should return false for invalid configuration', async () => {
       vi.mocked(fs.pathExists).mockResolvedValue(false); // Missing required mcp.json
 
+      // Mock process.argv to include -b mcp flag (since default is now shell, which doesn't require mcp.json)
+      const originalArgv = process.argv;
+      process.argv = ['node', 'test', '-b', 'mcp'];
+
       const result = await validateStartupConfigs(testBaseDir, false);
+
+      // Restore original argv
+      process.argv = originalArgv;
 
       expect(result).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation failed'));

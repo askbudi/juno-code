@@ -444,7 +444,8 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
   try {
     // Determine backend type from CLI arguments and environment variables
     // This logic mirrors the backend determination in the CLI
-    let backendType: BackendType = 'mcp'; // default
+    let backendType: BackendType = 'shell'; // default (matches DEFAULT_CONFIG.defaultBackend)
+    let backendSetViaCliArg = false;
 
     // Check CLI arguments for backend flag
     const backendArgIndex = process.argv.findIndex(arg => arg === '-b' || arg === '--backend');
@@ -452,11 +453,12 @@ export async function validateStartupConfigs(baseDir: string = process.cwd(), ve
       const cliBackend = process.argv[backendArgIndex + 1].toLowerCase().trim();
       if (cliBackend === 'shell' || cliBackend === 'mcp') {
         backendType = cliBackend as BackendType;
+        backendSetViaCliArg = true;
       }
     }
 
     // Check environment variables if no CLI backend specified
-    if (backendType === 'mcp') { // only override default if not set via CLI
+    if (!backendSetViaCliArg) {
       const envBackend = process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND || process.env.JUNO_TASK_BACKEND;
       if (envBackend) {
         const normalized = envBackend.toLowerCase().trim();
