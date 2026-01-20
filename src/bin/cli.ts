@@ -200,11 +200,39 @@ function setupMainCommand(program: Command): void {
             cwd: process.cwd()
           });
 
+          // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
+          // Remove global signal handlers first to prevent conflicts
+          process.removeAllListeners('SIGINT');
+          process.removeAllListeners('SIGTERM');
+
+          let childExited = false;
+          const signalHandler = (signal: NodeJS.Signals) => {
+            if (!childExited && child.pid) {
+              // Forward signal to child process
+              try {
+                process.kill(child.pid, signal);
+              } catch (err) {
+                // Child might have already exited, ignore errors
+              }
+            }
+          };
+
+          process.on('SIGINT', signalHandler);
+          process.on('SIGTERM', signalHandler);
+
           child.on('exit', (code) => {
+            childExited = true;
+            // Clean up signal handlers
+            process.removeListener('SIGINT', signalHandler);
+            process.removeListener('SIGTERM', signalHandler);
             process.exit(code || 0);
           });
 
           child.on('error', (error) => {
+            childExited = true;
+            // Clean up signal handlers
+            process.removeListener('SIGINT', signalHandler);
+            process.removeListener('SIGTERM', signalHandler);
             console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
             console.error(chalk.red(`   ${error.message}`));
             process.exit(1);
