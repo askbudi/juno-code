@@ -484,22 +484,19 @@ and for each part create a seperate .md file under @.juno_task/spec/*
 
 ## ULTIMATE Goal
 We want to achieve the main Task with respect to the Constraints section
+
+Part 1)
 Consider missing steps and plan. If the step is missing then author the specification at @.juno_task/spec/FILENAME.md (do NOT assume that it does not exist, search before creating). The naming of the module should be GenZ named and not conflict with another module name. If you create a new step then document the plan to implement in @.juno_task/plan.md
+
+
+Part 2) after completing the plan, and spec, create task for implementing each part on kanban './.juno_task/scripts/kanban.sh' You need to create a task for each step of implementation and testing. You need to go through the project, the spec and plan at the end to make sure you have covered all tasks on the kanban. We will later on implement tasks from kanban one by one.
+After completing the proccess an implementer agent would start the job and go through kanban tasks one by one.
 
 
 ### Constraints
 **Preferred Subagent**: {{SUBAGENT}}
 **Repository URL**: {{GIT_URL}}
-
-
-## Environment Setup
-[Empty]
-
-### 2. Package Installation
-[Empty]
-
-### 3. Test Installation
-[Empty]`,
+`,
         variables: [
           {
             name: 'main_task',
@@ -849,6 +846,23 @@ Items that have been resolved will be moved here.`,
 **Git Repository:** {{GIT_URL}}
 **Configuration Date:** {{CURRENT_DATE}}
 
+## Kanban Task Management
+
+\`\`\`bash
+# List tasks
+./.juno_task/scripts/kanban.sh list --limit 5 --sort asc 
+./.juno_task/scripts/kanban.sh list --status [backlog|todo|in_progress|done] --sort asc
+
+# Task operations
+./.juno_task/scripts/kanban.sh get {TASK_ID}
+./.juno_task/scripts/kanban.sh mark [in_progress|done|todo] --id {TASK_ID} --response "message"
+./.juno_task/scripts/kanban.sh update {TASK_ID} --commit {COMMIT_HASH}
+\`\`\`
+
+When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
+\`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
+
+
 ## Agent-Specific Instructions
 
 ### {{SUBAGENT}} Configuration
@@ -963,6 +977,24 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 - **Interaction Style:** Professional and detail-oriented
 - **Code Quality:** Focus on production-ready, well-documented code
 - **Testing:** Comprehensive unit and integration tests required
+
+## Kanban Task Management
+
+\`\`\`bash
+# List tasks
+./.juno_task/scripts/kanban.sh list --limit 5 --sort asc 
+./.juno_task/scripts/kanban.sh list --status [backlog|todo|in_progress|done] --sort asc
+
+# Task operations
+./.juno_task/scripts/kanban.sh get {TASK_ID}
+./.juno_task/scripts/kanban.sh mark [in_progress|done|todo] --id {TASK_ID} --response "message"
+./.juno_task/scripts/kanban.sh update {TASK_ID} --commit {COMMIT_HASH}
+\`\`\`
+
+When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
+\`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
+
+
 
 ## Build & Test Commands
 
