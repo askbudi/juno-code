@@ -862,6 +862,7 @@ Items that have been resolved will be moved here.`,
 When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
 \`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
 
+Important: You need to get maximum 3 tasks done in one go. 
 
 ## Agent-Specific Instructions
 
