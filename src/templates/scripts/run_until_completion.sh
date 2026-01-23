@@ -4,11 +4,10 @@
 #
 # Purpose: Continuously run juno-code until all kanban tasks are completed
 #
-# This script uses a do-while loop pattern: it runs juno-code at least once,
-# then checks the kanban board for tasks in backlog, todo, or in_progress status.
-# If tasks remain, it continues running juno-code. This ensures juno-code's
-# internal task management systems get a chance to operate even if kanban.sh
-# doesn't initially detect any tasks.
+# This script uses a while loop pattern: it ALWAYS runs pre-run hooks/commands,
+# then checks the kanban board for tasks BEFORE running juno-code. If no tasks
+# exist, juno-code is NOT executed. This allows pre-run hooks (e.g., Slack sync,
+# GitHub sync) to create tasks that will then be processed by juno-code.
 #
 # Usage: ./.juno_task/scripts/run_until_completion.sh [options] [juno-code arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
@@ -495,14 +494,23 @@ main() {
         log_warning "No arguments provided. Running juno-code with no arguments."
     fi
 
-    # Execute pre-run hooks and commands before entering the main loop
-    # Hooks run first, then explicit commands
+    # ALWAYS execute pre-run hooks and commands before checking for tasks
+    # This ensures hooks (e.g., Slack sync, GitHub sync) can create tasks
+    # that will then be processed by juno-code
     execute_pre_run_hooks
     execute_pre_run_commands
 
-    # Do-while loop pattern: Run juno-code at least once, then continue while tasks remain
-    # This ensures juno-code's internal task management systems get a chance to operate
-    # even if kanban.sh doesn't initially detect any tasks
+    # Check for tasks BEFORE entering the main loop
+    # If no tasks exist after running pre-run hooks, exit gracefully
+    if ! has_remaining_tasks; then
+        log_success ""
+        log_success "=========================================="
+        log_success "No tasks found in kanban. Pre-run hooks executed, juno-code skipped."
+        log_success "=========================================="
+        exit 0
+    fi
+
+    # While loop pattern: Only run juno-code if there are tasks to process
     while true; do
         iteration=$((iteration + 1))
 
@@ -524,7 +532,6 @@ main() {
         log_status "------------------------------------------"
 
         # Run juno-code with parsed arguments (excluding --pre-run which was already processed)
-        # We run juno-code FIRST (do-while pattern), then check for remaining tasks
         if juno-code "${JUNO_ARGS[@]}"; then
             log_success "juno-code completed successfully"
         else
@@ -585,9 +592,7 @@ main() {
             fi
         fi
 
-        # Check for remaining tasks AFTER running juno-code (do-while pattern)
-        # This ensures juno-code runs at least once, allowing its internal task
-        # management systems to check kanban for updates
+        # Check for remaining tasks AFTER running juno-code
         if ! has_remaining_tasks; then
             log_success ""
             log_success "=========================================="
