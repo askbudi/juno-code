@@ -734,7 +734,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       quiet: false,
 
       // MCP settings
-      mcpTimeout: 3600000, // 3600 seconds (1 hour) - increased to prevent timeouts for longer operations
+      mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
       mcpRetries: 3,
       mcpServerName: 'roundtable-ai',
 

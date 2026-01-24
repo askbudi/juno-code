@@ -604,7 +604,7 @@ export class ShellBackend implements Backend {
       });
 
       // Apply timeout if configured
-      const timeout = this.config!.timeout || 300000; // 5 minutes default
+      const timeout = this.config!.timeout || 43200000; // 12 hours default for long-running operations
       const timer = setTimeout(() => {
         if (isProcessKilled) return;
 

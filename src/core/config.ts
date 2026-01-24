@@ -227,8 +227,8 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   verbose: false,
   quiet: false,
 
-  // MCP settings
-  mcpTimeout: 86400000, // 86400 seconds (24 hours / 1 day) - maximum safe timeout for long-running operations
+  // MCP settings (also used by shell backend)
+  mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
   mcpRetries: 3,
   mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
 

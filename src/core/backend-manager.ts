@@ -146,7 +146,7 @@ export class BackendManager {
         workingDirectory: options.workingDirectory,
         servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
         debug: options.config.verbose,
-        timeout: options.config.mcpTimeout || 300000,
+        timeout: options.config.mcpTimeout || 43200000, // 12 hours default
         enableJsonStreaming: true,
         outputRawJson: options.config.verbose, // Output full JSON in verbose mode
         environment: process.env,
