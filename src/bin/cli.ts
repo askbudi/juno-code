@@ -117,6 +117,7 @@ function setupGlobalOptions(program: Command): void {
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
     .addOption(new Option('--till-complete', 'Alias for --til-completion').hideHelp())
     .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
+    .option('--force-update', 'Force update scripts, services, and Python dependencies (bypasses 24-hour cache)')
 
   // Global error handling
   program.exitOverride((err) => {
@@ -481,15 +482,27 @@ async function main(): Promise<void> {
   // Configure environment
   configureEnvironment();
 
+  // Check for --force-update flag early
+  const isForceUpdate = process.argv.includes('--force-update');
+
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
   try {
     const { ServiceInstaller } = await import('../utils/service-installer.js');
-    const updated = await ServiceInstaller.autoUpdate();
 
-    // Show update message in verbose mode
-    if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
-      console.error('[DEBUG] Service scripts auto-updated to latest version');
+    if (isForceUpdate) {
+      console.log(chalk.blue('🔄 Force updating service scripts (codex.py, claude.py, gemini.py)...'));
+    }
+
+    const updated = await ServiceInstaller.autoUpdate(isForceUpdate);
+
+    // Show update message in verbose mode or force update mode
+    if (updated && (isForceUpdate || process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+      if (isForceUpdate) {
+        console.log(chalk.green('✓ Service scripts reinstalled'));
+      } else {
+        console.error('[DEBUG] Service scripts auto-updated to latest version');
+      }
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
@@ -500,13 +513,24 @@ async function main(): Promise<void> {
 
   // Auto-update project scripts (e.g., run_until_completion.sh) in .juno_task/scripts/
   // This ensures scripts are always in sync with the package version (installs missing + updates outdated)
+  // If --force-update flag is present, force reinstall all scripts and bypass Python dependency cache
+
   try {
     const { ScriptInstaller } = await import('../utils/script-installer.js');
-    const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
 
-    // Show update message in verbose mode
-    if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
-      console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
+    if (isForceUpdate) {
+      // Force update all scripts and Python dependencies
+      console.log(chalk.blue('🔄 Force updating scripts and Python dependencies...'));
+      await ScriptInstaller.forceUpdateAll(process.cwd(), false);
+      console.log(chalk.green('✓ Force update completed'));
+    } else {
+      // Normal auto-update (only missing/outdated scripts)
+      const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
+
+      // Show update message in verbose mode
+      if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+        console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
+      }
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI

@@ -52,10 +52,9 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Required packages
-REQUIRED_PACKAGES=("juno-kanban" "roundtable-ai")
-
-# Slack integration dependencies (optional, only installed when Slack scripts are used)
-SLACK_PACKAGES=("slack_sdk" "python-dotenv")
+# Note: requests and python-dotenv are required by github.py
+# slack_sdk is required by Slack integration scripts (slack_fetch.py, slack_respond.py)
+REQUIRED_PACKAGES=("juno-kanban" "roundtable-ai" "requests" "python-dotenv" "slack_sdk")
 
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)

@@ -4,11 +4,10 @@
 #
 # Purpose: Continuously run juno-code until all kanban tasks are completed
 #
-# This script uses a do-while loop pattern: it runs juno-code at least once,
-# then checks the kanban board for tasks in backlog, todo, or in_progress status.
-# If tasks remain, it continues running juno-code. This ensures juno-code's
-# internal task management systems get a chance to operate even if kanban.sh
-# doesn't initially detect any tasks.
+# This script uses a while loop pattern: it ALWAYS runs pre-run hooks/commands,
+# then checks the kanban board for tasks BEFORE running juno-code. If no tasks
+# exist, juno-code is NOT executed. This allows pre-run hooks (e.g., Slack sync,
+# GitHub sync) to create tasks that will then be processed by juno-code.
 #
 # Usage: ./.juno_task/scripts/run_until_completion.sh [options] [juno-code arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
@@ -33,6 +32,9 @@
 #                               - Using the flag multiple times: --pre-run-hook A --pre-run-hook B
 #                               - Comma-separated: --pre-run-hook "A,B,C"
 #                               - Pipe-separated: --pre-run-hook "A|B|C"
+#   --stale-threshold <n>   - Number of stale iterations before exiting (default: 3)
+#                             Set to 0 to disable stale detection
+#   --no-stale-check        - Alias for --stale-threshold 0
 #
 # All other arguments are forwarded to juno-code.
 # The script shows all stdout/stderr from juno-code in real-time.
@@ -42,7 +44,15 @@
 #   JUNO_VERBOSE=true   - Show [RUN_UNTIL] informational messages
 #   JUNO_PRE_RUN        - Alternative way to specify pre-run command (env var)
 #   JUNO_PRE_RUN_HOOK   - Alternative way to specify pre-run hook name (env var)
+#   JUNO_STALE_THRESHOLD - Number of stale iterations before exiting (default: 3)
+#                          Set to 0 to disable stale detection
 #   (JUNO_DEBUG and JUNO_VERBOSE default to false for silent operation)
+#
+# Stale Iteration Detection:
+#   The script tracks kanban state (task IDs and statuses) between iterations.
+#   If no changes are detected for JUNO_STALE_THRESHOLD consecutive iterations,
+#   the script will exit to prevent infinite loops where the agent doesn't
+#   process any tasks.
 #
 # Created by: juno-code init command
 # Date: Auto-generated during project initialization
@@ -66,6 +76,12 @@ NC='\033[0m' # No Color
 SCRIPTS_DIR=".juno_task/scripts"
 KANBAN_SCRIPT="${SCRIPTS_DIR}/kanban.sh"
 
+# Stale iteration detection configuration
+# Number of consecutive iterations without kanban changes before exiting
+STALE_THRESHOLD="${JUNO_STALE_THRESHOLD:-3}"
+STALE_COUNTER=0
+PREVIOUS_KANBAN_STATE=""
+
 # Arrays to store pre-run commands, hooks, and juno-code arguments
 declare -a PRE_RUN_CMDS=()
 declare -a PRE_RUN_HOOKS=()
@@ -85,6 +101,22 @@ parse_arguments() {
                 fi
                 PRE_RUN_CMDS+=("$2")
                 shift 2
+                ;;
+            --stale-threshold)
+                if [[ -z "${2:-}" ]]; then
+                    echo "[ERROR] --stale-threshold requires a number argument" >&2
+                    exit 1
+                fi
+                if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                    echo "[ERROR] --stale-threshold must be a non-negative integer, got: $2" >&2
+                    exit 1
+                fi
+                STALE_THRESHOLD="$2"
+                shift 2
+                ;;
+            --no-stale-check)
+                STALE_THRESHOLD=0
+                shift
                 ;;
             --pre-run-hook|--pre-run-hooks|--run-pre-hook|--run-pre-hooks)
                 if [[ -z "${2:-}" ]]; then
@@ -327,6 +359,63 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 # Change to project root
 cd "$PROJECT_ROOT"
 
+# Function to get a snapshot of kanban state for comparison
+# Returns a sorted string of "task_id:status" pairs
+get_kanban_state_snapshot() {
+    local snapshot=""
+
+    # Check if kanban script exists
+    if [ ! -f "$KANBAN_SCRIPT" ]; then
+        echo ""
+        return
+    fi
+
+    # Get all non-done/archive tasks as JSON
+    local kanban_output
+    if kanban_output=$("$KANBAN_SCRIPT" list --status backlog todo in_progress 2>/dev/null); then
+        # Extract just the JSON array part (skip the SUMMARY section)
+        local json_part
+        json_part=$(echo "$kanban_output" | grep -E '^\[' | head -1)
+
+        if [[ -z "$json_part" ]]; then
+            # Try to find JSON array in the output
+            json_part=$(echo "$kanban_output" | sed -n '/^\[/,/^\]/p' | head -1)
+        fi
+
+        # If we have JSON output, extract task IDs and statuses
+        if [[ -n "$json_part" ]] && command -v jq &> /dev/null; then
+            # Create a deterministic snapshot: sorted "id:status" pairs
+            snapshot=$(echo "$kanban_output" | jq -r 'if type == "array" then .[] | "\(.id):\(.status)" else empty end' 2>/dev/null | sort | tr '\n' '|')
+        else
+            # Fallback: use the raw output as state (less precise but still detects changes)
+            snapshot=$(echo "$kanban_output" | grep -E '"id"|"status"' | tr -d ' \n')
+        fi
+    fi
+
+    echo "$snapshot"
+}
+
+# Function to check if kanban state has changed
+# Returns 0 if state changed, 1 if stale (no change)
+check_kanban_state_changed() {
+    local current_state
+    current_state=$(get_kanban_state_snapshot)
+
+    if [ "${JUNO_DEBUG:-false}" = "true" ]; then
+        echo "[DEBUG] Previous kanban state: $PREVIOUS_KANBAN_STATE" >&2
+        echo "[DEBUG] Current kanban state: $current_state" >&2
+    fi
+
+    if [[ "$current_state" == "$PREVIOUS_KANBAN_STATE" ]]; then
+        # State is the same - no changes detected
+        return 1
+    else
+        # State changed
+        PREVIOUS_KANBAN_STATE="$current_state"
+        return 0
+    fi
+}
+
 # Function to check if there are tasks remaining
 has_remaining_tasks() {
     log_info "Checking kanban for remaining tasks..."
@@ -391,19 +480,37 @@ main() {
         log_status "Maximum iterations: unlimited"
     fi
 
+    if [ "$STALE_THRESHOLD" -gt 0 ]; then
+        log_status "Stale iteration threshold: $STALE_THRESHOLD"
+    else
+        log_status "Stale iteration detection: disabled"
+    fi
+
+    # Capture initial kanban state before first iteration
+    PREVIOUS_KANBAN_STATE=$(get_kanban_state_snapshot)
+
     # Check if we have any arguments for juno-code
     if [[ ${#JUNO_ARGS[@]} -eq 0 ]]; then
         log_warning "No arguments provided. Running juno-code with no arguments."
     fi
 
-    # Execute pre-run hooks and commands before entering the main loop
-    # Hooks run first, then explicit commands
+    # ALWAYS execute pre-run hooks and commands before checking for tasks
+    # This ensures hooks (e.g., Slack sync, GitHub sync) can create tasks
+    # that will then be processed by juno-code
     execute_pre_run_hooks
     execute_pre_run_commands
 
-    # Do-while loop pattern: Run juno-code at least once, then continue while tasks remain
-    # This ensures juno-code's internal task management systems get a chance to operate
-    # even if kanban.sh doesn't initially detect any tasks
+    # Check for tasks BEFORE entering the main loop
+    # If no tasks exist after running pre-run hooks, exit gracefully
+    if ! has_remaining_tasks; then
+        log_success ""
+        log_success "=========================================="
+        log_success "No tasks found in kanban. Pre-run hooks executed, juno-code skipped."
+        log_success "=========================================="
+        exit 0
+    fi
+
+    # While loop pattern: Only run juno-code if there are tasks to process
     while true; do
         iteration=$((iteration + 1))
 
@@ -425,7 +532,6 @@ main() {
         log_status "------------------------------------------"
 
         # Run juno-code with parsed arguments (excluding --pre-run which was already processed)
-        # We run juno-code FIRST (do-while pattern), then check for remaining tasks
         if juno-code "${JUNO_ARGS[@]}"; then
             log_success "juno-code completed successfully"
         else
@@ -441,9 +547,52 @@ main() {
         # Small delay to prevent rapid-fire execution and allow user to Ctrl+C if needed
         sleep 1
 
-        # Check for remaining tasks AFTER running juno-code (do-while pattern)
-        # This ensures juno-code runs at least once, allowing its internal task
-        # management systems to check kanban for updates
+        # Check for stale iterations (no kanban state changes)
+        # This prevents infinite loops where agent doesn't process any tasks
+        if [ "$STALE_THRESHOLD" -gt 0 ]; then
+            if check_kanban_state_changed; then
+                # State changed - reset the stale counter
+                STALE_COUNTER=0
+                log_info "Kanban state changed. Stale counter reset."
+            else
+                # State unchanged - increment stale counter
+                STALE_COUNTER=$((STALE_COUNTER + 1))
+                log_warning "No kanban changes detected. Stale iteration count: $STALE_COUNTER/$STALE_THRESHOLD"
+
+                if [ "$STALE_COUNTER" -ge "$STALE_THRESHOLD" ]; then
+                    log_error ""
+                    log_error "=========================================="
+                    log_error "STALE ITERATION LIMIT REACHED"
+                    log_error "=========================================="
+                    log_error ""
+                    log_error "The script has run $STALE_COUNTER consecutive iterations"
+                    log_error "without any changes to the kanban board state."
+                    log_error ""
+                    log_error "This typically happens when:"
+                    log_error "  1. The agent doesn't recognize or prioritize remaining tasks"
+                    log_error "  2. Tasks are stuck in a state the agent cannot process"
+                    log_error "  3. There's a configuration or prompt issue"
+                    log_error ""
+                    log_error "Remaining tasks are still in the kanban system but"
+                    log_error "the agent is not making progress on them."
+                    log_error ""
+                    log_error "To adjust this threshold, set JUNO_STALE_THRESHOLD"
+                    log_error "environment variable (current: $STALE_THRESHOLD, default: 3)"
+                    log_error "Set to 0 to disable stale detection."
+                    log_error ""
+                    log_error "=========================================="
+                    # Also print to stdout so it's visible in all contexts
+                    echo ""
+                    echo "STALE ITERATION LIMIT REACHED: No kanban changes detected for $STALE_COUNTER iterations."
+                    echo "The agent is not processing remaining tasks. Exiting to prevent infinite loop."
+                    echo "Set JUNO_STALE_THRESHOLD=0 to disable this check, or increase the threshold value."
+                    echo ""
+                    exit 2
+                fi
+            fi
+        fi
+
+        # Check for remaining tasks AFTER running juno-code
         if ! has_remaining_tasks; then
             log_success ""
             log_success "=========================================="

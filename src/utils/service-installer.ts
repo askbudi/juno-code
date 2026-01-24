@@ -234,8 +234,9 @@ export class ServiceInstaller {
   /**
    * Automatically update services if needed (silent operation)
    * This should be called on every CLI run to ensure services are up-to-date
+   * @param force - If true, force reinstall services regardless of version
    */
-  static async autoUpdate(): Promise<boolean> {
+  static async autoUpdate(force = false): Promise<boolean> {
     try {
       const debug = process.env.JUNO_CODE_DEBUG === '1';
 
@@ -245,10 +246,10 @@ export class ServiceInstaller {
         console.error(`[DEBUG] Package version: ${packageVersion}, Installed version: ${installedVersion || 'not found'}`);
       }
 
-      const needsUpdate = await this.needsUpdate();
+      const needsUpdate = force || await this.needsUpdate();
 
       if (debug) {
-        console.error(`[DEBUG] Needs update: ${needsUpdate}`);
+        console.error(`[DEBUG] Needs update: ${needsUpdate}${force ? ' (forced)' : ''}`);
       }
 
       if (needsUpdate) {

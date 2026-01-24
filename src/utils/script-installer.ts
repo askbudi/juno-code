@@ -345,9 +345,10 @@ export class ScriptInstaller {
    * This should be called on every CLI run to ensure scripts are up-to-date.
    * @param projectDir - The project root directory
    * @param silent - If true, suppresses console output
+   * @param force - If true, reinstall all scripts regardless of content comparison
    * @returns true if any scripts were installed or updated
    */
-  static async autoUpdate(projectDir: string, silent = true): Promise<boolean> {
+  static async autoUpdate(projectDir: string, silent = true, force = false): Promise<boolean> {
     try {
       const debug = process.env.JUNO_CODE_DEBUG === '1';
 
@@ -357,23 +358,33 @@ export class ScriptInstaller {
         return false;
       }
 
-      const missing = await this.getMissingScripts(projectDir);
-      const outdated = await this.getOutdatedScripts(projectDir);
+      let scriptsToUpdate: string[];
 
-      if (debug) {
-        if (missing.length > 0) {
-          console.error(`[DEBUG] ScriptInstaller: Missing scripts: ${missing.join(', ')}`);
+      if (force) {
+        // Force update: reinstall all required scripts
+        scriptsToUpdate = [...this.REQUIRED_SCRIPTS];
+        if (debug) {
+          console.error(`[DEBUG] ScriptInstaller: Force update - reinstalling all ${scriptsToUpdate.length} scripts`);
         }
-        if (outdated.length > 0) {
-          console.error(`[DEBUG] ScriptInstaller: Outdated scripts: ${outdated.join(', ')}`);
+      } else {
+        const missing = await this.getMissingScripts(projectDir);
+        const outdated = await this.getOutdatedScripts(projectDir);
+
+        if (debug) {
+          if (missing.length > 0) {
+            console.error(`[DEBUG] ScriptInstaller: Missing scripts: ${missing.join(', ')}`);
+          }
+          if (outdated.length > 0) {
+            console.error(`[DEBUG] ScriptInstaller: Outdated scripts: ${outdated.join(', ')}`);
+          }
         }
-      }
 
-      if (missing.length === 0 && outdated.length === 0) {
-        return false;
-      }
+        if (missing.length === 0 && outdated.length === 0) {
+          return false;
+        }
 
-      const scriptsToUpdate = [...new Set([...missing, ...outdated])];
+        scriptsToUpdate = [...new Set([...missing, ...outdated])];
+      }
 
       let updatedAny = false;
       for (const script of scriptsToUpdate) {
@@ -396,6 +407,67 @@ export class ScriptInstaller {
     } catch (error) {
       if (process.env.JUNO_CODE_DEBUG === '1') {
         console.error('[DEBUG] ScriptInstaller: autoUpdate error:', error);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Force update all scripts and run install_requirements.sh with --force-update
+   * This bypasses the 24-hour cache and reinstalls all Python dependencies
+   * @param projectDir - The project root directory
+   * @param silent - If true, suppresses console output
+   * @returns true if update was successful
+   */
+  static async forceUpdateAll(projectDir: string, silent = false): Promise<boolean> {
+    const debug = process.env.JUNO_CODE_DEBUG === '1';
+
+    try {
+      // First, force update all scripts
+      const scriptsUpdated = await this.autoUpdate(projectDir, silent, true);
+
+      if (debug || !silent) {
+        console.log('✓ Force updated all scripts in .juno_task/scripts/');
+      }
+
+      // Then run install_requirements.sh with --force-update
+      const scriptsDir = path.join(projectDir, '.juno_task', 'scripts');
+      const installScript = path.join(scriptsDir, 'install_requirements.sh');
+
+      if (await fs.pathExists(installScript)) {
+        if (debug || !silent) {
+          console.log('Running install_requirements.sh --force-update...');
+        }
+
+        const { execSync } = await import('child_process');
+        try {
+          const output = execSync(`${installScript} --force-update`, {
+            cwd: projectDir,
+            encoding: 'utf8',
+            stdio: 'pipe'
+          });
+
+          if (output && output.trim() && (debug || !silent)) {
+            console.log(output);
+          }
+
+          if (!silent) {
+            console.log('✓ Python dependencies force updated (cache bypassed)');
+          }
+        } catch (error: any) {
+          if (error.stdout && error.stdout.trim() && (debug || !silent)) {
+            console.log(error.stdout);
+          }
+          if (error.status !== 0) {
+            console.error(`⚠️  install_requirements.sh failed: ${error.message || error.stderr}`);
+          }
+        }
+      }
+
+      return scriptsUpdated;
+    } catch (error) {
+      if (debug) {
+        console.error('[DEBUG] ScriptInstaller: forceUpdateAll error:', error);
       }
       return false;
     }
