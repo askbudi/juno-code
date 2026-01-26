@@ -79,7 +79,8 @@ describe('Configuration Module', () => {
         headlessMode: true,
         workingDirectory: '/test/path',
         sessionDirectory: '/test/sessions',
-        hooks: {}
+        hooks: {},
+        onHourlyLimit: 'raise'
       };
 
       const result = validateConfig(validConfig);

@@ -113,6 +113,8 @@ export interface GlobalCLIOptions {
   logLevel?: LogLevel;
   /** Enable concurrent feedback collection during execution */
   enableFeedback?: boolean;
+  /** Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately */
+  onHourlyLimit?: 'wait' | 'raise';
 }
 
 /**

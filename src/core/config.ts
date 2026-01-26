@@ -49,6 +49,9 @@ export const ENV_VAR_MAPPING = {
   // Hook settings
   JUNO_CODE_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
 
+  // Quota/hourly limit settings
+  JUNO_CODE_ON_HOURLY_LIMIT: 'onHourlyLimit',
+
   // TUI settings
   JUNO_CODE_INTERACTIVE: 'interactive',
   JUNO_CODE_HEADLESS_MODE: 'headlessMode',
@@ -84,6 +87,9 @@ export const LEGACY_ENV_VAR_MAPPING = {
   // Hook settings
   JUNO_TASK_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
 
+  // Quota/hourly limit settings
+  JUNO_TASK_ON_HOURLY_LIMIT: 'onHourlyLimit',
+
   // TUI settings
   JUNO_TASK_INTERACTIVE: 'interactive',
   JUNO_TASK_HEADLESS_MODE: 'headlessMode',
@@ -107,6 +113,11 @@ const BackendTypeSchema = z.enum(['mcp', 'shell']);
  * Zod schema for validating log levels
  */
 const LogLevelSchema = z.enum(['error', 'warn', 'info', 'debug', 'trace']);
+
+/**
+ * Zod schema for validating on-hourly-limit behavior
+ */
+const OnHourlyLimitSchema = z.enum(['wait', 'raise']);
 
 /**
  * Zod schema for validating hook types
@@ -193,6 +204,10 @@ export const JunoTaskConfigSchema = z.object({
     .optional()
     .describe('Timeout for individual hook commands in milliseconds (default: 300000 = 5 minutes)'),
 
+  // Quota/hourly limit settings
+  onHourlyLimit: OnHourlyLimitSchema
+    .describe('Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately'),
+
   // TUI settings
   interactive: z.boolean()
     .describe('Enable interactive mode'),
@@ -231,6 +246,9 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
   mcpRetries: 3,
   mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
+
+  // Quota/hourly limit settings
+  onHourlyLimit: 'raise', // Default to exit immediately when hourly limit is reached
 
   // TUI settings
   interactive: true,

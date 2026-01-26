@@ -118,6 +118,7 @@ function setupGlobalOptions(program: Command): void {
     .addOption(new Option('--till-complete', 'Alias for --til-completion').hideHelp())
     .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
     .option('--force-update', 'Force update scripts, services, and Python dependencies (bypasses 24-hour cache)')
+    .option('--on-hourly-limit <behavior>', 'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately (default: raise)')
 
   // Global error handling
   program.exitOverride((err) => {
@@ -664,6 +665,7 @@ ${chalk.blue.bold('Environment Variables:')}
   JUNO_CODE_VERBOSE               Enable verbose output (true/false)
   JUNO_CODE_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
   JUNO_CODE_MCP_TIMEOUT           MCP server timeout in milliseconds
+  JUNO_CODE_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)
 

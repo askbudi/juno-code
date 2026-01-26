@@ -567,7 +567,9 @@ export async function mainCommandHandler(
         verbose: options.verbose || false,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
-        workingDirectory: options.cwd || process.cwd()
+        workingDirectory: options.cwd || process.cwd(),
+        // Pass through onHourlyLimit if specified via CLI flag
+        ...(options.onHourlyLimit ? { onHourlyLimit: options.onHourlyLimit as 'wait' | 'raise' } : {})
       }
     });
 

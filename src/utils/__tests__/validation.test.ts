@@ -407,7 +407,8 @@ describe('Configuration Validation', () => {
         interactive: true,
         headlessMode: false,
         workingDirectory: process.cwd(),
-        sessionDirectory: '/tmp/sessions'
+        sessionDirectory: '/tmp/sessions',
+        onHourlyLimit: 'raise'
       };
 
       expect(() => validateConfig(config)).not.toThrow();

@@ -14,6 +14,9 @@ export type SessionStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 // Log levels
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
+// On hourly limit behavior
+export type OnHourlyLimit = 'wait' | 'raise';
+
 // Hook types
 export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN';
 
@@ -50,6 +53,9 @@ export interface JunoTaskConfig {
 
   // Hook settings
   hookCommandTimeout?: number;
+
+  // Quota/hourly limit settings
+  onHourlyLimit: OnHourlyLimit;
 
   // TUI settings
   interactive: boolean;

@@ -1154,6 +1154,40 @@ export class ExecutionEngine extends EventEmitter {
 
     context.statistics.quotaLimitEncounters++;
 
+    // Check the onHourlyLimit configuration setting
+    // Priority: config.json < ENV < Flag (all handled by the config loader)
+    const onHourlyLimit = this.engineConfig.config.onHourlyLimit || 'raise';
+
+    // If set to 'raise', exit immediately instead of waiting
+    if (onHourlyLimit === 'raise') {
+      const resetTimeStr = quotaInfo.resetTime
+        ? quotaInfo.resetTime.toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+            timeZoneName: 'short'
+          })
+        : 'unknown';
+
+      engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
+      engineLogger.info(`║  Claude Quota Limit Reached                                    ║`);
+      engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
+      engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
+      engineLogger.info(`║  Behavior:        raise (exit immediately)                     ║`);
+      engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
+      engineLogger.info(`║  To auto-wait instead, use: --on-hourly-limit wait            ║`);
+      engineLogger.info(`║  Or set: JUNO_CODE_ON_HOURLY_LIMIT=wait                        ║`);
+      engineLogger.info(`║  Or in config.json: { "onHourlyLimit": "wait" }               ║`);
+      engineLogger.info(`╚════════════════════════════════════════════════════════════════╝`);
+
+      this.emit('quota-limit:raise', { context, quotaInfo });
+
+      // Return false to NOT retry, which will cause the iteration loop to continue
+      // but since this is an error condition, we need to throw to actually exit
+      throw new Error(`Claude quota limit reached. Quota resets at ${resetTimeStr}. Use --on-hourly-limit wait to auto-retry.`);
+    }
+
+    // onHourlyLimit === 'wait' - proceed with waiting behavior
     const waitTimeMs = quotaInfo.sleepDurationMs;
 
     // Cap the wait time at 12 hours to prevent excessive waits

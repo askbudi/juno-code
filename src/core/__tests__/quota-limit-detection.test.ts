@@ -6,6 +6,7 @@
  * 2. Parses reset times from various timezone formats
  * 3. Calculates correct sleep durations
  * 4. Handles edge cases and malformed messages
+ * 5. Respects onHourlyLimit configuration (wait vs raise)
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
@@ -369,5 +370,129 @@ describe('Sleep Duration Calculation', () => {
       expect(result.sleepDurationMs!).toBeGreaterThan(fourHoursMs - 60000);
       expect(result.sleepDurationMs!).toBeLessThan(fourHoursMs + 60000);
     });
+  });
+});
+
+describe('onHourlyLimit Configuration', () => {
+  it('should default to "raise" in DEFAULT_CONFIG', async () => {
+    // Import config to check the default
+    const { DEFAULT_CONFIG } = await import('../config.js');
+    expect(DEFAULT_CONFIG.onHourlyLimit).toBe('raise');
+  });
+
+  it('should accept "wait" as valid onHourlyLimit value', async () => {
+    const { validateConfig, DEFAULT_CONFIG } = await import('../config.js');
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      onHourlyLimit: 'wait',
+    };
+
+    const result = validateConfig(config);
+    expect(result.onHourlyLimit).toBe('wait');
+  });
+
+  it('should accept "raise" as valid onHourlyLimit value', async () => {
+    const { validateConfig, DEFAULT_CONFIG } = await import('../config.js');
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      onHourlyLimit: 'raise',
+    };
+
+    const result = validateConfig(config);
+    expect(result.onHourlyLimit).toBe('raise');
+  });
+
+  it('should reject invalid onHourlyLimit values', async () => {
+    const { validateConfig, DEFAULT_CONFIG } = await import('../config.js');
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      onHourlyLimit: 'invalid',
+    };
+
+    expect(() => validateConfig(config)).toThrow();
+  });
+
+  it('should load onHourlyLimit from JUNO_CODE_ON_HOURLY_LIMIT environment variable', async () => {
+    // Set the environment variable
+    const originalEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+    process.env.JUNO_CODE_ON_HOURLY_LIMIT = 'wait';
+
+    try {
+      // Need to re-import to pick up the new env value
+      const { ConfigLoader } = await import('../config.js');
+
+      const loader = new ConfigLoader();
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.onHourlyLimit).toBe('wait');
+    } finally {
+      // Restore original env
+      if (originalEnv === undefined) {
+        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+      } else {
+        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalEnv;
+      }
+    }
+  });
+
+  it('should load onHourlyLimit from JUNO_TASK_ON_HOURLY_LIMIT for backward compatibility', async () => {
+    // Set the legacy environment variable
+    const originalEnv = process.env.JUNO_TASK_ON_HOURLY_LIMIT;
+    const originalCodeEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+
+    // Clear the new env var to test legacy fallback
+    delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+    process.env.JUNO_TASK_ON_HOURLY_LIMIT = 'wait';
+
+    try {
+      const { ConfigLoader } = await import('../config.js');
+
+      const loader = new ConfigLoader();
+      loader.fromEnvironment();
+      const config = loader.merge();
+
+      expect(config.onHourlyLimit).toBe('wait');
+    } finally {
+      // Restore original env
+      if (originalEnv === undefined) {
+        delete process.env.JUNO_TASK_ON_HOURLY_LIMIT;
+      } else {
+        process.env.JUNO_TASK_ON_HOURLY_LIMIT = originalEnv;
+      }
+      if (originalCodeEnv === undefined) {
+        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+      } else {
+        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalCodeEnv;
+      }
+    }
+  });
+
+  it('should prioritize CLI option over environment variable', async () => {
+    // Set the environment variable to 'raise'
+    const originalEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+    process.env.JUNO_CODE_ON_HOURLY_LIMIT = 'raise';
+
+    try {
+      const { ConfigLoader } = await import('../config.js');
+
+      const loader = new ConfigLoader();
+      loader.fromEnvironment();
+      // CLI option should override env
+      loader.fromCli({ onHourlyLimit: 'wait' } as any);
+      const config = loader.merge();
+
+      expect(config.onHourlyLimit).toBe('wait');
+    } finally {
+      // Restore original env
+      if (originalEnv === undefined) {
+        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+      } else {
+        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalEnv;
+      }
+    }
   });
 });
