@@ -246,4 +246,128 @@ describe('Sleep Duration Calculation', () => {
     expect(result.sleepDurationMs).toBeDefined();
     expect(result.sleepDurationMs!).toBeGreaterThan(20 * 60 * 60 * 1000); // Should be > 20 hours
   });
+
+  // Tests for specific scenarios from Task z4u46R (YV1DYV follow-up)
+  // Verifies that reset times work correctly for both 5AM and 10PM cases
+
+  describe('5AM and 10PM Reset Time Scenarios', () => {
+    it('should correctly calculate sleep duration when reset is 10PM and current time is daytime', () => {
+      // Current time: 2:00 PM EST (7:00 PM UTC)
+      // Reset time: 10:00 PM EST (3:00 AM UTC next day)
+      vi.setSystemTime(new Date('2026-01-25T19:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 10pm (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 2pm EST to 10pm EST = 8 hours
+      const eightHoursMs = 8 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(eightHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(eightHoursMs + 60000);
+    });
+
+    it('should correctly calculate sleep duration when reset is 5AM tomorrow (current time evening)', () => {
+      // Current time: 10:00 PM EST (3:00 AM UTC next day)
+      // Reset time: 5:00 AM EST next day (10:00 AM UTC next day)
+      vi.setSystemTime(new Date('2026-01-26T03:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 5am (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 10pm EST to 5am EST next day = 7 hours
+      const sevenHoursMs = 7 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(sevenHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(sevenHoursMs + 60000);
+    });
+
+    it('should correctly calculate sleep duration when reset is 5AM and current time is 1AM', () => {
+      // Current time: 1:00 AM EST (6:00 AM UTC)
+      // Reset time: 5:00 AM EST (10:00 AM UTC)
+      vi.setSystemTime(new Date('2026-01-25T06:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 5am (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 1am EST to 5am EST = 4 hours
+      const fourHoursMs = 4 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(fourHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(fourHoursMs + 60000);
+    });
+
+    it('should wrap to next day when reset is 5AM and current time is 6AM', () => {
+      // Current time: 6:00 AM EST (11:00 AM UTC)
+      // Reset time: 5:00 AM EST next day (should wrap since 5am already passed)
+      vi.setSystemTime(new Date('2026-01-25T11:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 5am (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 6am EST to 5am EST next day = 23 hours
+      const twentyThreeHoursMs = 23 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(twentyThreeHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(twentyThreeHoursMs + 60000);
+    });
+
+    it('should wrap to next day when reset is 10PM and current time is 11PM', () => {
+      // Current time: 11:00 PM EST (4:00 AM UTC next day)
+      // Reset time: 10:00 PM EST next day (should wrap since 10pm already passed)
+      vi.setSystemTime(new Date('2026-01-26T04:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 10pm (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 11pm EST to 10pm EST next day = 23 hours
+      const twentyThreeHoursMs = 23 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(twentyThreeHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(twentyThreeHoursMs + 60000);
+    });
+
+    it('should handle 5AM in UTC timezone', () => {
+      // Current time: 1:00 AM UTC
+      // Reset time: 5:00 AM UTC
+      vi.setSystemTime(new Date('2026-01-25T01:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 5am (UTC)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 1am UTC to 5am UTC = 4 hours
+      const fourHoursMs = 4 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(fourHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(fourHoursMs + 60000);
+    });
+
+    it('should handle 10PM in UTC timezone', () => {
+      // Current time: 6:00 PM UTC
+      // Reset time: 10:00 PM UTC
+      vi.setSystemTime(new Date('2026-01-25T18:00:00.000Z'));
+
+      const message = "You've hit your limit · resets 10pm (UTC)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBeDefined();
+
+      // From 6pm UTC to 10pm UTC = 4 hours
+      const fourHoursMs = 4 * 60 * 60 * 1000;
+      expect(result.sleepDurationMs!).toBeGreaterThan(fourHoursMs - 60000);
+      expect(result.sleepDurationMs!).toBeLessThan(fourHoursMs + 60000);
+    });
+  });
 });
