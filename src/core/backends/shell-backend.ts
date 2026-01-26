@@ -67,6 +67,170 @@ interface StreamingEvent {
   timestamp?: string;
 }
 
+/**
+ * Quota limit information extracted from Claude response
+ */
+export interface QuotaLimitInfo {
+  /** Whether a quota limit was detected */
+  detected: boolean;
+  /** The parsed reset time as a Date object */
+  resetTime?: Date;
+  /** Sleep duration in milliseconds until the reset time */
+  sleepDurationMs?: number;
+  /** The timezone extracted from the message */
+  timezone?: string;
+  /** Original error message from Claude */
+  originalMessage?: string;
+}
+
+// =============================================================================
+// Quota Limit Detection Utilities
+// =============================================================================
+
+/**
+ * Common timezone aliases and their UTC offsets
+ */
+const TIMEZONE_OFFSETS: Record<string, number> = {
+  // North American timezones
+  'America/Toronto': -5,
+  'America/New_York': -5,
+  'US/Eastern': -5,
+  'America/Chicago': -6,
+  'US/Central': -6,
+  'America/Denver': -7,
+  'US/Mountain': -7,
+  'America/Los_Angeles': -8,
+  'US/Pacific': -8,
+  // European timezones
+  'Europe/London': 0,
+  'UTC': 0,
+  'GMT': 0,
+  'Europe/Paris': 1,
+  'Europe/Berlin': 1,
+  'CET': 1,
+  // Other common timezones
+  'Asia/Tokyo': 9,
+  'Asia/Shanghai': 8,
+  'Australia/Sydney': 11,
+};
+
+/**
+ * Parse reset time from Claude quota limit message
+ * Handles formats like:
+ * - "resets 8pm (America/Toronto)"
+ * - "resets 10am (UTC)"
+ * - "resets 11:30pm (US/Eastern)"
+ * - "resets 2:00 PM (America/New_York)"
+ */
+function parseResetTime(message: string): { resetTime: Date; timezone: string } | null {
+  // Pattern to match: "resets HH[:MM] [AM/PM] (TIMEZONE)"
+  const resetPattern = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([^)]+)\)/i;
+  const match = message.match(resetPattern);
+
+  if (!match) {
+    return null;
+  }
+
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  const ampm = match[3]?.toLowerCase();
+  const timezone = match[4].trim();
+
+  // Convert to 24-hour format
+  if (ampm === 'pm' && hours !== 12) {
+    hours += 12;
+  } else if (ampm === 'am' && hours === 12) {
+    hours = 0;
+  }
+
+  // Get timezone offset (default to local if unknown)
+  const timezoneOffset = TIMEZONE_OFFSETS[timezone];
+
+  // Create reset time in the specified timezone
+  const now = new Date();
+  const resetTime = new Date();
+
+  if (timezoneOffset !== undefined) {
+    // Calculate the current time in the target timezone
+    const utcNow = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const targetNow = new Date(utcNow + (timezoneOffset * 3600000));
+
+    // Set the reset time in the target timezone
+    resetTime.setUTCHours(hours - timezoneOffset, minutes, 0, 0);
+
+    // If the reset time is in the past, add a day
+    if (resetTime.getTime() <= now.getTime()) {
+      resetTime.setTime(resetTime.getTime() + 24 * 60 * 60 * 1000);
+    }
+  } else {
+    // Fallback: assume it's in the local timezone
+    resetTime.setHours(hours, minutes, 0, 0);
+
+    // If the reset time is in the past, add a day
+    if (resetTime.getTime() <= now.getTime()) {
+      resetTime.setTime(resetTime.getTime() + 24 * 60 * 60 * 1000);
+    }
+  }
+
+  return { resetTime, timezone };
+}
+
+/**
+ * Detect and parse Claude quota limit error from response
+ */
+export function detectQuotaLimit(message: string | undefined | null): QuotaLimitInfo {
+  if (!message || typeof message !== 'string') {
+    return { detected: false };
+  }
+
+  // Check for the quota limit pattern
+  const quotaPattern = /you'?ve hit your limit/i;
+  if (!quotaPattern.test(message)) {
+    return { detected: false };
+  }
+
+  // Try to parse the reset time
+  const parsed = parseResetTime(message);
+
+  if (parsed) {
+    const now = new Date();
+    const sleepDurationMs = Math.max(0, parsed.resetTime.getTime() - now.getTime());
+
+    return {
+      detected: true,
+      resetTime: parsed.resetTime,
+      sleepDurationMs,
+      timezone: parsed.timezone,
+      originalMessage: message,
+    };
+  }
+
+  // Quota limit detected but couldn't parse reset time
+  // Default to 5 minutes wait
+  return {
+    detected: true,
+    sleepDurationMs: 5 * 60 * 1000, // 5 minutes default
+    originalMessage: message,
+  };
+}
+
+/**
+ * Format duration in human-readable form
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+
+  return parts.join(' ');
+}
+
 // =============================================================================
 // Shell Backend Implementation
 // =============================================================================
@@ -648,6 +812,10 @@ export class ShellBackend implements Backend {
       const claudeEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
       const isError = claudeEvent?.is_error ?? claudeEvent?.subtype === 'error' ?? !result.success;
 
+      // Check for quota limit error
+      const resultText = claudeEvent?.result ?? claudeEvent?.error ?? '';
+      const quotaLimitInfo = detectQuotaLimit(resultText);
+
       const structuredPayload = {
         type: 'result',
         subtype: claudeEvent?.subtype || (isError ? 'error' : 'success'),
@@ -666,14 +834,18 @@ export class ShellBackend implements Backend {
         modelUsage: claudeEvent?.modelUsage || claudeEvent?.model_usage || {},
         permission_denials: claudeEvent?.permission_denials || [],
         uuid: claudeEvent?.uuid,
-        sub_agent_response: claudeEvent
+        sub_agent_response: claudeEvent,
+        // Add quota limit info if detected
+        ...(quotaLimitInfo.detected && { quota_limit: quotaLimitInfo })
       };
 
       const metadata: ToolExecutionMetadata = {
         ...(claudeEvent ? { subAgentResponse: claudeEvent } : undefined),
         structuredOutput: true,
         contentType: 'application/json',
-        rawOutput: result.output
+        rawOutput: result.output,
+        // Add quota limit info to metadata as well for engine consumption
+        ...(quotaLimitInfo.detected && { quotaLimitInfo })
       };
 
       return {

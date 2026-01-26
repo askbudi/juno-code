@@ -34,6 +34,7 @@ import {
 import { executeHook } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
 import { BackendManager, type Backend, determineBackendType } from './backend-manager.js';
+import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js';
 
 // =============================================================================
 // Type Definitions
@@ -205,6 +206,12 @@ export interface ExecutionStatistics {
 
   /** Total rate limit wait time in milliseconds */
   rateLimitWaitTime: number;
+
+  /** Quota limit encounters (Claude-specific) */
+  quotaLimitEncounters: number;
+
+  /** Total quota limit wait time in milliseconds */
+  quotaLimitWaitTime: number;
 
   /** Error breakdown by type */
   errorBreakdown: Record<string, number>;
@@ -756,6 +763,8 @@ export class ExecutionEngine extends EventEmitter {
       totalProgressEvents: 0,
       rateLimitEncounters: 0,
       rateLimitWaitTime: 0,
+      quotaLimitEncounters: 0,
+      quotaLimitWaitTime: 0,
       errorBreakdown: {},
       performanceMetrics: {
         cpuUsage: 0,
@@ -876,7 +885,17 @@ export class ExecutionEngine extends EventEmitter {
       this.checkAbortSignal(context);
 
       try {
-        await this.executeIteration(context, iterationNumber);
+        const quotaLimitInfo = await this.executeIteration(context, iterationNumber);
+
+        // Check if a quota limit was encountered
+        if (quotaLimitInfo?.detected) {
+          const shouldRetry = await this.handleQuotaLimit(context, quotaLimitInfo);
+          if (shouldRetry) {
+            // Don't increment iteration number, retry same iteration
+            continue;
+          }
+        }
+
         iterationNumber++;
       } catch (error) {
         if (error instanceof MCPRateLimitError) {
@@ -900,8 +919,9 @@ export class ExecutionEngine extends EventEmitter {
 
   /**
    * Execute a single iteration
+   * @returns QuotaLimitInfo if a quota limit was detected, null otherwise
    */
-  private async executeIteration(context: ExecutionContext, iterationNumber: number): Promise<void> {
+  private async executeIteration(context: ExecutionContext, iterationNumber: number): Promise<QuotaLimitInfo | null> {
     const iterationStart = new Date();
 
     // Execute START_ITERATION hook
@@ -1007,6 +1027,10 @@ export class ExecutionEngine extends EventEmitter {
         engineLogger.warn('Hook END_ITERATION failed', { error, iterationNumber });
         // Continue execution despite hook failure
       }
+
+      // Check for quota limit in the result
+      const quotaLimitInfo = this.extractQuotaLimitInfo(toolResult);
+      return quotaLimitInfo;
     } catch (error) {
       const iterationEnd = new Date();
       const duration = iterationEnd.getTime() - iterationStart.getTime();
@@ -1117,6 +1141,110 @@ export class ExecutionEngine extends EventEmitter {
 
     // Default wait time if no reset time provided
     return 60000; // 1 minute
+  }
+
+  /**
+   * Handle Claude quota limit with automatic sleep and retry
+   * @returns true if we should retry the iteration, false otherwise
+   */
+  private async handleQuotaLimit(context: ExecutionContext, quotaInfo: QuotaLimitInfo): Promise<boolean> {
+    if (!quotaInfo.detected || !quotaInfo.sleepDurationMs) {
+      return false;
+    }
+
+    context.statistics.quotaLimitEncounters++;
+
+    const waitTimeMs = quotaInfo.sleepDurationMs;
+
+    // Cap the wait time at 12 hours to prevent excessive waits
+    const maxWaitTimeMs = 12 * 60 * 60 * 1000; // 12 hours
+    if (waitTimeMs > maxWaitTimeMs) {
+      engineLogger.warn(`Quota limit wait time (${formatDuration(waitTimeMs)}) exceeds maximum allowed (12 hours). Will not auto-retry.`);
+      return false;
+    }
+
+    context.statistics.quotaLimitWaitTime += waitTimeMs;
+
+    // Format the reset time for user display
+    const resetTimeStr = quotaInfo.resetTime
+      ? quotaInfo.resetTime.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+          timeZoneName: 'short'
+        })
+      : 'unknown';
+
+    const durationStr = formatDuration(waitTimeMs);
+
+    // Log user-friendly message
+    engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
+    engineLogger.info(`║  Claude Quota Limit Reached                                    ║`);
+    engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
+    engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
+    engineLogger.info(`║  Sleeping for:    ${durationStr.padEnd(44)}║`);
+    if (quotaInfo.timezone) {
+      engineLogger.info(`║  Timezone:        ${quotaInfo.timezone.padEnd(44)}║`);
+    }
+    engineLogger.info(`╚════════════════════════════════════════════════════════════════╝`);
+
+    this.emit('quota-limit:start', { context, quotaInfo, waitTimeMs });
+
+    // Sleep with periodic progress updates
+    await this.sleepWithProgress(waitTimeMs, (remaining) => {
+      const remainingStr = formatDuration(remaining);
+      engineLogger.info(`[Quota Wait] ${remainingStr} remaining until retry...`);
+    });
+
+    this.emit('quota-limit:end', { context });
+
+    engineLogger.info(`Quota limit wait complete. Resuming execution...`);
+
+    return true;
+  }
+
+  /**
+   * Sleep with periodic progress updates
+   */
+  private async sleepWithProgress(totalMs: number, onProgress: (remainingMs: number) => void): Promise<void> {
+    const updateIntervalMs = 60000; // Update every minute
+    let remaining = totalMs;
+
+    while (remaining > 0) {
+      const sleepTime = Math.min(remaining, updateIntervalMs);
+      await this.sleep(sleepTime);
+      remaining -= sleepTime;
+
+      if (remaining > 0) {
+        onProgress(remaining);
+      }
+    }
+  }
+
+  /**
+   * Check if tool result indicates a quota limit error
+   */
+  private extractQuotaLimitInfo(toolResult: ToolCallResult): QuotaLimitInfo | null {
+    // Check metadata first (most reliable)
+    const metadataQuotaInfo = (toolResult.metadata as any)?.quotaLimitInfo;
+    if (metadataQuotaInfo?.detected) {
+      return metadataQuotaInfo;
+    }
+
+    // Try to parse from content if metadata doesn't have it
+    try {
+      const content = typeof toolResult.content === 'string'
+        ? JSON.parse(toolResult.content)
+        : toolResult.content;
+
+      if (content?.quota_limit?.detected) {
+        return content.quota_limit;
+      }
+    } catch {
+      // Ignore parse errors
+    }
+
+    return null;
   }
 
   /**
