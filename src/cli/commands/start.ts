@@ -97,6 +97,56 @@ export async function startCommandHandler(
     // 2. Config file (config.defaultSubagent)
     // 3. Default fallback ('claude')
     const subagent = options.subagent || config.defaultSubagent || 'claude';
+    const backend = options.backend || config.defaultBackend || 'shell';
+    const maxIterations = options.maxIterations ?? config.maxIterations ?? 50;
+    const model = options.model || config.model;
+
+    // Handle dry-run mode - validate configuration and exit without executing
+    if (options.dryRun) {
+      console.log(chalk.blue.bold('\n🔍 dry-run mode: Validating configuration...\n'));
+
+      console.log(chalk.white('Configuration Summary:'));
+      console.log(chalk.gray('─'.repeat(50)));
+      console.log(chalk.cyan('  Working Directory: ') + workingDirectory);
+      console.log(chalk.cyan('  Subagent:          ') + subagent);
+      console.log(chalk.cyan('  Backend:           ') + backend);
+      console.log(chalk.cyan('  Max Iterations:    ') + maxIterations);
+      if (model) {
+        console.log(chalk.cyan('  Model:             ') + model);
+      }
+      if (options.agents) {
+        console.log(chalk.cyan('  Agents Config:     ') + options.agents);
+      }
+      console.log(chalk.gray('─'.repeat(50)));
+
+      // Validate init.md exists and has content
+      console.log(chalk.white('\nInit Prompt:'));
+      console.log(chalk.gray('─'.repeat(50)));
+      const promptPreview = initPrompt.length > 200
+        ? initPrompt.substring(0, 200) + '...'
+        : initPrompt;
+      console.log(chalk.gray(promptPreview));
+      console.log(chalk.gray('─'.repeat(50)));
+      console.log(chalk.gray(`  (${initPrompt.length} characters total)`));
+
+      // Check if required files exist
+      const junoTaskDir = path.join(workingDirectory, '.juno_task');
+      const configFile = path.join(junoTaskDir, 'config.json');
+      const configExists = await fs.pathExists(configFile);
+
+      console.log(chalk.white('\nFile Validation:'));
+      console.log(chalk.green('  ✓ .juno_task/init.md exists'));
+      if (configExists) {
+        console.log(chalk.green('  ✓ .juno_task/config.json exists'));
+      } else {
+        console.log(chalk.yellow('  ⚠ .juno_task/config.json not found (using defaults)'));
+      }
+
+      console.log(chalk.green.bold('\n✅ dry-run complete: Configuration is valid'));
+      console.log(chalk.gray('   Remove --dry-run flag to execute\n'));
+
+      return;
+    }
 
     // Convert StartCommandOptions to MainCommandOptions
     // The start command should pass through all options to the main command

@@ -215,6 +215,8 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   metricsFile?: string;
   /** Enable concurrent feedback collection during execution */
   enableFeedback?: boolean;
+  /** Validate configuration and exit without executing */
+  dryRun?: boolean;
 }
 
 /**
