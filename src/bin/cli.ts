@@ -24,6 +24,7 @@ import { configureFeedbackCommand } from '../cli/commands/feedback.js';
 import { configureSessionCommand } from '../cli/commands/session.js';
 import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
 import { configureLogsCommand } from '../cli/commands/logs.js';
+import { configureViewLogCommand } from '../cli/commands/view-log.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
 import { setupConfigCommand } from '../cli/commands/config.js';
 import { createServicesCommand } from '../cli/commands/services.js';
@@ -600,6 +601,7 @@ async function main(): Promise<void> {
   configureSessionCommand(program);
   configureSetupGitCommand(program);
   configureLogsCommand(program);
+  configureViewLogCommand(program);
   configureHelpCommand(program);
   setupConfigCommand(program);
   program.addCommand(createServicesCommand());
