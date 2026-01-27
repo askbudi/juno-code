@@ -582,6 +582,11 @@ main() {
                 log_warning "No kanban changes detected. Stale iteration count: $STALE_COUNTER/$STALE_THRESHOLD"
 
                 if [ "$STALE_COUNTER" -ge "$STALE_THRESHOLD" ]; then
+                    # Execute ON_STALE hook before exiting
+                    log_status ""
+                    log_status "Executing ON_STALE hook due to stale iteration detection"
+                    execute_hook_commands "ON_STALE"
+
                     log_error ""
                     log_error "=========================================="
                     log_error "STALE ITERATION LIMIT REACHED"

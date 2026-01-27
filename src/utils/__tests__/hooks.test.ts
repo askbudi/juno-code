@@ -544,7 +544,7 @@ describe('hooks', () => {
 
       expect(result.valid).toBe(true); // Still valid, just warnings
       expect(result.issues).toHaveLength(0);
-      expect(result.warnings).toContain('Unknown hook type: INVALID_HOOK. Valid types are: START_RUN, START_ITERATION, END_ITERATION, END_RUN');
+      expect(result.warnings).toContain('Unknown hook type: INVALID_HOOK. Valid types are: START_RUN, START_ITERATION, END_ITERATION, END_RUN, ON_STALE');
     });
 
     it('should detect missing commands array', () => {

@@ -13,7 +13,7 @@ import { logger, LogContext, LogLevel } from '../cli/utils/advanced-logger.js';
 /**
  * Supported hook types for lifecycle execution
  */
-export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN';
+export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN' | 'ON_STALE';
 
 /**
  * Hook configuration interface
@@ -447,7 +447,7 @@ export function validateHooksConfig(hooks: HooksConfig): {
   const issues: string[] = [];
   const warnings: string[] = [];
 
-  const validHookTypes: HookType[] = ['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN'];
+  const validHookTypes: HookType[] = ['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN', 'ON_STALE'];
 
   for (const [hookType, hook] of Object.entries(hooks)) {
     // Check if hook type is valid

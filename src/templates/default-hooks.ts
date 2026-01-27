@@ -62,6 +62,14 @@ export const DEFAULT_HOOKS: Hooks = {
   // Use for: final cleanup, notifications, reports, post-run actions
   END_RUN: {
     commands: []
+  },
+
+  // Executes when stale iteration is detected in run_until_completion.sh
+  // Use for: alerts, notifications, logging when agent is not making progress
+  ON_STALE: {
+    commands: [
+      './.juno_task/scripts/kanban.sh create "Warning: You haven\'t done anything on the kanban in the past run. You need to process a task, or if you find it unsuitable or unresolvable, you need to archive the task" --status todo'
+    ]
   }
 };
 

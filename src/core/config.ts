@@ -122,7 +122,7 @@ const OnHourlyLimitSchema = z.enum(['wait', 'raise']);
 /**
  * Zod schema for validating hook types
  */
-const HookTypeSchema = z.enum(['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN']);
+const HookTypeSchema = z.enum(['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN', 'ON_STALE']);
 
 /**
  * Zod schema for validating individual hook configuration
