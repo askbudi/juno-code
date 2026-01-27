@@ -360,7 +360,9 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 cd "$PROJECT_ROOT"
 
 # Function to get a snapshot of kanban state for comparison
-# Returns a sorted string of "task_id:status" pairs
+# Uses the summary statistics (total_tasks + status_counts) as a reliable indicator
+# of kanban state changes. This approach is more robust than parsing multi-line JSON
+# which can contain control characters that break jq parsing.
 get_kanban_state_snapshot() {
     local snapshot=""
 
@@ -370,24 +372,44 @@ get_kanban_state_snapshot() {
         return
     fi
 
-    # Get all non-done/archive tasks as JSON
+    # Use --raw format for cleaner JSON output
+    # The --raw flag outputs: line 1 = tasks array, line 2 = summary object
     local kanban_output
-    if kanban_output=$("$KANBAN_SCRIPT" list --status backlog todo in_progress 2>/dev/null); then
-        # Extract just the JSON array part (skip the SUMMARY section)
-        local json_part
-        json_part=$(echo "$kanban_output" | grep -E '^\[' | head -1)
+    if kanban_output=$("$KANBAN_SCRIPT" -f json --raw list --status backlog todo in_progress 2>/dev/null); then
+        if command -v jq &> /dev/null; then
+            # Extract the summary line (last line of --raw output)
+            local summary_line
+            summary_line=$(echo "$kanban_output" | tail -1)
 
-        if [[ -z "$json_part" ]]; then
-            # Try to find JSON array in the output
-            json_part=$(echo "$kanban_output" | sed -n '/^\[/,/^\]/p' | head -1)
-        fi
+            # Extract status counts from summary - this is a reliable state indicator
+            # Format: "backlog:N|done:N|in_progress:N|todo:N|archive:N|total:N"
+            local summary_snapshot=""
+            if [[ -n "$summary_line" ]] && echo "$summary_line" | grep -q '"summary"'; then
+                summary_snapshot=$(echo "$summary_line" | jq -r '
+                    .summary |
+                    "backlog:\(.status_counts.backlog // 0)|" +
+                    "todo:\(.status_counts.todo // 0)|" +
+                    "in_progress:\(.status_counts.in_progress // 0)|" +
+                    "done:\(.status_counts.done // 0)|" +
+                    "archive:\(.status_counts.archive // 0)|" +
+                    "total:\(.total_tasks // 0)"
+                ' 2>/dev/null)
+            fi
 
-        # If we have JSON output, extract task IDs and statuses
-        if [[ -n "$json_part" ]] && command -v jq &> /dev/null; then
-            # Create a deterministic snapshot: sorted "id:status" pairs
-            snapshot=$(echo "$kanban_output" | jq -r 'if type == "array" then .[] | "\(.id):\(.status)" else empty end' 2>/dev/null | sort | tr '\n' '|')
+            # Also try to extract task IDs using grep (more robust than jq for multi-line JSON)
+            # This catches cases where tasks are added/removed but counts stay the same
+            local task_ids=""
+            task_ids=$(echo "$kanban_output" | grep -o '"id": *"[^"]*"' | sed 's/"id": *"\([^"]*\)"/\1/' | sort | tr '\n' ',')
+
+            # Combine summary stats and task IDs for comprehensive state tracking
+            if [[ -n "$summary_snapshot" ]]; then
+                snapshot="${summary_snapshot}|ids:${task_ids}"
+            elif [[ -n "$task_ids" ]]; then
+                # Fallback to just task IDs if summary parsing failed
+                snapshot="ids:${task_ids}"
+            fi
         else
-            # Fallback: use the raw output as state (less precise but still detects changes)
+            # Fallback without jq: use grep to extract id and status fields
             snapshot=$(echo "$kanban_output" | grep -E '"id"|"status"' | tr -d ' \n')
         fi
     fi
