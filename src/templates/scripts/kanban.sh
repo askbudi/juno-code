@@ -9,6 +9,12 @@
 #
 # Usage: ./.juno_task/scripts/kanban.sh [juno-kanban arguments]
 # Example: ./.juno_task/scripts/kanban.sh list --limit 5
+# Example: ./.juno_task/scripts/kanban.sh list -f json --raw  # (flag order normalized)
+# Example: ./.juno_task/scripts/kanban.sh -f json --raw list  # (also works)
+#
+# Note: Global flags (-f/--format, -p/--pretty, --raw, -v/--verbose, -c/--config)
+#       can be placed anywhere in the command line. This wrapper normalizes them
+#       to appear before the command for juno-kanban compatibility.
 #
 # Environment Variables:
 #   JUNO_DEBUG=true    - Show [DEBUG] diagnostic messages
@@ -170,6 +176,67 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 # Change to project root
 cd "$PROJECT_ROOT"
 
+# Arrays to store normalized arguments (declared at script level for proper handling)
+declare -a NORMALIZED_GLOBAL_FLAGS=()
+declare -a NORMALIZED_COMMAND_ARGS=()
+
+# Normalize argument order for juno-kanban
+# juno-kanban requires global flags BEFORE the command, but users often
+# write them after (e.g., "list -f json --raw" instead of "-f json --raw list")
+# This function reorders arguments so global flags come first.
+# Results are stored in NORMALIZED_GLOBAL_FLAGS and NORMALIZED_COMMAND_ARGS arrays.
+normalize_arguments() {
+    # Reset arrays
+    NORMALIZED_GLOBAL_FLAGS=()
+    NORMALIZED_COMMAND_ARGS=()
+    local found_command=false
+
+    # Known subcommands
+    local commands="create search get show update archive mark list merge"
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            # Global flags that take a value
+            -f|--format|-c|--config)
+                if [[ -n "${2:-}" ]]; then
+                    NORMALIZED_GLOBAL_FLAGS+=("$1" "$2")
+                    shift 2
+                else
+                    NORMALIZED_GLOBAL_FLAGS+=("$1")
+                    shift
+                fi
+                ;;
+            # Global flags that don't take a value
+            -p|--pretty|--raw|-v|--verbose|-h|--help|--version)
+                NORMALIZED_GLOBAL_FLAGS+=("$1")
+                shift
+                ;;
+            # Check if this is a known command
+            *)
+                # Check if this argument is a known command
+                local is_command=false
+                for cmd in $commands; do
+                    if [[ "$1" == "$cmd" ]]; then
+                        is_command=true
+                        found_command=true
+                        break
+                    fi
+                done
+
+                # If we found a command, everything from here goes to command_args
+                if $is_command || $found_command; then
+                    NORMALIZED_COMMAND_ARGS+=("$1")
+                    found_command=true
+                else
+                    # Before finding a command, treat as command arg
+                    NORMALIZED_COMMAND_ARGS+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+}
+
 # Main kanban logic
 main() {
     log_info "=== juno-kanban Wrapper ==="
@@ -182,11 +249,26 @@ main() {
 
     log_success "Python environment ready!"
 
-    # Execute juno-kanban with all passed arguments from project root
+    # Normalize argument order (global flags before command)
+    # This allows users to write "list -f json --raw" which gets reordered to "-f json --raw list"
+    normalize_arguments "$@"
+
+    if [ "${JUNO_DEBUG:-false}" = "true" ]; then
+        echo "[DEBUG] Original args: $*" >&2
+        echo "[DEBUG] Normalized global flags: ${NORMALIZED_GLOBAL_FLAGS[*]:-<none>}" >&2
+        echo "[DEBUG] Normalized command args: ${NORMALIZED_COMMAND_ARGS[*]:-<none>}" >&2
+    fi
+
+    # Execute juno-kanban with normalized arguments from project root
     # Close stdin (redirect from /dev/null) to prevent hanging when called from tools
     # that don't provide stdin (similar to Issue #42 hook fix)
-    log_info "Executing juno-kanban: $*"
-    juno-kanban "$@" < /dev/null
+    # Build the command properly preserving argument quoting
+    log_info "Executing juno-kanban with normalized arguments"
+
+    # Execute with proper array expansion to preserve quoting
+    # Use ${arr[@]+"${arr[@]}"} pattern to handle empty arrays with set -u
+    juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+                ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
 }
 
 # Run main function with all arguments
