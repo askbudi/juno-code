@@ -388,6 +388,54 @@ Environment Variables:
                     simplified["content"] = text_content
                     return json.dumps(simplified, ensure_ascii=False)
 
+            # For progress events, handle bash_progress and skip hook_progress
+            elif data.get("type") == "progress":
+                progress_data = data.get("data", {})
+                progress_type = progress_data.get("type", "")
+
+                # Skip hook_progress events (not interested)
+                if progress_type == "hook_progress":
+                    return None
+
+                # Display bash_progress events with [Progress] tag
+                if progress_type == "bash_progress":
+                    # Extract relevant fields from bash_progress
+                    output_text = progress_data.get("output", "")
+                    elapsed_time = progress_data.get("elapsedTimeSeconds", 0)
+                    total_lines = progress_data.get("totalLines", 0)
+
+                    # Create simplified output with datetime and counter
+                    simplified = {
+                        "type": "progress",
+                        "progress_type": "bash_progress",
+                        "datetime": now,
+                        "counter": f"#{self.message_counter}",
+                        "elapsed": f"{elapsed_time}s",
+                        "lines": total_lines
+                    }
+
+                    # Check if output has newlines
+                    if '\n' in output_text:
+                        # Multi-line output: print metadata, then raw output
+                        metadata_json = json.dumps(simplified, ensure_ascii=False)
+                        return metadata_json + "\n[Progress] output:\n" + output_text
+                    else:
+                        # Single-line output: normal JSON with [Progress] tag
+                        simplified["output"] = output_text
+                        # Add [Progress] tag to the output
+                        output_json = json.dumps(simplified, ensure_ascii=False)
+                        return f"[Progress] {output_json}"
+
+                # For other progress types, display with datetime and counter
+                simplified = {
+                    "type": "progress",
+                    "progress_type": progress_type,
+                    "datetime": now,
+                    "counter": f"#{self.message_counter}",
+                    "data": progress_data
+                }
+                return json.dumps(simplified, ensure_ascii=False)
+
             # For assistant messages, show simplified output
             elif data.get("type") == "assistant":
                 message = data.get("message", {})
