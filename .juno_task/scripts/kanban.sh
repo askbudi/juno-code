@@ -260,15 +260,33 @@ main() {
     fi
 
     # Execute juno-kanban with normalized arguments from project root
-    # Close stdin (redirect from /dev/null) to prevent hanging when called from tools
-    # that don't provide stdin (similar to Issue #42 hook fix)
     # Build the command properly preserving argument quoting
     log_info "Executing juno-kanban with normalized arguments"
 
     # Execute with proper array expansion to preserve quoting
     # Use ${arr[@]+"${arr[@]}"} pattern to handle empty arrays with set -u
-    juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
-                ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
+    #
+    # Stdin handling:
+    # Detect the type of stdin to determine whether to pass it through or redirect from /dev/null:
+    # - 'p' (pipe): Pass through - user is piping data (e.g., echo "..." | kanban.sh create)
+    # - '-' (regular file): Pass through - user is using heredoc (kanban.sh create << 'EOF')
+    # - 'c' (character device) or other: Redirect from /dev/null to prevent hanging
+    #   when called from tools that don't provide stdin (Issue #42, #60)
+    #
+    # The first character of `ls -la /dev/fd/0` indicates the file type:
+    # p = pipe, - = regular file, c = character device, l = symlink, etc.
+    local stdin_type
+    stdin_type=$(ls -la /dev/fd/0 2>/dev/null | cut -c1)
+
+    if [[ "$stdin_type" == "p" || "$stdin_type" == "-" ]]; then
+        # stdin is a pipe or regular file (heredoc) - pass it through
+        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+                    ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"}
+    else
+        # stdin is a character device or unknown - redirect from /dev/null to prevent hanging
+        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+                    ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
+    fi
 }
 
 # Run main function with all arguments
