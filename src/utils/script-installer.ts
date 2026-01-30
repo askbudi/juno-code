@@ -19,6 +19,7 @@ export class ScriptInstaller {
    * Required scripts include both standalone scripts and their dependencies.
    * kanban.sh depends on install_requirements.sh for Python venv setup.
    * Slack integration scripts allow fetching tasks from Slack and responding.
+   * Hook scripts are stored in the hooks/ subdirectory.
    */
   private static readonly REQUIRED_SCRIPTS = [
     'run_until_completion.sh',
@@ -32,6 +33,8 @@ export class ScriptInstaller {
     'slack_respond.sh', // Wrapper script for Slack respond
     // GitHub integration script (single-file architecture)
     'github.py', // Unified GitHub integration (fetch, respond, sync)
+    // Claude Code hooks (stored in hooks/ subdirectory)
+    'hooks/session_counter.sh', // Session message counter hook for warning about long sessions
   ];
 
   /**
@@ -97,6 +100,12 @@ export class ScriptInstaller {
       await fs.ensureDir(destDir);
 
       const destPath = path.join(destDir, scriptName);
+
+      // Ensure parent directory exists for scripts in subdirectories (e.g., hooks/session_counter.sh)
+      const destParentDir = path.dirname(destPath);
+      if (destParentDir !== destDir) {
+        await fs.ensureDir(destParentDir);
+      }
 
       // Copy the script
       await fs.copy(sourcePath, destPath, { overwrite: true });

@@ -57,7 +57,9 @@ describe('ScriptInstaller', () => {
 
     it('should return empty array when all required scripts exist', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
+      const hooksDir = path.join(scriptsDir, 'hooks');
       await fs.ensureDir(scriptsDir);
+      await fs.ensureDir(hooksDir);
       // Create all required scripts including install_requirements.sh and Slack scripts
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
@@ -70,6 +72,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
       // GitHub integration script
       await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
+      // Claude Code hooks
+      await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -138,12 +142,16 @@ describe('ScriptInstaller', () => {
         { name: 'slack_respond.sh', installed: false },
         // GitHub integration script
         { name: 'github.py', installed: false },
+        // Claude Code hooks
+        { name: 'hooks/session_counter.sh', installed: false },
       ]);
     });
 
     it('should show installed=true for existing scripts', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
+      const hooksDir = path.join(scriptsDir, 'hooks');
       await fs.ensureDir(scriptsDir);
+      await fs.ensureDir(hooksDir);
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
       await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
@@ -155,6 +163,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
       // GitHub integration script
       await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
+      // Claude Code hooks
+      await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -170,6 +180,8 @@ describe('ScriptInstaller', () => {
         { name: 'slack_respond.sh', installed: true },
         // GitHub integration script
         { name: 'github.py', installed: true },
+        // Claude Code hooks
+        { name: 'hooks/session_counter.sh', installed: true },
       ]);
     });
   });
