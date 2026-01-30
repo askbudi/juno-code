@@ -5,15 +5,26 @@
 # becomes lengthy (long conversations = lower performance = higher cost).
 #
 # Usage as a Claude Code hook:
-#   Configure in ~/.claude/settings.json or .claude/settings.json:
+#   Configure in one of the following settings files:
+#
+#   1. Global settings: ~/.claude/settings.json
+#      (Applies to all projects for this user)
+#
+#   2. Project settings: $PROJECT_DIR/.claude/settings.json
+#      (Shared project settings, checked into version control)
+#
+#   3. Local settings: $PROJECT_DIR/.claude/settings.local.json
+#      (User-specific overrides, NOT checked into version control)
+#
+#   Add this hook configuration:
 #   {
 #     "hooks": {
-#       "UserPromptSubmit": [
+#       "PreToolUse": [
 #         {
 #           "hooks": [
 #             {
 #               "type": "command",
-#               "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 50"
+#               "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 100"
 #             }
 #           ]
 #         }
@@ -22,7 +33,7 @@
 #   }
 #
 # Environment Variables:
-#   JUNO_SESSION_COUNTER_THRESHOLD - Threshold for warning (default: 50)
+#   JUNO_SESSION_COUNTER_THRESHOLD - Threshold for warning (default: 100)
 #   JUNO_SESSION_COUNTER_DIR       - Directory for counter files (default: /tmp/juno_session_counters)
 #
 # Arguments:
@@ -38,7 +49,7 @@
 #   When threshold is exceeded, outputs JSON to stdout for Claude to see:
 #   {
 #     "hookSpecificOutput": {
-#       "hookEventName": "UserPromptSubmit",
+#       "hookEventName": "PreToolUse",
 #       "additionalContext": "SESSION_LENGTH_WARNING: ..."
 #     }
 #   }
@@ -49,7 +60,7 @@ set -e
 VERSION="1.0.0"
 
 # Default values
-DEFAULT_THRESHOLD=50
+DEFAULT_THRESHOLD=100
 DEFAULT_COUNTER_DIR="/tmp/juno_session_counters"
 
 # Parse environment variables with defaults
@@ -82,7 +93,7 @@ DESCRIPTION
 OPTIONS
     --threshold N, -t N
         Set the message count threshold for warnings.
-        Default: 50 (or JUNO_SESSION_COUNTER_THRESHOLD env var)
+        Default: 100 (or JUNO_SESSION_COUNTER_THRESHOLD env var)
 
     --reset
         Reset the counter for the current session to 0.
@@ -97,7 +108,7 @@ OPTIONS
 
 ENVIRONMENT VARIABLES
     JUNO_SESSION_COUNTER_THRESHOLD
-        Default threshold value. Default: 50
+        Default threshold value. Default: 100
 
     JUNO_SESSION_COUNTER_DIR
         Directory for state files. Default: /tmp/juno_session_counters
@@ -106,22 +117,39 @@ ENVIRONMENT VARIABLES
         Set to any value to enable debug logging to stderr.
 
 HOOK CONFIGURATION
-    Add to ~/.claude/settings.json or .claude/settings.json:
+    Claude Code settings files (in order of precedence, highest first):
+
+    1. Local settings: $PROJECT_DIR/.claude/settings.local.json
+       - User-specific overrides, NOT checked into version control
+       - Best for personal preferences that shouldn't affect team
+
+    2. Project settings: $PROJECT_DIR/.claude/settings.json
+       - Shared project settings, checked into version control
+       - Best for team-wide hooks and configurations
+
+    3. Global settings: ~/.claude/settings.json
+       - Applies to all projects for this user
+       - Best for user preferences across all projects
+
+    Add this hook configuration to any of the above files:
 
     {
       "hooks": {
-        "UserPromptSubmit": [
+        "PreToolUse": [
           {
             "hooks": [
               {
                 "type": "command",
-                "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 50"
+                "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 100"
               }
             ]
           }
         ]
       }
     }
+
+    Note: PreToolUse fires before each tool invocation, providing more
+    granular tracking than UserPromptSubmit (which fires per user message).
 
 MANUAL TESTING
     # Test with mock input
@@ -276,14 +304,14 @@ if [[ $NEW_COUNT -ge $THRESHOLD ]]; then
     fi
 
     # Create the warning message - this will be injected as context for Claude
-    WARNING_MESSAGE="SESSION_LENGTH_WARNING [$SEVERITY]: This session has reached $NEW_COUNT messages (threshold: $THRESHOLD). Long sessions reduce performance and increase costs. Please complete your current work as soon as possible: 1) Save any remaining tasks to kanban using './.juno_task/scripts/kanban.sh' 2) Update plan.md with current progress 3) Commit any completed work 4) Update CLAUDE.md with important learnings 5) Finish the current task and stop. A new session can continue where this one left off."
+    WARNING_MESSAGE="SESSION_LENGTH_WARNING [$SEVERITY]: This session has reached $NEW_COUNT tool calls (threshold: $THRESHOLD). Long sessions reduce performance and increase costs. Please complete your current work as soon as possible: 1) Save any remaining tasks to kanban using './.juno_task/scripts/kanban.sh' 2) Update plan.md with current progress 3) Commit any completed work 4) Update CLAUDE.md with important learnings 5) Finish the current task and stop. A new session can continue where this one left off."
 
     # Output JSON for Claude to see via additionalContext
-    # This format is recognized by Claude Code's UserPromptSubmit hook handler
+    # This format is recognized by Claude Code's PreToolUse hook handler
     cat << EOF
 {
   "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
+    "hookEventName": "PreToolUse",
     "additionalContext": "$WARNING_MESSAGE"
   }
 }
