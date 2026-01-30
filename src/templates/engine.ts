@@ -532,8 +532,7 @@ After completing the proccess an implementer agent would start the job and go th
         category: TemplateCategory.CORE,
         content: `0a. study @.juno_task/implement.md.
 
-0b.  When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update  tasks.md with your findings using a {{SUBAGENT}} subagent. When the issue is resolved, update tasks.md and remove the item using a {{SUBAGENT}} subagent.
-
+0b.  When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update  Kanban with your findings using a {{SUBAGENT}} subagent. When the issue is resolved, update Kanban.
 
 999. Important: When authoring documentation capture the why tests and the backing implementation is important.
 
@@ -625,7 +624,7 @@ Tasks , USER_FEEDBACK and @{{AGENT_DOC_FILE}} should repesent truth. User Open I
         description: 'Implementation steps and current task breakdown',
         category: TemplateCategory.WORKFLOW,
         content: `---
-description: Execute the implementation plan by processing and executing all tasks defined in tasks.md
+description: Execute the implementation plan by processing and executing all tasks defined in Kanban
 ---
 
 ## User Input
@@ -684,7 +683,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 1. Run \`./.juno_task/scripts/kanban.sh list\` from repo root and check current project status.
 
 2. Load and analyze the implementation context:
-   - **REQUIRED**: Read tasks.md for the complete task list and execution plan
+   - **REQUIRED**: Read Kanban for the complete task list and execution plan
    - **REQUIRED**: Read plan.md for tech stack, architecture, and file structure
    - **IF EXISTS**: Read data-model.md for entities and relationships
    - **IF EXISTS**: Read contracts/ for API specifications and test requirements
@@ -724,7 +723,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    - **Prettier**: \`node_modules/\`, \`dist/\`, \`build/\`, \`coverage/\`, \`package-lock.json\`, \`yarn.lock\`, \`pnpm-lock.yaml\`
    - **Terraform**: \`.terraform/\`, \`*.tfstate*\`, \`*.tfvars\`, \`.terraform.lock.hcl\`
 
-5. Parse tasks.md structure and extract:
+5. Parse Kanban structure and extract:
    - **Task phases**: Setup, Tests, Core, Integration, Polish
    - **Task dependencies**: Sequential vs parallel execution rules
    - **Task details**: ID, description, file paths, parallel markers [P]
@@ -773,7 +772,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 
 
-Note: This command assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running \`/tasks\` first to regenerate the task list.
+Note: This command assumes a complete task breakdown exists in Kanban. If tasks are incomplete or missing, suggest running \`/tasks\` first to regenerate the task list.
 
 
 ---

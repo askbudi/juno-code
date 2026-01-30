@@ -13,7 +13,7 @@
 #           "hooks": [
 #             {
 #               "type": "command",
-#               "command": "$CLAUDE_PROJECT_DIR/.juno_task/scripts/hooks/session_counter.sh --threshold 50"
+#               "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 50"
 #             }
 #           ]
 #         }
@@ -46,6 +46,8 @@
 
 set -e
 
+VERSION="1.0.0"
+
 # Default values
 DEFAULT_THRESHOLD=50
 DEFAULT_COUNTER_DIR="/tmp/juno_session_counters"
@@ -57,6 +59,102 @@ COUNTER_DIR="${JUNO_SESSION_COUNTER_DIR:-$DEFAULT_COUNTER_DIR}"
 # Command mode flags
 RESET_MODE=false
 STATUS_MODE=false
+
+show_help() {
+    cat << 'HELPEOF'
+session_counter.sh - Claude Code hook for session length monitoring
+
+SYNOPSIS
+    session_counter.sh [OPTIONS]
+
+DESCRIPTION
+    This hook counts user prompts in a Claude Code session and warns Claude
+    when the session becomes too long. Long sessions lead to:
+
+    - Higher API costs (more tokens in context)
+    - Lower performance (context window limits)
+    - Potential loss of context coherence
+
+    When the threshold is exceeded, the hook outputs a JSON message that
+    Claude Code injects as context, reminding Claude to wrap up and save
+    progress to kanban/plan.md.
+
+OPTIONS
+    --threshold N, -t N
+        Set the message count threshold for warnings.
+        Default: 50 (or JUNO_SESSION_COUNTER_THRESHOLD env var)
+
+    --reset
+        Reset the counter for the current session to 0.
+        Reads session_id from stdin JSON.
+
+    --status
+        Show current counter status without incrementing.
+        Useful for debugging and monitoring.
+
+    --help, -h
+        Show this help message.
+
+ENVIRONMENT VARIABLES
+    JUNO_SESSION_COUNTER_THRESHOLD
+        Default threshold value. Default: 50
+
+    JUNO_SESSION_COUNTER_DIR
+        Directory for state files. Default: /tmp/juno_session_counters
+
+    JUNO_DEBUG
+        Set to any value to enable debug logging to stderr.
+
+HOOK CONFIGURATION
+    Add to ~/.claude/settings.json or .claude/settings.json:
+
+    {
+      "hooks": {
+        "UserPromptSubmit": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "\"$CLAUDE_PROJECT_DIR\"/.juno_task/scripts/hooks/session_counter.sh --threshold 50"
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+MANUAL TESTING
+    # Test with mock input
+    echo '{"session_id":"test123","prompt":"hello"}' | ./session_counter.sh -t 5
+
+    # Check status
+    echo '{"session_id":"test123"}' | ./session_counter.sh --status
+
+    # Reset counter
+    echo '{"session_id":"test123"}' | ./session_counter.sh --reset
+
+EXIT CODES
+    Always exits 0 to ensure the hook never blocks Claude Code.
+    Errors are logged to stderr but don't affect exit status.
+
+OUTPUT BEHAVIOR
+    Under threshold: No output (silent counting)
+    At/over threshold: JSON with additionalContext warning message
+
+    The warning message instructs Claude to:
+    1. Save remaining tasks to kanban (./.juno_task/scripts/kanban.sh)
+    2. Update plan.md with progress
+    3. Commit completed work
+    4. Update CLAUDE.md with learnings
+    5. Finish current task and stop
+
+VERSION
+    1.0.0
+
+SEE ALSO
+    Claude Code hooks: https://code.claude.com/docs/en/hooks
+HELPEOF
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -79,19 +177,22 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            # Extract help from script header
-            sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+            show_help
+            exit 0
+            ;;
+        --version)
+            echo "session_counter.sh version $VERSION"
             exit 0
             ;;
         *)
-            # Unknown option, skip
+            # Unknown option, skip silently for hook compatibility
             shift
             ;;
     esac
 done
 
 # Ensure counter directory exists
-mkdir -p "$COUNTER_DIR"
+mkdir -p "$COUNTER_DIR" 2>/dev/null || true
 
 # Read JSON input from stdin (Claude Code hook input)
 INPUT_JSON=""
@@ -99,10 +200,18 @@ if [[ ! -t 0 ]]; then
     INPUT_JSON=$(cat)
 fi
 
-# Extract session_id from hook input
+# Extract session_id from hook input using multiple methods for robustness
 SESSION_ID=""
 if [[ -n "$INPUT_JSON" ]]; then
-    SESSION_ID=$(echo "$INPUT_JSON" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*: *"//' | sed 's/"$//' || true)
+    # Try jq first (most reliable)
+    if command -v jq &>/dev/null; then
+        SESSION_ID=$(echo "$INPUT_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
+    fi
+
+    # Fallback to grep/sed if jq didn't work
+    if [[ -z "$SESSION_ID" ]]; then
+        SESSION_ID=$(echo "$INPUT_JSON" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*: *"//' | sed 's/"$//' || true)
+    fi
 fi
 
 # Fallback to environment variable if no session_id in input
@@ -129,6 +238,10 @@ fi
 CURRENT_COUNT=0
 if [[ -f "$COUNTER_FILE" ]]; then
     CURRENT_COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+    # Ensure it's a valid number
+    if ! [[ "$CURRENT_COUNT" =~ ^[0-9]+$ ]]; then
+        CURRENT_COUNT=0
+    fi
 fi
 
 # Handle status mode (don't increment)
@@ -154,16 +267,19 @@ if [[ $NEW_COUNT -ge $THRESHOLD ]]; then
     # Calculate how much over threshold
     OVER_BY=$((NEW_COUNT - THRESHOLD))
 
-    # Determine severity
+    # Determine severity based on how far over threshold
     SEVERITY="WARNING"
     if [[ $OVER_BY -ge $((THRESHOLD / 2)) ]]; then
         SEVERITY="CRITICAL"
+    elif [[ $OVER_BY -ge 10 ]]; then
+        SEVERITY="HIGH"
     fi
 
-    # Create the warning message
-    WARNING_MESSAGE="SESSION_LENGTH_WARNING: This session has reached $NEW_COUNT messages (threshold: $THRESHOLD). Long sessions reduce performance and increase costs. $SEVERITY: Please complete your current work as soon as possible. Save any important progress to the kanban (./scripts/kanban.sh) and plan.md using a subagent, then conclude this session. You can start a fresh session to continue work."
+    # Create the warning message - this will be injected as context for Claude
+    WARNING_MESSAGE="SESSION_LENGTH_WARNING [$SEVERITY]: This session has reached $NEW_COUNT messages (threshold: $THRESHOLD). Long sessions reduce performance and increase costs. Please complete your current work as soon as possible: 1) Save any remaining tasks to kanban using './.juno_task/scripts/kanban.sh' 2) Update plan.md with current progress 3) Commit any completed work 4) Update CLAUDE.md with important learnings 5) Finish the current task and stop. A new session can continue where this one left off."
 
     # Output JSON for Claude to see via additionalContext
+    # This format is recognized by Claude Code's UserPromptSubmit hook handler
     cat << EOF
 {
   "hookSpecificOutput": {
@@ -174,10 +290,11 @@ if [[ $NEW_COUNT -ge $THRESHOLD ]]; then
 EOF
 else
     # Under threshold - no output needed
-    # But we can optionally log to stderr for debugging
-    if [[ -n "$JUNO_DEBUG" ]]; then
+    # Debug logging if enabled
+    if [[ -n "${JUNO_DEBUG:-}" ]]; then
         echo "[session_counter] Session $SESSION_ID: message $NEW_COUNT of $THRESHOLD" >&2
     fi
 fi
 
+# Always exit 0 - hooks should not block Claude Code
 exit 0
