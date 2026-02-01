@@ -118,6 +118,8 @@ function setupGlobalOptions(program: Command): void {
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
     .addOption(new Option('--till-complete', 'Alias for --til-completion').hideHelp())
     .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
+    .option('--stale-threshold <n>', 'Number of stale iterations before exiting (default: 3). Set to 0 to disable. (only with --til-completion)', parseInt)
+    .option('--no-stale-check', 'Disable stale iteration detection (alias for --stale-threshold 0). (only with --til-completion)')
     .option('--force-update', 'Force update scripts, services, and Python dependencies (bypasses 24-hour cache)')
     .option('--on-hourly-limit <behavior>', 'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately (default: raise)')
 

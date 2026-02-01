@@ -98,6 +98,9 @@ Files attached to Slack messages or GitHub issues are automatically downloaded a
 - Size limits: Configurable maximum file size
 - SHA256 checksums stored in metadata for verification
 
+**GitHub URL Patterns:**
+- Supports both `/assets/` (UUID format) and `/files/` (numeric ID) paths for user-attachments
+
 **Example Task Output:**
 ```
 Bug report: App crashes on login
