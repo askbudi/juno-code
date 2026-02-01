@@ -979,20 +979,32 @@ def extract_attachment_urls(body: str, comments: Optional[List[Dict[str, Any]]] 
     """
     urls = set()
 
-    def extract_from_text(text: str) -> None:
+    def extract_from_text(text: str, source: str = "text") -> None:
         if not text:
+            logger.debug(f"extract_attachment_urls: Empty {source}, skipping")
             return
         for pattern in GITHUB_ATTACHMENT_PATTERNS:
             matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                logger.debug(f"extract_attachment_urls: Pattern '{pattern[:50]}...' matched {len(matches)} URL(s) in {source}")
+                for url in matches:
+                    logger.info(f"  Detected attachment URL: {url}")
             urls.update(matches)
 
     # Extract from body
-    extract_from_text(body)
+    logger.debug(f"extract_attachment_urls: Scanning body ({len(body) if body else 0} chars)")
+    extract_from_text(body, "body")
 
     # Extract from comments
     if comments:
-        for comment in comments:
-            extract_from_text(comment.get('body', ''))
+        logger.debug(f"extract_attachment_urls: Scanning {len(comments)} comments")
+        for i, comment in enumerate(comments):
+            extract_from_text(comment.get('body', ''), f"comment[{i}]")
+
+    if urls:
+        logger.info(f"extract_attachment_urls: Found {len(urls)} unique attachment URL(s)")
+    else:
+        logger.debug("extract_attachment_urls: No attachment URLs found")
 
     return list(urls)
 
@@ -1517,7 +1529,8 @@ def create_kanban_task_from_comment(
     repo: str,
     kanban_script: str,
     related_task_ids: List[str],
-    dry_run: bool = False
+    dry_run: bool = False,
+    attachment_paths: Optional[List[str]] = None
 ) -> Optional[str]:
     """
     Create kanban task from a GitHub issue comment (user reply).
@@ -1529,6 +1542,7 @@ def create_kanban_task_from_comment(
         kanban_script: Path to kanban.sh script
         related_task_ids: List of previous task IDs from the thread
         dry_run: If True, don't actually create the task
+        attachment_paths: Optional list of downloaded attachment file paths
 
     Returns:
         Task ID if created, None if failed
@@ -1546,6 +1560,10 @@ def create_kanban_task_from_comment(
     # Start with the reply content
     task_body = f"# Reply to Issue #{issue_number}: {issue['title']}\n\n"
     task_body += comment['body'] or "(No content)"
+
+    # Append attachment paths if any
+    if attachment_paths:
+        task_body += format_attachments_section(attachment_paths)
 
     # Add previous task_id references if any
     if related_task_ids:
@@ -1568,11 +1586,17 @@ def create_kanban_task_from_comment(
     # Add comment tag_id
     tags.append(comment_tag_id)
 
+    # Add has-attachments tag if files were downloaded
+    if attachment_paths:
+        tags.append('has-attachments')
+
     if dry_run:
         logger.info(f"[DRY RUN] Would create task for comment #{comment_id} on issue #{issue_number}")
         logger.debug(f"[DRY RUN] Body: {task_body[:200]}...")
         logger.debug(f"[DRY RUN] Tags: {', '.join(tags)}")
         logger.debug(f"[DRY RUN] Related task IDs: {related_task_ids}")
+        if attachment_paths:
+            logger.debug(f"[DRY RUN] Attachments: {len(attachment_paths)} files")
         return "dry-run-task-id"
 
     try:
@@ -1616,7 +1640,10 @@ def process_issue_comments(
     repo: str,
     kanban_script: str,
     comment_state_mgr: 'CommentStateManager',
-    dry_run: bool = False
+    dry_run: bool = False,
+    download_attachments: bool = False,
+    downloader: Optional['AttachmentDownloader'] = None,
+    token: Optional[str] = None
 ) -> Tuple[int, int]:
     """
     Process comments on an issue, creating kanban tasks for user replies.
@@ -1634,6 +1661,9 @@ def process_issue_comments(
         kanban_script: Path to kanban.sh script
         comment_state_mgr: CommentStateManager for tracking processed comments
         dry_run: If True, don't actually create tasks
+        download_attachments: If True, download file attachments from comments
+        downloader: AttachmentDownloader instance for handling downloads
+        token: GitHub token for authenticated downloads
 
     Returns:
         Tuple of (processed_count, created_count)
@@ -1680,8 +1710,30 @@ def process_issue_comments(
         logger.info(f"  Comment #{comment_id} (@{comment_author}): User reply detected")
         processed += 1
 
+        # Handle attachments if enabled
+        attachment_paths = []
+        if download_attachments and downloader and token:
+            attachment_urls = extract_attachment_urls(comment_body)
+            if attachment_urls:
+                logger.info(f"    Found {len(attachment_urls)} attachment(s) in comment")
+                if not dry_run:
+                    attachment_paths = download_github_attachments(
+                        urls=attachment_urls,
+                        token=token,
+                        repo=repo,
+                        issue_number=issue_number,
+                        downloader=downloader
+                    )
+                    if attachment_paths:
+                        logger.info(f"    Downloaded {len(attachment_paths)} attachment(s)")
+                    else:
+                        logger.warning(f"    Failed to download some attachments")
+                else:
+                    logger.info(f"    [DRY RUN] Would download {len(attachment_urls)} attachment(s)")
+
         task_id = create_kanban_task_from_comment(
-            comment, issue, repo, kanban_script, all_task_ids, dry_run
+            comment, issue, repo, kanban_script, all_task_ids, dry_run,
+            attachment_paths=attachment_paths
         )
 
         if task_id:
@@ -1908,7 +1960,10 @@ def handle_fetch(args: argparse.Namespace) -> int:
                         repo,
                         kanban_script,
                         comment_state_mgr,
-                        args.dry_run
+                        args.dry_run,
+                        download_attachments=download_attachments,
+                        downloader=downloader,
+                        token=token
                     )
 
                     if replies_created > 0:
