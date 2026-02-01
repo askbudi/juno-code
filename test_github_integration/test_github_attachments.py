@@ -46,6 +46,31 @@ class TestExtractAttachmentUrls:
         assert 'screenshot.png' in urls[0]
         assert 'user-attachments' in urls[0]
 
+    def test_extract_user_attachments_files_url(self):
+        """Test extracting user-attachments/files URLs with numeric IDs (file uploads)."""
+        body = """
+        Analyze the log file:
+        [logs_result (1).csv](https://github.com/user-attachments/files/24988025/logs_result.1.csv)
+        """
+
+        urls = extract_attachment_urls(body)
+        assert len(urls) == 1
+        assert 'logs_result.1.csv' in urls[0]
+        assert 'user-attachments/files' in urls[0]
+
+    def test_extract_user_attachments_files_multiple(self):
+        """Test extracting multiple user-attachments/files URLs."""
+        body = """
+        Here are the files:
+        https://github.com/user-attachments/files/12345678/report.pdf
+        https://github.com/user-attachments/files/87654321/data.json
+        """
+
+        urls = extract_attachment_urls(body)
+        assert len(urls) == 2
+        assert any('report.pdf' in url for url in urls)
+        assert any('data.json' in url for url in urls)
+
     def test_extract_user_images_url(self):
         """Test extracting user-images.githubusercontent.com URLs."""
         body = """

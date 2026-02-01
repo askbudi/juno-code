@@ -87,7 +87,9 @@ except ImportError:
 
 # Regex patterns to extract attachment URLs from issue body and comments
 GITHUB_ATTACHMENT_PATTERNS = [
-    # GitHub user-attachments (new format)
+    # GitHub user-attachments/files (file uploads with numeric ID)
+    r'https://github\.com/user-attachments/files/\d+/[^\s\)\"\'\]]+',
+    # GitHub user-attachments/assets (new format with UUID)
     r'https://github\.com/user-attachments/assets/[a-f0-9-]+/[^\s\)\"\'\]]+',
     # User images (screenshots, drag-drop uploads)
     r'https://user-images\.githubusercontent\.com/\d+/[^\s\)\"\'\]]+',
