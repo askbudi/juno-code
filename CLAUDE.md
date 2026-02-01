@@ -65,6 +65,53 @@ The project uses a sophisticated AI workflow with:
 - Similar to `codex run-until-complete` functionality
 - Auto-installation verified on every CLI startup; missing scripts restored automatically
 
+## File Attachments (Slack & GitHub)
+
+**Overview:**
+Files attached to Slack messages or GitHub issues are automatically downloaded and included with kanban tasks.
+
+**Storage Location:**
+- `.juno_task/attachments/slack/{channel_id}/` - Slack file downloads
+- `.juno_task/attachments/github/{owner}_{repo}/` - GitHub attachment downloads
+
+**How it Works:**
+1. When fetching from Slack or GitHub, file attachments are detected
+2. Files are downloaded with authentication (bot token or PAT)
+3. Files are saved with collision-safe naming: `{prefix}_{original_filename}`
+4. An `[attached files]` section is added to the kanban task body listing file paths
+5. Metadata JSON files are saved alongside downloads with checksums
+
+**Environment Variables:**
+- `JUNO_DOWNLOAD_ATTACHMENTS`: Enable/disable downloads (default: true)
+- `JUNO_MAX_ATTACHMENT_SIZE`: Maximum file size in bytes (default: 50MB)
+- `JUNO_ALLOWED_DOMAINS`: Comma-separated list of additional allowed domains
+- `JUNO_ALLOWED_FILE_TYPES`: Comma-separated list of allowed extensions (overrides defaults)
+- `JUNO_SKIP_FILE_TYPES`: Comma-separated list of extensions to skip (adds to defaults)
+
+**CLI Flags:**
+- `--download-attachments` (default): Enable file downloads
+- `--no-attachments`: Disable file downloads
+
+**Security:**
+- Domain allowlisting: Only trusted domains (files.slack.com, github.com, githubusercontent.com)
+- Extension filtering: Blocks executable types (.exe, .dmg, .msi, .app, .deb, .rpm, .iso)
+- Size limits: Configurable maximum file size
+- SHA256 checksums stored in metadata for verification
+
+**Example Task Output:**
+```
+Bug report: App crashes on login
+
+[attached files]
+- ./.juno_task/attachments/slack/C12345/ts1234567890_screenshot.png
+- ./.juno_task/attachments/slack/C12345/ts1234567890_error_log.txt
+```
+
+**Scripts:**
+- `attachment_downloader.py`: Core download module (auto-installed to `.juno_task/scripts/`)
+- `slack_fetch.py`: Updated to extract and download Slack file attachments
+- `github.py`: Updated to extract and download GitHub issue attachment URLs
+
 ## Current Status Update (2025-12-13)
 
 **⚠️ 1 OPEN ISSUE**

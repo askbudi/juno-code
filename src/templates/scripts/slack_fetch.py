@@ -11,18 +11,22 @@ Features:
 - Default --once mode for cron/scheduled jobs
 - Persistent state tracking (no duplicate processing)
 - Automatic kanban task creation with slack-input tag
+- File attachment downloading (saves to .juno_task/attachments/slack/)
 - Graceful shutdown on SIGINT/SIGTERM
 
 Usage:
     python slack_fetch.py --channel bug-reports --once
     python slack_fetch.py --channel feature-requests --continuous
     python slack_fetch.py --channel general --dry-run --verbose
+    python slack_fetch.py --channel uploads --download-attachments
 
 Environment Variables:
-    SLACK_BOT_TOKEN         Slack bot token (required, starts with xoxb-)
-    SLACK_CHANNEL           Default channel to monitor
-    CHECK_INTERVAL_SECONDS  Polling interval in seconds (default: 60)
-    LOG_LEVEL               DEBUG, INFO, WARNING, ERROR (default: INFO)
+    SLACK_BOT_TOKEN             Slack bot token (required, starts with xoxb-)
+    SLACK_CHANNEL               Default channel to monitor
+    CHECK_INTERVAL_SECONDS      Polling interval in seconds (default: 60)
+    LOG_LEVEL                   DEBUG, INFO, WARNING, ERROR (default: INFO)
+    JUNO_DOWNLOAD_ATTACHMENTS   Enable/disable file downloads (default: true)
+    JUNO_MAX_ATTACHMENT_SIZE    Max file size in bytes (default: 50MB)
 """
 
 import argparse
@@ -35,7 +39,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -46,14 +50,31 @@ except ImportError as e:
     print("Please run: pip install slack_sdk python-dotenv")
     sys.exit(1)
 
-# Import local state manager
+# Import local modules
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
 try:
     from slack_state import SlackStateManager
 except ImportError:
     # Fallback: try importing from same directory
-    script_dir = Path(__file__).parent
-    sys.path.insert(0, str(script_dir))
     from slack_state import SlackStateManager
+
+# Import attachment downloader for file handling
+try:
+    from attachment_downloader import (
+        AttachmentDownloader,
+        format_attachments_section,
+        is_attachments_enabled
+    )
+    ATTACHMENTS_AVAILABLE = True
+except ImportError:
+    ATTACHMENTS_AVAILABLE = False
+    # Define stub functions if attachment_downloader not available
+    def is_attachments_enabled():
+        return False
+    def format_attachments_section(paths):
+        return ""
 
 
 # Global shutdown flag
@@ -235,6 +256,119 @@ def sanitize_tag(tag: str) -> str:
     return tag
 
 
+# =============================================================================
+# File Attachment Handling
+# =============================================================================
+
+def extract_files_from_message(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extract file attachment information from a Slack message.
+
+    Args:
+        message: Message dict from conversations.history API
+
+    Returns:
+        List of file info dicts with keys: id, name, url_private_download, size, mimetype
+    """
+    files = message.get('files', [])
+    if not files:
+        return []
+
+    extracted = []
+    for file_info in files:
+        # Skip external file links (not uploaded to Slack)
+        if file_info.get('mode') == 'external':
+            logger.debug(f"Skipping external file: {file_info.get('name')}")
+            continue
+
+        # Skip files that are tombstoned (deleted)
+        if file_info.get('mode') == 'tombstone':
+            logger.debug(f"Skipping deleted file: {file_info.get('id')}")
+            continue
+
+        extracted.append({
+            'id': file_info.get('id'),
+            'name': file_info.get('name', f"file_{file_info.get('id')}"),
+            'url_private_download': file_info.get('url_private_download'),
+            'url_private': file_info.get('url_private'),
+            'size': file_info.get('size', 0),
+            'mimetype': file_info.get('mimetype', 'application/octet-stream'),
+            'filetype': file_info.get('filetype', 'unknown'),
+            'title': file_info.get('title', '')
+        })
+
+    return extracted
+
+
+def download_message_files(
+    files: List[Dict[str, Any]],
+    bot_token: str,
+    channel_id: str,
+    message_ts: str,
+    downloader: 'AttachmentDownloader'
+) -> List[str]:
+    """
+    Download all files from a Slack message.
+
+    Args:
+        files: List of file info dicts from extract_files_from_message()
+        bot_token: Slack bot token for authorization
+        channel_id: Channel ID for directory organization
+        message_ts: Message timestamp for filename prefix
+        downloader: AttachmentDownloader instance
+
+    Returns:
+        List of local file paths (empty for failures)
+    """
+    if not files:
+        return []
+
+    downloaded_paths = []
+    headers = {'Authorization': f'Bearer {bot_token}'}
+
+    # Sanitize message_ts for use in filename (remove dots)
+    ts_prefix = message_ts.replace('.', '_')
+
+    target_dir = downloader.base_dir / 'slack' / channel_id
+
+    for file_info in files:
+        # Prefer url_private_download, fallback to url_private
+        url = file_info.get('url_private_download') or file_info.get('url_private')
+        if not url:
+            logger.warning(f"No download URL for file {file_info.get('id')}")
+            continue
+
+        original_filename = file_info.get('name', 'unnamed')
+
+        metadata = {
+            'source': 'slack',
+            'source_id': file_info.get('id'),
+            'message_ts': message_ts,
+            'channel_id': channel_id,
+            'mime_type': file_info.get('mimetype'),
+            'filetype': file_info.get('filetype'),
+            'title': file_info.get('title', ''),
+            'original_size': file_info.get('size', 0)
+        }
+
+        path, error = downloader.download_file(
+            url=url,
+            target_dir=target_dir,
+            filename_prefix=ts_prefix,
+            original_filename=original_filename,
+            headers=headers,
+            metadata=metadata
+        )
+
+        if path:
+            downloaded_paths.append(path)
+            logger.info(f"Downloaded Slack file: {original_filename}")
+        else:
+            logger.warning(f"Failed to download {original_filename}: {error}")
+
+    return downloaded_paths
+
+
 def create_kanban_task(
     message_text: str,
     author_name: str,
@@ -310,7 +444,10 @@ def process_messages(
     client: WebClient,
     state_mgr: SlackStateManager,
     kanban_script: str,
-    dry_run: bool = False
+    dry_run: bool = False,
+    bot_token: Optional[str] = None,
+    downloader: Optional['AttachmentDownloader'] = None,
+    download_attachments: bool = True
 ) -> int:
     """
     Process new messages: create kanban tasks and update state.
@@ -323,6 +460,9 @@ def process_messages(
         state_mgr: SlackStateManager instance
         kanban_script: Path to kanban.sh script
         dry_run: If True, don't create tasks
+        bot_token: Slack bot token for downloading attachments
+        downloader: AttachmentDownloader instance for file downloads
+        download_attachments: Whether to download file attachments
 
     Returns:
         Number of messages processed
@@ -341,8 +481,11 @@ def process_messages(
         user_id = msg.get('user', 'unknown')
         text = msg.get('text', '')
 
-        # Skip empty messages
-        if not text.strip():
+        # Check if message has files (allows processing messages with only attachments)
+        has_files = bool(msg.get('files'))
+
+        # Skip empty messages (unless they have files)
+        if not text.strip() and not has_files:
             logger.debug(f"Skipping empty message ts={ts}")
             continue
 
@@ -362,11 +505,40 @@ def process_messages(
 
         logger.info(f"New message from {author_name}: {text[:50]}{'...' if len(text) > 50 else ''}")
 
+        # Handle file attachments
+        attachment_paths = []
+        if download_attachments and ATTACHMENTS_AVAILABLE and downloader and bot_token:
+            files = extract_files_from_message(msg)
+            if files:
+                logger.info(f"Found {len(files)} file(s) attached to message")
+                if not dry_run:
+                    attachment_paths = download_message_files(
+                        files=files,
+                        bot_token=bot_token,
+                        channel_id=channel_id,
+                        message_ts=ts,
+                        downloader=downloader
+                    )
+                    if attachment_paths:
+                        logger.info(f"Downloaded {len(attachment_paths)} file(s)")
+                else:
+                    logger.info(f"[DRY RUN] Would download {len(files)} file(s)")
+
+        # Build task text with attachment paths
+        task_text = text
+        if attachment_paths:
+            task_text += format_attachments_section(attachment_paths)
+
         # Create kanban task
         # Create author tag with sanitization (colons not allowed in kanban tags)
         author_tag = sanitize_tag(f'author_{author_name}')
         tags = ['slack-input', author_tag]
-        task_id = create_kanban_task(text, author_name, tags, kanban_script, dry_run)
+
+        # Add has-attachments tag if files were downloaded
+        if attachment_paths:
+            tags.append('has-attachments')
+
+        task_id = create_kanban_task(task_text, author_name, tags, kanban_script, dry_run)
 
         if task_id:
             # Record in state
@@ -377,7 +549,9 @@ def process_messages(
                 'date': date_str,
                 'channel': channel_name,
                 'channel_id': channel_id,
-                'thread_ts': msg.get('thread_ts', ts)
+                'thread_ts': msg.get('thread_ts', ts),
+                'attachment_count': len(attachment_paths),
+                'attachment_paths': attachment_paths
             }
 
             if not dry_run:
@@ -408,7 +582,7 @@ def find_kanban_script(project_dir: Path) -> Optional[str]:
 SLACK_TOKEN_DOCS_URL = "https://api.slack.com/tutorials/tracks/getting-a-token"
 
 
-def validate_slack_environment() -> tuple[Optional[str], Optional[str], list[str]]:
+def validate_slack_environment() -> Tuple[Optional[str], Optional[str], List[str]]:
     """
     Validate Slack environment variables are properly configured.
 
@@ -486,6 +660,7 @@ Generating a Slack Bot Token:
      - channels:history, channels:read (public channels)
      - groups:history, groups:read (private channels)
      - users:read (user info)
+     - files:read (download file attachments)
      - chat:write (for slack_respond.py)
   3. Install the app to your workspace
   4. Copy the "Bot User OAuth Token" (starts with xoxb-)
@@ -583,9 +758,21 @@ def main_loop(args: argparse.Namespace) -> int:
     if args.dry_run:
         logger.info("Running in DRY RUN mode - no tasks will be created")
 
+    # Initialize attachment downloader if enabled
+    downloader = None
+    download_attachments = getattr(args, 'download_attachments', True) and is_attachments_enabled()
+    if download_attachments and ATTACHMENTS_AVAILABLE:
+        attachments_dir = project_dir / '.juno_task' / 'attachments'
+        downloader = AttachmentDownloader(base_dir=str(attachments_dir))
+        logger.info(f"Attachment downloads enabled: {attachments_dir}")
+    elif download_attachments and not ATTACHMENTS_AVAILABLE:
+        logger.warning("Attachment downloads requested but attachment_downloader module not available")
+        download_attachments = False
+
     logger.info(f"Monitoring channel #{channel} (ID: {channel_id})")
     logger.info(f"Check interval: {check_interval} seconds")
     logger.info(f"Mode: {'once' if args.once else 'continuous'}")
+    logger.info(f"Download attachments: {download_attachments}")
     logger.info("-" * 70)
 
     # Main loop
@@ -614,7 +801,10 @@ def main_loop(args: argparse.Namespace) -> int:
                     client,
                     state_mgr,
                     kanban_script,
-                    dry_run=args.dry_run
+                    dry_run=args.dry_run,
+                    bot_token=bot_token,
+                    downloader=downloader,
+                    download_attachments=download_attachments
                 )
                 total_processed += processed
                 logger.info(f"Processed {processed} messages (total: {total_processed})")
@@ -655,20 +845,26 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --channel bug-reports                # Run once (default)
+  %(prog)s --channel bug-reports                    # Run once (default)
   %(prog)s --channel feature-requests --continuous  # Continuous monitoring
   %(prog)s --channel general --dry-run --verbose    # Test mode
+  %(prog)s --channel uploads --download-attachments # Explicit attachment download
 
 Environment Variables:
-  SLACK_BOT_TOKEN          Slack bot token (required)
-  SLACK_CHANNEL            Default channel to monitor
-  CHECK_INTERVAL_SECONDS   Polling interval (default: 60)
-  LOG_LEVEL               DEBUG, INFO, WARNING, ERROR (default: INFO)
+  SLACK_BOT_TOKEN              Slack bot token (required)
+  SLACK_CHANNEL                Default channel to monitor
+  CHECK_INTERVAL_SECONDS       Polling interval (default: 60)
+  LOG_LEVEL                    DEBUG, INFO, WARNING, ERROR (default: INFO)
+  JUNO_DOWNLOAD_ATTACHMENTS    Enable/disable file downloads (default: true)
+  JUNO_MAX_ATTACHMENT_SIZE     Max file size in bytes (default: 50MB)
 
 Notes:
   - Messages are tagged with 'slack-input' and 'author_<name>'
+  - Messages with attachments also get 'has-attachments' tag
   - State is persisted to .juno_task/slack/slack.ndjson
+  - Attachments saved to .juno_task/attachments/slack/<channel_id>/
   - Use Ctrl+C for graceful shutdown
+  - Required OAuth scope for file downloads: files:read
         """
     )
 
@@ -690,6 +886,22 @@ Notes:
         dest='once',
         action='store_false',
         help='Run continuously with polling'
+    )
+
+    # Attachment handling options
+    attachment_group = parser.add_mutually_exclusive_group()
+    attachment_group.add_argument(
+        '--download-attachments',
+        dest='download_attachments',
+        action='store_true',
+        default=True,
+        help='Download file attachments from messages (DEFAULT)'
+    )
+    attachment_group.add_argument(
+        '--no-attachments',
+        dest='download_attachments',
+        action='store_false',
+        help='Skip downloading file attachments'
     )
 
     parser.add_argument(

@@ -25,6 +25,8 @@ export class ScriptInstaller {
     'run_until_completion.sh',
     'kanban.sh',
     'install_requirements.sh', // Required by kanban.sh for Python venv creation
+    // Shared utilities
+    'attachment_downloader.py', // File attachment downloading utility (used by Slack/GitHub)
     // Slack integration scripts
     'slack_state.py', // State management for Slack integration
     'slack_fetch.py', // Core logic for fetching Slack messages

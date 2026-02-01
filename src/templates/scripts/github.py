@@ -12,11 +12,19 @@ Features:
 - Persistent state tracking (NDJSON-based) to prevent duplicate processing
 - Tag-based identification using tag_id for O(1) lookups (no fuzzy matching)
 - Environment-based configuration with secure token management
+- File attachment downloading (saves to .juno_task/attachments/github/)
 
 Usage:
     python github.py fetch --repo owner/repo
+    python github.py fetch --repo owner/repo --download-attachments
     python github.py respond --tag github-input
     python github.py sync --repo owner/repo --once
+
+Environment Variables:
+    GITHUB_TOKEN                GitHub personal access token (required)
+    GITHUB_REPO                 Default repository (format: owner/repo)
+    JUNO_DOWNLOAD_ATTACHMENTS   Enable/disable file downloads (default: true)
+    JUNO_MAX_ATTACHMENT_SIZE    Max file size in bytes (default: 50MB)
 
 Version: 1.0.0
 Package: juno-code@1.x.x
@@ -52,6 +60,44 @@ shutdown_requested = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Import attachment downloader for file handling
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
+try:
+    from attachment_downloader import (
+        AttachmentDownloader,
+        format_attachments_section,
+        is_attachments_enabled
+    )
+    ATTACHMENTS_AVAILABLE = True
+except ImportError:
+    ATTACHMENTS_AVAILABLE = False
+    # Define stub functions if attachment_downloader not available
+    def is_attachments_enabled():
+        return False
+    def format_attachments_section(paths):
+        return ""
+
+
+# =============================================================================
+# GitHub Attachment URL Patterns
+# =============================================================================
+
+# Regex patterns to extract attachment URLs from issue body and comments
+GITHUB_ATTACHMENT_PATTERNS = [
+    # GitHub user-attachments (new format)
+    r'https://github\.com/user-attachments/assets/[a-f0-9-]+/[^\s\)\"\'\]]+',
+    # User images (screenshots, drag-drop uploads)
+    r'https://user-images\.githubusercontent\.com/\d+/[^\s\)\"\'\]]+',
+    # Private user images
+    r'https://private-user-images\.githubusercontent\.com/\d+/[^\s\)\"\'\]]+',
+    # Repository assets
+    r'https://github\.com/[^/]+/[^/]+/assets/\d+/[^\s\)\"\'\]]+',
+    # Objects storage
+    r'https://objects\.githubusercontent\.com/[^\s\)\"\'\]]+',
+]
 
 
 # =============================================================================
@@ -911,6 +957,126 @@ def validate_repo_format(repo: str) -> bool:
     return True
 
 
+# =============================================================================
+# Attachment Extraction and Download Functions
+# =============================================================================
+
+def extract_attachment_urls(body: str, comments: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """
+    Extract attachment URLs from issue body and comments.
+
+    GitHub doesn't have a dedicated attachment API - files are embedded as URLs
+    in the issue body or comments when users drag-drop or paste images.
+
+    Args:
+        body: Issue body text
+        comments: Optional list of comment dicts
+
+    Returns:
+        Deduplicated list of attachment URLs
+    """
+    urls = set()
+
+    def extract_from_text(text: str) -> None:
+        if not text:
+            return
+        for pattern in GITHUB_ATTACHMENT_PATTERNS:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            urls.update(matches)
+
+    # Extract from body
+    extract_from_text(body)
+
+    # Extract from comments
+    if comments:
+        for comment in comments:
+            extract_from_text(comment.get('body', ''))
+
+    return list(urls)
+
+
+def download_github_attachments(
+    urls: List[str],
+    token: str,
+    repo: str,
+    issue_number: int,
+    downloader: 'AttachmentDownloader'
+) -> List[str]:
+    """
+    Download GitHub attachment files.
+
+    Args:
+        urls: List of attachment URLs
+        token: GitHub token for authentication
+        repo: Repository in owner/repo format
+        issue_number: Issue number
+        downloader: AttachmentDownloader instance
+
+    Returns:
+        List of local file paths
+    """
+    if not urls:
+        return []
+
+    downloaded_paths = []
+    headers = {
+        'Authorization': f'token {token}',
+        'Accept': 'application/octet-stream'
+    }
+
+    # Sanitize repo for directory name
+    repo_dir = repo.replace('/', '_')
+    target_dir = downloader.base_dir / 'github' / repo_dir
+
+    for url in urls:
+        # Extract filename from URL
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(url)
+            path_parts = parsed.path.split('/')
+            filename = unquote(path_parts[-1]) if path_parts else None
+
+            # Handle URLs without clear filename
+            if not filename or filename in ['/', '']:
+                # Use hash of URL as filename
+                import hashlib
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+                # Try to extract extension from URL path
+                ext = ''
+                for part in reversed(path_parts):
+                    if '.' in part:
+                        ext = '.' + part.split('.')[-1]
+                        break
+                filename = f"attachment_{url_hash}{ext}"
+
+        except Exception as e:
+            logger.warning(f"Error parsing URL {url}: {e}")
+            continue
+
+        metadata = {
+            'source': 'github',
+            'repo': repo,
+            'issue_number': issue_number,
+        }
+
+        path, error = downloader.download_file(
+            url=url,
+            target_dir=target_dir,
+            filename_prefix=f"issue_{issue_number}",
+            original_filename=filename,
+            headers=headers,
+            metadata=metadata
+        )
+
+        if path:
+            downloaded_paths.append(path)
+            logger.info(f"Downloaded GitHub attachment: {filename}")
+        else:
+            logger.warning(f"Failed to download {url}: {error}")
+
+    return downloaded_paths
+
+
 def extract_task_ids_from_text(text: str) -> List[str]:
     """
     Extract task IDs from text using [task_id]...[/task_id] format.
@@ -1097,7 +1263,8 @@ def create_kanban_task_from_issue(
     issue: Dict[str, Any],
     repo: str,
     kanban_script: str,
-    dry_run: bool = False
+    dry_run: bool = False,
+    attachment_paths: Optional[List[str]] = None
 ) -> Optional[str]:
     """
     Create kanban task from GitHub issue.
@@ -1107,6 +1274,7 @@ def create_kanban_task_from_issue(
         repo: Repository in format "owner/repo"
         kanban_script: Path to kanban.sh script
         dry_run: If True, don't actually create the task
+        attachment_paths: Optional list of downloaded attachment file paths
 
     Returns:
         Task ID if created, None if failed
@@ -1121,6 +1289,10 @@ def create_kanban_task_from_issue(
     # Start with just title and description
     task_body = f"# {issue['title']}\n\n"
     task_body += issue['body'] or "(No description)"
+
+    # Append attachment paths if any
+    if attachment_paths:
+        task_body += format_attachments_section(attachment_paths)
 
     # Build tags - all metadata goes here for token efficiency
     tags = [
@@ -1140,10 +1312,16 @@ def create_kanban_task_from_issue(
     # Add tag_id as a tag
     tags.append(tag_id)
 
+    # Add has-attachments tag if files were downloaded
+    if attachment_paths:
+        tags.append('has-attachments')
+
     if dry_run:
         logger.info(f"[DRY RUN] Would create task with tag_id: {tag_id}")
         logger.debug(f"[DRY RUN] Body: {task_body[:200]}...")
         logger.debug(f"[DRY RUN] Tags: {', '.join(tags)}")
+        if attachment_paths:
+            logger.debug(f"[DRY RUN] Attachments: {len(attachment_paths)} files")
         return "dry-run-task-id"
 
     try:
@@ -1593,12 +1771,24 @@ def handle_fetch(args: argparse.Namespace) -> int:
     # Check if we should include comments
     include_comments = getattr(args, 'include_comments', True)  # Default to True
 
+    # Initialize attachment downloader if enabled
+    downloader = None
+    download_attachments = getattr(args, 'download_attachments', True) and is_attachments_enabled()
+    if download_attachments and ATTACHMENTS_AVAILABLE:
+        attachments_dir = project_dir / '.juno_task' / 'attachments'
+        downloader = AttachmentDownloader(base_dir=str(attachments_dir))
+        logger.info(f"Attachment downloads enabled: {attachments_dir}")
+    elif download_attachments and not ATTACHMENTS_AVAILABLE:
+        logger.warning("Attachment downloads requested but attachment_downloader module not available")
+        download_attachments = False
+
     if args.dry_run:
         logger.info("Running in DRY RUN mode - no tasks will be created")
 
     logger.info(f"Monitoring repository: {repo}")
     logger.info(f"Filters: labels={args.labels or 'None'} assignee={args.assignee or 'None'} state={args.state}")
     logger.info(f"Include comments/replies: {include_comments}")
+    logger.info(f"Download attachments: {download_attachments}")
     logger.info(f"Mode: {'once' if args.once else 'continuous'}")
     if since:
         logger.info(f"Incremental sync since: {since}")
@@ -1642,7 +1832,29 @@ def handle_fetch(args: argparse.Namespace) -> int:
                 for issue in new_issues:
                     logger.info(f"  Issue #{issue['number']} (@{issue['user']['login']}): {issue['title']}")
 
-                    task_id = create_kanban_task_from_issue(issue, repo, kanban_script, args.dry_run)
+                    # Handle attachments if enabled
+                    attachment_paths = []
+                    if download_attachments and downloader:
+                        attachment_urls = extract_attachment_urls(issue.get('body', ''))
+                        if attachment_urls:
+                            logger.info(f"    Found {len(attachment_urls)} attachment(s) in issue body")
+                            if not args.dry_run:
+                                attachment_paths = download_github_attachments(
+                                    urls=attachment_urls,
+                                    token=token,
+                                    repo=repo,
+                                    issue_number=issue['number'],
+                                    downloader=downloader
+                                )
+                                if attachment_paths:
+                                    logger.info(f"    Downloaded {len(attachment_paths)} attachment(s)")
+                            else:
+                                logger.info(f"    [DRY RUN] Would download {len(attachment_urls)} attachment(s)")
+
+                    task_id = create_kanban_task_from_issue(
+                        issue, repo, kanban_script, args.dry_run,
+                        attachment_paths=attachment_paths
+                    )
 
                     if task_id:
                         if not args.dry_run:
@@ -1659,7 +1871,9 @@ def handle_fetch(args: argparse.Namespace) -> int:
                                 'created_at': issue['created_at'],
                                 'updated_at': issue['updated_at'],
                                 'issue_url': issue['url'],
-                                'issue_html_url': issue['html_url']
+                                'issue_html_url': issue['html_url'],
+                                'attachment_count': len(attachment_paths),
+                                'attachment_paths': attachment_paths
                             }, task_id)
 
                         logger.info(f"  ✓ Created kanban task: {task_id}")
@@ -2294,6 +2508,8 @@ Notes:
     fetch_parser.add_argument('--verbose', '-v', action='store_true', help='Enable DEBUG level logging')
     fetch_parser.add_argument('--include-comments', dest='include_comments', action='store_true', default=True, help='Include user replies/comments (default: True)')
     fetch_parser.add_argument('--no-comments', dest='include_comments', action='store_false', help='Skip processing user replies/comments')
+    fetch_parser.add_argument('--download-attachments', dest='download_attachments', action='store_true', default=True, help='Download file attachments (default: True)')
+    fetch_parser.add_argument('--no-attachments', dest='download_attachments', action='store_false', help='Skip downloading file attachments')
 
     # Respond subcommand
     respond_parser = subparsers.add_parser('respond', help='Post comments on GitHub issues for completed tasks')
@@ -2322,6 +2538,8 @@ Notes:
     sync_parser.add_argument('--reset-tracker', action='store_true', help='Reset response tracker (WARNING: will re-send all responses)')
     sync_parser.add_argument('--include-comments', dest='include_comments', action='store_true', default=True, help='Include user replies/comments (default: True)')
     sync_parser.add_argument('--no-comments', dest='include_comments', action='store_false', help='Skip processing user replies/comments')
+    sync_parser.add_argument('--download-attachments', dest='download_attachments', action='store_true', default=True, help='Download file attachments (default: True)')
+    sync_parser.add_argument('--no-attachments', dest='download_attachments', action='store_false', help='Skip downloading file attachments')
 
     # Push subcommand
     push_parser = subparsers.add_parser('push', help='Create GitHub issues from kanban tasks without issues')

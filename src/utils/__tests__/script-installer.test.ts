@@ -64,6 +64,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
       await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      // Shared utilities
+      await fs.writeFile(path.join(scriptsDir, 'attachment_downloader.py'), '#!/usr/bin/env python3\nprint("downloader")');
       // Slack integration scripts
       await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
@@ -134,6 +136,8 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: false },
         { name: 'kanban.sh', installed: false },
         { name: 'install_requirements.sh', installed: false },
+        // Shared utilities
+        { name: 'attachment_downloader.py', installed: false },
         // Slack integration scripts
         { name: 'slack_state.py', installed: false },
         { name: 'slack_fetch.py', installed: false },
@@ -155,6 +159,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
       await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      // Shared utilities
+      await fs.writeFile(path.join(scriptsDir, 'attachment_downloader.py'), '#!/usr/bin/env python3\nprint("downloader")');
       // Slack integration scripts
       await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
@@ -172,6 +178,8 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: true },
         { name: 'kanban.sh', installed: true },
         { name: 'install_requirements.sh', installed: true },
+        // Shared utilities
+        { name: 'attachment_downloader.py', installed: true },
         // Slack integration scripts
         { name: 'slack_state.py', installed: true },
         { name: 'slack_fetch.py', installed: true },
