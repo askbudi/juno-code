@@ -1,6 +1,6 @@
 {
   "name": "juno-code",
-  "version": "1.0.44",
+  "version": "1.0.45",
   "description": "Ralph Wiggum meet Kanban! Ralph style execution for [Claude Code, Codex, Gemini, Cursor]. One task per iteration, automatic progress tracking, and git commits. Set it and let it run.",
   "keywords": [
     "Ralph",
