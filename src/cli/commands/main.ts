@@ -46,6 +46,24 @@ import type {
 import { ExecutionStatus } from '../../core/engine.js';
 
 /**
+ * Get the default model for a given subagent type.
+ * Returns shorthand model names with ':' prefix for proper resolution by service scripts.
+ *
+ * This ensures that when no -m flag is provided, each subagent uses its appropriate
+ * default model rather than falling back to the config's defaultModel (which may be
+ * set for a different subagent).
+ */
+function getDefaultModelForSubagent(subagent: SubagentType): string {
+  const modelDefaults: Record<SubagentType, string> = {
+    claude: ':sonnet',
+    codex: ':codex',  // Expands to gpt-5.2-codex in codex.py
+    gemini: ':pro',   // Expands to gemini-2.5-pro in gemini.py
+    cursor: 'auto'
+  };
+  return modelDefaults[subagent] || modelDefaults.claude;
+}
+
+/**
  * Prompt input processor for handling various input types
  */
 class PromptProcessor {
@@ -614,6 +632,15 @@ export async function mainCommandHandler(
       );
     }
 
+    // Determine the model to use:
+    // 1. If -m flag is provided, use that
+    // 2. If config has a defaultModel AND the selected subagent matches config's defaultSubagent, use config's model
+    // 3. Otherwise, use the appropriate default model for the selected subagent
+    // This ensures each subagent uses its correct default model (e.g., codex uses gpt-5.2-codex, not sonnet)
+    const resolvedModel = options.model ||
+      (config.defaultModel && config.defaultSubagent === options.subagent ? config.defaultModel : undefined) ||
+      getDefaultModelForSubagent(options.subagent);
+
     // Create execution request
     // Pass both --tools and --allowed-tools as separate parameters
     // Use nullish coalescing (??) instead of || to properly handle 0 or NaN values
@@ -623,7 +650,7 @@ export async function mainCommandHandler(
       backend: selectedBackend,
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations ?? config.defaultMaxIterations,
-      model: options.model || config.defaultModel,
+      model: resolvedModel,
       agents: options.agents,
       tools: options.tools,
       allowedTools: options.allowedTools,
