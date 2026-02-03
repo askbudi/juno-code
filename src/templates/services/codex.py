@@ -23,6 +23,7 @@ class CodexService:
     # Model shorthand mappings (colon-prefixed names expand to full model IDs)
     MODEL_SHORTHANDS = {
         ":codex": "gpt-5.2-codex",
+        ":codex-mini": "gpt-5.1-codex-mini",
         ":gpt-5": "gpt-5",
         ":mini": "gpt-5-codex-mini",
     }

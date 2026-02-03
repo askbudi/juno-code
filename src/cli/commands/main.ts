@@ -69,7 +69,7 @@ function getDefaultModelForSubagent(subagent: SubagentType): string {
  *
  * Model shorthands starting with ':' are mapped to specific subagents:
  * - Claude: :sonnet, :haiku, :opus, :claude-*
- * - Codex: :codex, :gpt-5, :mini
+ * - Codex: :codex, :codex-mini, :gpt-5, :mini
  * - Gemini: :pro, :flash, :gemini-*
  *
  * Full model names (not shorthands) are always considered compatible
@@ -83,7 +83,7 @@ function isModelCompatibleWithSubagent(model: string, subagent: SubagentType): b
 
   // Define which shorthands belong to which subagent
   const claudeShorthands = [':sonnet', ':haiku', ':opus'];
-  const codexShorthands = [':codex', ':gpt-5', ':mini'];
+  const codexShorthands = [':codex', ':codex-mini', ':gpt-5', ':mini'];
   const geminiShorthands = [':pro', ':flash'];
 
   // Check if shorthand starts with a subagent-specific prefix

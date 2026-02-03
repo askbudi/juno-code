@@ -933,6 +933,7 @@ describe('Model Compatibility', () => {
 
       it('should reject Codex model shorthands', () => {
         expect(isModelCompatibleWithSubagent(':codex', 'claude')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':codex-mini', 'claude')).toBe(false);
         expect(isModelCompatibleWithSubagent(':gpt-5', 'claude')).toBe(false);
         expect(isModelCompatibleWithSubagent(':mini', 'claude')).toBe(false);
       });
@@ -953,6 +954,7 @@ describe('Model Compatibility', () => {
     describe('Codex subagent', () => {
       it('should accept Codex model shorthands', () => {
         expect(isModelCompatibleWithSubagent(':codex', 'codex')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':codex-mini', 'codex')).toBe(true);
         expect(isModelCompatibleWithSubagent(':gpt-5', 'codex')).toBe(true);
         expect(isModelCompatibleWithSubagent(':mini', 'codex')).toBe(true);
       });
@@ -989,6 +991,7 @@ describe('Model Compatibility', () => {
 
       it('should reject Codex model shorthands', () => {
         expect(isModelCompatibleWithSubagent(':codex', 'gemini')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':codex-mini', 'gemini')).toBe(false);
         expect(isModelCompatibleWithSubagent(':gpt-5', 'gemini')).toBe(false);
       });
     });
