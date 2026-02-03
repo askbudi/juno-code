@@ -887,3 +887,134 @@ describe('Main Command', () => {
     });
   });
 });
+
+describe('Model Compatibility', () => {
+  // Import the functions after mocking
+  let getDefaultModelForSubagent: (subagent: string) => string;
+  let isModelCompatibleWithSubagent: (model: string, subagent: string) => boolean;
+
+  beforeAll(async () => {
+    // Reset modules to get fresh imports without the mocks affecting these specific functions
+    const mainModule = await import('../commands/main.js');
+    getDefaultModelForSubagent = mainModule.getDefaultModelForSubagent;
+    isModelCompatibleWithSubagent = mainModule.isModelCompatibleWithSubagent;
+  });
+
+  describe('getDefaultModelForSubagent', () => {
+    it('should return :sonnet for claude', () => {
+      expect(getDefaultModelForSubagent('claude')).toBe(':sonnet');
+    });
+
+    it('should return :codex for codex', () => {
+      expect(getDefaultModelForSubagent('codex')).toBe(':codex');
+    });
+
+    it('should return :pro for gemini', () => {
+      expect(getDefaultModelForSubagent('gemini')).toBe(':pro');
+    });
+
+    it('should return auto for cursor', () => {
+      expect(getDefaultModelForSubagent('cursor')).toBe('auto');
+    });
+
+    it('should return :sonnet as default for unknown subagent', () => {
+      expect(getDefaultModelForSubagent('unknown' as any)).toBe(':sonnet');
+    });
+  });
+
+  describe('isModelCompatibleWithSubagent', () => {
+    describe('Claude subagent', () => {
+      it('should accept Claude model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':sonnet', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':haiku', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':opus', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':claude-sonnet-4-5', 'claude')).toBe(true);
+      });
+
+      it('should reject Codex model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':codex', 'claude')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':gpt-5', 'claude')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':mini', 'claude')).toBe(false);
+      });
+
+      it('should reject Gemini model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':pro', 'claude')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':flash', 'claude')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':gemini-pro', 'claude')).toBe(false);
+      });
+
+      it('should accept full model names (non-shorthand)', () => {
+        expect(isModelCompatibleWithSubagent('claude-sonnet-4-5-20250929', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent('gpt-5.2-codex', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent('custom-model', 'claude')).toBe(true);
+      });
+    });
+
+    describe('Codex subagent', () => {
+      it('should accept Codex model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':codex', 'codex')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':gpt-5', 'codex')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':mini', 'codex')).toBe(true);
+      });
+
+      it('should reject Claude model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':sonnet', 'codex')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':haiku', 'codex')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':opus', 'codex')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':claude-sonnet-4-5', 'codex')).toBe(false);
+      });
+
+      it('should reject Gemini model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':pro', 'codex')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':flash', 'codex')).toBe(false);
+      });
+
+      it('should accept full model names (non-shorthand)', () => {
+        expect(isModelCompatibleWithSubagent('gpt-5.2-codex', 'codex')).toBe(true);
+        expect(isModelCompatibleWithSubagent('claude-sonnet-4-5-20250929', 'codex')).toBe(true);
+      });
+    });
+
+    describe('Gemini subagent', () => {
+      it('should accept Gemini model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':pro', 'gemini')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':flash', 'gemini')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':gemini-pro', 'gemini')).toBe(true);
+      });
+
+      it('should reject Claude model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':sonnet', 'gemini')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':haiku', 'gemini')).toBe(false);
+      });
+
+      it('should reject Codex model shorthands', () => {
+        expect(isModelCompatibleWithSubagent(':codex', 'gemini')).toBe(false);
+        expect(isModelCompatibleWithSubagent(':gpt-5', 'gemini')).toBe(false);
+      });
+    });
+
+    describe('Cursor subagent', () => {
+      it('should accept any model (cursor is model-agnostic)', () => {
+        expect(isModelCompatibleWithSubagent(':sonnet', 'cursor')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':codex', 'cursor')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':pro', 'cursor')).toBe(true);
+        expect(isModelCompatibleWithSubagent('auto', 'cursor')).toBe(true);
+        expect(isModelCompatibleWithSubagent('custom-model', 'cursor')).toBe(true);
+      });
+    });
+
+    describe('Edge cases', () => {
+      it('should handle unknown subagent gracefully', () => {
+        // Unknown subagents should accept any model
+        expect(isModelCompatibleWithSubagent(':sonnet', 'unknown' as any)).toBe(true);
+        expect(isModelCompatibleWithSubagent(':codex', 'unknown' as any)).toBe(true);
+      });
+
+      it('should handle unknown shorthands as compatible', () => {
+        // Unknown shorthands that don't match any known pattern should be accepted
+        expect(isModelCompatibleWithSubagent(':custom', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent(':custom', 'codex')).toBe(true);
+      });
+    });
+  });
+});

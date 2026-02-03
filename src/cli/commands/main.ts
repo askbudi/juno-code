@@ -64,6 +64,48 @@ function getDefaultModelForSubagent(subagent: SubagentType): string {
 }
 
 /**
+ * Check if a model string is compatible with a given subagent.
+ * This prevents using Claude model shorthands with Codex, and vice versa.
+ *
+ * Model shorthands starting with ':' are mapped to specific subagents:
+ * - Claude: :sonnet, :haiku, :opus, :claude-*
+ * - Codex: :codex, :gpt-5, :mini
+ * - Gemini: :pro, :flash, :gemini-*
+ *
+ * Full model names (not shorthands) are always considered compatible
+ * as users may have custom configurations.
+ */
+function isModelCompatibleWithSubagent(model: string, subagent: SubagentType): boolean {
+  // Non-shorthand models are always allowed (user explicitly configured them)
+  if (!model.startsWith(':')) {
+    return true;
+  }
+
+  // Define which shorthands belong to which subagent
+  const claudeShorthands = [':sonnet', ':haiku', ':opus'];
+  const codexShorthands = [':codex', ':gpt-5', ':mini'];
+  const geminiShorthands = [':pro', ':flash'];
+
+  // Check if shorthand starts with a subagent-specific prefix
+  const isClaudeModel = claudeShorthands.includes(model) || model.startsWith(':claude');
+  const isCodexModel = codexShorthands.includes(model) || model.startsWith(':gpt');
+  const isGeminiModel = geminiShorthands.includes(model) || model.startsWith(':gemini');
+
+  switch (subagent) {
+    case 'claude':
+      return isClaudeModel || (!isCodexModel && !isGeminiModel);
+    case 'codex':
+      return isCodexModel || (!isClaudeModel && !isGeminiModel);
+    case 'gemini':
+      return isGeminiModel || (!isClaudeModel && !isCodexModel);
+    case 'cursor':
+      return true; // Cursor accepts any model
+    default:
+      return true;
+  }
+}
+
+/**
  * Prompt input processor for handling various input types
  */
 class PromptProcessor {
@@ -634,11 +676,18 @@ export async function mainCommandHandler(
 
     // Determine the model to use:
     // 1. If -m flag is provided, use that
-    // 2. If config has a defaultModel AND the selected subagent matches config's defaultSubagent, use config's model
+    // 2. If config has a defaultModel AND the selected subagent matches config's defaultSubagent
+    //    AND the model is compatible with the subagent, use config's model
     // 3. Otherwise, use the appropriate default model for the selected subagent
-    // This ensures each subagent uses its correct default model (e.g., codex uses gpt-5.2-codex, not sonnet)
+    //
+    // The compatibility check prevents using Claude model shorthands (e.g., :sonnet) with Codex,
+    // which can happen with legacy config.json files created before the per-subagent model fix.
+    const configModelIsValid = config.defaultModel &&
+      config.defaultSubagent === options.subagent &&
+      isModelCompatibleWithSubagent(config.defaultModel, options.subagent);
+
     const resolvedModel = options.model ||
-      (config.defaultModel && config.defaultSubagent === options.subagent ? config.defaultModel : undefined) ||
+      (configModelIsValid ? config.defaultModel : undefined) ||
       getDefaultModelForSubagent(options.subagent);
 
     // Create execution request
@@ -812,3 +861,6 @@ export function createMainCommand(): CLICommand {
     handler: mainCommandHandler
   });
 }
+
+// Export for testing
+export { getDefaultModelForSubagent, isModelCompatibleWithSubagent };
