@@ -28,6 +28,7 @@ import { configureViewLogCommand } from '../cli/commands/view-log.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
 import { setupConfigCommand } from '../cli/commands/config.js';
 import { createServicesCommand } from '../cli/commands/services.js';
+import { createSkillsCommand } from '../cli/commands/skills.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -543,6 +544,28 @@ async function main(): Promise<void> {
     }
   }
 
+  // Auto-update agent skill files in .agents/skills/ and .claude/skills/
+  // Skills are installed for ALL agents regardless of which subagent is selected
+  try {
+    const { SkillInstaller } = await import('../utils/skill-installer.js');
+
+    if (isForceUpdate) {
+      console.log(chalk.blue('🔄 Force updating agent skill files...'));
+      await SkillInstaller.autoUpdate(process.cwd(), true);
+      console.log(chalk.green('✓ Agent skill files updated'));
+    } else {
+      const updated = await SkillInstaller.autoUpdate(process.cwd());
+
+      if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+        console.error('[DEBUG] Agent skill files auto-updated');
+      }
+    }
+  } catch (error) {
+    if (process.env.JUNO_CODE_DEBUG === '1') {
+      console.error('[DEBUG] Skill auto-update failed:', error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // Basic program setup
   program
     .name('juno-code')
@@ -607,6 +630,7 @@ async function main(): Promise<void> {
   configureHelpCommand(program);
   setupConfigCommand(program);
   program.addCommand(createServicesCommand());
+  program.addCommand(createSkillsCommand());
 
   // Setup completion
   setupCompletion(program);

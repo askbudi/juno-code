@@ -40,9 +40,10 @@
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",
-    "build": "tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-wrapper",
+    "build": "tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-skills && npm run build:copy-wrapper",
     "build:copy-templates": "node -e \"const fs = require('fs-extra'); const path = require('path'); fs.copySync('src/templates/scripts', 'dist/templates/scripts', { recursive: true }); fs.readdirSync('dist/templates/scripts').filter(f => f.endsWith('.sh')).forEach(f => fs.chmodSync(path.join('dist/templates/scripts', f), 0o755));\"",
     "build:copy-services": "node -e \"const fs = require('fs-extra'); const path = require('path'); const src = 'src/templates/services'; const dest = 'dist/templates/services'; fs.copySync(src, dest, { recursive: true }); const required = ['codex.py','claude.py','gemini.py']; const missing = required.filter(file => !fs.existsSync(path.join(dest, file))); if (missing.length) { throw new Error('Missing required service scripts in dist: ' + missing.join(', ')); } required.forEach(file => fs.chmodSync(path.join(dest, file), 0o755));\"",
+    "build:copy-skills": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/skills'; const dest = 'dist/templates/skills'; fs.copySync(src, dest, { recursive: true });\"",
     "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755);\"",
     "build:watch": "tsup --watch",
     "test": "vitest",
