@@ -1169,8 +1169,10 @@ export class ExecutionEngine extends EventEmitter {
           })
         : 'unknown';
 
+      const sourceLabel = quotaInfo.source === 'codex' ? 'Codex' : 'Claude';
+
       engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
-      engineLogger.info(`║  Claude Quota Limit Reached                                    ║`);
+      engineLogger.info(`║  ${sourceLabel} Quota Limit Reached${' '.repeat(44 - sourceLabel.length - ' Quota Limit Reached'.length)}║`);
       engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
       engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
       engineLogger.info(`║  Behavior:        raise (exit immediately)                     ║`);
@@ -1184,7 +1186,7 @@ export class ExecutionEngine extends EventEmitter {
 
       // Return false to NOT retry, which will cause the iteration loop to continue
       // but since this is an error condition, we need to throw to actually exit
-      throw new Error(`Claude quota limit reached. Quota resets at ${resetTimeStr}. Use --on-hourly-limit wait to auto-retry.`);
+      throw new Error(`${sourceLabel} quota limit reached. Quota resets at ${resetTimeStr}. Use --on-hourly-limit wait to auto-retry.`);
     }
 
     // onHourlyLimit === 'wait' - proceed with waiting behavior
@@ -1212,8 +1214,10 @@ export class ExecutionEngine extends EventEmitter {
     const durationStr = formatDuration(waitTimeMs);
 
     // Log user-friendly message
+    const waitSourceLabel = quotaInfo.source === 'codex' ? 'Codex' : 'Claude';
+
     engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
-    engineLogger.info(`║  Claude Quota Limit Reached                                    ║`);
+    engineLogger.info(`║  ${waitSourceLabel} Quota Limit Reached${' '.repeat(44 - waitSourceLabel.length - ' Quota Limit Reached'.length)}║`);
     engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
     engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
     engineLogger.info(`║  Sleeping for:    ${durationStr.padEnd(44)}║`);

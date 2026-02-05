@@ -68,7 +68,7 @@ interface StreamingEvent {
 }
 
 /**
- * Quota limit information extracted from Claude response
+ * Quota limit information extracted from Claude or Codex response
  */
 export interface QuotaLimitInfo {
   /** Whether a quota limit was detected */
@@ -79,8 +79,10 @@ export interface QuotaLimitInfo {
   sleepDurationMs?: number;
   /** The timezone extracted from the message */
   timezone?: string;
-  /** Original error message from Claude */
+  /** Original error message */
   originalMessage?: string;
+  /** Which subagent triggered the quota limit */
+  source?: 'claude' | 'codex';
 }
 
 // =============================================================================
@@ -176,32 +178,121 @@ function parseResetTime(message: string): { resetTime: Date; timezone: string } 
 }
 
 /**
- * Detect and parse Claude quota limit error from response
+ * Parse reset time from Codex quota limit message
+ * Handles formats like:
+ * - "try again at Feb 4th, 2026 1:50 AM"
+ * - "try again at February 4, 2026 1:50 AM"
+ * - "try again at Jan 15th, 2026 11:30 PM"
+ */
+function parseCodexResetTime(message: string): { resetTime: Date } | null {
+  // Pattern to match: "try again at Month Day[st/nd/rd/th], Year HH:MM AM/PM"
+  const resetPattern = /try again at\s+(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
+  const match = message.match(resetPattern);
+
+  if (!match) {
+    return null;
+  }
+
+  const monthStr = match[1];
+  const day = parseInt(match[2], 10);
+  const year = parseInt(match[3], 10);
+  let hours = parseInt(match[4], 10);
+  const minutes = parseInt(match[5], 10);
+  const ampm = match[6].toUpperCase();
+
+  // Convert month name to number
+  const MONTH_MAP: Record<string, number> = {
+    'jan': 0, 'january': 0,
+    'feb': 1, 'february': 1,
+    'mar': 2, 'march': 2,
+    'apr': 3, 'april': 3,
+    'may': 4,
+    'jun': 5, 'june': 5,
+    'jul': 6, 'july': 6,
+    'aug': 7, 'august': 7,
+    'sep': 8, 'september': 8,
+    'oct': 9, 'october': 9,
+    'nov': 10, 'november': 10,
+    'dec': 11, 'december': 11,
+  };
+
+  const month = MONTH_MAP[monthStr.toLowerCase()];
+  if (month === undefined) {
+    return null;
+  }
+
+  // Convert 12-hour format to 24-hour format
+  if (ampm === 'PM' && hours !== 12) {
+    hours += 12;
+  } else if (ampm === 'AM' && hours === 12) {
+    hours = 0;
+  }
+
+  // Codex provides an absolute date/time, construct it directly
+  // The time is assumed to be in the user's local timezone (Codex doesn't specify timezone)
+  const resetTime = new Date(year, month, day, hours, minutes, 0, 0);
+
+  // If the reset time is in the past, it's likely already passed; add 24h as fallback
+  const now = new Date();
+  if (resetTime.getTime() <= now.getTime()) {
+    resetTime.setTime(resetTime.getTime() + 24 * 60 * 60 * 1000);
+  }
+
+  return { resetTime };
+}
+
+/**
+ * Detect and parse quota limit error from Claude or Codex response
  */
 export function detectQuotaLimit(message: string | undefined | null): QuotaLimitInfo {
   if (!message || typeof message !== 'string') {
     return { detected: false };
   }
 
-  // Check for the quota limit pattern
-  const quotaPattern = /you'?ve hit your limit/i;
-  if (!quotaPattern.test(message)) {
+  // Check for quota limit patterns:
+  // Claude: "You've hit your limit · resets 8pm (America/Toronto)"
+  // Codex: "You've hit your usage limit. ... try again at Feb 4th, 2026 1:50 AM."
+  const claudePattern = /you'?ve hit your limit/i;
+  const codexPattern = /you'?ve hit your usage limit/i;
+
+  const isClaudeQuota = claudePattern.test(message) && !codexPattern.test(message);
+  const isCodexQuota = codexPattern.test(message);
+
+  if (!isClaudeQuota && !isCodexQuota) {
     return { detected: false };
   }
 
-  // Try to parse the reset time
-  const parsed = parseResetTime(message);
+  const source = isCodexQuota ? 'codex' : 'claude';
 
-  if (parsed) {
+  // Try to parse the reset time - Claude format first, then Codex format
+  const parsedClaude = parseResetTime(message);
+  if (parsedClaude) {
     const now = new Date();
-    const sleepDurationMs = Math.max(0, parsed.resetTime.getTime() - now.getTime());
+    const sleepDurationMs = Math.max(0, parsedClaude.resetTime.getTime() - now.getTime());
 
     return {
       detected: true,
-      resetTime: parsed.resetTime,
+      resetTime: parsedClaude.resetTime,
       sleepDurationMs,
-      timezone: parsed.timezone,
+      timezone: parsedClaude.timezone,
       originalMessage: message,
+      source,
+    };
+  }
+
+  // Try Codex reset time format ("try again at Feb 4th, 2026 1:50 AM")
+  const parsedCodex = parseCodexResetTime(message);
+  if (parsedCodex) {
+    const now = new Date();
+    const sleepDurationMs = Math.max(0, parsedCodex.resetTime.getTime() - now.getTime());
+
+    return {
+      detected: true,
+      resetTime: parsedCodex.resetTime,
+      sleepDurationMs,
+      timezone: 'local',
+      originalMessage: message,
+      source,
     };
   }
 
@@ -211,6 +302,7 @@ export function detectQuotaLimit(message: string | undefined | null): QuotaLimit
     detected: true,
     sleepDurationMs: 5 * 60 * 1000, // 5 minutes default
     originalMessage: message,
+    source,
   };
 }
 
@@ -854,7 +946,76 @@ export class ShellBackend implements Backend {
       };
     }
 
+    // Check for Codex quota limit errors in output
+    if (subagentType === 'codex') {
+      // Codex streams JSON events; look for error/turn.failed events with quota messages
+      const codexQuotaMessage = this.extractCodexQuotaMessage(result.output, result.error);
+      if (codexQuotaMessage) {
+        const quotaLimitInfo = detectQuotaLimit(codexQuotaMessage);
+        if (quotaLimitInfo.detected) {
+          const metadata: ToolExecutionMetadata = {
+            structuredOutput: true,
+            contentType: 'application/json',
+            rawOutput: result.output,
+            quotaLimitInfo
+          };
+          const structuredPayload = {
+            type: 'result',
+            subtype: 'error',
+            is_error: true,
+            result: codexQuotaMessage,
+            error: codexQuotaMessage,
+            exit_code: result.exitCode,
+            duration_ms: result.duration,
+            quota_limit: quotaLimitInfo
+          };
+          return {
+            content: JSON.stringify(structuredPayload),
+            metadata
+          };
+        }
+      }
+    }
+
     return { content: result.output, metadata: result.metadata as ToolExecutionMetadata | undefined };
+  }
+
+  /**
+   * Extract quota limit message from Codex stream output
+   * Codex outputs JSON events like:
+   * {"type": "error", "message": "You've hit your usage limit..."}
+   * {"type": "turn.failed", "error": {"message": "You've hit your usage limit..."}}
+   */
+  private extractCodexQuotaMessage(output: string, stderr?: string): string | null {
+    const sources = [output, stderr].filter(Boolean);
+
+    for (const source of sources) {
+      const lines = source!.split('\n').map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          // Check type=error events
+          if (parsed?.type === 'error' && parsed?.message) {
+            if (/you'?ve hit your usage limit/i.test(parsed.message)) {
+              return parsed.message;
+            }
+          }
+          // Check type=turn.failed events
+          if (parsed?.type === 'turn.failed' && parsed?.error?.message) {
+            if (/you'?ve hit your usage limit/i.test(parsed.error.message)) {
+              return parsed.error.message;
+            }
+          }
+        } catch {
+          // Not JSON, check as plain text
+          if (/you'?ve hit your usage limit/i.test(line)) {
+            return line;
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   /**

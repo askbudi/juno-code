@@ -205,6 +205,205 @@ describe('Quota Limit Detection', () => {
       expect(result.timezone).toBe('UTC');
     });
   });
+
+  describe('Codex quota limit detection', () => {
+    it('should detect Codex quota limit message with standard format', () => {
+      const message = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+      expect(result.originalMessage).toBe(message);
+      expect(result.resetTime).toBeDefined();
+      expect(result.sleepDurationMs).toBeDefined();
+    });
+
+    it('should identify source as codex for codex messages', () => {
+      const message = "You've hit your usage limit. try again at Jan 15th, 2026 11:30 PM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+    });
+
+    it('should identify source as claude for claude messages', () => {
+      const message = "You've hit your limit · resets 8pm (America/Toronto)";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('claude');
+    });
+
+    it('should parse Codex reset time with ordinal suffixes (st, nd, rd, th)', () => {
+      const cases = [
+        "You've hit your usage limit. try again at Jan 1st, 2026 5:00 AM.",
+        "You've hit your usage limit. try again at Feb 2nd, 2026 5:00 AM.",
+        "You've hit your usage limit. try again at Mar 3rd, 2026 5:00 AM.",
+        "You've hit your usage limit. try again at Apr 4th, 2026 5:00 AM.",
+      ];
+
+      for (const message of cases) {
+        const result = detectQuotaLimit(message);
+        expect(result.detected).toBe(true);
+        expect(result.resetTime).toBeDefined();
+        expect(result.source).toBe('codex');
+      }
+    });
+
+    it('should parse Codex reset time with PM hours correctly', () => {
+      // Set current time so the reset time is in the future
+      vi.setSystemTime(new Date('2026-02-03T20:00:00.000Z'));
+
+      const message = "You've hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.resetTime).toBeDefined();
+      // Reset is at Feb 4th 1:50 AM local time
+      expect(result.resetTime!.getMonth()).toBe(1); // February = month 1
+      expect(result.resetTime!.getDate()).toBe(4);
+      expect(result.resetTime!.getHours()).toBe(1);
+      expect(result.resetTime!.getMinutes()).toBe(50);
+    });
+
+    it('should handle Codex message with full month name', () => {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const message = "You've hit your usage limit. try again at February 4, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.resetTime).toBeDefined();
+      expect(result.source).toBe('codex');
+    });
+
+    it('should set timezone to local for Codex messages', () => {
+      const message = "You've hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.timezone).toBe('local');
+    });
+
+    it('should provide default sleep duration when Codex reset time cannot be parsed', () => {
+      const message = "You've hit your usage limit. Please wait.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.sleepDurationMs).toBe(5 * 60 * 1000); // 5 minutes default
+      expect(result.source).toBe('codex');
+    });
+
+    it('should handle Codex apostrophe variant', () => {
+      const message = "Youve hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+    });
+
+    it('should detect Codex quota limit case-insensitively', () => {
+      const message = "YOU'VE HIT YOUR USAGE LIMIT. try again at Feb 4th, 2026 1:50 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+    });
+
+    it('should handle Codex 12 PM correctly', () => {
+      vi.setSystemTime(new Date('2026-02-03T10:00:00.000Z'));
+
+      const message = "You've hit your usage limit. try again at Feb 4th, 2026 12:00 PM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.resetTime).toBeDefined();
+      expect(result.resetTime!.getHours()).toBe(12);
+      expect(result.resetTime!.getMinutes()).toBe(0);
+    });
+
+    it('should handle Codex 12 AM (midnight) correctly', () => {
+      vi.setSystemTime(new Date('2026-02-03T10:00:00.000Z'));
+
+      const message = "You've hit your usage limit. try again at Feb 4th, 2026 12:30 AM.";
+      const result = detectQuotaLimit(message);
+
+      expect(result.detected).toBe(true);
+      expect(result.resetTime).toBeDefined();
+      expect(result.resetTime!.getHours()).toBe(0);
+      expect(result.resetTime!.getMinutes()).toBe(30);
+    });
+
+    it('should detect from full Codex error event JSON', () => {
+      const codexErrorEvent = {
+        type: "error",
+        message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM."
+      };
+
+      const result = detectQuotaLimit(codexErrorEvent.message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+      expect(result.resetTime).toBeDefined();
+    });
+
+    it('should detect from Codex turn.failed event', () => {
+      const turnFailedEvent = {
+        type: "turn.failed",
+        error: {
+          message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM."
+        }
+      };
+
+      const result = detectQuotaLimit(turnFailedEvent.error.message);
+
+      expect(result.detected).toBe(true);
+      expect(result.source).toBe('codex');
+    });
+  });
+});
+
+describe('Codex Sleep Duration Calculation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('should calculate correct sleep duration for Codex reset time in the future', () => {
+    // Set current time to Feb 3, 2026 11:00 PM local time
+    vi.setSystemTime(new Date(2026, 1, 3, 23, 0, 0, 0));
+
+    const message = "You've hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+    const result = detectQuotaLimit(message);
+
+    expect(result.detected).toBe(true);
+    expect(result.sleepDurationMs).toBeDefined();
+
+    // From 11:00 PM to 1:50 AM = 2h 50m = 170 minutes = 10200000ms
+    const expectedMs = 2 * 60 * 60 * 1000 + 50 * 60 * 1000;
+    expect(result.sleepDurationMs!).toBeGreaterThan(expectedMs - 60000);
+    expect(result.sleepDurationMs!).toBeLessThan(expectedMs + 60000);
+  });
+
+  it('should wrap to next day when Codex reset time is in the past', () => {
+    // Set current time to Feb 4, 2026 3:00 AM (past the 1:50 AM reset)
+    vi.setSystemTime(new Date(2026, 1, 4, 3, 0, 0, 0));
+
+    const message = "You've hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+    const result = detectQuotaLimit(message);
+
+    expect(result.detected).toBe(true);
+    expect(result.sleepDurationMs).toBeDefined();
+
+    // Since 1:50 AM already passed, it should wrap to next day
+    // From 3:00 AM to 1:50 AM next day = 22h 50m
+    const expectedMs = 22 * 60 * 60 * 1000 + 50 * 60 * 1000;
+    expect(result.sleepDurationMs!).toBeGreaterThan(expectedMs - 60000);
+    expect(result.sleepDurationMs!).toBeLessThan(expectedMs + 60000);
+  });
 });
 
 describe('Sleep Duration Calculation', () => {
