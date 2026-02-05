@@ -27,10 +27,11 @@ class ClaudeService:
         ":claude-haiku-4-5": "claude-haiku-4-5-20251001",
         ":claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
         ":claude-opus-4-5": "claude-opus-4-5-20251101",
+        ":claude-opus-4-6": "claude-opus-4-6",
         ":claude-opus-4": "claude-opus-4-20250514",
         ":haiku": "claude-haiku-4-5-20251001",
         ":sonnet": "claude-sonnet-4-5-20250929",
-        ":opus": "claude-opus-4-5-20251101",
+        ":opus": "claude-opus-4-6",
     }
 
     # Default allowed tools (used with --append-allowed-tools)
