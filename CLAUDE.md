@@ -121,7 +121,7 @@ Bug report: App crashes on login
 - Issue #56: run_until_completion.sh task check - CANNOT REPRODUCE (awaiting user clarification)
 
 **Recent Resolutions (2026-02-03):**
-- Codex model resolution fix (Task: hDtS6Q, Commit: 5058e6c, Tag: v1.44.100) - Fixed codex defaulting to wrong model (sonnet-4-5 instead of gpt-5.2-codex) when -m flag not provided; added getDefaultModelForSubagent() in main.ts; updated init.ts to use :codex/:pro shorthands; all 1082 tests passing
+- Codex model resolution fix (Task: hDtS6Q, Commit: 5058e6c, Tag: v1.44.100) - Fixed codex defaulting to wrong model (sonnet-4-5 instead of gpt-5.3-codex) when -m flag not provided; added getDefaultModelForSubagent() in main.ts; updated init.ts to use :codex/:pro shorthands; all 1082 tests passing
 
 **Recent Resolutions (2025-12-13):**
 - Issue #58: run_until_completion.sh -i flag NaN validation fix - RESOLVED (added NaN validation in main.ts before fallback, changed `||` to `??`, completes partial fix from Issue #57, 1024 tests passing)

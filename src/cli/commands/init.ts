@@ -675,7 +675,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   private getDefaultModelForSubagent(subagent: string): string {
     const modelDefaults = {
       claude: ':sonnet',
-      codex: ':codex',   // Expands to gpt-5.2-codex in codex.py
+      codex: ':codex',   // Expands to gpt-5.3-codex in codex.py
       gemini: ':pro',    // Expands to gemini-2.5-pro in gemini.py
       cursor: 'auto'
     };

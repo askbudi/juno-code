@@ -946,7 +946,7 @@ describe('Model Compatibility', () => {
 
       it('should accept full model names (non-shorthand)', () => {
         expect(isModelCompatibleWithSubagent('claude-sonnet-4-5-20250929', 'claude')).toBe(true);
-        expect(isModelCompatibleWithSubagent('gpt-5.2-codex', 'claude')).toBe(true);
+        expect(isModelCompatibleWithSubagent('gpt-5.3-codex', 'claude')).toBe(true);
         expect(isModelCompatibleWithSubagent('custom-model', 'claude')).toBe(true);
       });
     });
@@ -972,7 +972,7 @@ describe('Model Compatibility', () => {
       });
 
       it('should accept full model names (non-shorthand)', () => {
-        expect(isModelCompatibleWithSubagent('gpt-5.2-codex', 'codex')).toBe(true);
+        expect(isModelCompatibleWithSubagent('gpt-5.3-codex', 'codex')).toBe(true);
         expect(isModelCompatibleWithSubagent('claude-sonnet-4-5-20250929', 'codex')).toBe(true);
       });
     });

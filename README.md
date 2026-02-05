@@ -487,7 +487,7 @@ The kanban.sh script wraps juno-kanban. Here are the actual commands:
 | Service | Default Model | Shorthands |
 |---------|---------------|------------|
 | claude | `claude-sonnet-4-5-20250929` | `:haiku`, `:sonnet`, `:opus` |
-| codex | `gpt-5.2-codex` | `:codex`, `:gpt-5`, `:mini` |
+| codex | `gpt-5.3-codex` | `:codex`, `:gpt-5`, `:mini` |
 | gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
 
 ### Custom Backends

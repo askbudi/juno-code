@@ -17,12 +17,12 @@ class CodexService:
     """Service wrapper for OpenAI Codex CLI"""
 
     # Default configuration
-    DEFAULT_MODEL = "gpt-5.2-codex"
+    DEFAULT_MODEL = "gpt-5.3-codex"
     DEFAULT_AUTO_INSTRUCTION = """You are an AI coding assistant. Follow the instructions provided and generate high-quality code."""
 
     # Model shorthand mappings (colon-prefixed names expand to full model IDs)
     MODEL_SHORTHANDS = {
-        ":codex": "gpt-5.2-codex",
+        ":codex": "gpt-5.3-codex",
         ":codex-mini": "gpt-5.1-codex-mini",
         ":gpt-5": "gpt-5",
         ":mini": "gpt-5-codex-mini",
@@ -71,10 +71,10 @@ Examples:
   %(prog)s -p "Write a hello world function"
   %(prog)s -pp prompt.txt --cd /path/to/project
   %(prog)s -p "Add tests" -m gpt-4 -c custom_arg=value
-  %(prog)s -p "Optimize code" -m :codex  # uses gpt-5.2-codex
+  %(prog)s -p "Optimize code" -m :codex  # uses gpt-5.3-codex
 
 Environment Variables:
-  CODEX_MODEL                Model name (supports shorthand, default: gpt-5.2-codex)
+  CODEX_MODEL                Model name (supports shorthand, default: gpt-5.3-codex)
   CODEX_HIDE_STREAM_TYPES    Comma-separated list of streaming msg types to hide
                              Default: turn_diff,token_count,exec_command_output_delta
   JUNO_CODE_HIDE_STREAM_TYPES Same as CODEX_HIDE_STREAM_TYPES (alias)
