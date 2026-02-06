@@ -37,6 +37,8 @@ export class ScriptInstaller {
     'github.py', // Unified GitHub integration (fetch, respond, sync)
     // Claude Code hooks (stored in hooks/ subdirectory)
     'hooks/session_counter.sh', // Session message counter hook for warning about long sessions
+    // Log scanning utility
+    'log_scanner.sh', // Scans log files for errors/exceptions and creates kanban bug reports
   ];
 
   /**

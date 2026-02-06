@@ -76,6 +76,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
       // Claude Code hooks
       await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
+      // Log scanning utility
+      await fs.writeFile(path.join(scriptsDir, 'log_scanner.sh'), '#!/bin/bash\necho "log_scanner"');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -148,6 +150,8 @@ describe('ScriptInstaller', () => {
         { name: 'github.py', installed: false },
         // Claude Code hooks
         { name: 'hooks/session_counter.sh', installed: false },
+        // Log scanning utility
+        { name: 'log_scanner.sh', installed: false },
       ]);
     });
 
@@ -171,6 +175,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
       // Claude Code hooks
       await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
+      // Log scanning utility
+      await fs.writeFile(path.join(scriptsDir, 'log_scanner.sh'), '#!/bin/bash\necho "log_scanner"');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -190,6 +196,8 @@ describe('ScriptInstaller', () => {
         { name: 'github.py', installed: true },
         // Claude Code hooks
         { name: 'hooks/session_counter.sh', installed: true },
+        // Log scanning utility
+        { name: 'log_scanner.sh', installed: true },
       ]);
     });
   });
