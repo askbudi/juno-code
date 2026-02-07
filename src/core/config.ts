@@ -159,6 +159,11 @@ export const JunoTaskConfigSchema = z.object({
     .optional()
     .describe('Default model to use for the subagent'),
 
+  // Project metadata
+  mainTask: z.string()
+    .optional()
+    .describe('Main task objective for the project'),
+
   // Logging settings
   logLevel: LogLevelSchema
     .describe('Logging level for the application'),

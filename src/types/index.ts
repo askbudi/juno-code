@@ -39,6 +39,9 @@ export interface JunoTaskConfig {
   defaultModel?: string;
   defaultBackend: BackendType;
 
+  // Project metadata
+  mainTask?: string;
+
   // Logging settings
   logLevel: LogLevel;
   logFile?: string;

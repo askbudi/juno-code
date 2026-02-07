@@ -580,6 +580,9 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       defaultMaxIterations: 50,
       defaultModel: this.getDefaultModelForSubagent(this.context.subagent || 'claude'),
 
+      // Project metadata
+      mainTask: this.context.task || "Project initialization",
+
       // Logging settings
       logLevel: 'info',
       verbose: false,
