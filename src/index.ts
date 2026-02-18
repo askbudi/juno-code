@@ -9,8 +9,6 @@ export * from './core/config';
 export * from './templates/default-hooks';
 export * from './core/engine';
 export * from './core/session';
-export * from './core/metrics';
-
 // Utility exports (excluding validateConfig to avoid conflicts)
 export * from './utils/environment';
 export * from './utils/hooks';

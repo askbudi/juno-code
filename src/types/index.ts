@@ -75,19 +75,6 @@ export interface JunoTaskConfig {
   skipHooks?: boolean;
 }
 
-// Re-export metrics types for convenience
-export type {
-  PerformanceTiming,
-  ToolCallMetrics,
-  SessionMetrics,
-  SystemMetrics,
-  ToolCallStatistics,
-  PerformanceRecommendation,
-  AnalyticsReport,
-  MetricsExportFormat,
-  MetricsExportOptions,
-} from '../core/metrics';
-
 // Global declarations for build-time constants
 declare global {
   const __VERSION__: string;
