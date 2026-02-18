@@ -16,7 +16,6 @@ import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
 import {
-  createMainCommand,
   mainCommandHandler
 } from '../commands/main.js';
 
@@ -82,10 +81,6 @@ vi.mock('../../core/session.js', () => ({
   })
 }));
 
-vi.mock('../../utils/environment.js', () => ({
-  isHeadlessEnvironment: vi.fn().mockReturnValue(false)
-}));
-
 vi.mock('fs-extra', () => ({
   pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
   readFile: vi.fn().mockResolvedValue('mock file content')
@@ -138,82 +133,6 @@ describe('Main Command', () => {
     consoleSpy.mockRestore();
     processExitSpy.mockRestore();
     processStdinSpy.mockRestore();
-  });
-
-  describe('createMainCommand', () => {
-    it('should create main command with correct structure', () => {
-      const command = createMainCommand();
-
-      expect(command.name).toBe('main');
-      expect(command.description).toContain('Execute subagents in a loop');
-      expect(command.options).toHaveLength(9); // Updated for --agents, --prompt-file option
-      expect(command.examples).toHaveLength(4);
-      expect(command.handler).toBe(mainCommandHandler);
-    });
-
-    it('should have required subagent option', () => {
-      const command = createMainCommand();
-      const subagentOption = command.options.find(opt => opt.flags.includes('--subagent'));
-
-      expect(subagentOption).toBeDefined();
-      expect(subagentOption?.required).toBe(true);
-      expect(subagentOption?.choices).toContain('claude');
-      expect(subagentOption?.choices).toContain('cursor');
-      expect(subagentOption?.choices).toContain('codex');
-      expect(subagentOption?.choices).toContain('gemini');
-    });
-
-    it('should have prompt option', () => {
-      const command = createMainCommand();
-      const promptOption = command.options.find(opt => opt.flags.includes('--prompt'));
-
-      expect(promptOption).toBeDefined();
-      expect(promptOption?.description).toContain('Prompt input');
-    });
-
-    it('should have prompt-file option', () => {
-      const command = createMainCommand();
-      const promptFileOption = command.options.find(opt => opt.flags.includes('--prompt-file'));
-
-      expect(promptFileOption).toBeDefined();
-      expect(promptFileOption?.description).toContain('Read prompt from a file');
-    });
-
-    it('should have working directory option', () => {
-      const command = createMainCommand();
-      const cwdOption = command.options.find(opt => opt.flags.includes('--cwd'));
-
-      expect(cwdOption).toBeDefined();
-      expect(cwdOption?.defaultValue).toBe(process.cwd());
-    });
-
-    it('should have max iterations option', () => {
-      const command = createMainCommand();
-      const maxIterOption = command.options.find(opt => opt.flags.includes('--max-iterations'));
-
-      expect(maxIterOption).toBeDefined();
-      // No hardcoded default - uses config.defaultMaxIterations (1)
-      expect(maxIterOption?.defaultValue).toBeUndefined();
-    });
-
-    it('should have interactive options', () => {
-      const command = createMainCommand();
-      const interactiveOption = command.options.find(opt => opt.flags.includes('--interactive'));
-      const interactivePromptOption = command.options.find(opt => opt.flags.includes('--interactive-prompt'));
-
-      expect(interactiveOption).toBeDefined();
-      expect(interactivePromptOption).toBeDefined();
-    });
-
-    it('should have examples', () => {
-      const command = createMainCommand();
-
-      expect(command.examples).toHaveLength(4);
-      expect(command.examples?.some(ex => ex.command.includes('claude'))).toBe(true);
-      expect(command.examples?.some(ex => ex.command.includes('cursor'))).toBe(true);
-      expect(command.examples?.some(ex => ex.command.includes('--interactive'))).toBe(true);
-      expect(command.examples?.some(ex => ex.command.includes('--interactive-prompt'))).toBe(true);
-    });
   });
 
   describe('mainCommandHandler', () => {

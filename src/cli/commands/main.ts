@@ -16,16 +16,13 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { createBackendManager, determineBackendType, getBackendDisplayName } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
-import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type {
-  MainCommandOptions,
-  CLICommand
+  MainCommandOptions
 } from '../types.js';
 import {
   ValidationError,
@@ -746,86 +743,6 @@ export async function mainCommandHandler(
 
     process.exit(99);
   }
-}
-
-/**
- * Create the main execution command according to specification
- */
-export function createMainCommand(): CLICommand {
-  return createCommand({
-    name: 'main',
-    description: 'Execute subagents in a loop with iterative prompt execution',
-    options: [
-      createOption({
-        flags: '-s, --subagent <type>',
-        description: 'Subagent to use',
-        required: true,
-        choices: ['claude', 'cursor', 'codex', 'gemini', 'pi', 'claude-code', 'claude_code', 'gemini-cli', 'cursor-agent', 'pi-agent'],
-        env: 'JUNO_CODE_SUBAGENT'
-      }),
-      createOption({
-        flags: '-p, --prompt <text|file>',
-        description: 'Prompt input (file path or inline text)',
-        env: 'JUNO_CODE_PROMPT'
-      }),
-      createOption({
-        flags: '-f, --prompt-file <path>',
-        description: 'Read prompt from a file (alternative to -p "$(cat file)")',
-        env: 'JUNO_CODE_PROMPT_FILE'
-      }),
-      createOption({
-        flags: '-w, --cwd <path>',
-        description: 'Working directory',
-        defaultValue: process.cwd(),
-        env: 'JUNO_CODE_CWD'
-      }),
-      createOption({
-        flags: '-i, --max-iterations <number>',
-        description: 'Maximum iterations (-1 for unlimited)',
-        env: 'JUNO_CODE_MAX_ITERATIONS'
-      }),
-      createOption({
-        flags: '-m, --model <name>',
-        description: 'Model to use (optional, subagent-specific)',
-        env: 'JUNO_CODE_MODEL'
-      }),
-      createOption({
-        flags: '--agents <config>',
-        description: 'Agents configuration (forwarded to shell backend, ignored for MCP)',
-        env: 'JUNO_CODE_AGENTS'
-      }),
-      createOption({
-        flags: '-I, --interactive',
-        description: 'Interactive mode for typing/pasting prompts',
-        defaultValue: false,
-        env: 'JUNO_CODE_INTERACTIVE'
-      }),
-      createOption({
-        flags: '--interactive-prompt',
-        description: 'Launch interactive prompt editor (readline)',
-        defaultValue: false
-      })
-    ],
-    examples: [
-      {
-        command: 'juno-code -s claude -p "Create a REST API"',
-        description: 'Execute task with Claude using inline prompt'
-      },
-      {
-        command: 'juno-code -s cursor -p ./task.md -i 3',
-        description: 'Execute task with Cursor using file prompt, max 3 iterations'
-      },
-      {
-        command: 'juno-code -s gemini --interactive',
-        description: 'Use interactive mode to enter prompt'
-      },
-      {
-        command: 'juno-code -s claude --interactive-prompt',
-        description: 'Use interactive prompt editor'
-      }
-    ],
-    handler: mainCommandHandler
-  });
 }
 
 // Export for testing

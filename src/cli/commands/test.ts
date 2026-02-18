@@ -14,7 +14,6 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
 import { createBackendManager } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
-import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
 import { ValidationError, ConfigurationError, FileSystemError } from '../types.js';
