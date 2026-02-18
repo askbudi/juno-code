@@ -68,7 +68,7 @@ describe('Configuration Module', () => {
     it('should validate valid configuration', () => {
       const validConfig: JunoTaskConfig = {
         defaultSubagent: 'claude',
-        defaultBackend: 'mcp',
+        defaultBackend: 'shell',
         defaultMaxIterations: 25,
         logLevel: 'debug',
         verbose: true,
@@ -219,38 +219,10 @@ describe('Configuration Module', () => {
       expect(config.mcpRetries).toBe(5);
     });
 
-    it('should parse numeric environment variables (JUNO_TASK backward compatibility)', () => {
-      process.env.JUNO_TASK_DEFAULT_MAX_ITERATIONS = '75';
-      process.env.JUNO_TASK_MCP_TIMEOUT = '45000';
-      process.env.JUNO_TASK_MCP_RETRIES = '5';
-
-      const loader = new ConfigLoader(tempDir);
-      loader.fromEnvironment();
-      const config = loader.merge();
-
-      expect(config.defaultMaxIterations).toBe(75);
-      expect(config.mcpTimeout).toBe(45000);
-      expect(config.mcpRetries).toBe(5);
-    });
-
     it('should parse string environment variables (JUNO_CODE)', () => {
       process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
       process.env.JUNO_CODE_LOG_LEVEL = 'debug';
       process.env.JUNO_CODE_WORKING_DIRECTORY = '/custom/path';
-
-      const loader = new ConfigLoader(tempDir);
-      loader.fromEnvironment();
-      const config = loader.merge();
-
-      expect(config.defaultSubagent).toBe('cursor');
-      expect(config.logLevel).toBe('debug');
-      expect(config.workingDirectory).toBe('/custom/path');
-    });
-
-    it('should parse string environment variables (JUNO_TASK backward compatibility)', () => {
-      process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
-      process.env.JUNO_TASK_WORKING_DIRECTORY = '/custom/path';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -283,19 +255,6 @@ describe('Configuration Module', () => {
       expect(config.defaultMaxIterations).toBe('not-a-number');
     });
 
-    it('should prefer JUNO_CODE over JUNO_TASK when both are set', () => {
-      process.env.JUNO_CODE_VERBOSE = 'true';
-      process.env.JUNO_TASK_VERBOSE = 'false';
-      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_TASK_DEFAULT_SUBAGENT = 'claude';
-
-      const loader = new ConfigLoader(tempDir);
-      loader.fromEnvironment();
-      const config = loader.merge();
-
-      expect(config.verbose).toBe(true);
-      expect(config.defaultSubagent).toBe('cursor');
-    });
   });
 
   describe('JSON configuration files', () => {

@@ -638,38 +638,6 @@ describe('onHourlyLimit Configuration', () => {
     }
   });
 
-  it('should load onHourlyLimit from JUNO_TASK_ON_HOURLY_LIMIT for backward compatibility', async () => {
-    // Set the legacy environment variable
-    const originalEnv = process.env.JUNO_TASK_ON_HOURLY_LIMIT;
-    const originalCodeEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
-
-    // Clear the new env var to test legacy fallback
-    delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
-    process.env.JUNO_TASK_ON_HOURLY_LIMIT = 'wait';
-
-    try {
-      const { ConfigLoader } = await import('../config.js');
-
-      const loader = new ConfigLoader();
-      loader.fromEnvironment();
-      const config = loader.merge();
-
-      expect(config.onHourlyLimit).toBe('wait');
-    } finally {
-      // Restore original env
-      if (originalEnv === undefined) {
-        delete process.env.JUNO_TASK_ON_HOURLY_LIMIT;
-      } else {
-        process.env.JUNO_TASK_ON_HOURLY_LIMIT = originalEnv;
-      }
-      if (originalCodeEnv === undefined) {
-        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
-      } else {
-        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalCodeEnv;
-      }
-    }
-  });
-
   it('should prioritize CLI option over environment variable', async () => {
     // Set the environment variable to 'raise'
     const originalEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;

@@ -32,7 +32,7 @@ import {
 } from './errors';
 import { executeHook } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
-import { BackendManager, type Backend, determineBackendType } from './backend-manager.js';
+import type { Backend } from './backend-manager.js';
 import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js';
 
 // =============================================================================
@@ -297,8 +297,7 @@ export interface ExecutionEngineConfig {
   /** Base configuration */
   readonly config: JunoTaskConfig;
 
-  /** Backend manager instance */
-  readonly backendManager: BackendManager;
+  /** No longer uses BackendManager; engine creates ShellBackend directly */
 
   /** Error recovery configuration */
   readonly errorRecovery: ErrorRecoveryConfig;
@@ -459,13 +458,7 @@ export const DEFAULT_PROGRESS_CONFIG: ProgressTrackingConfig = {
  *
  * @example
  * ```typescript
- * const engine = new ExecutionEngine({
- *   config: await loadConfig(),
- *   backendManager: new BackendManager(),
- *   errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
- *   rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
- *   progressConfig: DEFAULT_PROGRESS_CONFIG,
- * });
+ * const engine = createExecutionEngine(await loadConfig());
  *
  * const request: ExecutionRequest = {
  *   requestId: 'req-123',
@@ -484,6 +477,7 @@ export class ExecutionEngine extends EventEmitter {
   private readonly progressCallbacks: ProgressCallback[] = [];
   private readonly cleanupTasks: (() => Promise<void>)[] = [];
   private isShuttingDown = false;
+  private currentBackend: Backend | null = null;
 
   /**
    * Create a new ExecutionEngine instance
@@ -592,6 +586,12 @@ export class ExecutionEngine extends EventEmitter {
         ),
       ]);
 
+      // Clean up backend
+      if (this.currentBackend) {
+        await this.currentBackend.cleanup();
+        this.currentBackend = null;
+      }
+
       // Run cleanup tasks
       await Promise.all(this.cleanupTasks.map(task => task()));
 
@@ -653,18 +653,41 @@ export class ExecutionEngine extends EventEmitter {
   }
 
   /**
-   * Initialize backend for execution request
+   * Initialize backend for execution request.
+   * Directly creates and configures a ShellBackend (no factory indirection).
    */
   private async initializeBackend(request: ExecutionRequest): Promise<void> {
-    const backend = await this.engineConfig.backendManager.selectBackend({
-      type: request.backend,
-      config: this.engineConfig.config,
+    // Clean up existing backend if present
+    if (this.currentBackend) {
+      await this.currentBackend.cleanup();
+      this.currentBackend = null;
+    }
+
+    // Create ShellBackend directly
+    const { ShellBackend } = await import('./backends/shell-backend.js');
+    const backend = new ShellBackend();
+
+    // Configure
+    (backend as any).configure({
       workingDirectory: request.workingDirectory,
-      additionalOptions: {
-        sessionId: request.requestId,
-        timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout,
-      }
+      servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
+      debug: this.engineConfig.config.verbose,
+      timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout || 43200000,
+      enableJsonStreaming: true,
+      outputRawJson: this.engineConfig.config.verbose,
+      environment: process.env,
+      sessionId: request.requestId,
     });
+
+    // Initialize and check availability
+    await backend.initialize();
+
+    const isAvailable = await backend.isAvailable();
+    if (!isAvailable) {
+      throw new Error('Shell backend is not available. Ensure ~/.juno_code/services/ exists and contains service scripts.');
+    }
+
+    this.currentBackend = backend;
 
     // Set up progress tracking for the selected backend
     backend.onProgress(async (event: ProgressEvent) => {
@@ -986,7 +1009,10 @@ export class ExecutionEngine extends EventEmitter {
       };
 
     try {
-      const toolResult = await this.engineConfig.backendManager.execute(toolRequest);
+      if (!this.currentBackend) {
+        throw new Error('No backend initialized. Call initializeBackend() first.');
+      }
+      const toolResult = await this.currentBackend.execute(toolRequest);
 
       const iterationEnd = new Date();
       const duration = iterationEnd.getTime() - iterationStart.getTime();
@@ -1652,16 +1678,13 @@ interface ExecutionContext {
  * Create an execution engine with default configuration
  *
  * @param config - Base juno-task configuration
- * @param backendManager - Backend manager instance
  * @returns Configured execution engine
  */
 export function createExecutionEngine(
   config: JunoTaskConfig,
-  backendManager: BackendManager
 ): ExecutionEngine {
   return new ExecutionEngine({
     config,
-    backendManager,
     errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
     rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
     progressConfig: DEFAULT_PROGRESS_CONFIG,

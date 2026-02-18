@@ -26,7 +26,6 @@ import { configureSetupGitCommand } from '../cli/commands/setup-git.js';
 import { configureLogsCommand } from '../cli/commands/logs.js';
 import { configureViewLogCommand } from '../cli/commands/view-log.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
-import { setupConfigCommand } from '../cli/commands/config.js';
 import { createServicesCommand } from '../cli/commands/services.js';
 import { createSkillsCommand } from '../cli/commands/skills.js';
 import CompletionCommand from '../cli/commands/completion.js';
@@ -383,7 +382,7 @@ function setupAliases(program: Command): void {
 
 /**
  * Configure environment variable integration
- * Supports both JUNO_CODE_* and JUNO_TASK_* environment variables with priority for JUNO_CODE_*
+ * Supports JUNO_CODE_* environment variables
  */
 function configureEnvironment(): void {
   // New JUNO_CODE_* environment variables (priority)
@@ -401,23 +400,6 @@ function configureEnvironment(): void {
     'JUNO_CODE_MCP_TIMEOUT',
     'JUNO_CODE_NO_COLOR',
     'JUNO_CODE_ENABLE_FEEDBACK'
-  ];
-
-  // Legacy JUNO_TASK_* environment variables (backward compatibility)
-  const legacyEnvVars = [
-    'JUNO_TASK_SUBAGENT',
-    'JUNO_TASK_PROMPT',
-    'JUNO_TASK_CWD',
-    'JUNO_TASK_MAX_ITERATIONS',
-    'JUNO_TASK_MODEL',
-    'JUNO_TASK_LOG_FILE',
-    'JUNO_TASK_VERBOSE',
-    'JUNO_TASK_QUIET',
-    'JUNO_TASK_CONFIG',
-    'JUNO_TASK_MCP_SERVER_PATH',
-    'JUNO_TASK_MCP_TIMEOUT',
-    'JUNO_TASK_NO_COLOR',
-    'JUNO_TASK_ENABLE_FEEDBACK'
   ];
 
   // Helper function to process environment variables
@@ -444,21 +426,9 @@ function configureEnvironment(): void {
     return false;
   };
 
-  // Process new JUNO_CODE_* variables first (higher priority)
-  const processedOptions = new Set<string>();
+  // Process JUNO_CODE_* variables
   for (const envVar of newEnvVars) {
-    if (processEnvVar(envVar, 'juno_code_')) {
-      const option = envVar.toLowerCase().replace('juno_code_', '').replace(/_/g, '-');
-      processedOptions.add(option);
-    }
-  }
-
-  // Process legacy JUNO_TASK_* variables only if the option wasn't already set by JUNO_CODE_*
-  for (const envVar of legacyEnvVars) {
-    const option = envVar.toLowerCase().replace('juno_task_', '').replace(/_/g, '-');
-    if (!processedOptions.has(option)) {
-      processEnvVar(envVar, 'juno_task_');
-    }
+    processEnvVar(envVar, 'juno_code_');
   }
 
   // Handle JUNO_INTERACTIVE_FEEDBACK_MODE environment variable (user-requested alternative)
@@ -631,7 +601,6 @@ async function main(): Promise<void> {
   configureLogsCommand(program);
   configureViewLogCommand(program);
   configureHelpCommand(program);
-  setupConfigCommand(program);
   program.addCommand(createServicesCommand());
   program.addCommand(createSkillsCommand());
 
@@ -682,10 +651,6 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Collect feedback')}
   juno-code feedback --interactive
 
-  ${chalk.gray('# Manage configuration profiles')}
-  juno-code config list
-  juno-code config create development
-
   ${chalk.gray('# Setup Git repository')}
   juno-code setup-git https://github.com/askbudi/juno-code
 
@@ -699,9 +664,6 @@ ${chalk.blue.bold('Environment Variables:')}
   JUNO_CODE_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)
-
-  ${chalk.gray('Legacy variables (backward compatibility):')}
-  JUNO_TASK_*                     All JUNO_TASK_* variables still supported
 
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:

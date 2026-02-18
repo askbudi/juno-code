@@ -12,7 +12,6 @@ import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
-import { createBackendManager } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
 import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
@@ -338,9 +337,8 @@ Focus on ${request.intelligence === 'basic' ? 'basic functionality' :
       maxIterations: 3
     });
 
-    // Execute with backend manager (MCP backend by default)
-    const backendManager = createBackendManager();
-    const engine = createExecutionEngine(this.config, backendManager);
+    // Execute with shell backend
+    const engine = createExecutionEngine(this.config);
 
     engine.onProgress(async (event: ProgressEvent) => {
       this.progressDisplay.onProgress(event);
@@ -349,12 +347,10 @@ Focus on ${request.intelligence === 'basic' ? 'basic functionality' :
     try {
       const result = await engine.execute(executionRequest);
       await engine.shutdown();
-      await backendManager.cleanup();
 
       return result;
     } catch (error) {
       await engine.shutdown();
-      await backendManager.cleanup();
       throw error;
     }
   }

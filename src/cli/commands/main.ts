@@ -17,7 +17,6 @@ import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
-import { createBackendManager, determineBackendType, getBackendDisplayName } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
@@ -471,29 +470,13 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Determine backend type from request
-    const selectedBackend = determineBackendType(
-      request.backend,
-      process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
-      this.config.defaultBackend || 'shell'
-    );
-
     // Log backend selection if verbose
     if (this.config.verbose) {
-      console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
+      console.error(chalk.gray(`   Backend: Shell Scripts`));
     }
 
-    // Create backend manager with selected backend
-    const backendManager = createBackendManager({
-      defaultBackend: selectedBackend,
-      availableBackends: ['shell'],
-      backendConfigs: {
-        shell: {}
-      }
-    });
-
-    // Create execution engine
-    const engine = createExecutionEngine(this.config, backendManager);
+    // Create execution engine (backend is created internally)
+    const engine = createExecutionEngine(this.config);
 
     // Set up progress callback
     engine.onProgress(async (event: any) => {
@@ -547,7 +530,6 @@ class MainExecutionCoordinator {
       // Cleanup
       try {
         await engine.shutdown();
-        await backendManager.cleanup();
       } catch (cleanupError) {
         console.warn(chalk.yellow(`Warning: Cleanup error: ${cleanupError}`));
       }
@@ -619,17 +601,8 @@ export async function mainCommandHandler(
     const promptProcessor = new PromptProcessor(options);
     const instruction = await promptProcessor.processPrompt();
 
-    // Determine backend type from options, environment variable, or config default
-    const selectedBackend = determineBackendType(
-      options.backend,
-      process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
-      config.defaultBackend || 'shell'
-    );
-
-    // Log backend selection if verbose
-    if (options.verbose) {
-      console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
-    }
+    // Backend is always 'shell' (only backend type)
+    const selectedBackend = 'shell' as const;
 
     // Check if --allowed-tools and --append-allowed-tools are used together (mutually exclusive)
     if (options.allowedTools && options.appendAllowedTools) {

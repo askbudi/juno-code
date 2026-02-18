@@ -15,7 +15,7 @@ import { GitManager, GitUrlUtils, type GitRepositoryInfo } from '../../core/git.
 import type { SetupGitOptions, ValidationError, FileSystemError } from '../types.js';
 
 // Import environment detector for headless mode checks
-import { EnvironmentDetector } from '../utils/environment.js';
+import { isHeadlessEnvironment } from '../../utils/environment.js';
 
 /**
  * Interactive confirmation prompt
@@ -33,7 +33,7 @@ class InteractivePrompts {
    * Ask user for confirmation
    */
   static async confirm(prompt: ConfirmationPrompt): Promise<boolean> {
-    if (EnvironmentDetector.isHeadless()) {
+    if (isHeadlessEnvironment()) {
       return prompt.defaultAnswer ?? false;
     }
 
@@ -65,7 +65,7 @@ class InteractivePrompts {
    * Ask user for text input
    */
   static async input(question: string, defaultValue?: string): Promise<string> {
-    if (EnvironmentDetector.isHeadless()) {
+    if (isHeadlessEnvironment()) {
       return defaultValue || '';
     }
 

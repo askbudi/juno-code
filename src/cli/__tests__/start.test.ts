@@ -159,13 +159,6 @@ vi.mock('chalk', () => {
   };
 });
 
-vi.mock('../../core/backend-manager.js', () => ({
-  createBackendManager: vi.fn().mockReturnValue({
-    cleanup: vi.fn().mockResolvedValue(undefined)
-  }),
-  determineBackendType: vi.fn().mockReturnValue('mcp'),
-  getBackendDisplayName: vi.fn().mockReturnValue('MCP Backend')
-}));
 
 // Mock the start command handler by dynamically importing
 let startCommandHandler: any;
@@ -1087,13 +1080,6 @@ describe('Start Command', () => {
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
-        // Set up backend manager mock
-        const { createBackendManager } = await import('../../core/backend-manager.js');
-        const mockBackendManager = {
-          cleanup: vi.fn().mockResolvedValue(undefined)
-        };
-        vi.mocked(createBackendManager).mockReturnValueOnce(mockBackendManager);
-
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
@@ -1118,7 +1104,6 @@ describe('Start Command', () => {
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
           defaultBackend: 'mcp',
-    defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
@@ -1160,13 +1145,6 @@ describe('Start Command', () => {
           list: vi.fn().mockResolvedValue([])
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
-
-        // Set up backend manager mock
-        const { createBackendManager } = await import('../../core/backend-manager.js');
-        const mockBackendManager = {
-          cleanup: vi.fn().mockResolvedValue(undefined)
-        };
-        vi.mocked(createBackendManager).mockReturnValueOnce(mockBackendManager);
 
         const options: StartCommandOptions = {
           directory: '/project',

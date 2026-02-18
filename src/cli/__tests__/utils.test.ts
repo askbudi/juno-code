@@ -329,7 +329,7 @@ describe.skip('CLI Environment Utilities', () => {
 
   beforeAll(async () => {
     try {
-      environmentModule = await import('../utils/environment.js');
+      environmentModule = await import('../../utils/environment.js');
     } catch (e) {
       // Mock the module if it doesn't exist
       environmentModule = {

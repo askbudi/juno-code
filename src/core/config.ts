@@ -19,13 +19,12 @@ import type {
   HookType,
   Hook
 } from '../types/index';
-import type { ProfileManager } from './profiles.js';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 
 /**
  * Environment variable mapping for configuration options
  * All config options can be set via JUNO_CODE_* environment variables
- * Backward compatibility maintained for JUNO_TASK_* variables
+ * Uses JUNO_CODE_* environment variables
  */
 export const ENV_VAR_MAPPING = {
   // Core settings
@@ -62,44 +61,6 @@ export const ENV_VAR_MAPPING = {
 } as const;
 
 /**
- * Legacy environment variable mapping for backward compatibility
- * Maps old JUNO_TASK_* variables to the same config keys
- */
-export const LEGACY_ENV_VAR_MAPPING = {
-  // Core settings
-  JUNO_TASK_DEFAULT_SUBAGENT: 'defaultSubagent',
-  JUNO_TASK_DEFAULT_BACKEND: 'defaultBackend',
-  JUNO_TASK_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
-  JUNO_TASK_DEFAULT_MODEL: 'defaultModel',
-
-  // Logging settings
-  JUNO_TASK_LOG_LEVEL: 'logLevel',
-  JUNO_TASK_LOG_FILE: 'logFile',
-  JUNO_TASK_VERBOSE: 'verbose',
-  JUNO_TASK_QUIET: 'quiet',
-
-  // MCP settings
-  JUNO_TASK_MCP_TIMEOUT: 'mcpTimeout',
-  JUNO_TASK_MCP_RETRIES: 'mcpRetries',
-  JUNO_TASK_MCP_SERVER_PATH: 'mcpServerPath',
-  JUNO_TASK_MCP_SERVER_NAME: 'mcpServerName',
-
-  // Hook settings
-  JUNO_TASK_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
-
-  // Quota/hourly limit settings
-  JUNO_TASK_ON_HOURLY_LIMIT: 'onHourlyLimit',
-
-  // TUI settings
-  JUNO_TASK_INTERACTIVE: 'interactive',
-  JUNO_TASK_HEADLESS_MODE: 'headlessMode',
-
-  // Paths
-  JUNO_TASK_WORKING_DIRECTORY: 'workingDirectory',
-  JUNO_TASK_SESSION_DIRECTORY: 'sessionDirectory',
-} as const;
-
-/**
  * Zod schema for validating subagent types
  */
 const SubagentTypeSchema = z.enum(['claude', 'cursor', 'codex', 'gemini', 'pi']);
@@ -107,7 +68,7 @@ const SubagentTypeSchema = z.enum(['claude', 'cursor', 'codex', 'gemini', 'pi'])
 /**
  * Zod schema for validating backend types
  */
-const BackendTypeSchema = z.enum(['mcp', 'shell']);
+const BackendTypeSchema = z.enum(['shell']);
 
 /**
  * Zod schema for validating log levels
@@ -296,9 +257,9 @@ type ConfigFileFormat = 'json' | 'yaml' | 'toml' | 'js';
 
 /**
  * Configuration source types for precedence handling
- * Precedence order: cli > env > projectFile > file > profile > defaults
+ * Precedence order: cli > env > projectFile > file > defaults
  */
-type ConfigSource = 'defaults' | 'profile' | 'file' | 'projectFile' | 'env' | 'cli';
+type ConfigSource = 'defaults' | 'file' | 'projectFile' | 'env' | 'cli';
 
 /**
  * Utility function to resolve paths (relative to absolute)
@@ -341,26 +302,16 @@ function parseEnvValue(value: string): string | number | boolean {
 
 /**
  * Load configuration from environment variables
- * Maps JUNO_CODE_* environment variables to config properties with backward compatibility for JUNO_TASK_*
- * Prioritizes new JUNO_CODE_* variables over legacy JUNO_TASK_* variables
+ * Maps JUNO_CODE_* environment variables to config properties
  *
  * @returns Partial configuration from environment variables
  */
 function loadConfigFromEnv(): Partial<JunoTaskConfig> {
   const config: Partial<JunoTaskConfig> = {};
 
-  // First, load from new JUNO_CODE_* environment variables
   for (const [envVar, configKey] of Object.entries(ENV_VAR_MAPPING)) {
     const value = process.env[envVar];
     if (value !== undefined) {
-      (config as any)[configKey] = parseEnvValue(value);
-    }
-  }
-
-  // Then, load from legacy JUNO_TASK_* environment variables (only if not already set by new variables)
-  for (const [envVar, configKey] of Object.entries(LEGACY_ENV_VAR_MAPPING)) {
-    const value = process.env[envVar];
-    if (value !== undefined && (config as any)[configKey] === undefined) {
       (config as any)[configKey] = parseEnvValue(value);
     }
   }
@@ -650,26 +601,8 @@ export class ConfigLoader {
   }
 
   /**
-   * Load configuration from active profile
-   *
-   * @param profileManager - ProfileManager instance to load active profile from
-   * @returns This ConfigLoader instance for method chaining
-   */
-  async fromProfile(profileManager: ProfileManager): Promise<this> {
-    try {
-      const profileConfig = await profileManager.getActiveProfile();
-      this.configSources.set('profile', profileConfig);
-    } catch (error) {
-      // If profile loading fails, we continue without profile config
-      // This allows the system to work even if profiles are misconfigured
-      console.warn(`Warning: Failed to load active profile: ${error}`);
-    }
-    return this;
-  }
-
-  /**
    * Merge all configuration sources according to precedence
-   * CLI args > Environment Variables > Project Config > Global Config Files > Profile > Defaults
+   * CLI args > Environment Variables > Project Config > Global Config Files > Defaults
    *
    * @returns Merged configuration object
    */
@@ -678,7 +611,7 @@ export class ConfigLoader {
     const mergedConfig = { ...DEFAULT_CONFIG };
 
     // Apply sources in order of precedence (lowest to highest)
-    const sourcePrecedence: ConfigSource[] = ['profile', 'file', 'projectFile', 'env', 'cli'];
+    const sourcePrecedence: ConfigSource[] = ['file', 'projectFile', 'env', 'cli'];
 
     for (const source of sourcePrecedence) {
       const sourceConfig = this.configSources.get(source);
@@ -712,17 +645,11 @@ export class ConfigLoader {
    * Convenience method that performs auto-discovery and returns validated config
    *
    * @param cliConfig - Optional CLI configuration
-   * @param profileManager - Optional ProfileManager for profile support
    * @returns Promise resolving to validated configuration
    */
-  async loadAll(cliConfig?: Partial<JunoTaskConfig>, profileManager?: ProfileManager): Promise<JunoTaskConfig> {
+  async loadAll(cliConfig?: Partial<JunoTaskConfig>): Promise<JunoTaskConfig> {
     // Load from environment
     this.fromEnvironment();
-
-    // Load from active profile if available
-    if (profileManager) {
-      await this.fromProfile(profileManager);
-    }
 
     // Auto-discover configuration file
     await this.autoDiscoverFile();
@@ -816,67 +743,6 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
         needsUpdate = true;
       }
 
-      // Migration: Replace deprecated model names with current shorthands
-      // Users with old configs may have full model names or legacy aliases that should use shorthands
-      // Current models (as of 2026-02): Sonnet 4.6, Opus 4.6, Haiku 4.5
-      if (existingConfig.defaultModel) {
-        const deprecatedModelMap: Record<string, string> = {
-          // Claude Sonnet variants → :sonnet (current: claude-sonnet-4-6)
-          'sonnet': ':sonnet',
-          'sonnet-4': ':sonnet',
-          'sonnet-4-5': ':sonnet',
-          'sonnet-4-6': ':sonnet',
-          'claude-sonnet-4': ':sonnet',
-          'claude-sonnet-4-0': ':sonnet',          // API alias for Sonnet 4
-          'claude-sonnet-4-5': ':sonnet',           // API alias for Sonnet 4.5
-          'claude-sonnet-4-6': ':sonnet',           // Current Sonnet 4.6
-          'claude-sonnet-4-20250514': ':sonnet',    // Legacy Sonnet 4 pinned
-          'claude-sonnet-4-5-20250929': ':sonnet',  // Legacy Sonnet 4.5 pinned
-          'claude-3-5-sonnet-20241022': ':sonnet',  // Legacy 3.5 Sonnet
-          'claude-3-5-sonnet-latest': ':sonnet',
-          'claude-3-7-sonnet-20250219': ':sonnet',  // Legacy 3.7 Sonnet
-          'claude-3-7-sonnet-latest': ':sonnet',
-          // Claude Haiku variants → :haiku (current: claude-haiku-4-5-20251001)
-          'haiku': ':haiku',
-          'haiku-4': ':haiku',
-          'haiku-4-5': ':haiku',
-          'claude-haiku-4': ':haiku',
-          'claude-haiku-4-5': ':haiku',             // API alias for Haiku 4.5
-          'claude-haiku-4-5-20251001': ':haiku',    // Current Haiku 4.5 pinned
-          'claude-3-5-haiku-20241022': ':haiku',    // Legacy 3.5 Haiku
-          'claude-3-haiku-20240307': ':haiku',      // Legacy 3 Haiku
-          // Claude Opus variants → :opus (current: claude-opus-4-6)
-          'opus': ':opus',
-          'opus-4': ':opus',
-          'opus-4-1': ':opus',
-          'opus-4-5': ':opus',
-          'opus-4-6': ':opus',
-          'claude-opus-4': ':opus',
-          'claude-opus-4-0': ':opus',               // API alias for Opus 4
-          'claude-opus-4-1': ':opus',               // API alias for Opus 4.1
-          'claude-opus-4-5': ':opus',               // API alias for Opus 4.5
-          'claude-opus-4-6': ':opus',               // Current Opus 4.6
-          'claude-opus-4-20250514': ':opus',        // Legacy Opus 4 pinned
-          'claude-opus-4-1-20250805': ':opus',      // Legacy Opus 4.1 pinned
-          'claude-opus-4-5-20251101': ':opus',      // Legacy Opus 4.5 pinned
-          // Codex model names → :codex (current: gpt-5.3-codex)
-          'gpt-5': ':codex',
-          'gpt-5.3-codex': ':codex',
-          'gpt-5-codex-mini': ':codex-mini',
-          'gpt-5.1-codex-mini': ':codex-mini',
-          // Gemini model names → :pro/:flash
-          'gemini-2.5-pro': ':pro',
-          'gemini-2.5-flash': ':flash',
-          'gemini-3.0-pro': ':pro',
-          'gemini-3.0-flash': ':flash',
-        };
-        const replacement = deprecatedModelMap[existingConfig.defaultModel];
-        if (replacement) {
-          existingConfig.defaultModel = replacement;
-          needsUpdate = true;
-        }
-      }
-
       // Migration: Update defaultMaxIterations from old default (50) to new default (1)
       // Old configs created before v1.44.109 had defaultMaxIterations: 50
       if (existingConfig.defaultMaxIterations === 50) {
@@ -904,7 +770,6 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
  * @param options.baseDir - Base directory for relative path resolution
  * @param options.configFile - Specific configuration file to load
  * @param options.cliConfig - CLI configuration override
- * @param options.profileManager - ProfileManager for profile support
  * @returns Promise resolving to validated configuration
  *
  * @example
@@ -921,24 +786,17 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
  * const config = await loadConfig({
  *   cliConfig: { verbose: true, logLevel: 'debug' }
  * });
- *
- * // Load with profile support
- * const config = await loadConfig({
- *   profileManager: profileManagerInstance
- * });
  * ```
  */
 export async function loadConfig(options: {
   baseDir?: string;
   configFile?: string;
   cliConfig?: Partial<JunoTaskConfig>;
-  profileManager?: ProfileManager;
 } = {}): Promise<JunoTaskConfig> {
   const {
     baseDir = process.cwd(),
     configFile,
     cliConfig,
-    profileManager
   } = options;
 
   // Ensure hooks configuration exists in project config (auto-migration)
@@ -948,11 +806,6 @@ export async function loadConfig(options: {
 
   // Load from environment
   loader.fromEnvironment();
-
-  // Load from active profile if available
-  if (profileManager) {
-    await loader.fromProfile(profileManager);
-  }
 
   // Load from specific file or auto-discover
   if (configFile) {
@@ -981,8 +834,3 @@ export type ConfigLoadOptions = Parameters<typeof loadConfig>[0];
  */
 export type EnvVarMapping = typeof ENV_VAR_MAPPING;
 
-/**
- * Re-export ProfileManager and related types for convenience
- */
-export type { ProfileManager, ProfileConfig, ProfileMetadata } from './profiles.js';
-export { createProfileManager, ProfileError, ProfileNotFoundError, ProfileExistsError, CircularInheritanceError } from './profiles.js';

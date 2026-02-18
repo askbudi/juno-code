@@ -19,57 +19,27 @@ import {
 } from '../engine.js';
 import type {
   ToolCallResult,
-  MCPClient,
   ProgressEvent,
-  SessionContext,
 } from '../../types/execution.js';
 import type { JunoTaskConfig } from '../../types/index.js';
 
-// Minimal mock MCP client
-class MockMCPClient extends EventEmitter implements MCPClient {
-  connect = vi.fn().mockResolvedValue(undefined);
-  disconnect = vi.fn().mockResolvedValue(undefined);
-  callTool = vi.fn();
-  isConnected = vi.fn().mockReturnValue(true);
-  getConnectionState = vi.fn().mockReturnValue('connected' as const);
-  getRateLimitInfo = vi.fn().mockResolvedValue({
-    remaining: 100,
-    resetTime: new Date(Date.now() + 60000),
-  });
-  onProgress = vi.fn();
-}
-
-// Minimal mock backend that selectBackend returns
-class MockBackend {
-  onProgress = vi.fn().mockReturnValue(() => {});
-  configure = vi.fn();
-  initialize = vi.fn().mockResolvedValue(undefined);
-}
-
-// Mock backend manager that returns configurable results
-class MockBackendManager {
-  private _executeResult: ToolCallResult;
-  private _backend = new MockBackend();
-
-  constructor(result: Partial<ToolCallResult> = {}) {
-    this._executeResult = {
-      content: result.content ?? '{"type":"result","result":"ok"}',
-      status: result.status ?? 'completed',
-      startTime: new Date(),
-      endTime: new Date(),
-      duration: 100,
-      progressEvents: [],
-      request: {} as any,
-      ...result,
-    };
-  }
-
-  selectBackend = vi.fn().mockImplementation(async () => this._backend);
-  execute = vi.fn().mockImplementation(async () => this._executeResult);
-  cleanup = vi.fn().mockResolvedValue(undefined);
-  getAvailableBackends = vi.fn().mockReturnValue(['shell']);
-  getActiveBackend = vi.fn().mockReturnValue('shell');
-}
+// Mock the shell-backend module so the engine can create backends
+vi.mock('../backends/shell-backend.js', () => {
+  // The mock will be configured per-test via mockShellBackendExecute
+  return {
+    ShellBackend: vi.fn().mockImplementation(() => ({
+      type: 'shell',
+      name: 'Shell Backend',
+      configure: vi.fn(),
+      initialize: vi.fn().mockResolvedValue(undefined),
+      execute: vi.fn(),
+      cleanup: vi.fn().mockResolvedValue(undefined),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      onProgress: vi.fn().mockReturnValue(() => {}),
+    })),
+    formatDuration: vi.fn().mockReturnValue('0s'),
+  };
+});
 
 const createConfig = (): JunoTaskConfig => ({
   debug: false,
@@ -101,26 +71,39 @@ const createRequest = (overrides: Partial<ExecutionRequest> = {}): ExecutionRequ
   ...overrides,
 });
 
+/**
+ * Helper to configure the mocked ShellBackend's execute method.
+ * Must be called before engine.execute() to set up the desired behavior.
+ */
+async function configureMockBackend(executeFn: (...args: any[]) => Promise<ToolCallResult>) {
+  const { ShellBackend } = await import('../backends/shell-backend.js');
+  vi.mocked(ShellBackend).mockImplementation(() => ({
+    type: 'shell',
+    name: 'Shell Backend',
+    configure: vi.fn(),
+    initialize: vi.fn().mockResolvedValue(undefined),
+    execute: executeFn,
+    cleanup: vi.fn().mockResolvedValue(undefined),
+    isAvailable: vi.fn().mockResolvedValue(true),
+    onProgress: vi.fn().mockReturnValue(() => {}),
+  }) as any);
+}
+
 describe('Execution status determination', () => {
   let engine: ExecutionEngine;
-  let mockClient: MockMCPClient;
 
-  const createEngine = (backendManager: MockBackendManager) => {
-    mockClient = new MockMCPClient();
+  const createEngine = () => {
     const config: ExecutionEngineConfig = {
-      client: mockClient as unknown as MCPClient,
       config: createConfig(),
-      backendManager: backendManager as any,
       errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
-      rateLimit: DEFAULT_RATE_LIMIT_CONFIG,
-      progress: DEFAULT_PROGRESS_CONFIG,
+      rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
+      progressConfig: DEFAULT_PROGRESS_CONFIG,
     };
     return new ExecutionEngine(config);
   };
 
   it('should set status to FAILED when all iterations fail', async () => {
-    const backendManager = new MockBackendManager({
-      status: 'failed',
+    const failResult: ToolCallResult = {
       content: JSON.stringify({
         type: 'result',
         subtype: 'error',
@@ -129,9 +112,16 @@ describe('Execution status determination', () => {
         error: 'Error: No API key found',
         exit_code: 1,
       }),
+      status: 'failed',
+      startTime: new Date(),
+      endTime: new Date(),
+      duration: 100,
+      progressEvents: [],
+      request: {} as any,
       error: { type: 'shell_execution', message: 'Error: No API key found', timestamp: new Date() },
-    });
-    engine = createEngine(backendManager);
+    };
+    await configureMockBackend(vi.fn().mockResolvedValue(failResult));
+    engine = createEngine();
     const result = await engine.execute(createRequest({ maxIterations: 1 }));
 
     expect(result.status).toBe(ExecutionStatus.FAILED);
@@ -141,11 +131,9 @@ describe('Execution status determination', () => {
 
   it('should set status to COMPLETED when at least one iteration succeeds', async () => {
     let callCount = 0;
-    const backendManager = new MockBackendManager();
-    backendManager.execute = vi.fn().mockImplementation(async () => {
+    await configureMockBackend(vi.fn().mockImplementation(async () => {
       callCount++;
       if (callCount === 1) {
-        // First iteration fails
         return {
           content: '{"is_error":true}',
           status: 'failed',
@@ -157,7 +145,6 @@ describe('Execution status determination', () => {
           error: { type: 'shell_execution', message: 'fail', timestamp: new Date() },
         };
       }
-      // Second iteration succeeds
       return {
         content: '{"result":"ok"}',
         status: 'completed',
@@ -167,8 +154,8 @@ describe('Execution status determination', () => {
         progressEvents: [],
         request: {} as any,
       };
-    });
-    engine = createEngine(backendManager);
+    }));
+    engine = createEngine();
     const result = await engine.execute(createRequest({ maxIterations: 2 }));
 
     expect(result.status).toBe(ExecutionStatus.COMPLETED);
@@ -177,11 +164,16 @@ describe('Execution status determination', () => {
   });
 
   it('should set status to COMPLETED when all iterations succeed', async () => {
-    const backendManager = new MockBackendManager({
-      status: 'completed',
+    await configureMockBackend(vi.fn().mockResolvedValue({
       content: '{"result":"ok"}',
-    });
-    engine = createEngine(backendManager);
+      status: 'completed',
+      startTime: new Date(),
+      endTime: new Date(),
+      duration: 100,
+      progressEvents: [],
+      request: {} as any,
+    }));
+    engine = createEngine();
     const result = await engine.execute(createRequest({ maxIterations: 1 }));
 
     expect(result.status).toBe(ExecutionStatus.COMPLETED);
@@ -190,12 +182,17 @@ describe('Execution status determination', () => {
   });
 
   it('should set status to FAILED when multiple iterations all fail', async () => {
-    const backendManager = new MockBackendManager({
-      status: 'failed',
+    await configureMockBackend(vi.fn().mockResolvedValue({
       content: '{"is_error":true,"error":"crash"}',
+      status: 'failed',
+      startTime: new Date(),
+      endTime: new Date(),
+      duration: 100,
+      progressEvents: [],
+      request: {} as any,
       error: { type: 'shell_execution', message: 'crash', timestamp: new Date() },
-    });
-    engine = createEngine(backendManager);
+    }));
+    engine = createEngine();
     const result = await engine.execute(createRequest({ maxIterations: 3 }));
 
     expect(result.status).toBe(ExecutionStatus.FAILED);
@@ -204,12 +201,17 @@ describe('Execution status determination', () => {
   });
 
   it('should use exit code 1 when execution status is FAILED', async () => {
-    const backendManager = new MockBackendManager({
-      status: 'failed',
+    await configureMockBackend(vi.fn().mockResolvedValue({
       content: '{"is_error":true}',
+      status: 'failed',
+      startTime: new Date(),
+      endTime: new Date(),
+      duration: 100,
+      progressEvents: [],
+      request: {} as any,
       error: { type: 'shell_execution', message: 'fail', timestamp: new Date() },
-    });
-    engine = createEngine(backendManager);
+    }));
+    engine = createEngine();
     const result = await engine.execute(createRequest());
 
     // The exit code logic in main.ts: result.status === COMPLETED ? 0 : 1
