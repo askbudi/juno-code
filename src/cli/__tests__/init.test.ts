@@ -31,32 +31,6 @@ vi.mock('../../core/config.js', () => ({
   })
 }));
 
-vi.mock('../../templates/engine.js', () => ({
-  defaultTemplateEngine: {
-    getBuiltInTemplates: vi.fn().mockReturnValue([
-      { name: 'init.md', path: '/templates/init.md' },
-      { name: 'plan.md', path: '/templates/plan.md' },
-      { name: 'config.json', path: '/templates/config.json' }
-    ]),
-    createContext: vi.fn().mockResolvedValue({}),
-    generateFiles: vi.fn().mockResolvedValue({
-      files: [
-        { path: '.juno_task/init.md', status: 'created' },
-        { path: '.juno_task/plan.md', status: 'created' },
-        { path: '.juno_task/config.json', status: 'created' }
-      ],
-      summary: { created: 3, skipped: 0, errors: 0 }
-    })
-  },
-  TemplateUtils: {
-    createDefaultVariables: vi.fn().mockReturnValue({
-      PROJECT_NAME: 'test-project',
-      CURRENT_DATE: '2023-01-01',
-      TIMESTAMP: '2023-01-01T00:00:00.000Z'
-    })
-  }
-}));
-
 vi.mock('fs-extra', () => ({
   ensureDir: vi.fn(),
   pathExists: vi.fn(),
@@ -362,8 +336,8 @@ describe('Init Command', () => {
 
         await initCommandHandler([], options, mockCommand);
 
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        expect(defaultTemplateEngine.createContext).toHaveBeenCalled();
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
       });
     });
 
@@ -437,10 +411,10 @@ describe('Init Command', () => {
 
         await initCommandHandler([], options, mockCommand);
 
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        expect(defaultTemplateEngine.getBuiltInTemplates).toHaveBeenCalled();
-        expect(defaultTemplateEngine.createContext).toHaveBeenCalled();
-        expect(defaultTemplateEngine.generateFiles).toHaveBeenCalled();
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
+        // Template engine removed - init.ts uses inline template literals now
+        // Template engine removed - init.ts uses inline template literals now
       });
 
       it.skip('should create additional directories', async () => {
@@ -595,16 +569,8 @@ describe('Init Command', () => {
 
         await initCommandHandler([], options, mockCommand);
 
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        expect(defaultTemplateEngine.generateFiles).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.anything(),
-          expect.anything(),
-          expect.objectContaining({
-            force: true,
-            onConflict: 'overwrite'
-          })
-        );
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
       });
 
       it.skip('should fail without force when files exist', async () => {
@@ -638,11 +604,11 @@ describe('Init Command', () => {
       it.skip('should handle template errors', async () => {
         // SKIP: Test infrastructure issue - process.exit mock or fs mock setup
         // Production code works correctly (verified by USER_FEEDBACK.md)
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
+        // Template engine removed - init.ts now uses inline template literals
         const templateError = new Error('Template error');
         templateError.constructor.name = 'TemplateError';
         templateError.suggestions = ['Check template syntax'];
-        vi.mocked(defaultTemplateEngine.generateFiles).mockRejectedValueOnce(templateError);
+        // Template engine removed - init.ts uses inline template literals now
 
         const options: InitCommandOptions = {
           directory: undefined,
@@ -691,10 +657,8 @@ describe('Init Command', () => {
 
       it.skip('should handle unexpected errors', async () => {
         // SKIP: Test infrastructure issue with fs-extra mock default export
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        vi.mocked(defaultTemplateEngine.getBuiltInTemplates).mockImplementation(() => {
-          throw new Error('Unexpected error');
-        });
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
 
         const options: InitCommandOptions = {
           directory: undefined,
@@ -718,10 +682,8 @@ describe('Init Command', () => {
 
       it.skip('should show stack trace in verbose mode', async () => {
         // SKIP: Test infrastructure issue with fs-extra mock default export
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        vi.mocked(defaultTemplateEngine.getBuiltInTemplates).mockImplementation(() => {
-          throw new Error('Unexpected error');
-        });
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
 
         const options: InitCommandOptions = {
           directory: undefined,
@@ -761,15 +723,8 @@ describe('Init Command', () => {
 
         await initCommandHandler([], options, mockCommand);
 
-        const { defaultTemplateEngine } = await import('../../templates/engine.js');
-        expect(defaultTemplateEngine.createContext).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.stringContaining('test-project'),
-          expect.objectContaining({
-            includeGitInfo: true,
-            includeEnvironment: true
-          })
-        );
+        // Template engine removed - init.ts now uses inline template literals
+        // Template engine removed - init.ts uses inline template literals now
       });
 
       it.skip('should handle project name with special characters', async () => {

@@ -12,19 +12,21 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
-import { loadConfig } from '../../core/config.js';
 import { getDefaultHooks } from '../../templates/default-hooks.js';
 import type { InitCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
-import type { TemplateVariables } from '../../templates/types.js';
-import { TemplateEngine } from '../../templates/engine.js';
+
+/** Simple key-value variables for template interpolation */
+interface InitVariables {
+  readonly [key: string]: string | number | boolean | null | undefined;
+}
 
 interface InitializationContext {
   targetDirectory: string;
   task: string;
   subagent: string;
   gitUrl?: string;
-  variables: TemplateVariables;
+  variables: InitVariables;
   force: boolean;
   interactive: boolean;
 }
@@ -168,23 +170,17 @@ class SimpleInitTUI {
     task: string,
     editor: string,
     gitUrl?: string
-  ): TemplateVariables {
+  ): InitVariables {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
-    let AGENTMD = 'AGENTS.md';
-    if (editor == 'claude'){
-      AGENTMD = 'CLAUDE.md';
-    }
+    const agentMd = editor === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
 
     return {
-      // Core variables only
       PROJECT_NAME: projectName,
       TASK: task,
       EDITOR: editor,
-      AGENTMD:AGENTMD,
+      AGENTMD: agentMd,
       CURRENT_DATE: currentDate,
-
-      // Simple defaults
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',
       DESCRIPTION: task.substring(0, 200) + (task.length > 200 ? '...' : ''),
@@ -195,6 +191,7 @@ class SimpleInitTUI {
 
 /**
  * Simplified Project Generator - basic file creation only
+ * Uses direct template literals instead of a Handlebars template engine.
  */
 class SimpleProjectGenerator {
   constructor(private context: InitializationContext) {}
@@ -231,61 +228,28 @@ class SimpleProjectGenerator {
 
     console.log(chalk.blue('📄 Creating production-ready project files...'));
 
-    // Use templates from engine.ts instead of inline content
-    const templateEngine = new TemplateEngine();
-    const promptTemplate = templateEngine.getBuiltInTemplate('prompt.md');
-    const initTemplate = templateEngine.getBuiltInTemplate('init.md');
-    const implementTemplate = templateEngine.getBuiltInTemplate('implement.md');
+    // Derive template variables
+    const subagent = String(variables.EDITOR || 'claude');
+    const task = String(variables.TASK || '');
+    const gitUrl = String(variables.GIT_URL || 'Not specified');
+    const currentDate = String(variables.CURRENT_DATE || new Date().toISOString().split('T')[0]);
+    const venvPath = path.join(targetDirectory, '.venv_juno');
+    const agentDocFile = String(variables.AGENTMD || (subagent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
 
-    if (!promptTemplate || !initTemplate || !implementTemplate) {
-      throw new ValidationError(
-        'Required templates not found in engine.ts',
-        ['Ensure engine.ts contains prompt.md, init.md, and implement.md templates']
-      );
-    }
+    // Write prompt.md
+    await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), generatePromptContent(subagent, agentDocFile));
 
-    // Create template context for rendering
-    const templateContext = await templateEngine.createContext(
-      {
-        ...variables,
-        PROJECT_ROOT: targetDirectory,
-        PROJECT_PATH: targetDirectory,
-        VENV_PATH: path.join(targetDirectory, '.venv_juno'),
-        main_task: variables.TASK,
-        SUBAGENT: variables.EDITOR,
-        GIT_URL: variables.GIT_URL || 'Not specified',
-        TIMESTAMP: new Date().toISOString(),
-        AGENT_DOC_FILE: variables.AGENTMD || (variables.EDITOR === 'claude' ? 'CLAUDE.md' : 'AGENTS.md')
-      },
-      targetDirectory,
-      { includeGitInfo: false, includeEnvironment: false }
-    );
+    // Write init.md
+    await fs.writeFile(path.join(junoTaskDir, 'init.md'), generateInitContent(task, subagent, gitUrl));
 
-    // Render templates using engine
-    const promptContent = await templateEngine.render(promptTemplate, templateContext);
-    const initContent = await templateEngine.render(initTemplate, templateContext);
-    const implementContent = await templateEngine.render(implementTemplate, templateContext);
+    // Write implement.md
+    await fs.writeFile(path.join(junoTaskDir, 'implement.md'), generateImplementContent(currentDate, subagent));
 
-    // Write rendered template files
-    await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), promptContent);
-    await fs.writeFile(path.join(junoTaskDir, 'init.md'), initContent);
+    // Write USER_FEEDBACK.md
+    await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), generateUserFeedbackContent());
 
-    // Render and write implement.md
-    await fs.writeFile(path.join(junoTaskDir, 'implement.md'), implementContent);
-
-    // Get and render USER_FEEDBACK.md template
-    const userFeedbackTemplate = templateEngine.getBuiltInTemplate('USER_FEEDBACK.md');
-    if (userFeedbackTemplate) {
-      const userFeedbackContent = await templateEngine.render(userFeedbackTemplate, templateContext);
-      await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), userFeedbackContent);
-    }
-
-    // Get and render plan.md template
-    const planTemplate = templateEngine.getBuiltInTemplate('plan.md');
-    if (planTemplate) {
-      const planContent = await templateEngine.render(planTemplate, templateContext);
-      await fs.writeFile(path.join(junoTaskDir, 'plan.md'), planContent);
-    }
+    // Write plan.md (empty by design)
+    await fs.writeFile(path.join(junoTaskDir, 'plan.md'), '');
 
     // Create specs directory and files
     const specsDir = path.join(junoTaskDir, 'specs');
@@ -446,19 +410,17 @@ This project uses AI-assisted development with juno-code to achieve: ${variables
 
     await fs.writeFile(path.join(specsDir, 'architecture.md'), architectureContent);
 
-    // Get and render CLAUDE.md template from engine
-    const claudeTemplate = templateEngine.getBuiltInTemplate('CLAUDE.md');
-    if (claudeTemplate) {
-      const claudeContent = await templateEngine.render(claudeTemplate, templateContext);
-      await fs.writeFile(path.join(targetDirectory, 'CLAUDE.md'), claudeContent);
-    }
+    // Write CLAUDE.md
+    await fs.writeFile(
+      path.join(targetDirectory, 'CLAUDE.md'),
+      generateClaudeContent(subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+    );
 
-    // Get and render AGENTS.md template from engine
-    const agentsTemplate = templateEngine.getBuiltInTemplate('AGENTS.md');
-    if (agentsTemplate) {
-      const agentsContent = await templateEngine.render(agentsTemplate, templateContext);
-      await fs.writeFile(path.join(targetDirectory, 'AGENTS.md'), agentsContent);
-    }
+    // Write AGENTS.md
+    await fs.writeFile(
+      path.join(targetDirectory, 'AGENTS.md'),
+      generateAgentsContent(subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+    );
 
     // Create enhanced README.md in root
     const readmeContent = `# ${variables.PROJECT_NAME}
@@ -977,21 +939,16 @@ class SimpleHeadlessInit {
     task: string,
     editor: string,
     gitUrl?: string
-  ): TemplateVariables {
+  ): InitVariables {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
-
-    // Determine agent documentation file based on selected editor/subagent
-    let AGENTMD = 'AGENTS.md';
-    if (editor == 'claude'){
-      AGENTMD = 'CLAUDE.md';
-    }
+    const agentMd = editor === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
 
     return {
       PROJECT_NAME: projectName,
       TASK: task,
       EDITOR: editor,
-      AGENTMD: AGENTMD,
+      AGENTMD: agentMd,
       CURRENT_DATE: currentDate,
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',
@@ -1171,4 +1128,414 @@ Notes:
   - No prompt cost calculation or token counting
   - No character limits on task descriptions
     `);
+}
+
+// ---------------------------------------------------------------------------
+// Template content generators (replace Handlebars template engine)
+// ---------------------------------------------------------------------------
+
+function generateInitContent(task: string, subagent: string, gitUrl: string): string {
+  return `# Main Task
+${task}
+
+### Task 1
+First task is to study @.juno_task/plan.md  (it may be incorrect) and is to use up to 500 subagents to study existing project
+and study what is needed to achieve the main task.
+From that create/update a @.juno_task/plan.md  which is a bullet point list sorted in priority of the items which have yet to be implemeneted. Think extra hard.
+Study @.juno_task/plan.md to determine starting point for research and keep it up to date with items considered complete/incomplete using subagents.
+
+### Task 2
+Second Task is to understand the task, create a spec for process to follow, plan to execute, scripts to create, virtual enviroment that we need, things that we need to be aware of, how to test the scripts and follow progress.
+Think hard and plan/create spec for every step of this task
+and for each part create a seperate .md file under @.juno_task/spec/*
+
+## ULTIMATE Goal
+We want to achieve the main Task with respect to the Constraints section
+
+Part 1)
+Consider missing steps and plan. If the step is missing then author the specification at @.juno_task/spec/FILENAME.md (do NOT assume that it does not exist, search before creating). The naming of the module should be GenZ named and not conflict with another module name. If you create a new step then document the plan to implement in @.juno_task/plan.md
+
+
+Part 2) after completing the plan, and spec, create task for implementing each part on kanban './.juno_task/scripts/kanban.sh' You need to create a task for each step of implementation and testing. You need to go through the project, the spec and plan at the end to make sure you have covered all tasks on the kanban. We will later on implement tasks from kanban one by one.
+After completing the proccess an implementer agent would start the job and go through kanban tasks one by one.
+
+
+### Constraints
+**Preferred Subagent**: ${subagent}
+**Repository URL**: ${gitUrl}
+`;
+}
+
+function generatePromptContent(subagent: string, agentDocFile: string): string {
+  return `0a. study @.juno_task/implement.md.
+
+0b.  When you discover a syntax, logic, UI, User Flow Error or bug. Immediately update  Kanban with your findings using a ${subagent} subagent. When the issue is resolved, update Kanban.
+
+999. Important: When authoring documentation capture the why tests and the backing implementation is important.
+
+9999. Important: We want single sources of truth, no migrations/adapters. If tests unrelated to your work fail then it's your job to resolve these tests as part of the increment of change.
+
+999999. As soon as there are no build or test errors create a git tag. If there are no git tags start at 0.0.0 and increment patch by 1 for example 0.0.1 if 0.0.0 does not exist.
+
+999999999. You may add extra logging if required to be able to debug the issues.
+
+9999999999. ALWAYS KEEP Tasks up to date with your learnings using a ${subagent} subagent. Especially after wrapping up/finishing your turn.
+
+
+
+99999999999. When you learn something new about how to run the app or examples make sure you update @${agentDocFile} using a ${subagent} subagent but keep it brief. For example if you run commands multiple times before learning the correct command then that file should be updated.
+
+999999999999. IMPORTANT when you discover a bug resolve it using ${subagent} subagents even if it is unrelated to the current piece of work after documenting it in Tasks
+
+9999999999999999999. Keep @${agentDocFile} up to date with information on how to build the app and your learnings to optimize the build/test loop using a ${subagent} subagent.
+
+999999999999999999999. For any bugs you notice, it's important to resolve them or document them in Tasks to be resolved using a ${subagent} subagent.
+
+99999999999999999999999. When authoring the missing features you may author multiple standard libraries at once using up to 1000 parallel subagents
+
+99999999999999999999999999. When Tasks, ${agentDocFile} becomes large periodically clean out the items that are completed from the file using a ${subagent} subagent.
+Large ${agentDocFile} reduce the performance.
+
+
+
+9999999999999999999999999999. DO NOT IMPLEMENT PLACEHOLDER OR SIMPLE IMPLEMENTATIONS. WE WANT FULL IMPLEMENTATIONS. DO IT OR I WILL YELL AT YOU
+
+9999999999999999999999999999999. SUPER IMPORTANT DO NOT IGNORE. DO NOT PLACE STATUS REPORT UPDATES INTO @${agentDocFile}
+
+99999999999999999999999999999999. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the Tasks or @${agentDocFile} as resolved. You should update it to reflect that the issue is not resolved.
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
+Tasks , USER_FEEDBACK and @${agentDocFile} should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
+`;
+}
+
+function generateImplementContent(currentDate: string, subagent: string): string {
+  return `---
+description: Execute the implementation plan by processing and executing all tasks defined in Kanban
+---
+
+## User Input
+\`\`\`text
+A.
+**ALWAYS check remaing tasks and user feedbacks. Integrate it into the plan,
+this is the primary mechanism for user input and for you to track your progress.
+\`./.juno_task/scripts/kanban.sh list --limit 5\`
+return the most recent 5 Tasks and their status and potential agent response to them.
+
+**Important** ./.juno_task/scripts/kanban.sh has already installed in your enviroment and you can execute it in your bash.
+
+A-1.
+read @.juno_task/USER_FEEDBACK.md user feedback on your current execution will be writeen here. And will guide you. If user wants to talk to you while you are working , he will write into this file. first think you do is to read it file.
+
+B.
+Based on Items in **./.juno_task/scripts/kanban.sh** reflect on @.juno_task/plan.md and keep it up-to-date.
+0g. Entities and their status in **./.juno_task/scripts/kanban.sh** has higher priority and level of truth than other parts of the app.
+If you see user report a bug that you earlier marked as resolved, you need to investigate the issue again.
+./.juno_task/scripts/kanban.sh items has the higher level of truth. Always
+
+0e. Status in ./.juno_task/scripts/kanban.sh could be backlog, todo, in_progress, done.
+in_progress, todo, backlog. That is the priority of tasks in general sense, unless you find something with 10X magnitute of importance, or if you do it first it make other tasks easier or unnecessary.
+
+
+0f. After reviwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or Claude.md as resolved. You should update it to reflect that the issue is not resolved.
+\`./.juno_task/scripts/kanban.sh mark todo --ID {Task_ID}\`
+
+it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows
+   1.the issue is still open,
+   2. past approaches to resolve it, what it was, and know that it has failed.
+\`./.juno_task/scripts/kanban.sh mark todo --ID {Task_ID} --response "<PREVIOUS_AGENT_ATTEMP>{what happend before ...}<PREVIOUS_AGENT_ATTEMP>" \`
+
+   **Note** updating response will REPLACE response. So you need to include everything important from the past as well you can check the content of a task with
+   \`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
+
+
+
+C. Using parallel subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
+
+D. Choose the most important 1 things, ( Based on Open Issue  and Also Tasks ), Think hard about what is the most important Task.
+
+E. update status of most important task on ./.juno_task/scripts/kanban.sh.
+(if the task is not on ./.juno_task/scripts/kanban.sh, create it ! Kanban is our source of truth)
+\`./.juno_task/scripts/kanban.sh mark in_progress --ID {Task_ID}\`
+
+
+F. Implement the most important 1 thing following the outline.
+
+\`\`\`
+
+You **MUST** consider the user input before proceeding (if not empty).
+
+## Outline
+
+1. Run \`./.juno_task/scripts/kanban.sh list\` from repo root and check current project status.
+
+2. Load and analyze the implementation context:
+   - **REQUIRED**: Read Kanban for the complete task list and execution plan
+   - **REQUIRED**: Read plan.md for tech stack, architecture, and file structure
+   - **IF EXISTS**: Read data-model.md for entities and relationships
+   - **IF EXISTS**: Read contracts/ for API specifications and test requirements
+   - **IF EXISTS**: Read research.md for technical decisions and constraints
+   - **IF EXISTS**: Read quickstart.md for integration scenarios
+
+3. **Project Setup Verification**:
+   - **REQUIRED**: Create/verify ignore files based on actual project setup:
+
+   **Detection & Creation Logic**:
+   - Check if the following command succeeds to determine if the repository is a git repo (create/verify .gitignore if so):
+
+     \`\`\`sh
+     git rev-parse --git-dir 2>/dev/null
+     \`\`\`
+   - Check if Dockerfile* exists or Docker in plan.md → create/verify .dockerignore
+   - Check if .eslintrc* or eslint.config.* exists → create/verify .eslintignore
+   - Check if .prettierrc* exists → create/verify .prettierignore
+   - Check if .npmrc or package.json exists → create/verify .npmignore (if publishing)
+   - Check if terraform files (*.tf) exist → create/verify .terraformignore
+   - Check if .helmignore needed (helm charts present) → create/verify .helmignore
+
+   **If ignore file already exists**: Verify it contains essential patterns, append missing critical patterns only
+   **If ignore file missing**: Create with full pattern set for detected technology
+
+   **Common Patterns by Technology** (from plan.md tech stack):
+   - **Node.js/JavaScript**: \`node_modules/\`, \`dist/\`, \`build/\`, \`*.log\`, \`.env*\`
+   - **Python**: \`__pycache__/\`, \`*.pyc\`, \`.venv/\`, \`venv/\`, \`dist/\`, \`*.egg-info/\`
+   - **Java**: \`target/\`, \`*.class\`, \`*.jar\`, \`.gradle/\`, \`build/\`
+   - **C#/.NET**: \`bin/\`, \`obj/\`, \`*.user\`, \`*.suo\`, \`packages/\`
+   - **Go**: \`*.exe\`, \`*.test\`, \`vendor/\`, \`*.out\`
+   - **Universal**: \`.DS_Store\`, \`Thumbs.db\`, \`*.tmp\`, \`*.swp\`, \`.vscode/\`, \`.idea/\`
+
+   **Tool-Specific Patterns**:
+   - **Docker**: \`node_modules/\`, \`.git/\`, \`Dockerfile*\`, \`.dockerignore\`, \`*.log*\`, \`.env*\`, \`coverage/\`
+   - **ESLint**: \`node_modules/\`, \`dist/\`, \`build/\`, \`coverage/\`, \`*.min.js\`
+   - **Prettier**: \`node_modules/\`, \`dist/\`, \`build/\`, \`coverage/\`, \`package-lock.json\`, \`yarn.lock\`, \`pnpm-lock.yaml\`
+   - **Terraform**: \`.terraform/\`, \`*.tfstate*\`, \`*.tfvars\`, \`.terraform.lock.hcl\`
+
+5. Parse Kanban structure and extract:
+   - **Task phases**: Setup, Tests, Core, Integration, Polish
+   - **Task dependencies**: Sequential vs parallel execution rules
+   - **Task details**: ID, description, file paths, parallel markers [P]
+   - **Execution flow**: Order and dependency requirements
+
+6. Execute implementation following the task plan:
+   - **Phase-by-phase execution**: Complete each phase before moving to the next
+   - **Respect dependencies**: Run sequential tasks in order, parallel tasks [P] can run together
+   - **Follow TDD approach**: Execute test tasks before their corresponding implementation tasks
+   - **File-based coordination**: Tasks affecting the same files must run sequentially
+   - **Validation checkpoints**: Verify each phase completion before proceeding
+
+7. Implementation execution rules:
+   - **Setup first**: Initialize project structure, dependencies, configuration
+   - **Tests before code**: If you need to write tests for contracts, entities, and integration scenarios
+   - **Core development**: Implement models, services, CLI commands, endpoints
+   - **Integration work**: Database connections, middleware, logging, external services
+   - **Polish and validation**: Unit tests, performance optimization, documentation
+
+8. Progress tracking and error handling:
+   - Report progress after each completed task
+   - Halt execution if any non-parallel task fails
+   - For parallel tasks [P], continue with successful tasks, report failed ones
+   - Provide clear error messages with context for debugging
+   - Suggest next steps if implementation cannot proceed
+   - **IMPORTANT** For completed tasks, make sure to mark the task off as [X] in the tasks file.
+   - **IMPORTANT** Keep ./.juno_task/scripts/kanban.sh up-to-date
+   When the issue is resolved always update ./.juno_task/scripts/kanban.sh
+   \`./.juno_task/scripts/kanban.sh --status {status} --ID {task_id} --response "{key actions you take, and how you did test it}"\`
+
+9. Completion validation:
+   - Verify all required tasks are completed
+   - Check that implemented features match the original specification
+   - Validate that tests pass and coverage meets requirements
+   - Confirm the implementation follows the technical plan
+   - Report final status with summary of completed work
+   - When the issue is resolved always update ./.juno_task/scripts/kanban.sh
+   \` ./.juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}" \`
+
+10. Git
+
+   When the tests pass update ./.juno_task/scripts/kanban.sh, then add changed code with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
+   Use commit message as a backlog of what has achieved. So later on we would know exactly what we achieved in each commit.
+   Update the task in ./.juno_task/scripts/kanban.sh with the commit hash so later on we could map each task to a specific git commit
+   \`./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}\`
+
+
+
+Note: This command assumes a complete task breakdown exists in Kanban. If tasks are incomplete or missing, suggest running \`/tasks\` first to regenerate the task list.
+
+
+---
+*Last updated: ${currentDate}*
+*Primary subagent: ${subagent}*`;
+}
+
+function generateUserFeedbackContent(): string {
+  return `## User Feedback
+`;
+}
+
+function generateClaudeContent(
+  subagent: string, task: string, projectPath: string,
+  gitUrl: string, currentDate: string, venvPath: string
+): string {
+  return `# Claude Code Session Documentation
+
+## Current Project Configuration
+
+**Selected Coding Agent:** ${subagent}
+**Main Task:** ${task}
+**Project Path:** ${projectPath}
+**Git Repository:** ${gitUrl}
+**Configuration Date:** ${currentDate}
+
+## Kanban Task Management
+
+\`\`\`bash
+# List tasks
+./.juno_task/scripts/kanban.sh list --limit 5 --sort asc
+./.juno_task/scripts/kanban.sh list --status [backlog|todo|in_progress|done] --sort asc
+
+# Task operations
+./.juno_task/scripts/kanban.sh get {TASK_ID}
+./.juno_task/scripts/kanban.sh mark [in_progress|done|todo] --id {TASK_ID} --response "message"
+./.juno_task/scripts/kanban.sh update {TASK_ID} --commit {COMMIT_HASH}
+\`\`\`
+
+When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
+\`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
+
+When creating a task, relevant to another task, you can add the following format anywhere in the body of the task : \`[task_id]{Ref_TASK_ID}[/task_id]\` , using ref task id, help kanban organize dependecies between tasks better.
+
+Important: You need to get maximum 3 tasks done in one go.
+
+## Agent-Specific Instructions
+
+### ${subagent} Configuration
+- **Recommended Model:** Latest available model for ${subagent}
+- **Interaction Style:** Professional and detail-oriented
+- **Code Quality:** Focus on production-ready, well-documented code
+- **Testing:** Comprehensive unit and integration tests required
+
+## Build & Test Commands
+
+**Environment Setup:**
+\`\`\`bash
+# Activate virtual environment (if applicable)
+source ${venvPath}/bin/activate
+
+# Navigate to project
+cd ${projectPath}
+\`\`\`
+
+**Testing:**
+\`\`\`bash
+# Run tests
+python -m pytest tests/ -v
+
+# Run with coverage
+python -m pytest tests/ --cov=src --cov-report=term-missing
+\`\`\`
+
+**Development Notes:**
+- Keep this file updated with important learnings and optimizations
+- Document any environment-specific setup requirements
+- Record successful command patterns for future reference
+
+## Session History
+
+| Date | Agent | Task Summary | Status |
+|------|-------|--------------|---------|
+| ${currentDate} | ${subagent} | Project initialization | ✅ Completed |
+
+## Agent Performance Notes
+
+### ${subagent} Observations:
+- Initial setup: Successful
+- Code quality: To be evaluated
+- Test coverage: To be assessed
+- Documentation: To be reviewed
+
+*Note: Update this section with actual performance observations during development*`;
+}
+
+function generateAgentsContent(
+  subagent: string, task: string, projectPath: string,
+  gitUrl: string, currentDate: string, venvPath: string
+): string {
+  return `# AGENTS.md Session Documentation
+
+## Current Project Configuration
+
+**Selected Coding Agent:** ${subagent}
+**Main Task:** ${task}
+**Project Path:** ${projectPath}
+**Git Repository:** ${gitUrl}
+**Configuration Date:** ${currentDate}
+
+## Agent-Specific Instructions
+
+### ${subagent} Configuration
+- **Recommended Model:** Latest available model for ${subagent}
+- **Interaction Style:** Professional and detail-oriented
+- **Code Quality:** Focus on production-ready, well-documented code
+- **Testing:** Comprehensive unit and integration tests required
+
+## Kanban Task Management
+
+\`\`\`bash
+# List tasks
+./.juno_task/scripts/kanban.sh list --limit 5 --sort asc
+./.juno_task/scripts/kanban.sh list --status [backlog|todo|in_progress|done] --sort asc
+
+# Task operations
+./.juno_task/scripts/kanban.sh get {TASK_ID}
+./.juno_task/scripts/kanban.sh mark [in_progress|done|todo] --id {TASK_ID} --response "message"
+./.juno_task/scripts/kanban.sh update {TASK_ID} --commit {COMMIT_HASH}
+\`\`\`
+
+When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
+\`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
+
+
+When creating a task, relevant to another task, you can add the following format anywhere in the body of the task : \`[task_id]{Ref_TASK_ID}[/task_id]\` , using ref task id, help kanban organize dependecies between tasks better.
+
+Important: You need to get maximum 3 tasks done in one go.
+
+## Build & Test Commands
+
+**Environment Setup:**
+\`\`\`bash
+# Activate virtual environment (if applicable)
+source ${venvPath}/bin/activate
+
+# Navigate to project
+cd ${projectPath}
+\`\`\`
+
+**Testing:**
+\`\`\`bash
+# Run tests
+python -m pytest tests/ -v
+
+# Run with coverage
+python -m pytest tests/ --cov=src --cov-report=term-missing
+\`\`\`
+
+**Development Notes:**
+- Keep this file updated with important learnings and optimizations
+- Document any environment-specific setup requirements
+- Record successful command patterns for future reference
+
+## Session History
+
+| Date | Agent | Task Summary | Status |
+|------|-------|--------------|---------|
+| ${currentDate} | ${subagent} | Project initialization | ✅ Completed |
+
+## Agent Performance Notes
+
+### ${subagent} Observations:
+- Initial setup: Successful
+- Code quality: To be evaluated
+- Test coverage: To be assessed
+- Documentation: To be reviewed
+
+*Note: Update this section with actual performance observations during development*`;
 }
