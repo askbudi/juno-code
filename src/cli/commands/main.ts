@@ -23,7 +23,6 @@ import { createCommand, createOption } from '../framework.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { createBackendManager, determineBackendType, getBackendDisplayName } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
-import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { isHeadlessEnvironment as isHeadless } from '../../utils/environment.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
@@ -34,7 +33,6 @@ import type {
 import {
   ValidationError,
   ConfigurationError,
-  MCPError,
   FileSystemError
 } from '../types.js';
 import type { SubagentType, JunoTaskConfig } from '../../types/index.js';
@@ -525,7 +523,7 @@ class MainExecutionCoordinator {
     const selectedBackend = determineBackendType(
       request.backend,
       process.env.JUNO_CODE_AGENT || process.env.JUNO_CODE_BACKEND,
-      this.config.defaultBackend || 'mcp'
+      this.config.defaultBackend || 'shell'
     );
 
     // Log backend selection if verbose
@@ -536,9 +534,8 @@ class MainExecutionCoordinator {
     // Create backend manager with selected backend
     const backendManager = createBackendManager({
       defaultBackend: selectedBackend,
-      availableBackends: ['mcp', 'shell'],
+      availableBackends: ['shell'],
       backendConfigs: {
-        mcp: {},
         shell: {}
       }
     });
@@ -682,16 +679,6 @@ export async function mainCommandHandler(
       console.error(chalk.gray(`   Backend: ${getBackendDisplayName(selectedBackend)}`));
     }
 
-    // Check if --agents flag is used with non-shell backend
-    if (options.agents && selectedBackend !== 'shell') {
-      console.error(chalk.yellow('\n⚠️  Note: --agents flag is only supported with shell backend and will be ignored'));
-    }
-
-    // Check if --tools, --allowed-tools, --append-allowed-tools or --disallowed-tools flags are used with non-shell backend
-    if ((options.tools || options.allowedTools || options.appendAllowedTools || options.disallowedTools) && selectedBackend !== 'shell') {
-      console.error(chalk.yellow('\n⚠️  Note: --tools, --allowed-tools, --append-allowed-tools and --disallowed-tools flags are only supported with shell backend and will be ignored'));
-    }
-
     // Check if --allowed-tools and --append-allowed-tools are used together (mutually exclusive)
     if (options.allowedTools && options.appendAllowedTools) {
       console.error(chalk.red('\n❌ Error: --allowed-tools and --append-allowed-tools are mutually exclusive. Use one or the other.'));
@@ -791,20 +778,6 @@ export async function mainCommandHandler(
       }
 
       process.exit(5);
-    }
-
-    if (error instanceof MCPError) {
-      console.error(chalk.red.bold('\n❌ MCP Error'));
-      console.error(chalk.red(`   ${error.message}`));
-
-      if (error.suggestions?.length) {
-        console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
-          console.error(chalk.yellow(`   • ${suggestion}`));
-        });
-      }
-
-      process.exit(4);
     }
 
     // Unexpected error

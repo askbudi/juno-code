@@ -390,7 +390,7 @@ export function configureLogsCommand(program: Command): void {
     .description('View and manage application logs')
     .option('-i, --interactive', 'Launch interactive log viewer')
     .option('-l, --level <level>', 'Filter by log level (trace, debug, info, warn, error, fatal)')
-    .option('-c, --context <context>', 'Filter by context (cli, mcp, engine, session, template, config, performance, system)')
+    .option('-c, --context <context>', 'Filter by context (cli, engine, session, template, config, performance, system)')
     .option('-s, --search <term>', 'Search in log messages and data')
     .option('-t, --tail <number>', 'Number of recent entries to show', parseInt)
     .option('-f, --follow', 'Follow logs in real-time')
@@ -405,7 +405,7 @@ Examples:
   $ juno-code logs                                    # Show recent logs
   $ juno-code logs --interactive                      # Interactive log viewer
   $ juno-code logs --level error                      # Show only errors
-  $ juno-code logs --context mcp                      # Show only MCP logs
+  $ juno-code logs --context engine                    # Show only engine logs
   $ juno-code logs --search "connection"              # Search for connection logs
   $ juno-code logs --tail 100                         # Show last 100 entries
   $ juno-code logs --follow                           # Follow logs in real-time
@@ -434,7 +434,6 @@ Log Levels:
 
 Contexts:
   CLI             Command-line interface operations
-  MCP             Model Context Protocol operations
   ENGINE          Execution engine operations
   SESSION         Session management operations
   TEMPLATE        Template processing operations

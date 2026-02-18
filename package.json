@@ -46,8 +46,8 @@
     "build:copy-skills": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/skills'; const dest = 'dist/templates/skills'; fs.copySync(src, dest, { recursive: true });\"",
     "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755);\"",
     "build:watch": "tsup --watch",
-    "test": "vitest -c ./vitest.fast.config.ts",
-    "test:full": "vitest",
+    "test": "vitest run -c ./vitest.fast.config.ts",
+    "test:full": "vitest run",
     "test:tui": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
     "test:tui:preserve": "PRESERVE_TMP=1 RUN_TUI=1 vitest -c ./vitest.tui.config.ts run",
     "test:feedback": "RUN_TUI=1 vitest -c ./vitest.tui.config.ts run src/cli/__tests__/feedback-command-tui-execution.test.ts",
@@ -77,7 +77,6 @@
     "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.20.0",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^11.1.0",

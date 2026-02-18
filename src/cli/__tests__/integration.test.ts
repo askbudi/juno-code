@@ -81,14 +81,6 @@ vi.mock('../../core/session.js', () => ({
   })
 }));
 
-vi.mock('../../mcp/client.js', () => ({
-  createMCPClient: vi.fn().mockReturnValue({
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    execute: vi.fn()
-  })
-}));
-
 vi.mock('../../templates/engine.js', () => ({
   defaultTemplateEngine: {
     getBuiltInTemplates: vi.fn().mockReturnValue([
@@ -368,32 +360,8 @@ describe.skip('CLI Integration Tests', () => {
       expect(processExitSpy).toHaveBeenCalledWith(2);
     });
 
-    it('should handle MCP errors gracefully', async () => {
-      const { createMCPClient } = await import('../../mcp/client.js');
-      const mcpError = new Error('MCP connection failed');
-      mcpError.constructor.name = 'MCPError';
-
-      const mockClient = {
-        connect: vi.fn().mockRejectedValue(mcpError),
-        disconnect: vi.fn(),
-        execute: vi.fn()
-      };
-      vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
-
-      await expect(
-        framework.execute([
-          'main',
-          '--subagent', 'claude',
-          '--prompt', 'test'
-        ])
-      ).rejects.toThrow('process.exit called');
-
-      expect(processExitSpy).toHaveBeenCalledWith(4);
-    });
-
     it('should cleanup resources on errors', async () => {
       const { createExecutionEngine } = await import('../../core/engine.js');
-      const { createMCPClient } = await import('../../mcp/client.js');
 
       const mockEngine = {
         execute: vi.fn().mockRejectedValue(new Error('Execution failed')),
@@ -402,14 +370,7 @@ describe.skip('CLI Integration Tests', () => {
         shutdown: vi.fn()
       };
 
-      const mockClient = {
-        connect: vi.fn(),
-        disconnect: vi.fn(),
-        execute: vi.fn()
-      };
-
       vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
-      vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
 
       await expect(
         framework.execute([
@@ -419,7 +380,6 @@ describe.skip('CLI Integration Tests', () => {
         ])
       ).rejects.toThrow('process.exit called');
 
-      expect(mockClient.disconnect).toHaveBeenCalled();
       expect(mockEngine.shutdown).toHaveBeenCalled();
     });
   });
@@ -650,13 +610,10 @@ describe.skip('CLI Integration Tests', () => {
         '--prompt', 'test'
       ]);
 
-      const { createMCPClient } = await import('../../mcp/client.js');
       const { createExecutionEngine } = await import('../../core/engine.js');
 
-      const mcpClient = vi.mocked(createMCPClient).mock.results[0].value;
       const engine = vi.mocked(createExecutionEngine).mock.results[0].value;
 
-      expect(mcpClient.disconnect).toHaveBeenCalled();
       expect(engine.shutdown).toHaveBeenCalled();
     });
 
@@ -689,28 +646,5 @@ describe.skip('CLI Integration Tests', () => {
       expect(processExitSpy).toHaveBeenCalledWith(0);
     });
 
-    it('should handle memory cleanup warnings', async () => {
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-      const { createMCPClient } = await import('../../mcp/client.js');
-      const mockClient = {
-        connect: vi.fn(),
-        disconnect: vi.fn().mockRejectedValue(new Error('Cleanup warning')),
-        execute: vi.fn()
-      };
-      vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
-
-      await framework.execute([
-        'main',
-        '--subagent', 'claude',
-        '--prompt', 'test'
-      ]);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Cleanup warning')
-      );
-
-      consoleSpy.mockRestore();
-    });
   });
 });

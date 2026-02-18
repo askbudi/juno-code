@@ -22,7 +22,6 @@ export * from './recovery';
 export * from './system';
 export * from './validation';
 export * from './configuration';
-export * from './mcp';
 export * from './template';
 export * from './session';
 export * from './cli';

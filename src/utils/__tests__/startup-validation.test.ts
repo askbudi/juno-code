@@ -83,31 +83,10 @@ describe('startup-validation', () => {
   });
 
   describe('validateJSONConfigs', () => {
-    it('should pass validation for valid mcp.json', async () => {
-      const validMcpConfig = {
-        mcpServers: {
-          'test-server': {
-            name: 'test-server',
-            command: 'python',
-            args: ['server.py'],
-            timeout: 3600,
-            env: {
-              'TEST_VAR': 'test_value'
-            }
-          }
-        },
-        default_server: 'test-server',
-        global_settings: {
-          connection_timeout: 30.0
-        }
-      };
-
+    it('should pass validation when config.json is valid', async () => {
       vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockResolvedValue(undefined);
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return JSON.stringify(validMcpConfig);
-        }
         if (filePath.includes('config.json')) {
           return JSON.stringify({ defaultSubagent: 'claude' });
         }
@@ -118,38 +97,13 @@ describe('startup-validation', () => {
 
       expect(result.isValid).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.warnings).toHaveLength(0);
     });
 
-    it('should fail validation for missing required mcp.json', async () => {
-      vi.mocked(fs.pathExists).mockImplementation(async (filePath: string) => {
-        return !filePath.includes('mcp.json'); // mcp.json missing, config.json exists
-      });
-      vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('config.json')) {
-          return JSON.stringify({ defaultSubagent: 'claude' });
-        }
-        throw new Error('File not found');
-      });
-
-      const result = await validateJSONConfigs(testBaseDir);
-
-      expect(result.isValid).toBe(false);
-      const mcpError = result.errors.find(e => e.file === '.juno_task/mcp.json');
-      expect(mcpError).toBeDefined();
-      expect(mcpError?.type).toBe('missing_file');
-      expect(mcpError?.message).toContain('Required configuration file not found');
-    });
-
-    it('should handle JSON parse errors', async () => {
+    it('should handle JSON parse errors in config.json', async () => {
       vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return '{ invalid json }'; // Invalid JSON
-        }
-        return '{}';
+      vi.mocked(fs.readFile).mockImplementation(async () => {
+        return '{ invalid json }'; // Invalid JSON
       });
 
       const result = await validateJSONConfigs(testBaseDir);
@@ -160,68 +114,8 @@ describe('startup-validation', () => {
       expect(result.errors[0].message).toContain('Invalid JSON syntax');
     });
 
-    it('should detect missing required fields in mcp.json', async () => {
-      const invalidMcpConfig = {
-        mcpServers: {
-          'test-server': {
-            // Missing required fields: name, command, args
-            timeout: 3600
-          }
-        }
-        // Missing required field: default_server
-      };
-
-      vi.mocked(fs.pathExists).mockResolvedValue(true);
-      vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return JSON.stringify(invalidMcpConfig);
-        }
-        return '{}';
-      });
-
-      const result = await validateJSONConfigs(testBaseDir);
-
-      expect(result.isValid).toBe(false);
-      expect(result.errors.length).toBeGreaterThan(0);
-
-      const missingFieldErrors = result.errors.filter(e => e.message.includes('Missing required field'));
-      expect(missingFieldErrors.length).toBeGreaterThan(0);
-    });
-
-    it('should detect invalid default_server reference', async () => {
-      const invalidMcpConfig = {
-        mcpServers: {
-          'test-server': {
-            name: 'test-server',
-            command: 'python',
-            args: ['server.py']
-          }
-        },
-        default_server: 'nonexistent-server' // References a server that doesn't exist
-      };
-
-      vi.mocked(fs.pathExists).mockResolvedValue(true);
-      vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return JSON.stringify(invalidMcpConfig);
-        }
-        return '{}';
-      });
-
-      const result = await validateJSONConfigs(testBaseDir);
-
-      expect(result.isValid).toBe(false);
-      const defaultServerError = result.errors.find(e => e.message.includes('default_server'));
-      expect(defaultServerError).toBeDefined();
-      expect(defaultServerError?.message).toContain('not found in mcpServers');
-    });
-
     it('should handle permission errors', async () => {
-      vi.mocked(fs.pathExists).mockImplementation(async (filePath: string) => {
-        return filePath.includes('mcp.json'); // Only mcp.json exists
-      });
+      vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockRejectedValue(new Error('Permission denied'));
 
       const result = await validateJSONConfigs(testBaseDir);
@@ -238,15 +132,10 @@ describe('startup-validation', () => {
         defaultMaxIterations: 'invalid'    // Wrong type
       };
 
-      vi.mocked(fs.pathExists).mockImplementation(async (filePath: string) => {
-        return filePath.includes('config.json'); // Only config.json exists
-      });
+      vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('config.json')) {
-          return JSON.stringify(unusualConfig);
-        }
-        return '{}';
+      vi.mocked(fs.readFile).mockImplementation(async () => {
+        return JSON.stringify(unusualConfig);
       });
 
       const result = await validateJSONConfigs(testBaseDir);
@@ -257,27 +146,7 @@ describe('startup-validation', () => {
     });
 
     it('should handle missing optional config.json gracefully', async () => {
-      const validMcpConfig = {
-        mcpServers: {
-          'test-server': {
-            name: 'test-server',
-            command: 'python',
-            args: ['server.py']
-          }
-        },
-        default_server: 'test-server'
-      };
-
-      vi.mocked(fs.pathExists).mockImplementation(async (filePath: string) => {
-        return filePath.includes('mcp.json'); // Only mcp.json exists
-      });
-      vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return JSON.stringify(validMcpConfig);
-        }
-        throw new Error('File not found');
-      });
+      vi.mocked(fs.pathExists).mockResolvedValue(false);
 
       const result = await validateJSONConfigs(testBaseDir);
 
@@ -305,7 +174,7 @@ describe('startup-validation', () => {
       const result: ValidationResult = {
         isValid: false,
         errors: [{
-          file: '.juno_task/mcp.json',
+          file: '.juno_task/config.json',
           type: 'parse_error',
           message: 'Invalid JSON syntax',
           suggestions: ['Check for missing commas', 'Use a JSON validator']
@@ -344,7 +213,7 @@ describe('startup-validation', () => {
       const result: ValidationResult = {
         isValid: false,
         errors: [{
-          file: '.juno_task/mcp.json',
+          file: '.juno_task/config.json',
           type: 'parse_error',
           message: 'Invalid JSON syntax',
           details: 'Unexpected token at position 5',
@@ -385,24 +254,10 @@ describe('startup-validation', () => {
 
   describe('validateStartupConfigs', () => {
     it('should return true for valid configuration', async () => {
-      const validMcpConfig = {
-        mcpServers: {
-          'test-server': {
-            name: 'test-server',
-            command: 'python',
-            args: ['server.py']
-          }
-        },
-        default_server: 'test-server'
-      };
-
       vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-        if (filePath.includes('mcp.json')) {
-          return JSON.stringify(validMcpConfig);
-        }
-        return '{}';
+      vi.mocked(fs.readFile).mockImplementation(async () => {
+        return JSON.stringify({ defaultSubagent: 'claude' });
       });
 
       const result = await validateStartupConfigs(testBaseDir, false);
@@ -412,16 +267,14 @@ describe('startup-validation', () => {
     });
 
     it('should return false for invalid configuration', async () => {
-      vi.mocked(fs.pathExists).mockResolvedValue(false); // Missing required mcp.json
-
-      // Mock process.argv to include -b mcp flag (since default is now shell, which doesn't require mcp.json)
-      const originalArgv = process.argv;
-      process.argv = ['node', 'test', '-b', 'mcp'];
+      // config.json exists but has invalid JSON
+      vi.mocked(fs.pathExists).mockResolvedValue(true);
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.readFile).mockImplementation(async () => {
+        return '{ invalid json }';
+      });
 
       const result = await validateStartupConfigs(testBaseDir, false);
-
-      // Restore original argv
-      process.argv = originalArgv;
 
       expect(result).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Configuration validation failed'));
@@ -437,14 +290,9 @@ describe('startup-validation', () => {
     });
 
     it('should show verbose output when requested', async () => {
-      const validConfig = {
-        mcpServers: { 'test': { name: 'test', command: 'python', args: ['test.py'] } },
-        default_server: 'test'
-      };
-
       vi.mocked(fs.pathExists).mockResolvedValue(true);
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(validConfig));
+      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ defaultSubagent: 'claude' }));
 
       await validateStartupConfigs(testBaseDir, true);
 

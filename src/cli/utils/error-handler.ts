@@ -6,8 +6,8 @@
  */
 
 import chalk from 'chalk';
-import type {
-  CLIError,
+import {
+  type CLIError,
   ValidationError,
   ConfigurationError,
   CommandNotFoundError,
@@ -15,7 +15,7 @@ import type {
   FileSystemError,
   SessionError,
   TemplateError,
-  EXIT_CODES
+  type EXIT_CODES
 } from '../types.js';
 
 // ============================================================================

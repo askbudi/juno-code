@@ -3,7 +3,7 @@
  *
  * This module provides the main execution orchestration engine that manages
  * the entire workflow for AI task execution, including session management,
- * MCP client integration, progress tracking, error handling, and cancellation.
+ * backend integration, progress tracking, error handling, and cancellation.
  *
  * The implementation closely matches the Python budi-cli execution patterns,
  * including rate limit handling, iteration logic, and progress tracking.
@@ -20,7 +20,6 @@ import type {
   BackendType,
 } from '../types/index';
 import type {
-  MCPClient,
   ProgressEvent,
   ProgressCallback,
   ToolCallRequest,
@@ -462,7 +461,7 @@ export const DEFAULT_PROGRESS_CONFIG: ProgressTrackingConfig = {
  * ```typescript
  * const engine = new ExecutionEngine({
  *   config: await loadConfig(),
- *   mcpClient: new MCPClientImpl(mcpConfig),
+ *   backendManager: new BackendManager(),
  *   errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
  *   rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
  *   progressConfig: DEFAULT_PROGRESS_CONFIG,
@@ -557,7 +556,7 @@ export class ExecutionEngine extends EventEmitter {
    * @returns Current rate limit status
    */
   async getRateLimitInfo(): Promise<RateLimitInfo> {
-    // Implementation would query MCP client for rate limit status
+    // Implementation would query backend for rate limit status
     return {
       isRateLimited: false,
       remaining: 100,
@@ -661,7 +660,6 @@ export class ExecutionEngine extends EventEmitter {
       type: request.backend,
       config: this.engineConfig.config,
       workingDirectory: request.workingDirectory,
-      mcpServerName: request.mcpServerName || this.engineConfig.config.mcpServerName,
       additionalOptions: {
         sessionId: request.requestId,
         timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout,

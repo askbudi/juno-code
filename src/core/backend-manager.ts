@@ -1,8 +1,8 @@
 /**
  * Backend Manager for juno-code
  *
- * Manages backend selection and execution between MCP and shell backends.
- * Supports both MCP servers and shell scripts in ~/.juno_code/services/
+ * Manages the shell backend for executing subagent service scripts
+ * located in ~/.juno_code/services/
  */
 
 import type { JunoTaskConfig, SubagentType } from '../types/index.js';
@@ -13,9 +13,9 @@ import type { ProgressEvent, ProgressCallback, ToolCallRequest, ToolCallResult }
 // =============================================================================
 
 /**
- * Supported backend types
+ * Supported backend types (shell only after MCP removal)
  */
-export type BackendType = 'mcp' | 'shell';
+export type BackendType = 'shell';
 
 /**
  * Backend interface that all backends must implement
@@ -56,9 +56,6 @@ export interface BackendOptions {
   /** Working directory */
   workingDirectory: string;
 
-  /** Optional MCP server name (for MCP backend) */
-  mcpServerName?: string;
-
   /** Additional backend-specific options */
   additionalOptions?: Record<string, any>;
 }
@@ -74,7 +71,7 @@ export interface BackendManagerConfig {
   availableBackends: BackendType[];
 
   /** Backend-specific configuration */
-  backendConfigs: Record<BackendType, any>;
+  backendConfigs: Record<string, any>;
 }
 
 // =============================================================================
@@ -96,12 +93,6 @@ export class BackendManager {
    * Register available backend implementations
    */
   private registerBackends(): void {
-    // MCP backend factory
-    this.availableBackends.set('mcp', async () => {
-      const { MCPBackend } = await import('./backends/mcp-backend.js');
-      return new MCPBackend();
-    });
-
     // Shell backend factory
     this.availableBackends.set('shell', async () => {
       const { ShellBackend } = await import('./backends/shell-backend.js');
@@ -128,31 +119,18 @@ export class BackendManager {
     const backendFactory = this.availableBackends.get(options.type)!;
     const backend = await backendFactory();
 
-    // Configure backend based on type
-    if (options.type === 'mcp') {
-      const mcpBackend = backend as any;
-      mcpBackend.configure({
-        serverName: options.mcpServerName || options.config.mcpServerPath,
-        workingDirectory: options.workingDirectory,
-        timeout: options.config.mcpTimeout,
-        retries: options.config.mcpRetries,
-        debug: options.config.verbose,
-        enableProgressStreaming: true,
-        ...options.additionalOptions
-      });
-    } else if (options.type === 'shell') {
-      const shellBackend = backend as any;
-      shellBackend.configure({
-        workingDirectory: options.workingDirectory,
-        servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
-        debug: options.config.verbose,
-        timeout: options.config.mcpTimeout || 43200000, // 12 hours default
-        enableJsonStreaming: true,
-        outputRawJson: options.config.verbose, // Output full JSON in verbose mode
-        environment: process.env,
-        ...options.additionalOptions
-      });
-    }
+    // Configure shell backend
+    const shellBackend = backend as any;
+    shellBackend.configure({
+      workingDirectory: options.workingDirectory,
+      servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
+      debug: options.config.verbose,
+      timeout: options.config.mcpTimeout || 43200000, // 12 hours default
+      enableJsonStreaming: true,
+      outputRawJson: options.config.verbose, // Output full JSON in verbose mode
+      environment: process.env,
+      ...options.additionalOptions
+    });
 
     // Initialize the backend
     await backend.initialize();
@@ -197,14 +175,11 @@ export class BackendManager {
       const factory = this.availableBackends.get(type)!;
       const backend = await factory();
 
-      // For shell backend, check if services directory exists
-      if (type === 'shell') {
-        const shellBackend = backend as any;
-        shellBackend.configure({
-          servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
-          workingDirectory: process.cwd()
-        });
-      }
+      const shellBackend = backend as any;
+      shellBackend.configure({
+        servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
+        workingDirectory: process.cwd()
+      });
 
       const available = await backend.isAvailable();
       await backend.cleanup();
@@ -248,53 +223,50 @@ export class BackendManager {
 // =============================================================================
 
 /**
- * Determine backend type from environment variable or CLI argument
+ * Determine backend type from environment variable or CLI argument.
+ * Always returns 'shell' since MCP has been removed.
  */
 export function determineBackendType(
   cliBackend?: string,
   envVariable?: string,
-  defaultType: BackendType = 'mcp'
+  defaultType: BackendType = 'shell'
 ): BackendType {
-  // CLI argument takes precedence
+  // Accept 'shell' or legacy 'mcp' (map to shell)
   if (cliBackend) {
     const normalized = cliBackend.toLowerCase().trim();
-    if (normalized === 'mcp' || normalized === 'shell') {
-      return normalized as BackendType;
+    if (normalized === 'shell') {
+      return 'shell';
     }
-    throw new Error(`Invalid backend type: ${cliBackend}. Use 'mcp' or 'shell'.`);
+    if (normalized === 'mcp') {
+      // Legacy: silently map MCP to shell
+      return 'shell';
+    }
+    throw new Error(`Invalid backend type: ${cliBackend}. Use 'shell'.`);
   }
 
-  // Environment variable is second priority
   if (envVariable) {
     const normalized = envVariable.toLowerCase().trim();
-    if (normalized === 'mcp' || normalized === 'shell') {
-      return normalized as BackendType;
+    if (normalized === 'shell' || normalized === 'mcp') {
+      return 'shell';
     }
-    console.warn(`Invalid JUNO_CODE_AGENT value: ${envVariable}. Using default: ${defaultType}`);
+    console.warn(`Invalid JUNO_CODE_AGENT value: ${envVariable}. Using default: shell`);
   }
 
-  return defaultType;
+  return 'shell';
 }
 
 /**
  * Validate backend type string
  */
 export function isValidBackendType(type: string): type is BackendType {
-  return type === 'mcp' || type === 'shell';
+  return type === 'shell';
 }
 
 /**
  * Get backend display name
  */
 export function getBackendDisplayName(type: BackendType): string {
-  switch (type) {
-    case 'mcp':
-      return 'MCP (Model Context Protocol)';
-    case 'shell':
-      return 'Shell Scripts';
-    default:
-      return type;
-  }
+  return 'Shell Scripts';
 }
 
 /**
@@ -302,14 +274,9 @@ export function getBackendDisplayName(type: BackendType): string {
  */
 export function createDefaultBackendManagerConfig(): BackendManagerConfig {
   return {
-    defaultBackend: 'mcp',
-    availableBackends: ['mcp', 'shell'],
+    defaultBackend: 'shell',
+    availableBackends: ['shell'],
     backendConfigs: {
-      mcp: {
-        timeout: 30000,
-        retries: 3,
-        enableProgressStreaming: true
-      },
       shell: {
         timeout: 30000,
         enableJsonStreaming: true,

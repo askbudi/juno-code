@@ -146,7 +146,7 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   /** Append tools to default allowed-tools list (mutually exclusive with --allowed-tools, forwarded to shell backend --appendAllowedTools flag) */
   appendAllowedTools?: string[];
   /** Backend to use (mcp, shell) */
-  backend?: 'mcp' | 'shell';
+  backend?: 'shell';
   /** Interactive mode for typing prompts */
   interactive?: boolean;
   /** Launch TUI prompt editor */

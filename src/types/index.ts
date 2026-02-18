@@ -6,7 +6,7 @@
 export type SubagentType = 'claude' | 'cursor' | 'codex' | 'gemini' | 'pi';
 
 // Backend types for execution
-export type BackendType = 'mcp' | 'shell';
+export type BackendType = 'shell';
 
 // Session status
 export type SessionStatus = 'running' | 'completed' | 'failed' | 'cancelled';

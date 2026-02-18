@@ -14,11 +14,10 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
 import { createBackendManager } from '../../core/backend-manager.js';
 import { createSessionManager } from '../../core/session.js';
-import { createMCPClientFromConfig } from '../../mcp/client.js';
 import { PerformanceIntegration } from '../utils/performance-integration.js';
 import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
-import { ValidationError, ConfigurationError, MCPError, FileSystemError } from '../types.js';
+import { ValidationError, ConfigurationError, FileSystemError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
 import type {
   ExecutionRequest,
@@ -1397,20 +1396,6 @@ export async function testCommandHandler(
       }
 
       process.exit(2);
-    }
-
-    if (error instanceof MCPError) {
-      console.error(chalk.red.bold('\n❌ MCP Error'));
-      console.error(chalk.red(`   ${error.message}`));
-
-      if (error.suggestions?.length) {
-        console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
-          console.error(chalk.yellow(`   • ${suggestion}`));
-        });
-      }
-
-      process.exit(4);
     }
 
     if (error instanceof FileSystemError) {

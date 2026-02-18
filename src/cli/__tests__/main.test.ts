@@ -82,14 +82,6 @@ vi.mock('../../core/session.js', () => ({
   })
 }));
 
-vi.mock('../../mcp/client.js', () => ({
-  createMCPClient: vi.fn().mockReturnValue({
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    execute: vi.fn()
-  })
-}));
-
 vi.mock('../../utils/environment.js', () => ({
   isHeadlessEnvironment: vi.fn().mockReturnValue(false)
 }));
@@ -736,13 +728,9 @@ describe('Main Command', () => {
 
         await mainCommandHandler([], options, mockCommand);
 
-        const { createMCPClient } = await import('../../mcp/client.js');
         const { createExecutionEngine } = await import('../../core/engine.js');
-
-        const mcpClient = vi.mocked(createMCPClient).mock.results[0].value;
         const engine = vi.mocked(createExecutionEngine).mock.results[0].value;
 
-        expect(mcpClient.disconnect).toHaveBeenCalled();
         expect(engine.shutdown).toHaveBeenCalled();
       });
     });
@@ -824,40 +812,6 @@ describe('Main Command', () => {
         ).rejects.toThrow('process.exit called');
 
         expect(processExitSpy).toHaveBeenCalledWith(5);
-      });
-
-      it.skip('should handle MCPError', async () => {
-        // SKIP: Test infrastructure issue - same as other error handling tests
-        // Production code works correctly (see main.ts MCP error handling)
-        const { createMCPClient } = await import('../../mcp/client.js');
-        const mcpError = new Error('MCP error');
-        mcpError.constructor.name = 'MCPError';
-        mcpError.suggestions = ['Check MCP server'];
-
-        const mockClient = {
-          connect: vi.fn().mockRejectedValue(mcpError),
-          disconnect: vi.fn(),
-          execute: vi.fn()
-        };
-        vi.mocked(createMCPClient).mockReturnValueOnce(mockClient);
-
-        const options: MainCommandOptions = {
-          subagent: 'claude',
-          prompt: 'test prompt',
-          cwd: '/test',
-          maxIterations: 1,
-          interactive: false,
-          interactivePrompt: false,
-          verbose: false,
-          quiet: false,
-          logLevel: 'info'
-        };
-
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
-
-        expect(processExitSpy).toHaveBeenCalledWith(4);
       });
 
       it.skip('should handle unexpected errors', async () => {

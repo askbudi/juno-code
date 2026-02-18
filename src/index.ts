@@ -60,9 +60,6 @@ export * from './tui';
 // Version information
 export { version } from './version';
 
-// MCP exports (full implementation exports)
-export * from './mcp';
-
 // Template exports
 export type { TemplateEngine } from './templates/engine';
 

@@ -136,20 +136,6 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 
 ## Common Issues and Solutions
 
-### 🔌 MCP Connection Problems
-
-**Issue**: "Failed to connect to MCP server"
-**Causes**:
-- MCP server not installed or not in PATH
-- Incorrect server path in configuration
-- Server binary not executable
-
-**Solutions**:
-1. Install MCP server (e.g., roundtable-mcp-server)
-2. Check configuration: \`juno-code init --interactive\`
-3. Verify server path: \`which roundtable-mcp-server\`
-4. Test connection: \`juno-code start --verbose\`
-
 ### 📁 File System Issues
 
 **Issue**: "init.md not found"
@@ -167,7 +153,6 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 - Large codebase: Add patterns to .gitignore
 - Complex tasks: Break into smaller, focused tasks
 - Server overload: Reduce max iterations
-- Network issues: Increase MCP timeout
 
 ### 🔧 Configuration Problems
 
@@ -196,8 +181,7 @@ juno-code logs --export debug.json --level debug
 1. **Interactive Help**: \`juno-code help --interactive\`
 2. **View Logs**: \`juno-code logs --interactive\`
 3. **Check Configuration**: Review .juno_task/config.json
-4. **Test MCP Connection**: Use --verbose flag with any command
-5. **Report Issues**: Include debug logs when reporting problems
+4. **Report Issues**: Include debug logs when reporting problems
 
 ## Environment Variables
 
@@ -278,7 +262,6 @@ function listHelpTopics(): void {
     { id: 'commands-start', title: 'Start Command', difficulty: 'beginner' },
     { id: 'commands-logs', title: 'Logs Command', difficulty: 'intermediate' },
     { id: 'configuration', title: 'Configuration Guide', difficulty: 'intermediate' },
-    { id: 'mcp-integration', title: 'MCP Integration', difficulty: 'advanced' },
     { id: 'sessions', title: 'Session Management', difficulty: 'intermediate' },
     { id: 'templates', title: 'Template System', difficulty: 'advanced' },
     { id: 'troubleshooting', title: 'Troubleshooting Guide', difficulty: 'intermediate' }
@@ -448,7 +431,6 @@ Available Topics:
   quickstart          Get started in 5 minutes
   commands-*          Detailed command help
   configuration       Setup and configuration
-  mcp-integration     MCP server integration
   sessions            Session management
   templates           Template system
   troubleshooting     Common issues and solutions

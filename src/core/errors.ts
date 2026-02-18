@@ -5,8 +5,9 @@
  * including error codes, context tracking, recovery suggestions, and
  * specialized error types for different failure scenarios.
  *
- * Migrated from src/mcp/errors.ts as part of Phase A simplification.
- * MCP-prefixed names have been renamed to generic execution names.
+ * Originally migrated from the MCP error module. The MCP system has been
+ * removed; these are now the canonical execution error definitions.
+ * Deprecated MCP-prefixed aliases are retained below for backward compatibility.
  *
  * @module core/errors
  * @version 2.0.0
@@ -585,7 +586,7 @@ export class TimeoutError extends ExecutionError {
       `Connection timeout after ${timeoutMs}ms`,
       timeoutMs,
       'connection',
-      'mcp_connection',
+      'backend_connection',
       {
         code: ExecutionErrorCode.CONNECTION_TIMEOUT,
         recoverySuggestions: [
@@ -1230,7 +1231,9 @@ export function calculateRetryDelay(
 
 // =============================================================================
 // Deprecated Aliases (backward compatibility)
-// These will be removed when src/mcp/ is deleted in Phase B.
+// The MCP system has been removed. These aliases are kept temporarily so that
+// any external consumers referencing the old MCP-prefixed names continue to
+// compile. They will be removed in a future major version.
 // =============================================================================
 
 /** @deprecated Use ExecutionErrorType instead */
