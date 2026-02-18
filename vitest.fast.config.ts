@@ -14,10 +14,16 @@ export default mergeConfig(baseConfig, defineConfig({
       'coverage',
       'src/test-utils/**',
       '**/*.d.ts',
-      // Slow tests excluded from fast runs
+      // Slow tests excluded from fast runs (require built binary or TUI)
       'src/cli/__tests__/binary-execution*.test.ts',
       'src/cli/__tests__/*-binary-execution*.test.ts',
-      'src/cli/__tests__/*-tui-execution*.test.ts',
+      'src/cli/__tests__/*tui*.test.ts',
+      'src/cli/__tests__/init-command-execution.test.ts',
+      'src/cli/__tests__/feedback-command-execution.test.ts',
+      'src/cli/__tests__/view-log-command.test.ts',
+      // MCP integration tests (require real server connection, slow/flaky)
+      '**/mcp-timeout-validation.test.ts',
+      'src/mcp/__tests__/mcp-integration.test.ts',
       'src/__tests__/integration/**',
       'src/__tests__/e2e/**',
     ],

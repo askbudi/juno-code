@@ -6,7 +6,7 @@
  */
 
 import type { JunoTaskConfig, SubagentType } from '../types/index.js';
-import type { ProgressEvent, ProgressCallback, ToolCallRequest, ToolCallResult } from '../mcp/types.js';
+import type { ProgressEvent, ProgressCallback, ToolCallRequest, ToolCallResult } from '../types/execution.js';
 
 // =============================================================================
 // Type Definitions

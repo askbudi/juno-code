@@ -6,7 +6,7 @@
  */
 
 import type { Backend } from '../backend-manager.js';
-import type { ToolCallRequest, ToolCallResult, ProgressCallback } from '../../mcp/types.js';
+import type { ToolCallRequest, ToolCallResult, ProgressCallback } from '../../types/execution.js';
 import { createMCPClient, createMCPClientFromConfig, type MCPClientOptions } from '../../mcp/client.js';
 import type { JunoMCPClient } from '../../mcp/client.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';

@@ -25,8 +25,8 @@ import type {
   MCPClient,
   ProgressEvent,
   ToolCallResult,
-  MCPSessionContext
-} from '../../mcp/types.js';
+  SessionContext,
+} from '../../types/execution.js';
 import type { JunoTaskConfig } from '../../types/index.js';
 
 // Mock implementations

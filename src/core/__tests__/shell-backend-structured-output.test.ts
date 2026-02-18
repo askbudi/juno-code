@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import os from 'node:os';
 
 import { ShellBackend } from '../backends/shell-backend.js';
-import type { ToolCallRequest, ProgressEvent } from '../../mcp/types.js';
+import type { ToolCallRequest, ProgressEvent } from '../../types/execution.js';
 
 const tempRoots: string[] = [];
 

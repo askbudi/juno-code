@@ -25,8 +25,8 @@ import type {
   ProgressCallback,
   ToolCallRequest,
   ToolCallResult,
-  MCPSessionContext,
-} from '../mcp/types';
+  SessionContext,
+} from '../types/execution.js';
 import {
   MCPError,
   MCPRateLimitError,
@@ -131,7 +131,7 @@ export interface ExecutionResult {
   readonly error?: MCPError;
 
   /** Session context information */
-  readonly sessionContext: MCPSessionContext;
+  readonly sessionContext: SessionContext;
 
   /** All progress events captured during execution */
   readonly progressEvents: readonly ProgressEvent[];
@@ -783,7 +783,7 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Create session context for execution
    */
-  private createSessionContext(request: ExecutionRequest): MCPSessionContext {
+  private createSessionContext(request: ExecutionRequest): SessionContext {
     return {
       sessionId: `session-${request.requestId}`,
       startTime: new Date(),
@@ -1642,7 +1642,7 @@ interface ExecutionContext {
   progressEvents: ProgressEvent[];
   error: MCPError | null;
   abortController: AbortController;
-  sessionContext: MCPSessionContext;
+  sessionContext: SessionContext;
   rateLimitInfo: RateLimitInfo;
 }
 

@@ -11,7 +11,7 @@ import * as path from 'node:path';
 import os from 'node:os';
 import fsExtra from 'fs-extra';
 import type { Backend } from '../backend-manager.js';
-import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback, ToolExecutionMetadata } from '../../mcp/types.js';
+import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback, ToolExecutionMetadata } from '../../types/execution.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';
 
 // =============================================================================
