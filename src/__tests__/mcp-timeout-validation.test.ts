@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import which from 'which';
 import { JunoMCPClient, createMCPClient } from '../mcp/client.js';
-import { MCPTimeoutError, MCPConnectionError } from '../mcp/errors.js';
+import { MCPTimeoutError, MCPConnectionError } from '../core/errors.js';
 import { execa } from 'execa';
 import path from 'node:path';
 import fs from 'fs-extra';

@@ -74,12 +74,12 @@ describe('MCP Error System', () => {
     it('should create basic connection error', () => {
       const error = new MCPConnectionError('Connection failed');
 
-      expect(error.name).toBe('MCPConnectionError');
+      expect(error.name).toBe('ConnectionError');
       expect(error.message).toBe('Connection failed');
       expect(error.type).toBe(MCPErrorType.CONNECTION);
       expect(error.code).toBe(MCPErrorCode.CONNECTION_FAILED);
       expect(error.timestamp).toBeInstanceOf(Date);
-      expect(error.recoverySuggestions).toContain('Check if the MCP server is running');
+      expect(error.recoverySuggestions).toContain('Check if the server is running');
     });
 
     it('should create connection error with server info', () => {
@@ -120,9 +120,9 @@ describe('MCP Error System', () => {
     it('should create server not found error using static method', () => {
       const error = MCPConnectionError.serverNotFound('/missing/server');
 
-      expect(error.message).toBe('MCP server not found at path: /missing/server');
+      expect(error.message).toBe('Server not found at path: /missing/server');
       expect(error.code).toBe(MCPErrorCode.SERVER_NOT_FOUND);
-      expect(error.recoverySuggestions).toContain('Install the MCP server package');
+      expect(error.recoverySuggestions).toContain('Install the server package');
     });
   });
 
@@ -136,7 +136,7 @@ describe('MCP Error System', () => {
     it('should create basic tool error', () => {
       const error = new MCPToolError('Tool execution failed', toolInfo);
 
-      expect(error.name).toBe('MCPToolError');
+      expect(error.name).toBe('ToolError');
       expect(error.type).toBe(MCPErrorType.TOOL_EXECUTION);
       expect(error.toolInfo).toEqual(toolInfo);
       expect(error.recoverySuggestions).toContain('Check tool arguments and parameters');
@@ -199,7 +199,7 @@ describe('MCP Error System', () => {
     it('should create basic timeout error', () => {
       const error = new MCPTimeoutError('Operation timed out', 5000, 'connection');
 
-      expect(error.name).toBe('MCPTimeoutError');
+      expect(error.name).toBe('TimeoutError');
       expect(error.type).toBe(MCPErrorType.TIMEOUT);
       expect(error.timeoutMs).toBe(5000);
       expect(error.operationType).toBe('connection');
@@ -227,7 +227,7 @@ describe('MCP Error System', () => {
       const resetTime = new Date(Date.now() + 3600000); // 1 hour from now
       const error = new MCPRateLimitError('Rate limit exceeded', 5, resetTime, 'premium');
 
-      expect(error.name).toBe('MCPRateLimitError');
+      expect(error.name).toBe('RateLimitError');
       expect(error.type).toBe(MCPErrorType.RATE_LIMIT);
       expect(error.remaining).toBe(5);
       expect(error.resetTime).toBe(resetTime);
@@ -284,7 +284,7 @@ describe('MCP Error System', () => {
     it('should create basic validation error', () => {
       const error = new MCPValidationError('Invalid value', 'type_check', 'string', 'number');
 
-      expect(error.name).toBe('MCPValidationError');
+      expect(error.name).toBe('ValidationError');
       expect(error.type).toBe(MCPErrorType.VALIDATION);
       expect(error.rule).toBe('type_check');
       expect(error.value).toBe('string');
@@ -339,7 +339,7 @@ describe('MCP Error System', () => {
 
     it('should provide technical details', () => {
       const details = error.getTechnicalDetails();
-      expect(details).toContain('Error: MCPConnectionError');
+      expect(details).toContain('Error: ConnectionError');
       expect(details).toContain('Type: connection');
       expect(details).toContain('Message: Test error');
       expect(details).toContain('Context: test_context');
@@ -377,7 +377,7 @@ describe('MCP Error System', () => {
 
     it('should serialize to JSON', () => {
       const json = error.toJSON();
-      expect(json.name).toBe('MCPConnectionError');
+      expect(json.name).toBe('ConnectionError');
       expect(json.type).toBe('connection');
       expect(json.message).toBe('Test error');
       expect(json.context).toBe('test_context');
@@ -509,7 +509,7 @@ describe('MCP Error System', () => {
     it('should format errors for logging', () => {
       const error = new MCPConnectionError('Connection failed');
       const formatted = formatErrorForLogging(error);
-      expect(formatted).toContain('Error: MCPConnectionError');
+      expect(formatted).toContain('Error: ConnectionError');
       expect(formatted).toContain('Type: connection');
       expect(formatted).toContain('Message: Connection failed');
     });
@@ -517,7 +517,7 @@ describe('MCP Error System', () => {
     it('should get recovery suggestions', () => {
       const connectionError = new MCPConnectionError('Connection failed');
       const suggestions = getRecoverySuggestions(connectionError);
-      expect(suggestions).toContain('Check if the MCP server is running');
+      expect(suggestions).toContain('Check if the server is running');
 
       const regularError = new Error('Regular error');
       const defaultSuggestions = getRecoverySuggestions(regularError);
@@ -609,13 +609,13 @@ describe('MCP Error System', () => {
 
       expect(error).toBeInstanceOf(MCPError);
       expect(error).toBeInstanceOf(Error);
-      expect(error.constructor.name).toBe('MCPConnectionError');
+      expect(error.constructor.name).toBe('ConnectionError');
     });
 
     it('should preserve stack traces', () => {
       const error = new MCPConnectionError('Test');
       expect(error.stack).toBeDefined();
-      expect(error.stack).toContain('MCPConnectionError');
+      expect(error.stack).toContain('ConnectionError');
     });
   });
 });

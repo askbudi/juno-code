@@ -28,9 +28,9 @@ import type {
   SessionContext,
 } from '../types/execution.js';
 import {
-  MCPError,
-  MCPRateLimitError,
-} from '../mcp/errors';
+  ExecutionError,
+  RateLimitError,
+} from './errors';
 import { executeHook } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
 import { BackendManager, type Backend, determineBackendType } from './backend-manager.js';
@@ -128,7 +128,7 @@ export interface ExecutionResult {
   readonly statistics: ExecutionStatistics;
 
   /** Any error that terminated execution */
-  readonly error?: MCPError;
+  readonly error?: ExecutionError;
 
   /** Session context information */
   readonly sessionContext: SessionContext;
@@ -163,7 +163,7 @@ export interface IterationResult {
   readonly progressEvents: readonly ProgressEvent[];
 
   /** Any error that occurred during iteration */
-  readonly error?: MCPError;
+  readonly error?: ExecutionError;
 }
 
 /**
@@ -288,7 +288,7 @@ export interface ErrorRecoveryConfig {
   readonly continueOnError: Record<string, boolean>;
 
   /** Custom recovery strategies */
-  readonly customStrategies: Record<string, (error: MCPError) => Promise<boolean>>;
+  readonly customStrategies: Record<string, (error: ExecutionError) => Promise<boolean>>;
 }
 
 /**
@@ -905,7 +905,7 @@ export class ExecutionEngine extends EventEmitter {
 
         iterationNumber++;
       } catch (error) {
-        if (error instanceof MCPRateLimitError) {
+        if (error instanceof RateLimitError) {
           await this.handleRateLimit(context, error);
           // Don't increment iteration number, retry same iteration
           continue;
@@ -1102,7 +1102,7 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Handle rate limit errors with automatic retry
    */
-  private async handleRateLimit(context: ExecutionContext, error: MCPRateLimitError): Promise<void> {
+  private async handleRateLimit(context: ExecutionContext, error: RateLimitError): Promise<void> {
     if (!this.engineConfig.rateLimitConfig.enabled) {
       throw error;
     }
@@ -1139,7 +1139,7 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Calculate wait time for rate limit reset
    */
-  private calculateRateLimitWaitTime(error: MCPRateLimitError): number {
+  private calculateRateLimitWaitTime(error: RateLimitError): number {
     if (error.resetTime) {
       const now = new Date();
       const waitTime = error.resetTime.getTime() - now.getTime();
@@ -1446,10 +1446,10 @@ export class ExecutionEngine extends EventEmitter {
   }
 
   /**
-   * Wrap unknown errors as MCP errors
+   * Wrap unknown errors as execution errors
    */
-  private wrapError(error: unknown): MCPError {
-    if (error instanceof MCPError) {
+  private wrapError(error: unknown): ExecutionError {
+    if (error instanceof ExecutionError) {
       return error;
     }
 
@@ -1485,7 +1485,7 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Determine execution status from error
    */
-  private determineErrorStatus(error: MCPError): ExecutionStatus {
+  private determineErrorStatus(error: ExecutionError): ExecutionStatus {
     switch (error.type) {
       case 'rate_limit':
         return ExecutionStatus.RATE_LIMITED;
@@ -1640,7 +1640,7 @@ interface ExecutionContext {
   iterations: IterationResult[];
   statistics: ExecutionStatistics;
   progressEvents: ProgressEvent[];
-  error: MCPError | null;
+  error: ExecutionError | null;
   abortController: AbortController;
   sessionContext: SessionContext;
   rateLimitInfo: RateLimitInfo;

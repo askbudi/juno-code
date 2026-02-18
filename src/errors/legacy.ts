@@ -6,7 +6,7 @@
  */
 
 // Re-export some existing patterns for backward compatibility
-export * from '../mcp/errors';
+export * from '../core/errors';
 
 // Legacy error type aliases
 export type { ValidationError as LegacyValidationError } from '../utils/validation';

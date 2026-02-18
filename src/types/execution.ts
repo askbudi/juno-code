@@ -782,6 +782,18 @@ export interface CompressionConfig {
 
 // Import error types from dedicated errors module
 export type {
+  ExecutionError,
+  ConnectionError,
+  ToolError,
+  TimeoutError,
+  RateLimitError,
+  ValidationError,
+  ExecutionErrorOptions,
+  RetryInfo,
+  ServerInfo,
+  ToolInfo,
+  ToolExecutionDetails,
+  // Deprecated aliases for backward compatibility
   MCPError,
   MCPConnectionError,
   MCPToolError,
@@ -789,11 +801,7 @@ export type {
   MCPRateLimitError,
   MCPValidationError,
   MCPErrorOptions,
-  RetryInfo,
-  ServerInfo,
-  ToolInfo,
-  ToolExecutionDetails,
-} from '../mcp/errors.js';
+} from '../core/errors.js';
 
 // =============================================================================
 // Utility Types
@@ -863,7 +871,7 @@ export function isProgressEvent(obj: unknown): obj is ProgressEvent {
 }
 
 // Import type guards from errors module
-export { isMCPError } from '../mcp/errors.js';
+export { isExecutionError, isMCPError } from '../core/errors.js';
 
 /**
  * Type guard for subagent types

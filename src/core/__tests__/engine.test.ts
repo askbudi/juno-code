@@ -20,7 +20,7 @@ import {
   MCPTimeoutError,
   MCPValidationError,
   MCPToolError
-} from '../../mcp/errors.js';
+} from '../errors.js';
 import type {
   MCPClient,
   ProgressEvent,
