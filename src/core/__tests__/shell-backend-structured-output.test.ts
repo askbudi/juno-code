@@ -1,0 +1,990 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'fs-extra';
+import * as path from 'node:path';
+import os from 'node:os';
+
+import { ShellBackend } from '../backends/shell-backend.js';
+import type { ToolCallRequest, ProgressEvent } from '../../mcp/types.js';
+
+const tempRoots: string[] = [];
+
+const createStubClaudeService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-stdout-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'claude.py');
+  const scriptContent = `#!/usr/bin/env python3
+import json
+
+print(json.dumps({"type": "assistant", "content": "thinking"}))
+print(json.dumps({"type": "result", "result": "done", "usage": {"input_tokens": 1, "output_tokens": 2}}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
+const createStubTextService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-text-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'codex.py');
+  const scriptContent = `#!/usr/bin/env python3
+lines = [
+  "import Link from 'next/link';",
+  "export interface HeaderProps {",
+  "  onToggleSideMenu?: () => void;",
+  "  sticky?: boolean;",
+  "}",
+  "export function Header() {",
+  "  const enabled = true;",
+  "\\tconst tabValue = enabled;",
+  "    const nested = enabled;",
+  "  return nested;",
+  "\\t\\t",
+  "    ",
+  "}",
+]
+
+for line in lines:
+  print(line)
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
+const createStubGeminiService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-gemini-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'gemini.py');
+  const scriptContent = `#!/usr/bin/env python3
+import json
+import os
+import sys
+
+payload = {
+  "argv": sys.argv[1:],
+  "output_format_env": os.environ.get("GEMINI_OUTPUT_FORMAT")
+}
+
+print(json.dumps({"type": "result", "content": json.dumps(payload)}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
+afterEach(async () => {
+  await Promise.all(tempRoots.map(dir => fs.remove(dir)));
+  tempRoots.length = 0;
+});
+
+describe('ShellBackend structured output', () => {
+  it('emits JSON-parsable stdout even when capture file is absent', async () => {
+    const { servicesDir, workingDir } = await createStubClaudeService();
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: workingDir,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true
+    });
+    await backend.initialize();
+
+    const progressEvents: ProgressEvent[] = [];
+    const request: ToolCallRequest = {
+      toolName: 'claude_subagent',
+      arguments: {
+        instruction: 'Return stub data',
+        project_path: workingDir
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      },
+      progressCallback: async (event) => {
+        progressEvents.push(event);
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toContain('done');
+    expect(parsed.sub_agent_response).toBeTruthy();
+
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+    expect(metadata?.rawOutput).toContain('"result": "done"');
+  });
+
+  it('preserves leading whitespace for text streaming outputs', async () => {
+    const { servicesDir, workingDir } = await createStubTextService();
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: workingDir,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const progressEvents: ProgressEvent[] = [];
+    const dispose = backend.onProgress(async (event) => {
+      progressEvents.push(event);
+    });
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        project_path: workingDir
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    await backend.execute(request);
+    dispose();
+
+    const thinkingLines = progressEvents
+      .filter(event => event.type === 'thinking')
+      .map(event => event.content);
+
+    expect(thinkingLines).toContain('  onToggleSideMenu?: () => void;');
+    expect(thinkingLines).toContain('  sticky?: boolean;');
+    expect(thinkingLines).toContain('\tconst tabValue = enabled;');
+    expect(thinkingLines).toContain('    const nested = enabled;');
+    expect(thinkingLines).toContain('  return nested;');
+    expect(thinkingLines).toContain('\t\t');
+    expect(thinkingLines).toContain('    ');
+  });
+
+  it('forces stream-json output format when invoking gemini service scripts', async () => {
+    const originalOutputFormat = process.env.GEMINI_OUTPUT_FORMAT;
+    delete process.env.GEMINI_OUTPUT_FORMAT;
+
+    try {
+      const { servicesDir, workingDir } = await createStubGeminiService();
+
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: workingDir,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true
+      });
+      await backend.initialize();
+
+      const request: ToolCallRequest = {
+        toolName: 'gemini_subagent',
+        arguments: {
+          instruction: 'Show args',
+          model: 'gemini-2.5-pro',
+          project_path: workingDir
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1
+        }
+      };
+
+      const result = await backend.execute(request);
+      const firstLine = result.content.trim().split('\n')[0];
+      const parsed = JSON.parse(firstLine);
+      const payload = JSON.parse(parsed.content);
+
+      expect(payload.argv).toContain('--output-format');
+      expect(payload.argv).toContain('stream-json');
+      expect(payload.output_format_env).toBe('stream-json');
+    } finally {
+      if (originalOutputFormat !== undefined) {
+        process.env.GEMINI_OUTPUT_FORMAT = originalOutputFormat;
+      } else {
+        delete process.env.GEMINI_OUTPUT_FORMAT;
+      }
+    }
+  });
+
+  it('builds structured error output for generic subagent (pi) failures', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-err-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a pi.py that outputs a session event to stdout then crashes with error on stderr
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "session", "id": "test-session"}))
+print("Error: No API key found for vercel-ai-gateway.", file=sys.stderr)
+sys.exit(1)
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test task',
+        model: 'zai/glm-5',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    // Should be marked as failed
+    expect(result.status).toBe('failed');
+
+    // Should have structured error output
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.subtype).toBe('error');
+    expect(parsed.is_error).toBe(true);
+    expect(parsed.error).toContain('No API key found');
+    expect(parsed.exit_code).toBe(1);
+
+    // Metadata should include structured output flag
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+  });
+
+  it('streams stderr as progress events for generic subagents', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-stderr-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print("Executing: pi --model glm-5 --provider zai", file=sys.stderr)
+print(json.dumps({"type": "session", "id": "test"}))
+print("Error: connection refused", file=sys.stderr)
+sys.exit(1)
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const progressEvents: ProgressEvent[] = [];
+    const dispose = backend.onProgress(async (event) => {
+      progressEvents.push(event);
+    });
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    await backend.execute(request);
+    dispose();
+
+    // stderr messages should appear as progress events with source: 'stderr'
+    const stderrEvents = progressEvents.filter(
+      e => e.metadata?.source === 'stderr'
+    );
+    expect(stderrEvents.length).toBeGreaterThan(0);
+
+    const stderrContent = stderrEvents.map(e => e.content).join('\n');
+    expect(stderrContent).toContain('Executing: pi --model glm-5 --provider zai');
+    expect(stderrContent).toContain('Error: connection refused');
+  });
+
+  it('returns raw output for generic subagent success', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-ok-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json
+
+print(json.dumps({"type": "session", "id": "test"}))
+print(json.dumps({"type": "agent_end", "result": "task completed"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    // Should be marked as completed
+    expect(result.status).toBe('completed');
+
+    // Pi subagent now returns structured output with result extracted
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.subtype).toBe('success');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('task completed');
+  });
+
+  it('extracts structured output from codex capture file when available', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-codex-cap-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a codex.py that writes a capture file and outputs agent_message events
+    const scriptPath = path.join(servicesDir, 'codex.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, os, sys
+
+# Write capture file if JUNO_SUBAGENT_CAPTURE_PATH is set
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+
+# Simulate streaming output
+print(json.dumps({"type": "agent_reasoning", "msg": {"type": "agent_reasoning", "text": "thinking..."}}))
+final_event = {"type": "agent_message", "msg": {"type": "agent_message", "message": "Here is the solution code."}}
+print(json.dumps(final_event))
+
+if capture_path:
+    with open(capture_path, "w") as f:
+        f.write(json.dumps(final_event))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        instruction: 'Write a hello world',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('Here is the solution code.');
+    expect(parsed.sub_agent_response).toBeTruthy();
+    expect(parsed.sub_agent_response.msg.type).toBe('agent_message');
+
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+    expect(metadata?.subAgentResponse).toBeTruthy();
+  });
+
+  it('extracts result from codex item.completed event format (not legacy msg format)', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-codex-item-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a codex.py that writes item.completed format (new codex event schema)
+    const scriptPath = path.join(servicesDir, 'codex.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, os, sys
+
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+
+# Simulate codex NDJSON streaming with item.completed events
+print(json.dumps({"type": "thread.started", "thread_id": "test-thread-id"}))
+print(json.dumps({"type": "turn.started"}))
+print(json.dumps({"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": "Thinking about the task..."}}))
+final_event = {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": "Here is the final answer from codex."}}
+print(json.dumps(final_event))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 50}}))
+
+if capture_path:
+    with open(capture_path, "w") as f:
+        f.write(json.dumps(final_event))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        instruction: 'Write a hello world',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(false);
+    // The key assertion: result should be the agent_message text, NOT the entire NDJSON stream
+    expect(parsed.result).toBe('Here is the final answer from codex.');
+    expect(parsed.sub_agent_response).toBeTruthy();
+    expect(parsed.sub_agent_response.item.type).toBe('agent_message');
+
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+    expect(metadata?.subAgentResponse).toBeTruthy();
+  });
+
+  it('falls back to last JSON event for codex when capture file is absent', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-codex-fb-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a codex.py that does NOT write a capture file
+    const scriptPath = path.join(servicesDir, 'codex.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json
+
+print(json.dumps({"type": "agent_reasoning", "msg": {"type": "agent_reasoning", "text": "analyzing..."}}))
+print(json.dumps({"type": "agent_message", "msg": {"type": "agent_message", "message": "Final answer from codex."}}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        instruction: 'Explain something',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('Final answer from codex.');
+
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+  });
+
+  it('passes --cd flag to Pi subagent with project_path', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-cd-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a pi.py that echoes sys.argv as JSON so we can inspect arguments
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: '/my/project/dir'
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    // Parse the argv from the stub script output
+    const lines = result.content.trim().split('\n');
+    const lastJsonLine = lines.filter(l => l.startsWith('{')).pop();
+    expect(lastJsonLine).toBeTruthy();
+    const parsed = JSON.parse(lastJsonLine!);
+
+    // Pi subagent should receive --cd /my/project/dir
+    const cdIdx = parsed.args.indexOf('--cd');
+    expect(cdIdx).toBeGreaterThanOrEqual(0);
+    expect(parsed.args[cdIdx + 1]).toBe('/my/project/dir');
+  });
+
+  it('passes --continue flag to Claude subagent when continueConversation is set', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-cont-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'claude.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "result", "result": "done"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'claude_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot,
+        continueConversation: true
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    // Claude structured output wraps content; use rawOutput from metadata to inspect argv
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const lines = rawOutput.trim().split('\n');
+    const argvLine = lines.find((l: string) => l.includes('"argv"'));
+    expect(argvLine).toBeTruthy();
+    const parsed = JSON.parse(argvLine!);
+
+    expect(parsed.args).toContain('--continue');
+  });
+
+  it('passes --resume flag with session ID to Claude subagent', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-resume-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'claude.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "result", "result": "resumed"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'claude_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot,
+        resume: 'session-abc-123'
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const lines = rawOutput.trim().split('\n');
+    const argvLine = lines.find((l: string) => l.includes('"argv"'));
+    expect(argvLine).toBeTruthy();
+    const parsed = JSON.parse(argvLine!);
+
+    const resumeIdx = parsed.args.indexOf('--resume');
+    expect(resumeIdx).toBeGreaterThanOrEqual(0);
+    expect(parsed.args[resumeIdx + 1]).toBe('session-abc-123');
+  });
+
+  it('passes tool arguments to Claude subagent (--tools, --allowedTools, --disallowedTools)', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-tools-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'claude.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "result", "result": "ok"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'claude_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot,
+        tools: ['Bash', 'Edit'],
+        allowedTools: ['Bash', 'Read', 'Write'],
+        disallowedTools: ['NotebookEdit']
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const lines = rawOutput.trim().split('\n');
+    const argvLine = lines.find((l: string) => l.includes('"argv"'));
+    expect(argvLine).toBeTruthy();
+    const parsed = JSON.parse(argvLine!);
+    const args = parsed.args;
+
+    // --tools should include Bash and Edit
+    const toolsIdx = args.indexOf('--tools');
+    expect(toolsIdx).toBeGreaterThanOrEqual(0);
+    expect(args[toolsIdx + 1]).toBe('Bash');
+    expect(args[toolsIdx + 2]).toBe('Edit');
+
+    // --allowedTools should include Bash, Read, Write
+    const allowedIdx = args.indexOf('--allowedTools');
+    expect(allowedIdx).toBeGreaterThanOrEqual(0);
+
+    // --disallowedTools should include NotebookEdit
+    const disallowedIdx = args.indexOf('--disallowedTools');
+    expect(disallowedIdx).toBeGreaterThanOrEqual(0);
+    expect(args[disallowedIdx + 1]).toBe('NotebookEdit');
+  });
+
+  it('does not pass Pi-specific --cd flag to Claude subagent', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-nocd-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'claude.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "result", "result": "done"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'claude_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: '/some/path'
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const lines = rawOutput.trim().split('\n');
+    const argvLine = lines.find((l: string) => l.includes('"argv"'));
+    expect(argvLine).toBeTruthy();
+    const parsed = JSON.parse(argvLine!);
+
+    // Claude should NOT receive --cd (Pi-only flag)
+    expect(parsed.args).not.toContain('--cd');
+  });
+
+  it('handles codex structured error output on failure', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-codex-err-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'codex.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "agent_message", "msg": {"type": "agent_message", "message": "Something went wrong"}}))
+print("Error: API key invalid", file=sys.stderr)
+sys.exit(1)
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'codex_subagent',
+      arguments: {
+        instruction: 'test task',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    expect(result.status).toBe('failed');
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(true);
+    expect(parsed.exit_code).toBe(1);
+
+    const metadata = result.metadata as any;
+    expect(metadata?.structuredOutput).toBe(true);
+  });
+
+  it('strips messages and type from Pi sub_agent_response to reduce token usage', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-sanitize-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    // Create a pi.py that outputs a result event with nested sub_agent_response containing messages
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const captureEvent = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Hello from Pi agent',
+      sub_agent_response: {
+        type: 'agent_end',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'test prompt' }], timestamp: 123 },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'long thinking content...' },
+              { type: 'text', text: 'Hello from Pi agent' }
+            ],
+            api: 'openai-completions',
+            provider: 'zai',
+            model: 'glm-5',
+            usage: { input: 64, output: 137 },
+            stopReason: 'stop',
+            timestamp: 456
+          }
+        ]
+      }
+    };
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys, os
+
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+event = ${JSON.stringify(JSON.stringify(captureEvent))}
+print(event)
+if capture_path:
+    with open(capture_path, "w") as f:
+        f.write(event)
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test task',
+        model: 'zai/glm-5',
+        project_path: tempRoot
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1
+      }
+    };
+
+    const result = await backend.execute(request);
+
+    expect(result.status).toBe('completed');
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('Hello from Pi agent');
+
+    // sub_agent_response should exist but without messages array
+    expect(parsed.sub_agent_response).toBeDefined();
+    expect(parsed.sub_agent_response.messages).toBeUndefined();
+
+    // Inner sub_agent_response (from pi.py) should have messages and type stripped
+    if (parsed.sub_agent_response.sub_agent_response) {
+      expect(parsed.sub_agent_response.sub_agent_response.messages).toBeUndefined();
+      expect(parsed.sub_agent_response.sub_agent_response.type).toBeUndefined();
+    }
+  });
+});
+

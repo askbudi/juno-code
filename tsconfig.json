@@ -1,0 +1,98 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "allowJs": false,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "removeComments": false,
+    "noEmit": false,
+    "importHelpers": true,
+    "isolatedModules": true,
+    "downlevelIteration": true,
+    "resolveJsonModule": true,
+
+    // Strict Type Checking
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Additional Checks
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noPropertyAccessFromIndexSignature": false,
+
+    // Module Resolution
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["./*"],
+      "@/cli/*": ["./cli/*"],
+      "@/core/*": ["./core/*"],
+      "@/mcp/*": ["./mcp/*"],
+      "@/tui/*": ["./tui/*"],
+      "@/templates/*": ["./templates/*"],
+      "@/utils/*": ["./utils/*"],
+      "@/types": ["./types/index.ts"],
+      "@/test-utils/*": ["./test-utils/*"]
+    },
+
+    // Emit
+    "newLine": "lf",
+    "stripInternal": true,
+    "noEmitHelpers": false,
+    "noEmitOnError": true,
+    "preserveConstEnums": true,
+    "declarationDir": "./dist/types",
+
+    // Interop Constraints
+    "verbatimModuleSyntax": false,
+    "allowImportingTsExtensions": false,
+    "forceConsistentCasingInFileNames": true,
+
+    // Language and Environment
+    "experimentalDecorators": false,
+    "emitDecoratorMetadata": false,
+    "useDefineForClassFields": true,
+
+    // Skip Lib Check for faster builds
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/**/*",
+    "src/**/*.json"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
+  ],
+  "ts-node": {
+    "esm": true,
+    "compilerOptions": {
+      "module": "ESNext",
+      "moduleResolution": "node"
+    }
+  }
+}

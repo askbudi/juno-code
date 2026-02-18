@@ -1,0 +1,17 @@
+{
+  "mcpServerCommand": "npx -y @anthropic-ai/mcp-server-filesystem",
+  "mcpServerArgs": ["--port", "3001"],
+  "mcpPort": 3001,
+  "mcpTimeout": 86400000,
+  "maxIterations": 50,
+  "defaultSubagent": "claude",
+  "verbose": false,
+  "enableFeedback": false,
+  "hooks": {
+    "START_ITERATION": {
+      "commands": [
+        "./hooks/check-file-sizes.sh"
+      ]
+    }
+  }
+}
