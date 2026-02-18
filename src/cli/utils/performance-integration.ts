@@ -5,10 +5,7 @@
  * Provides utilities for measuring command execution and displaying results.
  */
 
-import React from 'react';
-import { render } from 'ink';
 import { PerformanceCollector, PerformanceManager, PerformanceMetrics, PerformanceReport } from '../../core/performance-collector.js';
-import { PerformanceDashboard } from '../../tui/components/PerformanceDashboard.js';
 import { RichFormatter } from './rich-formatter.js';
 
 // ============================================================================
@@ -148,22 +145,19 @@ export class PerformanceIntegration {
   }
 
   /**
-   * Show interactive performance dashboard
+   * Show performance dashboard (console-based)
    */
   async showDashboard(metrics: PerformanceMetrics, report: PerformanceReport): Promise<void> {
-    return new Promise((resolve) => {
-      const { unmount } = render(
-        React.createElement(PerformanceDashboard, {
-          metrics,
-          report,
-          interactive: true,
-          onClose: () => {
-            unmount();
-            resolve();
-          }
-        })
-      );
-    });
+    this.displayMetricsSummary(metrics);
+    console.log(this.formatter.panel(
+      `Grade: ${report.grade}\nRecommendations: ${report.recommendations?.join(', ') || 'None'}`,
+      {
+        title: 'Performance Report',
+        border: 'rounded',
+        style: 'info',
+        padding: 1
+      }
+    ));
   }
 
   /**

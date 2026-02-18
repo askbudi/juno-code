@@ -5,14 +5,11 @@
  * Provides access to structured logs with Python Rich-style aesthetics.
  */
 
-import React from 'react';
-import { render } from 'ink';
 import { Command } from 'commander';
 import chalk from 'chalk';
 
 import { loadConfig } from '../../core/config.js';
 import { logger, LogLevel, LogContext, AdvancedLogger } from '../utils/advanced-logger.js';
-import { LogViewer } from '../../tui/components/LogViewer.js';
 import type { GlobalCLIOptions } from '../types.js';
 import { ConfigurationError } from '../types.js';
 
@@ -322,23 +319,9 @@ export async function logsCommandHandler(
       return;
     }
 
-    // Interactive viewer
+    // Interactive viewer (TUI removed, fall back to console display)
     if (options.interactive) {
-      await new Promise<void>((resolve) => {
-        const { unmount } = render(
-          React.createElement(LogViewer, {
-            logger,
-            maxEntries: options.tail || 1000,
-            refreshInterval: options.follow ? 1000 : 0,
-            interactive: true,
-            autoScroll: options.follow,
-            onClose: () => {
-              unmount();
-              resolve();
-            }
-          })
-        );
-      });
+      displayLogs(logger, { ...options, tail: options.tail || 1000 });
     } else {
       // Console display
       displayLogs(logger, options);

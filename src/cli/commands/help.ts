@@ -5,12 +5,9 @@
  * and comprehensive documentation access.
  */
 
-import React from 'react';
-import { render } from 'ink';
 import { Command } from 'commander';
 import chalk from 'chalk';
 
-import { InteractiveHelp } from '../../tui/components/InteractiveHelp.js';
 import { RichFormatter } from '../utils/rich-formatter.js';
 import { cliLogger } from '../utils/advanced-logger.js';
 import type { GlobalCLIOptions } from '../types.js';
@@ -332,21 +329,11 @@ export async function helpCommandHandler(
 
     cliLogger.info('Help command accessed', { options });
 
-    // Interactive help system
+    // Interactive help (TUI removed, display all help topics)
     if (options.interactive) {
-      await new Promise<void>((resolve) => {
-        const { unmount } = render(
-          React.createElement(InteractiveHelp, {
-            initialTopic: options.topic,
-            showSearch: true,
-            showTutorial: true,
-            onClose: () => {
-              unmount();
-              resolve();
-            }
-          })
-        );
-      });
+      displayQuickReference(formatter);
+      listHelpTopics();
+      displayTroubleshooting(formatter);
       return;
     }
 

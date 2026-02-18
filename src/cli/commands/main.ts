@@ -5,7 +5,6 @@
  * Handles direct subagent execution with support for:
  * - File and inline prompts
  * - Interactive input modes
- * - TUI prompt editor
  * - Environment variable integration
  * - Complete validation and error handling
  */
@@ -15,8 +14,6 @@ import fs from 'fs-extra';
 import * as readline from 'node:readline';
 import chalk from 'chalk';
 import { Command } from 'commander';
-import { render } from 'ink';
-import React from 'react';
 
 import { loadConfig } from '../../core/config.js';
 import { createCommand, createOption } from '../framework.js';
@@ -200,51 +197,9 @@ class PromptProcessor {
   }
 
   private async launchTUIPromptEditor(initialValue?: string): Promise<string> {
-    try {
-      // Dynamic import to avoid loading TUI in headless environments
-      const { launchPromptEditor, isTUISupported, safeTUIExecution } = await import('../../tui/index.js');
-
-      console.error(chalk.blue.bold('\n🎨 Launching TUI Prompt Editor...\n'));
-
-      return await safeTUIExecution(
-        // TUI function
-        async () => {
-          const result = await launchPromptEditor({
-            initialValue: initialValue || '',
-            title: `Prompt Editor - ${this.options.subagent}`,
-            maxLength: 10000
-          });
-
-          if (!result) {
-            throw new ValidationError(
-              'Prompt editor was cancelled',
-              ['Try again with --interactive-prompt', 'Use --interactive for simple input']
-            );
-          }
-
-          return result;
-        },
-        // Fallback function
-        async () => {
-          console.error(chalk.yellow('TUI not available, falling back to interactive mode...'));
-          return await this.collectInteractivePrompt();
-        }
-      );
-
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        throw error;
-      }
-
-      throw new ValidationError(
-        `Failed to launch TUI prompt editor: ${error}`,
-        [
-          'Try using --interactive for simple input',
-          'Ensure terminal supports TUI',
-          'Check that dependencies are installed'
-        ]
-      );
-    }
+    // TUI system has been removed; redirect to readline-based interactive prompt
+    console.error(chalk.yellow('Using interactive prompt mode...'));
+    return await this.collectInteractivePrompt();
   }
 
   private async collectInteractivePrompt(): Promise<string> {
@@ -847,7 +802,7 @@ export function createMainCommand(): CLICommand {
       }),
       createOption({
         flags: '--interactive-prompt',
-        description: 'Launch Rich TUI prompt editor',
+        description: 'Launch interactive prompt editor (readline)',
         defaultValue: false
       })
     ],
@@ -866,7 +821,7 @@ export function createMainCommand(): CLICommand {
       },
       {
         command: 'juno-code -s claude --interactive-prompt',
-        description: 'Use enhanced TUI prompt editor'
+        description: 'Use interactive prompt editor'
       }
     ],
     handler: mainCommandHandler

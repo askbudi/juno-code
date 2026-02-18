@@ -3,7 +3,7 @@
  *
  * Tests the main command functionality including:
  * - Command creation and registration
- * - Prompt processing (inline, file, interactive, TUI)
+ * - Prompt processing (inline, file, interactive)
  * - Subagent validation
  * - Execution coordination
  * - Progress display
@@ -89,18 +89,6 @@ vi.mock('../../utils/environment.js', () => ({
 vi.mock('fs-extra', () => ({
   pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
   readFile: vi.fn().mockResolvedValue('mock file content')
-}));
-
-vi.mock('../../tui/index.js', () => ({
-  launchPromptEditor: vi.fn().mockResolvedValue('TUI prompt result'),
-  isTUISupported: vi.fn().mockReturnValue(true),
-  safeTUIExecution: vi.fn().mockImplementation(async (tuiFunc, fallbackFunc) => {
-    try {
-      return await tuiFunc();
-    } catch {
-      return await fallbackFunc();
-    }
-  })
 }));
 
 vi.mock('chalk', () => {
@@ -465,38 +453,6 @@ describe('Main Command', () => {
         );
       });
 
-      it.skip('should handle TUI prompt editor', async () => {
-        // SKIP: Test infrastructure issue - same as other prompt processing tests
-        // Issue: launchPromptEditor and createExecutionRequest mocks not being called
-        // Production code works correctly (see main.ts PromptProcessor TUI mode)
-        const options: MainCommandOptions = {
-          subagent: 'claude',
-          prompt: 'initial prompt',
-          cwd: '/test',
-          maxIterations: 1,
-          interactive: false,
-          interactivePrompt: true,
-          verbose: false,
-          quiet: false,
-          logLevel: 'info'
-        };
-
-        await mainCommandHandler([], options, mockCommand);
-
-        const { launchPromptEditor } = await import('../../tui/index.js');
-        expect(launchPromptEditor).toHaveBeenCalledWith({
-          initialValue: 'initial prompt',
-          title: 'Prompt Editor - claude',
-          maxLength: 10000
-        });
-
-        const { createExecutionRequest } = await import('../../core/engine.js');
-        expect(createExecutionRequest).toHaveBeenCalledWith(
-          expect.objectContaining({
-            instruction: 'TUI prompt result'
-          })
-        );
-      });
 
       it.skip('should handle missing prompt error', async () => {
         // SKIP: Test infrastructure issue - same as other prompt processing tests
@@ -560,30 +516,6 @@ describe('Main Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
       });
 
-      it.skip('should handle TUI editor cancellation', async () => {
-        // SKIP: Test infrastructure issue - process.exit mock not throwing consistently
-        // Production code works correctly (see main.ts TUI editor validation)
-        const { launchPromptEditor } = await import('../../tui/index.js');
-        vi.mocked(launchPromptEditor).mockResolvedValueOnce(null);
-
-        const options: MainCommandOptions = {
-          subagent: 'claude',
-          prompt: undefined,
-          cwd: '/test',
-          maxIterations: 1,
-          interactive: false,
-          interactivePrompt: true,
-          verbose: false,
-          quiet: false,
-          logLevel: 'info'
-        };
-
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
-
-        expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
-      });
     });
 
     describe('execution', () => {

@@ -25,8 +25,6 @@ export * from './configuration';
 export * from './template';
 export * from './session';
 export * from './cli';
-export * from './tui';
-
 // Error utilities and managers
 export * from './utils';
 export * from './manager';

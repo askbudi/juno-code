@@ -8,7 +8,6 @@
     "esModuleInterop": true,
     "allowJs": false,
     "checkJs": false,
-    "jsx": "react-jsx",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -46,8 +45,6 @@
       "@/*": ["./*"],
       "@/cli/*": ["./cli/*"],
       "@/core/*": ["./core/*"],
-      "@/mcp/*": ["./mcp/*"],
-      "@/tui/*": ["./tui/*"],
       "@/templates/*": ["./templates/*"],
       "@/utils/*": ["./utils/*"],
       "@/types": ["./types/index.ts"],
@@ -84,9 +81,7 @@
     "dist",
     "coverage",
     "**/*.test.ts",
-    "**/*.test.tsx",
-    "**/*.spec.ts",
-    "**/*.spec.tsx"
+    "**/*.spec.ts"
   ],
   "ts-node": {
     "esm": true,

@@ -54,9 +54,6 @@ export {
 // Type exports (consolidated to avoid conflicts)
 export * from './types';
 
-// TUI exports
-export * from './tui';
-
 // Version information
 export { version } from './version';
 

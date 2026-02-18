@@ -30,8 +30,6 @@ import {
   SessionNotFoundError,
   CLIError,
   CommandNotFoundError,
-  TUIError,
-  TUINotAvailableError,
   errorRecoveryManager,
   isJunoTaskError,
   hasErrorCode,
@@ -156,12 +154,6 @@ describe('Unified Error Hierarchy', () => {
       expect(cliError.code).toBe(ErrorCode.CLI_COMMAND_NOT_FOUND);
     });
 
-    it('should create TUI errors correctly', () => {
-      const tuiError = new TUINotAvailableError('No TTY available');
-
-      expect(tuiError.category).toBe(ErrorCategory.TUI);
-      expect(tuiError.code).toBe(ErrorCode.TUI_NOT_AVAILABLE);
-    });
   });
 
   describe('Error Context', () => {
