@@ -9,7 +9,6 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import fs from 'fs-extra';
 import { glob } from 'glob';
-import fastGlob from 'fast-glob';
 import { ShellDetector, type ShellType } from './shell-detector.js';
 
 // ============================================================================
@@ -85,16 +84,16 @@ export class ContextAwareCompletion {
         pattern = path.join(dirPath, `${baseName}*${extPattern}`);
       }
 
-      // Use fast-glob for better performance
+      // Use glob for file path matching
       const options = {
         dot: filter?.includeHidden || false,
-        onlyFiles: !(filter?.includeDirectories ?? true),
-        deep: filter?.maxDepth || 3,
+        nodir: !(filter?.includeDirectories ?? true),
+        maxDepth: filter?.maxDepth || 3,
         absolute: false,
-        markDirectories: true
+        mark: true
       };
 
-      const results = await fastGlob(pattern, options);
+      const results = await glob(pattern, options);
 
       // Convert back to relative paths and filter
       return results
