@@ -107,29 +107,29 @@ function setupGlobalOptions(program: Command): void {
     .option('--no-color', 'Disable colored output')
     .option('--log-level <level>', 'Log level for output (error, warn, info, debug, trace)', 'info')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini, pi)')
-    .option('-b, --backend <type>', 'Backend to use (mcp, shell) - default: shell')
+    .option('-b, --backend <type>', 'Backend type (default: shell)')
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
     .option(
       '--agents <config>',
-      'Agents configuration (forwarded to shell backend, ignored for MCP)',
+      'Agents configuration (forwarded to shell backend)',
     )
     .option(
       '--tools <tools...>',
-      'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read"). Passed to shell backend, ignored for MCP.',
+      'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").',
     )
     .option(
       '--allowed-tools <tools...>',
-      'Permission-based filtering of specific tool instances (e.g. "Bash(git:*) Edit"). Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode. Passed to shell backend, ignored for MCP.',
+      'Permission-based filtering of specific tool instances (e.g. "Bash(git:*) Edit"). Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode.',
     )
     .option(
       '--disallowed-tools <tools...>',
-      'Disallowed tools for Claude (passed to shell backend, ignored for MCP). By default, no tools are disallowed',
+      'Disallowed tools for Claude. By default, no tools are disallowed',
     )
     .option(
       '--append-allowed-tools <tools...>',
-      'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Passed to shell backend, ignored for MCP.',
+      'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools).',
     )
-    .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
+    .option('--mcp-timeout <number>', 'Operation timeout in milliseconds (default: 43200000)', parseInt)
     .option(
       '--enable-feedback',
       'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)',
@@ -200,7 +200,7 @@ function setupMainCommand(program: Command): void {
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-I, --interactive', 'Interactive mode for typing prompts')
-    .option('-ip, --interactive-prompt', 'Launch TUI prompt editor')
+    .option('-ip, --interactive-prompt', 'Launch interactive prompt editor')
     .action(async (options, command) => {
       try {
         // Get global options from program
@@ -479,7 +479,6 @@ function configureEnvironment(): void {
     'JUNO_CODE_VERBOSE',
     'JUNO_CODE_QUIET',
     'JUNO_CODE_CONFIG',
-    'JUNO_CODE_MCP_SERVER_PATH',
     'JUNO_CODE_MCP_TIMEOUT',
     'JUNO_CODE_NO_COLOR',
     'JUNO_CODE_ENABLE_FEEDBACK',
@@ -735,12 +734,11 @@ ${chalk.blue.bold('Examples:')}
   juno-code setup-git https://github.com/askbudi/juno-code
 
 ${chalk.blue.bold('Environment Variables:')}
-  JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini)
-  JUNO_CODE_MCP_SERVER_PATH       Path to MCP server executable
+  JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini, pi)
   JUNO_CODE_CONFIG                Configuration file path
   JUNO_CODE_VERBOSE               Enable verbose output (true/false)
   JUNO_CODE_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
-  JUNO_CODE_MCP_TIMEOUT           MCP server timeout in milliseconds
+  JUNO_CODE_MCP_TIMEOUT           Operation timeout in milliseconds
   JUNO_CODE_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)

@@ -202,12 +202,12 @@ export function configureStartCommand(program: Command): void {
     .command('start')
     .description('Start execution using .juno_task/init.md as prompt')
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini)')
-    .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
+    .option('-b, --backend <type>', 'Backend type (default: shell)')
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
     .option(
       '--agents <config>',
-      'Agents configuration (forwarded to shell backend, ignored for MCP)',
+      'Agents configuration (forwarded to shell backend)',
     )
     .option('-d, --directory <path>', 'Project directory (default: current)')
     .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
@@ -241,8 +241,6 @@ Examples:
   $ juno-code start                                   # Start execution in current directory
   $ juno-code start -s claude                        # Use claude subagent
   $ juno-code start --subagent cursor                # Use cursor subagent
-  $ juno-code start -b shell                         # Use shell backend
-  $ juno-code start --backend mcp                    # Use MCP backend (default)
   $ juno-code start -s codex --max-iterations 10     # Use codex with 10 iterations
   $ juno-code start --model sonnet-4                 # Use specific model
   $ juno-code start --directory ./my-project         # Execute in specific directory
@@ -269,12 +267,10 @@ Performance Options:
   --metrics-file <path>         Custom metrics file path
 
 Environment Variables:
-  JUNO_CODE_AGENT              Backend to use (mcp, shell)
-  JUNO_CODE_BACKEND            Backend to use (mcp, shell)
+  JUNO_CODE_BACKEND            Backend type (default: shell)
   JUNO_CODE_MAX_ITERATIONS     Default maximum iterations
   JUNO_CODE_MODEL              Default model to use
-  JUNO_CODE_MCP_SERVER_PATH    Path to MCP server executable
-  JUNO_CODE_MCP_TIMEOUT        MCP operation timeout (ms)
+  JUNO_CODE_MCP_TIMEOUT        Operation timeout in milliseconds
 
 Notes:
   - Requires .juno_task/init.md file (created by 'juno-code init')
@@ -284,10 +280,8 @@ Notes:
   - Use --enable-feedback to submit feedback while execution is running
   - Use Ctrl+C to cancel execution gracefully
 
-Backend Options:
-  mcp                          Use MCP (Model Context Protocol) backend (default)
-                               Connects to MCP servers for AI subagent communication
-  shell                        Use shell script backend
+Backend:
+  shell                        Shell script backend (default)
                                Executes scripts from ~/.juno_code/services/
                                Supports subagent.py, subagent.sh, or subagent-specific scripts
     `,

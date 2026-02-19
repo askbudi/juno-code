@@ -1567,7 +1567,7 @@ AI Subagent Specializations:
   gemini        Best for: edge cases, security tests, unusual scenarios
 
 Notes:
-  - AI-powered test generation requires MCP server connection
+  - AI-powered test generation requires a configured subagent
   - Generated tests follow best practices for the selected framework
   - Coverage analysis supports multiple reporting formats
   - Quality analysis provides actionable insights for improvement

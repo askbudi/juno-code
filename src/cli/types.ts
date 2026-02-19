@@ -76,11 +76,11 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   disallowedTools?: string[];
   /** Append tools to default allowed-tools list (mutually exclusive with --allowed-tools, forwarded to shell backend --appendAllowedTools flag) */
   appendAllowedTools?: string[];
-  /** Backend to use (mcp, shell) */
+  /** Backend type (shell) */
   backend?: 'shell';
   /** Interactive mode for typing prompts */
   interactive?: boolean;
-  /** Launch TUI prompt editor */
+  /** Launch interactive prompt editor */
   interactivePrompt?: boolean;
   /** Resume a conversation by session ID (shell backend only) */
   resume?: string;
@@ -102,7 +102,7 @@ export interface InitCommandOptions extends GlobalCLIOptions {
   subagent?: SubagentType;
   /** Repository URL */
   gitUrl?: string;
-  /** Launch interactive TUI for guided setup */
+  /** Force interactive mode for guided setup */
   interactive?: boolean;
   /** Template variant to use */
   template?: string;
@@ -116,7 +116,7 @@ export interface InitCommandOptions extends GlobalCLIOptions {
 export interface StartCommandOptions extends GlobalCLIOptions {
   /** Subagent to use (optional override of config default) */
   subagent?: SubagentType;
-  /** Backend to use (mcp or shell) */
+  /** Backend type (shell) */
   backend?: BackendType;
   /** Maximum iterations */
   maxIterations?: number;

@@ -187,10 +187,6 @@ Useful for debugging:
 export JUNO_CODE_VERBOSE=true
 export JUNO_CODE_LOG_LEVEL=debug
 export NO_COLOR=true  # Disable colors for log analysis
-
-# Legacy variables (still supported for backward compatibility)
-export JUNO_TASK_VERBOSE=true
-export JUNO_TASK_LOG_LEVEL=debug
 \`\`\`
 `;
 
@@ -263,7 +259,7 @@ function listHelpTopics(): void {
     { id: 'commands-logs', title: 'Logs Command', difficulty: 'intermediate' },
     { id: 'configuration', title: 'Configuration Guide', difficulty: 'intermediate' },
     { id: 'sessions', title: 'Session Management', difficulty: 'intermediate' },
-    { id: 'templates', title: 'Template System', difficulty: 'advanced' },
+    { id: 'services', title: 'Service Scripts', difficulty: 'advanced' },
     { id: 'troubleshooting', title: 'Troubleshooting Guide', difficulty: 'intermediate' },
   ];
 
@@ -415,38 +411,27 @@ Examples:
   $ juno-code help                                    # Quick reference guide
   $ juno-code help --interactive                      # Interactive help system
   $ juno-code help --topic quickstart                 # Specific topic
-  $ juno-code help --search "mcp"                     # Search topics
+  $ juno-code help --search "session"                  # Search topics
   $ juno-code help --list                             # List all topics
   $ juno-code help --troubleshooting                  # Troubleshooting guide
 
-Interactive Help Features:
+Help Features:
   - Browse help by category
   - Search across all topics
   - View examples and tutorials
-  - Navigate with keyboard shortcuts
-  - Contextual assistance
+  - Quick reference and troubleshooting guides
 
 Available Topics:
   quickstart          Get started in 5 minutes
   commands-*          Detailed command help
   configuration       Setup and configuration
   sessions            Session management
-  templates           Template system
   troubleshooting     Common issues and solutions
 
-Navigation (Interactive Mode):
-  ↑↓ or j/k          Navigate items
-  Enter              Select item
-  h                  Go back
-  c                  Return to categories
-  s                  Search topics
-  q or Esc           Quit
-
 Notes:
-  - Interactive help provides the most comprehensive assistance
+  - Use --interactive to display all help topics at once
   - Use --verbose with any command for detailed output
   - Check logs with 'juno-code logs' for debugging
-  - All help content is searchable and cross-referenced
     `,
     );
 }
