@@ -14,40 +14,42 @@ import { Command } from 'commander';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
-import type {
-  StartCommandOptions
-} from '../types.js';
+import type { StartCommandOptions } from '../types.js';
 
 // Mock mainCommandHandler since start now delegates to it
 vi.mock('../commands/main.js', () => ({
-  mainCommandHandler: vi.fn().mockResolvedValue(undefined)
+  mainCommandHandler: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock external dependencies
 vi.mock('../../core/config.js', () => ({
-  loadConfig: vi.fn().mockImplementation((opts) => Promise.resolve({
-    workingDirectory: opts?.baseDir || '/test/dir',
-    defaultMaxIterations: 5,
-    defaultModel: 'test-model',
-    defaultSubagent: 'claude',
-    defaultBackend: 'mcp',
-    mcpServerPath: '/test/mcp',
-    mcpTimeout: 30000,
-    mcpRetries: 3,
-    verbose: false
-  }))
+  loadConfig: vi.fn().mockImplementation((opts) =>
+    Promise.resolve({
+      workingDirectory: opts?.baseDir || '/test/dir',
+      defaultMaxIterations: 5,
+      defaultModel: 'test-model',
+      defaultSubagent: 'claude',
+      defaultBackend: 'mcp',
+      mcpServerPath: '/test/mcp',
+      mcpTimeout: 30000,
+      mcpRetries: 3,
+      verbose: false,
+    }),
+  ),
 }));
 
 vi.mock('../../core/engine.js', () => ({
   createExecutionEngine: vi.fn().mockReturnValue({
     execute: vi.fn().mockResolvedValue({
       status: 'completed',
-      iterations: [{
-        iterationNumber: 1,
-        success: true,
-        duration: 1000,
-        toolResult: { content: 'Task completed successfully' }
-      }],
+      iterations: [
+        {
+          iterationNumber: 1,
+          success: true,
+          duration: 1000,
+          toolResult: { content: 'Task completed successfully' },
+        },
+      ],
       statistics: {
         totalIterations: 1,
         successfulIterations: 1,
@@ -56,12 +58,12 @@ vi.mock('../../core/engine.js', () => ({
         totalToolCalls: 5,
         rateLimitEncounters: 0,
         rateLimitWaitTime: 0,
-        errorBreakdown: {}
-      }
+        errorBreakdown: {},
+      },
     }),
     onProgress: vi.fn(),
     on: vi.fn(),
-    shutdown: vi.fn()
+    shutdown: vi.fn(),
   }),
   createExecutionRequest: vi.fn().mockImplementation((opts) => ({
     requestId: 'test-request-' + Date.now(),
@@ -69,7 +71,7 @@ vi.mock('../../core/engine.js', () => ({
     subagent: opts.subagent,
     workingDirectory: opts.workingDirectory,
     maxIterations: opts.maxIterations,
-    model: opts.model
+    model: opts.model,
   })),
   ExecutionStatus: {
     PENDING: 'pending',
@@ -78,8 +80,8 @@ vi.mock('../../core/engine.js', () => ({
     FAILED: 'failed',
     CANCELLED: 'cancelled',
     TIMEOUT: 'timeout',
-    RATE_LIMITED: 'rate_limited'
-  }
+    RATE_LIMITED: 'rate_limited',
+  },
 }));
 
 vi.mock('../../core/session.js', () => ({
@@ -89,28 +91,28 @@ vi.mock('../../core/session.js', () => ({
         id: 'test-session-id',
         name: 'Test Session',
         createdAt: new Date(),
-        status: 'active'
-      }
+        status: 'active',
+      },
     }),
     addHistoryEntry: vi.fn(),
     completeSession: vi.fn(),
     save: vi.fn(),
     load: vi.fn(),
-    list: vi.fn().mockResolvedValue([])
-  })
+    list: vi.fn().mockResolvedValue([]),
+  }),
 }));
 
 vi.mock('../../mcp/client.js', () => ({
   createMCPClient: vi.fn().mockReturnValue({
     connect: vi.fn(),
     disconnect: vi.fn(),
-    execute: vi.fn()
+    execute: vi.fn(),
   }),
   createMCPClientFromConfig: vi.fn().mockResolvedValue({
     connect: vi.fn(),
     disconnect: vi.fn(),
-    execute: vi.fn()
-  })
+    execute: vi.fn(),
+  }),
 }));
 
 vi.mock('fs-extra', () => {
@@ -123,17 +125,17 @@ vi.mock('fs-extra', () => {
     default: {
       pathExists,
       readFile,
-      ensureDir
+      ensureDir,
     },
     pathExists,
     readFile,
-    ensureDir
+    ensureDir,
   };
 });
 
 vi.mock('execa', () => ({
   default: vi.fn().mockResolvedValue({ stdout: '' }),
-  execa: vi.fn().mockResolvedValue({ stdout: '' })
+  execa: vi.fn().mockResolvedValue({ stdout: '' }),
 }));
 
 vi.mock('chalk', () => {
@@ -150,15 +152,14 @@ vi.mock('chalk', () => {
     gray: createChainableFunction('gray'),
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
-    white: createChainableFunction('white')
+    white: createChainableFunction('white'),
   };
 
   return {
     default: mockChalk,
-    ...mockChalk
+    ...mockChalk,
   };
 });
-
 
 // Mock the start command handler by dynamically importing
 let startCommandHandler: any;
@@ -181,10 +182,12 @@ describe('Start Command', () => {
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code: string | number | null | undefined = 1) => {
-      // Mock successful exit for tests - these command handlers expect to call process.exit(0) on success
-      return undefined as never;
-    });
+    processExitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((code: string | number | null | undefined = 1) => {
+        // Mock successful exit for tests - these command handlers expect to call process.exit(0) on success
+        return undefined as never;
+      });
 
     // Mock process.cwd()
     vi.spyOn(process, 'cwd').mockReturnValue('/current/dir');
@@ -210,7 +213,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -223,7 +226,7 @@ describe('Start Command', () => {
           maxIterations: 3,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         // Execute the start command - should delegate to mainCommandHandler
@@ -231,7 +234,7 @@ describe('Start Command', () => {
 
         expect(fs.readFile).toHaveBeenCalledWith(
           path.join('/project', '.juno_task', 'init.md'),
-          'utf-8'
+          'utf-8',
         );
 
         const { mainCommandHandler } = await import('../commands/main.js');
@@ -239,9 +242,9 @@ describe('Start Command', () => {
           [],
           expect.objectContaining({
             prompt: 'Build a comprehensive TypeScript CLI tool',
-            subagent: 'claude'
+            subagent: 'claude',
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -255,7 +258,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -268,14 +271,14 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
 
         expect(fs.readFile).toHaveBeenCalledWith(
           path.join('/current/dir', '.juno_task', 'init.md'),
-          'utf-8'
+          'utf-8',
         );
       });
 
@@ -291,11 +294,11 @@ describe('Start Command', () => {
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
           defaultBackend: 'mcp',
-    defaultBackend: 'mcp',
+          defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -307,16 +310,16 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('Process exit called');
+        await expect(startCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'Process exit called',
+        );
 
         expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('No init.md file found in .juno_task directory')
+          expect.stringContaining('No init.md file found in .juno_task directory'),
         );
 
         // Restore process.exit
@@ -335,11 +338,11 @@ describe('Start Command', () => {
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
           defaultBackend: 'mcp',
-    defaultBackend: 'mcp',
+          defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -352,16 +355,16 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('Process exit called');
+        await expect(startCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'Process exit called',
+        );
 
         expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('init.md file is empty')
+          expect.stringContaining('init.md file is empty'),
         );
 
         // Restore process.exit
@@ -380,11 +383,11 @@ describe('Start Command', () => {
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
           defaultBackend: 'mcp',
-    defaultBackend: 'mcp',
+          defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -397,16 +400,16 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          startCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('Process exit called');
+        await expect(startCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'Process exit called',
+        );
 
         expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Failed to read init.md')
+          expect.stringContaining('Failed to read init.md'),
         );
 
         // Restore process.exit
@@ -430,7 +433,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -438,7 +441,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -447,9 +450,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            subagent: 'cursor'
+            subagent: 'cursor',
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -463,7 +466,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -471,7 +474,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -480,9 +483,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            subagent: 'gemini'
+            subagent: 'gemini',
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -496,7 +499,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -509,7 +512,7 @@ describe('Start Command', () => {
           maxIterations: 10,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -518,9 +521,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            maxIterations: 10
+            maxIterations: 10,
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -534,7 +537,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -548,7 +551,7 @@ describe('Start Command', () => {
           model: 'custom-model',
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -557,9 +560,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            model: 'custom-model'
+            model: 'custom-model',
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -573,7 +576,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -586,7 +589,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -595,9 +598,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            cwd: '/project'
+            cwd: '/project',
           }),
-          mockCommand
+          mockCommand,
         );
       });
     });
@@ -619,7 +622,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -627,7 +630,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -637,9 +640,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            prompt: 'Test task content'
+            prompt: 'Test task content',
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -654,7 +657,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -663,7 +666,7 @@ describe('Start Command', () => {
           sessionName: undefined,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -684,7 +687,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -692,7 +695,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -720,7 +723,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -728,7 +731,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -749,7 +752,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -758,7 +761,7 @@ describe('Start Command', () => {
           model: 'gpt-4',
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -779,7 +782,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -787,7 +790,7 @@ describe('Start Command', () => {
           maxIterations: -1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -798,7 +801,8 @@ describe('Start Command', () => {
       });
 
       it('should display task instructions preview', async () => {
-        const longTask = 'This is a very long task description that should be truncated when displayed in the progress output because it exceeds the 200 character limit that is set for the preview display in the start command handler.';
+        const longTask =
+          'This is a very long task description that should be truncated when displayed in the progress output because it exceeds the 200 character limit that is set for the preview display in the start command handler.';
         vi.mocked(fs.readFile).mockResolvedValueOnce(longTask);
 
         const { loadConfig } = await import('../../core/config.js');
@@ -811,7 +815,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -819,7 +823,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -829,9 +833,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            prompt: longTask
+            prompt: longTask,
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -849,7 +853,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -857,7 +861,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -867,9 +871,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            prompt: shortTask
+            prompt: shortTask,
           }),
-          mockCommand
+          mockCommand,
         );
       });
     });
@@ -891,7 +895,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -899,7 +903,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -920,7 +924,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -928,7 +932,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -949,7 +953,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: true
+          verbose: true,
         });
 
         const options: StartCommandOptions = {
@@ -957,7 +961,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: true,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -967,9 +971,9 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            verbose: true
+            verbose: true,
           }),
-          mockCommand
+          mockCommand,
         );
       });
 
@@ -984,7 +988,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -992,7 +996,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -1018,24 +1022,28 @@ describe('Start Command', () => {
           defaultModel: 'test-model',
           defaultSubagent: 'claude',
           defaultBackend: 'mcp',
-    defaultBackend: 'mcp',
+          defaultBackend: 'mcp',
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         // Set up execution engine mock
-        const { createExecutionEngine, createExecutionRequest, ExecutionStatus } = await import('../../core/engine.js');
+        const { createExecutionEngine, createExecutionRequest, ExecutionStatus } = await import(
+          '../../core/engine.js'
+        );
         const mockEngine = {
           execute: vi.fn().mockResolvedValue({
             status: ExecutionStatus.COMPLETED,
-            iterations: [{
-              iterationNumber: 1,
-              success: true,
-              duration: 1000,
-              toolResult: { content: 'Task completed successfully' }
-            }],
+            iterations: [
+              {
+                iterationNumber: 1,
+                success: true,
+                duration: 1000,
+                toolResult: { content: 'Task completed successfully' },
+              },
+            ],
             statistics: {
               totalIterations: 1,
               successfulIterations: 1,
@@ -1044,12 +1052,12 @@ describe('Start Command', () => {
               totalToolCalls: 5,
               rateLimitEncounters: 0,
               rateLimitWaitTime: 0,
-              errorBreakdown: {}
-            }
+              errorBreakdown: {},
+            },
           }),
           onProgress: vi.fn(),
           on: vi.fn(),
-          shutdown: vi.fn().mockResolvedValue(undefined)
+          shutdown: vi.fn().mockResolvedValue(undefined),
         };
         vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
         vi.mocked(createExecutionRequest).mockReturnValueOnce({
@@ -1058,7 +1066,7 @@ describe('Start Command', () => {
           subagent: 'claude',
           workingDirectory: '/project',
           maxIterations: 1,
-          model: 'test-model'
+          model: 'test-model',
         });
 
         // Set up session manager mock
@@ -1069,14 +1077,14 @@ describe('Start Command', () => {
               id: 'test-session-id',
               name: 'Test Session',
               createdAt: new Date(),
-              status: 'active'
-            }
+              status: 'active',
+            },
           }),
           addHistoryEntry: vi.fn().mockResolvedValue(undefined),
           completeSession: vi.fn().mockResolvedValue(undefined),
           save: vi.fn().mockResolvedValue(undefined),
           load: vi.fn().mockResolvedValue(undefined),
-          list: vi.fn().mockResolvedValue([])
+          list: vi.fn().mockResolvedValue([]),
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
@@ -1085,7 +1093,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -1107,15 +1115,17 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
-        const { createExecutionEngine, createExecutionRequest } = await import('../../core/engine.js');
+        const { createExecutionEngine, createExecutionRequest } = await import(
+          '../../core/engine.js'
+        );
         const mockEngine = {
           execute: vi.fn().mockRejectedValue(new Error('Execution failed')),
           onProgress: vi.fn(),
           on: vi.fn(),
-          shutdown: vi.fn()
+          shutdown: vi.fn(),
         };
         vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
         vi.mocked(createExecutionRequest).mockReturnValueOnce({
@@ -1124,7 +1134,7 @@ describe('Start Command', () => {
           subagent: 'claude',
           workingDirectory: '/project',
           maxIterations: 1,
-          model: 'test-model'
+          model: 'test-model',
         });
 
         // Set up session manager mock
@@ -1135,14 +1145,14 @@ describe('Start Command', () => {
               id: 'test-session-id',
               name: 'Test Session',
               createdAt: new Date(),
-              status: 'active'
-            }
+              status: 'active',
+            },
           }),
           addHistoryEntry: vi.fn().mockResolvedValue(undefined),
           completeSession: vi.fn().mockResolvedValue(undefined),
           save: vi.fn().mockResolvedValue(undefined),
           load: vi.fn().mockResolvedValue(undefined),
-          list: vi.fn().mockResolvedValue([])
+          list: vi.fn().mockResolvedValue([]),
         };
         vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
@@ -1151,7 +1161,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -1172,7 +1182,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -1180,7 +1190,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -1209,7 +1219,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         try {
@@ -1231,7 +1241,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false
+          verbose: false,
         });
 
         const options: StartCommandOptions = {
@@ -1239,7 +1249,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await startCommandHandler([], options, mockCommand);
@@ -1258,7 +1268,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         try {
@@ -1278,7 +1288,7 @@ describe('Start Command', () => {
           maxIterations: 1,
           verbose: true,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         try {

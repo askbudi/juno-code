@@ -81,7 +81,7 @@ export class CompletionCommand {
       }
 
       let successCount = 0;
-      let totalCount = targetShells.length;
+      const totalCount = targetShells.length;
 
       for (const targetShell of targetShells) {
         console.log(chalk.blue(`\n📦 Installing completion for ${targetShell}...`));
@@ -91,7 +91,7 @@ export class CompletionCommand {
           const validation = await this.shellDetector.validateShellEnvironment(targetShell);
           if (!validation.valid) {
             console.log(chalk.red(`❌ Validation failed for ${targetShell}:`));
-            validation.issues.forEach(issue => {
+            validation.issues.forEach((issue) => {
               console.log(chalk.red(`   • ${issue}`));
             });
 
@@ -110,7 +110,7 @@ export class CompletionCommand {
 
           if (result.warnings && result.warnings.length > 0) {
             console.log(chalk.yellow('\n⚠️  Warnings:'));
-            result.warnings.forEach(warning => {
+            result.warnings.forEach((warning) => {
               console.log(chalk.yellow(`   • ${warning}`));
             });
           }
@@ -131,9 +131,12 @@ export class CompletionCommand {
         console.log(chalk.green('\n🎉 Shell completion installation completed!'));
         console.log(chalk.white('Restart your shell or open a new terminal to activate.'));
       }
-
     } catch (error) {
-      console.error(chalk.red(`❌ Installation failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      console.error(
+        chalk.red(
+          `❌ Installation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ),
+      );
       process.exit(1);
     }
   }
@@ -158,7 +161,7 @@ export class CompletionCommand {
       }
 
       let successCount = 0;
-      let totalCount = targetShells.length;
+      const totalCount = targetShells.length;
 
       for (const targetShell of targetShells) {
         console.log(chalk.blue(`\n🗑️  Uninstalling completion for ${targetShell}...`));
@@ -180,9 +183,12 @@ export class CompletionCommand {
       if (successCount > 0) {
         console.log(chalk.green('\n🎉 Shell completion uninstallation completed!'));
       }
-
     } catch (error) {
-      console.error(chalk.red(`❌ Uninstallation failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      console.error(
+        chalk.red(
+          `❌ Uninstallation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ),
+      );
       process.exit(1);
     }
   }
@@ -231,28 +237,37 @@ export class CompletionCommand {
 
       // Show suggestions
       const uninstalledShells = completionStatus
-        .filter(status => !status.isInstalled && !status.error)
-        .map(status => status.shell);
+        .filter((status) => !status.isInstalled && !status.error)
+        .map((status) => status.shell);
 
       if (uninstalledShells.length > 0) {
         console.log(chalk.blue('\n💡 Suggestions:'));
-        console.log(chalk.white(`   Install completion: juno-code completion install ${uninstalledShells.join(' ')}`));
+        console.log(
+          chalk.white(
+            `   Install completion: juno-code completion install ${uninstalledShells.join(' ')}`,
+          ),
+        );
       }
 
       // Show current shell info
       const currentShell = this.shellDetector.getCurrentShell();
       if (currentShell) {
-        const currentStatus = completionStatus.find(status => status.shell === currentShell);
+        const currentStatus = completionStatus.find((status) => status.shell === currentShell);
         if (currentStatus?.isInstalled) {
           console.log(chalk.green(`\n🎯 Current shell (${currentShell}): Completion active`));
         } else {
-          console.log(chalk.yellow(`\n🎯 Current shell (${currentShell}): Completion not installed`));
+          console.log(
+            chalk.yellow(`\n🎯 Current shell (${currentShell}): Completion not installed`),
+          );
           console.log(chalk.white(`   Install: juno-code completion install ${currentShell}`));
         }
       }
-
     } catch (error) {
-      console.error(chalk.red(`❌ Status check failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      console.error(
+        chalk.red(
+          `❌ Status check failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ),
+      );
       process.exit(1);
     }
   }
@@ -263,8 +278,8 @@ export class CompletionCommand {
   private async installAllShells(options?: CompletionOptions): Promise<void> {
     const availableShells = await this.shellDetector.detectAvailableShells();
     const targetShells = availableShells
-      .filter(shell => shell.isAvailable)
-      .map(shell => shell.name);
+      .filter((shell) => shell.isAvailable)
+      .map((shell) => shell.name);
 
     if (targetShells.length === 0) {
       console.log(chalk.yellow('⚠️  No shells available for installation'));
@@ -289,7 +304,9 @@ export class CompletionCommand {
       return;
     }
 
-    console.log(chalk.blue(`Uninstalling completion for all shells: ${installedShells.join(', ')}`));
+    console.log(
+      chalk.blue(`Uninstalling completion for all shells: ${installedShells.join(', ')}`),
+    );
 
     for (const shell of installedShells) {
       await this.handleUninstall(shell, { ...options, all: false });
@@ -302,15 +319,13 @@ export class CompletionCommand {
   private async detectTargetShells(): Promise<ShellType[]> {
     const currentShell = this.shellDetector.getCurrentShell();
 
-    if (currentShell && await this.shellDetector.commandExists(currentShell)) {
+    if (currentShell && (await this.shellDetector.commandExists(currentShell))) {
       return [currentShell];
     }
 
     // Fall back to all available shells
     const availableShells = await this.shellDetector.detectAvailableShells();
-    return availableShells
-      .filter(shell => shell.isAvailable)
-      .map(shell => shell.name);
+    return availableShells.filter((shell) => shell.isAvailable).map((shell) => shell.name);
   }
 
   /**
@@ -318,9 +333,7 @@ export class CompletionCommand {
    */
   private async detectInstalledShells(): Promise<ShellType[]> {
     const completionStatus = await this.installer.getStatus();
-    return completionStatus
-      .filter(status => status.isInstalled)
-      .map(status => status.shell);
+    return completionStatus.filter((status) => status.isInstalled).map((status) => status.shell);
   }
 
   /**

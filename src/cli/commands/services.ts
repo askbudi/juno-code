@@ -10,7 +10,9 @@ import { ServiceInstaller } from '../../utils/service-installer.js';
 export function createServicesCommand(): Command {
   const servicesCmd = new Command('services')
     .description('Manage juno-code service scripts')
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code services install            Install service scripts to ~/.juno_code/services/
   $ juno-code services install --force    Reinstall/refresh service scripts (codex.py/claude.py/gemini.py)
@@ -22,7 +24,8 @@ Examples:
 Service scripts are Python/shell scripts that provide additional functionality
 and can be customized by users. They are installed to ~/.juno_code/services/
 where users can modify or extend them.
-    `);
+    `,
+    );
 
   // Install subcommand
   servicesCmd
@@ -45,7 +48,7 @@ where users can modify or extend them.
 
         const services = await ServiceInstaller.listServices();
         console.log(chalk.green(`\n✓ Successfully installed ${services.length} service(s):`));
-        services.forEach(service => {
+        services.forEach((service) => {
           console.log(chalk.dim(`  - ${service}`));
         });
         console.log(chalk.dim(`\nLocation: ${ServiceInstaller.getServicesDir()}`));
@@ -79,7 +82,7 @@ where users can modify or extend them.
         }
 
         console.log(chalk.blue(`Installed services (${services.length}):`));
-        services.forEach(service => {
+        services.forEach((service) => {
           const servicePath = ServiceInstaller.getServicePath(service);
           console.log(chalk.green(`  ✓ ${service}`));
           console.log(chalk.dim(`    ${servicePath}`));
@@ -109,7 +112,7 @@ where users can modify or extend them.
 
           if (services.length > 0) {
             console.log(chalk.dim('\n  Available services:'));
-            services.forEach(service => {
+            services.forEach((service) => {
               console.log(chalk.dim(`    - ${service}`));
             });
           }

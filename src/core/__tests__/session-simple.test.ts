@@ -37,7 +37,9 @@ class MockSessionStorage implements SessionStorage {
         ...serialized.info,
         createdAt: new Date(serialized.info.createdAt),
         updatedAt: new Date(serialized.info.updatedAt),
-        completedAt: serialized.info.completedAt ? new Date(serialized.info.completedAt) : undefined,
+        completedAt: serialized.info.completedAt
+          ? new Date(serialized.info.completedAt)
+          : undefined,
       },
       history: serialized.history.map((entry: any) => ({
         ...entry,
@@ -47,7 +49,7 @@ class MockSessionStorage implements SessionStorage {
   }
 
   async listSessions(): Promise<SessionInfo[]> {
-    return Array.from(this.sessions.values()).map(s => s.info);
+    return Array.from(this.sessions.values()).map((s) => s.info);
   }
 
   async removeSession(sessionId: string): Promise<void> {
@@ -213,7 +215,7 @@ describe('SessionManager (Core Logic)', () => {
 
     it('should throw error if session not found', async () => {
       await expect(
-        sessionManager.updateSession('nonexistent-session', { status: 'completed' })
+        sessionManager.updateSession('nonexistent-session', { status: 'completed' }),
       ).rejects.toThrow('Session nonexistent-session not found');
     });
 
@@ -318,7 +320,7 @@ describe('SessionManager (Core Logic)', () => {
         sessionManager.addHistoryEntry('nonexistent-session', {
           type: 'prompt',
           content: 'Test',
-        })
+        }),
       ).rejects.toThrow('Session nonexistent-session not found');
     });
   });
@@ -572,8 +574,8 @@ describe('SessionManager (Core Logic)', () => {
       const sessions = await sessionManager.listSessions();
 
       expect(sessions).toHaveLength(2);
-      expect(sessions.map(s => s.id)).toContain(session1.info.id);
-      expect(sessions.map(s => s.id)).toContain(session2.info.id);
+      expect(sessions.map((s) => s.id)).toContain(session1.info.id);
+      expect(sessions.map((s) => s.id)).toContain(session2.info.id);
     });
   });
 
@@ -694,7 +696,8 @@ describe('SessionManager (Core Logic)', () => {
       // Add history entry
       await sessionManager.addHistoryEntry(session.info.id, {
         type: 'prompt',
-        content: 'Test prompt with a very long content that should be truncated in the context view',
+        content:
+          'Test prompt with a very long content that should be truncated in the context view',
       });
 
       const context = await sessionManager.getSessionContext(session.info.id, {
@@ -702,7 +705,9 @@ describe('SessionManager (Core Logic)', () => {
       });
 
       expect(context).toContain('Recent History:');
-      expect(context).toContain('prompt: Test prompt with a very long content that should be truncated in the context view');
+      expect(context).toContain(
+        'prompt: Test prompt with a very long content that should be truncated in the context view',
+      );
     });
 
     it('should handle malformed history timestamp in context', async () => {

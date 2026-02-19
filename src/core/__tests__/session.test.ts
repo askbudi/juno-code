@@ -94,7 +94,9 @@ const createMockSessionInfo = (overrides: Partial<SessionInfo> = {}): SessionInf
   };
 };
 
-const createMockSessionStatistics = (overrides: Partial<SessionStatistics> = {}): SessionStatistics => ({
+const createMockSessionStatistics = (
+  overrides: Partial<SessionStatistics> = {},
+): SessionStatistics => ({
   duration: 300000, // 5 minutes
   iterations: 5,
   toolCalls: 15,
@@ -221,11 +223,15 @@ describe('FileSessionStorage', () => {
         ...session,
         info: {
           ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          createdAt:
+            session.info.createdAt?.toISOString() ||
+            new Date('2024-01-01T10:00:00.000Z').toISOString(),
+          updatedAt:
+            session.info.updatedAt?.toISOString() ||
+            new Date('2024-01-01T10:05:00.000Z').toISOString(),
           completedAt: session.info.completedAt?.toISOString(),
         },
-        history: session.history.map(entry => ({
+        history: session.history.map((entry) => ({
           ...entry,
           timestamp: entry.timestamp.toISOString(),
         })),
@@ -265,11 +271,15 @@ describe('FileSessionStorage', () => {
         ...session,
         info: {
           ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          createdAt:
+            session.info.createdAt?.toISOString() ||
+            new Date('2024-01-01T10:00:00.000Z').toISOString(),
+          updatedAt:
+            session.info.updatedAt?.toISOString() ||
+            new Date('2024-01-01T10:05:00.000Z').toISOString(),
           completedAt: undefined,
         },
-        history: session.history.map(entry => ({
+        history: session.history.map((entry) => ({
           ...entry,
           timestamp: entry.timestamp.toISOString(),
         })),
@@ -291,36 +301,56 @@ describe('FileSessionStorage', () => {
       ];
 
       mockFs.promises.mkdir.mockImplementation(() => Promise.resolve(undefined));
-      mockFs.promises.readdir.mockImplementation(() => Promise.resolve(['session-1.json', 'session-2.json']));
+      mockFs.promises.readdir.mockImplementation(() =>
+        Promise.resolve(['session-1.json', 'session-2.json']),
+      );
       mockFs.promises.access.mockImplementation(() => Promise.resolve(undefined));
 
       mockFs.promises.readFile.mockReset();
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const testStorage = new FileSessionStorage(tempDir);
       const result = await testStorage.listSessions();
 
       expect(result).toHaveLength(2);
-      expect(result.map(s => s.id)).toContain('session-1');
-      expect(result.map(s => s.id)).toContain('session-2');
+      expect(result.map((s) => s.id)).toContain('session-1');
+      expect(result.map((s) => s.id)).toContain('session-2');
     });
 
     it.skip('should filter sessions by status', async () => {
@@ -333,24 +363,42 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = { status: ['completed'] };
       const result = await storage.listSessions(filter);
@@ -370,24 +418,42 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = { subagent: ['cursor'] };
       const result = await storage.listSessions(filter);
@@ -402,13 +468,13 @@ describe('FileSessionStorage', () => {
         createMockSession({
           info: {
             id: 'session-1',
-            createdAt: new Date('2024-01-01T10:00:00.000Z')
+            createdAt: new Date('2024-01-01T10:00:00.000Z'),
           } as any,
         }),
         createMockSession({
           info: {
             id: 'session-2',
-            createdAt: new Date('2024-01-02T10:00:00.000Z')
+            createdAt: new Date('2024-01-02T10:00:00.000Z'),
           } as any,
         }),
       ];
@@ -417,24 +483,42 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = {
         dateRange: {
@@ -458,24 +542,42 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = { tags: ['development'] };
       const result = await storage.listSessions(filter);
@@ -490,14 +592,14 @@ describe('FileSessionStorage', () => {
           info: {
             id: 'session-1',
             name: 'A Session',
-            updatedAt: new Date('2024-01-01T10:00:00.000Z')
+            updatedAt: new Date('2024-01-01T10:00:00.000Z'),
           } as any,
         }),
         createMockSession({
           info: {
             id: 'session-2',
             name: 'B Session',
-            updatedAt: new Date('2024-01-02T10:00:00.000Z')
+            updatedAt: new Date('2024-01-02T10:00:00.000Z'),
           } as any,
         }),
       ];
@@ -506,28 +608,46 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = {
         sortBy: 'name',
-        sortOrder: 'asc'
+        sortOrder: 'asc',
       };
       const result = await storage.listSessions(filter);
 
@@ -543,40 +663,71 @@ describe('FileSessionStorage', () => {
       ];
 
       mockFs.promises.mkdir.mockResolvedValue(undefined);
-      mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json', 'session-3.json']);
+      mockFs.promises.readdir.mockResolvedValue([
+        'session-1.json',
+        'session-2.json',
+        'session-3.json',
+      ]);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[2],
-          info: {
-            ...sessions[2].info,
-            createdAt: sessions[2].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[2].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[2].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[2],
+            info: {
+              ...sessions[2].info,
+              createdAt:
+                sessions[2].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[2].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[2].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = {
         offset: 1,
-        limit: 1
+        limit: 1,
       };
       const result = await storage.listSessions(filter);
 
@@ -589,15 +740,24 @@ describe('FileSessionStorage', () => {
 
       const validSession = createMockSession({ info: { id: 'session-1' } as any });
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...validSession,
-          info: {
-            ...validSession.info,
-            createdAt: validSession.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: validSession.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: validSession.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...validSession,
+            info: {
+              ...validSession.info,
+              createdAt:
+                validSession.info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                validSession.info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: validSession.history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
         .mockRejectedValueOnce(new Error('Invalid JSON'));
 
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -607,7 +767,7 @@ describe('FileSessionStorage', () => {
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('session-1');
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to load session from corrupted.json')
+        expect.stringContaining('Failed to load session from corrupted.json'),
       );
 
       consoleSpy.mockRestore();
@@ -634,24 +794,42 @@ describe('FileSessionStorage', () => {
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'session-2.json']);
 
       mockFs.promises.readFile
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[0],
-          info: {
-            ...sessions[0].info,
-            createdAt: sessions[0].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[0].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[0].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }))
-        .mockResolvedValueOnce(JSON.stringify({
-          ...sessions[1],
-          info: {
-            ...sessions[1].info,
-            createdAt: sessions[1].info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-            updatedAt: sessions[1].info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-          },
-          history: sessions[1].history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-        }));
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[0],
+            info: {
+              ...sessions[0].info,
+              createdAt:
+                sessions[0].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[0].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[0].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            ...sessions[1],
+            info: {
+              ...sessions[1].info,
+              createdAt:
+                sessions[1].info.createdAt?.toISOString() ||
+                new Date('2024-01-01T10:00:00.000Z').toISOString(),
+              updatedAt:
+                sessions[1].info.updatedAt?.toISOString() ||
+                new Date('2024-01-01T10:05:00.000Z').toISOString(),
+            },
+            history: sessions[1].history.map((h) => ({
+              ...h,
+              timestamp: h.timestamp.toISOString(),
+            })),
+          }),
+        );
 
       const filter: SessionListFilter = { sortBy: 'name', sortOrder: 'asc' };
       const result = await storage.listSessions(filter);
@@ -669,7 +847,7 @@ describe('FileSessionStorage', () => {
       await storage.removeSession('test-session-123');
 
       expect(mockFs.promises.unlink).toHaveBeenCalledWith(
-        path.join(tempDir, 'sessions', 'test-session-123.json')
+        path.join(tempDir, 'sessions', 'test-session-123.json'),
       );
     });
 
@@ -686,7 +864,7 @@ describe('FileSessionStorage', () => {
       mockFs.promises.unlink.mockRejectedValue(error);
 
       await expect(storage.removeSession('test-session-123')).rejects.toThrow(
-        'Failed to remove session test-session-123: Error: Permission denied'
+        'Failed to remove session test-session-123: Error: Permission denied',
       );
     });
   });
@@ -700,7 +878,7 @@ describe('FileSessionStorage', () => {
       expect(exists).toBe(true);
       expect(mockFs.promises.access).toHaveBeenCalledWith(
         path.join(tempDir, 'sessions', 'test-session-123.json'),
-        fs.constants.F_OK
+        fs.constants.F_OK,
       );
     });
 
@@ -723,15 +901,21 @@ describe('FileSessionStorage', () => {
 
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
-        ...session,
-        info: {
-          ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-        },
-        history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-      }));
+      mockFs.promises.readFile.mockResolvedValue(
+        JSON.stringify({
+          ...session,
+          info: {
+            ...session.info,
+            createdAt:
+              session.info.createdAt?.toISOString() ||
+              new Date('2024-01-01T10:00:00.000Z').toISOString(),
+            updatedAt:
+              session.info.updatedAt?.toISOString() ||
+              new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          },
+          history: session.history.map((h) => ({ ...h, timestamp: h.timestamp.toISOString() })),
+        }),
+      );
       mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const mockDate = new Date('2024-12-01T10:00:00.000Z');
@@ -739,13 +923,13 @@ describe('FileSessionStorage', () => {
 
       const options: CleanupOptions = {
         removeOlderThanDays: 30,
-        dryRun: false
+        dryRun: false,
       };
 
       await storage.cleanup(options);
 
       expect(mockFs.promises.unlink).toHaveBeenCalledWith(
-        path.join(tempDir, 'sessions', 'test-session-123.json')
+        path.join(tempDir, 'sessions', 'test-session-123.json'),
       );
 
       vi.useRealTimers();
@@ -758,26 +942,32 @@ describe('FileSessionStorage', () => {
 
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
-        ...session,
-        info: {
-          ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-        },
-        history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-      }));
+      mockFs.promises.readFile.mockResolvedValue(
+        JSON.stringify({
+          ...session,
+          info: {
+            ...session.info,
+            createdAt:
+              session.info.createdAt?.toISOString() ||
+              new Date('2024-01-01T10:00:00.000Z').toISOString(),
+            updatedAt:
+              session.info.updatedAt?.toISOString() ||
+              new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          },
+          history: session.history.map((h) => ({ ...h, timestamp: h.timestamp.toISOString() })),
+        }),
+      );
       mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: CleanupOptions = {
         removeStatus: ['failed'],
-        dryRun: false
+        dryRun: false,
       };
 
       await storage.cleanup(options);
 
       expect(mockFs.promises.unlink).toHaveBeenCalledWith(
-        path.join(tempDir, 'sessions', 'test-session-123.json')
+        path.join(tempDir, 'sessions', 'test-session-123.json'),
       );
     });
 
@@ -789,26 +979,32 @@ describe('FileSessionStorage', () => {
 
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
-        ...session,
-        info: {
-          ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-        },
-        history: [],
-      }));
+      mockFs.promises.readFile.mockResolvedValue(
+        JSON.stringify({
+          ...session,
+          info: {
+            ...session.info,
+            createdAt:
+              session.info.createdAt?.toISOString() ||
+              new Date('2024-01-01T10:00:00.000Z').toISOString(),
+            updatedAt:
+              session.info.updatedAt?.toISOString() ||
+              new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          },
+          history: [],
+        }),
+      );
       mockFs.promises.unlink.mockResolvedValue(undefined);
 
       const options: CleanupOptions = {
         removeEmpty: true,
-        dryRun: false
+        dryRun: false,
       };
 
       await storage.cleanup(options);
 
       expect(mockFs.promises.unlink).toHaveBeenCalledWith(
-        path.join(tempDir, 'sessions', 'test-session-123.json')
+        path.join(tempDir, 'sessions', 'test-session-123.json'),
       );
     });
 
@@ -819,19 +1015,25 @@ describe('FileSessionStorage', () => {
 
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
-      mockFs.promises.readFile.mockResolvedValue(JSON.stringify({
-        ...session,
-        info: {
-          ...session.info,
-          createdAt: session.info.createdAt?.toISOString() || new Date('2024-01-01T10:00:00.000Z').toISOString(),
-          updatedAt: session.info.updatedAt?.toISOString() || new Date('2024-01-01T10:05:00.000Z').toISOString()
-        },
-        history: session.history.map(h => ({ ...h, timestamp: h.timestamp.toISOString() })),
-      }));
+      mockFs.promises.readFile.mockResolvedValue(
+        JSON.stringify({
+          ...session,
+          info: {
+            ...session.info,
+            createdAt:
+              session.info.createdAt?.toISOString() ||
+              new Date('2024-01-01T10:00:00.000Z').toISOString(),
+            updatedAt:
+              session.info.updatedAt?.toISOString() ||
+              new Date('2024-01-01T10:05:00.000Z').toISOString(),
+          },
+          history: session.history.map((h) => ({ ...h, timestamp: h.timestamp.toISOString() })),
+        }),
+      );
 
       const options: CleanupOptions = {
         removeStatus: ['failed'],
-        dryRun: true
+        dryRun: true,
       };
 
       await storage.cleanup(options);
@@ -847,13 +1049,13 @@ describe('FileSessionStorage', () => {
 
       const options: CleanupOptions = {
         removeEmpty: true,
-        dryRun: false
+        dryRun: false,
       };
 
       await storage.cleanup(options);
 
       expect(mockFs.promises.unlink).toHaveBeenCalledWith(
-        path.join(tempDir, 'sessions', 'test-session-123.json')
+        path.join(tempDir, 'sessions', 'test-session-123.json'),
       );
     });
   });
@@ -1015,7 +1217,7 @@ describe('SessionManager', () => {
           info: expect.objectContaining({
             status: 'completed',
           }),
-        })
+        }),
       );
     });
 
@@ -1023,7 +1225,7 @@ describe('SessionManager', () => {
       mockStorage.loadSession.mockResolvedValue(null);
 
       await expect(
-        sessionManager.updateSession('nonexistent-session', { status: 'completed' })
+        sessionManager.updateSession('nonexistent-session', { status: 'completed' }),
       ).rejects.toThrow('Session nonexistent-session not found');
     });
 
@@ -1254,7 +1456,7 @@ describe('SessionManager', () => {
         sessionManager.addHistoryEntry('nonexistent-session', {
           type: 'prompt',
           content: 'Test',
-        })
+        }),
       ).rejects.toThrow('Session nonexistent-session not found');
     });
   });

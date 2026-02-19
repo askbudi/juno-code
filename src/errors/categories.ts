@@ -40,7 +40,7 @@ export enum ErrorCategory {
   NETWORK = 'network',
 
   /** Security and permission errors */
-  SECURITY = 'security'
+  SECURITY = 'security',
 }
 
 /**
@@ -60,7 +60,7 @@ export enum ErrorSeverity {
   CRITICAL = 'critical',
 
   /** Fatal errors that require immediate termination */
-  FATAL = 'fatal'
+  FATAL = 'fatal',
 }
 
 /**
@@ -80,7 +80,7 @@ export enum ErrorPriority {
   HIGH = 3,
 
   /** Highest priority - handle before all others */
-  HIGHEST = 4
+  HIGHEST = 4,
 }
 
 /**
@@ -103,7 +103,7 @@ export enum ErrorHandlingStrategy {
   USER_INTERVENTION = 'user_intervention',
 
   /** Ignore - log and continue */
-  IGNORE = 'ignore'
+  IGNORE = 'ignore',
 }
 
 /**
@@ -120,7 +120,7 @@ export const DEFAULT_CATEGORY_SEVERITY: Record<ErrorCategory, ErrorSeverity> = {
   [ErrorCategory.TUI]: ErrorSeverity.LOW,
   [ErrorCategory.INTERNAL]: ErrorSeverity.CRITICAL,
   [ErrorCategory.NETWORK]: ErrorSeverity.HIGH,
-  [ErrorCategory.SECURITY]: ErrorSeverity.CRITICAL
+  [ErrorCategory.SECURITY]: ErrorSeverity.CRITICAL,
 };
 
 /**
@@ -137,7 +137,7 @@ export const DEFAULT_CATEGORY_STRATEGY: Record<ErrorCategory, ErrorHandlingStrat
   [ErrorCategory.TUI]: ErrorHandlingStrategy.FALLBACK,
   [ErrorCategory.INTERNAL]: ErrorHandlingStrategy.FAIL_FAST,
   [ErrorCategory.NETWORK]: ErrorHandlingStrategy.RETRY,
-  [ErrorCategory.SECURITY]: ErrorHandlingStrategy.FAIL_FAST
+  [ErrorCategory.SECURITY]: ErrorHandlingStrategy.FAIL_FAST,
 };
 
 /**

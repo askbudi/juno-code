@@ -22,8 +22,10 @@ describe('Feedback Command Binary Execution', () => {
   });
 
   afterEach(async () => {
-    if (tempDir && await fs.pathExists(tempDir)) {
-      try { await fs.remove(tempDir); } catch {}
+    if (tempDir && (await fs.pathExists(tempDir))) {
+      try {
+        await fs.remove(tempDir);
+      } catch {}
     }
   });
 
@@ -31,16 +33,15 @@ describe('Feedback Command Binary Execution', () => {
     const issue = 'Binary feedback: duplicate logs still present';
     const criteria = 'Run start --verbose and ensure single messages';
 
-    const { exitCode, stdout, stderr } = await execa('node', [
-      BINARY_MJS,
-      'feedback',
-      '--issue', issue,
-      '--test', criteria
-    ], {
-      cwd: tempDir,
-      env: { NO_COLOR: '1', NODE_ENV: 'development', JUNO_CODE_CONFIG: '', JUNO_TASK_CONFIG: '' },
-      reject: false
-    });
+    const { exitCode, stdout, stderr } = await execa(
+      'node',
+      [BINARY_MJS, 'feedback', '--issue', issue, '--test', criteria],
+      {
+        cwd: tempDir,
+        env: { NO_COLOR: '1', NODE_ENV: 'development', JUNO_CODE_CONFIG: '', JUNO_TASK_CONFIG: '' },
+        reject: false,
+      },
+    );
 
     expect(exitCode).toBe(0);
     expect(stdout + stderr).toContain('Feedback added to USER_FEEDBACK.md');
@@ -49,7 +50,8 @@ describe('Feedback Command Binary Execution', () => {
     const exists = await fs.pathExists(feedbackPath);
     expect(exists).toBe(true);
     const content = await fs.readFile(feedbackPath, 'utf-8');
-    expect(content).toMatch(/<OPEN_ISSUES>[\s\S]*<ISSUE>[\s\S]*Binary feedback:[\s\S]*<Test_CRITERIA>[\s\S]*single messages[\s\S]*<\/Test_CRITERIA>[\s\S]*<\/ISSUE>[\s\S]*<\/OPEN_ISSUES>/);
+    expect(content).toMatch(
+      /<OPEN_ISSUES>[\s\S]*<ISSUE>[\s\S]*Binary feedback:[\s\S]*<Test_CRITERIA>[\s\S]*single messages[\s\S]*<\/Test_CRITERIA>[\s\S]*<\/ISSUE>[\s\S]*<\/OPEN_ISSUES>/,
+    );
   });
 });
-

@@ -11,7 +11,7 @@ import {
   countOpenIssues,
   shouldArchive,
   type ArchivalStats,
-  type ArchivalOptions
+  type ArchivalOptions,
 } from '../feedback-archival.js';
 
 describe('Feedback Archival System', () => {
@@ -77,7 +77,7 @@ describe('Feedback Archival System', () => {
         archiveDir,
         openIssuesThreshold: 10,
         dryRun: false,
-        verbose: false
+        verbose: false,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -128,7 +128,7 @@ describe('Feedback Archival System', () => {
       const options: ArchivalOptions = {
         feedbackFile,
         archiveDir,
-        verbose: true
+        verbose: true,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -164,7 +164,7 @@ describe('Feedback Archival System', () => {
       const options: ArchivalOptions = {
         feedbackFile,
         archiveDir,
-        openIssuesThreshold: 10
+        openIssuesThreshold: 10,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -199,7 +199,7 @@ describe('Feedback Archival System', () => {
       const options: ArchivalOptions = {
         feedbackFile,
         archiveDir,
-        dryRun: true
+        dryRun: true,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -258,7 +258,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       const options: ArchivalOptions = {
         feedbackFile,
         archiveDir,
-        dryRun: false
+        dryRun: false,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -275,7 +275,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
     test('should throw error for non-existent feedback file', async () => {
       const options: ArchivalOptions = {
         feedbackFile: path.join(testDir, 'nonexistent.md'),
-        archiveDir
+        archiveDir,
       };
 
       await expect(archiveResolvedIssues(options)).rejects.toThrow('Feedback file does not exist');
@@ -377,7 +377,9 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       const result = await shouldArchive(feedbackFile, { openIssuesThreshold: 10 });
 
       expect(result.shouldArchive).toBe(true);
-      expect(result.reasons.some(r => r.includes('12 open issues exceeds threshold (10)'))).toBe(true);
+      expect(result.reasons.some((r) => r.includes('12 open issues exceeds threshold (10)'))).toBe(
+        true,
+      );
       expect(result.stats.openIssuesCount).toBe(12);
     });
 
@@ -396,7 +398,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       const result = await shouldArchive(feedbackFile, { fileSizeThreshold: 10 * 1024 }); // 10KB
 
       expect(result.shouldArchive).toBe(true);
-      expect(result.reasons.some(r => r.includes('exceeds threshold'))).toBe(true);
+      expect(result.reasons.some((r) => r.includes('exceeds threshold'))).toBe(true);
       expect(result.stats.fileSizeBytes).toBeGreaterThan(10 * 1024);
     });
 
@@ -477,7 +479,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
 
       const options: ArchivalOptions = {
         feedbackFile,
-        archiveDir
+        archiveDir,
       };
 
       const result = await archiveResolvedIssues(options);
@@ -522,7 +524,7 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
       // Archive and verify structure is preserved
       const options: ArchivalOptions = {
         feedbackFile,
-        archiveDir
+        archiveDir,
       };
 
       const result = await archiveResolvedIssues(options);

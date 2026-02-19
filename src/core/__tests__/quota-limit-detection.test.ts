@@ -13,7 +13,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   detectQuotaLimit,
   formatDuration,
-  type QuotaLimitInfo
+  type QuotaLimitInfo,
 } from '../backends/shell-backend.js';
 
 describe('Quota Limit Detection', () => {
@@ -41,7 +41,7 @@ describe('Quota Limit Detection', () => {
     });
 
     it('should detect quota limit message with apostrophe variant', () => {
-      const message = "Youve hit your limit · resets 10am (UTC)";
+      const message = 'Youve hit your limit · resets 10am (UTC)';
       const result = detectQuotaLimit(message);
 
       expect(result.detected).toBe(true);
@@ -56,12 +56,12 @@ describe('Quota Limit Detection', () => {
 
     it('should return false for non-quota-limit messages', () => {
       const messages = [
-        "Task completed successfully",
-        "Rate limit exceeded",
-        "Error: connection timeout",
-        "",
+        'Task completed successfully',
+        'Rate limit exceeded',
+        'Error: connection timeout',
+        '',
         null,
-        undefined
+        undefined,
       ];
 
       for (const message of messages) {
@@ -115,9 +115,15 @@ describe('Quota Limit Detection', () => {
 
     it('should handle various timezone formats', () => {
       const testCases = [
-        { message: "You've hit your limit · resets 8pm (America/Toronto)", timezone: 'America/Toronto' },
+        {
+          message: "You've hit your limit · resets 8pm (America/Toronto)",
+          timezone: 'America/Toronto',
+        },
         { message: "You've hit your limit · resets 8pm (US/Eastern)", timezone: 'US/Eastern' },
-        { message: "You've hit your limit · resets 8pm (Europe/London)", timezone: 'Europe/London' },
+        {
+          message: "You've hit your limit · resets 8pm (Europe/London)",
+          timezone: 'Europe/London',
+        },
         { message: "You've hit your limit · resets 8pm (UTC)", timezone: 'UTC' },
         { message: "You've hit your limit · resets 8pm (GMT)", timezone: 'GMT' },
         { message: "You've hit your limit · resets 8pm (Asia/Tokyo)", timezone: 'Asia/Tokyo' },
@@ -195,8 +201,8 @@ describe('Quota Limit Detection', () => {
     it('should handle nested sub_agent_response format', () => {
       const response = {
         sub_agent_response: {
-          result: "You've hit your limit · resets 10am (UTC)"
-        }
+          result: "You've hit your limit · resets 10am (UTC)",
+        },
       };
 
       const result = detectQuotaLimit(response.sub_agent_response.result);
@@ -208,7 +214,8 @@ describe('Quota Limit Detection', () => {
 
   describe('Codex quota limit detection', () => {
     it('should detect Codex quota limit message with standard format', () => {
-      const message = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM.";
+      const message =
+        "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM.";
       const result = detectQuotaLimit(message);
 
       expect(result.detected).toBe(true);
@@ -295,7 +302,7 @@ describe('Quota Limit Detection', () => {
     });
 
     it('should handle Codex apostrophe variant', () => {
-      const message = "Youve hit your usage limit. try again at Feb 4th, 2026 1:50 AM.";
+      const message = 'Youve hit your usage limit. try again at Feb 4th, 2026 1:50 AM.';
       const result = detectQuotaLimit(message);
 
       expect(result.detected).toBe(true);
@@ -336,8 +343,9 @@ describe('Quota Limit Detection', () => {
 
     it('should detect from full Codex error event JSON', () => {
       const codexErrorEvent = {
-        type: "error",
-        message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM."
+        type: 'error',
+        message:
+          "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM.",
       };
 
       const result = detectQuotaLimit(codexErrorEvent.message);
@@ -349,10 +357,11 @@ describe('Quota Limit Detection', () => {
 
     it('should detect from Codex turn.failed event', () => {
       const turnFailedEvent = {
-        type: "turn.failed",
+        type: 'turn.failed',
         error: {
-          message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM."
-        }
+          message:
+            "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 4th, 2026 1:50 AM.",
+        },
       };
 
       const result = detectQuotaLimit(turnFailedEvent.error.message);

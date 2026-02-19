@@ -24,13 +24,13 @@ vi.mock('fs-extra', () => {
       readFile,
       writeFile,
       mkdtemp,
-      remove
+      remove,
     },
     pathExists,
     readFile,
     writeFile,
     mkdtemp,
-    remove
+    remove,
   };
 });
 
@@ -80,14 +80,10 @@ describe('GitManager', () => {
       const result = await gitManager.isGitRepository();
 
       expect(result).toBe(true);
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['rev-parse', '--git-dir'],
-        {
-          cwd: tempDir,
-          stdio: 'pipe'
-        }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['rev-parse', '--git-dir'], {
+        cwd: tempDir,
+        stdio: 'pipe',
+      });
     });
 
     it('should return false when not a git repository', async () => {
@@ -113,25 +109,17 @@ describe('GitManager', () => {
 
       await gitManager.initRepository();
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['init'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['init'], { cwd: tempDir });
 
       // Should also setup default branch
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['branch', '--show-current'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['branch', '--show-current'], { cwd: tempDir });
     });
 
     it('should throw RuntimeError when git init fails', async () => {
       mockExeca.mockRejectedValue(new Error('Permission denied'));
 
       await expect(gitManager.initRepository()).rejects.toThrow(
-        'Failed to initialize Git repository'
+        'Failed to initialize Git repository',
       );
     });
 
@@ -143,11 +131,7 @@ describe('GitManager', () => {
 
       await gitManager.initRepository();
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['checkout', '-b', 'main'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['checkout', '-b', 'main'], { cwd: tempDir });
     });
   });
 
@@ -164,7 +148,7 @@ describe('GitManager', () => {
         hasUncommittedChanges: false,
         hasUntrackedFiles: false,
         commitCount: 0,
-        status: 'not-repository'
+        status: 'not-repository',
       });
     });
 
@@ -172,10 +156,15 @@ describe('GitManager', () => {
       mockExeca
         .mockResolvedValueOnce({ stdout: '.git' }) // rev-parse --git-dir
         .mockResolvedValueOnce({ stdout: 'main' }) // branch --show-current
-        .mockResolvedValueOnce({ stdout: 'origin\thttps://github.com/user/repo.git (fetch)\norigin\thttps://github.com/user/repo.git (push)' }) // remote -v
+        .mockResolvedValueOnce({
+          stdout:
+            'origin\thttps://github.com/user/repo.git (fetch)\norigin\thttps://github.com/user/repo.git (push)',
+        }) // remote -v
         .mockResolvedValueOnce({ stdout: '' }) // status --porcelain
         .mockResolvedValueOnce({ stdout: '5' }) // rev-list --count HEAD
-        .mockResolvedValueOnce({ stdout: 'abc123|abc|Initial commit|John Doe|john@example.com|2024-01-01|1704067200' }) // log -1
+        .mockResolvedValueOnce({
+          stdout: 'abc123|abc|Initial commit|John Doe|john@example.com|2024-01-01|1704067200',
+        }) // log -1
         .mockResolvedValueOnce({ stdout: 'README.md\npackage.json' }); // diff-tree
 
       const info = await gitManager.getRepositoryInfo();
@@ -299,11 +288,11 @@ describe('GitManager', () => {
             super(message);
             this.name = 'RuntimeError';
           }
-        }
+        },
       }));
 
       await expect(gitManager.getRepositoryInfo()).rejects.toThrow(
-        'Failed to get Git repository information'
+        'Failed to get Git repository information',
       );
     });
   });
@@ -323,7 +312,7 @@ describe('GitManager', () => {
         url: 'https://github.com/user/repo.git',
         remote: 'origin',
         branch: 'main',
-        isConfigured: true
+        isConfigured: true,
       });
     });
 
@@ -341,7 +330,7 @@ describe('GitManager', () => {
         url: undefined,
         remote: 'origin',
         branch: 'main',
-        isConfigured: false
+        isConfigured: false,
       });
     });
 
@@ -376,11 +365,9 @@ describe('GitManager', () => {
 
       await gitManager.setupUpstream(url);
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['remote', 'add', 'origin', url],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['remote', 'add', 'origin', url], {
+        cwd: tempDir,
+      });
     });
 
     it('should setup upstream with valid SSH URL', async () => {
@@ -399,11 +386,9 @@ describe('GitManager', () => {
 
       await gitManager.setupUpstream(url);
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['remote', 'add', 'origin', url],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['remote', 'add', 'origin', url], {
+        cwd: tempDir,
+      });
     });
 
     it('should update existing remote URL', async () => {
@@ -422,11 +407,9 @@ describe('GitManager', () => {
 
       await gitManager.setupUpstream(url);
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['remote', 'set-url', 'origin', url],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['remote', 'set-url', 'origin', url], {
+        cwd: tempDir,
+      });
     });
 
     it('should initialize repository if not a git repo', async () => {
@@ -453,9 +436,7 @@ describe('GitManager', () => {
     it('should throw ValidationError for invalid URL', async () => {
       const invalidUrl = 'not-a-valid-url';
 
-      await expect(gitManager.setupUpstream(invalidUrl)).rejects.toThrow(
-        'Invalid Git URL'
-      );
+      await expect(gitManager.setupUpstream(invalidUrl)).rejects.toThrow('Invalid Git URL');
     });
 
     it('should handle upstream branch setting errors gracefully', async () => {
@@ -483,9 +464,7 @@ describe('GitManager', () => {
         .mockResolvedValueOnce({ stdout: '.git' }) // isGitRepository
         .mockRejectedValueOnce(new Error('Fatal git error')); // remote get-url origin fails
 
-      await expect(gitManager.setupUpstream(url)).rejects.toThrow(
-        'Failed to setup upstream'
-      );
+      await expect(gitManager.setupUpstream(url)).rejects.toThrow('Failed to setup upstream');
     });
   });
 
@@ -502,11 +481,9 @@ describe('GitManager', () => {
       const result = await gitManager.removeUpstream();
 
       expect(result).toBe(true);
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['remote', 'remove', 'origin'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['remote', 'remove', 'origin'], {
+        cwd: tempDir,
+      });
     });
 
     it('should return false when no upstream configured', async () => {
@@ -523,7 +500,7 @@ describe('GitManager', () => {
       expect(mockExeca).not.toHaveBeenCalledWith(
         'git',
         ['remote', 'remove', 'origin'],
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 
@@ -535,7 +512,7 @@ describe('GitManager', () => {
             super(message);
             this.name = 'RuntimeError';
           }
-        }
+        },
       }));
 
       // Mock getUpstreamConfig to return configured upstream
@@ -543,15 +520,13 @@ describe('GitManager', () => {
         url: 'https://github.com/user/repo.git',
         remote: 'origin',
         branch: 'main',
-        isConfigured: true
+        isConfigured: true,
       });
 
       // Mock the git remote remove command to fail
       mockExeca.mockRejectedValueOnce(new Error('Permission denied'));
 
-      await expect(gitManager.removeUpstream()).rejects.toThrow(
-        'Failed to remove upstream'
-      );
+      await expect(gitManager.removeUpstream()).rejects.toThrow('Failed to remove upstream');
     });
   });
 
@@ -563,11 +538,7 @@ describe('GitManager', () => {
 
       await gitManager.setupDefaultBranch();
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['checkout', '-b', 'main'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['checkout', '-b', 'main'], { cwd: tempDir });
     });
 
     it('should setup custom branch name', async () => {
@@ -577,11 +548,9 @@ describe('GitManager', () => {
 
       await gitManager.setupDefaultBranch('develop');
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['checkout', '-b', 'develop'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['checkout', '-b', 'develop'], {
+        cwd: tempDir,
+      });
     });
 
     it('should rename existing branch', async () => {
@@ -591,11 +560,7 @@ describe('GitManager', () => {
 
       await gitManager.setupDefaultBranch('main');
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['branch', '-m', 'main'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['branch', '-m', 'main'], { cwd: tempDir });
     });
 
     it('should do nothing if already on target branch', async () => {
@@ -612,7 +577,7 @@ describe('GitManager', () => {
         .mockRejectedValueOnce(new Error('Branch rename failed')); // branch -m
 
       await expect(gitManager.setupDefaultBranch('main')).rejects.toThrow(
-        'Failed to setup default branch'
+        'Failed to setup default branch',
       );
     });
   });
@@ -626,15 +591,11 @@ describe('GitManager', () => {
 
       await gitManager.createInitialCommit();
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['add', '.'],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['add', '.'], { cwd: tempDir });
       expect(mockExeca).toHaveBeenCalledWith(
         'git',
         ['commit', '-m', 'Initial commit - juno-code project setup'],
-        { cwd: tempDir }
+        { cwd: tempDir },
       );
     });
 
@@ -648,11 +609,9 @@ describe('GitManager', () => {
 
       await gitManager.createInitialCommit(customMessage);
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['commit', '-m', customMessage],
-        { cwd: tempDir }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['commit', '-m', customMessage], {
+        cwd: tempDir,
+      });
     });
 
     it('should do nothing when no files to commit', async () => {
@@ -665,7 +624,7 @@ describe('GitManager', () => {
       expect(mockExeca).not.toHaveBeenCalledWith(
         'git',
         ['commit', '-m', expect.any(String)],
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 
@@ -676,7 +635,7 @@ describe('GitManager', () => {
         .mockRejectedValueOnce(new Error('Commit failed')); // git commit
 
       await expect(gitManager.createInitialCommit()).rejects.toThrow(
-        'Failed to create initial commit'
+        'Failed to create initial commit',
       );
     });
   });
@@ -693,14 +652,10 @@ describe('GitManager', () => {
 
       await gitManager.performInitialPush();
 
-      expect(mockExeca).toHaveBeenCalledWith(
-        'git',
-        ['push', '-u', 'origin', 'main'],
-        {
-          cwd: tempDir,
-          stdio: 'inherit'
-        }
-      );
+      expect(mockExeca).toHaveBeenCalledWith('git', ['push', '-u', 'origin', 'main'], {
+        cwd: tempDir,
+        stdio: 'inherit',
+      });
     });
 
     it('should throw ValidationError when no upstream configured', async () => {
@@ -712,7 +667,7 @@ describe('GitManager', () => {
         .mockResolvedValueOnce({ stdout: '1' }); // rev-list --count HEAD
 
       await expect(gitManager.performInitialPush()).rejects.toThrow(
-        'No upstream repository configured'
+        'No upstream repository configured',
       );
     });
 
@@ -724,7 +679,7 @@ describe('GitManager', () => {
             super(message);
             this.name = 'RuntimeError';
           }
-        }
+        },
       }));
 
       // Mock getUpstreamConfig to return configured upstream
@@ -732,15 +687,13 @@ describe('GitManager', () => {
         url: 'https://github.com/user/repo.git',
         remote: 'origin',
         branch: 'main',
-        isConfigured: true
+        isConfigured: true,
       });
 
       // Mock the git push command to fail
       mockExeca.mockRejectedValueOnce(new Error('Push failed'));
 
-      await expect(gitManager.performInitialPush()).rejects.toThrow(
-        'Failed to push to upstream'
-      );
+      await expect(gitManager.performInitialPush()).rejects.toThrow('Failed to push to upstream');
     });
   });
 
@@ -764,7 +717,7 @@ GIT_URL: old-url
       expect(mockFs.writeFile).toHaveBeenCalledWith(
         configPath,
         expect.stringContaining(`GIT_URL: ${gitUrl}`),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -786,7 +739,7 @@ EXISTING_CONFIG: value
       expect(mockFs.writeFile).toHaveBeenCalledWith(
         configPath,
         expect.stringContaining(`GIT_URL: ${gitUrl}`),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -804,7 +757,7 @@ EXISTING_CONFIG: value
       expect(mockFs.writeFile).toHaveBeenCalledWith(
         configPath,
         expect.stringContaining(`---\nGIT_URL: ${gitUrl}\n---`),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -829,7 +782,7 @@ EXISTING_CONFIG: value
       await gitManager.updateJunoTaskConfig(gitUrl);
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Warning: Failed to update juno-code configuration')
+        expect.stringContaining('Warning: Failed to update juno-code configuration'),
       );
 
       consoleSpy.mockRestore();
@@ -850,7 +803,7 @@ upstream\thttps://github.com/original/repo.git (push)`;
 
       expect(result).toEqual({
         origin: 'https://github.com/user/repo.git',
-        upstream: 'https://github.com/original/repo.git'
+        upstream: 'https://github.com/original/repo.git',
       });
     });
 
@@ -875,7 +828,7 @@ upstream\thttps://github.com/original/repo.git (fetch)`;
 
       expect(result).toEqual({
         origin: 'https://github.com/user/repo.git',
-        upstream: 'https://github.com/original/repo.git'
+        upstream: 'https://github.com/original/repo.git',
       });
     });
   });
@@ -920,7 +873,7 @@ upstream\thttps://github.com/original/repo.git (fetch)`;
         'not-a-url',
         'https://example.com/not-git',
         'git@invalid:format',
-        'ftp://github.com/user/repo.git'
+        'ftp://github.com/user/repo.git',
       ];
 
       for (const url of invalidUrls) {
@@ -966,7 +919,7 @@ describe('GitUrlUtils', () => {
       const testCases = [
         ['git@gitlab.com:user/repo.git', 'https://gitlab.com/user/repo'],
         ['git@bitbucket.org:user/repo.git', 'https://bitbucket.org/user/repo'],
-        ['git@custom-host.com:user/repo.git', 'https://custom-host.com/user/repo']
+        ['git@custom-host.com:user/repo.git', 'https://custom-host.com/user/repo'],
       ];
 
       for (const [input, expected] of testCases) {
@@ -984,7 +937,7 @@ describe('GitUrlUtils', () => {
         provider: 'github.com',
         owner: 'user',
         repo: 'repo',
-        isSSH: false
+        isSSH: false,
       });
     });
 
@@ -996,7 +949,7 @@ describe('GitUrlUtils', () => {
         provider: 'github.com',
         owner: 'user',
         repo: 'repo',
-        isSSH: true
+        isSSH: true,
       });
     });
 
@@ -1015,7 +968,7 @@ describe('GitUrlUtils', () => {
       const invalidUrls = [
         'not-a-valid-url',
         'https://github.com/incomplete',
-        'git@github.com:incomplete'
+        'git@github.com:incomplete',
       ];
 
       for (const url of invalidUrls) {
@@ -1028,7 +981,7 @@ describe('GitUrlUtils', () => {
         ['https://gitlab.com/user/repo.git', 'gitlab.com'],
         ['https://bitbucket.org/user/repo.git', 'bitbucket.org'],
         ['git@gitlab.com:user/repo.git', 'gitlab.com'],
-        ['git@bitbucket.org:user/repo.git', 'bitbucket.org']
+        ['git@bitbucket.org:user/repo.git', 'bitbucket.org'],
       ];
 
       for (const [url, expectedProvider] of testCases) {
@@ -1044,7 +997,7 @@ describe('GitUrlUtils', () => {
         ['https://github.com/user/repo.git', 'https://github.com/user/repo'],
         ['git@github.com:user/repo.git', 'https://github.com/user/repo'],
         ['https://gitlab.com/user/repo.git', 'https://gitlab.com/user/repo'],
-        ['git@gitlab.com:user/repo.git', 'https://gitlab.com/user/repo']
+        ['git@gitlab.com:user/repo.git', 'https://gitlab.com/user/repo'],
       ];
 
       for (const [input, expected] of testCases) {
@@ -1071,7 +1024,7 @@ describe('Git URL Schemas', () => {
         'https://github.com/user/repo.git',
         'https://github.com/user/repo',
         'https://github.com/user/repo-name.git',
-        'https://github.com/user-name/repo.git'
+        'https://github.com/user-name/repo.git',
       ];
 
       for (const url of validUrls) {
@@ -1080,10 +1033,7 @@ describe('Git URL Schemas', () => {
     });
 
     it('should validate GitLab HTTPS URLs', () => {
-      const validUrls = [
-        'https://gitlab.com/user/repo.git',
-        'https://gitlab.com/user/repo'
-      ];
+      const validUrls = ['https://gitlab.com/user/repo.git', 'https://gitlab.com/user/repo'];
 
       for (const url of validUrls) {
         expect(() => GitHttpsUrlSchema.parse(url)).not.toThrow();
@@ -1091,10 +1041,7 @@ describe('Git URL Schemas', () => {
     });
 
     it('should validate Bitbucket HTTPS URLs', () => {
-      const validUrls = [
-        'https://bitbucket.org/user/repo.git',
-        'https://bitbucket.org/user/repo'
-      ];
+      const validUrls = ['https://bitbucket.org/user/repo.git', 'https://bitbucket.org/user/repo'];
 
       for (const url of validUrls) {
         expect(() => GitHttpsUrlSchema.parse(url)).not.toThrow();
@@ -1104,7 +1051,7 @@ describe('Git URL Schemas', () => {
     it('should validate generic Git hosting URLs', () => {
       const validUrls = [
         'https://git.example.com/user/repo.git',
-        'https://code.company.com/team/project.git'
+        'https://code.company.com/team/project.git',
       ];
 
       for (const url of validUrls) {
@@ -1118,7 +1065,7 @@ describe('Git URL Schemas', () => {
         'https://github.com/incomplete',
         'https://github.com',
         'http://github.com/user/repo.git', // HTTP not HTTPS
-        'ftp://github.com/user/repo.git'
+        'ftp://github.com/user/repo.git',
       ];
 
       for (const url of invalidUrls) {
@@ -1133,7 +1080,7 @@ describe('Git URL Schemas', () => {
         'git@github.com:user/repo.git',
         'git@github.com:user/repo',
         'git@github.com:user/repo-name.git',
-        'git@github.com:user-name/repo.git'
+        'git@github.com:user-name/repo.git',
       ];
 
       for (const url of validUrls) {
@@ -1142,10 +1089,7 @@ describe('Git URL Schemas', () => {
     });
 
     it('should validate GitLab SSH URLs', () => {
-      const validUrls = [
-        'git@gitlab.com:user/repo.git',
-        'git@gitlab.com:user/repo'
-      ];
+      const validUrls = ['git@gitlab.com:user/repo.git', 'git@gitlab.com:user/repo'];
 
       for (const url of validUrls) {
         expect(() => GitSshUrlSchema.parse(url)).not.toThrow();
@@ -1153,10 +1097,7 @@ describe('Git URL Schemas', () => {
     });
 
     it('should validate Bitbucket SSH URLs', () => {
-      const validUrls = [
-        'git@bitbucket.org:user/repo.git',
-        'git@bitbucket.org:user/repo'
-      ];
+      const validUrls = ['git@bitbucket.org:user/repo.git', 'git@bitbucket.org:user/repo'];
 
       for (const url of validUrls) {
         expect(() => GitSshUrlSchema.parse(url)).not.toThrow();
@@ -1169,7 +1110,7 @@ describe('Git URL Schemas', () => {
         'user@github.com:user/repo.git', // Wrong user
         'git@github.com:incomplete',
         'git@github.com',
-        'ssh://git@github.com/user/repo.git' // Wrong format
+        'ssh://git@github.com/user/repo.git', // Wrong format
       ];
 
       for (const url of invalidUrls) {
@@ -1184,7 +1125,7 @@ describe('Git URL Schemas', () => {
         'https://github.com/user/repo.git',
         'git@github.com:user/repo.git',
         'https://gitlab.com/user/repo.git',
-        'git@gitlab.com:user/repo.git'
+        'git@gitlab.com:user/repo.git',
       ];
 
       for (const url of validUrls) {
@@ -1197,7 +1138,7 @@ describe('Git URL Schemas', () => {
         'not-a-url',
         'https://example.com/not-git',
         'git@invalid:format',
-        'ftp://github.com/user/repo.git'
+        'ftp://github.com/user/repo.git',
       ];
 
       for (const url of invalidUrls) {

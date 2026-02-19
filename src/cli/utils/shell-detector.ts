@@ -55,7 +55,7 @@ export class ShellDetector {
           configPath,
           completionPath,
           isAvailable: !!executable,
-          isCurrent: shellName === currentShell
+          isCurrent: shellName === currentShell,
         });
       } catch (error) {
         // Shell not available
@@ -65,7 +65,7 @@ export class ShellDetector {
           configPath,
           completionPath,
           isAvailable: false,
-          isCurrent: false
+          isCurrent: false,
         });
       }
     }
@@ -222,7 +222,7 @@ export class ShellDetector {
         statuses.push({
           shell: shell.name,
           isInstalled: false,
-          error: 'Shell not available'
+          error: 'Shell not available',
         });
         continue;
       }
@@ -230,10 +230,12 @@ export class ShellDetector {
       try {
         const completionExists = await fs.pathExists(shell.completionPath);
         const configExists = await fs.pathExists(shell.configPath);
-        const isSourced = configExists && await this.isSourceCommandPresent(
-          shell.configPath,
-          this.getSourceCommand(shell.name, shell.completionPath)
-        );
+        const isSourced =
+          configExists &&
+          (await this.isSourceCommandPresent(
+            shell.configPath,
+            this.getSourceCommand(shell.name, shell.completionPath),
+          ));
 
         let lastInstalled: Date | undefined;
         if (completionExists) {
@@ -246,13 +248,13 @@ export class ShellDetector {
           isInstalled: completionExists && (shell.name === 'fish' || isSourced),
           installPath: completionExists ? shell.completionPath : undefined,
           configPath: shell.configPath,
-          lastInstalled
+          lastInstalled,
         });
       } catch (error) {
         statuses.push({
           shell: shell.name,
           isInstalled: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
+          error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
     }
@@ -323,7 +325,7 @@ export class ShellDetector {
 
     return {
       valid: issues.length === 0,
-      issues
+      issues,
     };
   }
 }

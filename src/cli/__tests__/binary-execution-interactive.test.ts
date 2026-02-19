@@ -32,7 +32,8 @@ import { performance } from 'node:perf_hooks';
 const PROJECT_ROOT = path.resolve(__dirname, '../../../');
 const BINARY_MJS = path.join(PROJECT_ROOT, 'dist/bin/cli.mjs');
 const BASE_TMP_DIR = process.env.TEST_TMP_DIR || '/tmp';
-const ARTIFACTS_DIR = process.env.BINARY_ARTIFACTS_DIR || path.join(PROJECT_ROOT, 'test-artifacts', 'binary');
+const ARTIFACTS_DIR =
+  process.env.BINARY_ARTIFACTS_DIR || path.join(PROJECT_ROOT, 'test-artifacts', 'binary');
 
 // Test timeout for interactive scenarios
 const INTERACTIVE_TIMEOUT = 45000; // 45 seconds for interactive tests
@@ -84,7 +85,7 @@ async function executeInteractiveCLI(
     userInputSequence?: string[];
     expectError?: boolean;
     testScenario?: InteractiveTestReport['scenario'];
-  } = {}
+  } = {},
 ): Promise<{ result: ExecaReturnValue; filesCreated: string[] }> {
   const {
     timeout = INTERACTIVE_TIMEOUT,
@@ -92,7 +93,7 @@ async function executeInteractiveCLI(
     env = {},
     userInputSequence = [],
     expectError = false,
-    testScenario = 'interactive_prompt'
+    testScenario = 'interactive_prompt',
   } = options;
 
   // Record files before execution
@@ -105,7 +106,7 @@ async function executeInteractiveCLI(
     CI: 'false', // Enable interactive mode
     JUNO_TASK_CONFIG: '',
     FORCE_INTERACTIVE: '1', // Force interactive mode for testing
-    ...env
+    ...env,
   };
 
   // Prepare input for interactive prompts
@@ -118,17 +119,17 @@ async function executeInteractiveCLI(
       timeout,
       input: inputText,
       reject: !expectError,
-      all: true
+      all: true,
     });
 
     // Record files after execution
     const filesAfter = await getDirectoryFiles(cwd);
-    const filesCreated = filesAfter.filter(f => !filesBefore.includes(f));
+    const filesCreated = filesAfter.filter((f) => !filesBefore.includes(f));
 
     return { result, filesCreated };
   } catch (error: any) {
     const filesAfter = await getDirectoryFiles(cwd);
-    const filesCreated = filesAfter.filter(f => !filesBefore.includes(f));
+    const filesCreated = filesAfter.filter((f) => !filesBefore.includes(f));
 
     if (expectError) {
       return { result: error, filesCreated };
@@ -143,7 +144,7 @@ async function executeInteractiveCLI(
 async function getDirectoryFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
 
-  if (!await fs.pathExists(dir)) {
+  if (!(await fs.pathExists(dir))) {
     return files;
   }
 
@@ -167,21 +168,23 @@ async function getDirectoryFiles(dir: string): Promise<string[]> {
 /**
  * Analyze response quality for agent outputs
  */
-function analyzeAgentResponseQuality(output: string): InteractiveTestReport['output']['agentResponseQuality'] {
+function analyzeAgentResponseQuality(
+  output: string,
+): InteractiveTestReport['output']['agentResponseQuality'] {
   if (!output || output.length < 50) return 'poor';
 
   const indicators = {
     excellent: ['comprehensive', 'detailed analysis', 'multiple solutions', 'well-structured'],
     good: ['analysis', 'solution', 'explanation', 'approach'],
     fair: ['response', 'answer', 'result'],
-    poor: ['error', 'failed', 'timeout', 'unable']
+    poor: ['error', 'failed', 'timeout', 'unable'],
   };
 
   const lowerOutput = output.toLowerCase();
 
-  if (indicators.excellent.some(ind => lowerOutput.includes(ind))) return 'excellent';
-  if (indicators.good.some(ind => lowerOutput.includes(ind))) return 'good';
-  if (indicators.fair.some(ind => lowerOutput.includes(ind))) return 'fair';
+  if (indicators.excellent.some((ind) => lowerOutput.includes(ind))) return 'excellent';
+  if (indicators.good.some((ind) => lowerOutput.includes(ind))) return 'good';
+  if (indicators.fair.some((ind) => lowerOutput.includes(ind))) return 'fair';
   return 'poor';
 }
 
@@ -193,7 +196,7 @@ function recordInteractiveTestResult(
   startTime: number,
   input: InteractiveTestReport['input'],
   output: InteractiveTestReport['output'],
-  scenario: InteractiveTestReport['scenario']
+  scenario: InteractiveTestReport['scenario'],
 ): void {
   const duration = performance.now() - startTime;
 
@@ -204,7 +207,7 @@ function recordInteractiveTestResult(
     promptsAppearCorrectly: checkPromptsAppearCorrectly(output),
     outputIsUseful: output.stdout.length > 100 && !output.stdout.includes('error'),
     errorsHandledGracefully: output.exitCode !== 0 ? output.stderr.length > 0 : true,
-    recommendations: generateRecommendations(output)
+    recommendations: generateRecommendations(output),
   };
 
   testReportData.push({
@@ -214,7 +217,7 @@ function recordInteractiveTestResult(
     scenario,
     input,
     output,
-    analysis
+    analysis,
   });
 }
 
@@ -236,8 +239,8 @@ function calculateUserExperienceScore(output: InteractiveTestReport['output']): 
 
 function checkPromptsAppearCorrectly(output: InteractiveTestReport['output']): boolean {
   const promptIndicators = ['?', 'Enter', 'Input', 'Choose', 'Select', 'Y/n', 'y/N'];
-  return promptIndicators.some(indicator =>
-    output.stdout.includes(indicator) || output.stderr.includes(indicator)
+  return promptIndicators.some(
+    (indicator) => output.stdout.includes(indicator) || output.stderr.includes(indicator),
   );
 }
 
@@ -274,9 +277,11 @@ async function generateInteractiveTestReport(): Promise<void> {
   const reportPath = path.join(tempDir, 'binary-execution-interactive-report.md');
   const stableDir = ARTIFACTS_DIR;
 
-  const successfulTests = testReportData.filter(t => t.output.success);
-  const interactiveTests = testReportData.filter(t => t.output.interactivePromptsDetected);
-  const avgUXScore = testReportData.reduce((sum, t) => sum + t.analysis.userExperienceScore, 0) / testReportData.length;
+  const successfulTests = testReportData.filter((t) => t.output.success);
+  const interactiveTests = testReportData.filter((t) => t.output.interactivePromptsDetected);
+  const avgUXScore =
+    testReportData.reduce((sum, t) => sum + t.analysis.userExperienceScore, 0) /
+    testReportData.length;
 
   const report = `# Binary Execution Interactive Test Report
 
@@ -291,13 +296,19 @@ async function generateInteractiveTestReport(): Promise<void> {
 ## Critical Issues Summary
 
 ### Interactive Functionality
-${testReportData.map(t => `- **${t.testName}**: ${t.analysis.interactivityWorking ? '✅ Working' : '❌ Not Working'}`).join('\n')}
+${testReportData.map((t) => `- **${t.testName}**: ${t.analysis.interactivityWorking ? '✅ Working' : '❌ Not Working'}`).join('\n')}
 
 ### User Experience Quality
-${testReportData.map(t => `- **${t.testName}**: ${t.analysis.userExperienceScore}/10 ${t.analysis.userExperienceScore >= 7 ? '✅' : t.analysis.userExperienceScore >= 5 ? '⚠️' : '❌'}`).join('\n')}
+${testReportData.map((t) => `- **${t.testName}**: ${t.analysis.userExperienceScore}/10 ${t.analysis.userExperienceScore >= 7 ? '✅' : t.analysis.userExperienceScore >= 5 ? '⚠️' : '❌'}`).join('\n')}
 
 ### Agent Response Quality
-${testReportData.filter(t => t.output.agentResponseQuality).map(t => `- **${t.testName}**: ${t.output.agentResponseQuality === 'excellent' ? '✅' : t.output.agentResponseQuality === 'good' ? '⚠️' : '❌'} ${t.output.agentResponseQuality}`).join('\n')}
+${testReportData
+  .filter((t) => t.output.agentResponseQuality)
+  .map(
+    (t) =>
+      `- **${t.testName}**: ${t.output.agentResponseQuality === 'excellent' ? '✅' : t.output.agentResponseQuality === 'good' ? '⚠️' : '❌'} ${t.output.agentResponseQuality}`,
+  )
+  .join('\n')}
 
 ## Key Findings
 
@@ -306,16 +317,18 @@ ${testReportData.filter(t => t.output.agentResponseQuality).map(t => `- **${t.te
 - Status: ${interactiveTests.length === testReportData.length ? '✅ All interactive tests working' : interactiveTests.length > 0 ? '⚠️ Some interactive tests working' : '❌ No interactive functionality detected'}
 
 ### 2. User Input Handling
-- Tests with proper prompt display: ${testReportData.filter(t => t.analysis.promptsAppearCorrectly).length}/${testReportData.length}
-- Status: ${testReportData.filter(t => t.analysis.promptsAppearCorrectly).length > testReportData.length / 2 ? '✅ Good' : '❌ Needs improvement'}
+- Tests with proper prompt display: ${testReportData.filter((t) => t.analysis.promptsAppearCorrectly).length}/${testReportData.length}
+- Status: ${testReportData.filter((t) => t.analysis.promptsAppearCorrectly).length > testReportData.length / 2 ? '✅ Good' : '❌ Needs improvement'}
 
 ### 3. Error Handling Quality
-- Tests with graceful error handling: ${testReportData.filter(t => t.analysis.errorsHandledGracefully).length}/${testReportData.length}
-- Status: ${testReportData.filter(t => t.analysis.errorsHandledGracefully).length === testReportData.length ? '✅ Excellent' : '⚠️ Needs improvement'}
+- Tests with graceful error handling: ${testReportData.filter((t) => t.analysis.errorsHandledGracefully).length}/${testReportData.length}
+- Status: ${testReportData.filter((t) => t.analysis.errorsHandledGracefully).length === testReportData.length ? '✅ Excellent' : '⚠️ Needs improvement'}
 
 ## Detailed Test Results
 
-${testReportData.map(test => `
+${testReportData
+  .map(
+    (test) => `
 ### ${test.testName}
 
 **Test Scenario**: ${test.scenario}
@@ -346,70 +359,101 @@ ${test.output.agentResponseQuality ? `- Agent Response Quality: ${test.output.ag
 - Output Is Useful: ${test.analysis.outputIsUseful ? '✅' : '❌'}
 - Errors Handled Gracefully: ${test.analysis.errorsHandledGracefully ? '✅' : '❌'}
 
-${test.analysis.recommendations.length > 0 ? `**Recommendations**:
-${test.analysis.recommendations.map(r => `- ${r}`).join('\n')}` : ''}
+${
+  test.analysis.recommendations.length > 0
+    ? `**Recommendations**:
+${test.analysis.recommendations.map((r) => `- ${r}`).join('\n')}`
+    : ''
+}
 
 **Standard Output** (first 1000 chars):
 \`\`\`
 ${test.output.stdout.substring(0, 1000)}${test.output.stdout.length > 1000 ? '...' : ''}
 \`\`\`
 
-${test.output.stderr ? `**Standard Error**:
+${
+  test.output.stderr
+    ? `**Standard Error**:
 \`\`\`
 ${test.output.stderr.substring(0, 500)}${test.output.stderr.length > 500 ? '...' : ''}
-\`\`\`` : ''}
+\`\`\``
+    : ''
+}
 
 ---
-`).join('\n')}
+`,
+  )
+  .join('\n')}
 
 ## Overall Assessment
 
 ### Interactive Functionality Status
-${interactiveTests.length === testReportData.length ? `
+${
+  interactiveTests.length === testReportData.length
+    ? `
 ✅ **EXCELLENT**: All interactive tests are working correctly
 - Users receive proper prompts for input
 - Interactive flows complete successfully
 - User experience is smooth and intuitive
-` : interactiveTests.length > testReportData.length / 2 ? `
+`
+    : interactiveTests.length > testReportData.length / 2
+      ? `
 ⚠️ **PARTIAL**: Some interactive functionality is working
 - ${interactiveTests.length}/${testReportData.length} tests show interactive behavior
 - Need to investigate and fix non-interactive scenarios
 - User experience is inconsistent
-` : `
+`
+      : `
 ❌ **CRITICAL ISSUE**: Interactive functionality is not working
 - No tests show proper interactive behavior
 - Users are not being prompted for input
 - This is a blocking issue for user experience
-`}
+`
+}
 
 ### Agent Execution Quality
-${testReportData.filter(t => t.output.agentResponseQuality === 'excellent' || t.output.agentResponseQuality === 'good').length > 0 ? `
+${
+  testReportData.filter(
+    (t) =>
+      t.output.agentResponseQuality === 'excellent' || t.output.agentResponseQuality === 'good',
+  ).length > 0
+    ? `
 ✅ **GOOD**: Agent execution is producing quality responses
 - Response quality meets user expectations
 - Agents are handling prompts correctly
 - Output is useful and actionable
-` : `
+`
+    : `
 ❌ **NEEDS IMPROVEMENT**: Agent execution quality is poor
 - Responses are not meeting quality standards
 - Need to improve prompt handling and response generation
 - Users will be frustrated with current output quality
-`}
+`
+}
 
 ## Action Items
 
 ### High Priority (Critical)
-${testReportData.filter(t => !t.analysis.interactivityWorking).length > 0 ? `
-1. **Fix Interactive Prompts**: ${testReportData.filter(t => !t.analysis.interactivityWorking).length} tests are not showing interactive behavior
+${
+  testReportData.filter((t) => !t.analysis.interactivityWorking).length > 0
+    ? `
+1. **Fix Interactive Prompts**: ${testReportData.filter((t) => !t.analysis.interactivityWorking).length} tests are not showing interactive behavior
 2. **Improve Error Messages**: Ensure all failures provide clear, actionable error messages
 3. **Test Real User Scenarios**: Validate that the CLI works as users expect
-` : ''}
+`
+    : ''
+}
 
 ### Medium Priority (Important)
-${avgUXScore < 7 ? `
+${
+  avgUXScore < 7
+    ? `
 1. **Improve User Experience**: Current UX score is ${avgUXScore.toFixed(1)}/10
 2. **Enhance Output Quality**: Make CLI output more informative and useful
 3. **Better Error Handling**: Improve how errors are communicated to users
-` : ''}
+`
+    : ''
+}
 
 ### Low Priority (Nice to Have)
 - Optimize performance for faster response times
@@ -420,9 +464,9 @@ ${avgUXScore < 7 ? `
 
 1. **Interactive Testing**: ${interactiveTests.length === 0 ? 'Implement proper interactive input testing in CI/CD pipeline' : 'Continue comprehensive interactive testing'}
 
-2. **User Feedback Integration**: ${testReportData.filter(t => t.analysis.outputIsUseful).length < testReportData.length ? 'Gather more user feedback to improve output quality' : 'Maintain current output quality standards'}
+2. **User Feedback Integration**: ${testReportData.filter((t) => t.analysis.outputIsUseful).length < testReportData.length ? 'Gather more user feedback to improve output quality' : 'Maintain current output quality standards'}
 
-3. **Error Experience**: ${testReportData.filter(t => !t.analysis.errorsHandledGracefully).length > 0 ? 'Focus on improving error messages and recovery scenarios' : 'Current error handling is working well'}
+3. **Error Experience**: ${testReportData.filter((t) => !t.analysis.errorsHandledGracefully).length > 0 ? 'Focus on improving error messages and recovery scenarios' : 'Current error handling is working well'}
 
 4. **Performance Monitoring**: Set up monitoring for CLI execution times and user experience metrics
 
@@ -464,7 +508,7 @@ describe('Binary Execution Interactive Tests', () => {
     }
 
     // Clean up temporary directory
-    if (tempDir && await fs.pathExists(tempDir)) {
+    if (tempDir && (await fs.pathExists(tempDir))) {
       if (process.env.PRESERVE_TMP === '1') {
         // eslint-disable-next-line no-console
         console.log(`🛑 PRESERVE_TMP=1 set. Temp kept at: ${tempDir}`);
@@ -475,151 +519,160 @@ describe('Binary Execution Interactive Tests', () => {
   });
 
   describe('Interactive Prompt Testing', () => {
-    it('should handle feedback --interactive command with user input', async () => {
-      const startTime = performance.now();
+    it(
+      'should handle feedback --interactive command with user input',
+      async () => {
+        const startTime = performance.now();
 
-      try {
-        const { result, filesCreated } = await executeInteractiveCLI(
-          ['feedback', '--interactive'],
-          {
-            userInputSequence: [
-              'Test feedback from interactive test',
-              'This is a test of the interactive feedback system',
-              'y' // Confirm submission
-            ],
-            testScenario: 'interactive_prompt',
-            expectError: true // Might fail due to no .juno_task directory
+        try {
+          const { result, filesCreated } = await executeInteractiveCLI(
+            ['feedback', '--interactive'],
+            {
+              userInputSequence: [
+                'Test feedback from interactive test',
+                'This is a test of the interactive feedback system',
+                'y', // Confirm submission
+              ],
+              testScenario: 'interactive_prompt',
+              expectError: true, // Might fail due to no .juno_task directory
+            },
+          );
+
+          const output: InteractiveTestReport['output'] = {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
+            interactivePromptsDetected: checkForInteractivePrompts(
+              result.stdout || '',
+              result.stderr || '',
+            ),
+          };
+
+          recordInteractiveTestResult(
+            'feedback --interactive with user input',
+            startTime,
+            {
+              command: ['feedback', '--interactive'],
+              userInput: 'Test feedback from interactive test\nThis is a test\ny',
+              environment: { FORCE_INTERACTIVE: '1' },
+              workingDirectory: tempDir,
+            },
+            output,
+            'interactive_prompt',
+          );
+
+          // The test should either work (if .juno_task setup) or show proper error
+          expect(typeof result.exitCode).toBe('number');
+
+          // Should show interactive behavior (prompts, questions, etc.)
+          const hasInteractiveElements = output.interactivePromptsDetected;
+
+          if (result.exitCode === 0) {
+            expect(hasInteractiveElements).toBe(true);
           }
-        );
-
-        const output: InteractiveTestReport['output'] = {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated,
-          interactivePromptsDetected: checkForInteractivePrompts(result.stdout || '', result.stderr || '')
-        };
-
-        recordInteractiveTestResult(
-          'feedback --interactive with user input',
-          startTime,
-          {
-            command: ['feedback', '--interactive'],
-            userInput: 'Test feedback from interactive test\nThis is a test\ny',
-            environment: { FORCE_INTERACTIVE: '1' },
-            workingDirectory: tempDir
-          },
-          output,
-          'interactive_prompt'
-        );
-
-        // The test should either work (if .juno_task setup) or show proper error
-        expect(typeof result.exitCode).toBe('number');
-
-        // Should show interactive behavior (prompts, questions, etc.)
-        const hasInteractiveElements = output.interactivePromptsDetected;
-
-        if (result.exitCode === 0) {
-          expect(hasInteractiveElements).toBe(true);
+        } catch (error) {
+          // Record failed test
+          recordInteractiveTestResult(
+            'feedback --interactive with user input',
+            startTime,
+            {
+              command: ['feedback', '--interactive'],
+              userInput: 'Test feedback\ny',
+              environment: { FORCE_INTERACTIVE: '1' },
+              workingDirectory: tempDir,
+            },
+            {
+              success: false,
+              exitCode: -1,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              filesCreated: [],
+              interactivePromptsDetected: false,
+            },
+            'interactive_prompt',
+          );
+          throw error;
         }
+      },
+      INTERACTIVE_TIMEOUT,
+    );
 
-      } catch (error) {
-        // Record failed test
-        recordInteractiveTestResult(
-          'feedback --interactive with user input',
-          startTime,
-          {
-            command: ['feedback', '--interactive'],
-            userInput: 'Test feedback\ny',
-            environment: { FORCE_INTERACTIVE: '1' },
-            workingDirectory: tempDir
-          },
-          {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: error instanceof Error ? error.message : String(error),
-            filesCreated: [],
-            interactivePromptsDetected: false
-          },
-          'interactive_prompt'
-        );
-        throw error;
-      }
-    }, INTERACTIVE_TIMEOUT);
+    it(
+      'should handle init command with interactive template selection',
+      async () => {
+        const startTime = performance.now();
 
-    it('should handle init command with interactive template selection', async () => {
-      const startTime = performance.now();
-
-      try {
-        const { result, filesCreated } = await executeInteractiveCLI(
-          ['init', '--interactive'],
-          {
+        try {
+          const { result, filesCreated } = await executeInteractiveCLI(['init', '--interactive'], {
             userInputSequence: [
               '1', // Select first template option
               'y', // Confirm template selection
               'Test Project', // Project name
-              'This is a test project for interactive testing' // Project description
+              'This is a test project for interactive testing', // Project description
             ],
             testScenario: 'interactive_prompt',
-            expectError: true // Might fail due to template issues
+            expectError: true, // Might fail due to template issues
+          });
+
+          const output: InteractiveTestReport['output'] = {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
+            interactivePromptsDetected: checkForInteractivePrompts(
+              result.stdout || '',
+              result.stderr || '',
+            ),
+          };
+
+          recordInteractiveTestResult(
+            'init --interactive with template selection',
+            startTime,
+            {
+              command: ['init', '--interactive'],
+              userInput: '1\ny\nTest Project\nThis is a test project',
+              environment: { FORCE_INTERACTIVE: '1' },
+              workingDirectory: tempDir,
+            },
+            output,
+            'interactive_prompt',
+          );
+
+          expect(typeof result.exitCode).toBe('number');
+
+          // If successful, should have created files
+          if (result.exitCode === 0) {
+            expect(filesCreated.length).toBeGreaterThan(0);
+            expect(filesCreated.some((f) => f.includes('.juno_task'))).toBe(true);
           }
-        );
-
-        const output: InteractiveTestReport['output'] = {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated,
-          interactivePromptsDetected: checkForInteractivePrompts(result.stdout || '', result.stderr || '')
-        };
-
-        recordInteractiveTestResult(
-          'init --interactive with template selection',
-          startTime,
-          {
-            command: ['init', '--interactive'],
-            userInput: '1\ny\nTest Project\nThis is a test project',
-            environment: { FORCE_INTERACTIVE: '1' },
-            workingDirectory: tempDir
-          },
-          output,
-          'interactive_prompt'
-        );
-
-        expect(typeof result.exitCode).toBe('number');
-
-        // If successful, should have created files
-        if (result.exitCode === 0) {
-          expect(filesCreated.length).toBeGreaterThan(0);
-          expect(filesCreated.some(f => f.includes('.juno_task'))).toBe(true);
+        } catch (error) {
+          recordInteractiveTestResult(
+            'init --interactive with template selection',
+            startTime,
+            {
+              command: ['init', '--interactive'],
+              userInput: '1\ny\nTest Project\nDescription',
+              environment: { FORCE_INTERACTIVE: '1' },
+              workingDirectory: tempDir,
+            },
+            {
+              success: false,
+              exitCode: -1,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              filesCreated: [],
+              interactivePromptsDetected: false,
+            },
+            'interactive_prompt',
+          );
+          throw error;
         }
-
-      } catch (error) {
-        recordInteractiveTestResult(
-          'init --interactive with template selection',
-          startTime,
-          {
-            command: ['init', '--interactive'],
-            userInput: '1\ny\nTest Project\nDescription',
-            environment: { FORCE_INTERACTIVE: '1' },
-            workingDirectory: tempDir
-          },
-          {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: error instanceof Error ? error.message : String(error),
-            filesCreated: [],
-            interactivePromptsDetected: false
-          },
-          'interactive_prompt'
-        );
-        throw error;
-      }
-    }, INTERACTIVE_TIMEOUT);
+      },
+      INTERACTIVE_TIMEOUT,
+    );
   });
 
   describe('Real Agent Execution Testing', () => {
@@ -652,220 +705,229 @@ Please provide:
 - Actionable suggestions
 - Professional code review quality
 `,
-        'utf-8'
+        'utf-8',
       );
     });
 
-    it.skip('should execute claude agent with real prompt and analyze response', async () => {
-      // SKIP: This test requires actual MCP server and may timeout
-      // It's designed to test real agent execution but is disabled to prevent CI failures
+    it.skip(
+      'should execute claude agent with real prompt and analyze response',
+      async () => {
+        // SKIP: This test requires actual MCP server and may timeout
+        // It's designed to test real agent execution but is disabled to prevent CI failures
 
-      const startTime = performance.now();
+        const startTime = performance.now();
 
-      try {
-        const { result, filesCreated } = await executeInteractiveCLI(
-          ['start', '--max-iterations', '1', '--subagent', 'claude'],
-          {
-            timeout: AGENT_EXECUTION_TIMEOUT,
-            testScenario: 'agent_execution',
-            expectError: true // May fail due to MCP connection issues
+        try {
+          const { result, filesCreated } = await executeInteractiveCLI(
+            ['start', '--max-iterations', '1', '--subagent', 'claude'],
+            {
+              timeout: AGENT_EXECUTION_TIMEOUT,
+              testScenario: 'agent_execution',
+              expectError: true, // May fail due to MCP connection issues
+            },
+          );
+
+          const responseQuality = analyzeAgentResponseQuality(result.stdout || '');
+
+          const output: InteractiveTestReport['output'] = {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
+            interactivePromptsDetected: false, // Not relevant for agent execution
+            agentResponseQuality: responseQuality,
+          };
+
+          recordInteractiveTestResult(
+            'claude agent real execution',
+            startTime,
+            {
+              command: ['start', '--max-iterations', '1', '--subagent', 'claude'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            output,
+            'agent_execution',
+          );
+
+          if (result.exitCode === 0) {
+            expect(result.stdout.length).toBeGreaterThan(100);
+            expect(responseQuality).not.toBe('poor');
           }
-        );
+        } catch (error) {
+          recordInteractiveTestResult(
+            'claude agent real execution',
+            startTime,
+            {
+              command: ['start', '--max-iterations', '1', '--subagent', 'claude'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            {
+              success: false,
+              exitCode: -1,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              filesCreated: [],
+              interactivePromptsDetected: false,
+              agentResponseQuality: 'poor',
+            },
+            'agent_execution',
+          );
 
-        const responseQuality = analyzeAgentResponseQuality(result.stdout || '');
-
-        const output: InteractiveTestReport['output'] = {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated,
-          interactivePromptsDetected: false, // Not relevant for agent execution
-          agentResponseQuality: responseQuality
-        };
-
-        recordInteractiveTestResult(
-          'claude agent real execution',
-          startTime,
-          {
-            command: ['start', '--max-iterations', '1', '--subagent', 'claude'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          output,
-          'agent_execution'
-        );
-
-        if (result.exitCode === 0) {
-          expect(result.stdout.length).toBeGreaterThan(100);
-          expect(responseQuality).not.toBe('poor');
+          // Don't throw - we want to record the failure for analysis
+          console.warn('Claude agent execution test failed:', error);
         }
+      },
+      AGENT_EXECUTION_TIMEOUT,
+    );
 
-      } catch (error) {
-        recordInteractiveTestResult(
-          'claude agent real execution',
-          startTime,
-          {
-            command: ['start', '--max-iterations', '1', '--subagent', 'claude'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: error instanceof Error ? error.message : String(error),
-            filesCreated: [],
+    it(
+      'should handle dry-run mode with proper output analysis',
+      async () => {
+        const startTime = performance.now();
+
+        try {
+          const { result, filesCreated } = await executeInteractiveCLI(
+            ['start', '--dry-run', '--max-iterations', '1'],
+            {
+              testScenario: 'agent_execution',
+              expectError: true,
+            },
+          );
+
+          const output: InteractiveTestReport['output'] = {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
             interactivePromptsDetected: false,
-            agentResponseQuality: 'poor'
-          },
-          'agent_execution'
-        );
+            agentResponseQuality: result.exitCode === 0 ? 'good' : 'poor',
+          };
 
-        // Don't throw - we want to record the failure for analysis
-        console.warn('Claude agent execution test failed:', error);
-      }
-    }, AGENT_EXECUTION_TIMEOUT);
+          recordInteractiveTestResult(
+            'dry-run mode execution analysis',
+            startTime,
+            {
+              command: ['start', '--dry-run', '--max-iterations', '1'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            output,
+            'agent_execution',
+          );
 
-    it('should handle dry-run mode with proper output analysis', async () => {
-      const startTime = performance.now();
+          // Dry run should always succeed and provide useful output
+          expect(typeof result.exitCode).toBe('number');
 
-      try {
-        const { result, filesCreated } = await executeInteractiveCLI(
-          ['start', '--dry-run', '--max-iterations', '1'],
-          {
-            testScenario: 'agent_execution',
-            expectError: true
+          if (result.exitCode === 0) {
+            expect(result.stdout).toContain('dry-run');
+            expect(result.stdout.length).toBeGreaterThan(50);
           }
-        );
-
-        const output: InteractiveTestReport['output'] = {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated,
-          interactivePromptsDetected: false,
-          agentResponseQuality: result.exitCode === 0 ? 'good' : 'poor'
-        };
-
-        recordInteractiveTestResult(
-          'dry-run mode execution analysis',
-          startTime,
-          {
-            command: ['start', '--dry-run', '--max-iterations', '1'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          output,
-          'agent_execution'
-        );
-
-        // Dry run should always succeed and provide useful output
-        expect(typeof result.exitCode).toBe('number');
-
-        if (result.exitCode === 0) {
-          expect(result.stdout).toContain('dry-run');
-          expect(result.stdout.length).toBeGreaterThan(50);
+        } catch (error) {
+          recordInteractiveTestResult(
+            'dry-run mode execution analysis',
+            startTime,
+            {
+              command: ['start', '--dry-run', '--max-iterations', '1'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            {
+              success: false,
+              exitCode: -1,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              filesCreated: [],
+              interactivePromptsDetected: false,
+              agentResponseQuality: 'poor',
+            },
+            'agent_execution',
+          );
+          throw error;
         }
-
-      } catch (error) {
-        recordInteractiveTestResult(
-          'dry-run mode execution analysis',
-          startTime,
-          {
-            command: ['start', '--dry-run', '--max-iterations', '1'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: error instanceof Error ? error.message : String(error),
-            filesCreated: [],
-            interactivePromptsDetected: false,
-            agentResponseQuality: 'poor'
-          },
-          'agent_execution'
-        );
-        throw error;
-      }
-    }, INTERACTIVE_TIMEOUT);
+      },
+      INTERACTIVE_TIMEOUT,
+    );
   });
 
   describe('File Interaction and I/O Testing', () => {
-    it('should handle file creation and validation workflows', async () => {
-      const startTime = performance.now();
+    it(
+      'should handle file creation and validation workflows',
+      async () => {
+        const startTime = performance.now();
 
-      try {
-        const { result, filesCreated } = await executeInteractiveCLI(
-          ['init', '--template', 'default', '--force'],
-          {
-            testScenario: 'file_interaction',
-            expectError: true
-          }
-        );
+        try {
+          const { result, filesCreated } = await executeInteractiveCLI(
+            ['init', '--template', 'default', '--force'],
+            {
+              testScenario: 'file_interaction',
+              expectError: true,
+            },
+          );
 
-        const output: InteractiveTestReport['output'] = {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated,
-          interactivePromptsDetected: false
-        };
+          const output: InteractiveTestReport['output'] = {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
+            interactivePromptsDetected: false,
+          };
 
-        recordInteractiveTestResult(
-          'file creation and validation workflow',
-          startTime,
-          {
-            command: ['init', '--template', 'default', '--force'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          output,
-          'file_interaction'
-        );
+          recordInteractiveTestResult(
+            'file creation and validation workflow',
+            startTime,
+            {
+              command: ['init', '--template', 'default', '--force'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            output,
+            'file_interaction',
+          );
 
-        // Should handle file operations appropriately
-        expect(typeof result.exitCode).toBe('number');
+          // Should handle file operations appropriately
+          expect(typeof result.exitCode).toBe('number');
 
-        if (result.exitCode === 0) {
-          expect(filesCreated.length).toBeGreaterThan(0);
+          if (result.exitCode === 0) {
+            expect(filesCreated.length).toBeGreaterThan(0);
 
-          // Verify that created files have content
-          for (const file of filesCreated) {
-            const filePath = path.join(tempDir, file);
-            if (await fs.pathExists(filePath)) {
-              const content = await fs.readFile(filePath, 'utf-8');
-              expect(content.length).toBeGreaterThan(0);
+            // Verify that created files have content
+            for (const file of filesCreated) {
+              const filePath = path.join(tempDir, file);
+              if (await fs.pathExists(filePath)) {
+                const content = await fs.readFile(filePath, 'utf-8');
+                expect(content.length).toBeGreaterThan(0);
+              }
             }
           }
+        } catch (error) {
+          recordInteractiveTestResult(
+            'file creation and validation workflow',
+            startTime,
+            {
+              command: ['init', '--template', 'default', '--force'],
+              environment: {},
+              workingDirectory: tempDir,
+            },
+            {
+              success: false,
+              exitCode: -1,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              filesCreated: [],
+              interactivePromptsDetected: false,
+            },
+            'file_interaction',
+          );
+          throw error;
         }
-
-      } catch (error) {
-        recordInteractiveTestResult(
-          'file creation and validation workflow',
-          startTime,
-          {
-            command: ['init', '--template', 'default', '--force'],
-            environment: {},
-            workingDirectory: tempDir
-          },
-          {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: error instanceof Error ? error.message : String(error),
-            filesCreated: [],
-            interactivePromptsDetected: false
-          },
-          'file_interaction'
-        );
-        throw error;
-      }
-    }, INTERACTIVE_TIMEOUT);
+      },
+      INTERACTIVE_TIMEOUT,
+    );
   });
 });
 
@@ -876,16 +938,25 @@ function checkForInteractivePrompts(stdout: string, stderr: string): boolean {
   const allOutput = stdout + stderr;
   const promptIndicators = [
     '?', // Question marks
-    'Enter', 'Input', 'Type', // Input requests
-    'Choose', 'Select', 'Pick', // Selection prompts
-    'Y/n', 'y/N', 'yes/no', // Confirmation prompts
-    '[y/N]', '[Y/n]', // Bracketed confirmations
+    'Enter',
+    'Input',
+    'Type', // Input requests
+    'Choose',
+    'Select',
+    'Pick', // Selection prompts
+    'Y/n',
+    'y/N',
+    'yes/no', // Confirmation prompts
+    '[y/N]',
+    '[Y/n]', // Bracketed confirmations
     ':', // Colon often indicates prompt
-    'Press', 'Continue', // Action prompts
-    '>', '>>>' // Command line style prompts
+    'Press',
+    'Continue', // Action prompts
+    '>',
+    '>>>', // Command line style prompts
   ];
 
-  return promptIndicators.some(indicator =>
-    allOutput.toLowerCase().includes(indicator.toLowerCase())
+  return promptIndicators.some((indicator) =>
+    allOutput.toLowerCase().includes(indicator.toLowerCase()),
   );
 }

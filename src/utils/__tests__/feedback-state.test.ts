@@ -10,7 +10,7 @@ import {
   getBufferedProgressEvents,
   clearBufferedProgressEvents,
   getFeedbackBufferStats,
-  resetFeedbackState
+  resetFeedbackState,
 } from '../feedback-state';
 
 describe('FeedbackState', () => {
@@ -157,7 +157,9 @@ describe('FeedbackState', () => {
       setFeedbackActive(false); // No buffered events
 
       // Should not write flush headers for empty buffer
-      expect(stderrWriteSpy).not.toHaveBeenCalledWith('\n--- Buffered progress events during feedback ---\n');
+      expect(stderrWriteSpy).not.toHaveBeenCalledWith(
+        '\n--- Buffered progress events during feedback ---\n',
+      );
 
       stderrWriteSpy.mockRestore();
     });

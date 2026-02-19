@@ -110,7 +110,7 @@ export class FileSessionStorage implements SessionStorage {
         updatedAt: session.info.updatedAt.toISOString(),
         completedAt: session.info.completedAt?.toISOString(),
       },
-      history: session.history.map(entry => ({
+      history: session.history.map((entry) => ({
         ...entry,
         timestamp: entry.timestamp.toISOString(),
       })),
@@ -146,7 +146,7 @@ export class FileSessionStorage implements SessionStorage {
     await this.initialize();
     try {
       const files = await fsPromises.readdir(this.sessionsDir);
-      const sessionFiles = files.filter(file => file.endsWith('.json'));
+      const sessionFiles = files.filter((file) => file.endsWith('.json'));
       const sessions: SessionInfo[] = [];
       for (const file of sessionFiles) {
         try {
@@ -159,23 +159,23 @@ export class FileSessionStorage implements SessionStorage {
 
       let filtered = sessions;
       if (filter) {
-        if (filter.status)
-          filtered = filtered.filter(s => filter.status!.includes(s.status));
+        if (filter.status) filtered = filtered.filter((s) => filter.status!.includes(s.status));
         if (filter.subagent)
-          filtered = filtered.filter(s => filter.subagent!.includes(s.subagent));
+          filtered = filtered.filter((s) => filter.subagent!.includes(s.subagent));
         if (filter.dateRange) {
           if (filter.dateRange.start)
-            filtered = filtered.filter(s => s.createdAt >= filter.dateRange!.start!);
+            filtered = filtered.filter((s) => s.createdAt >= filter.dateRange!.start!);
           if (filter.dateRange.end)
-            filtered = filtered.filter(s => s.createdAt <= filter.dateRange!.end!);
+            filtered = filtered.filter((s) => s.createdAt <= filter.dateRange!.end!);
         }
         if (filter.tags && filter.tags.length > 0)
-          filtered = filtered.filter(s => filter.tags!.some(tag => s.tags.includes(tag)));
+          filtered = filtered.filter((s) => filter.tags!.some((tag) => s.tags.includes(tag)));
 
         const sortBy = filter.sortBy || 'updatedAt';
         const sortOrder = filter.sortOrder || 'desc';
         filtered.sort((a, b) => {
-          const aVal = a[sortBy], bVal = b[sortBy];
+          const aVal = a[sortBy],
+            bVal = b[sortBy];
           if (aVal === undefined && bVal === undefined) return 0;
           if (aVal === undefined) return 1;
           if (bVal === undefined) return -1;
@@ -221,13 +221,14 @@ export class FileSessionStorage implements SessionStorage {
         cutoff.setDate(cutoff.getDate() - options.removeOlderThanDays);
         if (info.createdAt < cutoff) shouldRemove = true;
       }
-      if (options.removeStatus && options.removeStatus.includes(info.status))
-        shouldRemove = true;
+      if (options.removeStatus && options.removeStatus.includes(info.status)) shouldRemove = true;
       if (options.removeEmpty) {
         try {
           const session = await this.loadSession(info.id);
           if (session && session.history.length === 0 && !session.result) shouldRemove = true;
-        } catch { shouldRemove = true; }
+        } catch {
+          shouldRemove = true;
+        }
       }
       if (shouldRemove && !options.dryRun) await this.removeSession(info.id);
     }
@@ -277,14 +278,17 @@ export class SessionManager {
     return session;
   }
 
-  async updateSession(sessionId: string, updates: {
-    status?: SessionStatus;
-    name?: string;
-    tags?: string[];
-    metadata?: Record<string, any>;
-    statistics?: Partial<SessionStatistics>;
-    result?: Session['result'];
-  }): Promise<void> {
+  async updateSession(
+    sessionId: string,
+    updates: {
+      status?: SessionStatus;
+      name?: string;
+      tags?: string[];
+      metadata?: Record<string, any>;
+      statistics?: Partial<SessionStatistics>;
+      result?: Session['result'];
+    },
+  ): Promise<void> {
     let session = this.activeSessions.get(sessionId);
     if (!session) {
       const loaded = await this.storage.loadSession(sessionId);
@@ -294,19 +298,23 @@ export class SessionManager {
     if (updates.status) session.info.status = updates.status;
     if (updates.name) session.info.name = updates.name;
     if (updates.tags) session.info.tags = updates.tags;
-    if (updates.metadata)
-      session.info.metadata = { ...session.info.metadata, ...updates.metadata };
-    if (updates.statistics)
-      session.statistics = { ...session.statistics, ...updates.statistics };
+    if (updates.metadata) session.info.metadata = { ...session.info.metadata, ...updates.metadata };
+    if (updates.statistics) session.statistics = { ...session.statistics, ...updates.statistics };
     if (updates.result) session.result = updates.result;
     session.info.updatedAt = new Date();
     this.activeSessions.set(sessionId, session);
     await this.storage.saveSession(session);
   }
 
-  async completeSession(sessionId: string, result: {
-    success: boolean; output?: string; error?: string; finalState?: any;
-  }): Promise<void> {
+  async completeSession(
+    sessionId: string,
+    result: {
+      success: boolean;
+      output?: string;
+      error?: string;
+      finalState?: any;
+    },
+  ): Promise<void> {
     const now = new Date();
     await this.updateSession(sessionId, {
       status: result.success ? 'completed' : 'failed',
@@ -327,7 +335,7 @@ export class SessionManager {
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
-    return this.activeSessions.get(sessionId) || await this.storage.loadSession(sessionId);
+    return this.activeSessions.get(sessionId) || (await this.storage.loadSession(sessionId));
   }
 
   async listSessions(filter?: SessionListFilter): Promise<SessionInfo[]> {
@@ -343,7 +351,10 @@ export class SessionManager {
     await this.storage.cleanup(options);
   }
 
-  async addHistoryEntry(sessionId: string, entry: Omit<SessionHistoryEntry, 'id' | 'timestamp'>): Promise<void> {
+  async addHistoryEntry(
+    sessionId: string,
+    entry: Omit<SessionHistoryEntry, 'id' | 'timestamp'>,
+  ): Promise<void> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
     session.history.push({ id: uuidv4(), timestamp: new Date(), ...entry });
@@ -354,9 +365,14 @@ export class SessionManager {
     await this.updateSession(sessionId, { statistics: stats });
   }
 
-  async recordToolCall(sessionId: string, toolCall: {
-    name: string; duration: number; success: boolean;
-  }): Promise<void> {
+  async recordToolCall(
+    sessionId: string,
+    toolCall: {
+      name: string;
+      duration: number;
+      success: boolean;
+    },
+  ): Promise<void> {
     const session = await this.getSession(sessionId);
     if (!session) return;
     session.statistics.toolCalls++;
@@ -364,9 +380,14 @@ export class SessionManager {
     await this.storage.saveSession(session);
   }
 
-  async getSessionContext(sessionId: string, options: {
-    includeHistory?: boolean; includeStats?: boolean; maxHistoryEntries?: number;
-  } = {}): Promise<string> {
+  async getSessionContext(
+    sessionId: string,
+    options: {
+      includeHistory?: boolean;
+      includeStats?: boolean;
+      maxHistoryEntries?: number;
+    } = {},
+  ): Promise<string> {
     const session = await this.getSession(sessionId);
     if (!session) return `Session ${sessionId}: Not found`;
 
@@ -377,8 +398,7 @@ export class SessionManager {
       `Created: ${session.info.createdAt.toISOString()}`,
       `Working Directory: ${session.context.workingDirectory}`,
     ];
-    if (session.info.tags.length > 0)
-      lines.push(`Tags: ${session.info.tags.join(', ')}`);
+    if (session.info.tags.length > 0) lines.push(`Tags: ${session.info.tags.join(', ')}`);
     if (options.includeStats) {
       lines.push('', 'Statistics:');
       lines.push(`  Iterations: ${session.statistics.iterations}`);
@@ -399,14 +419,25 @@ export class SessionManager {
   async getSessionSummary(sessionId: string): Promise<{
     info: SessionInfo;
     statistics: SessionStatistics;
-    summary: { totalDuration: string; iterationsPerMinute: number; toolCallsPerIteration: number; errorRate: number };
+    summary: {
+      totalDuration: string;
+      iterationsPerMinute: number;
+      toolCallsPerIteration: number;
+      errorRate: number;
+    };
   } | null> {
     const session = await this.getSession(sessionId);
     if (!session) return null;
     const mins = session.statistics.duration / 60_000;
     const ipm = mins > 0 ? session.statistics.iterations / mins : 0;
-    const tcpi = session.statistics.iterations > 0 ? session.statistics.toolCalls / session.statistics.iterations : 0;
-    const er = session.statistics.toolCalls > 0 ? session.statistics.errorCount / session.statistics.toolCalls : 0;
+    const tcpi =
+      session.statistics.iterations > 0
+        ? session.statistics.toolCalls / session.statistics.iterations
+        : 0;
+    const er =
+      session.statistics.toolCalls > 0
+        ? session.statistics.errorCount / session.statistics.toolCalls
+        : 0;
     return {
       info: session.info,
       statistics: session.statistics,

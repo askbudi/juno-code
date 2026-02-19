@@ -15,8 +15,8 @@ vi.mock('fs-extra', () => ({
     readFile: vi.fn(),
     readJson: vi.fn(),
     writeJson: vi.fn(),
-    pathExists: vi.fn()
-  }
+    pathExists: vi.fn(),
+  },
 }));
 
 // Mock chalk
@@ -27,8 +27,8 @@ vi.mock('chalk', () => ({
     red: vi.fn((text: string) => text),
     yellow: vi.fn((text: string) => text),
     gray: vi.fn((text: string) => text),
-    bold: vi.fn((text: string) => text)
-  }
+    bold: vi.fn((text: string) => text),
+  },
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -37,8 +37,8 @@ vi.mock('../../core/config.js', () => ({
     defaultSubagent: 'claude',
     mcpServerName: 'test-server',
     mcpRetries: 3,
-    verbose: false
-  })
+    verbose: false,
+  }),
 }));
 
 vi.mock('../../core/session.js', () => ({
@@ -46,16 +46,16 @@ vi.mock('../../core/session.js', () => ({
     createSession: vi.fn().mockResolvedValue({
       info: { id: 'test-session-id' },
       addHistoryEntry: vi.fn(),
-      completeSession: vi.fn()
-    })
-  })
+      completeSession: vi.fn(),
+    }),
+  }),
 }));
 
 vi.mock('../../mcp/client.js', () => ({
   createMCPClientFromConfig: vi.fn().mockResolvedValue({
     connect: vi.fn(),
-    disconnect: vi.fn()
-  })
+    disconnect: vi.fn(),
+  }),
 }));
 
 vi.mock('../utils/advanced-logger.js', () => ({
@@ -68,7 +68,7 @@ vi.mock('../utils/advanced-logger.js', () => ({
       error: vi.fn(),
       fatal: vi.fn(),
       startTimer: vi.fn(),
-      endTimer: vi.fn()
+      endTimer: vi.fn(),
     }),
     trace: vi.fn(),
     debug: vi.fn(),
@@ -77,15 +77,15 @@ vi.mock('../utils/advanced-logger.js', () => ({
     error: vi.fn(),
     fatal: vi.fn(),
     startTimer: vi.fn(),
-    endTimer: vi.fn()
+    endTimer: vi.fn(),
   },
   cliLogger: {
     startTimer: vi.fn(),
     endTimer: vi.fn(),
-    info: vi.fn()
+    info: vi.fn(),
   },
   engineLogger: {
-    info: vi.fn()
+    info: vi.fn(),
   },
   LogLevel: {
     TRACE: 0,
@@ -93,7 +93,7 @@ vi.mock('../utils/advanced-logger.js', () => ({
     INFO: 2,
     WARN: 3,
     ERROR: 4,
-    FATAL: 5
+    FATAL: 5,
   },
   LogContext: {
     CLI: 'CLI',
@@ -103,8 +103,8 @@ vi.mock('../utils/advanced-logger.js', () => ({
     TEMPLATE: 'TEMPLATE',
     CONFIG: 'CONFIG',
     PERFORMANCE: 'PERFORMANCE',
-    SYSTEM: 'SYSTEM'
-  }
+    SYSTEM: 'SYSTEM',
+  },
 }));
 
 describe('Test Command', () => {
@@ -122,7 +122,7 @@ describe('Test Command', () => {
     it('should configure test command with correct options', () => {
       configureTestCommand(program);
 
-      const testCommand = program.commands.find(cmd => cmd.name() === 'test');
+      const testCommand = program.commands.find((cmd) => cmd.name() === 'test');
       expect(testCommand).toBeDefined();
       expect(testCommand?.description()).toContain('AI-powered testing framework');
     });
@@ -130,10 +130,10 @@ describe('Test Command', () => {
     it('should have all required options', () => {
       configureTestCommand(program);
 
-      const testCommand = program.commands.find(cmd => cmd.name() === 'test');
+      const testCommand = program.commands.find((cmd) => cmd.name() === 'test');
       const options = testCommand?.options || [];
 
-      const optionFlags = options.map(opt => opt.flags);
+      const optionFlags = options.map((opt) => opt.flags);
 
       expect(optionFlags).toContain('-t, --type <type>');
       expect(optionFlags).toContain('-s, --subagent <name>');
@@ -151,13 +151,13 @@ describe('Test Command', () => {
     it('should have correct default values', () => {
       configureTestCommand(program);
 
-      const testCommand = program.commands.find(cmd => cmd.name() === 'test');
+      const testCommand = program.commands.find((cmd) => cmd.name() === 'test');
       const options = testCommand?.options || [];
 
-      const typeOption = options.find(opt => opt.flags.includes('-t'));
-      const intelligenceOption = options.find(opt => opt.flags.includes('-i'));
-      const formatOption = options.find(opt => opt.flags.includes('--format'));
-      const frameworkOption = options.find(opt => opt.flags.includes('--framework'));
+      const typeOption = options.find((opt) => opt.flags.includes('-t'));
+      const intelligenceOption = options.find((opt) => opt.flags.includes('-i'));
+      const formatOption = options.find((opt) => opt.flags.includes('--format'));
+      const frameworkOption = options.find((opt) => opt.flags.includes('--framework'));
 
       expect(typeOption?.defaultValue).toBe('all');
       expect(intelligenceOption?.defaultValue).toBe('comprehensive');
@@ -168,7 +168,7 @@ describe('Test Command', () => {
     it('should have proper command structure', () => {
       configureTestCommand(program);
 
-      const testCommand = program.commands.find(cmd => cmd.name() === 'test');
+      const testCommand = program.commands.find((cmd) => cmd.name() === 'test');
       expect(testCommand).toBeDefined();
       expect(testCommand?.name()).toBe('test');
       expect(testCommand?.usage()).toContain('[options] [target...]');
@@ -177,7 +177,7 @@ describe('Test Command', () => {
     it('should display help when called with --help', () => {
       configureTestCommand(program);
 
-      const testCommand = program.commands.find(cmd => cmd.name() === 'test');
+      const testCommand = program.commands.find((cmd) => cmd.name() === 'test');
       expect(testCommand).toBeDefined();
       expect(testCommand?.description()).toContain('AI-powered testing framework');
     });

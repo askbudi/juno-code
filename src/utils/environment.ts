@@ -38,7 +38,17 @@ export type Platform = 'win32' | 'darwin' | 'linux' | 'freebsd' | 'openbsd' | 's
 /**
  * System architectures
  */
-export type Architecture = 'arm' | 'arm64' | 'ia32' | 'mips' | 'mipsel' | 'ppc' | 'ppc64' | 's390' | 's390x' | 'x64';
+export type Architecture =
+  | 'arm'
+  | 'arm64'
+  | 'ia32'
+  | 'mips'
+  | 'mipsel'
+  | 'ppc'
+  | 'ppc64'
+  | 's390'
+  | 's390x'
+  | 'x64';
 
 /**
  * Shell types
@@ -116,9 +126,9 @@ export function isHeadlessEnvironment(): boolean {
     'JENKINS_URL',
     'TRAVIS',
     'CIRCLECI',
-    'PYTEST_CURRENT_TEST',  // Pytest test runner
-    'JUNO_TASK_HEADLESS',   // Our custom flag for headless testing
-    'NODE_ENV',             // Additional Node.js specific
+    'PYTEST_CURRENT_TEST', // Pytest test runner
+    'JUNO_TASK_HEADLESS', // Our custom flag for headless testing
+    'NODE_ENV', // Additional Node.js specific
   ];
 
   for (const indicator of ciIndicators) {
@@ -161,7 +171,7 @@ export function isCIEnvironment(): boolean {
     'TEAMCITY_VERSION',
   ];
 
-  return ciIndicators.some(indicator => Boolean(process.env[indicator]));
+  return ciIndicators.some((indicator) => Boolean(process.env[indicator]));
 }
 
 /**
@@ -325,11 +335,14 @@ export function parseEnvNumber(value: string | undefined, defaultValue: number =
 export function parseEnvArray(
   value: string | undefined,
   delimiter: string = ',',
-  defaultValue: string[] = []
+  defaultValue: string[] = [],
 ): string[] {
   if (!value) return defaultValue;
 
-  return value.split(delimiter).map(item => item.trim()).filter(Boolean);
+  return value
+    .split(delimiter)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 // ============================================================================
@@ -401,7 +414,7 @@ export function supportsColor(): boolean {
 
   // Check for common color-supporting terminals
   const colorTerms = ['color', 'ansi', 'truecolor', '256color', 'xterm'];
-  return colorTerms.some(colorTerm => term.includes(colorTerm));
+  return colorTerms.some((colorTerm) => term.includes(colorTerm));
 }
 
 /**
@@ -780,7 +793,7 @@ export async function findMCPServerPath(serverName: string = 'mcp-server'): Prom
     searchPaths.push(
       'C:\\Program Files\\MCP\\bin',
       'C:\\Program Files (x86)\\MCP\\bin',
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'MCP', 'bin')
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'MCP', 'bin'),
     );
   } else {
     searchPaths.push(
@@ -788,7 +801,7 @@ export async function findMCPServerPath(serverName: string = 'mcp-server'): Prom
       '/usr/bin',
       '/opt/mcp/bin',
       path.join(getHomeDirectory(), '.local', 'bin'),
-      path.join(getHomeDirectory(), 'bin')
+      path.join(getHomeDirectory(), 'bin'),
     );
   }
 
@@ -852,7 +865,9 @@ export async function validateMCPServerPath(serverPath: string): Promise<boolean
  * console.log('MCP server environment:', env);
  * ```
  */
-export function getMCPServerEnvironment(additionalEnv: Record<string, string> = {}): MCPServerEnvironment {
+export function getMCPServerEnvironment(
+  additionalEnv: Record<string, string> = {},
+): MCPServerEnvironment {
   const baseEnv = {
     PATH: process.env.PATH || '',
     NODE_ENV: getNodeEnvironment(),

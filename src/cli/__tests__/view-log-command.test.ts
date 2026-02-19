@@ -48,7 +48,8 @@ describe('View Log Command', () => {
     });
 
     it('should extract content between [thinking] and | metadata:', () => {
-      const line = '2024-01-26 10:00:00 [thinking] {"type": "result", "value": 42} | metadata: some info';
+      const line =
+        '2024-01-26 10:00:00 [thinking] {"type": "result", "value": 42} | metadata: some info';
       const result = extractThinkingContent(line);
       expect(result).toBe('{"type": "result", "value": 42}');
     });
@@ -90,7 +91,8 @@ describe('View Log Command', () => {
     });
 
     it('should handle escaped characters in content', () => {
-      const line = '2024-01-26 10:00:00 [thinking] Content with "quotes" and \\backslashes | metadata: info';
+      const line =
+        '2024-01-26 10:00:00 [thinking] Content with "quotes" and \\backslashes | metadata: info';
       const result = extractThinkingContent(line);
       expect(result).toBe('Content with "quotes" and \\backslashes');
     });
@@ -125,7 +127,7 @@ describe('View Log Command', () => {
         const result = execSync('node dist/bin/cli.mjs view-log --help', {
           cwd,
           encoding: 'utf-8',
-          timeout: 10000
+          timeout: 10000,
         });
         expect(result).toContain('view-log');
         expect(result).toContain('logFilePath');
@@ -145,7 +147,7 @@ describe('View Log Command', () => {
         execSync('node dist/bin/cli.mjs view-log /nonexistent/file.log', {
           cwd,
           encoding: 'utf-8',
-          timeout: 10000
+          timeout: 10000,
         });
         // Should not reach here
         expect(true).toBe(false);
@@ -170,7 +172,7 @@ describe('View Log Command', () => {
         const result = execSync(`node dist/bin/cli.mjs view-log "${logFile}" --raw`, {
           cwd,
           encoding: 'utf-8',
-          timeout: 10000
+          timeout: 10000,
         });
         // Should contain formatted output
         expect(result).toBeDefined();
@@ -193,11 +195,14 @@ describe('View Log Command', () => {
       await fs.writeFile(logFile, logContent);
 
       try {
-        const result = execSync(`node dist/bin/cli.mjs view-log "${logFile}" --raw --output json-only`, {
-          cwd,
-          encoding: 'utf-8',
-          timeout: 10000
-        });
+        const result = execSync(
+          `node dist/bin/cli.mjs view-log "${logFile}" --raw --output json-only`,
+          {
+            cwd,
+            encoding: 'utf-8',
+            timeout: 10000,
+          },
+        );
         // JSON entries should be present
         expect(result).toContain('type');
       } catch (error: any) {
@@ -224,14 +229,20 @@ describe('View Log Command', () => {
         const result = execSync(`node dist/bin/cli.mjs view-log "${logFile}" --raw --limit 2`, {
           cwd,
           encoding: 'utf-8',
-          timeout: 10000
+          timeout: 10000,
         });
         // Should not contain all entries
-        const lines = result.trim().split('\n').filter(l => l.includes('Entry'));
+        const lines = result
+          .trim()
+          .split('\n')
+          .filter((l) => l.includes('Entry'));
         expect(lines.length).toBeLessThanOrEqual(2);
       } catch (error: any) {
         if (error.stdout) {
-          const lines = error.stdout.trim().split('\n').filter((l: string) => l.includes('Entry'));
+          const lines = error.stdout
+            .trim()
+            .split('\n')
+            .filter((l: string) => l.includes('Entry'));
           expect(lines.length).toBeLessThanOrEqual(2);
         }
       }

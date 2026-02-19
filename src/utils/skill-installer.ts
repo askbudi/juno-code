@@ -73,7 +73,7 @@ export class SkillInstaller {
    * Returns paths relative to the group directory.
    */
   private static async getSkillFiles(groupDir: string): Promise<string[]> {
-    if (!await fs.pathExists(groupDir)) {
+    if (!(await fs.pathExists(groupDir))) {
       return [];
     }
 
@@ -113,7 +113,7 @@ export class SkillInstaller {
     projectDir: string,
     group: SkillGroup,
     silent = true,
-    force = false
+    force = false,
   ): Promise<number> {
     const debug = process.env.JUNO_CODE_DEBUG === '1';
     const packageSkillsDir = this.getPackageSkillsDir();
@@ -153,7 +153,7 @@ export class SkillInstaller {
       let shouldCopy = force;
 
       if (!shouldCopy) {
-        if (!await fs.pathExists(destPath)) {
+        if (!(await fs.pathExists(destPath))) {
           shouldCopy = true;
         } else {
           // Content-based comparison
@@ -178,7 +178,9 @@ export class SkillInstaller {
         installed++;
 
         if (debug) {
-          console.error(`[DEBUG] SkillInstaller: Installed ${group.name}/${relFile} -> ${destPath}`);
+          console.error(
+            `[DEBUG] SkillInstaller: Installed ${group.name}/${relFile} -> ${destPath}`,
+          );
         }
       }
     }
@@ -213,7 +215,9 @@ export class SkillInstaller {
           console.error(`[DEBUG] SkillInstaller: Error installing group '${group.name}':`, error);
         }
         if (!silent) {
-          console.error(`⚠️  Failed to install skills for ${group.name}: ${error instanceof Error ? error.message : String(error)}`);
+          console.error(
+            `⚠️  Failed to install skills for ${group.name}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
     }
@@ -240,7 +244,7 @@ export class SkillInstaller {
 
       // Only install skills for initialized projects
       const junoTaskDir = path.join(projectDir, '.juno_task');
-      if (!await fs.pathExists(junoTaskDir)) {
+      if (!(await fs.pathExists(junoTaskDir))) {
         return false;
       }
 
@@ -257,7 +261,10 @@ export class SkillInstaller {
       return updated;
     } catch (error) {
       if (process.env.JUNO_CODE_DEBUG === '1') {
-        console.error('[DEBUG] SkillInstaller: autoUpdate error:', error instanceof Error ? error.message : String(error));
+        console.error(
+          '[DEBUG] SkillInstaller: autoUpdate error:',
+          error instanceof Error ? error.message : String(error),
+        );
       }
       return false;
     }
@@ -272,7 +279,7 @@ export class SkillInstaller {
   static async needsUpdate(projectDir: string): Promise<boolean> {
     try {
       const junoTaskDir = path.join(projectDir, '.juno_task');
-      if (!await fs.pathExists(junoTaskDir)) {
+      if (!(await fs.pathExists(junoTaskDir))) {
         return false;
       }
 
@@ -291,7 +298,7 @@ export class SkillInstaller {
           const srcPath = path.join(sourceGroupDir, relFile);
           const destPath = path.join(destGroupDir, relFile);
 
-          if (!await fs.pathExists(destPath)) {
+          if (!(await fs.pathExists(destPath))) {
             return true;
           }
 
@@ -317,11 +324,13 @@ export class SkillInstaller {
    * @param projectDir - The project root directory
    * @returns Array of skill group status objects
    */
-  static async listSkillGroups(projectDir: string): Promise<{
-    name: string;
-    destDir: string;
-    files: { name: string; installed: boolean; upToDate: boolean }[];
-  }[]> {
+  static async listSkillGroups(projectDir: string): Promise<
+    {
+      name: string;
+      destDir: string;
+      files: { name: string; installed: boolean; upToDate: boolean }[];
+    }[]
+  > {
     const packageSkillsDir = this.getPackageSkillsDir();
     const results = [];
 

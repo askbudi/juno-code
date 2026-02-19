@@ -10,7 +10,7 @@ import {
   formatFileSize,
   shouldCompactFile,
   type CompactionResult,
-  type CompactionOptions
+  type CompactionOptions,
 } from '../file-compaction.js';
 
 describe('File Compaction Utility', () => {
@@ -83,16 +83,18 @@ This section should always be preserved.
       const result = await compactConfigFile(testFilePath, {
         createBackup: true,
         dryRun: false,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       expect(result).toMatchObject({
         originalSize: expect.any(Number),
         compactedSize: expect.any(Number),
-        backupPath: expect.stringMatching(/test-config\.backup\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/),
+        backupPath: expect.stringMatching(
+          /test-config\.backup\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/,
+        ),
         sectionsRemoved: expect.any(Array),
         sectionsPreserved: expect.any(Array),
-        reductionPercentage: expect.any(Number)
+        reductionPercentage: expect.any(Number),
       });
 
       // Verify backup exists
@@ -110,7 +112,7 @@ This section should always be preserved.
       await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: false,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       const compactedContent = await fs.readFile(testFilePath, 'utf-8');
@@ -133,14 +135,14 @@ This section should always be preserved.
       const recentDate = new Date().toISOString().split('T')[0]; // Today
       const contentWithRecentDate = sampleContent.replace(
         '2024-10-10 — Old Resolved Issue',
-        `${recentDate} — Recent Resolved Issue`
+        `${recentDate} — Recent Resolved Issue`,
       );
       await fs.writeFile(testFilePath, contentWithRecentDate, 'utf-8');
 
       await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: false,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       const compactedContent = await fs.readFile(testFilePath, 'utf-8');
@@ -157,7 +159,7 @@ This section should always be preserved.
         createBackup: false,
         dryRun: false,
         preserveDays: 30,
-        preservePatterns: ['Old Resolved Issue']
+        preservePatterns: ['Old Resolved Issue'],
       });
 
       const compactedContent = await fs.readFile(testFilePath, 'utf-8');
@@ -172,7 +174,7 @@ This section should always be preserved.
       const result = await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: true,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       const currentContent = await fs.readFile(testFilePath, 'utf-8');
@@ -189,7 +191,7 @@ This section should always be preserved.
       await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: false,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       const compactedContent = await fs.readFile(testFilePath, 'utf-8');
@@ -244,7 +246,7 @@ This section should always be preserved.
       const result = await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: true,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       expect(result.sectionsPreserved).toContain('OPTIMIZED BUILD/TEST LOOP');
@@ -271,11 +273,13 @@ Random text without headers
       await fs.writeFile(testFilePath, malformedContent, 'utf-8');
 
       // Should not throw error
-      await expect(compactConfigFile(testFilePath, {
-        createBackup: false,
-        dryRun: false,
-        preserveDays: 30
-      })).resolves.toBeDefined();
+      await expect(
+        compactConfigFile(testFilePath, {
+          createBackup: false,
+          dryRun: false,
+          preserveDays: 30,
+        }),
+      ).resolves.toBeDefined();
     });
   });
 
@@ -286,7 +290,7 @@ Random text without headers
       const result = await compactConfigFile(testFilePath, {
         createBackup: false,
         dryRun: false,
-        preserveDays: 30
+        preserveDays: 30,
       });
 
       expect(result.originalSize).toBe(0);
@@ -302,24 +306,28 @@ Random text without headers
 
       await fs.writeFile(testFilePath, headersOnly, 'utf-8');
 
-      await expect(compactConfigFile(testFilePath, {
-        createBackup: false,
-        dryRun: false,
-        preserveDays: 30
-      })).resolves.toBeDefined();
+      await expect(
+        compactConfigFile(testFilePath, {
+          createBackup: false,
+          dryRun: false,
+          preserveDays: 30,
+        }),
+      ).resolves.toBeDefined();
     });
 
     it('should handle permission errors gracefully', async () => {
       // Mock fs.writeFile to throw permission error
-      const mockWriteFile = vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(
-        new Error('EACCES: permission denied')
-      );
+      const mockWriteFile = vi
+        .spyOn(fs, 'writeFile')
+        .mockRejectedValueOnce(new Error('EACCES: permission denied'));
 
-      await expect(compactConfigFile(testFilePath, {
-        createBackup: false,
-        dryRun: false,
-        preserveDays: 30
-      })).rejects.toThrow('EACCES: permission denied');
+      await expect(
+        compactConfigFile(testFilePath, {
+          createBackup: false,
+          dryRun: false,
+          preserveDays: 30,
+        }),
+      ).rejects.toThrow('EACCES: permission denied');
 
       mockWriteFile.mockRestore();
     });

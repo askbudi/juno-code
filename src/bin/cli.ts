@@ -44,8 +44,14 @@ const VERSION = packageJson.version;
 function isConnectionLikeError(err: unknown): boolean {
   const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   const lower = msg.toLowerCase();
-  return ['epipe', 'broken pipe', 'econnreset', 'socket hang up', 'err_socket_closed', 'connection reset by peer']
-    .some(token => lower.includes(token));
+  return [
+    'epipe',
+    'broken pipe',
+    'econnreset',
+    'socket hang up',
+    'err_socket_closed',
+    'connection reset by peer',
+  ].some((token) => lower.includes(token));
 }
 
 /**
@@ -59,7 +65,7 @@ function handleCLIError(error: unknown, verbose: boolean = false): void {
 
     if (error.suggestions?.length) {
       console.error(chalk.yellow('\n💡 Suggestions:'));
-      error.suggestions.forEach(suggestion => {
+      error.suggestions.forEach((suggestion) => {
         console.error(chalk.yellow(`   • ${suggestion}`));
       });
     }
@@ -103,25 +109,65 @@ function setupGlobalOptions(program: Command): void {
     .option('-s, --subagent <name>', 'Subagent to use (claude, cursor, codex, gemini, pi)')
     .option('-b, --backend <type>', 'Backend to use (mcp, shell) - default: shell')
     .option('-m, --model <name>', 'Model to use (subagent-specific)')
-    .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
-    .option('--tools <tools...>', 'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read"). Passed to shell backend, ignored for MCP.')
-    .option('--allowed-tools <tools...>', 'Permission-based filtering of specific tool instances (e.g. "Bash(git:*) Edit"). Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode. Passed to shell backend, ignored for MCP.')
-    .option('--disallowed-tools <tools...>', 'Disallowed tools for Claude (passed to shell backend, ignored for MCP). By default, no tools are disallowed')
-    .option('--append-allowed-tools <tools...>', 'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Passed to shell backend, ignored for MCP.')
+    .option(
+      '--agents <config>',
+      'Agents configuration (forwarded to shell backend, ignored for MCP)',
+    )
+    .option(
+      '--tools <tools...>',
+      'Specify the list of available tools from the built-in set (only works with --print mode). Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read"). Passed to shell backend, ignored for MCP.',
+    )
+    .option(
+      '--allowed-tools <tools...>',
+      'Permission-based filtering of specific tool instances (e.g. "Bash(git:*) Edit"). Default when not specified: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell, Skill, SlashCommand, EnterPlanMode. Passed to shell backend, ignored for MCP.',
+    )
+    .option(
+      '--disallowed-tools <tools...>',
+      'Disallowed tools for Claude (passed to shell backend, ignored for MCP). By default, no tools are disallowed',
+    )
+    .option(
+      '--append-allowed-tools <tools...>',
+      'Append tools to the default allowed-tools list (mutually exclusive with --allowed-tools). Passed to shell backend, ignored for MCP.',
+    )
     .option('--mcp-timeout <number>', 'MCP server timeout in milliseconds', parseInt)
-    .option('--enable-feedback', 'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)')
+    .option(
+      '--enable-feedback',
+      'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)',
+    )
     .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
-    .option('--til-completion', 'Run juno-code in a loop until all kanban tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)')
+    .option(
+      '--til-completion',
+      'Run juno-code in a loop until all kanban tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
+    )
     .option('--until-completion', 'Alias for --til-completion')
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
     .addOption(new Option('--till-complete', 'Alias for --til-completion').hideHelp())
-    .option('--pre-run-hook <hooks...>', 'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)')
-    .option('--stale-threshold <n>', 'Number of stale iterations before exiting (default: 3). Set to 0 to disable. (only with --til-completion)', parseInt)
-    .option('--no-stale-check', 'Disable stale iteration detection (alias for --stale-threshold 0). (only with --til-completion)')
-    .option('--force-update', 'Force update scripts, services, and Python dependencies (bypasses 24-hour cache)')
-    .option('--on-hourly-limit <behavior>', 'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately (default: raise)')
-    .option('--no-hooks', 'Skip execution of all lifecycle hooks (START_RUN, START_ITERATION, END_ITERATION, END_RUN)')
+    .option(
+      '--pre-run-hook <hooks...>',
+      'Execute named hooks from .juno_task/config.json before each iteration (only with --til-completion)',
+    )
+    .option(
+      '--stale-threshold <n>',
+      'Number of stale iterations before exiting (default: 3). Set to 0 to disable. (only with --til-completion)',
+      parseInt,
+    )
+    .option(
+      '--no-stale-check',
+      'Disable stale iteration detection (alias for --stale-threshold 0). (only with --til-completion)',
+    )
+    .option(
+      '--force-update',
+      'Force update scripts, services, and Python dependencies (bypasses 24-hour cache)',
+    )
+    .option(
+      '--on-hourly-limit <behavior>',
+      'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately (default: raise)',
+    )
+    .option(
+      '--no-hooks',
+      'Skip execution of all lifecycle hooks (START_RUN, START_ITERATION, END_ITERATION, END_RUN)',
+    );
 
   // Global error handling
   program.exitOverride((err) => {
@@ -162,23 +208,35 @@ function setupMainCommand(program: Command): void {
         // Merge options with command options taking precedence over global options
         // Only merge defined global options to avoid overwriting command options with undefined
         const definedGlobalOptions = Object.fromEntries(
-          Object.entries(globalOptions).filter(([_, v]) => v !== undefined)
+          Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
         );
         const allOptions = { ...definedGlobalOptions, ...options };
 
         // Handle --til-completion flag and its synonyms: invoke run_until_completion.sh
-        if (allOptions.tilCompletion || allOptions.untilCompletion || allOptions.runUntilCompletion || allOptions.tillComplete) {
+        if (
+          allOptions.tilCompletion ||
+          allOptions.untilCompletion ||
+          allOptions.runUntilCompletion ||
+          allOptions.tillComplete
+        ) {
           const { spawn } = await import('node:child_process');
           const path = await import('node:path');
           const fs = await import('fs-extra');
 
-          const scriptPath = path.join(process.cwd(), '.juno_task', 'scripts', 'run_until_completion.sh');
+          const scriptPath = path.join(
+            process.cwd(),
+            '.juno_task',
+            'scripts',
+            'run_until_completion.sh',
+          );
 
           // Check if script exists
-          if (!await fs.pathExists(scriptPath)) {
+          if (!(await fs.pathExists(scriptPath))) {
             console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
             console.error(chalk.red(`   Expected location: ${scriptPath}`));
-            console.error(chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'));
+            console.error(
+              chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'),
+            );
             process.exit(1);
           }
 
@@ -193,17 +251,21 @@ function setupMainCommand(program: Command): void {
           }
 
           // Forward all juno-code arguments (except --til-completion and its synonyms, and --pre-run-hook)
-          const completionFlags = ['--til-completion', '--until-completion', '--run-until-completion', '--till-complete'];
-          const forwardedArgs = process.argv.slice(2).filter(arg =>
-            !completionFlags.includes(arg) &&
-            !arg.startsWith('--pre-run-hook')
-          );
+          const completionFlags = [
+            '--til-completion',
+            '--until-completion',
+            '--run-until-completion',
+            '--till-complete',
+          ];
+          const forwardedArgs = process.argv
+            .slice(2)
+            .filter((arg) => !completionFlags.includes(arg) && !arg.startsWith('--pre-run-hook'));
           scriptArgs.push(...forwardedArgs);
 
           // Execute run_until_completion.sh
           const child = spawn(scriptPath, scriptArgs, {
             stdio: 'inherit',
-            cwd: process.cwd()
+            cwd: process.cwd(),
           });
 
           // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
@@ -248,7 +310,12 @@ function setupMainCommand(program: Command): void {
         }
 
         // Check if we should auto-detect project configuration
-        if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
+        if (
+          !globalOptions.subagent &&
+          !options.prompt &&
+          !options.interactive &&
+          !options.interactivePrompt
+        ) {
           const fs = await import('fs-extra');
           const path = await import('node:path');
           const cwd = process.cwd();
@@ -267,25 +334,29 @@ function setupMainCommand(program: Command): void {
                   verbose: allOptions.verbose || false,
                   quiet: allOptions.quiet || false,
                   logLevel: allOptions.logLevel || 'info',
-                  workingDirectory: cwd
-                }
+                  workingDirectory: cwd,
+                },
               });
 
               // Auto-detect subagent from config
               if (!allOptions.subagent && config.defaultSubagent) {
                 allOptions.subagent = config.defaultSubagent;
-                console.log(chalk.gray(`🤖 Using configured subagent: ${chalk.cyan(config.defaultSubagent)}`));
+                console.log(
+                  chalk.gray(`🤖 Using configured subagent: ${chalk.cyan(config.defaultSubagent)}`),
+                );
               }
 
               // Auto-detect prompt file (.juno_task/prompt.md)
               const promptFile = path.join(junoTaskDir, 'prompt.md');
-              if (!allOptions.prompt && await fs.pathExists(promptFile)) {
+              if (!allOptions.prompt && (await fs.pathExists(promptFile))) {
                 allOptions.prompt = promptFile;
-                console.log(chalk.gray(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
+                console.log(
+                  chalk.gray(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`),
+                );
               }
 
               // Check if we have enough information to proceed
-              if (allOptions.subagent && (allOptions.prompt || await fs.pathExists(promptFile))) {
+              if (allOptions.subagent && (allOptions.prompt || (await fs.pathExists(promptFile)))) {
                 console.log(chalk.green('✓ Auto-detected project configuration\n'));
                 // Import and execute with auto-detected options
                 const { mainCommandHandler } = await import('../cli/commands/main.js');
@@ -299,13 +370,22 @@ function setupMainCommand(program: Command): void {
         }
 
         // Show help if no arguments provided or auto-detection failed
-        if (!globalOptions.subagent && !options.prompt && !options.interactive && !options.interactivePrompt) {
-          console.log(chalk.blue.bold('🎯 Juno Code - TypeScript CLI for AI Subagent Orchestration\n'));
+        if (
+          !globalOptions.subagent &&
+          !options.prompt &&
+          !options.interactive &&
+          !options.interactivePrompt
+        ) {
+          console.log(
+            chalk.blue.bold('🎯 Juno Code - TypeScript CLI for AI Subagent Orchestration\n'),
+          );
           console.log(chalk.white('To get started:'));
           console.log(chalk.gray('  juno-code init                    # Initialize new project'));
           console.log(chalk.gray('  juno-code start                   # Start execution'));
           console.log(chalk.gray('  juno-code test --generate --run   # AI-powered testing'));
-          console.log(chalk.gray('  juno-code -s claude -p "prompt"   # Quick execution with Claude'));
+          console.log(
+            chalk.gray('  juno-code -s claude -p "prompt"   # Quick execution with Claude'),
+          );
           console.log(chalk.gray('  juno-code --help                  # Show all commands'));
           console.log('');
           return;
@@ -366,12 +446,16 @@ function setupAliases(program: Command): void {
           const promptText = Array.isArray(prompt) ? prompt.join(' ') : prompt;
           // Get global options and merge with command options
           const globalOptions = program.opts();
-          await mainCommandHandler([], {
-            ...globalOptions,
-            ...options,
-            subagent,
-            prompt: promptText
-          }, command);
+          await mainCommandHandler(
+            [],
+            {
+              ...globalOptions,
+              ...options,
+              subagent,
+              prompt: promptText,
+            },
+            command,
+          );
         } catch (error) {
           handleCLIError(error, options.verbose);
         }
@@ -398,13 +482,16 @@ function configureEnvironment(): void {
     'JUNO_CODE_MCP_SERVER_PATH',
     'JUNO_CODE_MCP_TIMEOUT',
     'JUNO_CODE_NO_COLOR',
-    'JUNO_CODE_ENABLE_FEEDBACK'
+    'JUNO_CODE_ENABLE_FEEDBACK',
   ];
 
   // Helper function to process environment variables
   const processEnvVar = (envVar: string, prefix: string) => {
     const value = process.env[envVar];
-    if (value && !process.argv.includes(`--${envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-')}`)) {
+    if (
+      value &&
+      !process.argv.includes(`--${envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-')}`)
+    ) {
       // Environment variable is set but not overridden by CLI argument
       const option = envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-');
 
@@ -468,13 +555,21 @@ async function main(): Promise<void> {
     const { ServiceInstaller } = await import('../utils/service-installer.js');
 
     if (isForceUpdate) {
-      console.log(chalk.blue('🔄 Force updating service scripts (codex.py, claude.py, gemini.py)...'));
+      console.log(
+        chalk.blue('🔄 Force updating service scripts (codex.py, claude.py, gemini.py)...'),
+      );
     }
 
     const updated = await ServiceInstaller.autoUpdate(isForceUpdate);
 
     // Show update message in verbose mode or force update mode
-    if (updated && (isForceUpdate || process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+    if (
+      updated &&
+      (isForceUpdate ||
+        process.argv.includes('--verbose') ||
+        process.argv.includes('-v') ||
+        process.env.JUNO_CODE_DEBUG === '1')
+    ) {
       if (isForceUpdate) {
         console.log(chalk.green('✓ Service scripts reinstalled'));
       } else {
@@ -484,7 +579,10 @@ async function main(): Promise<void> {
   } catch (error) {
     // Log error in debug mode, but don't break CLI
     if (process.env.JUNO_CODE_DEBUG === '1') {
-      console.error('[DEBUG] Service auto-update failed:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[DEBUG] Service auto-update failed:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -505,14 +603,22 @@ async function main(): Promise<void> {
       const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
 
       // Show update message in verbose mode
-      if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+      if (
+        updated &&
+        (process.argv.includes('--verbose') ||
+          process.argv.includes('-v') ||
+          process.env.JUNO_CODE_DEBUG === '1')
+      ) {
         console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
       }
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
     if (process.env.JUNO_CODE_DEBUG === '1') {
-      console.error('[DEBUG] Script auto-update failed:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[DEBUG] Script auto-update failed:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -528,13 +634,21 @@ async function main(): Promise<void> {
     } else {
       const updated = await SkillInstaller.autoUpdate(process.cwd());
 
-      if (updated && (process.argv.includes('--verbose') || process.argv.includes('-v') || process.env.JUNO_CODE_DEBUG === '1')) {
+      if (
+        updated &&
+        (process.argv.includes('--verbose') ||
+          process.argv.includes('-v') ||
+          process.env.JUNO_CODE_DEBUG === '1')
+      ) {
         console.error('[DEBUG] Agent skill files auto-updated');
       }
     }
   } catch (error) {
     if (process.env.JUNO_CODE_DEBUG === '1') {
-      console.error('[DEBUG] Skill auto-update failed:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[DEBUG] Skill auto-update failed:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -575,12 +689,17 @@ async function main(): Promise<void> {
   setupMainCommand(program);
 
   // Add comprehensive help
-  program.addHelpText('beforeAll', `
+  program.addHelpText(
+    'beforeAll',
+    `
 ${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestration
 
-`);
+`,
+  );
 
-  program.addHelpText('afterAll', `
+  program.addHelpText(
+    'afterAll',
+    `
 ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Initialize new project (interactive mode)')}
   juno-code init
@@ -639,7 +758,8 @@ ${chalk.blue.bold('Support:')}
   Website: https://askbudi.ai
   License: MIT
 
-`);
+`,
+  );
 
   // Parse and execute
   try {

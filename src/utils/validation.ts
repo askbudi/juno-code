@@ -7,11 +7,7 @@
  */
 
 import { z } from 'zod';
-import type {
-  SubagentType,
-  LogLevel,
-  JunoTaskConfig
-} from '../types/index';
+import type { SubagentType, LogLevel, JunoTaskConfig } from '../types/index';
 import { JunoTaskConfigSchema, validateConfig as coreValidateConfig } from '../core/config';
 import { SUBAGENT_ALIASES } from '../cli/types';
 
@@ -22,7 +18,8 @@ import { SUBAGENT_ALIASES } from '../cli/types';
 /**
  * Schema for validating subagent types with alias support
  */
-export const SubagentSchema = z.string()
+export const SubagentSchema = z
+  .string()
   .transform((value) => {
     if (['claude', 'cursor', 'codex', 'gemini', 'pi'].includes(value)) {
       return value as SubagentType;
@@ -33,26 +30,30 @@ export const SubagentSchema = z.string()
       return normalized;
     }
 
-    throw new z.ZodError([{
-      code: z.ZodIssueCode.invalid_enum_value,
-      options: ['claude', 'cursor', 'codex', 'gemini', 'pi'],
-      received: value,
-      path: [],
-      message: `Invalid subagent: ${value}. Valid options: claude, cursor, codex, gemini, pi`
-    }]);
+    throw new z.ZodError([
+      {
+        code: z.ZodIssueCode.invalid_enum_value,
+        options: ['claude', 'cursor', 'codex', 'gemini', 'pi'],
+        received: value,
+        path: [],
+        message: `Invalid subagent: ${value}. Valid options: claude, cursor, codex, gemini, pi`,
+      },
+    ]);
   })
-  .refine((value): value is SubagentType =>
-    ['claude', 'cursor', 'codex', 'gemini', 'pi'].includes(value), {
-    message: 'Invalid subagent type'
-  });
+  .refine(
+    (value): value is SubagentType => ['claude', 'cursor', 'codex', 'gemini', 'pi'].includes(value),
+    {
+      message: 'Invalid subagent type',
+    },
+  );
 
 /**
  * Schema for validating log levels
  */
 export const LogLevelSchema = z.enum(['error', 'warn', 'info', 'debug', 'trace'], {
   errorMap: (_issue, ctx) => ({
-    message: `Invalid log level: ${ctx.data}. Valid options: error, warn, info, debug, trace`
-  })
+    message: `Invalid log level: ${ctx.data}. Valid options: error, warn, info, debug, trace`,
+  }),
 });
 
 /**
@@ -60,25 +61,27 @@ export const LogLevelSchema = z.enum(['error', 'warn', 'info', 'debug', 'trace']
  */
 export const SessionStatusSchema = z.enum(['running', 'completed', 'failed', 'cancelled'], {
   errorMap: (_issue, ctx) => ({
-    message: `Invalid session status: ${ctx.data}. Valid options: running, completed, failed, cancelled`
-  })
+    message: `Invalid session status: ${ctx.data}. Valid options: running, completed, failed, cancelled`,
+  }),
 });
 
 /**
  * Schema for validating iteration counts
  */
-export const IterationsSchema = z.number()
+export const IterationsSchema = z
+  .number()
   .int('Iterations must be an integer')
   .refine(
     (value) => value === -1 || value > 0,
-    'Iterations must be a positive integer or -1 for infinite'
+    'Iterations must be a positive integer or -1 for infinite',
   )
-  .transform((value) => value === -1 ? Infinity : value);
+  .transform((value) => (value === -1 ? Infinity : value));
 
 /**
  * Schema for validating model names (subagent-specific)
  */
-export const ModelSchema = z.string()
+export const ModelSchema = z
+  .string()
   .min(1, 'Model name cannot be empty')
   .refine((model) => {
     return /^[a-zA-Z0-9._-]+$/.test(model);
@@ -137,7 +140,7 @@ export function validateConfig(config: unknown): JunoTaskConfig {
  * Environment variable validation
  */
 export function validateEnvironmentVars(
-  envVars: Record<string, string | undefined>
+  envVars: Record<string, string | undefined>,
 ): Partial<JunoTaskConfig> {
   const config: Partial<JunoTaskConfig> = {};
   const errors: string[] = [];
@@ -179,9 +182,7 @@ export function validateEnvironmentVars(
   });
 
   if (errors.length > 0) {
-    throw new Error(
-      `Environment variable validation failed:\n${errors.join('\n')}`
-    );
+    throw new Error(`Environment variable validation failed:\n${errors.join('\n')}`);
   }
 
   return config;
@@ -191,9 +192,4 @@ export function validateEnvironmentVars(
 // Type Re-exports
 // ============================================================================
 
-export type {
-  SubagentType,
-  SessionStatus,
-  LogLevel,
-  JunoTaskConfig
-} from '../types/index';
+export type { SubagentType, SessionStatus, LogLevel, JunoTaskConfig } from '../types/index';

@@ -3,8 +3,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TerminalProgressWriter, getTerminalProgressWriter, resetTerminalProgressWriter, writeTerminalProgress, writeTerminalProgressWithPrefix } from '../terminal-progress-writer.js';
-import { setFeedbackActive, resetFeedbackState, getBufferedProgressEvents } from '../feedback-state.js';
+import {
+  TerminalProgressWriter,
+  getTerminalProgressWriter,
+  resetTerminalProgressWriter,
+  writeTerminalProgress,
+  writeTerminalProgressWithPrefix,
+} from '../terminal-progress-writer.js';
+import {
+  setFeedbackActive,
+  resetFeedbackState,
+  getBufferedProgressEvents,
+} from '../feedback-state.js';
 import { Writable } from 'node:stream';
 
 describe('TerminalProgressWriter', () => {
@@ -18,7 +28,7 @@ describe('TerminalProgressWriter', () => {
         writtenData.push(chunk.toString());
         callback();
         return true;
-      }
+      },
     }) as Writable & { isTTY?: boolean };
   });
 
@@ -159,18 +169,30 @@ describe('TerminalProgressWriter', () => {
       const originalIsTTY = process.stderr.isTTY;
 
       // Test with TTY
-      Object.defineProperty(process.stderr, 'isTTY', { value: true, writable: true, configurable: true });
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: true,
+        writable: true,
+        configurable: true,
+      });
       let writer = new TerminalProgressWriter();
       expect(writer.isTerminalAware()).toBe(true);
 
       // Test without TTY
-      Object.defineProperty(process.stderr, 'isTTY', { value: false, writable: true, configurable: true });
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: false,
+        writable: true,
+        configurable: true,
+      });
       resetTerminalProgressWriter();
       writer = new TerminalProgressWriter();
       expect(writer.isTerminalAware()).toBe(false);
 
       // Restore original value
-      Object.defineProperty(process.stderr, 'isTTY', { value: originalIsTTY, writable: true, configurable: true });
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: originalIsTTY,
+        writable: true,
+        configurable: true,
+      });
     });
 
     it('should allow manual override of terminal awareness', () => {

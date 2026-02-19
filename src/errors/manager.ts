@@ -19,7 +19,7 @@ export class ErrorManager {
   }
 
   public getErrorsByCategory(category: ErrorCategory): readonly JunoTaskError[] {
-    return this.errorHistory.filter(error => error.category === category);
+    return this.errorHistory.filter((error) => error.category === category);
   }
 }
 

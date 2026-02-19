@@ -53,24 +53,24 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'init',
         description: 'Initialize new project',
-        usage: 'juno-code init [--interactive]'
+        usage: 'juno-code init [--interactive]',
       },
       {
         name: 'start',
         description: 'Execute task',
-        usage: 'juno-code start [--max-iterations N]'
+        usage: 'juno-code start [--max-iterations N]',
       },
       {
         name: 'logs',
         description: 'View application logs',
-        usage: 'juno-code logs [--interactive]'
+        usage: 'juno-code logs [--interactive]',
       },
       {
         name: 'session',
         description: 'Manage execution sessions',
-        usage: 'juno-code session <list|info|remove>'
-      }
-    ]
+        usage: 'juno-code session <list|info|remove>',
+      },
+    ],
   },
   {
     category: 'Subagent Shortcuts',
@@ -78,24 +78,24 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'claude',
         description: 'Execute with Claude subagent',
-        usage: 'juno-code claude "task description"'
+        usage: 'juno-code claude "task description"',
       },
       {
         name: 'cursor',
         description: 'Execute with Cursor subagent',
-        usage: 'juno-code cursor "task description"'
+        usage: 'juno-code cursor "task description"',
       },
       {
         name: 'codex',
         description: 'Execute with Codex subagent',
-        usage: 'juno-code codex "task description"'
+        usage: 'juno-code codex "task description"',
       },
       {
         name: 'gemini',
         description: 'Execute with Gemini subagent',
-        usage: 'juno-code gemini "task description"'
-      }
-    ]
+        usage: 'juno-code gemini "task description"',
+      },
+    ],
   },
   {
     category: 'Utility Commands',
@@ -103,30 +103,30 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'feedback',
         description: 'Collect user feedback',
-        usage: 'juno-code feedback [--interactive]'
+        usage: 'juno-code feedback [--interactive]',
       },
       {
         name: 'setup-git',
         description: 'Initialize Git repository',
-        usage: 'juno-code setup-git <repository-url>'
+        usage: 'juno-code setup-git <repository-url>',
       },
       {
         name: 'completion',
         description: 'Shell completion setup',
-        usage: 'juno-code completion <install|uninstall>'
+        usage: 'juno-code completion <install|uninstall>',
       },
       {
         name: 'services',
         description: 'Manage service scripts (use --force to refresh codex.py/claude.py)',
-        usage: 'juno-code services install --force'
+        usage: 'juno-code services install --force',
       },
       {
         name: 'help',
         description: 'Show help information',
-        usage: 'juno-code help [--interactive]'
-      }
-    ]
-  }
+        usage: 'juno-code help [--interactive]',
+      },
+    ],
+  },
 ];
 
 const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
@@ -202,51 +202,54 @@ export JUNO_TASK_LOG_LEVEL=debug
  * Display quick reference guide
  */
 function displayQuickReference(formatter: RichFormatter): void {
-  console.log(formatter.panel(
-    'Welcome to juno-code! This quick reference shows the most commonly used commands.',
-    {
-      title: '🚀 juno-code Quick Reference',
-      border: 'rounded',
-      style: 'success',
-      padding: 1
-    }
-  ));
+  console.log(
+    formatter.panel(
+      'Welcome to juno-code! This quick reference shows the most commonly used commands.',
+      {
+        title: '🚀 juno-code Quick Reference',
+        border: 'rounded',
+        style: 'success',
+        padding: 1,
+      },
+    ),
+  );
 
-  QUICK_REFERENCE.forEach(section => {
+  QUICK_REFERENCE.forEach((section) => {
     console.log(chalk.yellow.bold(`\n📂 ${section.category}`));
     console.log(chalk.gray('─'.repeat(60)));
 
-    section.commands.forEach(cmd => {
+    section.commands.forEach((cmd) => {
       console.log(chalk.cyan(`  ${cmd.name.padEnd(12)}`), cmd.description);
       console.log(chalk.gray(`  ${' '.repeat(12)} ${cmd.usage}`));
       console.log();
     });
   });
 
-  console.log(formatter.panel(
-    `Use ${chalk.cyan('juno-code help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-code <command> --help')} for detailed command information.`,
-    {
-      title: '💡 Next Steps',
-      border: 'rounded',
-      style: 'info',
-      padding: 1
-    }
-  ));
+  console.log(
+    formatter.panel(
+      `Use ${chalk.cyan('juno-code help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-code <command> --help')} for detailed command information.`,
+      {
+        title: '💡 Next Steps',
+        border: 'rounded',
+        style: 'info',
+        padding: 1,
+      },
+    ),
+  );
 }
 
 /**
  * Display troubleshooting guide
  */
 function displayTroubleshooting(formatter: RichFormatter): void {
-  console.log(formatter.panel(
-    TROUBLESHOOTING_GUIDE,
-    {
+  console.log(
+    formatter.panel(TROUBLESHOOTING_GUIDE, {
       title: '🔧 Troubleshooting Guide',
       border: 'rounded',
       style: 'warning',
-      padding: 1
-    }
-  ));
+      padding: 1,
+    }),
+  );
 }
 
 /**
@@ -261,7 +264,7 @@ function listHelpTopics(): void {
     { id: 'configuration', title: 'Configuration Guide', difficulty: 'intermediate' },
     { id: 'sessions', title: 'Session Management', difficulty: 'intermediate' },
     { id: 'templates', title: 'Template System', difficulty: 'advanced' },
-    { id: 'troubleshooting', title: 'Troubleshooting Guide', difficulty: 'intermediate' }
+    { id: 'troubleshooting', title: 'Troubleshooting Guide', difficulty: 'intermediate' },
   ];
 
   console.log(chalk.blue.bold('\n📖 Available Help Topics'));
@@ -269,20 +272,28 @@ function listHelpTopics(): void {
 
   const getDifficultyIcon = (difficulty: string) => {
     switch (difficulty) {
-      case 'beginner': return '🟢';
-      case 'intermediate': return '🟡';
-      case 'advanced': return '🔴';
-      default: return '⚪';
+      case 'beginner':
+        return '🟢';
+      case 'intermediate':
+        return '🟡';
+      case 'advanced':
+        return '🔴';
+      default:
+        return '⚪';
     }
   };
 
-  topics.forEach(topic => {
+  topics.forEach((topic) => {
     const icon = getDifficultyIcon(topic.difficulty);
     console.log(`${icon} ${chalk.cyan(topic.id.padEnd(20))} ${topic.title}`);
   });
 
-  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view a specific topic`));
-  console.log(chalk.yellow(`Use ${chalk.cyan('juno-code help --interactive')} for full interactive help`));
+  console.log(
+    chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view a specific topic`),
+  );
+  console.log(
+    chalk.yellow(`Use ${chalk.cyan('juno-code help --interactive')} for full interactive help`),
+  );
 }
 
 /**
@@ -290,11 +301,9 @@ function listHelpTopics(): void {
  */
 function searchHelpTopics(searchTerm: string): void {
   // Mock search functionality - in real implementation would search through help content
-  const matchingTopics = [
-    'quickstart',
-    'commands-init',
-    'configuration'
-  ].filter(id => id.toLowerCase().includes(searchTerm.toLowerCase()));
+  const matchingTopics = ['quickstart', 'commands-init', 'configuration'].filter((id) =>
+    id.toLowerCase().includes(searchTerm.toLowerCase()),
+  );
 
   console.log(chalk.blue.bold(`\n🔍 Search Results for "${searchTerm}"`));
   console.log(chalk.gray('═'.repeat(60)));
@@ -305,7 +314,7 @@ function searchHelpTopics(searchTerm: string): void {
     return;
   }
 
-  matchingTopics.forEach(topicId => {
+  matchingTopics.forEach((topicId) => {
     console.log(chalk.cyan(`• ${topicId}`));
   });
 
@@ -322,7 +331,7 @@ function searchHelpTopics(searchTerm: string): void {
 export async function helpCommandHandler(
   args: any,
   options: HelpCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     const formatter = new RichFormatter();
@@ -357,14 +366,15 @@ export async function helpCommandHandler(
 
     // Specific topic
     if (options.topic) {
-      console.log(chalk.yellow(`Topic-specific help for "${options.topic}" would be displayed here.`));
+      console.log(
+        chalk.yellow(`Topic-specific help for "${options.topic}" would be displayed here.`),
+      );
       console.log(chalk.gray('Use --interactive for full topic content.'));
       return;
     }
 
     // Default: Quick reference
     displayQuickReference(formatter);
-
   } catch (error) {
     console.error(chalk.red.bold('\n❌ Help Command Error'));
     console.error(chalk.red(`   ${error}`));
@@ -398,7 +408,9 @@ export function configureHelpCommand(program: Command): void {
     .action(async (options, command) => {
       await helpCommandHandler([], options, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code help                                    # Quick reference guide
   $ juno-code help --interactive                      # Interactive help system
@@ -435,7 +447,8 @@ Notes:
   - Use --verbose with any command for detailed output
   - Check logs with 'juno-code logs' for debugging
   - All help content is searchable and cross-referenced
-    `);
+    `,
+    );
 }
 
 export default helpCommandHandler;

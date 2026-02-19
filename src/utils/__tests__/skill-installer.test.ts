@@ -20,7 +20,10 @@ describe('SkillInstaller', () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(os.tmpdir(), `skill-installer-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(
+      os.tmpdir(),
+      `skill-installer-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
     await fs.ensureDir(testDir);
   });
 
@@ -231,23 +234,34 @@ describe('SkillInstaller', () => {
       await fs.ensureDir(path.join(codexDir, 'debugging', 'scripts'));
       await fs.writeFile(path.join(codexDir, 'README.md'), '# Codex Skills');
       await fs.writeFile(path.join(codexDir, 'analysis', 'analyze.md'), '# Analysis Skill');
-      await fs.writeFile(path.join(codexDir, 'analysis', 'prompts', 'system.txt'), 'You are an analyzer');
+      await fs.writeFile(
+        path.join(codexDir, 'analysis', 'prompts', 'system.txt'),
+        'You are an analyzer',
+      );
       await fs.writeFile(path.join(codexDir, 'debugging', 'debug.md'), '# Debug Skill');
-      await fs.writeFile(path.join(codexDir, 'debugging', 'scripts', 'trace.sh'), '#!/bin/bash\necho trace');
+      await fs.writeFile(
+        path.join(codexDir, 'debugging', 'scripts', 'trace.sh'),
+        '#!/bin/bash\necho trace',
+      );
 
       // Create claude skills with nested folders
       const claudeDir = path.join(mockSkillsDir, 'claude');
       await fs.ensureDir(path.join(claudeDir, 'refactor', 'templates'));
       await fs.writeFile(path.join(claudeDir, 'refactor', 'refactor.md'), '# Refactor Skill');
-      await fs.writeFile(path.join(claudeDir, 'refactor', 'templates', 'component.txt'), 'Template content');
+      await fs.writeFile(
+        path.join(claudeDir, 'refactor', 'templates', 'component.txt'),
+        'Template content',
+      );
       await fs.writeFile(path.join(claudeDir, 'top-level.md'), '# Top Level Skill');
 
       // Create project dir with .juno_task
       await fs.ensureDir(path.join(testDir, 'project', '.juno_task'));
 
       // Mock getPackageSkillsDir to return our mock directory
-      vi.spyOn(SkillInstaller as unknown as { getPackageSkillsDir: () => string | null }, 'getPackageSkillsDir')
-        .mockReturnValue(mockSkillsDir);
+      vi.spyOn(
+        SkillInstaller as unknown as { getPackageSkillsDir: () => string | null },
+        'getPackageSkillsDir',
+      ).mockReturnValue(mockSkillsDir);
     });
 
     afterEach(() => {
@@ -264,15 +278,21 @@ describe('SkillInstaller', () => {
       const agentsSkillsDir = path.join(projectDir, '.agents', 'skills');
       expect(await fs.pathExists(path.join(agentsSkillsDir, 'README.md'))).toBe(true);
       expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', 'analyze.md'))).toBe(true);
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt'))).toBe(true);
+      expect(
+        await fs.pathExists(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt')),
+      ).toBe(true);
       expect(await fs.pathExists(path.join(agentsSkillsDir, 'debugging', 'debug.md'))).toBe(true);
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'debugging', 'scripts', 'trace.sh'))).toBe(true);
+      expect(
+        await fs.pathExists(path.join(agentsSkillsDir, 'debugging', 'scripts', 'trace.sh')),
+      ).toBe(true);
 
       // Verify claude nested files were installed
       const claudeSkillsDir = path.join(projectDir, '.claude', 'skills');
       expect(await fs.pathExists(path.join(claudeSkillsDir, 'top-level.md'))).toBe(true);
       expect(await fs.pathExists(path.join(claudeSkillsDir, 'refactor', 'refactor.md'))).toBe(true);
-      expect(await fs.pathExists(path.join(claudeSkillsDir, 'refactor', 'templates', 'component.txt'))).toBe(true);
+      expect(
+        await fs.pathExists(path.join(claudeSkillsDir, 'refactor', 'templates', 'component.txt')),
+      ).toBe(true);
     });
 
     it('should preserve file content in nested directories', async () => {
@@ -282,17 +302,29 @@ describe('SkillInstaller', () => {
       const agentsSkillsDir = path.join(projectDir, '.agents', 'skills');
       const claudeSkillsDir = path.join(projectDir, '.claude', 'skills');
 
-      expect(await fs.readFile(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt'), 'utf-8'))
-        .toBe('You are an analyzer');
-      expect(await fs.readFile(path.join(claudeSkillsDir, 'refactor', 'templates', 'component.txt'), 'utf-8'))
-        .toBe('Template content');
+      expect(
+        await fs.readFile(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt'), 'utf-8'),
+      ).toBe('You are an analyzer');
+      expect(
+        await fs.readFile(
+          path.join(claudeSkillsDir, 'refactor', 'templates', 'component.txt'),
+          'utf-8',
+        ),
+      ).toBe('Template content');
     });
 
     it('should make .sh files executable in nested directories', async () => {
       const projectDir = path.join(testDir, 'project');
       await SkillInstaller.install(projectDir, true);
 
-      const traceScript = path.join(projectDir, '.agents', 'skills', 'debugging', 'scripts', 'trace.sh');
+      const traceScript = path.join(
+        projectDir,
+        '.agents',
+        'skills',
+        'debugging',
+        'scripts',
+        'trace.sh',
+      );
       const stat = await fs.stat(traceScript);
       // Check executable bit (owner execute)
       expect(stat.mode & 0o100).toBeTruthy();
@@ -312,8 +344,12 @@ describe('SkillInstaller', () => {
 
       const agentsSkillsDir = path.join(projectDir, '.agents', 'skills');
       // Hidden files should NOT be copied
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', '.hidden-file'))).toBe(false);
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', '__pycache__'))).toBe(false);
+      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', '.hidden-file'))).toBe(
+        false,
+      );
+      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', '__pycache__'))).toBe(
+        false,
+      );
       expect(await fs.pathExists(path.join(agentsSkillsDir, '.hidden-dir'))).toBe(false);
 
       // Non-hidden files should still be copied
@@ -327,7 +363,14 @@ describe('SkillInstaller', () => {
       await SkillInstaller.install(projectDir, true);
 
       // Modify one nested file in destination
-      const destFile = path.join(projectDir, '.agents', 'skills', 'analysis', 'prompts', 'system.txt');
+      const destFile = path.join(
+        projectDir,
+        '.agents',
+        'skills',
+        'analysis',
+        'prompts',
+        'system.txt',
+      );
       await fs.writeFile(destFile, 'Modified by user');
 
       // Second install should overwrite modified file (content differs)
@@ -350,11 +393,14 @@ describe('SkillInstaller', () => {
 
       // User files should still exist
       expect(await fs.pathExists(path.join(userDir, 'my-analysis.md'))).toBe(true);
-      expect(await fs.readFile(path.join(userDir, 'my-analysis.md'), 'utf-8'))
-        .toBe('# My Custom Analysis');
+      expect(await fs.readFile(path.join(userDir, 'my-analysis.md'), 'utf-8')).toBe(
+        '# My Custom Analysis',
+      );
 
       // Skill files should also exist
-      expect(await fs.pathExists(path.join(projectDir, '.agents', 'skills', 'analysis', 'analyze.md'))).toBe(true);
+      expect(
+        await fs.pathExists(path.join(projectDir, '.agents', 'skills', 'analysis', 'analyze.md')),
+      ).toBe(true);
     });
 
     it('should report nested files in listSkillGroups', async () => {
@@ -362,10 +408,10 @@ describe('SkillInstaller', () => {
 
       // List before install
       const beforeInstall = await SkillInstaller.listSkillGroups(projectDir);
-      const codexGroup = beforeInstall.find(g => g.name === 'codex')!;
+      const codexGroup = beforeInstall.find((g) => g.name === 'codex')!;
 
       // Should include nested file paths with forward slashes
-      const fileNames = codexGroup.files.map(f => f.name);
+      const fileNames = codexGroup.files.map((f) => f.name);
       expect(fileNames).toContain('README.md');
       expect(fileNames).toContain('analysis/analyze.md');
       expect(fileNames).toContain('analysis/prompts/system.txt');
@@ -380,7 +426,7 @@ describe('SkillInstaller', () => {
       // Install and verify status updates
       await SkillInstaller.install(projectDir, true);
       const afterInstall = await SkillInstaller.listSkillGroups(projectDir);
-      const codexAfter = afterInstall.find(g => g.name === 'codex')!;
+      const codexAfter = afterInstall.find((g) => g.name === 'codex')!;
 
       for (const file of codexAfter.files) {
         expect(file.installed).toBe(true);
@@ -399,7 +445,14 @@ describe('SkillInstaller', () => {
       expect(await SkillInstaller.needsUpdate(projectDir)).toBe(false);
 
       // Modify a nested file -> should need update again
-      const nestedFile = path.join(projectDir, '.agents', 'skills', 'analysis', 'prompts', 'system.txt');
+      const nestedFile = path.join(
+        projectDir,
+        '.agents',
+        'skills',
+        'analysis',
+        'prompts',
+        'system.txt',
+      );
       await fs.writeFile(nestedFile, 'Modified content');
       expect(await SkillInstaller.needsUpdate(projectDir)).toBe(true);
     });
@@ -416,8 +469,12 @@ describe('SkillInstaller', () => {
 
       // All files should still be present
       const agentsSkillsDir = path.join(projectDir, '.agents', 'skills');
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt'))).toBe(true);
-      expect(await fs.pathExists(path.join(agentsSkillsDir, 'debugging', 'scripts', 'trace.sh'))).toBe(true);
+      expect(
+        await fs.pathExists(path.join(agentsSkillsDir, 'analysis', 'prompts', 'system.txt')),
+      ).toBe(true);
+      expect(
+        await fs.pathExists(path.join(agentsSkillsDir, 'debugging', 'scripts', 'trace.sh')),
+      ).toBe(true);
     });
 
     it('should handle deeply nested directories (3+ levels)', async () => {
@@ -426,13 +483,22 @@ describe('SkillInstaller', () => {
       await fs.ensureDir(path.join(codexDir, 'level1', 'level2', 'level3', 'level4'));
       await fs.writeFile(
         path.join(codexDir, 'level1', 'level2', 'level3', 'level4', 'deep-skill.py'),
-        '#!/usr/bin/env python3\nprint("deep")'
+        '#!/usr/bin/env python3\nprint("deep")',
       );
 
       const projectDir = path.join(testDir, 'project');
       await SkillInstaller.install(projectDir, true);
 
-      const deepFile = path.join(projectDir, '.agents', 'skills', 'level1', 'level2', 'level3', 'level4', 'deep-skill.py');
+      const deepFile = path.join(
+        projectDir,
+        '.agents',
+        'skills',
+        'level1',
+        'level2',
+        'level3',
+        'level4',
+        'deep-skill.py',
+      );
       expect(await fs.pathExists(deepFile)).toBe(true);
       expect(await fs.readFile(deepFile, 'utf-8')).toBe('#!/usr/bin/env python3\nprint("deep")');
 

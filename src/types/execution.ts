@@ -21,11 +21,7 @@ export type SubagentType = 'claude' | 'cursor' | 'codex' | 'gemini' | 'pi';
 /**
  * Extended subagent aliases for flexible naming
  */
-export type SubagentAlias =
-  | 'claude-code'
-  | 'claude_code'
-  | 'gemini-cli'
-  | 'cursor-agent';
+export type SubagentAlias = 'claude-code' | 'claude_code' | 'gemini-cli' | 'cursor-agent';
 
 /**
  * Connection state lifecycle
@@ -36,7 +32,7 @@ export enum MCPConnectionState {
   CONNECTED = 'connected',
   RECONNECTING = 'reconnecting',
   FAILED = 'failed',
-  CLOSING = 'closing'
+  CLOSING = 'closing',
 }
 
 /**
@@ -48,7 +44,7 @@ export enum ProgressEventType {
   THINKING = 'thinking',
   ERROR = 'error',
   INFO = 'info',
-  DEBUG = 'debug'
+  DEBUG = 'debug',
 }
 
 /**
@@ -62,7 +58,7 @@ export enum MCPErrorType {
   VALIDATION = 'validation',
   SERVER_NOT_FOUND = 'server_not_found',
   PROTOCOL = 'protocol',
-  AUTHENTICATION = 'authentication'
+  AUTHENTICATION = 'authentication',
 }
 
 /**
@@ -74,7 +70,7 @@ export enum ToolExecutionStatus {
   COMPLETED = 'completed',
   FAILED = 'failed',
   CANCELLED = 'cancelled',
-  TIMEOUT = 'timeout'
+  TIMEOUT = 'timeout',
 }
 
 // =============================================================================
@@ -449,7 +445,7 @@ export enum SubagentCapability {
   DOCUMENTATION = 'documentation',
   TESTING = 'testing',
   ARCHITECTURE = 'architecture',
-  REVIEW = 'review'
+  REVIEW = 'review',
 }
 
 /**
@@ -461,7 +457,7 @@ export enum SubagentStatus {
   RATE_LIMITED = 'rate_limited',
   UNAVAILABLE = 'unavailable',
   ERROR = 'error',
-  MAINTENANCE = 'maintenance'
+  MAINTENANCE = 'maintenance',
 }
 
 /**
@@ -580,7 +576,7 @@ export enum ConnectionEventType {
   RECONNECTING = 'reconnecting',
   ERROR = 'error',
   TIMEOUT = 'timeout',
-  RATE_LIMITED = 'rate_limited'
+  RATE_LIMITED = 'rate_limited',
 }
 
 /**
@@ -634,7 +630,7 @@ export enum RecoveryStrategyType {
   EXPONENTIAL_BACKOFF = 'exponential_backoff',
   CIRCUIT_BREAKER = 'circuit_breaker',
   GRACEFUL_DEGRADATION = 'graceful_degradation',
-  CUSTOM = 'custom'
+  CUSTOM = 'custom',
 }
 
 /**
@@ -693,7 +689,7 @@ export enum SessionState {
   IDLE = 'idle',
   SUSPENDED = 'suspended',
   COMPLETED = 'completed',
-  FAILED = 'failed'
+  FAILED = 'failed',
 }
 
 /**
@@ -723,7 +719,7 @@ export enum SessionStorageType {
   MEMORY = 'memory',
   FILE = 'file',
   DATABASE = 'database',
-  REDIS = 'redis'
+  REDIS = 'redis',
 }
 
 /**
@@ -1013,7 +1009,7 @@ export const SUBAGENT_TOOL_MAPPING: Record<SubagentType, string> = {
  */
 export const SUBAGENT_ALIASES: Record<SubagentAlias, SubagentType> = {
   'claude-code': 'claude',
-  'claude_code': 'claude',
+  claude_code: 'claude',
   'gemini-cli': 'gemini',
   'cursor-agent': 'cursor',
 } as const;

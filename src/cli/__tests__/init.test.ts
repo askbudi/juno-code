@@ -14,27 +14,22 @@ import { Command } from 'commander';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
-import {
-  initCommandHandler,
-  configureInitCommand
-} from '../commands/init.js';
+import { initCommandHandler, configureInitCommand } from '../commands/init.js';
 
-import type {
-  InitCommandOptions
-} from '../types.js';
+import type { InitCommandOptions } from '../types.js';
 
 // Mock external dependencies
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
     workingDirectory: '/test/dir',
-    verbose: false
-  })
+    verbose: false,
+  }),
 }));
 
 vi.mock('fs-extra', () => ({
   ensureDir: vi.fn(),
   pathExists: vi.fn(),
-  readdir: vi.fn().mockResolvedValue([])
+  readdir: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('chalk', () => {
@@ -51,12 +46,12 @@ vi.mock('chalk', () => {
     gray: createChainableFunction('gray'),
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
-    white: createChainableFunction('white')
+    white: createChainableFunction('white'),
   };
 
   return {
     default: mockChalk,
-    ...mockChalk
+    ...mockChalk,
   };
 });
 
@@ -88,7 +83,7 @@ describe('Init Command', () => {
       const program = new Command();
       configureInitCommand(program);
 
-      const initCommand = program.commands.find(cmd => cmd.name() === 'init');
+      const initCommand = program.commands.find((cmd) => cmd.name() === 'init');
 
       expect(initCommand).toBeDefined();
       expect(initCommand?.description()).toContain('Initialize new juno-code project');
@@ -101,30 +96,30 @@ describe('Init Command', () => {
       const program = new Command();
       configureInitCommand(program);
 
-      const initCommand = program.commands.find(cmd => cmd.name() === 'init');
+      const initCommand = program.commands.find((cmd) => cmd.name() === 'init');
       const options = initCommand?.options || [];
 
       // Simplified init command options after user feedback refactoring
-      expect(options.some(opt => opt.flags.includes('--force'))).toBe(true);
-      expect(options.some(opt => opt.flags.includes('--task'))).toBe(true);
-      expect(options.some(opt => opt.flags.includes('--git-url'))).toBe(true);
-      expect(options.some(opt => opt.flags.includes('--interactive'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--force'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--task'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--git-url'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--interactive'))).toBe(true);
 
       // Issue #32: Added back --subagent and --git-repo for inline mode support
-      expect(options.some(opt => opt.flags.includes('--subagent'))).toBe(true);
-      expect(options.some(opt => opt.flags.includes('--git-repo'))).toBe(true);
-      expect(options.some(opt => opt.flags.includes('--directory'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--subagent'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--git-repo'))).toBe(true);
+      expect(options.some((opt) => opt.flags.includes('--directory'))).toBe(true);
 
       // Removed options during simplification
-      expect(options.some(opt => opt.flags.includes('--template'))).toBe(false);
-      expect(options.some(opt => opt.flags.includes('--var'))).toBe(false);
+      expect(options.some((opt) => opt.flags.includes('--template'))).toBe(false);
+      expect(options.some((opt) => opt.flags.includes('--var'))).toBe(false);
     });
 
     it('should have help text with examples', () => {
       const program = new Command();
       configureInitCommand(program);
 
-      const initCommand = program.commands.find(cmd => cmd.name() === 'init');
+      const initCommand = program.commands.find((cmd) => cmd.name() === 'init');
 
       // Test that help text is added (this is visual, so we test that no error occurs)
       expect(() => configureInitCommand(program)).not.toThrow();
@@ -145,14 +140,14 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(fs.ensureDir).toHaveBeenCalledWith('/current/dir');
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -166,14 +161,12 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
-        expect(fs.ensureDir).toHaveBeenCalledWith(
-          path.resolve('./my-project')
-        );
+        expect(fs.ensureDir).toHaveBeenCalledWith(path.resolve('./my-project'));
       });
 
       it.skip('should use default task when not provided', async () => {
@@ -186,13 +179,13 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -206,13 +199,13 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -221,12 +214,12 @@ describe('Init Command', () => {
           directory: undefined,
           task: 'abc', // Too short task should trigger validation error (min 5 chars)
           force: false,
-          interactive: false
+          interactive: false,
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(expect.any(Number)); // Any exit code is fine for error handling
       });
@@ -238,16 +231,16 @@ describe('Init Command', () => {
           directory: undefined,
           task: 'short',
           force: false,
-          interactive: false
+          interactive: false,
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(expect.any(Number)); // Any exit code is fine for error handling
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Task description must be at least')
+          expect.stringContaining('Task description must be at least'),
         );
       });
 
@@ -261,17 +254,15 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
-        expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid Git URL')
-        );
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Invalid Git URL'));
       });
 
       it.skip('should accept valid git URL', async () => {
@@ -285,13 +276,13 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -306,13 +297,13 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -321,7 +312,7 @@ describe('Init Command', () => {
         // Production code works correctly (see init.ts variable merging)
         const customVariables = {
           CUSTOM_VAR: 'custom_value',
-          ANOTHER_VAR: 'another_value'
+          ANOTHER_VAR: 'another_value',
         };
 
         const options: InitCommandOptions = {
@@ -331,7 +322,7 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: customVariables
+          variables: customVariables,
         };
 
         await initCommandHandler([], options, mockCommand);
@@ -352,16 +343,16 @@ describe('Init Command', () => {
           force: false,
           interactive: true,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Code Project Initialization')
+          expect.stringContaining('Juno Code Project Initialization'),
         );
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
 
@@ -375,22 +366,16 @@ describe('Init Command', () => {
           force: false,
           interactive: true,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Project Directory:'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Main Task:'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Preferred Subagent:'));
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project Directory:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Main Task:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Preferred Subagent:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Git Repository (Optional):')
+          expect.stringContaining('Git Repository (Optional):'),
         );
       });
     });
@@ -406,7 +391,7 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
@@ -427,7 +412,7 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
@@ -448,23 +433,15 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Generated files:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('.juno_task/init.md')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('.juno_task/plan.md')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('.juno_task/config.json')
-        );
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Generated files:'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('.juno_task/init.md'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('.juno_task/plan.md'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('.juno_task/config.json'));
       });
 
       it.skip('should display next steps', async () => {
@@ -477,20 +454,14 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Next Steps:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('cd my-project')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-code start')
-        );
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Next Steps:'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('cd my-project'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('juno-code start'));
       });
 
       it.skip('should not show cd command for current directory', async () => {
@@ -503,18 +474,14 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Next Steps:')
-        );
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Next Steps:'));
         // Should not show cd command
-        expect(consoleSpy).not.toHaveBeenCalledWith(
-          expect.stringContaining('cd ')
-        );
+        expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('cd '));
       });
 
       it.skip('should display useful commands', async () => {
@@ -527,26 +494,16 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Useful Commands:')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-code start')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-code session list')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-code feedback')
-        );
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('juno-code --help')
-        );
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Useful Commands:'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('juno-code start'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('juno-code session list'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('juno-code feedback'));
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('juno-code --help'));
       });
     });
 
@@ -564,7 +521,7 @@ describe('Init Command', () => {
           force: true,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
@@ -586,16 +543,16 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Project appears to already be initialized')
+          expect.stringContaining('Project appears to already be initialized'),
         );
       });
     });
@@ -617,20 +574,18 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Initialization Failed')
+          expect.stringContaining('Initialization Failed'),
         );
-        expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Template error')
-        );
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Template error'));
       });
 
       it.skip('should handle directory creation errors', async () => {
@@ -645,12 +600,12 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
@@ -667,16 +622,16 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
         expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Initialization Failed')
+          expect.stringContaining('Initialization Failed'),
         );
       });
 
@@ -693,16 +648,14 @@ describe('Init Command', () => {
           interactive: false,
           template: 'default',
           variables: {},
-          verbose: true
+          verbose: true,
         };
 
-        await expect(
-          initCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
-
-        expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Stack Trace')
+        await expect(initCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
         );
+
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Stack Trace'));
       });
     });
 
@@ -718,7 +671,7 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
@@ -737,14 +690,14 @@ describe('Init Command', () => {
           force: false,
           interactive: false,
           template: 'default',
-          variables: {}
+          variables: {},
         };
 
         await initCommandHandler([], options, mockCommand);
 
         // Should not throw error due to special characters
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Project initialization complete')
+          expect.stringContaining('Project initialization complete'),
         );
       });
     });

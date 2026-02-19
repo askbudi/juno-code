@@ -13,9 +13,7 @@ import * as nodeFs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
-import type {
-  JunoTaskConfig,
-} from '../types/index';
+import type { JunoTaskConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 
 /**
@@ -80,13 +78,19 @@ const OnHourlyLimitSchema = z.enum(['wait', 'raise']);
 /**
  * Zod schema for validating hook types
  */
-const HookTypeSchema = z.enum(['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN', 'ON_STALE']);
+const HookTypeSchema = z.enum([
+  'START_RUN',
+  'START_ITERATION',
+  'END_ITERATION',
+  'END_RUN',
+  'ON_STALE',
+]);
 
 /**
  * Zod schema for validating individual hook configuration
  */
 const HookSchema = z.object({
-  commands: z.array(z.string()).describe('List of bash commands to execute for this hook')
+  commands: z.array(z.string()).describe('List of bash commands to execute for this hook'),
 });
 
 /**
@@ -99,101 +103,91 @@ const HooksSchema = z.record(HookTypeSchema, HookSchema).optional();
  * Zod schema for validating JunoTaskConfig
  * Provides runtime validation with detailed error messages
  */
-export const JunoTaskConfigSchema = z.object({
-  // Core settings
-  defaultSubagent: SubagentTypeSchema
-    .describe('Default subagent to use for task execution'),
+export const JunoTaskConfigSchema = z
+  .object({
+    // Core settings
+    defaultSubagent: SubagentTypeSchema.describe('Default subagent to use for task execution'),
 
-  defaultBackend: BackendTypeSchema
-    .describe('Default backend to use for task execution'),
+    defaultBackend: BackendTypeSchema.describe('Default backend to use for task execution'),
 
-  defaultMaxIterations: z.number()
-    .int()
-    .min(1)
-    .max(1000)
-    .describe('Default maximum number of iterations for task execution'),
+    defaultMaxIterations: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .describe('Default maximum number of iterations for task execution'),
 
-  defaultModel: z.string()
-    .optional()
-    .describe('Default model to use for the subagent'),
+    defaultModel: z.string().optional().describe('Default model to use for the subagent'),
 
-  // Project metadata
-  mainTask: z.string()
-    .optional()
-    .describe('Main task objective for the project'),
+    // Project metadata
+    mainTask: z.string().optional().describe('Main task objective for the project'),
 
-  // Logging settings
-  logLevel: LogLevelSchema
-    .describe('Logging level for the application'),
+    // Logging settings
+    logLevel: LogLevelSchema.describe('Logging level for the application'),
 
-  logFile: z.string()
-    .optional()
-    .describe('Path to log file (optional)'),
+    logFile: z.string().optional().describe('Path to log file (optional)'),
 
-  verbose: z.boolean()
-    .describe('Enable verbose output'),
+    verbose: z.boolean().describe('Enable verbose output'),
 
-  quiet: z.boolean()
-    .describe('Enable quiet mode (minimal output)'),
+    quiet: z.boolean().describe('Enable quiet mode (minimal output)'),
 
-  // MCP settings
-  mcpTimeout: z.number()
-    .int()
-    .min(1000)
-    // Allow very large timeouts to satisfy real-world workflows and user tests
-    // User feedback requires accepting values like 6,000,000 ms (100 minutes)
-    .max(86400000) // up to 24 hours
-    .describe('MCP server timeout in milliseconds'),
+    // MCP settings
+    mcpTimeout: z
+      .number()
+      .int()
+      .min(1000)
+      // Allow very large timeouts to satisfy real-world workflows and user tests
+      // User feedback requires accepting values like 6,000,000 ms (100 minutes)
+      .max(86400000) // up to 24 hours
+      .describe('MCP server timeout in milliseconds'),
 
-  mcpRetries: z.number()
-    .int()
-    .min(0)
-    .max(10)
-    .describe('Number of retries for MCP operations'),
+    mcpRetries: z.number().int().min(0).max(10).describe('Number of retries for MCP operations'),
 
-  mcpServerPath: z.string()
-    .optional()
-    .describe('Path to MCP server executable (auto-discovered if not specified)'),
+    mcpServerPath: z
+      .string()
+      .optional()
+      .describe('Path to MCP server executable (auto-discovered if not specified)'),
 
-  mcpServerName: z.string()
-    .optional()
-    .describe('Named MCP server to connect to (e.g., "roundtable-ai")'),
+    mcpServerName: z
+      .string()
+      .optional()
+      .describe('Named MCP server to connect to (e.g., "roundtable-ai")'),
 
-  // Hook settings
-  hookCommandTimeout: z.number()
-    .int()
-    .min(1000)
-    .max(3600000) // up to 1 hour
-    .optional()
-    .describe('Timeout for individual hook commands in milliseconds (default: 300000 = 5 minutes)'),
+    // Hook settings
+    hookCommandTimeout: z
+      .number()
+      .int()
+      .min(1000)
+      .max(3600000) // up to 1 hour
+      .optional()
+      .describe(
+        'Timeout for individual hook commands in milliseconds (default: 300000 = 5 minutes)',
+      ),
 
-  // Quota/hourly limit settings
-  onHourlyLimit: OnHourlyLimitSchema
-    .describe('Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately'),
+    // Quota/hourly limit settings
+    onHourlyLimit: OnHourlyLimitSchema.describe(
+      'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately',
+    ),
 
-  // TUI settings
-  interactive: z.boolean()
-    .describe('Enable interactive mode'),
+    // TUI settings
+    interactive: z.boolean().describe('Enable interactive mode'),
 
-  headlessMode: z.boolean()
-    .describe('Enable headless mode (no TUI)'),
+    headlessMode: z.boolean().describe('Enable headless mode (no TUI)'),
 
-  // Paths
-  workingDirectory: z.string()
-    .describe('Working directory for task execution'),
+    // Paths
+    workingDirectory: z.string().describe('Working directory for task execution'),
 
-  sessionDirectory: z.string()
-    .describe('Directory for storing session data'),
+    sessionDirectory: z.string().describe('Directory for storing session data'),
 
-  // Hooks configuration
-  hooks: HooksSchema
-    .describe('Hook system configuration for executing commands at specific lifecycle events'),
+    // Hooks configuration
+    hooks: HooksSchema.describe(
+      'Hook system configuration for executing commands at specific lifecycle events',
+    ),
 
-  // Skip hooks execution
-  skipHooks: z.boolean()
-    .optional()
-    .describe('Skip execution of all lifecycle hooks when true'),
-}).strict();
+    // Skip hooks execution
+    skipHooks: z.boolean().optional().describe('Skip execution of all lifecycle hooks when true'),
+  })
+  .strict();
 
 /**
  * Default configuration values
@@ -650,9 +644,9 @@ export function validateConfig(config: unknown): JunoTaskConfig {
     return parsed as JunoTaskConfig;
   } catch (error) {
     if (error instanceof z.ZodError) {
-      const errorMessages = error.errors.map(err =>
-        `${err.path.join('.')}: ${err.message}`
-      ).join('; ');
+      const errorMessages = error.errors
+        .map((err) => `${err.path.join('.')}: ${err.message}`)
+        .join('; ');
       throw new Error(`Configuration validation failed: ${errorMessages}`);
     }
     throw error;
@@ -688,7 +682,7 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
       // Create new config file with default config including all hook types
       const defaultConfig = {
         ...DEFAULT_CONFIG,
-        hooks: allHookTypes
+        hooks: allHookTypes,
       };
       await fs.writeJson(configPath, defaultConfig, { spaces: 2 });
     } else {
@@ -710,7 +704,7 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
           claude: ':sonnet',
           codex: ':codex',
           gemini: ':pro',
-          cursor: 'auto'
+          cursor: 'auto',
         };
         existingConfig.defaultModel = modelDefaults[subagent] || ':sonnet';
         needsUpdate = true;
@@ -761,16 +755,14 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
  * });
  * ```
  */
-export async function loadConfig(options: {
-  baseDir?: string;
-  configFile?: string;
-  cliConfig?: Partial<JunoTaskConfig>;
-} = {}): Promise<JunoTaskConfig> {
-  const {
-    baseDir = process.cwd(),
-    configFile,
-    cliConfig,
-  } = options;
+export async function loadConfig(
+  options: {
+    baseDir?: string;
+    configFile?: string;
+    cliConfig?: Partial<JunoTaskConfig>;
+  } = {},
+): Promise<JunoTaskConfig> {
+  const { baseDir = process.cwd(), configFile, cliConfig } = options;
 
   // Ensure hooks configuration exists in project config (auto-migration)
   await ensureHooksConfig(baseDir);
@@ -806,4 +798,3 @@ export type ConfigLoadOptions = Parameters<typeof loadConfig>[0];
  * Type export for environment variable mapping
  */
 export type EnvVarMapping = typeof ENV_VAR_MAPPING;
-

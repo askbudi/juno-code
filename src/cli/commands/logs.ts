@@ -45,9 +45,13 @@ export interface LogsCommandOptions extends GlobalCLIOptions {
 export async function logsCommandHandler(
   _args: any,
   _options: LogsCommandOptions,
-  _command: Command
+  _command: Command,
 ): Promise<void> {
-  console.log(chalk.yellow('\nLog history is not available - the logger writes to stderr in real-time and does not store entries in memory.'));
+  console.log(
+    chalk.yellow(
+      '\nLog history is not available - the logger writes to stderr in real-time and does not store entries in memory.',
+    ),
+  );
   console.log(chalk.gray('Redirect stderr to a file to capture logs: juno-code start 2> logs.txt'));
 }
 
@@ -67,11 +71,14 @@ export function configureLogsCommand(program: Command): void {
     .action(async (options, command) => {
       await logsCommandHandler([], options, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Notes:
   - The logger writes to stderr in real-time
   - Redirect stderr to capture logs: juno-code start 2> logs.txt
-    `);
+    `,
+    );
 }
 
 export default logsCommandHandler;

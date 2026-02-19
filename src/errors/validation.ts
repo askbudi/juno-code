@@ -33,7 +33,7 @@ export class RequiredFieldError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = context?.fieldPath
       ? `Required field '${fieldName}' is missing at path: ${context.fieldPath}`
@@ -49,15 +49,17 @@ export class RequiredFieldError extends ValidationError {
           expectedType: context?.expectedType,
           parentObject: context?.parentObject,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Provide a value for the required field '${fieldName}'`,
-          context?.expectedType ? `Expected type: ${context.expectedType}` : 'Check the expected data type',
+          context?.expectedType
+            ? `Expected type: ${context.expectedType}`
+            : 'Check the expected data type',
           'Review the input data structure',
-          'Check API documentation for required fields'
+          'Check API documentation for required fields',
         ].filter(Boolean),
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -66,16 +68,16 @@ export class RequiredFieldError extends ValidationError {
           description: `Provide default value for '${fieldName}'`,
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.7
+          successProbability: 0.7,
         },
         {
           id: 'make_field_optional',
           description: `Make field '${fieldName}' optional`,
           type: RecoveryActionType.FALLBACK,
           canAutomate: false,
-          successProbability: 0.9
-        }
-      ]
+          successProbability: 0.9,
+        },
+      ],
     });
   }
 }
@@ -97,7 +99,7 @@ export class InvalidFormatError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Invalid format for field '${fieldName}': expected ${expectedFormat}, got ${typeof actualValue}`;
 
@@ -113,15 +115,17 @@ export class InvalidFormatError extends ValidationError {
           formatPattern: context?.formatPattern,
           examples: context?.examples,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Format '${fieldName}' as ${expectedFormat}`,
-          context?.formatPattern ? `Use pattern: ${context.formatPattern}` : 'Check the expected pattern',
+          context?.formatPattern
+            ? `Use pattern: ${context.formatPattern}`
+            : 'Check the expected pattern',
           ...(context?.examples ? [`Examples: ${context.examples.join(', ')}`] : []),
-          'Validate input before processing'
+          'Validate input before processing',
         ].filter(Boolean),
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -130,16 +134,16 @@ export class InvalidFormatError extends ValidationError {
           description: `Automatically format '${fieldName}' to ${expectedFormat}`,
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.6
+          successProbability: 0.6,
         },
         {
           id: 'suggest_format',
           description: 'Suggest correct format with examples',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -161,7 +165,7 @@ export class OutOfRangeError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     let message = `Value for field '${fieldName}' is out of range: ${actualValue}`;
     if (minValue !== undefined && maxValue !== undefined) {
@@ -184,20 +188,20 @@ export class OutOfRangeError extends ValidationError {
           fieldPath: context?.fieldPath,
           isInclusive: context?.isInclusive,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           minValue !== undefined && maxValue !== undefined
             ? `Provide a value between ${minValue} and ${maxValue}`
             : minValue !== undefined
-            ? `Provide a value greater than ${context?.isInclusive ? 'or equal to ' : ''}${minValue}`
-            : maxValue !== undefined
-            ? `Provide a value less than ${context?.isInclusive ? 'or equal to ' : ''}${maxValue}`
-            : 'Provide a value within the valid range',
+              ? `Provide a value greater than ${context?.isInclusive ? 'or equal to ' : ''}${minValue}`
+              : maxValue !== undefined
+                ? `Provide a value less than ${context?.isInclusive ? 'or equal to ' : ''}${maxValue}`
+                : 'Provide a value within the valid range',
           'Check the field constraints',
-          'Use the nearest valid value'
+          'Use the nearest valid value',
         ].filter(Boolean),
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -206,16 +210,16 @@ export class OutOfRangeError extends ValidationError {
           description: 'Clamp value to valid range',
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.9
+          successProbability: 0.9,
         },
         {
           id: 'suggest_valid_range',
           description: 'Display valid range information',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -236,7 +240,7 @@ export class InvalidChoiceError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Invalid choice for field '${fieldName}': '${actualValue}'. Valid choices: ${validChoices.join(', ')}`;
 
@@ -251,15 +255,15 @@ export class InvalidChoiceError extends ValidationError {
           fieldPath: context?.fieldPath,
           caseSensitive: context?.caseSensitive,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Choose one of: ${validChoices.join(', ')}`,
           'Check spelling and case sensitivity',
           'Use exact match for the choices',
-          'Check if new choices need to be added'
+          'Check if new choices need to be added',
         ],
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -268,16 +272,16 @@ export class InvalidChoiceError extends ValidationError {
           description: 'Suggest closest valid choice',
           type: RecoveryActionType.FALLBACK,
           canAutomate: true,
-          successProbability: 0.8
+          successProbability: 0.8,
         },
         {
           id: 'list_valid_choices',
           description: 'Display all valid choices',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -298,7 +302,7 @@ export class SchemaValidationError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Schema validation failed at ${schemaPath}: ${validationErrors.join(', ')}`;
 
@@ -313,15 +317,15 @@ export class SchemaValidationError extends ValidationError {
           schemaVersion: context?.schemaVersion,
           inputData: context?.inputData,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           'Check data structure against schema requirements',
           'Validate all required fields are present',
           'Verify data types match schema definitions',
-          'Check for additional properties that are not allowed'
+          'Check for additional properties that are not allowed',
         ],
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -330,16 +334,16 @@ export class SchemaValidationError extends ValidationError {
           description: 'Automatically fix common schema issues',
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.4
+          successProbability: 0.4,
         },
         {
           id: 'generate_valid_example',
           description: 'Generate example of valid data',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -361,7 +365,7 @@ export class TypeValidationError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Type validation failed for field '${fieldName}': expected ${expectedType}, got ${actualType}`;
 
@@ -377,15 +381,17 @@ export class TypeValidationError extends ValidationError {
           actualValue: context?.actualValue,
           allowedTypes: context?.allowedTypes,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Convert value to ${expectedType}`,
-          context?.allowedTypes ? `Allowed types: ${context.allowedTypes.join(', ')}` : 'Check allowed types',
+          context?.allowedTypes
+            ? `Allowed types: ${context.allowedTypes.join(', ')}`
+            : 'Check allowed types',
           'Validate input data types before processing',
-          'Use type conversion functions if appropriate'
+          'Use type conversion functions if appropriate',
         ].filter(Boolean),
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -394,16 +400,16 @@ export class TypeValidationError extends ValidationError {
           description: `Convert value to ${expectedType}`,
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.7
+          successProbability: 0.7,
         },
         {
           id: 'suggest_conversion',
           description: 'Suggest type conversion approach',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -425,7 +431,7 @@ export class ConstraintValidationError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Constraint '${constraintName}' validation failed for field '${fieldName}': ${constraintDetails}`;
 
@@ -441,15 +447,15 @@ export class ConstraintValidationError extends ValidationError {
           actualValue: context?.actualValue,
           constraintConfig: context?.constraintConfig,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Ensure field '${fieldName}' meets constraint: ${constraintName}`,
           'Check constraint configuration and requirements',
           'Validate data against all defined constraints',
-          'Consider adjusting constraint rules if appropriate'
+          'Consider adjusting constraint rules if appropriate',
         ],
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -458,16 +464,16 @@ export class ConstraintValidationError extends ValidationError {
           description: `Fix ${constraintName} constraint violation`,
           type: RecoveryActionType.REPAIR,
           canAutomate: false,
-          successProbability: 0.5
+          successProbability: 0.5,
         },
         {
           id: 'explain_constraint',
           description: `Explain ${constraintName} constraint requirements`,
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }
@@ -488,7 +494,7 @@ export class DependencyValidationError extends ValidationError {
       validationContext?: Record<string, unknown>;
       errorContext?: Partial<ErrorContext>;
       cause?: Error;
-    }
+    },
   ) {
     const message = `Dependency validation failed: field '${dependentField}' requires '${requiredField}' to ${dependencyRule}`;
 
@@ -503,15 +509,15 @@ export class DependencyValidationError extends ValidationError {
           dependentValue: context?.dependentValue,
           requiredValue: context?.requiredValue,
           validationContext: context?.validationContext,
-          ...context?.errorContext?.metadata
+          ...context?.errorContext?.metadata,
         },
         recoverySuggestions: [
           `Ensure '${requiredField}' ${dependencyRule} when '${dependentField}' is set`,
           'Check field dependencies and conditional requirements',
           'Review the complete data structure for consistency',
-          'Consider making fields optional if dependencies are complex'
+          'Consider making fields optional if dependencies are complex',
         ],
-        isRetriable: false
+        isRetriable: false,
       },
       cause: context?.cause,
       recoveryActions: [
@@ -520,16 +526,16 @@ export class DependencyValidationError extends ValidationError {
           description: `Fix dependency between '${dependentField}' and '${requiredField}'`,
           type: RecoveryActionType.REPAIR,
           canAutomate: true,
-          successProbability: 0.6
+          successProbability: 0.6,
         },
         {
           id: 'explain_dependencies',
           description: 'Explain field dependency requirements',
           type: RecoveryActionType.MANUAL,
           canAutomate: true,
-          successProbability: 1.0
-        }
-      ]
+          successProbability: 1.0,
+        },
+      ],
     });
   }
 }

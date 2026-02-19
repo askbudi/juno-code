@@ -180,10 +180,7 @@ export class ErrorRecoveryManager {
   /**
    * Create recovery plan for an error
    */
-  public createRecoveryPlan(
-    error: JunoTaskError,
-    preferences?: RecoveryPreferences
-  ): RecoveryPlan {
+  public createRecoveryPlan(error: JunoTaskError, preferences?: RecoveryPreferences): RecoveryPlan {
     const applicableStrategies = this.findApplicableStrategies(error, preferences);
     const sortedStrategies = this.prioritizeStrategies(applicableStrategies, error, preferences);
 
@@ -196,7 +193,7 @@ export class ErrorRecoveryManager {
     }, 0);
 
     const successProbability = this.calculatePlanSuccessProbability(sortedStrategies, error);
-    const requiresUserIntervention = sortedStrategies.some(s => !s.canAutomate);
+    const requiresUserIntervention = sortedStrategies.some((s) => !s.canAutomate);
 
     return {
       id: this.generatePlanId(error),
@@ -206,8 +203,8 @@ export class ErrorRecoveryManager {
         createdAt: new Date(),
         estimatedTime,
         successProbability,
-        requiresUserIntervention
-      }
+        requiresUserIntervention,
+      },
     };
   }
 
@@ -216,13 +213,13 @@ export class ErrorRecoveryManager {
    */
   public async executeRecoveryPlan(
     plan: RecoveryPlan,
-    preferences?: RecoveryPreferences
+    preferences?: RecoveryPreferences,
   ): Promise<RecoveryResult> {
     const context = this.createContext(plan.error, preferences);
     let lastResult: RecoveryResult = {
       success: false,
       description: 'No recovery strategies available',
-      shouldRetry: false
+      shouldRetry: false,
     };
 
     for (const strategy of plan.strategies) {
@@ -289,7 +286,7 @@ export class ErrorRecoveryManager {
    */
   private findApplicableStrategies(
     error: JunoTaskError,
-    preferences?: RecoveryPreferences
+    preferences?: RecoveryPreferences,
   ): readonly RecoveryStrategy[] {
     const strategies: RecoveryStrategy[] = [];
 
@@ -332,7 +329,7 @@ export class ErrorRecoveryManager {
   private prioritizeStrategies(
     strategies: readonly RecoveryStrategy[],
     error: JunoTaskError,
-    preferences?: RecoveryPreferences
+    preferences?: RecoveryPreferences,
   ): readonly RecoveryStrategy[] {
     const context = this.createContext(error, preferences);
 
@@ -384,7 +381,7 @@ export class ErrorRecoveryManager {
    */
   private calculatePlanSuccessProbability(
     strategies: readonly RecoveryStrategy[],
-    error: JunoTaskError
+    error: JunoTaskError,
   ): number {
     if (strategies.length === 0) return 0;
 
@@ -395,7 +392,7 @@ export class ErrorRecoveryManager {
       const executor = this.executors.get(strategy.id);
       if (executor) {
         const successProb = executor.estimateSuccessProbability(error, context);
-        combinedFailureProb *= (1 - successProb);
+        combinedFailureProb *= 1 - successProb;
       }
     }
 
@@ -408,7 +405,7 @@ export class ErrorRecoveryManager {
   private async executeStrategy(
     strategy: RecoveryStrategy,
     executor: RecoveryStrategyExecutor,
-    context: RecoveryContext
+    context: RecoveryContext,
   ): Promise<RecoveryAttempt> {
     const startTime = Date.now();
     const attemptId = this.generateAttemptId();
@@ -416,7 +413,7 @@ export class ErrorRecoveryManager {
     try {
       const result = await this.executeWithTimeout(
         () => executor.execute(context),
-        strategy.timeout || 30000
+        strategy.timeout || 30000,
       );
 
       const duration = Date.now() - startTime;
@@ -427,7 +424,7 @@ export class ErrorRecoveryManager {
         timestamp: new Date(startTime),
         duration,
         result,
-        context: { ...context.operationContext }
+        context: { ...context.operationContext },
       };
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -441,9 +438,9 @@ export class ErrorRecoveryManager {
           success: false,
           description: `Strategy execution failed: ${error instanceof Error ? error.message : String(error)}`,
           error: error instanceof Error ? error : new Error(String(error)),
-          shouldRetry: false
+          shouldRetry: false,
         },
-        context: { ...context.operationContext }
+        context: { ...context.operationContext },
       };
     }
   }
@@ -451,21 +448,18 @@ export class ErrorRecoveryManager {
   /**
    * Execute function with timeout
    */
-  private async executeWithTimeout<T>(
-    fn: () => Promise<T>,
-    timeoutMs: number
-  ): Promise<T> {
+  private async executeWithTimeout<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error(`Recovery strategy timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       fn()
-        .then(result => {
+        .then((result) => {
           clearTimeout(timeout);
           resolve(result);
         })
-        .catch(error => {
+        .catch((error) => {
           clearTimeout(timeout);
           reject(error);
         });
@@ -475,10 +469,7 @@ export class ErrorRecoveryManager {
   /**
    * Create recovery context
    */
-  private createContext(
-    error: JunoTaskError,
-    preferences?: RecoveryPreferences
-  ): RecoveryContext {
+  private createContext(error: JunoTaskError, preferences?: RecoveryPreferences): RecoveryContext {
     const previousAttempts = this.getRecoveryHistory(error);
 
     return {
@@ -486,7 +477,7 @@ export class ErrorRecoveryManager {
       previousAttempts,
       attemptNumber: previousAttempts.length + 1,
       userPreferences: preferences,
-      timeBudget: preferences?.maxRecoveryTime
+      timeBudget: preferences?.maxRecoveryTime,
     };
   }
 

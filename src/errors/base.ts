@@ -5,7 +5,12 @@
  * with comprehensive context, recovery capabilities, and standardized interfaces.
  */
 
-import type { ErrorCategory, ErrorSeverity, ErrorPriority, ErrorHandlingStrategy } from './categories';
+import type {
+  ErrorCategory,
+  ErrorSeverity,
+  ErrorPriority,
+  ErrorHandlingStrategy,
+} from './categories';
 import type { ErrorCode } from './codes';
 import type { ErrorContext, ErrorMetadata, ErrorCorrelation, ErrorImpact } from './context';
 import { createContextFromCode, createErrorCorrelation } from './context';
@@ -62,7 +67,7 @@ export enum RecoveryActionType {
   ESCALATE = 'escalate',
 
   /** Ignore and continue */
-  IGNORE = 'ignore'
+  IGNORE = 'ignore',
 }
 
 /**
@@ -183,7 +188,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
       correlation?: Partial<ErrorCorrelation>;
       impact?: ErrorImpact;
       recoveryActions?: readonly RecoveryAction[];
-    }
+    },
   ) {
     super(message);
 
@@ -202,7 +207,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
     // Create correlation information
     this.correlation = {
       ...createErrorCorrelation(options.cause),
-      ...options.correlation
+      ...options.correlation,
     };
 
     // Ensure the error stack includes the cause chain
@@ -276,12 +281,12 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
    * Attempt recovery using specified action
    */
   public async attemptRecovery(actionId: string): Promise<RecoveryResult> {
-    const action = this.recoveryActions.find(a => a.id === actionId);
+    const action = this.recoveryActions.find((a) => a.id === actionId);
     if (!action) {
       return {
         success: false,
         description: `Recovery action '${actionId}' not found`,
-        shouldRetry: false
+        shouldRetry: false,
       };
     }
 
@@ -289,7 +294,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
       return {
         success: false,
         description: `Recovery action '${actionId}' has no execution handler`,
-        shouldRetry: false
+        shouldRetry: false,
       };
     }
 
@@ -300,7 +305,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
         success: false,
         description: `Recovery action '${actionId}' failed: ${error instanceof Error ? error.message : String(error)}`,
         error: error instanceof Error ? error : new Error(String(error)),
-        shouldRetry: false
+        shouldRetry: false,
       };
     }
   }
@@ -310,16 +315,19 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
    */
   public getDefaultRecoveryAction(): RecoveryAction | null {
     // Prefer automated actions
-    const automated = this.recoveryActions.find(a => a.canAutomate);
+    const automated = this.recoveryActions.find((a) => a.canAutomate);
     if (automated) return automated;
 
     // Fall back to highest probability action
-    return this.recoveryActions.reduce((best, current) => {
-      if (!best) return current;
-      const bestProb = best.successProbability || 0;
-      const currentProb = current.successProbability || 0;
-      return currentProb > bestProb ? current : best;
-    }, null as RecoveryAction | null);
+    return this.recoveryActions.reduce(
+      (best, current) => {
+        if (!best) return current;
+        const bestProb = best.successProbability || 0;
+        const currentProb = current.successProbability || 0;
+        return currentProb > bestProb ? current : best;
+      },
+      null as RecoveryAction | null,
+    );
   }
 
   // ============================================================================
@@ -370,7 +378,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
       config.initialDelay,
       config.maxDelay,
       config.backoffMultiplier,
-      config.useJitter
+      config.useJitter,
     );
   }
 
@@ -386,15 +394,15 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
       ...this.context,
       metadata: {
         ...this.context.metadata,
-        ...metadata
-      }
+        ...metadata,
+      },
     };
 
     // Create new instance with updated context (errors should be immutable)
     Object.defineProperty(this, 'context', {
       value: newContext,
       writable: false,
-      enumerable: true
+      enumerable: true,
     });
 
     return this;
@@ -427,11 +435,13 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
       impact: this.impact,
       timestamp: this.timestamp.toISOString(),
       stack: this.stack,
-      cause: this.cause ? {
-        name: this.cause.name,
-        message: this.cause.message,
-        stack: this.cause.stack
-      } : undefined
+      cause: this.cause
+        ? {
+            name: this.cause.name,
+            message: this.cause.message,
+            stack: this.cause.stack,
+          }
+        : undefined,
     };
   }
 
@@ -450,7 +460,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
 
     if (this.context.documentationLinks && this.context.documentationLinks.length > 0) {
       message += '\n\nDocumentation:';
-      this.context.documentationLinks.forEach(link => {
+      this.context.documentationLinks.forEach((link) => {
         message += `\n  - ${link}`;
       });
     }
@@ -476,7 +486,7 @@ export class ExponentialBackoffStrategy implements BackoffStrategy {
     private readonly initialDelay: number,
     public readonly maxDelay: number,
     private readonly multiplier: number,
-    public readonly useJitter: boolean
+    public readonly useJitter: boolean,
   ) {}
 
   calculateDelay(attempt: number): number {
@@ -500,7 +510,7 @@ export class LinearBackoffStrategy implements BackoffStrategy {
   constructor(
     private readonly baseDelay: number,
     public readonly maxDelay: number,
-    public readonly useJitter: boolean = false
+    public readonly useJitter: boolean = false,
   ) {}
 
   calculateDelay(attempt: number): number {
@@ -523,7 +533,7 @@ export class FixedBackoffStrategy implements BackoffStrategy {
   constructor(
     private readonly fixedDelay: number,
     public readonly maxDelay: number = fixedDelay,
-    public readonly useJitter: boolean = false
+    public readonly useJitter: boolean = false,
   ) {}
 
   calculateDelay(_attempt: number): number {

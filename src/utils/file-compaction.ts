@@ -29,14 +29,9 @@ export interface CompactionOptions {
  */
 export async function compactConfigFile(
   filePath: string,
-  options: CompactionOptions = {}
+  options: CompactionOptions = {},
 ): Promise<CompactionResult> {
-  const {
-    createBackup = true,
-    dryRun = false,
-    preserveDays = 30,
-    preservePatterns = []
-  } = options;
+  const { createBackup = true, dryRun = false, preserveDays = 30, preservePatterns = [] } = options;
 
   // Read original file
   const originalContent = await fs.readFile(filePath, 'utf-8');
@@ -59,7 +54,7 @@ export async function compactConfigFile(
     originalContent,
     compactionAnalysis,
     preserveDays,
-    preservePatterns
+    preservePatterns,
   );
 
   // Add compaction header
@@ -80,7 +75,7 @@ export async function compactConfigFile(
     backupPath,
     sectionsRemoved: compactionAnalysis.removableSections,
     sectionsPreserved: compactionAnalysis.essentialSections,
-    reductionPercentage
+    reductionPercentage,
   };
 }
 
@@ -122,16 +117,16 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
     /UX-FOCUSED TUI/i,
     /Build\/Test Quick Notes/i,
     /CRITICAL:/i,
-    /important-instruction-reminders/i
+    /important-instruction-reminders/i,
   ];
 
   // Historical patterns that can be removed if old enough
   const historicalPatterns = [
     /RESOLVED/i,
-    /^### \d{4}-\d{2}-\d{2}/,  // Date-based sections
+    /^### \d{4}-\d{2}-\d{2}/, // Date-based sections
     /PREVIOUS_AGENT_ATTEMPT/i,
     /Status.*✅/i,
-    /DOCUMENTATION INTEGRITY FAILURE/i
+    /DOCUMENTATION INTEGRITY FAILURE/i,
   ];
 
   // Process each line
@@ -144,7 +139,12 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
     if (headerMatch) {
       // Save previous section
       if (currentSection.title) {
-        const section = finalizeSection(currentSection, sectionLines, lineIndex - sectionLines.length, i - 1);
+        const section = finalizeSection(
+          currentSection,
+          sectionLines,
+          lineIndex - sectionLines.length,
+          i - 1,
+        );
         sections.push(section);
 
         if (section.isEssential) {
@@ -157,7 +157,7 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
       // Start new section
       currentSection = {
         title: headerMatch[2].trim(),
-        startLine: i
+        startLine: i,
       };
       sectionLines = [line];
     } else {
@@ -169,7 +169,12 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
 
   // Handle last section
   if (currentSection.title) {
-    const section = finalizeSection(currentSection, sectionLines, lineIndex - sectionLines.length + 1, lineIndex);
+    const section = finalizeSection(
+      currentSection,
+      sectionLines,
+      lineIndex - sectionLines.length + 1,
+      lineIndex,
+    );
     sections.push(section);
 
     if (section.isEssential) {
@@ -185,19 +190,19 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
     section: Partial<MarkdownSection>,
     lines: string[],
     startLine: number,
-    endLine: number
+    endLine: number,
   ): MarkdownSection {
     const content = lines.join('\n');
     const title = section.title || 'Untitled Section';
 
     // Check if section is essential
-    const isEssential = essentialPatterns.some(pattern =>
-      pattern.test(title) || pattern.test(content)
+    const isEssential = essentialPatterns.some(
+      (pattern) => pattern.test(title) || pattern.test(content),
     );
 
     // Check if section is historical
-    const isHistorical = historicalPatterns.some(pattern =>
-      pattern.test(title) || pattern.test(content)
+    const isHistorical = historicalPatterns.some(
+      (pattern) => pattern.test(title) || pattern.test(content),
     );
 
     // Extract date if present
@@ -213,7 +218,7 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
       isEssential,
       isHistorical,
       containsDate,
-      dateFound
+      dateFound,
     };
   }
 }
@@ -225,12 +230,12 @@ function compactMarkdownContent(
   content: string,
   analysis: CompactionAnalysis,
   preserveDays: number,
-  preservePatterns: string[]
+  preservePatterns: string[],
 ): string {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - preserveDays);
 
-  const compiledPatterns = preservePatterns.map(pattern => new RegExp(pattern, 'i'));
+  const compiledPatterns = preservePatterns.map((pattern) => new RegExp(pattern, 'i'));
 
   let compactedContent = '';
   const lines = content.split('\n');
@@ -247,9 +252,11 @@ function compactMarkdownContent(
       shouldPreserve = true;
     }
     // Preserve sections matching custom patterns
-    else if (compiledPatterns.some(pattern =>
-      pattern.test(section.title) || pattern.test(section.content)
-    )) {
+    else if (
+      compiledPatterns.some(
+        (pattern) => pattern.test(section.title) || pattern.test(section.content),
+      )
+    ) {
       shouldPreserve = true;
     }
     // Remove old historical sections
@@ -288,7 +295,7 @@ export function formatFileSize(bytes: number): string {
 export async function shouldCompactFile(
   filePath: string,
   sizeThresholdKB: number = 50,
-  ageThresholdDays: number = 30
+  ageThresholdDays: number = 30,
 ): Promise<boolean> {
   try {
     const stats = await fs.stat(filePath);

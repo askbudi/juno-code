@@ -79,7 +79,7 @@ class SimpleInitTUI {
       gitUrl,
       variables,
       force: false,
-      interactive: true
+      interactive: true,
     };
   }
 
@@ -98,10 +98,9 @@ class SimpleInitTUI {
     });
 
     if (!input || input.replace(/\s+/g, '').length < 5) {
-      throw new ValidationError(
-        'Task description must be at least 5 characters',
-        ['Provide a basic description of what you want to build']
-      );
+      throw new ValidationError('Task description must be at least 5 characters', [
+        'Provide a basic description of what you want to build',
+      ]);
     }
 
     return input;
@@ -118,11 +117,16 @@ class SimpleInitTUI {
     const choice = parseInt(answer) || 1;
 
     switch (choice) {
-      case 1: return 'claude';
-      case 2: return 'codex';
-      case 3: return 'gemini';
-      case 4: return 'cursor';
-      default: return 'claude';
+      case 1:
+        return 'claude';
+      case 2:
+        return 'codex';
+      case 3:
+        return 'gemini';
+      case 4:
+        return 'cursor';
+      default:
+        return 'claude';
     }
   }
 
@@ -169,7 +173,7 @@ class SimpleInitTUI {
     targetDirectory: string,
     task: string,
     editor: string,
-    gitUrl?: string
+    gitUrl?: string,
   ): InitVariables {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
@@ -184,7 +188,7 @@ class SimpleInitTUI {
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',
       DESCRIPTION: task.substring(0, 200) + (task.length > 200 ? '...' : ''),
-      GIT_URL: gitUrl || ''
+      GIT_URL: gitUrl || '',
     };
   }
 }
@@ -211,7 +215,7 @@ class SimpleProjectGenerator {
     if (junoTaskExists && !force) {
       throw new ValidationError(
         'Project already initialized. Directory .juno_task already exists.',
-        ['Use --force flag to overwrite existing files', 'Choose a different directory']
+        ['Use --force flag to overwrite existing files', 'Choose a different directory'],
       );
     }
 
@@ -234,16 +238,27 @@ class SimpleProjectGenerator {
     const gitUrl = String(variables.GIT_URL || 'Not specified');
     const currentDate = String(variables.CURRENT_DATE || new Date().toISOString().split('T')[0]);
     const venvPath = path.join(targetDirectory, '.venv_juno');
-    const agentDocFile = String(variables.AGENTMD || (subagent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
+    const agentDocFile = String(
+      variables.AGENTMD || (subagent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'),
+    );
 
     // Write prompt.md
-    await fs.writeFile(path.join(junoTaskDir, 'prompt.md'), generatePromptContent(subagent, agentDocFile));
+    await fs.writeFile(
+      path.join(junoTaskDir, 'prompt.md'),
+      generatePromptContent(subagent, agentDocFile),
+    );
 
     // Write init.md
-    await fs.writeFile(path.join(junoTaskDir, 'init.md'), generateInitContent(task, subagent, gitUrl));
+    await fs.writeFile(
+      path.join(junoTaskDir, 'init.md'),
+      generateInitContent(task, subagent, gitUrl),
+    );
 
     // Write implement.md
-    await fs.writeFile(path.join(junoTaskDir, 'implement.md'), generateImplementContent(currentDate, subagent));
+    await fs.writeFile(
+      path.join(junoTaskDir, 'implement.md'),
+      generateImplementContent(currentDate, subagent),
+    );
 
     // Write USER_FEEDBACK.md
     await fs.writeFile(path.join(junoTaskDir, 'USER_FEEDBACK.md'), generateUserFeedbackContent());
@@ -413,11 +428,27 @@ This project uses AI-assisted development with juno-code to achieve: ${variables
     // Write CLAUDE.md and AGENTS.md (single template, parameterised by doc type)
     await fs.writeFile(
       path.join(targetDirectory, 'CLAUDE.md'),
-      generateAgentDocContent('CLAUDE.md', subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+      generateAgentDocContent(
+        'CLAUDE.md',
+        subagent,
+        task,
+        targetDirectory,
+        gitUrl,
+        currentDate,
+        venvPath,
+      ),
     );
     await fs.writeFile(
       path.join(targetDirectory, 'AGENTS.md'),
-      generateAgentDocContent('AGENTS.md', subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+      generateAgentDocContent(
+        'AGENTS.md',
+        subagent,
+        task,
+        targetDirectory,
+        gitUrl,
+        currentDate,
+        venvPath,
+      ),
     );
 
     // Create enhanced README.md in root
@@ -541,7 +572,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       defaultModel: this.getDefaultModelForSubagent(this.context.subagent || 'claude'),
 
       // Project metadata
-      mainTask: this.context.task || "Project initialization",
+      mainTask: this.context.task || 'Project initialization',
 
       // Logging settings
       logLevel: 'info',
@@ -562,13 +593,17 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       sessionDirectory: path.join(targetDirectory, '.juno_task'),
 
       // Hooks configuration with default file size monitoring
-      hooks: getDefaultHooks()
+      hooks: getDefaultHooks(),
     };
 
     const configPath = path.join(junoTaskDir, 'config.json');
     await fs.writeFile(configPath, JSON.stringify(configContent, null, 2));
 
-    console.log(chalk.green(`   ✓ Created .juno_task/config.json with ${this.context.subagent} as default subagent`));
+    console.log(
+      chalk.green(
+        `   ✓ Created .juno_task/config.json with ${this.context.subagent} as default subagent`,
+      ),
+    );
   }
 
   private async createMcpFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
@@ -580,67 +615,70 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     const __dirname = path.dirname(__filename);
 
     // Get the roundtable server path - use environment variable or default
-    const roundtablePath = process.env.JUNO_TASK_MCP_SERVER_PATH ||
+    const roundtablePath =
+      process.env.JUNO_TASK_MCP_SERVER_PATH ||
       path.join(__dirname, '../../../roundtable_mcp_server/roundtable_mcp_server/server.py');
 
     const mcpContent = {
       mcpServers: {
-        "roundtable-ai": {
-          name: "roundtable-ai",
-          command: "roundtable-ai",
+        'roundtable-ai': {
+          name: 'roundtable-ai',
+          command: 'roundtable-ai',
           args: [],
           timeout: 7200.0,
           enable_default_progress_callback: true,
           suppress_subprocess_logs: true,
           env: {
-            
-            ROUNDTABLE_DEBUG: "false"
+            ROUNDTABLE_DEBUG: 'false',
           },
           _metadata: {
-            description: "Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents",
+            description:
+              'Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents',
             capabilities: [
-              "claude_subagent - Advanced reasoning and code quality",
-              "cursor_subagent - Real-time collaboration and editing",
-              "codex_subagent - Code generation and completion",
-              "gemini_subagent - Multimodal analysis and generation"
+              'claude_subagent - Advanced reasoning and code quality',
+              'cursor_subagent - Real-time collaboration and editing',
+              'codex_subagent - Code generation and completion',
+              'gemini_subagent - Multimodal analysis and generation',
             ],
             working_directory: targetDirectory,
             verbose: false,
             created_at: timestamp,
             project_name: projectName,
-            main_task: this.context.task || "Project initialization"
-          }
-        }
+            main_task: this.context.task || 'Project initialization',
+          },
+        },
       },
-      default_server: "roundtable-ai",
+      default_server: 'roundtable-ai',
       global_settings: {
         connection_timeout: 300.0,
         default_retries: 3,
         enable_progress_streaming: true,
-        log_level: "info",
-        debug_mode: false
+        log_level: 'info',
+        debug_mode: false,
       },
       project_config: {
         name: projectName,
-        main_task: this.context.task || "Project initialization",
-        preferred_subagent: this.context.subagent || "claude",
+        main_task: this.context.task || 'Project initialization',
+        preferred_subagent: this.context.subagent || 'claude',
         created_at: timestamp,
-        version: "1.0.0"
-      }
+        version: '1.0.0',
+      },
     };
 
     const mcpPath = path.join(junoTaskDir, 'mcp.json');
     await fs.writeFile(mcpPath, JSON.stringify(mcpContent, null, 2));
 
-    console.log(chalk.green(`   ✓ Created .juno_task/mcp.json with roundtable-ai server configuration`));
+    console.log(
+      chalk.green(`   ✓ Created .juno_task/mcp.json with roundtable-ai server configuration`),
+    );
   }
 
   private getDefaultModelForSubagent(subagent: string): string {
     const modelDefaults = {
       claude: ':sonnet',
-      codex: ':codex',   // Expands to gpt-5.3-codex in codex.py
-      gemini: ':pro',    // Expands to gemini-2.5-pro in gemini.py
-      cursor: 'auto'
+      codex: ':codex', // Expands to gpt-5.3-codex in codex.py
+      gemini: ':pro', // Expands to gemini-2.5-pro in gemini.py
+      cursor: 'auto',
     };
     return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
   }
@@ -667,7 +705,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       if (__dirname.includes('/dist/bin') || __dirname.includes('\\dist\\bin')) {
         // Production: dist/bin -> dist/templates/scripts
         templatesScriptsDir = path.join(__dirname, '../templates/scripts');
-      } else if (__dirname.includes('/src/cli/commands') || __dirname.includes('\\src\\cli\\commands')) {
+      } else if (
+        __dirname.includes('/src/cli/commands') ||
+        __dirname.includes('\\src\\cli\\commands')
+      ) {
         // Development: src/cli/commands -> src/templates/scripts
         templatesScriptsDir = path.join(__dirname, '../../templates/scripts');
       } else {
@@ -676,8 +717,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       }
 
       // Check if template scripts directory exists
-      if (!await fs.pathExists(templatesScriptsDir)) {
-        console.log(chalk.yellow('   ⚠️  Template scripts directory not found, skipping script installation'));
+      if (!(await fs.pathExists(templatesScriptsDir))) {
+        console.log(
+          chalk.yellow('   ⚠️  Template scripts directory not found, skipping script installation'),
+        );
         return;
       }
 
@@ -711,12 +754,15 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       }
 
       if (copiedCount > 0) {
-        console.log(chalk.green(`   ✓ Installed ${copiedCount} utility script(s) in .juno_task/scripts/`));
+        console.log(
+          chalk.green(`   ✓ Installed ${copiedCount} utility script(s) in .juno_task/scripts/`),
+        );
       }
-
     } catch (error) {
       console.log(chalk.yellow('   ⚠️  Failed to copy utility scripts'));
-      console.log(chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`));
+      console.log(
+        chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`),
+      );
       console.log(chalk.gray('   Scripts can be added manually later if needed'));
     }
   }
@@ -731,9 +777,15 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       const installScript = path.join(scriptsDir, 'install_requirements.sh');
 
       // Check if install_requirements.sh exists
-      if (!await fs.pathExists(installScript)) {
-        console.log(chalk.yellow('   ⚠️  install_requirements.sh not found, skipping Python dependencies installation'));
-        console.log(chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'));
+      if (!(await fs.pathExists(installScript))) {
+        console.log(
+          chalk.yellow(
+            '   ⚠️  install_requirements.sh not found, skipping Python dependencies installation',
+          ),
+        );
+        console.log(
+          chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'),
+        );
         return;
       }
 
@@ -750,7 +802,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         const output = execSync(installScript, {
           cwd: process.cwd(), // FIXED: Run from project root, not .juno_task
           encoding: 'utf8',
-          stdio: 'pipe' // Capture output instead of inheriting
+          stdio: 'pipe', // Capture output instead of inheriting
         });
 
         // Print the script output
@@ -759,7 +811,6 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         }
 
         console.log(chalk.green('   ✓ Python requirements installation completed'));
-
       } catch (error: any) {
         // Script execution failed
         const errorOutput = error.stdout ? error.stdout.toString() : '';
@@ -779,19 +830,28 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         // Check if this is a "neither uv nor pip found" error
         if (errorMsg.includes('Neither') || errorMsg.includes('not found')) {
           console.log(chalk.yellow('   ⚠️  Python package manager not found'));
-          console.log(chalk.gray('   Please install uv or pip manually to install Python dependencies'));
+          console.log(
+            chalk.gray('   Please install uv or pip manually to install Python dependencies'),
+          );
           console.log(chalk.gray('   Required packages: juno-kanban, roundtable-ai'));
         } else {
           console.log(chalk.yellow('   ⚠️  Failed to install Python requirements'));
           console.log(chalk.gray(`   Error: ${errorMsg}`));
-          console.log(chalk.gray('   You can run the script manually later: .juno_task/scripts/install_requirements.sh'));
+          console.log(
+            chalk.gray(
+              '   You can run the script manually later: .juno_task/scripts/install_requirements.sh',
+            ),
+          );
         }
       }
-
     } catch (error) {
       console.log(chalk.yellow('   ⚠️  Failed to execute install_requirements.sh'));
-      console.log(chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`));
-      console.log(chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'));
+      console.log(
+        chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`),
+      );
+      console.log(
+        chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'),
+      );
     }
   }
 
@@ -845,7 +905,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           // Check if remote already exists
           const remotes = execSync('git remote -v', {
             cwd: targetDirectory,
-            encoding: 'utf8'
+            encoding: 'utf8',
           });
 
           if (remotes.includes('origin')) {
@@ -854,7 +914,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
             // Add origin remote
             execSync(`git remote add origin "${this.context.gitUrl}"`, {
               cwd: targetDirectory,
-              stdio: 'ignore'
+              stdio: 'ignore',
             });
             console.log(chalk.green(`   ✓ Added remote origin: ${this.context.gitUrl}`));
           }
@@ -869,7 +929,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         try {
           execSync('git rev-parse HEAD', {
             cwd: targetDirectory,
-            stdio: 'ignore'
+            stdio: 'ignore',
           });
           hasCommits = true;
         } catch {
@@ -885,7 +945,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
           execSync(`git commit -m "${commitMessage}"`, {
             cwd: targetDirectory,
-            stdio: 'ignore'
+            stdio: 'ignore',
           });
           console.log(chalk.green('   ✓ Created initial commit'));
         } else {
@@ -895,7 +955,6 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         console.log(chalk.yellow('   ⚠️  Failed to create initial commit'));
         console.log(chalk.gray('   You can commit manually later'));
       }
-
     } catch (error) {
       console.log(chalk.yellow('   ⚠️  Git setup failed'));
       console.log(chalk.gray(`   Error: ${error}`));
@@ -928,7 +987,7 @@ class SimpleHeadlessInit {
       gitUrl,
       variables,
       force: this.options.force || false,
-      interactive: false
+      interactive: false,
     };
   }
 
@@ -936,7 +995,7 @@ class SimpleHeadlessInit {
     targetDirectory: string,
     task: string,
     editor: string,
-    gitUrl?: string
+    gitUrl?: string,
   ): InitVariables {
     const projectName = path.basename(targetDirectory);
     const currentDate = new Date().toISOString().split('T')[0];
@@ -951,7 +1010,7 @@ class SimpleHeadlessInit {
       VERSION: '1.0.0',
       AUTHOR: 'Development Team',
       DESCRIPTION: task.substring(0, 200) + (task.length > 200 ? '...' : ''),
-      GIT_URL: gitUrl || ''
+      GIT_URL: gitUrl || '',
     };
   }
 }
@@ -962,7 +1021,7 @@ class SimpleHeadlessInit {
 export async function initCommandHandler(
   args: any,
   options: InitCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Get global options from command's parent program
@@ -974,7 +1033,8 @@ export async function initCommandHandler(
     let context: InitializationContext;
 
     // Default to interactive mode if no task is provided
-    const shouldUseInteractive = options.interactive ||
+    const shouldUseInteractive =
+      options.interactive ||
       (!options.task && !process.env.CI) ||
       process.env.FORCE_INTERACTIVE === '1';
 
@@ -1004,7 +1064,11 @@ export async function initCommandHandler(
       // Don't fail initialization if service installation fails, just warn
       console.log(chalk.yellow('⚠️  Service installation skipped'));
       if (options.verbose) {
-        console.log(chalk.gray(`  ${serviceError instanceof Error ? serviceError.message : String(serviceError)}`));
+        console.log(
+          chalk.gray(
+            `  ${serviceError instanceof Error ? serviceError.message : String(serviceError)}`,
+          ),
+        );
       }
     }
 
@@ -1018,7 +1082,6 @@ export async function initCommandHandler(
       // Fallback if import path changes; still attempt graceful exit
       process.exit(0);
     }
-
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(chalk.red.bold('\n❌ Initialization Failed'));
@@ -1026,7 +1089,7 @@ export async function initCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1054,7 +1117,10 @@ export function configureInitCommand(program: Command): void {
   program
     .command('init')
     .description('Initialize new juno-code project - supports both interactive and inline modes')
-    .argument('[description]', 'Task description for inline mode (optional - triggers inline mode if provided)')
+    .argument(
+      '[description]',
+      'Task description for inline mode (optional - triggers inline mode if provided)',
+    )
     .option('-s, --subagent <name>', 'AI subagent to use (claude, codex, gemini, cursor)')
     .option('-g, --git-repo <url>', 'Git repository URL')
     .option('-d, --directory <path>', 'Target directory (default: current directory)')
@@ -1079,12 +1145,14 @@ export function configureInitCommand(program: Command): void {
         quiet: options.quiet,
         config: options.config,
         logFile: options.logFile,
-        logLevel: options.logLevel
+        logLevel: options.logLevel,
       };
 
       await initCommandHandler([], initOptions, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Modes:
   Interactive Mode (default):
     $ juno-code init                                    # Opens interactive TUI
@@ -1125,7 +1193,8 @@ Notes:
   - Defaults: directory=cwd, subagent=claude, no git repo
   - No prompt cost calculation or token counting
   - No character limits on task descriptions
-    `);
+    `,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,12 +1444,17 @@ function generateUserFeedbackContent(): string {
  */
 function generateAgentDocContent(
   docType: 'CLAUDE.md' | 'AGENTS.md',
-  subagent: string, task: string, projectPath: string,
-  gitUrl: string, currentDate: string, venvPath: string
+  subagent: string,
+  task: string,
+  projectPath: string,
+  gitUrl: string,
+  currentDate: string,
+  venvPath: string,
 ): string {
-  const title = docType === 'CLAUDE.md'
-    ? '# Claude Code Session Documentation'
-    : '# AGENTS.md Session Documentation';
+  const title =
+    docType === 'CLAUDE.md'
+      ? '# Claude Code Session Documentation'
+      : '# AGENTS.md Session Documentation';
 
   return `${title}
 

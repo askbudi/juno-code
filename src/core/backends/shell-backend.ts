@@ -11,7 +11,13 @@ import * as path from 'node:path';
 import os from 'node:os';
 import fsExtra from 'fs-extra';
 import type { Backend } from '../backend-manager.js';
-import type { ToolCallRequest, ToolCallResult, ProgressEvent, ProgressCallback, ToolExecutionMetadata } from '../../types/execution.js';
+import type {
+  ToolCallRequest,
+  ToolCallResult,
+  ProgressEvent,
+  ProgressCallback,
+  ToolExecutionMetadata,
+} from '../../types/execution.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';
 
 // =============================================================================
@@ -105,11 +111,11 @@ const TIMEZONE_OFFSETS: Record<string, number> = {
   'US/Pacific': -8,
   // European timezones
   'Europe/London': 0,
-  'UTC': 0,
-  'GMT': 0,
+  UTC: 0,
+  GMT: 0,
   'Europe/Paris': 1,
   'Europe/Berlin': 1,
-  'CET': 1,
+  CET: 1,
   // Other common timezones
   'Asia/Tokyo': 9,
   'Asia/Shanghai': 8,
@@ -154,8 +160,8 @@ function parseResetTime(message: string): { resetTime: Date; timezone: string } 
 
   if (timezoneOffset !== undefined) {
     // Calculate the current time in the target timezone
-    const utcNow = now.getTime() + (now.getTimezoneOffset() * 60000);
-    const targetNow = new Date(utcNow + (timezoneOffset * 3600000));
+    const utcNow = now.getTime() + now.getTimezoneOffset() * 60000;
+    const targetNow = new Date(utcNow + timezoneOffset * 3600000);
 
     // Set the reset time in the target timezone
     resetTime.setUTCHours(hours - timezoneOffset, minutes, 0, 0);
@@ -186,7 +192,8 @@ function parseResetTime(message: string): { resetTime: Date; timezone: string } 
  */
 function parseCodexResetTime(message: string): { resetTime: Date } | null {
   // Pattern to match: "try again at Month Day[st/nd/rd/th], Year HH:MM AM/PM"
-  const resetPattern = /try again at\s+(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
+  const resetPattern =
+    /try again at\s+(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
   const match = message.match(resetPattern);
 
   if (!match) {
@@ -202,18 +209,29 @@ function parseCodexResetTime(message: string): { resetTime: Date } | null {
 
   // Convert month name to number
   const MONTH_MAP: Record<string, number> = {
-    'jan': 0, 'january': 0,
-    'feb': 1, 'february': 1,
-    'mar': 2, 'march': 2,
-    'apr': 3, 'april': 3,
-    'may': 4,
-    'jun': 5, 'june': 5,
-    'jul': 6, 'july': 6,
-    'aug': 7, 'august': 7,
-    'sep': 8, 'september': 8,
-    'oct': 9, 'october': 9,
-    'nov': 10, 'november': 10,
-    'dec': 11, 'december': 11,
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11,
   };
 
   const month = MONTH_MAP[monthStr.toLowerCase()];
@@ -359,11 +377,15 @@ export class ShellBackend implements Backend {
     try {
       await fs.access(this.config.servicesPath);
     } catch (error) {
-      throw new Error(`Services directory not found: ${this.config.servicesPath}. Please create the directory and add subagent scripts.`);
+      throw new Error(
+        `Services directory not found: ${this.config.servicesPath}. Please create the directory and add subagent scripts.`,
+      );
     }
 
     if (this.config.debug) {
-      engineLogger.info(`Shell backend initialized with services path: ${this.config.servicesPath}`);
+      engineLogger.info(
+        `Shell backend initialized with services path: ${this.config.servicesPath}`,
+      );
     }
   }
 
@@ -385,14 +407,16 @@ export class ShellBackend implements Backend {
     } catch (error) {
       // Log creation failed - continue without file logging
       if (this.config.debug) {
-        engineLogger.warn(`Failed to create log file, continuing without file logging: ${error instanceof Error ? error.message : String(error)}`);
+        engineLogger.warn(
+          `Failed to create log file, continuing without file logging: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
       this.logFilePath = null;
     }
 
     // Emit tool start event
     await this.emitProgressEvent({
-      sessionId: request.metadata?.sessionId as string || 'unknown',
+      sessionId: (request.metadata?.sessionId as string) || 'unknown',
       timestamp: new Date(),
       backend: 'shell',
       count: ++this.eventCounter,
@@ -402,8 +426,8 @@ export class ShellBackend implements Backend {
       metadata: {
         toolName: request.toolName,
         arguments: request.arguments,
-        phase: 'initialization'
-      }
+        phase: 'initialization',
+      },
     });
 
     try {
@@ -417,7 +441,7 @@ export class ShellBackend implements Backend {
 
       // Emit completion event
       await this.emitProgressEvent({
-        sessionId: request.metadata?.sessionId as string || 'unknown',
+        sessionId: (request.metadata?.sessionId as string) || 'unknown',
         timestamp: new Date(),
         backend: 'shell',
         count: ++this.eventCounter,
@@ -428,8 +452,8 @@ export class ShellBackend implements Backend {
           toolName: request.toolName,
           duration,
           success: result.success,
-          phase: 'completion'
-        }
+          phase: 'completion',
+        },
       });
 
       const structuredResult = this.buildStructuredOutput(subagentType, result);
@@ -440,18 +464,19 @@ export class ShellBackend implements Backend {
         startTime: new Date(startTime),
         endTime: new Date(),
         duration,
-        error: result.error ? { type: 'shell_execution', message: result.error, timestamp: new Date() } : undefined,
+        error: result.error
+          ? { type: 'shell_execution', message: result.error, timestamp: new Date() }
+          : undefined,
         progressEvents: [], // Progress events are handled via callbacks
         ...(structuredResult.metadata ? { metadata: structuredResult.metadata } : undefined),
-        request
+        request,
       };
-
     } catch (error) {
       const duration = Date.now() - startTime;
 
       // Emit error event
       await this.emitProgressEvent({
-        sessionId: request.metadata?.sessionId as string || 'unknown',
+        sessionId: (request.metadata?.sessionId as string) || 'unknown',
         timestamp: new Date(),
         backend: 'shell',
         count: ++this.eventCounter,
@@ -463,8 +488,8 @@ export class ShellBackend implements Backend {
           duration,
           success: false,
           error: error instanceof Error ? error.message : String(error),
-          phase: 'error'
-        }
+          phase: 'error',
+        },
       });
 
       throw error;
@@ -525,7 +550,8 @@ export class ShellBackend implements Backend {
   private async createLogFile(subagentName: string): Promise<string> {
     // Format timestamp as YYYYMMDD_HHMMSS
     const now = new Date();
-    const timestamp = now.getFullYear().toString() +
+    const timestamp =
+      now.getFullYear().toString() +
       (now.getMonth() + 1).toString().padStart(2, '0') +
       now.getDate().toString().padStart(2, '0') +
       '_' +
@@ -541,7 +567,9 @@ export class ShellBackend implements Backend {
       await fsExtra.ensureDir(logDir);
     } catch (error) {
       if (this.config?.debug) {
-        engineLogger.warn(`Failed to create log directory: ${error instanceof Error ? error.message : String(error)}`);
+        engineLogger.warn(
+          `Failed to create log directory: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
       throw new Error(`Failed to create log directory: ${logDir}`);
     }
@@ -573,7 +601,9 @@ export class ShellBackend implements Backend {
     } catch (error) {
       // Don't throw - just log the error if debug is enabled
       if (this.config?.debug) {
-        engineLogger.warn(`Failed to write to log file: ${error instanceof Error ? error.message : String(error)}`);
+        engineLogger.warn(
+          `Failed to write to log file: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
@@ -588,7 +618,7 @@ export class ShellBackend implements Backend {
       cursor_subagent: 'cursor',
       codex_subagent: 'codex',
       gemini_subagent: 'gemini',
-      pi_subagent: 'pi'
+      pi_subagent: 'pi',
     };
 
     return toolMapping[toolName] || toolName.replace('_subagent', '');
@@ -599,10 +629,10 @@ export class ShellBackend implements Backend {
    */
   private async findScriptForSubagent(subagent: string): Promise<string> {
     const possibleNames = [
-      `${subagent}.py`,  // Subagent-specific Python script (e.g. claude.py, codex.py)
-      `${subagent}.sh`,  // Subagent-specific shell script
-      `subagent.py`,     // Generic Python script (fallback)
-      `subagent.sh`,     // Generic shell script (fallback)
+      `${subagent}.py`, // Subagent-specific Python script (e.g. claude.py, codex.py)
+      `${subagent}.sh`, // Subagent-specific shell script
+      `subagent.py`, // Generic Python script (fallback)
+      `subagent.sh`, // Generic shell script (fallback)
     ];
 
     const checkedPaths: string[] = [];
@@ -627,7 +657,9 @@ export class ShellBackend implements Backend {
       }
     }
 
-    throw new Error(`No script found for subagent: ${subagent}. Checked paths: ${checkedPaths.join(', ')}`);
+    throw new Error(
+      `No script found for subagent: ${subagent}. Checked paths: ${checkedPaths.join(', ')}`,
+    );
   }
 
   /**
@@ -636,9 +668,7 @@ export class ShellBackend implements Backend {
   private async findAvailableScripts(): Promise<string[]> {
     try {
       const files = await fs.readdir(this.config!.servicesPath);
-      const scriptFiles = files.filter(file =>
-        file.endsWith('.py') || file.endsWith('.sh')
-      );
+      const scriptFiles = files.filter((file) => file.endsWith('.py') || file.endsWith('.sh'));
       return scriptFiles;
     } catch (error) {
       return [];
@@ -652,7 +682,7 @@ export class ShellBackend implements Backend {
     scriptPath: string,
     request: ToolCallRequest,
     toolId: string,
-    subagentType: string
+    subagentType: string,
   ): Promise<ScriptExecutionResult> {
     return new Promise(async (resolve, reject) => {
       const startTime = Date.now();
@@ -668,7 +698,7 @@ export class ShellBackend implements Backend {
         JUNO_PROJECT_PATH: request.arguments?.project_path || this.config!.workingDirectory,
         JUNO_MODEL: request.arguments?.model || '',
         JUNO_ITERATION: String(request.arguments?.iteration || 1),
-        JUNO_TOOL_ID: toolId
+        JUNO_TOOL_ID: toolId,
       };
 
       if (isGemini) {
@@ -685,7 +715,9 @@ export class ShellBackend implements Backend {
           env.JUNO_SUBAGENT_CAPTURE_PATH = capturePath;
         } catch (error) {
           if (this.config?.debug) {
-            engineLogger.warn(`Failed to prepare subagent capture path: ${error instanceof Error ? error.message : String(error)}`);
+            engineLogger.warn(
+              `Failed to prepare subagent capture path: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         }
       }
@@ -721,19 +753,31 @@ export class ShellBackend implements Backend {
       }
 
       // For Python scripts, add permission-based allowed tools if provided (--allowedTools)
-      if (isPython && request.arguments?.allowedTools && Array.isArray(request.arguments.allowedTools)) {
+      if (
+        isPython &&
+        request.arguments?.allowedTools &&
+        Array.isArray(request.arguments.allowedTools)
+      ) {
         args.push('--allowedTools');
         args.push(...request.arguments.allowedTools);
       }
 
       // For Python scripts, add append allowed tools if provided (--appendAllowedTools)
-      if (isPython && request.arguments?.appendAllowedTools && Array.isArray(request.arguments.appendAllowedTools)) {
+      if (
+        isPython &&
+        request.arguments?.appendAllowedTools &&
+        Array.isArray(request.arguments.appendAllowedTools)
+      ) {
         args.push('--appendAllowedTools');
         args.push(...request.arguments.appendAllowedTools);
       }
 
       // For Python scripts, add disallowed tools if provided (--disallowedTools)
-      if (isPython && request.arguments?.disallowedTools && Array.isArray(request.arguments.disallowedTools)) {
+      if (
+        isPython &&
+        request.arguments?.disallowedTools &&
+        Array.isArray(request.arguments.disallowedTools)
+      ) {
         args.push('--disallowedTools');
         args.push(...request.arguments.disallowedTools);
       }
@@ -769,14 +813,18 @@ export class ShellBackend implements Backend {
         engineLogger.debug(`Executing script: ${command} ${displayArgs.join(' ')}`);
         engineLogger.debug(`Working directory: ${this.config!.workingDirectory}`);
         engineLogger.debug(`Subagent type: ${subagentType}`);
-        engineLogger.debug(`Environment variables: ${Object.keys(env).filter(k => k.startsWith('JUNO_') || k.startsWith('PI_')).join(', ')}`);
+        engineLogger.debug(
+          `Environment variables: ${Object.keys(env)
+            .filter((k) => k.startsWith('JUNO_') || k.startsWith('PI_'))
+            .join(', ')}`,
+        );
       }
 
       // Spawn the process
       const child: ChildProcess = spawn(command, args, {
         env,
         cwd: this.config!.workingDirectory,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       // Close stdin immediately - we don't need it and it prevents the subprocess from waiting
@@ -800,10 +848,15 @@ export class ShellBackend implements Backend {
         // Try to parse and emit streaming events (handles both JSON and TEXT formats)
         if (this.config!.enableJsonStreaming !== false) {
           try {
-            this.parseAndEmitStreamingEvents(data, request.metadata?.sessionId as string || 'unknown');
+            this.parseAndEmitStreamingEvents(
+              data,
+              (request.metadata?.sessionId as string) || 'unknown',
+            );
           } catch (error) {
             if (this.config!.debug) {
-              engineLogger.warn(`Streaming parse error: ${error instanceof Error ? error.message : String(error)}`);
+              engineLogger.warn(
+                `Streaming parse error: ${error instanceof Error ? error.message : String(error)}`,
+              );
             }
           }
         }
@@ -823,7 +876,7 @@ export class ShellBackend implements Backend {
         for (const line of lines) {
           if (!line.trim()) continue;
           this.emitProgressEvent({
-            sessionId: request.metadata?.sessionId as string || 'unknown',
+            sessionId: (request.metadata?.sessionId as string) || 'unknown',
             timestamp: new Date(),
             backend: 'shell',
             count: ++this.eventCounter,
@@ -832,11 +885,13 @@ export class ShellBackend implements Backend {
             metadata: {
               format: 'text',
               source: 'stderr',
-              raw: true
-            }
-          }).catch(error => {
+              raw: true,
+            },
+          }).catch((error) => {
             if (this.config?.debug) {
-              engineLogger.warn(`Failed to emit stderr progress event: ${error instanceof Error ? error.message : String(error)}`);
+              engineLogger.warn(
+                `Failed to emit stderr progress event: ${error instanceof Error ? error.message : String(error)}`,
+              );
             }
           });
         }
@@ -859,7 +914,9 @@ export class ShellBackend implements Backend {
               }
             } catch (error) {
               if (this.config?.debug) {
-                engineLogger.warn(`Failed to read subagent capture: ${error instanceof Error ? error.message : String(error)}`);
+                engineLogger.warn(
+                  `Failed to read subagent capture: ${error instanceof Error ? error.message : String(error)}`,
+                );
               }
             } finally {
               if (captureDir) {
@@ -867,7 +924,9 @@ export class ShellBackend implements Backend {
                   await fs.rm(captureDir, { recursive: true, force: true });
                 } catch (cleanupError) {
                   if (this.config?.debug) {
-                    engineLogger.warn(`Failed to clean capture directory: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+                    engineLogger.warn(
+                      `Failed to clean capture directory: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+                    );
                   }
                 }
               }
@@ -875,7 +934,9 @@ export class ShellBackend implements Backend {
           }
 
           if (this.config!.debug) {
-            engineLogger.debug(`Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`);
+            engineLogger.debug(
+              `Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`,
+            );
             engineLogger.debug(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
           }
 
@@ -885,7 +946,7 @@ export class ShellBackend implements Backend {
             error: stderr || undefined,
             exitCode: exitCode || 0,
             duration,
-            ...(subAgentResponse ? { subAgentResponse } : undefined)
+            ...(subAgentResponse ? { subAgentResponse } : undefined),
           });
         })();
       });
@@ -939,7 +1000,7 @@ export class ShellBackend implements Backend {
    */
   private buildStructuredOutput(
     subagentType: string,
-    result: ScriptExecutionResult
+    result: ScriptExecutionResult,
   ): { content: string; metadata?: ToolExecutionMetadata } {
     if (subagentType === 'claude') {
       const claudeEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
@@ -969,7 +1030,7 @@ export class ShellBackend implements Backend {
         uuid: claudeEvent?.uuid,
         sub_agent_response: claudeEvent,
         // Add quota limit info if detected
-        ...(quotaLimitInfo.detected && { quota_limit: quotaLimitInfo })
+        ...(quotaLimitInfo.detected && { quota_limit: quotaLimitInfo }),
       };
 
       const metadata: ToolExecutionMetadata = {
@@ -978,12 +1039,12 @@ export class ShellBackend implements Backend {
         contentType: 'application/json',
         rawOutput: result.output,
         // Add quota limit info to metadata as well for engine consumption
-        ...(quotaLimitInfo.detected && { quotaLimitInfo })
+        ...(quotaLimitInfo.detected && { quotaLimitInfo }),
       };
 
       return {
         content: JSON.stringify(structuredPayload),
-        metadata
+        metadata,
       };
     }
 
@@ -998,7 +1059,7 @@ export class ShellBackend implements Backend {
             structuredOutput: true,
             contentType: 'application/json',
             rawOutput: result.output,
-            quotaLimitInfo
+            quotaLimitInfo,
           };
           const structuredPayload = {
             type: 'result',
@@ -1008,11 +1069,11 @@ export class ShellBackend implements Backend {
             error: codexQuotaMessage,
             exit_code: result.exitCode,
             duration_ms: result.duration,
-            quota_limit: quotaLimitInfo
+            quota_limit: quotaLimitInfo,
           };
           return {
             content: JSON.stringify(structuredPayload),
-            metadata
+            metadata,
           };
         }
       }
@@ -1026,8 +1087,15 @@ export class ShellBackend implements Backend {
         // Extract message text from agent_message event format
         // Codex events can be: {msg: {message: "..."}} (legacy) or {item: {text: "..."}} (item.completed)
         const msgPayload = codexEvent.msg ?? codexEvent;
-        const itemPayload = typeof codexEvent.item === 'object' && codexEvent.item ? codexEvent.item : undefined;
-        const messageText = msgPayload.message ?? msgPayload.text ?? itemPayload?.text ?? itemPayload?.message ?? msgPayload.content ?? result.output;
+        const itemPayload =
+          typeof codexEvent.item === 'object' && codexEvent.item ? codexEvent.item : undefined;
+        const messageText =
+          msgPayload.message ??
+          msgPayload.text ??
+          itemPayload?.text ??
+          itemPayload?.message ??
+          msgPayload.content ??
+          result.output;
         const structuredPayload = {
           type: 'result',
           subtype: codexEvent.subtype || (isError ? 'error' : 'success'),
@@ -1047,7 +1115,7 @@ export class ShellBackend implements Backend {
         };
         return {
           content: JSON.stringify(structuredPayload),
-          metadata
+          metadata,
         };
       }
     }
@@ -1071,7 +1139,8 @@ export class ShellBackend implements Backend {
                 const texts: string[] = [];
                 for (const item of content) {
                   if (typeof item === 'string') texts.push(item);
-                  else if (item?.type === 'text' && typeof item.text === 'string') texts.push(item.text);
+                  else if (item?.type === 'text' && typeof item.text === 'string')
+                    texts.push(item.text);
                 }
                 resultText = texts.join('\n');
               }
@@ -1086,7 +1155,10 @@ export class ShellBackend implements Backend {
           const sanitizedPiEvent = { ...piEvent };
           delete sanitizedPiEvent.messages;
           // Also sanitize nested sub_agent_response if present (from pi.py capture)
-          if (sanitizedPiEvent.sub_agent_response && typeof sanitizedPiEvent.sub_agent_response === 'object') {
+          if (
+            sanitizedPiEvent.sub_agent_response &&
+            typeof sanitizedPiEvent.sub_agent_response === 'object'
+          ) {
             const inner = { ...sanitizedPiEvent.sub_agent_response };
             delete inner.messages;
             delete inner.type;
@@ -1113,7 +1185,7 @@ export class ShellBackend implements Backend {
           };
           return {
             content: JSON.stringify(structuredPayload),
-            metadata
+            metadata,
           };
         }
       }
@@ -1139,11 +1211,14 @@ export class ShellBackend implements Backend {
       };
       return {
         content: JSON.stringify(structuredPayload),
-        metadata
+        metadata,
       };
     }
 
-    return { content: result.output, metadata: result.metadata as ToolExecutionMetadata | undefined };
+    return {
+      content: result.output,
+      metadata: result.metadata as ToolExecutionMetadata | undefined,
+    };
   }
 
   /**
@@ -1156,7 +1231,10 @@ export class ShellBackend implements Backend {
     const sources = [output, stderr].filter(Boolean);
 
     for (const source of sources) {
-      const lines = source!.split('\n').map(l => l.trim()).filter(Boolean);
+      const lines = source!
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       for (const line of lines) {
         try {
           const parsed = JSON.parse(line);
@@ -1192,7 +1270,10 @@ export class ShellBackend implements Backend {
       return null;
     }
 
-    const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+    const lines = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
 
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
@@ -1247,11 +1328,13 @@ export class ShellBackend implements Backend {
           content: rawLine,
           metadata: {
             format: 'text',
-            raw: true
-          }
-        }).catch(error => {
+            raw: true,
+          },
+        }).catch((error) => {
           if (this.config?.debug) {
-            engineLogger.warn(`Failed to emit whitespace-only streaming event: ${error instanceof Error ? error.message : String(error)}`);
+            engineLogger.warn(
+              `Failed to emit whitespace-only streaming event: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         });
         continue;
@@ -1281,7 +1364,7 @@ export class ShellBackend implements Backend {
             count: ++this.eventCounter,
             type: jsonEvent.type as any,
             content: jsonEvent.content,
-            metadata: jsonEvent.metadata
+            metadata: jsonEvent.metadata,
           };
           isJsonParsed = true;
         } else {
@@ -1293,13 +1376,14 @@ export class ShellBackend implements Backend {
 
         // Emit the progress event if JSON was successfully parsed
         if (isJsonParsed) {
-          this.emitProgressEvent(progressEvent!).catch(error => {
+          this.emitProgressEvent(progressEvent!).catch((error) => {
             if (this.config?.debug) {
-              engineLogger.warn(`Failed to emit progress event: ${error instanceof Error ? error.message : String(error)}`);
+              engineLogger.warn(
+                `Failed to emit progress event: ${error instanceof Error ? error.message : String(error)}`,
+              );
             }
           });
         }
-
       } catch (error) {
         // Not JSON - this is expected for text-based subagents like Codex
         // Treat as TEXT streaming and emit as thinking event
@@ -1317,11 +1401,13 @@ export class ShellBackend implements Backend {
           content: rawLine,
           metadata: {
             format: 'text',
-            raw: true
-          }
-        }).catch(error => {
+            raw: true,
+          },
+        }).catch((error) => {
           if (this.config?.debug) {
-            engineLogger.warn(`Failed to emit text streaming event: ${error instanceof Error ? error.message : String(error)}`);
+            engineLogger.warn(
+              `Failed to emit text streaming event: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         });
       }
@@ -1332,22 +1418,29 @@ export class ShellBackend implements Backend {
    * Check if JSON event is Claude CLI format
    */
   private isClaudeCliEvent(event: any): boolean {
-    return event && typeof event === 'object' &&
-           event.type && ['system', 'assistant', 'result'].includes(event.type);
+    return (
+      event &&
+      typeof event === 'object' &&
+      event.type &&
+      ['system', 'assistant', 'result'].includes(event.type)
+    );
   }
 
   /**
    * Check if JSON event is generic StreamingEvent format
    */
   private isGenericStreamingEvent(event: any): boolean {
-    return event && typeof event === 'object' &&
-           event.type && event.content !== undefined;
+    return event && typeof event === 'object' && event.type && event.content !== undefined;
   }
 
   /**
    * Convert Claude CLI event to ProgressEvent format
    */
-  private convertClaudeEventToProgress(event: any, sessionId: string, originalLine?: string): ProgressEvent {
+  private convertClaudeEventToProgress(
+    event: any,
+    sessionId: string,
+    originalLine?: string,
+  ): ProgressEvent {
     let type: ProgressEvent['type'];
     let content: string;
     const metadata: Record<string, any> = {};
@@ -1383,7 +1476,7 @@ export class ShellBackend implements Backend {
         count: ++this.eventCounter,
         type,
         content,
-        metadata
+        metadata,
       };
     }
 
@@ -1461,7 +1554,7 @@ export class ShellBackend implements Backend {
       count: ++this.eventCounter,
       type,
       content,
-      metadata
+      metadata,
     };
   }
 
@@ -1496,9 +1589,10 @@ export class ShellBackend implements Backend {
         if (event.message?.content && Array.isArray(event.message.content)) {
           const textContent = event.message.content.find((c: any) => c.type === 'text');
           if (textContent?.text) {
-            const preview = textContent.text.length > 100
-              ? textContent.text.substring(0, 100) + '...'
-              : textContent.text;
+            const preview =
+              textContent.text.length > 100
+                ? textContent.text.substring(0, 100) + '...'
+                : textContent.text;
             parts.push(`content="${preview}"`);
           }
         }
@@ -1519,15 +1613,15 @@ export class ShellBackend implements Backend {
 
         // Show result/error content
         if (event.result) {
-          const resultPreview = event.result.length > 150
-            ? event.result.substring(0, 150) + '...'
-            : event.result;
+          const resultPreview =
+            event.result.length > 150 ? event.result.substring(0, 150) + '...' : event.result;
           parts.push(`result="${resultPreview}"`);
         }
 
         // Show performance metrics
         if (event.duration_ms !== undefined) parts.push(`duration=${event.duration_ms}ms`);
-        if (event.total_cost_usd !== undefined) parts.push(`cost=$${event.total_cost_usd.toFixed(6)}`);
+        if (event.total_cost_usd !== undefined)
+          parts.push(`cost=$${event.total_cost_usd.toFixed(6)}`);
 
         // Show usage summary if available
         if (event.usage) {
@@ -1564,7 +1658,9 @@ export class ShellBackend implements Backend {
       } catch (error) {
         // Don't break on callback errors
         if (this.config?.debug) {
-          engineLogger.warn(`Progress callback error: ${error instanceof Error ? error.message : String(error)}`);
+          engineLogger.warn(
+            `Progress callback error: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
     }

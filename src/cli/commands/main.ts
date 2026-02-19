@@ -18,19 +18,10 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
-import type {
-  MainCommandOptions
-} from '../types.js';
-import {
-  ValidationError,
-  ConfigurationError,
-  RuntimeError
-} from '../types.js';
+import type { MainCommandOptions } from '../types.js';
+import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
-import type {
-  ExecutionRequest,
-  ExecutionResult
-} from '../../core/engine.js';
+import type { ExecutionRequest, ExecutionResult } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
 import type { ProgressEvent } from '../../types/execution.js';
 
@@ -45,10 +36,10 @@ import type { ProgressEvent } from '../../types/execution.js';
 function getDefaultModelForSubagent(subagent: SubagentType): string {
   const modelDefaults: Record<SubagentType, string> = {
     claude: ':sonnet',
-    codex: ':codex',  // Expands to gpt-5.3-codex in codex.py
-    gemini: ':pro',   // Expands to gemini-2.5-pro in gemini.py
+    codex: ':codex', // Expands to gpt-5.3-codex in codex.py
+    gemini: ':pro', // Expands to gemini-2.5-pro in gemini.py
     cursor: 'auto',
-    pi: ':pi'         // Expands to anthropic/claude-sonnet-4-6 in pi.py
+    pi: ':pi', // Expands to anthropic/claude-sonnet-4-6 in pi.py
   };
   return modelDefaults[subagent] || modelDefaults.claude;
 }
@@ -124,19 +115,18 @@ class PromptProcessor {
         // Try default prompt file: .juno_task/prompt.md
         const defaultPromptPath = path.join(process.cwd(), '.juno_task', 'prompt.md');
         if (await fs.pathExists(defaultPromptPath)) {
-          console.error(chalk.blue(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`));
+          console.error(
+            chalk.blue(`📄 Using default prompt: ${chalk.cyan('.juno_task/prompt.md')}`),
+          );
           return await this.loadPromptFromFile(defaultPromptPath);
         } else {
-          throw new ValidationError(
-            'Prompt is required for execution',
-            [
-              'Provide prompt text: juno-code claude "your prompt here"',
-              'Use file input: juno-code claude prompt.txt',
-              'Use interactive mode: juno-code claude --interactive',
-              'Use TUI editor: juno-code claude --interactive-prompt',
-              'Create default prompt file: .juno_task/prompt.md'
-            ]
-          );
+          throw new ValidationError('Prompt is required for execution', [
+            'Provide prompt text: juno-code claude "your prompt here"',
+            'Use file input: juno-code claude prompt.txt',
+            'Use interactive mode: juno-code claude --interactive',
+            'Use TUI editor: juno-code claude --interactive-prompt',
+            'Create default prompt file: .juno_task/prompt.md',
+          ]);
         }
       }
     }
@@ -170,23 +160,21 @@ class PromptProcessor {
       const content = await fs.readFile(resolvedPath, 'utf-8');
 
       if (!content.trim()) {
-        throw new RuntimeError(
-          'Prompt file is empty',
-          resolvedPath
-        );
+        throw new RuntimeError('Prompt file is empty', resolvedPath);
       }
 
-      console.error(chalk.blue(`📄 Loaded prompt from: ${chalk.cyan(path.relative(process.cwd(), resolvedPath))}`));
+      console.error(
+        chalk.blue(
+          `📄 Loaded prompt from: ${chalk.cyan(path.relative(process.cwd(), resolvedPath))}`,
+        ),
+      );
       return content.trim();
     } catch (error) {
       if (error instanceof RuntimeError) {
         throw error;
       }
 
-      throw new RuntimeError(
-        `Failed to read prompt file: ${error}`,
-        filePath
-      );
+      throw new RuntimeError(`Failed to read prompt file: ${error}`, filePath);
     }
   }
 
@@ -199,7 +187,9 @@ class PromptProcessor {
   private async collectInteractivePrompt(): Promise<string> {
     console.error(chalk.blue.bold('\n✏️  Interactive Prompt Mode\n'));
     console.error(chalk.yellow('Enter your prompt (press Ctrl+D when finished):'));
-    console.error(chalk.gray('You can type multiple lines. End with Ctrl+D (Unix) or Ctrl+Z (Windows).\n'));
+    console.error(
+      chalk.gray('You can type multiple lines. End with Ctrl+D (Unix) or Ctrl+Z (Windows).\n'),
+    );
 
     return new Promise((resolve, reject) => {
       let input = '';
@@ -214,20 +204,19 @@ class PromptProcessor {
       process.stdin.on('end', () => {
         const trimmed = input.trim();
         if (!trimmed) {
-          reject(new ValidationError(
-            'Empty prompt provided',
-            ['Provide meaningful prompt text', 'Use --help for usage examples']
-          ));
+          reject(
+            new ValidationError('Empty prompt provided', [
+              'Provide meaningful prompt text',
+              'Use --help for usage examples',
+            ]),
+          );
         } else {
           resolve(trimmed);
         }
       });
 
       process.stdin.on('error', (error) => {
-        reject(new RuntimeError(
-          `Failed to read interactive input: ${error}`,
-          'stdin'
-        ));
+        reject(new RuntimeError(`Failed to read interactive input: ${error}`, 'stdin'));
       });
     });
   }
@@ -248,11 +237,21 @@ class MainProgressDisplay {
 
   start(request: ExecutionRequest): void {
     this.startTime = new Date();
-    console.error(chalk.blue.bold('\n🚀 Executing with ' + request.subagent.charAt(0).toUpperCase() + request.subagent.slice(1)));
+    console.error(
+      chalk.blue.bold(
+        '\n🚀 Executing with ' +
+          request.subagent.charAt(0).toUpperCase() +
+          request.subagent.slice(1),
+      ),
+    );
 
     if (this.verbose) {
       console.error(chalk.gray(`   Request ID: ${request.requestId}`));
-      console.error(chalk.gray(`   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`));
+      console.error(
+        chalk.gray(
+          `   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`,
+        ),
+      );
       console.error(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
       if (request.model) {
         console.error(chalk.gray(`   Model: ${request.model}`));
@@ -260,9 +259,10 @@ class MainProgressDisplay {
     }
 
     console.error(chalk.blue('\n📋 Task:'));
-    const preview = request.instruction.length > 200
-      ? request.instruction.substring(0, 200) + '...'
-      : request.instruction;
+    const preview =
+      request.instruction.length > 200
+        ? request.instruction.substring(0, 200) + '...'
+        : request.instruction;
     console.error(chalk.white(`   ${preview}`));
     console.error('');
   }
@@ -273,14 +273,16 @@ class MainProgressDisplay {
     // If this is raw JSON output from shell backend (jq-style formatting)
     // OR if this is TEXT format streaming from shell backend (codex.py)
     // Mark that we're streaming output - this means we should NOT print the accumulated result later
-    if (event.metadata?.rawJsonOutput || (event.metadata?.format === 'text' && event.metadata?.raw === true)) {
+    if (
+      event.metadata?.rawJsonOutput ||
+      (event.metadata?.format === 'text' && event.metadata?.raw === true)
+    ) {
       this.hasStreamedJsonOutput = true;
     }
 
     // If this is raw JSON output from shell backend (jq-style formatting)
     // Display it with colors and indentation like `claude.py | jq .`
     if (event.metadata?.rawJsonOutput) {
-
       try {
         // Parse and re-format with indentation
         const jsonObj = JSON.parse(event.content);
@@ -325,7 +327,7 @@ class MainProgressDisplay {
     const json = JSON.stringify(obj, null, 2);
 
     // Apply colors to different JSON elements
-    let colored = json
+    const colored = json
       // Keys (property names)
       .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
       // String values
@@ -375,9 +377,17 @@ class MainProgressDisplay {
       const elapsed = this.getElapsedTime();
       const durationText = `${duration.toFixed(0)}ms`;
       if (success) {
-        console.error(chalk.green(`✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`));
+        console.error(
+          chalk.green(
+            `✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`,
+          ),
+        );
       } else {
-        console.error(chalk.red(`❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`));
+        console.error(
+          chalk.red(
+            `❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`,
+          ),
+        );
       }
     }
   }
@@ -399,8 +409,8 @@ class MainProgressDisplay {
     const structuredOutput = (lastIteration?.toolResult.metadata as any)?.structuredOutput === true;
     const shouldPrintResult = Boolean(
       lastIteration &&
-      lastIteration.toolResult.content &&
-      (!this.hasStreamedJsonOutput || structuredOutput)
+        lastIteration.toolResult.content &&
+        (!this.hasStreamedJsonOutput || structuredOutput),
     );
 
     if (shouldPrintResult) {
@@ -416,7 +426,9 @@ class MainProgressDisplay {
       console.error(chalk.white(`   Total Iterations: ${stats.totalIterations}`));
       console.error(chalk.white(`   Successful: ${stats.successfulIterations}`));
       console.error(chalk.white(`   Failed: ${stats.failedIterations}`));
-      console.error(chalk.white(`   Average Duration: ${stats.averageIterationDuration.toFixed(0)}ms`));
+      console.error(
+        chalk.white(`   Average Duration: ${stats.averageIterationDuration.toFixed(0)}ms`),
+      );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
 
       if (stats.rateLimitEncounters > 0) {
@@ -462,7 +474,7 @@ class MainExecutionCoordinator {
         commandArgs: ['feedback'],
         verbose: this.config.verbose,
         showHeader: true,
-        progressInterval: 0 // Don't use built-in ticker, we have our own progress display
+        progressInterval: 0, // Don't use built-in ticker, we have our own progress display
       });
     }
   }
@@ -488,10 +500,7 @@ class MainExecutionCoordinator {
     });
 
     engine.on('iteration:complete', ({ iterationResult }) => {
-      this.progressDisplay.onIterationComplete(
-        iterationResult.success,
-        iterationResult.duration
-      );
+      this.progressDisplay.onIterationComplete(iterationResult.success, iterationResult.duration);
     });
 
     engine.on('execution:error', ({ error }) => {
@@ -504,7 +513,10 @@ class MainExecutionCoordinator {
 
       // Start feedback collector if enabled
       if (this.feedbackCollector) {
-        writeTerminalProgress(chalk.gray('   Feedback collection: enabled (Type F+Enter to enter feedback mode)') + '\n');
+        writeTerminalProgress(
+          chalk.gray('   Feedback collection: enabled (Type F+Enter to enter feedback mode)') +
+            '\n',
+        );
         this.feedbackCollector.start();
       }
 
@@ -515,10 +527,8 @@ class MainExecutionCoordinator {
       this.progressDisplay.complete(result);
 
       return result;
-
     } catch (error) {
       throw error;
-
     } finally {
       // Stop feedback collector if it was started
       if (this.feedbackCollector) {
@@ -541,7 +551,7 @@ class MainExecutionCoordinator {
 export async function mainCommandHandler(
   args: string[],
   options: MainCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Load configuration first so we can resolve defaults from config.json
@@ -555,8 +565,10 @@ export async function mainCommandHandler(
         logLevel: options.logLevel || 'info',
         workingDirectory: options.cwd || process.cwd(),
         // Pass through onHourlyLimit if specified via CLI flag
-        ...(options.onHourlyLimit ? { onHourlyLimit: options.onHourlyLimit as 'wait' | 'raise' } : {})
-      }
+        ...(options.onHourlyLimit
+          ? { onHourlyLimit: options.onHourlyLimit as 'wait' | 'raise' }
+          : {}),
+      },
     });
 
     // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
@@ -585,14 +597,11 @@ export async function mainCommandHandler(
     // Validate subagent
     const validSubagents: SubagentType[] = ['claude', 'cursor', 'codex', 'gemini', 'pi'];
     if (!validSubagents.includes(options.subagent)) {
-      throw new ValidationError(
-        `Invalid subagent: ${options.subagent}`,
-        [
-          `Use one of: ${validSubagents.join(', ')}`,
-          'Example: juno-code claude "your prompt"',
-          'Use --help for more information'
-        ]
-      );
+      throw new ValidationError(`Invalid subagent: ${options.subagent}`, [
+        `Use one of: ${validSubagents.join(', ')}`,
+        'Example: juno-code claude "your prompt"',
+        'Use --help for more information',
+      ]);
     }
 
     // Process prompt
@@ -604,17 +613,22 @@ export async function mainCommandHandler(
 
     // Check if --allowed-tools and --append-allowed-tools are used together (mutually exclusive)
     if (options.allowedTools && options.appendAllowedTools) {
-      console.error(chalk.red('\n❌ Error: --allowed-tools and --append-allowed-tools are mutually exclusive. Use one or the other.'));
+      console.error(
+        chalk.red(
+          '\n❌ Error: --allowed-tools and --append-allowed-tools are mutually exclusive. Use one or the other.',
+        ),
+      );
       process.exit(1);
     }
 
     // Validate maxIterations - check for NaN (e.g., from parseInt('invalid'))
     // This must happen BEFORE the fallback logic, otherwise NaN || default = default (silent failure)
     if (options.maxIterations !== undefined && Number.isNaN(options.maxIterations)) {
-      throw new ValidationError(
-        'Max iterations must be a valid number',
-        ['Use -1 for unlimited iterations', 'Use positive integers like 1, 5, or 10', 'Example: -i 5']
-      );
+      throw new ValidationError('Max iterations must be a valid number', [
+        'Use -1 for unlimited iterations',
+        'Use positive integers like 1, 5, or 10',
+        'Example: -i 5',
+      ]);
     }
 
     // Determine the model to use:
@@ -625,11 +639,13 @@ export async function mainCommandHandler(
     //
     // The compatibility check prevents using Claude model shorthands (e.g., :sonnet) with Codex,
     // which can happen with legacy config.json files created before the per-subagent model fix.
-    const configModelIsValid = config.defaultModel &&
+    const configModelIsValid =
+      config.defaultModel &&
       config.defaultSubagent === options.subagent &&
       isModelCompatibleWithSubagent(config.defaultModel, options.subagent);
 
-    const resolvedModel = options.model ||
+    const resolvedModel =
+      options.model ||
       (configModelIsValid ? config.defaultModel : undefined) ||
       getDefaultModelForSubagent(options.subagent);
 
@@ -649,17 +665,20 @@ export async function mainCommandHandler(
       appendAllowedTools: options.appendAllowedTools,
       disallowedTools: options.disallowedTools,
       resume: options.resume,
-      continueConversation: options.continue
+      continueConversation: options.continue,
     });
 
     // Execute
-    const coordinator = new MainExecutionCoordinator(config, options.verbose, options.enableFeedback || false);
+    const coordinator = new MainExecutionCoordinator(
+      config,
+      options.verbose,
+      options.enableFeedback || false,
+    );
     const result = await coordinator.execute(executionRequest);
 
     // Set exit code based on result
     const exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
     process.exit(exitCode);
-
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(chalk.red.bold('\n❌ Validation Error'));
@@ -667,7 +686,7 @@ export async function mainCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -681,7 +700,7 @@ export async function mainCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -695,7 +714,7 @@ export async function mainCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }

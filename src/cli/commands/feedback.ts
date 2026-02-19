@@ -13,8 +13,16 @@ import { Command } from 'commander';
 import type { FeedbackCommandOptions } from '../types.js';
 import { ValidationError } from '../types.js';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
-import { compactConfigFile, formatFileSize, shouldCompactFile } from '../../utils/file-compaction.js';
-import { archiveResolvedIssues, countOpenIssues, shouldArchive } from '../../utils/feedback-archival.js';
+import {
+  compactConfigFile,
+  formatFileSize,
+  shouldCompactFile,
+} from '../../utils/file-compaction.js';
+import {
+  archiveResolvedIssues,
+  countOpenIssues,
+  shouldArchive,
+} from '../../utils/feedback-archival.js';
 
 /**
  * Simple Interactive Feedback for user feedback collection
@@ -61,10 +69,9 @@ class SimpleFeedbackTUI {
     });
 
     if (!input || input.replace(/\s+/g, '').length < 5) {
-      throw new ValidationError(
-        'Feedback must be at least 5 characters',
-        ['Provide a description of your issue or suggestion']
-      );
+      throw new ValidationError('Feedback must be at least 5 characters', [
+        'Provide a description of your issue or suggestion',
+      ]);
     }
 
     return input;
@@ -91,10 +98,9 @@ class EnhancedFeedbackFileManager {
       const updatedContent = this.addIssueToContent(content, issue, testCriteria);
       await fs.writeFile(this.feedbackFile, updatedContent, 'utf-8');
     } catch (error) {
-      throw new ValidationError(
-        `Failed to save feedback: ${error}`,
-        ['Check file permissions and try again']
-      );
+      throw new ValidationError(`Failed to save feedback: ${error}`, [
+        'Check file permissions and try again',
+      ]);
     }
   }
 
@@ -170,7 +176,9 @@ List any features you'd like to see added or bugs you've encountered.
       if (insertionPoint !== -1) {
         const updatedSection =
           openIssuesSection.slice(0, insertionPoint) +
-          '\n' + newIssue + '\n' +
+          '\n' +
+          newIssue +
+          '\n' +
           openIssuesSection.slice(insertionPoint);
 
         return content.replace(openIssuesSection, updatedSection);
@@ -207,7 +215,11 @@ List any features you'd like to see added or bugs you've encountered.
 /**
  * Append issue to USER_FEEDBACK.md with optional test criteria
  */
-async function appendIssueToFeedback(feedbackFile: string, issueText: string, testCriteria?: string): Promise<void> {
+async function appendIssueToFeedback(
+  feedbackFile: string,
+  issueText: string,
+  testCriteria?: string,
+): Promise<void> {
   try {
     const fileManager = new EnhancedFeedbackFileManager(feedbackFile);
     await fileManager.addFeedback(issueText, testCriteria);
@@ -215,10 +227,9 @@ async function appendIssueToFeedback(feedbackFile: string, issueText: string, te
     if (error instanceof ValidationError) {
       throw error;
     }
-    throw new ValidationError(
-      `Failed to append feedback: ${error}`,
-      ['Check file permissions and try again']
-    );
+    throw new ValidationError(`Failed to append feedback: ${error}`, [
+      'Check file permissions and try again',
+    ]);
   }
 }
 
@@ -252,7 +263,10 @@ export function configureFeedbackCommand(program: Command): void {
     .option('--details <description>', 'Issue description (alternative form)')
     .option('--description <description>', 'Issue description (alternative form)')
     .option('-t, --test <criteria>', 'Test criteria or success factors')
-    .option('-tc, --test-criteria <criteria>', 'Test criteria or success factors (alternative form)')
+    .option(
+      '-tc, --test-criteria <criteria>',
+      'Test criteria or success factors (alternative form)',
+    )
     .action(async (feedback, options, command) => {
       // Create feedback options from command options (similar to init command)
       const feedbackOptions: FeedbackCommandOptions = {
@@ -266,7 +280,7 @@ export function configureFeedbackCommand(program: Command): void {
         quiet: options.quiet,
         config: options.config,
         logFile: options.logFile,
-        logLevel: options.logLevel
+        logLevel: options.logLevel,
       };
 
       const feedbackText = Array.isArray(feedback) ? feedback.join(' ') : feedback;
@@ -274,7 +288,9 @@ export function configureFeedbackCommand(program: Command): void {
       const args = feedbackText ? [feedbackText] : [];
       await feedbackCommandHandler(args, feedbackOptions, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code feedback                                    # Interactive feedback form
   $ juno-code feedback "Issue with command"              # Direct feedback text
@@ -302,13 +318,17 @@ Notes:
   - Use -t/--test or -tc/--test-criteria for test criteria (recommended for actionable feedback)
   - XML structure ensures proper parsing and organization
   - Automatic backup and repair for corrupted feedback files
-    `);
+    `,
+    );
 }
 
 /**
  * Handle compact subcommand for compacting CLAUDE.md and AGENTS.md files
  */
-async function handleCompactCommand(subArgs: string[], options: FeedbackCommandOptions): Promise<void> {
+async function handleCompactCommand(
+  subArgs: string[],
+  options: FeedbackCommandOptions,
+): Promise<void> {
   try {
     // Default to compacting CLAUDE.md in current directory
     const defaultClaudeFile = path.join(process.cwd(), 'CLAUDE.md');
@@ -370,8 +390,8 @@ async function handleCompactCommand(subArgs: string[], options: FeedbackCommandO
             'BUILD.*LOOP',
             'TEST PATTERNS',
             'UX.*TUI',
-            'important-instruction-reminders'
-          ]
+            'important-instruction-reminders',
+          ],
         });
 
         console.log(chalk.green(`✅ ${fileName} compacted successfully!`));
@@ -383,7 +403,7 @@ async function handleCompactCommand(subArgs: string[], options: FeedbackCommandO
         if (result.sectionsRemoved.length > 0) {
           console.log(chalk.gray(`   Removed sections: ${result.sectionsRemoved.length}`));
           if (options.verbose) {
-            result.sectionsRemoved.forEach(section => {
+            result.sectionsRemoved.forEach((section) => {
               console.log(chalk.gray(`     - ${section}`));
             });
           }
@@ -397,7 +417,6 @@ async function handleCompactCommand(subArgs: string[], options: FeedbackCommandO
 
     console.log(chalk.green.bold('🎉 Compaction process completed!'));
     console.log(chalk.gray('   Essential information preserved, historical content removed'));
-
   } catch (error) {
     console.error(chalk.red('❌ Compaction failed:'), error);
     throw error;
@@ -415,14 +434,16 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
     const archivalCheck = await shouldArchive(feedbackFile, {
       openIssuesThreshold: 10,
       fileSizeThreshold: 50 * 1024, // 50KB
-      lineCountThreshold: 500
+      lineCountThreshold: 500,
     });
 
     if (!archivalCheck.shouldArchive) {
       console.log(chalk.blue('📋 No archival needed'));
       console.log(chalk.gray(`   Open issues: ${archivalCheck.stats.openIssuesCount}`));
       console.log(chalk.gray(`   Resolved issues: ${archivalCheck.stats.resolvedIssuesCount}`));
-      console.log(chalk.gray(`   File size: ${(archivalCheck.stats.fileSizeBytes / 1024).toFixed(1)}KB`));
+      console.log(
+        chalk.gray(`   File size: ${(archivalCheck.stats.fileSizeBytes / 1024).toFixed(1)}KB`),
+      );
       console.log(chalk.gray(`   Line count: ${archivalCheck.stats.lineCount}`));
       return;
     }
@@ -433,7 +454,7 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
       archiveDir: path.join(path.dirname(feedbackFile), 'archives'),
       openIssuesThreshold: 10,
       dryRun: false,
-      verbose: true
+      verbose: true,
     });
 
     // Display results
@@ -448,7 +469,7 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
     // Display warnings
     if (results.warningsGenerated.length > 0) {
       console.log(chalk.yellow('\n⚠️  Warnings:'));
-      results.warningsGenerated.forEach(warning => {
+      results.warningsGenerated.forEach((warning) => {
         console.log(chalk.yellow(`   • ${warning}`));
       });
       console.log(chalk.gray('   Check .juno_task/logs/feedback-warnings.log for details'));
@@ -456,15 +477,14 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
 
     // Show summary
     console.log(chalk.blue('\n📊 Archival reasons:'));
-    archivalCheck.reasons.forEach(reason => {
+    archivalCheck.reasons.forEach((reason) => {
       console.log(chalk.gray(`   • ${reason}`));
     });
-
   } catch (error) {
-    throw new ValidationError(
-      `Failed to archive feedback: ${error}`,
-      ['Check file permissions and try again', 'Verify USER_FEEDBACK.md is not corrupted']
-    );
+    throw new ValidationError(`Failed to archive feedback: ${error}`, [
+      'Check file permissions and try again',
+      'Verify USER_FEEDBACK.md is not corrupted',
+    ]);
   }
 }
 
@@ -474,7 +494,7 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
 export async function feedbackCommandHandler(
   args: string[],
   options: FeedbackCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Handle explicit --issue/--detail/--description flags (headless mode)
@@ -486,7 +506,9 @@ export async function feedbackCommandHandler(
       if (!issueText.trim()) {
         throw new ValidationError(
           'Issue description is required when using --issue/-is/--detail/--description or --test/-tc flags',
-          ['Use: juno-code feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"']
+          [
+            'Use: juno-code feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"',
+          ],
         );
       }
       const feedbackFile = getFeedbackFile(options);
@@ -499,7 +521,6 @@ export async function feedbackCommandHandler(
       if (testCriteria) {
         console.log(chalk.blue(`   Test Criteria: ${testCriteria}`));
       }
-
     } else {
       // Default to interactive mode if no headless arguments provided
       const shouldUseInteractive = options.interactive || args.length === 0;
@@ -517,7 +538,6 @@ export async function feedbackCommandHandler(
         if (testCriteria) {
           console.log(chalk.blue(`   Test Criteria: ${testCriteria}`));
         }
-
       } else {
         // Handle subcommands
         const [subcommand, ...subArgs] = args;
@@ -553,7 +573,11 @@ export async function feedbackCommandHandler(
               await appendIssueToFeedback(feedbackFile, feedbackText);
               console.log(chalk.green.bold('✅ Feedback added to USER_FEEDBACK.md!'));
             } else {
-              console.log(chalk.yellow('Use --interactive mode, --issue/-is/--detail/--description flag, or provide feedback text'));
+              console.log(
+                chalk.yellow(
+                  'Use --interactive mode, --issue/-is/--detail/--description flag, or provide feedback text',
+                ),
+              );
               console.log(chalk.gray('Examples:'));
               console.log(chalk.gray('  juno-code feedback --issue "Bug description"'));
               console.log(chalk.gray('  juno-code feedback -is "Issue" -t "Test criteria"'));
@@ -570,7 +594,7 @@ export async function feedbackCommandHandler(
       console.error(chalk.red(error.message));
       if (error.suggestions.length > 0) {
         console.error(chalk.yellow('\nSuggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.gray(`  • ${suggestion}`));
         });
       }

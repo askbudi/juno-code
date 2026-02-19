@@ -165,7 +165,7 @@ import {
   isValidSubagent,
   isValidSessionStatus,
   isValidLogLevel,
-  isValidPath
+  isValidPath,
 } from '@/utils/validation';
 
 // Type guards return boolean and narrow types
@@ -240,12 +240,10 @@ Custom error class with enhanced context and suggestions.
 ```typescript
 import { ValidationError, formatValidationError } from '@/utils/validation';
 
-const error = new ValidationError(
-  'Invalid subagent type',
-  'subagent',
-  'invalid-type',
-  ['Use: claude, cursor, codex, or gemini', 'Check for typos']
-);
+const error = new ValidationError('Invalid subagent type', 'subagent', 'invalid-type', [
+  'Use: claude, cursor, codex, or gemini',
+  'Check for typos',
+]);
 
 console.log(formatValidationError(error));
 // Outputs formatted error with field, value, and suggestions
@@ -262,7 +260,7 @@ const level = validateWithFallback(
   validateLogLevel,
   'invalid-level',
   'info', // fallback
-  true // silent
+  true, // silent
 ); // Returns 'info' without throwing
 ```
 
@@ -295,7 +293,7 @@ import { validateEnvironmentVars } from '@/utils/validation';
 const envConfig = validateEnvironmentVars({
   JUNO_TASK_DEFAULT_SUBAGENT: 'claude',
   JUNO_TASK_LOG_LEVEL: 'debug',
-  JUNO_TASK_VERBOSE: 'true'
+  JUNO_TASK_VERBOSE: 'true',
 });
 ```
 
@@ -309,7 +307,7 @@ import { validateCommandOptions } from '@/utils/validation';
 const options = {
   subagent: 'claude',
   verbose: true,
-  maxIterations: 50
+  maxIterations: 50,
 };
 
 const validatedOptions = validateCommandOptions(options);
@@ -391,14 +389,10 @@ import { ValidationCache } from '@/utils';
 
 const cache = new ValidationCache<string, string>(5 * 60 * 1000); // 5 minute TTL
 
-const result = await cache.validate(
-  'file-validation',
-  '/path/to/file',
-  async (path) => {
-    // Expensive validation logic
-    return path;
-  }
-);
+const result = await cache.validate('file-validation', '/path/to/file', async (path) => {
+  // Expensive validation logic
+  return path;
+});
 ```
 
 ### Batch Validation
@@ -409,9 +403,8 @@ Validate multiple values efficiently:
 import { batchValidate, safeValidate, validateSubagent } from '@/utils';
 
 const subagents = ['claude', 'cursor', 'invalid'];
-const results = await batchValidate(
-  subagents,
-  (value) => Promise.resolve(safeValidate(validateSubagent, value))
+const results = await batchValidate(subagents, (value) =>
+  Promise.resolve(safeValidate(validateSubagent, value)),
 );
 ```
 
@@ -466,6 +459,7 @@ npm test src/utils/__tests__/validation.test.ts
 ```
 
 Tests cover:
+
 - All core validation functions
 - Zod schema transformations
 - Type guard functionality

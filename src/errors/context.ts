@@ -296,7 +296,7 @@ export interface PerformanceImpact {
 export function createErrorContext(
   code: ErrorCode,
   category: ErrorCategory,
-  options?: Partial<ErrorContext>
+  options?: Partial<ErrorContext>,
 ): ErrorContext {
   return {
     code,
@@ -306,7 +306,7 @@ export function createErrorContext(
     strategy: options?.strategy || ErrorHandlingStrategy.FAIL_FAST,
     timestamp: new Date(),
     isRetriable: options?.isRetriable ?? false,
-    ...options
+    ...options,
   };
 }
 
@@ -315,7 +315,7 @@ export function createErrorContext(
  */
 export function createContextFromCode(
   code: ErrorCode,
-  overrides?: Partial<ErrorContext>
+  overrides?: Partial<ErrorContext>,
 ): ErrorContext {
   // Auto-determine category from error code
   const codeString = code.toString();
@@ -368,14 +368,14 @@ export function createContextFromCode(
  */
 export function enrichErrorContext(
   context: ErrorContext,
-  metadata: Partial<ErrorMetadata>
+  metadata: Partial<ErrorMetadata>,
 ): ErrorContext {
   return {
     ...context,
     metadata: {
       ...context.metadata,
-      ...metadata
-    }
+      ...metadata,
+    },
   };
 }
 
@@ -384,13 +384,13 @@ export function enrichErrorContext(
  */
 export function createErrorCorrelation(
   parentError?: Error,
-  operationId?: string
+  operationId?: string,
 ): ErrorCorrelation {
   return {
     parentErrorId: parentError ? generateErrorId(parentError) : undefined,
     operationId,
     chainDepth: getErrorChainDepth(parentError),
-    sessionId: generateSessionId()
+    sessionId: generateSessionId(),
   };
 }
 
@@ -432,7 +432,7 @@ function simpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32-bit integer
   }
   return Math.abs(hash).toString(36).substr(0, 8);

@@ -12,9 +12,9 @@ import chalk from 'chalk';
 import { SkillInstaller } from '../../utils/skill-installer.js';
 
 export function createSkillsCommand(): Command {
-  const skillsCmd = new Command('skills')
-    .description('Manage agent skill files')
-    .addHelpText('after', `
+  const skillsCmd = new Command('skills').description('Manage agent skill files').addHelpText(
+    'after',
+    `
 Examples:
   $ juno-code skills install            Install skill files to project directories
   $ juno-code skills install --force    Force reinstall all skill files
@@ -27,7 +27,8 @@ Skill files are copied from the juno-code package into the project:
 
 Skills are installed for ALL agents regardless of which subagent is selected.
 Existing files in the destination directories are preserved.
-    `);
+    `,
+  );
 
   // Install subcommand
   skillsCmd
@@ -103,7 +104,11 @@ Existing files in the destination directories are preserved.
         }
 
         if (!hasAnyFiles) {
-          console.log(chalk.dim('\nNo skill files bundled yet. Add files to src/templates/skills/<agent>/ to bundle skills.'));
+          console.log(
+            chalk.dim(
+              '\nNo skill files bundled yet. Add files to src/templates/skills/<agent>/ to bundle skills.',
+            ),
+          );
         }
       } catch (error) {
         console.error(chalk.red('✗ Failed to list skills:'));
@@ -130,7 +135,9 @@ Existing files in the destination directories are preserved.
         }
 
         const needsUpdate = await SkillInstaller.needsUpdate(projectDir);
-        console.log(`\n  ${needsUpdate ? chalk.yellow('⚠ Updates available') : chalk.green('✓ All skills up-to-date')}`);
+        console.log(
+          `\n  ${needsUpdate ? chalk.yellow('⚠ Updates available') : chalk.green('✓ All skills up-to-date')}`,
+        );
 
         let totalFiles = 0;
         let installedFiles = 0;
@@ -149,7 +156,11 @@ Existing files in the destination directories are preserved.
         }
 
         if (totalFiles > 0) {
-          console.log(chalk.dim(`\n  Files: ${installedFiles}/${totalFiles} installed, ${outdatedFiles} outdated`));
+          console.log(
+            chalk.dim(
+              `\n  Files: ${installedFiles}/${totalFiles} installed, ${outdatedFiles} outdated`,
+            ),
+          );
         } else {
           console.log(chalk.dim('\n  No skill files bundled yet'));
         }

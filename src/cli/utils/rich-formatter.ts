@@ -105,15 +105,15 @@ export class RichFormatter {
     if (options.headers || data.headers) {
       const headers = options.headers || data.headers || [];
       if (options.colors?.headers && this.colorSupport) {
-        const coloredHeaders = headers.map(header =>
-          chalk.keyword(options.colors!.headers!)(header)
+        const coloredHeaders = headers.map((header) =>
+          chalk.keyword(options.colors!.headers!)(header),
         );
         table.push(coloredHeaders);
       }
     }
 
     // Add data rows
-    data.rows.forEach(row => {
+    data.rows.forEach((row) => {
       table.push(row);
     });
 
@@ -143,7 +143,7 @@ export class RichFormatter {
       padding = 1,
       width = this.terminalWidth - 4,
       style = 'default',
-      align = 'left'
+      align = 'left',
     } = options;
 
     const borderChars = this.getBorderChars(border);
@@ -151,68 +151,59 @@ export class RichFormatter {
 
     // Process content
     const lines = content.split('\n');
-    const contentWidth = width - (padding * 2) - 2; // -2 for left/right borders
+    const contentWidth = width - padding * 2 - 2; // -2 for left/right borders
 
-    const processedLines = lines.flatMap(line => this.wrapText(line, contentWidth));
+    const processedLines = lines.flatMap((line) => this.wrapText(line, contentWidth));
 
     // Build panel
     const panelLines: string[] = [];
 
     // Top border
-    const topBorder = borderChars.topLeft +
-                     borderChars.horizontal.repeat(width - 2) +
-                     borderChars.topRight;
+    const topBorder =
+      borderChars.topLeft + borderChars.horizontal.repeat(width - 2) + borderChars.topRight;
     panelLines.push(this.colorize(topBorder, styleColors.border));
 
     // Title (if provided)
     if (title) {
-      const titleLine = borderChars.vertical +
-                       this.centerText(title, width - 2) +
-                       borderChars.vertical;
+      const titleLine =
+        borderChars.vertical + this.centerText(title, width - 2) + borderChars.vertical;
       panelLines.push(this.colorize(titleLine, styleColors.border));
 
       // Title separator
-      const separator = borderChars.left +
-                       borderChars.horizontal.repeat(width - 2) +
-                       borderChars.right;
+      const separator =
+        borderChars.left + borderChars.horizontal.repeat(width - 2) + borderChars.right;
       panelLines.push(this.colorize(separator, styleColors.border));
     }
 
     // Padding (top)
     for (let i = 0; i < padding; i++) {
-      const paddingLine = borderChars.vertical +
-                         ' '.repeat(width - 2) +
-                         borderChars.vertical;
+      const paddingLine = borderChars.vertical + ' '.repeat(width - 2) + borderChars.vertical;
       panelLines.push(this.colorize(paddingLine, styleColors.border));
     }
 
     // Content lines
-    processedLines.forEach(line => {
+    processedLines.forEach((line) => {
       const alignedContent = this.alignText(line, contentWidth, align);
       const paddedContent = ' '.repeat(padding) + alignedContent + ' '.repeat(padding);
-      const contentLine = borderChars.vertical +
-                         paddedContent +
-                         borderChars.vertical;
+      const contentLine = borderChars.vertical + paddedContent + borderChars.vertical;
 
-      const coloredContent = this.colorize(borderChars.vertical, styleColors.border) +
-                            this.colorize(paddedContent, styleColors.content) +
-                            this.colorize(borderChars.vertical, styleColors.border);
+      const coloredContent =
+        this.colorize(borderChars.vertical, styleColors.border) +
+        this.colorize(paddedContent, styleColors.content) +
+        this.colorize(borderChars.vertical, styleColors.border);
 
       panelLines.push(coloredContent);
     });
 
     // Padding (bottom)
     for (let i = 0; i < padding; i++) {
-      const paddingLine = borderChars.vertical +
-                         ' '.repeat(width - 2) +
-                         borderChars.vertical;
+      const paddingLine = borderChars.vertical + ' '.repeat(width - 2) + borderChars.vertical;
       panelLines.push(this.colorize(paddingLine, styleColors.border));
     }
 
     // Bottom border
-    const bottomBorder = borderChars.bottomLeft +
-                        borderChars.horizontal.repeat(width - 2) +
-                        borderChars.bottomRight;
+    const bottomBorder =
+      borderChars.bottomLeft + borderChars.horizontal.repeat(width - 2) + borderChars.bottomRight;
     panelLines.push(this.colorize(bottomBorder, styleColors.border));
 
     return panelLines.join('\n');
@@ -230,8 +221,8 @@ export class RichFormatter {
       colors = {
         directory: 'blue',
         file: 'white',
-        metadata: 'gray'
-      }
+        metadata: 'gray',
+      },
     } = options;
 
     return this.renderTreeNode(data, 0, '', options, true);
@@ -251,8 +242,8 @@ export class RichFormatter {
       colors = {
         completed: 'green',
         incomplete: 'gray',
-        percentage: 'blue'
-      }
+        percentage: 'blue',
+      },
     } = options;
 
     progress = Math.max(0, Math.min(100, progress));
@@ -309,11 +300,11 @@ export class RichFormatter {
         'padding-left': 1,
         'padding-right': 1,
         head: options.colors?.headers ? [options.colors.headers] : ['blue'],
-        border: options.colors?.border ? [options.colors.border] : ['gray']
+        border: options.colors?.border ? [options.colors.border] : ['gray'],
       },
       colWidths: options.columnWidths,
       colAligns: options.align,
-      wordWrap: true
+      wordWrap: true,
     };
   }
 
@@ -321,38 +312,93 @@ export class RichFormatter {
     switch (style) {
       case 'rounded':
         return {
-          'top': '─', 'top-mid': '┬', 'top-left': '╭', 'top-right': '╮',
-          'bottom': '─', 'bottom-mid': '┴', 'bottom-left': '╰', 'bottom-right': '╯',
-          'left': '│', 'left-mid': '├', 'mid': '─', 'mid-mid': '┼',
-          'right': '│', 'right-mid': '┤', 'middle': '│'
+          top: '─',
+          'top-mid': '┬',
+          'top-left': '╭',
+          'top-right': '╮',
+          bottom: '─',
+          'bottom-mid': '┴',
+          'bottom-left': '╰',
+          'bottom-right': '╯',
+          left: '│',
+          'left-mid': '├',
+          mid: '─',
+          'mid-mid': '┼',
+          right: '│',
+          'right-mid': '┤',
+          middle: '│',
         };
       case 'double':
         return {
-          'top': '═', 'top-mid': '╦', 'top-left': '╔', 'top-right': '╗',
-          'bottom': '═', 'bottom-mid': '╩', 'bottom-left': '╚', 'bottom-right': '╝',
-          'left': '║', 'left-mid': '╠', 'mid': '═', 'mid-mid': '╬',
-          'right': '║', 'right-mid': '╣', 'middle': '║'
+          top: '═',
+          'top-mid': '╦',
+          'top-left': '╔',
+          'top-right': '╗',
+          bottom: '═',
+          'bottom-mid': '╩',
+          'bottom-left': '╚',
+          'bottom-right': '╝',
+          left: '║',
+          'left-mid': '╠',
+          mid: '═',
+          'mid-mid': '╬',
+          right: '║',
+          'right-mid': '╣',
+          middle: '║',
         };
       case 'heavy':
         return {
-          'top': '━', 'top-mid': '┳', 'top-left': '┏', 'top-right': '┓',
-          'bottom': '━', 'bottom-mid': '┻', 'bottom-left': '┗', 'bottom-right': '┛',
-          'left': '┃', 'left-mid': '┣', 'mid': '━', 'mid-mid': '╋',
-          'right': '┃', 'right-mid': '┫', 'middle': '┃'
+          top: '━',
+          'top-mid': '┳',
+          'top-left': '┏',
+          'top-right': '┓',
+          bottom: '━',
+          'bottom-mid': '┻',
+          'bottom-left': '┗',
+          'bottom-right': '┛',
+          left: '┃',
+          'left-mid': '┣',
+          mid: '━',
+          'mid-mid': '╋',
+          right: '┃',
+          'right-mid': '┫',
+          middle: '┃',
         };
       case 'minimal':
         return {
-          'top': '', 'top-mid': '', 'top-left': '', 'top-right': '',
-          'bottom': '', 'bottom-mid': '', 'bottom-left': '', 'bottom-right': '',
-          'left': '', 'left-mid': '', 'mid': '', 'mid-mid': '',
-          'right': '', 'right-mid': '', 'middle': ' '
+          top: '',
+          'top-mid': '',
+          'top-left': '',
+          'top-right': '',
+          bottom: '',
+          'bottom-mid': '',
+          'bottom-left': '',
+          'bottom-right': '',
+          left: '',
+          'left-mid': '',
+          mid: '',
+          'mid-mid': '',
+          right: '',
+          'right-mid': '',
+          middle: ' ',
         };
       default: // ascii
         return {
-          'top': '-', 'top-mid': '+', 'top-left': '+', 'top-right': '+',
-          'bottom': '-', 'bottom-mid': '+', 'bottom-left': '+', 'bottom-right': '+',
-          'left': '|', 'left-mid': '+', 'mid': '-', 'mid-mid': '+',
-          'right': '|', 'right-mid': '+', 'middle': '|'
+          top: '-',
+          'top-mid': '+',
+          'top-left': '+',
+          'top-right': '+',
+          bottom: '-',
+          'bottom-mid': '+',
+          'bottom-left': '+',
+          'bottom-right': '+',
+          left: '|',
+          'left-mid': '+',
+          mid: '-',
+          'mid-mid': '+',
+          right: '|',
+          'right-mid': '+',
+          middle: '|',
         };
     }
   }
@@ -361,28 +407,58 @@ export class RichFormatter {
     switch (style) {
       case 'rounded':
         return {
-          topLeft: '╭', topRight: '╮', bottomLeft: '╰', bottomRight: '╯',
-          horizontal: '─', vertical: '│', left: '├', right: '┤'
+          topLeft: '╭',
+          topRight: '╮',
+          bottomLeft: '╰',
+          bottomRight: '╯',
+          horizontal: '─',
+          vertical: '│',
+          left: '├',
+          right: '┤',
         };
       case 'double':
         return {
-          topLeft: '╔', topRight: '╗', bottomLeft: '╚', bottomRight: '╝',
-          horizontal: '═', vertical: '║', left: '╠', right: '╣'
+          topLeft: '╔',
+          topRight: '╗',
+          bottomLeft: '╚',
+          bottomRight: '╝',
+          horizontal: '═',
+          vertical: '║',
+          left: '╠',
+          right: '╣',
         };
       case 'heavy':
         return {
-          topLeft: '┏', topRight: '┓', bottomLeft: '┗', bottomRight: '┛',
-          horizontal: '━', vertical: '┃', left: '┣', right: '┫'
+          topLeft: '┏',
+          topRight: '┓',
+          bottomLeft: '┗',
+          bottomRight: '┛',
+          horizontal: '━',
+          vertical: '┃',
+          left: '┣',
+          right: '┫',
         };
       case 'minimal':
         return {
-          topLeft: ' ', topRight: ' ', bottomLeft: ' ', bottomRight: ' ',
-          horizontal: ' ', vertical: ' ', left: ' ', right: ' '
+          topLeft: ' ',
+          topRight: ' ',
+          bottomLeft: ' ',
+          bottomRight: ' ',
+          horizontal: ' ',
+          vertical: ' ',
+          left: ' ',
+          right: ' ',
         };
       default: // square
         return {
-          topLeft: '┌', topRight: '┐', bottomLeft: '└', bottomRight: '┘',
-          horizontal: '─', vertical: '│', left: '├', right: '┤'
+          topLeft: '┌',
+          topRight: '┐',
+          bottomLeft: '└',
+          bottomRight: '┘',
+          horizontal: '─',
+          vertical: '│',
+          left: '├',
+          right: '┤',
         };
     }
   }
@@ -460,7 +536,7 @@ export class RichFormatter {
     depth: number,
     prefix: string,
     options: TreeOptions,
-    isLast: boolean = false
+    isLast: boolean = false,
   ): string {
     if (depth > (options.maxDepth || 10)) return '';
 
@@ -480,8 +556,8 @@ export class RichFormatter {
       const metadataStr = Object.entries(node.metadata)
         .map(([key, value]) => `${key}: ${value}`)
         .join(', ');
-      const metadataLine = prefix + (isLast ? '    ' : '│   ') +
-                          this.colorize(`(${metadataStr})`, colors.metadata);
+      const metadataLine =
+        prefix + (isLast ? '    ' : '│   ') + this.colorize(`(${metadataStr})`, colors.metadata);
       lines.push(metadataLine);
     }
 

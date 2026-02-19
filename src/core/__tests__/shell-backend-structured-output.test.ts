@@ -86,7 +86,7 @@ print(json.dumps({"type": "result", "content": json.dumps(payload)}))
 };
 
 afterEach(async () => {
-  await Promise.all(tempRoots.map(dir => fs.remove(dir)));
+  await Promise.all(tempRoots.map((dir) => fs.remove(dir)));
   tempRoots.length = 0;
 });
 
@@ -99,7 +99,7 @@ describe('ShellBackend structured output', () => {
       workingDirectory: workingDir,
       servicesPath: servicesDir,
       enableJsonStreaming: true,
-      outputRawJson: true
+      outputRawJson: true,
     });
     await backend.initialize();
 
@@ -108,17 +108,17 @@ describe('ShellBackend structured output', () => {
       toolName: 'claude_subagent',
       arguments: {
         instruction: 'Return stub data',
-        project_path: workingDir
+        project_path: workingDir,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
+        iterationNumber: 1,
       },
       progressCallback: async (event) => {
         progressEvents.push(event);
-      }
+      },
     };
 
     const result = await backend.execute(request);
@@ -141,7 +141,7 @@ describe('ShellBackend structured output', () => {
     backend.configure({
       workingDirectory: workingDir,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -153,22 +153,22 @@ describe('ShellBackend structured output', () => {
     const request: ToolCallRequest = {
       toolName: 'codex_subagent',
       arguments: {
-        project_path: workingDir
+        project_path: workingDir,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     await backend.execute(request);
     dispose();
 
     const thinkingLines = progressEvents
-      .filter(event => event.type === 'thinking')
-      .map(event => event.content);
+      .filter((event) => event.type === 'thinking')
+      .map((event) => event.content);
 
     expect(thinkingLines).toContain('  onToggleSideMenu?: () => void;');
     expect(thinkingLines).toContain('  sticky?: boolean;');
@@ -190,7 +190,7 @@ describe('ShellBackend structured output', () => {
       backend.configure({
         workingDirectory: workingDir,
         servicesPath: servicesDir,
-        enableJsonStreaming: true
+        enableJsonStreaming: true,
       });
       await backend.initialize();
 
@@ -199,14 +199,14 @@ describe('ShellBackend structured output', () => {
         arguments: {
           instruction: 'Show args',
           model: 'gemini-2.5-pro',
-          project_path: workingDir
+          project_path: workingDir,
         },
         timeout: 15000,
         priority: 'normal',
         metadata: {
           sessionId: 'test-session',
-          iterationNumber: 1
-        }
+          iterationNumber: 1,
+        },
       };
 
       const result = await backend.execute(request);
@@ -248,7 +248,7 @@ sys.exit(1)
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -257,14 +257,14 @@ sys.exit(1)
       arguments: {
         instruction: 'test task',
         model: 'zai/glm-5',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -307,7 +307,7 @@ sys.exit(1)
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -320,26 +320,24 @@ sys.exit(1)
       toolName: 'pi_subagent',
       arguments: {
         instruction: 'test task',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     await backend.execute(request);
     dispose();
 
     // stderr messages should appear as progress events with source: 'stderr'
-    const stderrEvents = progressEvents.filter(
-      e => e.metadata?.source === 'stderr'
-    );
+    const stderrEvents = progressEvents.filter((e) => e.metadata?.source === 'stderr');
     expect(stderrEvents.length).toBeGreaterThan(0);
 
-    const stderrContent = stderrEvents.map(e => e.content).join('\n');
+    const stderrContent = stderrEvents.map((e) => e.content).join('\n');
     expect(stderrContent).toContain('Executing: pi --model glm-5 --provider zai');
     expect(stderrContent).toContain('Error: connection refused');
   });
@@ -364,7 +362,7 @@ print(json.dumps({"type": "agent_end", "result": "task completed"}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -372,14 +370,14 @@ print(json.dumps({"type": "agent_end", "result": "task completed"}))
       toolName: 'pi_subagent',
       arguments: {
         instruction: 'test task',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -426,7 +424,7 @@ if capture_path:
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
       enableJsonStreaming: true,
-      outputRawJson: true
+      outputRawJson: true,
     });
     await backend.initialize();
 
@@ -434,14 +432,14 @@ if capture_path:
       toolName: 'codex_subagent',
       arguments: {
         instruction: 'Write a hello world',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -491,7 +489,7 @@ if capture_path:
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
       enableJsonStreaming: true,
-      outputRawJson: true
+      outputRawJson: true,
     });
     await backend.initialize();
 
@@ -499,14 +497,14 @@ if capture_path:
       toolName: 'codex_subagent',
       arguments: {
         instruction: 'Write a hello world',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -546,7 +544,7 @@ print(json.dumps({"type": "agent_message", "msg": {"type": "agent_message", "mes
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
       enableJsonStreaming: true,
-      outputRawJson: true
+      outputRawJson: true,
     });
     await backend.initialize();
 
@@ -554,14 +552,14 @@ print(json.dumps({"type": "agent_message", "msg": {"type": "agent_message", "mes
       toolName: 'codex_subagent',
       arguments: {
         instruction: 'Explain something',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -595,7 +593,7 @@ print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -603,21 +601,21 @@ print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
       toolName: 'pi_subagent',
       arguments: {
         instruction: 'test task',
-        project_path: '/my/project/dir'
+        project_path: '/my/project/dir',
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
 
     // Parse the argv from the stub script output
     const lines = result.content.trim().split('\n');
-    const lastJsonLine = lines.filter(l => l.startsWith('{')).pop();
+    const lastJsonLine = lines.filter((l) => l.startsWith('{')).pop();
     expect(lastJsonLine).toBeTruthy();
     const parsed = JSON.parse(lastJsonLine!);
 
@@ -647,7 +645,7 @@ print(json.dumps({"type": "result", "result": "done"}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -656,14 +654,14 @@ print(json.dumps({"type": "result", "result": "done"}))
       arguments: {
         instruction: 'test task',
         project_path: tempRoot,
-        continueConversation: true
+        continueConversation: true,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -698,7 +696,7 @@ print(json.dumps({"type": "result", "result": "resumed"}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -707,14 +705,14 @@ print(json.dumps({"type": "result", "result": "resumed"}))
       arguments: {
         instruction: 'test task',
         project_path: tempRoot,
-        resume: 'session-abc-123'
+        resume: 'session-abc-123',
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -750,7 +748,7 @@ print(json.dumps({"type": "result", "result": "ok"}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -761,14 +759,14 @@ print(json.dumps({"type": "result", "result": "ok"}))
         project_path: tempRoot,
         tools: ['Bash', 'Edit'],
         allowedTools: ['Bash', 'Read', 'Write'],
-        disallowedTools: ['NotebookEdit']
+        disallowedTools: ['NotebookEdit'],
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -816,7 +814,7 @@ print(json.dumps({"type": "result", "result": "done"}))
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -824,14 +822,14 @@ print(json.dumps({"type": "result", "result": "done"}))
       toolName: 'claude_subagent',
       arguments: {
         instruction: 'test task',
-        project_path: '/some/path'
+        project_path: '/some/path',
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -867,7 +865,7 @@ sys.exit(1)
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -875,14 +873,14 @@ sys.exit(1)
       toolName: 'codex_subagent',
       arguments: {
         instruction: 'test task',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -920,17 +918,17 @@ sys.exit(1)
             role: 'assistant',
             content: [
               { type: 'thinking', thinking: 'long thinking content...' },
-              { type: 'text', text: 'Hello from Pi agent' }
+              { type: 'text', text: 'Hello from Pi agent' },
             ],
             api: 'openai-completions',
             provider: 'zai',
             model: 'glm-5',
             usage: { input: 64, output: 137 },
             stopReason: 'stop',
-            timestamp: 456
-          }
-        ]
-      }
+            timestamp: 456,
+          },
+        ],
+      },
     };
     const scriptContent = `#!/usr/bin/env python3
 import json, sys, os
@@ -948,7 +946,7 @@ if capture_path:
     backend.configure({
       workingDirectory: tempRoot,
       servicesPath: servicesDir,
-      enableJsonStreaming: true
+      enableJsonStreaming: true,
     });
     await backend.initialize();
 
@@ -957,14 +955,14 @@ if capture_path:
       arguments: {
         instruction: 'test task',
         model: 'zai/glm-5',
-        project_path: tempRoot
+        project_path: tempRoot,
       },
       timeout: 15000,
       priority: 'normal',
       metadata: {
         sessionId: 'test-session',
-        iterationNumber: 1
-      }
+        iterationNumber: 1,
+      },
     };
 
     const result = await backend.execute(request);
@@ -987,4 +985,3 @@ if capture_path:
     }
   });
 });
-

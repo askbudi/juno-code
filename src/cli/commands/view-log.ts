@@ -99,7 +99,7 @@ function formatValue(value: unknown, indent: number): string {
     if (value.length === 0) {
       return '[]';
     }
-    const items = value.map(item => nextIndent + formatValue(item, indent + 1));
+    const items = value.map((item) => nextIndent + formatValue(item, indent + 1));
     return '[\n' + items.join(',\n') + '\n' + indentStr + ']';
   }
 
@@ -108,8 +108,8 @@ function formatValue(value: unknown, indent: number): string {
     if (entries.length === 0) {
       return '{}';
     }
-    const items = entries.map(([key, val]) =>
-      nextIndent + chalk.blue(`"${key}"`) + ': ' + formatValue(val, indent + 1)
+    const items = entries.map(
+      ([key, val]) => nextIndent + chalk.blue(`"${key}"`) + ': ' + formatValue(val, indent + 1),
     );
     return '{\n' + items.join(',\n') + '\n' + indentStr + '}';
   }
@@ -132,10 +132,7 @@ function escapeJsonString(str: string): string {
 /**
  * Process a single log line and return formatted output
  */
-function processLogLine(
-  line: string,
-  options: ViewLogCommandOptions
-): string | null {
+function processLogLine(line: string, options: ViewLogCommandOptions): string | null {
   const content = extractThinkingContent(line);
 
   if (content === null) {
@@ -176,10 +173,7 @@ function processLogLine(
 /**
  * Stream and process a log file
  */
-async function streamLogFile(
-  filePath: string,
-  options: ViewLogCommandOptions
-): Promise<void> {
+async function streamLogFile(filePath: string, options: ViewLogCommandOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const stream = createReadStream(filePath, { encoding: 'utf-8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -218,10 +212,7 @@ async function streamLogFile(
 /**
  * Pipe output through less for paging (if not raw mode)
  */
-async function processWithPager(
-  filePath: string,
-  options: ViewLogCommandOptions
-): Promise<void> {
+async function processWithPager(filePath: string, options: ViewLogCommandOptions): Promise<void> {
   const { spawn } = await import('node:child_process');
 
   // Collect all processed lines
@@ -259,7 +250,7 @@ async function processWithPager(
 
       // Try to use less with -R for color support
       const less = spawn('less', ['-R'], {
-        stdio: ['pipe', 'inherit', 'inherit']
+        stdio: ['pipe', 'inherit', 'inherit'],
       });
 
       less.stdin.write(lines.join('\n'));
@@ -288,11 +279,11 @@ async function processWithPager(
 export async function viewLogCommandHandler(
   logFilePath: string,
   options: ViewLogCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Validate file exists
-    if (!await fs.pathExists(logFilePath)) {
+    if (!(await fs.pathExists(logFilePath))) {
       console.error(chalk.red.bold('\n Error: Log file not found'));
       console.error(chalk.red(`   Path: ${logFilePath}`));
       process.exit(1);
@@ -324,7 +315,6 @@ export async function viewLogCommandHandler(
       // Interactive mode - use pager
       await processWithPager(logFilePath, options);
     }
-
   } catch (error) {
     console.error(chalk.red.bold('\n View Log Error'));
     console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
@@ -368,7 +358,9 @@ export function configureViewLogCommand(program: Command): void {
     .action(async (logFilePath: string, options, command) => {
       await viewLogCommandHandler(logFilePath, options, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code view-log log_file.log                    # View log with pager
   $ juno-code view-log log_file.log --raw              # Output without pager
@@ -392,7 +384,8 @@ Output Modes:
   all        Show all entries (default)
   json-only  Show only JSON-formatted entries
   text-only  Show only non-JSON text entries
-    `);
+    `,
+    );
 }
 
 export default viewLogCommandHandler;

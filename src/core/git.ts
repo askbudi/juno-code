@@ -11,30 +11,27 @@ import { z } from 'zod';
 import type { ValidationError, RuntimeError } from '../cli/types.js';
 
 // Git URL validation schemas
-const GitHttpsUrlSchema = z.string().url().refine(
-  (url) => {
+const GitHttpsUrlSchema = z
+  .string()
+  .url()
+  .refine((url) => {
     const gitUrlPatterns = [
       /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?$/,
       /^https:\/\/gitlab\.com\/[\w.-]+\/[\w.-]+(?:\.git)?$/,
       /^https:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+(?:\.git)?$/,
       /^https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+(?:\.git)?$/, // Generic Git hosting
     ];
-    return gitUrlPatterns.some(pattern => pattern.test(url));
-  },
-  'Must be a valid Git repository URL from a supported provider'
-);
+    return gitUrlPatterns.some((pattern) => pattern.test(url));
+  }, 'Must be a valid Git repository URL from a supported provider');
 
-const GitSshUrlSchema = z.string().refine(
-  (url) => {
-    const sshPatterns = [
-      /^git@github\.com:[\w.-]+\/[\w.-]+(?:\.git)?$/,
-      /^git@gitlab\.com:[\w.-]+\/[\w.-]+(?:\.git)?$/,
-      /^git@bitbucket\.org:[\w.-]+\/[\w.-]+(?:\.git)?$/,
-    ];
-    return sshPatterns.some(pattern => pattern.test(url));
-  },
-  'Must be a valid SSH Git repository URL'
-);
+const GitSshUrlSchema = z.string().refine((url) => {
+  const sshPatterns = [
+    /^git@github\.com:[\w.-]+\/[\w.-]+(?:\.git)?$/,
+    /^git@gitlab\.com:[\w.-]+\/[\w.-]+(?:\.git)?$/,
+    /^git@bitbucket\.org:[\w.-]+\/[\w.-]+(?:\.git)?$/,
+  ];
+  return sshPatterns.some((pattern) => pattern.test(url));
+}, 'Must be a valid SSH Git repository URL');
 
 const GitUrlSchema = z.union([GitHttpsUrlSchema, GitSshUrlSchema]);
 
@@ -84,11 +81,11 @@ export interface GitCommitInfo {
  * Git repository status
  */
 export type GitRepositoryStatus =
-  | 'clean'           // No changes
-  | 'dirty'           // Uncommitted changes
-  | 'untracked'       // Untracked files only
-  | 'mixed'           // Both uncommitted and untracked
-  | 'empty'           // No commits yet
+  | 'clean' // No changes
+  | 'dirty' // Uncommitted changes
+  | 'untracked' // Untracked files only
+  | 'mixed' // Both uncommitted and untracked
+  | 'empty' // No commits yet
   | 'not-repository'; // Not a Git repository
 
 /**
@@ -119,7 +116,7 @@ export class GitManager {
       const { execa } = await import('execa');
       await execa('git', ['rev-parse', '--git-dir'], {
         cwd: this.workingDirectory,
-        stdio: 'pipe'
+        stdio: 'pipe',
       });
       return true;
     } catch {
@@ -141,7 +138,7 @@ export class GitManager {
       const { RuntimeError } = await import('../cli/types.js');
       throw new RuntimeError(
         `Failed to initialize Git repository: ${error}`,
-        this.workingDirectory
+        this.workingDirectory,
       );
     }
   }
@@ -160,7 +157,7 @@ export class GitManager {
         hasUncommittedChanges: false,
         hasUntrackedFiles: false,
         commitCount: 0,
-        status: 'not-repository'
+        status: 'not-repository',
       };
     }
 
@@ -169,28 +166,31 @@ export class GitManager {
 
       // Get current branch
       const branchResult = await execa('git', ['branch', '--show-current'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       }).catch(() => ({ stdout: '' }));
       const currentBranch = branchResult.stdout.trim();
 
       // Get remotes
       const remotesResult = await execa('git', ['remote', '-v'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       }).catch(() => ({ stdout: '' }));
       const remotes = this.parseRemotes(remotesResult.stdout);
 
       // Check status
       const statusResult = await execa('git', ['status', '--porcelain'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       }).catch(() => ({ stdout: '' }));
-      const statusLines = statusResult.stdout.trim().split('\n').filter(line => line.trim());
+      const statusLines = statusResult.stdout
+        .trim()
+        .split('\n')
+        .filter((line) => line.trim());
 
-      const hasUncommittedChanges = statusLines.some(line => line.match(/^[MADRC]/));
-      const hasUntrackedFiles = statusLines.some(line => line.startsWith('??'));
+      const hasUncommittedChanges = statusLines.some((line) => line.match(/^[MADRC]/));
+      const hasUntrackedFiles = statusLines.some((line) => line.startsWith('??'));
 
       // Get commit count
       const commitCountResult = await execa('git', ['rev-list', '--count', 'HEAD'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       }).catch(() => ({ stdout: '0' }));
       const commitCount = parseInt(commitCountResult.stdout.trim(), 10) || 0;
 
@@ -198,20 +198,25 @@ export class GitManager {
       let lastCommit: GitCommitInfo | undefined;
       if (commitCount > 0) {
         try {
-          const commitResult = await execa('git', [
-            'log', '-1',
-            '--pretty=format:%H|%h|%s|%an|%ae|%ad|%ct',
-            '--stat=1,1'
-          ], { cwd: this.workingDirectory });
+          const commitResult = await execa(
+            'git',
+            ['log', '-1', '--pretty=format:%H|%h|%s|%an|%ae|%ad|%ct', '--stat=1,1'],
+            { cwd: this.workingDirectory },
+          );
 
           const [fullHash, hash, message, author, email, dateStr, timestamp] =
             commitResult.stdout.split('|');
 
           // Get files changed count
-          const diffResult = await execa('git', [
-            'diff-tree', '--no-commit-id', '--name-only', '-r', fullHash
-          ], { cwd: this.workingDirectory });
-          const filesChanged = diffResult.stdout.trim().split('\n').filter(line => line).length;
+          const diffResult = await execa(
+            'git',
+            ['diff-tree', '--no-commit-id', '--name-only', '-r', fullHash],
+            { cwd: this.workingDirectory },
+          );
+          const filesChanged = diffResult.stdout
+            .trim()
+            .split('\n')
+            .filter((line) => line).length;
 
           lastCommit = {
             hash,
@@ -220,7 +225,7 @@ export class GitManager {
             author,
             email,
             date: new Date(parseInt(timestamp) * 1000),
-            filesChanged
+            filesChanged,
           };
         } catch {
           // Ignore errors getting commit info
@@ -249,13 +254,13 @@ export class GitManager {
         hasUntrackedFiles,
         commitCount,
         lastCommit,
-        status
+        status,
       };
     } catch (error) {
       const { RuntimeError } = await import('../cli/types.js');
       throw new RuntimeError(
         `Failed to get Git repository information: ${error}`,
-        this.workingDirectory
+        this.workingDirectory,
       );
     }
   }
@@ -270,7 +275,7 @@ export class GitManager {
       url: info.remotes.origin,
       remote: 'origin',
       branch: info.currentBranch || 'main',
-      isConfigured: !!info.remotes.origin
+      isConfigured: !!info.remotes.origin,
     };
   }
 
@@ -283,14 +288,11 @@ export class GitManager {
       const validation = GitUrlSchema.safeParse(url);
       if (!validation.success) {
         const { ValidationError } = await import('../cli/types.js');
-        throw new ValidationError(
-          `Invalid Git URL: ${url}`,
-          [
-            'Use HTTPS format: https://github.com/owner/repo.git',
-            'Use SSH format: git@github.com:owner/repo.git',
-            'Supported providers: GitHub, GitLab, Bitbucket'
-          ]
-        );
+        throw new ValidationError(`Invalid Git URL: ${url}`, [
+          'Use HTTPS format: https://github.com/owner/repo.git',
+          'Use SSH format: git@github.com:owner/repo.git',
+          'Supported providers: GitHub, GitLab, Bitbucket',
+        ]);
       }
 
       const { execa } = await import('execa');
@@ -303,16 +305,16 @@ export class GitManager {
       // Check if origin remote exists
       try {
         await execa('git', ['remote', 'get-url', 'origin'], {
-          cwd: this.workingDirectory
+          cwd: this.workingDirectory,
         });
         // Remote exists, update it
         await execa('git', ['remote', 'set-url', 'origin', url], {
-          cwd: this.workingDirectory
+          cwd: this.workingDirectory,
         });
       } catch {
         // Remote doesn't exist, add it
         await execa('git', ['remote', 'add', 'origin', url], {
-          cwd: this.workingDirectory
+          cwd: this.workingDirectory,
         });
       }
 
@@ -320,24 +322,22 @@ export class GitManager {
       const info = await this.getRepositoryInfo();
       if (info.currentBranch && info.commitCount > 0) {
         try {
-          await execa('git', [
-            'branch', '--set-upstream-to', `origin/${info.currentBranch}`, info.currentBranch
-          ], { cwd: this.workingDirectory });
+          await execa(
+            'git',
+            ['branch', '--set-upstream-to', `origin/${info.currentBranch}`, info.currentBranch],
+            { cwd: this.workingDirectory },
+          );
         } catch {
           // Ignore upstream setting errors
         }
       }
-
     } catch (error) {
       if (error instanceof Error && error.name === 'ValidationError') {
         throw error;
       }
 
       const { RuntimeError } = await import('../cli/types.js');
-      throw new RuntimeError(
-        `Failed to setup upstream: ${error}`,
-        this.workingDirectory
-      );
+      throw new RuntimeError(`Failed to setup upstream: ${error}`, this.workingDirectory);
     }
   }
 
@@ -354,16 +354,13 @@ export class GitManager {
 
       const { execa } = await import('execa');
       await execa('git', ['remote', 'remove', 'origin'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       });
 
       return true;
     } catch (error) {
       const { RuntimeError } = await import('../cli/types.js');
-      throw new RuntimeError(
-        `Failed to remove upstream: ${error}`,
-        this.workingDirectory
-      );
+      throw new RuntimeError(`Failed to remove upstream: ${error}`, this.workingDirectory);
     }
   }
 
@@ -376,7 +373,7 @@ export class GitManager {
 
       // Get current branch
       const currentResult = await execa('git', ['branch', '--show-current'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       }).catch(() => ({ stdout: '' }));
       const currentBranch = currentResult.stdout.trim();
 
@@ -387,27 +384,26 @@ export class GitManager {
       if (currentBranch) {
         // Rename current branch
         await execa('git', ['branch', '-m', branchName], {
-          cwd: this.workingDirectory
+          cwd: this.workingDirectory,
         });
       } else {
         // Create new branch (for empty repositories)
         await execa('git', ['checkout', '-b', branchName], {
-          cwd: this.workingDirectory
+          cwd: this.workingDirectory,
         });
       }
     } catch (error) {
       const { RuntimeError } = await import('../cli/types.js');
-      throw new RuntimeError(
-        `Failed to setup default branch: ${error}`,
-        this.workingDirectory
-      );
+      throw new RuntimeError(`Failed to setup default branch: ${error}`, this.workingDirectory);
     }
   }
 
   /**
    * Create initial commit
    */
-  async createInitialCommit(message: string = 'Initial commit - juno-code project setup'): Promise<void> {
+  async createInitialCommit(
+    message: string = 'Initial commit - juno-code project setup',
+  ): Promise<void> {
     try {
       const { execa } = await import('execa');
 
@@ -416,7 +412,7 @@ export class GitManager {
 
       // Check if there are files to commit
       const statusResult = await execa('git', ['status', '--porcelain'], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       });
 
       if (!statusResult.stdout.trim()) {
@@ -425,14 +421,11 @@ export class GitManager {
 
       // Create commit
       await execa('git', ['commit', '-m', message], {
-        cwd: this.workingDirectory
+        cwd: this.workingDirectory,
       });
     } catch (error) {
       const { RuntimeError } = await import('../cli/types.js');
-      throw new RuntimeError(
-        `Failed to create initial commit: ${error}`,
-        this.workingDirectory
-      );
+      throw new RuntimeError(`Failed to create initial commit: ${error}`, this.workingDirectory);
     }
   }
 
@@ -445,27 +438,21 @@ export class GitManager {
 
       if (!config.isConfigured) {
         const { ValidationError } = await import('../cli/types.js');
-        throw new ValidationError(
-          'No upstream repository configured',
-          ['Run setup-git with a repository URL first']
-        );
+        throw new ValidationError('No upstream repository configured', [
+          'Run setup-git with a repository URL first',
+        ]);
       }
 
       const { execa } = await import('execa');
 
       // Push with upstream setting
-      await execa('git', [
-        'push', '-u', 'origin', config.branch
-      ], {
+      await execa('git', ['push', '-u', 'origin', config.branch], {
         cwd: this.workingDirectory,
-        stdio: 'inherit' // Show progress to user
+        stdio: 'inherit', // Show progress to user
       });
     } catch (error) {
       const { RuntimeError } = await import('../cli/types.js');
-      throw new RuntimeError(
-        `Failed to push to upstream: ${error}`,
-        this.workingDirectory
-      );
+      throw new RuntimeError(`Failed to push to upstream: ${error}`, this.workingDirectory);
     }
   }
 
@@ -522,7 +509,7 @@ GIT_URL: ${gitUrl}
     if (!validation.success) {
       return {
         valid: false,
-        error: validation.error.errors[0]?.message || 'Invalid Git URL format'
+        error: validation.error.errors[0]?.message || 'Invalid Git URL format',
       };
     }
 
@@ -562,9 +549,7 @@ export class GitUrlUtils {
   static normalizeToHttps(url: string): string {
     // Convert SSH to HTTPS
     if (url.startsWith('git@')) {
-      return url
-        .replace(/^git@([^:]+):(.+)$/, 'https://$1/$2')
-        .replace(/\.git$/, '');
+      return url.replace(/^git@([^:]+):(.+)$/, 'https://$1/$2').replace(/\.git$/, '');
     }
 
     // Ensure .git suffix for HTTPS URLs
@@ -591,7 +576,7 @@ export class GitUrlUtils {
         provider: httpsMatch[1],
         owner: httpsMatch[2],
         repo: httpsMatch[3],
-        isSSH: false
+        isSSH: false,
       };
     }
 
@@ -602,7 +587,7 @@ export class GitUrlUtils {
         provider: sshMatch[1],
         owner: sshMatch[2],
         repo: sshMatch[3],
-        isSSH: true
+        isSSH: true,
       };
     }
 
@@ -621,8 +606,4 @@ export class GitUrlUtils {
 }
 
 // Export types and classes
-export {
-  GitUrlSchema,
-  GitHttpsUrlSchema,
-  GitSshUrlSchema
-};
+export { GitUrlSchema, GitHttpsUrlSchema, GitSshUrlSchema };

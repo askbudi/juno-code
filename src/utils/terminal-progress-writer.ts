@@ -45,8 +45,8 @@ export class TerminalProgressWriter {
 
   constructor(options: TerminalProgressOptions = {}) {
     this.options = {
-      terminalAware: options.terminalAware ?? (process.stderr.isTTY ?? false),
-      stream: options.stream ?? process.stderr
+      terminalAware: options.terminalAware ?? process.stderr.isTTY ?? false,
+      stream: options.stream ?? process.stderr,
     };
   }
 

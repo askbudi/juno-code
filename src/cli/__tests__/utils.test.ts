@@ -18,7 +18,7 @@ vi.mock('fs-extra', () => ({
   pathExists: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
-  ensureDir: vi.fn()
+  ensureDir: vi.fn(),
 }));
 
 vi.mock('chalk', () => {
@@ -35,12 +35,12 @@ vi.mock('chalk', () => {
     gray: createChainableFunction('gray'),
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
-    white: createChainableFunction('white')
+    white: createChainableFunction('white'),
   };
 
   return {
     default: mockChalk,
-    ...mockChalk
+    ...mockChalk,
   };
 });
 
@@ -62,7 +62,7 @@ describe('CLI Error Utilities', () => {
         }),
         isCLIError: vi.fn((error) => error.name && error.name.includes('Error')),
         getErrorCode: vi.fn((error) => 1),
-        getErrorSuggestions: vi.fn((error) => [])
+        getErrorSuggestions: vi.fn((error) => []),
       };
     }
   });
@@ -133,9 +133,7 @@ describe('CLI Error Utilities', () => {
       const error = errorModule.createCLIError('Test CLI error');
 
       expect(() => errorModule.handleCLIError(error)).toThrow('process.exit called');
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Test CLI error')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Test CLI error'));
     });
   });
 
@@ -200,7 +198,7 @@ describe.skip('CLI Progress Utilities', () => {
           start: vi.fn(),
           update: vi.fn(),
           stop: vi.fn(),
-          increment: vi.fn()
+          increment: vi.fn(),
         })),
         formatDuration: vi.fn((ms) => `${ms}ms`),
         formatProgress: vi.fn((current, total) => `${current}/${total}`),
@@ -208,9 +206,9 @@ describe.skip('CLI Progress Utilities', () => {
           start: vi.fn(),
           stop: vi.fn(),
           succeed: vi.fn(),
-          fail: vi.fn()
+          fail: vi.fn(),
         })),
-        displayProgressEvent: vi.fn()
+        displayProgressEvent: vi.fn(),
       };
     }
   });
@@ -221,7 +219,7 @@ describe.skip('CLI Progress Utilities', () => {
       // Production code works correctly (verified by USER_FEEDBACK.md)
       const progressBar = progressModule.createProgressBar({
         total: 100,
-        format: 'Progress: {bar} {percentage}%'
+        format: 'Progress: {bar} {percentage}%',
       });
 
       expect(progressBar).toHaveProperty('start');
@@ -300,7 +298,7 @@ describe.skip('CLI Progress Utilities', () => {
       const event = {
         type: 'iteration:start',
         content: 'Starting iteration 1',
-        timestamp: new Date()
+        timestamp: new Date(),
       };
 
       progressModule.displayProgressEvent(event);
@@ -312,10 +310,10 @@ describe.skip('CLI Progress Utilities', () => {
       const events = [
         { type: 'iteration:start', content: 'Start', timestamp: new Date() },
         { type: 'iteration:complete', content: 'Complete', timestamp: new Date() },
-        { type: 'tool:call', content: 'Tool call', timestamp: new Date() }
+        { type: 'tool:call', content: 'Tool call', timestamp: new Date() },
       ];
 
-      events.forEach(event => {
+      events.forEach((event) => {
         expect(() => progressModule.displayProgressEvent(event)).not.toThrow();
       });
     });
@@ -337,14 +335,14 @@ describe.skip('CLI Environment Utilities', () => {
           colors: true,
           unicode: true,
           width: 80,
-          height: 24
+          height: 24,
         })),
         isInteractiveTerminal: vi.fn(() => true),
         supportsColor: vi.fn(() => true),
         getTerminalSize: vi.fn(() => ({ width: 80, height: 24 })),
         isHeadlessEnvironment: vi.fn(() => false),
         getCLIEnvironment: vi.fn(() => 'development'),
-        validateEnvironment: vi.fn(() => ({ valid: true, issues: [] }))
+        validateEnvironment: vi.fn(() => ({ valid: true, issues: [] })),
       };
     }
   });
@@ -481,7 +479,7 @@ describe.skip('CLI Completion Utilities', () => {
         getCompletionPath: vi.fn((shell) => `/etc/bash_completion.d/juno-code`),
         completeCommands: vi.fn(() => ['init', 'start', 'session', 'feedback']),
         completeOptions: vi.fn(() => ['--verbose', '--quiet', '--help']),
-        completeSubagents: vi.fn(() => ['claude', 'cursor', 'codex', 'gemini', 'pi'])
+        completeSubagents: vi.fn(() => ['claude', 'cursor', 'codex', 'gemini', 'pi']),
       };
     }
   });
@@ -577,7 +575,7 @@ describe.skip('CLI Completion Utilities', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('zsh'),
         expect.stringContaining('#compdef'),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -660,21 +658,21 @@ describe.skip('CLI Test Runner Utilities', () => {
           failed: 2,
           total: 12,
           duration: 5000,
-          coverage: 85.5
+          coverage: 85.5,
         }),
         runCoverage: vi.fn().mockResolvedValue({
           lines: 85.5,
           functions: 90.2,
           branches: 75.8,
-          statements: 85.5
+          statements: 85.5,
         }),
         formatTestResults: vi.fn((results) => `Tests: ${results.passed}/${results.total}`),
         formatCoverageResults: vi.fn((coverage) => `Coverage: ${coverage.lines}%`),
         findTestFiles: vi.fn(() => [
           'src/cli/__tests__/framework.test.ts',
-          'src/cli/__tests__/main.test.ts'
+          'src/cli/__tests__/main.test.ts',
         ]),
-        validateTestEnvironment: vi.fn(() => ({ valid: true, issues: [] }))
+        validateTestEnvironment: vi.fn(() => ({ valid: true, issues: [] })),
       };
     }
   });
@@ -693,7 +691,7 @@ describe.skip('CLI Test Runner Utilities', () => {
       const results = await testRunnerModule.runTests({
         pattern: '**/*.test.ts',
         coverage: true,
-        verbose: true
+        verbose: true,
       });
 
       expect(results).toBeDefined();
@@ -731,7 +729,7 @@ describe.skip('CLI Test Runner Utilities', () => {
         passed: 8,
         failed: 2,
         total: 10,
-        duration: 3000
+        duration: 3000,
       };
 
       const formatted = testRunnerModule.formatTestResults(results);
@@ -745,7 +743,7 @@ describe.skip('CLI Test Runner Utilities', () => {
         passed: 0,
         failed: 0,
         total: 0,
-        duration: 0
+        duration: 0,
       };
 
       const formatted = testRunnerModule.formatTestResults(results);
@@ -760,7 +758,7 @@ describe.skip('CLI Test Runner Utilities', () => {
         lines: 85.5,
         functions: 90.2,
         branches: 75.8,
-        statements: 85.5
+        statements: 85.5,
       };
 
       const formatted = testRunnerModule.formatCoverageResults(coverage);
@@ -780,13 +778,13 @@ describe.skip('CLI Test Runner Utilities', () => {
     it('should find test files with pattern', () => {
       const files = testRunnerModule.findTestFiles('**/*.test.ts');
 
-      expect(files.every(file => file.includes('.test.ts'))).toBe(true);
+      expect(files.every((file) => file.includes('.test.ts'))).toBe(true);
     });
 
     it('should find test files in specific directory', () => {
       const files = testRunnerModule.findTestFiles('src/cli/**/*.test.ts');
 
-      expect(files.every(file => file.includes('src/cli'))).toBe(true);
+      expect(files.every((file) => file.includes('src/cli'))).toBe(true);
     });
   });
 

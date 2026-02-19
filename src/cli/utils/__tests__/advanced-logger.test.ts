@@ -18,7 +18,7 @@ describe('AdvancedLogger output routing', () => {
       showTimestamp: false,
       showContext: false,
       showLevel: false,
-      colorize: false
+      colorize: false,
     });
 
     logger.info('structured payload ready', LogContext.CLI);

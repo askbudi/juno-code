@@ -270,15 +270,27 @@ describe('hooks', () => {
       expect(mockedExeca).toHaveBeenCalledTimes(3);
 
       // Verify commands were called in order
-      expect(mockedExeca).toHaveBeenNthCalledWith(1, 'echo "first"', expect.objectContaining({
-        shell: true,
-      }));
-      expect(mockedExeca).toHaveBeenNthCalledWith(2, 'echo "second"', expect.objectContaining({
-        shell: true,
-      }));
-      expect(mockedExeca).toHaveBeenNthCalledWith(3, 'echo "third"', expect.objectContaining({
-        shell: true,
-      }));
+      expect(mockedExeca).toHaveBeenNthCalledWith(
+        1,
+        'echo "first"',
+        expect.objectContaining({
+          shell: true,
+        }),
+      );
+      expect(mockedExeca).toHaveBeenNthCalledWith(
+        2,
+        'echo "second"',
+        expect.objectContaining({
+          shell: true,
+        }),
+      );
+      expect(mockedExeca).toHaveBeenNthCalledWith(
+        3,
+        'echo "third"',
+        expect.objectContaining({
+          shell: true,
+        }),
+      );
     });
 
     it('should inject environment variables from context', async () => {
@@ -297,17 +309,20 @@ describe('hooks', () => {
 
       await executeHook('START_ITERATION', envHooks, mockContext);
 
-      expect(mockedExeca).toHaveBeenCalledWith('echo $HOOK_TYPE $ITERATION $SESSION_ID', expect.objectContaining({
-        shell: true,
-        env: expect.objectContaining({
-          HOOK_TYPE: 'START_ITERATION',
-          ITERATION: '1',
-          SESSION_ID: 'test-session-123',
-          RUN_ID: 'run-456',
-          TOTAL_ITERATIONS: '5',
-          JUNO_TESTKEY: 'testValue', // metadata prefixed with JUNO_
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo $HOOK_TYPE $ITERATION $SESSION_ID',
+        expect.objectContaining({
+          shell: true,
+          env: expect.objectContaining({
+            HOOK_TYPE: 'START_ITERATION',
+            ITERATION: '1',
+            SESSION_ID: 'test-session-123',
+            RUN_ID: 'run-456',
+            TOTAL_ITERATIONS: '5',
+            JUNO_TESTKEY: 'testValue', // metadata prefixed with JUNO_
+          }),
         }),
-      }));
+      );
     });
 
     it('should use custom environment variables from options', async () => {
@@ -328,12 +343,15 @@ describe('hooks', () => {
         env: { CUSTOM_VAR: 'custom-value' },
       });
 
-      expect(mockedExeca).toHaveBeenCalledWith('echo $CUSTOM_VAR', expect.objectContaining({
-        shell: true,
-        env: expect.objectContaining({
-          CUSTOM_VAR: 'custom-value',
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo $CUSTOM_VAR',
+        expect.objectContaining({
+          shell: true,
+          env: expect.objectContaining({
+            CUSTOM_VAR: 'custom-value',
+          }),
         }),
-      }));
+      );
     });
 
     it('should stop execution on error when continueOnError is false', async () => {
@@ -398,10 +416,13 @@ describe('hooks', () => {
         commandTimeout: 5000,
       });
 
-      expect(mockedExeca).toHaveBeenCalledWith('echo "test"', expect.objectContaining({
-        shell: true,
-        timeout: 5000,
-      }));
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo "test"',
+        expect.objectContaining({
+          shell: true,
+          timeout: 5000,
+        }),
+      );
     });
 
     it('should use default working directory when not specified in context', async () => {
@@ -420,10 +441,13 @@ describe('hooks', () => {
 
       await executeHook('START_RUN', basicHooks, {});
 
-      expect(mockedExeca).toHaveBeenCalledWith('pwd', expect.objectContaining({
-        shell: true,
-        cwd: process.cwd(),
-      }));
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'pwd',
+        expect.objectContaining({
+          shell: true,
+          cwd: process.cwd(),
+        }),
+      );
     });
   });
 
@@ -471,7 +495,7 @@ describe('hooks', () => {
       expect(results[0].hookType).toBe('START_RUN');
       expect(results[1].hookType).toBe('START_ITERATION');
       expect(results[2].hookType).toBe('END_RUN');
-      expect(results.every(r => r.success)).toBe(true);
+      expect(results.every((r) => r.success)).toBe(true);
     });
 
     it('should continue executing hooks even if one fails', async () => {
@@ -544,7 +568,9 @@ describe('hooks', () => {
 
       expect(result.valid).toBe(true); // Still valid, just warnings
       expect(result.issues).toHaveLength(0);
-      expect(result.warnings).toContain('Unknown hook type: INVALID_HOOK. Valid types are: START_RUN, START_ITERATION, END_ITERATION, END_RUN, ON_STALE');
+      expect(result.warnings).toContain(
+        'Unknown hook type: INVALID_HOOK. Valid types are: START_RUN, START_ITERATION, END_ITERATION, END_RUN, ON_STALE',
+      );
     });
 
     it('should detect missing commands array', () => {
@@ -557,7 +583,7 @@ describe('hooks', () => {
       const result = validateHooksConfig(hooksWithMissingCommands as any);
 
       expect(result.valid).toBe(false);
-      expect(result.issues).toContain('Hook START_RUN is missing \'commands\' array');
+      expect(result.issues).toContain("Hook START_RUN is missing 'commands' array");
     });
 
     it('should detect non-array commands field', () => {
@@ -570,7 +596,7 @@ describe('hooks', () => {
       const result = validateHooksConfig(hooksWithInvalidCommands as any);
 
       expect(result.valid).toBe(false);
-      expect(result.issues).toContain('Hook START_RUN \'commands\' must be an array');
+      expect(result.issues).toContain("Hook START_RUN 'commands' must be an array");
     });
 
     it('should detect non-string commands', () => {
@@ -617,10 +643,10 @@ describe('hooks', () => {
       const result = validateHooksConfig(dangerousHooks);
 
       expect(result.valid).toBe(true);
-      expect(result.warnings.some(w => w.includes('rm -rf /'))).toBe(true);
-      expect(result.warnings.some(w => w.includes('sudo rm -rf /important'))).toBe(true);
-      expect(result.warnings.some(w => w.includes('format c:'))).toBe(true);
-      expect(result.warnings.some(w => w.includes('del /s /q'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('rm -rf /'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('sudo rm -rf /important'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('format c:'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('del /s /q'))).toBe(true);
     });
 
     it('should handle empty hooks configuration', () => {
@@ -760,9 +786,9 @@ describe('hooks', () => {
         START_ITERATION: {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),
-            expect.stringContaining('AGENTS.md')
-          ])
-        }
+            expect.stringContaining('AGENTS.md'),
+          ]),
+        },
       });
     });
 
@@ -788,9 +814,9 @@ describe('hooks', () => {
         START_ITERATION: {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),
-            expect.stringContaining('AGENTS.md')
-          ])
-        }
+            expect.stringContaining('AGENTS.md'),
+          ]),
+        },
       });
       expect(config.defaultSubagent).toBe('claude'); // Preserve existing config
       expect(config.logLevel).toBe('info');
@@ -958,16 +984,19 @@ describe('hooks', () => {
       const result = await executeHook('START_RUN', simpleHooks);
 
       expect(result.success).toBe(true);
-      expect(mockedExeca).toHaveBeenCalledWith('echo "test"', expect.objectContaining({
-        shell: true,
-        env: expect.objectContaining({
-          HOOK_TYPE: 'START_RUN',
-          ITERATION: '',
-          SESSION_ID: '',
-          RUN_ID: '',
-          TOTAL_ITERATIONS: '',
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo "test"',
+        expect.objectContaining({
+          shell: true,
+          env: expect.objectContaining({
+            HOOK_TYPE: 'START_RUN',
+            ITERATION: '',
+            SESSION_ID: '',
+            RUN_ID: '',
+            TOTAL_ITERATIONS: '',
+          }),
         }),
-      }));
+      );
     });
 
     it('should handle very long command output', async () => {
@@ -1008,15 +1037,18 @@ describe('hooks', () => {
       const result = await executeHook('START_RUN', specialCharHooks);
 
       expect(result.success).toBe(true);
-      expect(mockedExeca).toHaveBeenCalledWith('echo "Hello & goodbye; echo done | cat"', expect.any(Object));
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo "Hello & goodbye; echo done | cat"',
+        expect.any(Object),
+      );
     });
 
     it('should handle metadata with special characters', async () => {
       const specialMetadataContext: HookExecutionContext = {
         metadata: {
           'special-key': 'value with spaces',
-          'number_key': 123,
-          'boolean_key': true,
+          number_key: 123,
+          boolean_key: true,
         },
       };
 
@@ -1035,13 +1067,16 @@ describe('hooks', () => {
 
       await executeHook('START_RUN', metadataHooks, specialMetadataContext);
 
-      expect(mockedExeca).toHaveBeenCalledWith('echo "test"', expect.objectContaining({
-        env: expect.objectContaining({
-          'JUNO_SPECIAL-KEY': 'value with spaces',
-          'JUNO_NUMBER_KEY': '123',
-          'JUNO_BOOLEAN_KEY': 'true',
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'echo "test"',
+        expect.objectContaining({
+          env: expect.objectContaining({
+            'JUNO_SPECIAL-KEY': 'value with spaces',
+            JUNO_NUMBER_KEY: '123',
+            JUNO_BOOLEAN_KEY: 'true',
+          }),
         }),
-      }));
+      );
     });
   });
 });

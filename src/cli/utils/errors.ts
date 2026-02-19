@@ -3,11 +3,7 @@
  *
  * Re-exports error types from the CLI types module for convenience.
  */
-export {
-  isCLIError,
-  ConfigurationError,
-  ExecutionError as CLIExecutionError,
-} from '../types.js';
+export { isCLIError, ConfigurationError, ExecutionError as CLIExecutionError } from '../types.js';
 
 /**
  * Format an error for CLI display

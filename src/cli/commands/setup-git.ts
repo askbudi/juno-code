@@ -39,13 +39,14 @@ class InteractivePrompts {
 
     const rl = readline.createInterface({
       input: process.stdin,
-      output: process.stdout
+      output: process.stdout,
     });
 
     return new Promise((resolve) => {
-      const defaultText = prompt.defaultAnswer !== undefined
-        ? ` (${prompt.defaultAnswer ? 'Y/n' : 'y/N'})`
-        : ' (y/n)';
+      const defaultText =
+        prompt.defaultAnswer !== undefined
+          ? ` (${prompt.defaultAnswer ? 'Y/n' : 'y/N'})`
+          : ' (y/n)';
 
       rl.question(`${prompt.question}${defaultText}: `, (answer) => {
         rl.close();
@@ -71,7 +72,7 @@ class InteractivePrompts {
 
     const rl = readline.createInterface({
       input: process.stdin,
-      output: process.stdout
+      output: process.stdout,
     });
 
     return new Promise((resolve) => {
@@ -99,7 +100,9 @@ class GitDisplayFormatter {
     // Repository status
     console.log(chalk.white.bold('Repository Status:'));
     console.log(`   Initialized: ${chalk.green('Yes')}`);
-    console.log(`   Current Branch: ${info.currentBranch ? chalk.cyan(info.currentBranch) : chalk.gray('(no branch)')}`);
+    console.log(
+      `   Current Branch: ${info.currentBranch ? chalk.cyan(info.currentBranch) : chalk.gray('(no branch)')}`,
+    );
     console.log(`   Status: ${this.formatStatus(info.status)}`);
     console.log(`   Commits: ${chalk.cyan(info.commitCount.toString())}`);
 
@@ -120,7 +123,9 @@ class GitDisplayFormatter {
       console.log(chalk.white.bold('\nLast Commit:'));
       console.log(`   Hash: ${chalk.gray(info.lastCommit.hash)}`);
       console.log(`   Message: ${chalk.white(info.lastCommit.message)}`);
-      console.log(`   Author: ${chalk.gray(info.lastCommit.author)} <${chalk.gray(info.lastCommit.email)}>`);
+      console.log(
+        `   Author: ${chalk.gray(info.lastCommit.author)} <${chalk.gray(info.lastCommit.email)}>`,
+      );
       console.log(`   Date: ${chalk.gray(info.lastCommit.date.toLocaleString())}`);
       console.log(`   Files Changed: ${chalk.cyan(info.lastCommit.filesChanged.toString())}`);
     } else {
@@ -164,12 +169,12 @@ class GitDisplayFormatter {
 
   private formatStatus(status: GitRepositoryInfo['status']): string {
     const statusColors = {
-      'clean': chalk.green('Clean'),
-      'dirty': chalk.yellow('Uncommitted changes'),
-      'untracked': chalk.blue('Untracked files'),
-      'mixed': chalk.red('Mixed changes'),
-      'empty': chalk.gray('No commits'),
-      'not-repository': chalk.red('Not a Git repository')
+      clean: chalk.green('Clean'),
+      dirty: chalk.yellow('Uncommitted changes'),
+      untracked: chalk.blue('Untracked files'),
+      mixed: chalk.red('Mixed changes'),
+      empty: chalk.gray('No commits'),
+      'not-repository': chalk.red('Not a Git repository'),
     };
 
     return statusColors[status] || chalk.gray(status);
@@ -180,7 +185,10 @@ class GitDisplayFormatter {
  * Interactive Git setup
  */
 class GitSetupInteractive {
-  constructor(private gitManager: GitManager, private formatter: GitDisplayFormatter) {}
+  constructor(
+    private gitManager: GitManager,
+    private formatter: GitDisplayFormatter,
+  ) {}
 
   async setup(): Promise<void> {
     console.log(chalk.blue.bold('\n🔧 Git Repository Setup\n'));
@@ -212,7 +220,7 @@ class GitSetupInteractive {
       if (updatedInfo.commitCount === 0) {
         const shouldCommit = await InteractivePrompts.confirm({
           question: 'Create initial commit with current files?',
-          defaultAnswer: true
+          defaultAnswer: true,
         });
 
         if (shouldCommit) {
@@ -225,7 +233,7 @@ class GitSetupInteractive {
       // Offer to push to upstream
       const shouldPush = await InteractivePrompts.confirm({
         question: 'Push to upstream repository now?',
-        defaultAnswer: false
+        defaultAnswer: false,
       });
 
       if (shouldPush) {
@@ -252,7 +260,7 @@ class GitSetupInteractive {
       console.log(`   Current: ${chalk.white(currentUrl)}`);
       const keepCurrent = await InteractivePrompts.confirm({
         question: 'Keep current URL?',
-        defaultAnswer: true
+        defaultAnswer: true,
       });
 
       if (keepCurrent) {
@@ -294,7 +302,7 @@ class GitSetupInteractive {
 export async function setupGitCommandHandler(
   args: string[],
   options: SetupGitOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     const workingDirectory = process.cwd();
@@ -342,7 +350,7 @@ export async function setupGitCommandHandler(
 
       const confirmRemoval = await InteractivePrompts.confirm({
         question: `Remove upstream remote '${upstreamConfig.remote}' (${upstreamConfig.url})?`,
-        defaultAnswer: false
+        defaultAnswer: false,
       });
 
       if (confirmRemoval) {
@@ -367,14 +375,11 @@ export async function setupGitCommandHandler(
       const validation = GitManager.validateGitUrl(url);
       if (!validation.valid) {
         const { ValidationError } = await import('../types.js');
-        throw new ValidationError(
-          `Invalid Git URL: ${validation.error}`,
-          [
-            'Use HTTPS format: https://github.com/owner/repo.git',
-            'Use SSH format: git@github.com:owner/repo.git',
-            'Supported providers: GitHub, GitLab, Bitbucket'
-          ]
-        );
+        throw new ValidationError(`Invalid Git URL: ${validation.error}`, [
+          'Use HTTPS format: https://github.com/owner/repo.git',
+          'Use SSH format: git@github.com:owner/repo.git',
+          'Supported providers: GitHub, GitLab, Bitbucket',
+        ]);
       }
 
       const info = await gitManager.getRepositoryInfo();
@@ -408,7 +413,7 @@ export async function setupGitCommandHandler(
       // Ask about initial push
       const shouldPush = await InteractivePrompts.confirm({
         question: 'Push to upstream repository now?',
-        defaultAnswer: true
+        defaultAnswer: true,
       });
 
       if (shouldPush) {
@@ -425,13 +430,11 @@ export async function setupGitCommandHandler(
       // Display final configuration
       const finalInfo = await gitManager.getRepositoryInfo();
       formatter.formatSetupResult(finalInfo, url);
-
     } else {
       // Interactive setup
       const interactive = new GitSetupInteractive(gitManager, formatter);
       await interactive.setup();
     }
-
   } catch (error) {
     const { ValidationError, RuntimeError } = await import('../types.js');
 
@@ -476,7 +479,9 @@ export function configureSetupGitCommand(program: Command): void {
       const args = url ? [url] : [];
       await setupGitCommandHandler(args, options, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code setup-git                                    # Interactive setup
   $ juno-code setup-git https://github.com/owner/repo     # Set specific URL
@@ -497,5 +502,6 @@ Notes:
   - Updates .juno_task/init.md with Git URL
   - Creates initial commit if repository is empty
   - Use HTTPS URLs for better compatibility
-    `);
+    `,
+    );
 }

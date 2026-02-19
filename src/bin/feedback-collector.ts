@@ -47,8 +47,8 @@ function printHeader(): void {
       '📝 Concurrent Feedback Collector',
       '   Type or paste your feedback. Submit by pressing Enter on an EMPTY line.',
       '   (EOF ends the session: Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows.)',
-      ''
-    ].join(EOL) + EOL
+      '',
+    ].join(EOL) + EOL,
   );
 }
 printHeader();
@@ -122,12 +122,14 @@ function submitBufferIfAny(): void {
   process.stdout.write(content + EOL);
   process.stdout.write('===== END BLOCK =====' + EOL);
 
-  enqueueSubmission(content).then(() => {
-    // After the command finishes (still sequential), re-prompt
-    process.stdout.write(EOL + '✅ Submission processed. You can type another block.' + EOL);
-  }).catch((err) => {
-    process.stderr.write(`Error submitting feedback: ${err}${EOL}`);
-  });
+  enqueueSubmission(content)
+    .then(() => {
+      // After the command finishes (still sequential), re-prompt
+      process.stdout.write(EOL + '✅ Submission processed. You can type another block.' + EOL);
+    })
+    .catch((err) => {
+      process.stderr.write(`Error submitting feedback: ${err}${EOL}`);
+    });
 }
 
 // Handle stdin data events

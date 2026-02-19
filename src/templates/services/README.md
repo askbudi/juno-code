@@ -87,6 +87,7 @@ A wrapper for OpenAI Codex CLI with configurable options.
 #### Default Configuration
 
 The script comes with these default codex configurations:
+
 - `include_apply_patch_tool=true`
 - `use_experimental_streamable_shell_tool=true`
 - `sandbox_mode=danger-full-access`
@@ -168,6 +169,7 @@ A wrapper for Anthropic Claude CLI with configurable options.
 #### Default Configuration
 
 The script comes with these default allowed tools:
+
 - Read, Write, Edit, MultiEdit
 - Bash, Glob, Grep
 - WebFetch, WebSearch

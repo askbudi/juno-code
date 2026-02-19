@@ -15,19 +15,15 @@ import { Command } from 'commander';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
-import {
-  mainCommandHandler
-} from '../commands/main.js';
+import { mainCommandHandler } from '../commands/main.js';
 
-import type {
-  MainCommandOptions
-} from '../types.js';
+import type { MainCommandOptions } from '../types.js';
 
 import type {
   ExecutionRequest,
   ExecutionResult,
   ExecutionStatus,
-  ProgressEvent
+  ProgressEvent,
 } from '../../core/engine.js';
 
 // Mock external dependencies
@@ -39,29 +35,31 @@ vi.mock('../../core/config.js', () => ({
     mcpServerPath: '/test/mcp',
     mcpTimeout: 30000,
     mcpRetries: 3,
-    verbose: false
-  })
+    verbose: false,
+  }),
 }));
 
 vi.mock('../../core/engine.js', () => ({
   createExecutionEngine: vi.fn().mockReturnValue({
     execute: vi.fn().mockResolvedValue({
       status: 'COMPLETED',
-      iterations: [{
-        toolResult: { content: 'Test result' }
-      }],
+      iterations: [
+        {
+          toolResult: { content: 'Test result' },
+        },
+      ],
       statistics: {
         totalIterations: 1,
         successfulIterations: 1,
         failedIterations: 0,
         averageIterationDuration: 1000,
         totalToolCalls: 5,
-        rateLimitEncounters: 0
-      }
+        rateLimitEncounters: 0,
+      },
     }),
     onProgress: vi.fn(),
     on: vi.fn(),
-    shutdown: vi.fn()
+    shutdown: vi.fn(),
   }),
   createExecutionRequest: vi.fn().mockImplementation((opts) => ({
     requestId: 'test-request',
@@ -69,21 +67,21 @@ vi.mock('../../core/engine.js', () => ({
     subagent: opts.subagent,
     workingDirectory: opts.workingDirectory,
     maxIterations: opts.maxIterations,
-    model: opts.model
-  }))
+    model: opts.model,
+  })),
 }));
 
 vi.mock('../../core/session.js', () => ({
   createSessionManager: vi.fn().mockReturnValue({
     create: vi.fn(),
     load: vi.fn(),
-    save: vi.fn()
-  })
+    save: vi.fn(),
+  }),
 }));
 
 vi.mock('fs-extra', () => ({
   pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
-  readFile: vi.fn().mockResolvedValue('mock file content')
+  readFile: vi.fn().mockResolvedValue('mock file content'),
 }));
 
 vi.mock('chalk', () => {
@@ -100,12 +98,12 @@ vi.mock('chalk', () => {
     gray: createChainableFunction('gray'),
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
-    white: createChainableFunction('white')
+    white: createChainableFunction('white'),
   };
 
   return {
     default: mockChalk,
-    ...mockChalk
+    ...mockChalk,
   };
 });
 
@@ -117,10 +115,12 @@ describe('Main Command', () => {
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code: string | number | null | undefined = 1) => {
-      // Mock successful exit for tests - these command handlers expect to call process.exit(0) on success
-      return undefined as never;
-    });
+    processExitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((code: string | number | null | undefined = 1) => {
+        // Mock successful exit for tests - these command handlers expect to call process.exit(0) on success
+        return undefined as never;
+      });
 
     // Mock stdin for interactive input
     processStdinSpy = vi.spyOn(process.stdin, 'on').mockImplementation(() => process.stdin);
@@ -149,7 +149,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -170,12 +170,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
@@ -194,14 +194,14 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         // Note: The alias normalization happens in the framework,
         // so we test that it doesn't immediately fail
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
       });
     });
 
@@ -220,7 +220,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -228,8 +228,8 @@ describe('Main Command', () => {
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
-            instruction: 'test inline prompt'
-          })
+            instruction: 'test inline prompt',
+          }),
         );
       });
 
@@ -249,21 +249,18 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
 
-        expect(fs.readFile).toHaveBeenCalledWith(
-          path.resolve('/path/to/prompt.txt'),
-          'utf-8'
-        );
+        expect(fs.readFile).toHaveBeenCalledWith(path.resolve('/path/to/prompt.txt'), 'utf-8');
 
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
-            instruction: 'file prompt content'
-          })
+            instruction: 'file prompt content',
+          }),
         );
       });
 
@@ -283,12 +280,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(5); // RuntimeError
       });
@@ -308,21 +305,21 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
 
         expect(fs.readFile).toHaveBeenCalledWith(
           path.resolve('/path/to/prompt_item-012.txt'),
-          'utf-8'
+          'utf-8',
         );
 
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
-            instruction: 'prompt from file'
-          })
+            instruction: 'prompt from file',
+          }),
         );
       });
 
@@ -352,7 +349,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         // Start the handler
@@ -367,11 +364,10 @@ describe('Main Command', () => {
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
-            instruction: 'interactive prompt content'
-          })
+            instruction: 'interactive prompt content',
+          }),
         );
       });
-
 
       it.skip('should handle missing prompt error', async () => {
         // SKIP: Test infrastructure issue - same as other prompt processing tests
@@ -386,12 +382,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
       });
@@ -421,7 +417,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         // Start the handler
@@ -434,7 +430,6 @@ describe('Main Command', () => {
         await expect(handlerPromise).rejects.toThrow('process.exit called');
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
       });
-
     });
 
     describe('execution', () => {
@@ -451,7 +446,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: true,
           quiet: false,
-          logLevel: 'debug'
+          logLevel: 'debug',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -462,7 +457,7 @@ describe('Main Command', () => {
           subagent: 'claude',
           workingDirectory: '/test/dir', // From config mock
           maxIterations: 5,
-          model: 'custom-model'
+          model: 'custom-model',
         });
 
         expect(processExitSpy).toHaveBeenCalledWith(0);
@@ -482,12 +477,12 @@ describe('Main Command', () => {
               failedIterations: 1,
               averageIterationDuration: 0,
               totalToolCalls: 0,
-              rateLimitEncounters: 0
-            }
+              rateLimitEncounters: 0,
+            },
           }),
           onProgress: vi.fn(),
           on: vi.fn(),
-          shutdown: vi.fn()
+          shutdown: vi.fn(),
         };
         vi.mocked(createExecutionEngine).mockReturnValueOnce(mockEngine);
 
@@ -500,7 +495,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -521,7 +516,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -532,7 +527,7 @@ describe('Main Command', () => {
           subagent: 'claude',
           workingDirectory: '/test/dir', // From config
           maxIterations: 5, // From config defaultMaxIterations
-          model: 'test-model' // From config defaultModel
+          model: 'test-model', // From config defaultModel
         });
       });
 
@@ -548,7 +543,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -574,7 +569,7 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
         await mainCommandHandler([], options, mockCommand);
@@ -599,12 +594,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
@@ -627,12 +622,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(2);
       });
@@ -655,12 +650,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(5);
       });
@@ -680,12 +675,12 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: false,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(99);
       });
@@ -705,16 +700,14 @@ describe('Main Command', () => {
           interactivePrompt: false,
           verbose: true,
           quiet: false,
-          logLevel: 'info'
+          logLevel: 'info',
         };
 
-        await expect(
-          mainCommandHandler([], options, mockCommand)
-        ).rejects.toThrow('process.exit called');
-
-        expect(console.error).toHaveBeenCalledWith(
-          expect.stringContaining('Stack Trace')
+        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
+          'process.exit called',
         );
+
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Stack Trace'));
       });
     });
   });

@@ -16,17 +16,17 @@ export class ServiceInstaller {
   private static readonly VERSION_FILE = path.join(homedir(), '.juno_code', 'services', '.version');
 
   private static missingScripts(baseDir: string): string[] {
-    return this.REQUIRED_SCRIPTS.filter(file => !fs.existsSync(path.join(baseDir, file)));
+    return this.REQUIRED_SCRIPTS.filter((file) => !fs.existsSync(path.join(baseDir, file)));
   }
 
   private static async missingScriptsAsync(baseDir: string): Promise<string[]> {
     const results = await Promise.all(
-      this.REQUIRED_SCRIPTS.map(async file => ({
+      this.REQUIRED_SCRIPTS.map(async (file) => ({
         file,
         exists: await fs.pathExists(path.join(baseDir, file)),
-      }))
+      })),
     );
-    return results.filter(result => !result.exists).map(result => result.file);
+    return results.filter((result) => !result.exists).map((result) => result.file);
   }
 
   /**
@@ -121,7 +121,9 @@ export class ServiceInstaller {
           const packageServicesDir = this.getPackageServicesDir();
           const missingPackageScripts = this.missingScripts(packageServicesDir);
           if (missingPackageScripts.length > 0) {
-            throw new Error(`Missing required service scripts: ${missingPackageScripts.join(', ')}`);
+            throw new Error(
+              `Missing required service scripts: ${missingPackageScripts.join(', ')}`,
+            );
           }
 
           for (const script of this.REQUIRED_SCRIPTS) {
@@ -177,13 +179,15 @@ export class ServiceInstaller {
       }
 
       if (process.env.JUNO_CODE_DEBUG === '1') {
-        console.error(`[DEBUG] Services path missing required scripts (${servicesPath}): ${missing.join(', ')}`);
+        console.error(
+          `[DEBUG] Services path missing required scripts (${servicesPath}): ${missing.join(', ')}`,
+        );
       }
     }
 
     throw new Error(
       'Could not find services directory in package containing codex.py, claude.py, and gemini.py. ' +
-      'Try reinstalling juno-code or re-running npm run build to refresh service scripts.'
+        'Try reinstalling juno-code or re-running npm run build to refresh service scripts.',
     );
   }
 
@@ -207,7 +211,9 @@ export class ServiceInstaller {
 
       const missingAfterCopy = await this.missingScriptsAsync(this.SERVICES_DIR);
       if (missingAfterCopy.length > 0) {
-        throw new Error(`Installed services missing required service scripts: ${missingAfterCopy.join(', ')}`);
+        throw new Error(
+          `Installed services missing required service scripts: ${missingAfterCopy.join(', ')}`,
+        );
       }
 
       // Ensure scripts are executable
@@ -227,7 +233,9 @@ export class ServiceInstaller {
         console.log(`✓ Services installed to: ${this.SERVICES_DIR}`);
       }
     } catch (error) {
-      throw new Error(`Failed to install services: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to install services: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -243,10 +251,12 @@ export class ServiceInstaller {
       if (debug) {
         const packageVersion = this.getPackageVersion();
         const installedVersion = await this.getInstalledVersion();
-        console.error(`[DEBUG] Package version: ${packageVersion}, Installed version: ${installedVersion || 'not found'}`);
+        console.error(
+          `[DEBUG] Package version: ${packageVersion}, Installed version: ${installedVersion || 'not found'}`,
+        );
       }
 
-      const needsUpdate = force || await this.needsUpdate();
+      const needsUpdate = force || (await this.needsUpdate());
 
       if (debug) {
         console.error(`[DEBUG] Needs update: ${needsUpdate}${force ? ' (forced)' : ''}`);
@@ -265,7 +275,10 @@ export class ServiceInstaller {
     } catch (error) {
       // Log error in debug mode
       if (process.env.JUNO_CODE_DEBUG === '1') {
-        console.error('[DEBUG] autoUpdate error:', error instanceof Error ? error.message : String(error));
+        console.error(
+          '[DEBUG] autoUpdate error:',
+          error instanceof Error ? error.message : String(error),
+        );
       }
       // Silent failure - don't break CLI if update fails
       return false;
@@ -315,7 +328,7 @@ export class ServiceInstaller {
       }
 
       const files = await fs.readdir(this.SERVICES_DIR);
-      return files.filter(file => file.endsWith('.py') || file.endsWith('.sh'));
+      return files.filter((file) => file.endsWith('.py') || file.endsWith('.sh'));
     } catch {
       return [];
     }
@@ -332,7 +345,9 @@ export class ServiceInstaller {
         console.log('✓ Services uninstalled');
       }
     } catch (error) {
-      throw new Error(`Failed to uninstall services: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to uninstall services: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 }

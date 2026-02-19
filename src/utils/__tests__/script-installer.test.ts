@@ -40,7 +40,10 @@ describe('ScriptInstaller', () => {
     it('should return true when script exists', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "test"',
+      );
 
       const exists = await ScriptInstaller.scriptExists(testDir, 'run_until_completion.sh');
       expect(exists).toBe(true);
@@ -61,23 +64,50 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(scriptsDir);
       await fs.ensureDir(hooksDir);
       // Create all required scripts including install_requirements.sh and Slack scripts
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "test"',
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
-      await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'install_requirements.sh'),
+        '#!/bin/bash\necho "install"',
+      );
       // Shared utilities
-      await fs.writeFile(path.join(scriptsDir, 'attachment_downloader.py'), '#!/usr/bin/env python3\nprint("downloader")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'attachment_downloader.py'),
+        '#!/usr/bin/env python3\nprint("downloader")',
+      );
       // Slack integration scripts
-      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
-      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_state.py'),
+        '#!/usr/bin/env python3\nprint("state")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_fetch.py'),
+        '#!/usr/bin/env python3\nprint("fetch")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_respond.py'),
+        '#!/usr/bin/env python3\nprint("respond")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
       // GitHub integration script
-      await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'github.py'),
+        '#!/usr/bin/env python3\nprint("github")',
+      );
       // Claude Code hooks
-      await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
+      await fs.writeFile(
+        path.join(hooksDir, 'session_counter.sh'),
+        '#!/bin/bash\necho "session_counter"',
+      );
       // Log scanning utility
-      await fs.writeFile(path.join(scriptsDir, 'log_scanner.sh'), '#!/bin/bash\necho "log_scanner"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'log_scanner.sh'),
+        '#!/bin/bash\necho "log_scanner"',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -160,23 +190,50 @@ describe('ScriptInstaller', () => {
       const hooksDir = path.join(scriptsDir, 'hooks');
       await fs.ensureDir(scriptsDir);
       await fs.ensureDir(hooksDir);
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "test"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "test"',
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
-      await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "install"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'install_requirements.sh'),
+        '#!/bin/bash\necho "install"',
+      );
       // Shared utilities
-      await fs.writeFile(path.join(scriptsDir, 'attachment_downloader.py'), '#!/usr/bin/env python3\nprint("downloader")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'attachment_downloader.py'),
+        '#!/usr/bin/env python3\nprint("downloader")',
+      );
       // Slack integration scripts
-      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("state")');
-      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("fetch")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_state.py'),
+        '#!/usr/bin/env python3\nprint("state")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_fetch.py'),
+        '#!/usr/bin/env python3\nprint("fetch")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "fetch"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("respond")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_respond.py'),
+        '#!/usr/bin/env python3\nprint("respond")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "respond"');
       // GitHub integration script
-      await fs.writeFile(path.join(scriptsDir, 'github.py'), '#!/usr/bin/env python3\nprint("github")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'github.py'),
+        '#!/usr/bin/env python3\nprint("github")',
+      );
       // Claude Code hooks
-      await fs.writeFile(path.join(hooksDir, 'session_counter.sh'), '#!/bin/bash\necho "session_counter"');
+      await fs.writeFile(
+        path.join(hooksDir, 'session_counter.sh'),
+        '#!/bin/bash\necho "session_counter"',
+      );
       // Log scanning utility
-      await fs.writeFile(path.join(scriptsDir, 'log_scanner.sh'), '#!/bin/bash\necho "log_scanner"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'log_scanner.sh'),
+        '#!/bin/bash\necho "log_scanner"',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -206,7 +263,11 @@ describe('ScriptInstaller', () => {
     it('should install script if it does not exist', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
 
-      const updated = await ScriptInstaller.updateScriptIfNewer(testDir, 'run_until_completion.sh', true);
+      const updated = await ScriptInstaller.updateScriptIfNewer(
+        testDir,
+        'run_until_completion.sh',
+        true,
+      );
       // Result depends on whether templates are accessible
       expect(typeof updated).toBe('boolean');
     });
@@ -224,15 +285,30 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(scriptsDir);
 
       // Create scripts with different content than package
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "OLD VERSION"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "OLD VERSION"',
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD VERSION"');
-      await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "OLD VERSION"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'install_requirements.sh'),
+        '#!/bin/bash\necho "OLD VERSION"',
+      );
 
       // Create all Slack scripts too
-      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("OLD")');
-      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_state.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_fetch.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_respond.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "OLD"');
 
       const outdated = await ScriptInstaller.getOutdatedScripts(testDir);
@@ -260,13 +336,28 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(scriptsDir);
 
       // Create all required scripts with old content
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "OLD"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "OLD"',
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("OLD")');
-      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'install_requirements.sh'),
+        '#!/bin/bash\necho "OLD"',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_state.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_fetch.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_respond.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "OLD"');
 
       const needsUpdate = await ScriptInstaller.needsUpdate(testDir);
@@ -294,13 +385,28 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(scriptsDir);
 
       // Create all required scripts with old content
-      await fs.writeFile(path.join(scriptsDir, 'run_until_completion.sh'), '#!/bin/bash\necho "OLD"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'run_until_completion.sh'),
+        '#!/bin/bash\necho "OLD"',
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'install_requirements.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_state.py'), '#!/usr/bin/env python3\nprint("OLD")');
-      await fs.writeFile(path.join(scriptsDir, 'slack_fetch.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'install_requirements.sh'),
+        '#!/bin/bash\necho "OLD"',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_state.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_fetch.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_fetch.sh'), '#!/bin/bash\necho "OLD"');
-      await fs.writeFile(path.join(scriptsDir, 'slack_respond.py'), '#!/usr/bin/env python3\nprint("OLD")');
+      await fs.writeFile(
+        path.join(scriptsDir, 'slack_respond.py'),
+        '#!/usr/bin/env python3\nprint("OLD")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'slack_respond.sh'), '#!/bin/bash\necho "OLD"');
 
       const updated = await ScriptInstaller.autoUpdate(testDir, true);

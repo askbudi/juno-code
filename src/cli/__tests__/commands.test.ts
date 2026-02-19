@@ -16,7 +16,7 @@ import * as fs from 'fs-extra';
 import type {
   SessionCommandOptions,
   FeedbackCommandOptions,
-  SetupGitCommandOptions
+  SetupGitCommandOptions,
 } from '../types.js';
 
 // Mock external dependencies
@@ -30,7 +30,7 @@ vi.mock('../../core/session.js', () => ({
         updatedAt: new Date('2024-01-01'),
         status: 'completed',
         iterations: 5,
-        subagent: 'claude'
+        subagent: 'claude',
       },
       {
         id: 'session-2',
@@ -39,8 +39,8 @@ vi.mock('../../core/session.js', () => ({
         updatedAt: new Date('2024-01-02'),
         status: 'active',
         iterations: 3,
-        subagent: 'cursor'
-      }
+        subagent: 'cursor',
+      },
     ]),
     get: vi.fn().mockResolvedValue({
       id: 'session-1',
@@ -52,14 +52,14 @@ vi.mock('../../core/session.js', () => ({
         status: 'COMPLETED',
         iterations: [
           { iterationNumber: 1, success: true, duration: 1000 },
-          { iterationNumber: 2, success: true, duration: 1500 }
+          { iterationNumber: 2, success: true, duration: 1500 },
         ],
         statistics: {
           totalIterations: 2,
           successfulIterations: 2,
-          failedIterations: 0
-        }
-      }
+          failedIterations: 0,
+        },
+      },
     }),
     getSession: vi.fn().mockResolvedValue({
       info: {
@@ -73,7 +73,7 @@ vi.mock('../../core/session.js', () => ({
         workingDirectory: '/project',
         config: {},
         tags: ['test'],
-        metadata: {}
+        metadata: {},
       },
       context: {
         workingDirectory: '/project',
@@ -83,8 +83,8 @@ vi.mock('../../core/session.js', () => ({
           nodeVersion: 'v18.0.0',
           platform: 'linux',
           arch: 'x64',
-          pid: 1234
-        }
+          pid: 1234,
+        },
       },
       statistics: {
         duration: 5000,
@@ -93,40 +93,40 @@ vi.mock('../../core/session.js', () => ({
         successRate: 100,
         errorCount: 0,
         warningCount: 0,
-        toolStats: {}
+        toolStats: {},
       },
-      history: []
+      history: [],
     }),
     delete: vi.fn(),
     removeSession: vi.fn(),
     resume: vi.fn().mockResolvedValue({
       id: 'session-1',
       name: 'Resumed Session',
-      status: 'active'
-    })
-  })
+      status: 'active',
+    }),
+  }),
 }));
 
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
     workingDirectory: '/test/dir',
-    verbose: false
-  })
+    verbose: false,
+  }),
 }));
 
 vi.mock('fs-extra', () => ({
   pathExists: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
-  ensureDir: vi.fn()
+  ensureDir: vi.fn(),
 }));
 
 vi.mock('execa', () => ({
   execa: vi.fn().mockResolvedValue({
     stdout: 'git command executed successfully',
     stderr: '',
-    exitCode: 0
-  })
+    exitCode: 0,
+  }),
 }));
 
 vi.mock('chalk', () => {
@@ -144,12 +144,12 @@ vi.mock('chalk', () => {
     green: createChainableFunction('green'),
     cyan: createChainableFunction('cyan'),
     white: createChainableFunction('white'),
-    magenta: createChainableFunction('magenta')
+    magenta: createChainableFunction('magenta'),
   };
 
   return {
     default: mockChalk,
-    ...mockChalk
+    ...mockChalk,
   };
 });
 
@@ -210,7 +210,7 @@ describe('Session Command', () => {
           workingDirectory: '/project',
           config: {},
           tags: ['test'],
-          metadata: {}
+          metadata: {},
         },
         context: {
           workingDirectory: '/project',
@@ -220,8 +220,8 @@ describe('Session Command', () => {
             nodeVersion: 'v18.0.0',
             platform: 'linux',
             arch: 'x64',
-            pid: 1234
-          }
+            pid: 1234,
+          },
         },
         statistics: {
           duration: 5000,
@@ -230,13 +230,13 @@ describe('Session Command', () => {
           successRate: 100,
           errorCount: 0,
           warningCount: 0,
-          toolStats: {}
+          toolStats: {},
         },
-        history: []
+        history: [],
       }),
       delete: vi.fn(),
       removeSession: vi.fn(),
-      resume: vi.fn()
+      resume: vi.fn(),
     } as any);
   });
 
@@ -255,20 +255,14 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['list'], options, mockCommand);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Execution Sessions')
-      );
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Test Session 1')
-      );
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Test Session 2')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Execution Sessions'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Test Session 1'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Test Session 2'));
     });
 
     it.skip('should filter sessions by status', async () => {
@@ -279,14 +273,12 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['list'], options, mockCommand);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Test Session 2')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Test Session 2'));
     });
 
     it('should limit session results', async () => {
@@ -297,7 +289,7 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['list'], options, mockCommand);
@@ -305,9 +297,7 @@ describe('Session Command', () => {
       // Should call session manager with limit
       const { createSessionManager } = await import('../../core/session.js');
       const sessionManager = vi.mocked(createSessionManager).mock.results[0].value;
-      expect(sessionManager.list).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 1 })
-      );
+      expect(sessionManager.list).toHaveBeenCalledWith(expect.objectContaining({ limit: 1 }));
     });
 
     it('should show sessions for specific date range', async () => {
@@ -318,16 +308,14 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['list'], options, mockCommand);
 
       const { createSessionManager } = await import('../../core/session.js');
       const sessionManager = vi.mocked(createSessionManager).mock.results[0].value;
-      expect(sessionManager.list).toHaveBeenCalledWith(
-        expect.objectContaining({ days: 7 })
-      );
+      expect(sessionManager.list).toHaveBeenCalledWith(expect.objectContaining({ days: 7 }));
     });
 
     it('should handle empty session list', async () => {
@@ -336,7 +324,7 @@ describe('Session Command', () => {
         list: vi.fn().mockResolvedValue([]),
         get: vi.fn(),
         delete: vi.fn(),
-        resume: vi.fn()
+        resume: vi.fn(),
       };
       vi.mocked(createSessionManager).mockReturnValueOnce(mockSessionManager);
 
@@ -346,14 +334,12 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['list'], options, mockCommand);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('No sessions found')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('No sessions found'));
     });
   });
 
@@ -366,17 +352,13 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['show', 'session-1'], options, mockCommand);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Session Details')
-      );
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('session-1')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Session Details'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('session-1'));
     });
 
     it('should require session ID for show', async () => {
@@ -386,15 +368,13 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['show'], options, mockCommand);
 
       // Handler logs error message and returns (doesn't exit)
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Session ID is required')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Session ID is required'));
     });
 
     it('should handle non-existent session', async () => {
@@ -404,7 +384,7 @@ describe('Session Command', () => {
         get: vi.fn().mockResolvedValue(null),
         getSession: vi.fn().mockResolvedValue(null),
         delete: vi.fn(),
-        resume: vi.fn()
+        resume: vi.fn(),
       };
       vi.mocked(createSessionManager).mockResolvedValueOnce(mockSessionManager);
 
@@ -415,15 +395,13 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['show', 'non-existent'], options, mockCommand);
 
       // Handler logs error message and returns (doesn't exit)
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Session not found')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Session not found'));
     });
   });
 
@@ -437,7 +415,7 @@ describe('Session Command', () => {
         verbose: false,
         quiet: false,
         logLevel: 'info',
-        force: true
+        force: true,
       };
 
       await sessionCommandHandler(['delete', 'session-1'], options, mockCommand);
@@ -446,9 +424,7 @@ describe('Session Command', () => {
       const sessionManager = await vi.mocked(createSessionManager)();
       expect(sessionManager.removeSession).toHaveBeenCalledWith('session-1');
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Removed session')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Removed session'));
     });
 
     it('should require session ID for delete', async () => {
@@ -458,16 +434,16 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        sessionCommandHandler(['delete'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(sessionCommandHandler(['delete'], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('At least one session ID is required')
+        expect.stringContaining('At least one session ID is required'),
       );
     });
   });
@@ -483,7 +459,7 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await sessionCommandHandler(['resume', 'session-1'], options, mockCommand);
@@ -492,9 +468,7 @@ describe('Session Command', () => {
       const sessionManager = vi.mocked(createSessionManager).mock.results[0].value;
       expect(sessionManager.resume).toHaveBeenCalledWith('session-1');
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Session resumed')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Session resumed'));
     });
 
     it.skip('should require session ID for resume', async () => {
@@ -506,17 +480,15 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        sessionCommandHandler(['resume'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(sessionCommandHandler(['resume'], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Session ID is required')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Session ID is required'));
     });
   });
 
@@ -530,17 +502,15 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        sessionCommandHandler(['invalid'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(sessionCommandHandler(['invalid'], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Invalid session action')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Invalid session action'));
     });
 
     it('should handle session manager errors', async () => {
@@ -549,7 +519,7 @@ describe('Session Command', () => {
         list: vi.fn().mockRejectedValue(new Error('Database error')),
         get: vi.fn(),
         delete: vi.fn(),
-        resume: vi.fn()
+        resume: vi.fn(),
       };
       vi.mocked(createSessionManager).mockReturnValueOnce(mockSessionManager);
 
@@ -559,17 +529,15 @@ describe('Session Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        sessionCommandHandler(['list'], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(sessionCommandHandler(['list'], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(99);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Unexpected Error')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Unexpected Error'));
     });
   });
 });
@@ -606,7 +574,7 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await feedbackCommandHandler([], options, mockCommand);
@@ -614,11 +582,11 @@ describe('Feedback Command', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('USER_FEEDBACK.md'),
         expect.stringContaining('This is test feedback'),
-        'utf-8'
+        'utf-8',
       );
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Feedback submitted successfully')
+        expect.stringContaining('Feedback submitted successfully'),
       );
     });
 
@@ -637,7 +605,7 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await feedbackCommandHandler([], options, mockCommand);
@@ -646,7 +614,7 @@ describe('Feedback Command', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.anything(),
         expect.stringContaining('Feedback from file'),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -659,16 +627,16 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        feedbackCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(feedbackCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Either --message or --file is required')
+        expect.stringContaining('Either --message or --file is required'),
       );
     });
 
@@ -684,16 +652,16 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        feedbackCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(feedbackCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(5);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Feedback file not found')
+        expect.stringContaining('Feedback file not found'),
       );
     });
 
@@ -707,17 +675,15 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        feedbackCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(feedbackCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Invalid feedback type')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Invalid feedback type'));
     });
 
     it.skip('should include session ID when provided', async () => {
@@ -734,7 +700,7 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await feedbackCommandHandler([], options, mockCommand);
@@ -742,7 +708,7 @@ describe('Feedback Command', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.anything(),
         expect.stringContaining('session-123'),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -760,7 +726,7 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await feedbackCommandHandler([], options, mockCommand);
@@ -768,7 +734,7 @@ describe('Feedback Command', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.anything(),
         expect.stringContaining('high'),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -785,16 +751,16 @@ describe('Feedback Command', () => {
         cwd: '/project',
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        feedbackCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(feedbackCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(5);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to write feedback file')
+        expect.stringContaining('Failed to write feedback file'),
       );
     });
   });
@@ -826,7 +792,7 @@ describe('Setup Git Command', () => {
       vi.mocked(execa).mockResolvedValue({
         stdout: 'Initialized empty Git repository',
         stderr: '',
-        exitCode: 0
+        exitCode: 0,
       } as any);
 
       const mockCommand = new Command();
@@ -835,17 +801,17 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
 
       expect(execa).toHaveBeenCalledWith('git', ['init'], {
-        cwd: '/project'
+        cwd: '/project',
       });
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Git repository initialized')
+        expect.stringContaining('Git repository initialized'),
       );
     });
 
@@ -856,7 +822,7 @@ describe('Setup Git Command', () => {
       vi.mocked(execa).mockResolvedValue({
         stdout: 'Success',
         stderr: '',
-        exitCode: 0
+        exitCode: 0,
       } as any);
 
       const mockCommand = new Command();
@@ -866,14 +832,18 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
 
-      expect(execa).toHaveBeenCalledWith('git', ['remote', 'add', 'origin', 'https://github.com/user/repo.git'], {
-        cwd: '/project'
-      });
+      expect(execa).toHaveBeenCalledWith(
+        'git',
+        ['remote', 'add', 'origin', 'https://github.com/user/repo.git'],
+        {
+          cwd: '/project',
+        },
+      );
     });
 
     it.skip('should create initial commit', async () => {
@@ -883,7 +853,7 @@ describe('Setup Git Command', () => {
       vi.mocked(execa).mockResolvedValue({
         stdout: 'Success',
         stderr: '',
-        exitCode: 0
+        exitCode: 0,
       } as any);
 
       const mockCommand = new Command();
@@ -893,16 +863,16 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
 
       expect(execa).toHaveBeenCalledWith('git', ['add', '.'], {
-        cwd: '/project'
+        cwd: '/project',
       });
       expect(execa).toHaveBeenCalledWith('git', ['commit', '-m', 'Initial commit'], {
-        cwd: '/project'
+        cwd: '/project',
       });
     });
 
@@ -918,7 +888,7 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
@@ -926,7 +896,7 @@ describe('Setup Git Command', () => {
       expect(fs.writeFile).toHaveBeenCalledWith(
         path.join('/project', '.gitignore'),
         expect.stringContaining('node_modules'),
-        'utf-8'
+        'utf-8',
       );
     });
 
@@ -940,17 +910,15 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        setupGitCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(setupGitCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Invalid remote URL')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Invalid remote URL'));
     });
 
     it.skip('should check if git repository already exists', async () => {
@@ -964,16 +932,16 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        setupGitCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(setupGitCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(1);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Git repository already exists')
+        expect.stringContaining('Git repository already exists'),
       );
     });
 
@@ -985,7 +953,7 @@ describe('Setup Git Command', () => {
       vi.mocked(execa).mockResolvedValue({
         stdout: 'Success',
         stderr: '',
-        exitCode: 0
+        exitCode: 0,
       } as any);
 
       const mockCommand = new Command();
@@ -994,13 +962,13 @@ describe('Setup Git Command', () => {
         force: true,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
 
       expect(execa).toHaveBeenCalledWith('git', ['init'], {
-        cwd: '/project'
+        cwd: '/project',
       });
     });
 
@@ -1016,17 +984,15 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: false,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
-      await expect(
-        setupGitCommandHandler([], options, mockCommand)
-      ).rejects.toThrow('process.exit called');
+      await expect(setupGitCommandHandler([], options, mockCommand)).rejects.toThrow(
+        'process.exit called',
+      );
 
       expect(processExitSpy).toHaveBeenCalledWith(99);
-      expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Git setup failed')
-      );
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Git setup failed'));
     });
 
     it('should show verbose output when verbose flag is used', async () => {
@@ -1034,7 +1000,7 @@ describe('Setup Git Command', () => {
       vi.mocked(execa).mockResolvedValue({
         stdout: 'Detailed git output',
         stderr: '',
-        exitCode: 0
+        exitCode: 0,
       } as any);
 
       const mockCommand = new Command();
@@ -1043,14 +1009,12 @@ describe('Setup Git Command', () => {
         force: false,
         verbose: true,
         quiet: false,
-        logLevel: 'info'
+        logLevel: 'info',
       };
 
       await setupGitCommandHandler([], options, mockCommand);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Detailed git output')
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Detailed git output'));
     });
   });
 });

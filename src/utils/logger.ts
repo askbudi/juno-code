@@ -17,7 +17,7 @@ export enum LogLevel {
   INFO = 1,
   WARNING = 2,
   ERROR = 3,
-  CRITICAL = 4
+  CRITICAL = 4,
 }
 
 export interface LoggerOptions {
@@ -87,7 +87,12 @@ export class JunoLogger {
   /**
    * Log message at specified level
    */
-  private async log(level: LogLevel, levelName: string, message: string, writeToConsole: boolean = true): Promise<void> {
+  private async log(
+    level: LogLevel,
+    levelName: string,
+    message: string,
+    writeToConsole: boolean = true,
+  ): Promise<void> {
     if (level < this.logLevel) {
       return;
     }

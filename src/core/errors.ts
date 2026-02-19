@@ -28,7 +28,7 @@ export enum ExecutionErrorType {
   VALIDATION = 'validation',
   SERVER_NOT_FOUND = 'server_not_found',
   PROTOCOL = 'protocol',
-  AUTHENTICATION = 'authentication'
+  AUTHENTICATION = 'authentication',
 }
 
 /**
@@ -73,7 +73,7 @@ export enum ExecutionErrorCode {
   // Authentication errors
   AUTHENTICATION_FAILED = 'MCP_AUTHENTICATION_FAILED',
   UNAUTHORIZED = 'MCP_UNAUTHORIZED',
-  TOKEN_EXPIRED = 'MCP_TOKEN_EXPIRED'
+  TOKEN_EXPIRED = 'MCP_TOKEN_EXPIRED',
 }
 
 /**
@@ -96,7 +96,7 @@ export const RATE_LIMIT_PATTERNS = [
 
   // Specific service patterns
   /5-hour limit reached.*resets\s+(?:at\s+)?(\d{1,2})\s*(am|pm)/i,
-  /hourly limit.*resets\s+(?:at\s+)?(\d{1,2}):(\d{2})/i
+  /hourly limit.*resets\s+(?:at\s+)?(\d{1,2}):(\d{2})/i,
 ] as const;
 
 // =============================================================================
@@ -248,7 +248,7 @@ export abstract class ExecutionError extends Error {
     message: string,
     type: ExecutionErrorType,
     code: ExecutionErrorCode,
-    options?: ExecutionErrorOptions
+    options?: ExecutionErrorOptions,
   ) {
     super(message);
     this.name = this.constructor.name;
@@ -355,7 +355,7 @@ export class ConnectionError extends ExecutionError {
     message: string,
     context?: string,
     serverInfo?: ServerInfo,
-    options?: ExecutionErrorOptions
+    options?: ExecutionErrorOptions,
   ) {
     const code = options?.code ?? ExecutionErrorCode.CONNECTION_FAILED;
     const suggestions = options?.recoverySuggestions ?? [
@@ -389,7 +389,7 @@ export class ConnectionError extends ExecutionError {
           'Check server responsiveness',
           'Verify network latency',
         ],
-      }
+      },
     );
   }
 
@@ -408,7 +408,7 @@ export class ConnectionError extends ExecutionError {
           'Check server address and port',
           'Review firewall settings',
         ],
-      }
+      },
     );
   }
 
@@ -428,7 +428,7 @@ export class ConnectionError extends ExecutionError {
           'Install the server package',
           'Update PATH environment variable',
         ],
-      }
+      },
     );
   }
 }
@@ -451,7 +451,7 @@ export class ToolError extends ExecutionError {
     message: string,
     toolInfo: ToolInfo,
     context?: string,
-    options?: ExecutionErrorOptions & { executionDetails?: ToolExecutionDetails }
+    options?: ExecutionErrorOptions & { executionDetails?: ToolExecutionDetails },
   ) {
     const code = options?.code ?? ExecutionErrorCode.TOOL_EXECUTION_FAILED;
     const suggestions = options?.recoverySuggestions ?? [
@@ -486,7 +486,7 @@ export class ToolError extends ExecutionError {
           'Verify tool name spelling',
           'Ensure server supports this tool',
         ],
-      }
+      },
     );
   }
 
@@ -496,7 +496,7 @@ export class ToolError extends ExecutionError {
   static timeout(
     toolName: string,
     timeoutMs: number,
-    executionDetails?: ToolExecutionDetails
+    executionDetails?: ToolExecutionDetails,
   ): ToolError {
     return new ToolError(
       `Tool execution timeout: ${toolName} (${timeoutMs}ms)`,
@@ -510,7 +510,7 @@ export class ToolError extends ExecutionError {
           'Check tool complexity and resource usage',
           'Consider breaking task into smaller parts',
         ],
-      }
+      },
     );
   }
 
@@ -520,7 +520,7 @@ export class ToolError extends ExecutionError {
   static invalidArguments(
     toolName: string,
     invalidArgs: Record<string, unknown>,
-    expectedFormat?: string
+    expectedFormat?: string,
   ): ToolError {
     return new ToolError(
       `Invalid arguments for tool: ${toolName}`,
@@ -534,7 +534,7 @@ export class ToolError extends ExecutionError {
           'Verify argument types and formats',
           'Review tool schema definition',
         ],
-      }
+      },
     );
   }
 }
@@ -558,7 +558,7 @@ export class TimeoutError extends ExecutionError {
     timeoutMs: number,
     operationType: string,
     context?: string,
-    options?: ExecutionErrorOptions
+    options?: ExecutionErrorOptions,
   ) {
     const code = options?.code ?? ExecutionErrorCode.CONNECTION_TIMEOUT;
     const suggestions = options?.recoverySuggestions ?? [
@@ -594,7 +594,7 @@ export class TimeoutError extends ExecutionError {
           'Check server startup time',
           'Verify network latency',
         ],
-      }
+      },
     );
   }
 
@@ -614,7 +614,7 @@ export class TimeoutError extends ExecutionError {
           'Optimize tool parameters',
           'Check tool resource usage',
         ],
-      }
+      },
     );
   }
 }
@@ -645,7 +645,7 @@ export class RateLimitError extends ExecutionError {
     resetTime?: Date,
     tier?: string,
     context?: string,
-    options?: ExecutionErrorOptions
+    options?: ExecutionErrorOptions,
   ) {
     const code = options?.code ?? ExecutionErrorCode.RATE_LIMIT_EXCEEDED;
     const waitTime = resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 1000) : 0;
@@ -660,12 +660,14 @@ export class RateLimitError extends ExecutionError {
       ...options,
       context,
       recoverySuggestions: suggestions,
-      retryInfo: resetTime ? {
-        attempt: 1,
-        maxAttempts: 1,
-        nextRetryTime: resetTime,
-        strategy: 'rate_limit_wait',
-      } : options?.retryInfo,
+      retryInfo: resetTime
+        ? {
+            attempt: 1,
+            maxAttempts: 1,
+            nextRetryTime: resetTime,
+            strategy: 'rate_limit_wait',
+          }
+        : options?.retryInfo,
     });
 
     this.resetTime = resetTime;
@@ -687,17 +689,10 @@ export class RateLimitError extends ExecutionError {
     const tierMatch = message.match(/tier[:\s]*([a-zA-Z0-9_-]+)/i);
     const tier = tierMatch ? tierMatch[1] : undefined;
 
-    return new RateLimitError(
-      message,
-      remaining,
-      resetTime,
-      tier,
-      context,
-      {
-        code: ExecutionErrorCode.RATE_LIMIT_EXCEEDED,
-        metadata: { originalMessage: message },
-      }
-    );
+    return new RateLimitError(message, remaining, resetTime, tier, context, {
+      code: ExecutionErrorCode.RATE_LIMIT_EXCEEDED,
+      metadata: { originalMessage: message },
+    });
   }
 
   /**
@@ -712,7 +707,7 @@ export class RateLimitError extends ExecutionError {
       'hourly_limit',
       {
         code: ExecutionErrorCode.RATE_LIMIT_HOURLY,
-      }
+      },
     );
   }
 
@@ -728,7 +723,7 @@ export class RateLimitError extends ExecutionError {
       'daily_limit',
       {
         code: ExecutionErrorCode.RATE_LIMIT_DAILY,
-      }
+      },
     );
   }
 
@@ -777,7 +772,7 @@ export class ValidationError extends ExecutionError {
     expected?: string,
     field?: string,
     context?: string,
-    options?: ExecutionErrorOptions
+    options?: ExecutionErrorOptions,
   ) {
     const code = options?.code ?? ExecutionErrorCode.VALIDATION_FAILED;
     const suggestions = options?.recoverySuggestions ?? [
@@ -811,18 +806,14 @@ export class ValidationError extends ExecutionError {
       'parameter_validation',
       {
         code: ExecutionErrorCode.MISSING_PARAMETERS,
-      }
+      },
     );
   }
 
   /**
    * Create type mismatch error
    */
-  static typeMismatch(
-    field: string,
-    value: unknown,
-    expectedType: string
-  ): ValidationError {
+  static typeMismatch(field: string, value: unknown, expectedType: string): ValidationError {
     return new ValidationError(
       `Invalid type for field '${field}': expected ${expectedType}, got ${typeof value}`,
       'type_mismatch',
@@ -832,18 +823,14 @@ export class ValidationError extends ExecutionError {
       'type_validation',
       {
         code: ExecutionErrorCode.INVALID_PARAMETERS,
-      }
+      },
     );
   }
 
   /**
    * Create format error
    */
-  static format(
-    field: string,
-    value: unknown,
-    expectedFormat: string
-  ): ValidationError {
+  static format(field: string, value: unknown, expectedFormat: string): ValidationError {
     return new ValidationError(
       `Invalid format for field '${field}': expected ${expectedFormat}`,
       'format',
@@ -853,24 +840,20 @@ export class ValidationError extends ExecutionError {
       'format_validation',
       {
         code: ExecutionErrorCode.INVALID_PARAMETERS,
-      }
+      },
     );
   }
 
   /**
    * Create range error
    */
-  static range(
-    field: string,
-    value: unknown,
-    min?: number,
-    max?: number
-  ): ValidationError {
-    const range = min !== undefined && max !== undefined
-      ? `${min}-${max}`
-      : min !== undefined
-        ? `>= ${min}`
-        : `<= ${max}`;
+  static range(field: string, value: unknown, min?: number, max?: number): ValidationError {
+    const range =
+      min !== undefined && max !== undefined
+        ? `${min}-${max}`
+        : min !== undefined
+          ? `>= ${min}`
+          : `<= ${max}`;
 
     return new ValidationError(
       `Value out of range for field '${field}': expected ${range}`,
@@ -881,7 +864,7 @@ export class ValidationError extends ExecutionError {
       'range_validation',
       {
         code: ExecutionErrorCode.INVALID_PARAMETERS,
-      }
+      },
     );
   }
 }
@@ -1095,27 +1078,15 @@ export function getRecoverySuggestions(error: unknown): string[] {
 
   // Default suggestions based on error type
   if (isConnectionError(error)) {
-    return [
-      'Check network connectivity',
-      'Verify server is running',
-      'Check server configuration',
-    ];
+    return ['Check network connectivity', 'Verify server is running', 'Check server configuration'];
   }
 
   if (isRateLimitError(error)) {
-    return [
-      'Wait for rate limit reset',
-      'Reduce request frequency',
-      'Implement request queuing',
-    ];
+    return ['Wait for rate limit reset', 'Reduce request frequency', 'Implement request queuing'];
   }
 
   if (isValidationError(error)) {
-    return [
-      'Check input parameters',
-      'Refer to API documentation',
-      'Validate data before sending',
-    ];
+    return ['Check input parameters', 'Refer to API documentation', 'Validate data before sending'];
   }
 
   return [
@@ -1153,7 +1124,7 @@ export function createErrorChain(errors: Error[]): ExecutionError {
     {
       cause: primaryError,
       metadata: {
-        additionalErrors: additionalErrors.map(e => ({
+        additionalErrors: additionalErrors.map((e) => ({
           name: e.name,
           message: e.message,
         })),
@@ -1163,7 +1134,7 @@ export function createErrorChain(errors: Error[]): ExecutionError {
         'Check for cascading failures',
         'Review system configuration',
       ],
-    }
+    },
   );
 }
 
@@ -1216,7 +1187,7 @@ export function calculateRetryDelay(
   error: unknown,
   attempt: number,
   baseDelay: number = 1000,
-  maxDelay: number = 30000
+  maxDelay: number = 30000,
 ): number {
   if (isRateLimitError(error)) {
     return error.getWaitTimeMs();

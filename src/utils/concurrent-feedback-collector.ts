@@ -15,7 +15,12 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
-import { setFeedbackActive, isFeedbackActive, flushBufferedProgress, setInputRedisplayCallback } from './feedback-state.js';
+import {
+  setFeedbackActive,
+  isFeedbackActive,
+  flushBufferedProgress,
+  setInputRedisplayCallback,
+} from './feedback-state.js';
 
 export interface FeedbackCollectorOptions {
   /**
@@ -76,12 +81,13 @@ export interface FeedbackSubmission {
  * Feedback collector mode states
  */
 enum FeedbackMode {
-  NORMAL = 'normal',           // Normal mode - MCP progress shown, waiting for f+enter
-  FEEDBACK = 'feedback'        // Feedback mode - MCP progress buffered, collecting feedback until q+enter
+  NORMAL = 'normal', // Normal mode - MCP progress shown, waiting for f+enter
+  FEEDBACK = 'feedback', // Feedback mode - MCP progress buffered, collecting feedback until q+enter
 }
 
 export class ConcurrentFeedbackCollector {
-  private options: Required<Omit<FeedbackCollectorOptions, 'onSubmit'>> & Pick<FeedbackCollectorOptions, 'onSubmit'>;
+  private options: Required<Omit<FeedbackCollectorOptions, 'onSubmit'>> &
+    Pick<FeedbackCollectorOptions, 'onSubmit'>;
   private submissionCount: number = 0;
   private pending: Promise<void> = Promise.resolve();
   private buffer: string = '';
@@ -102,7 +108,7 @@ export class ConcurrentFeedbackCollector {
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,
       progressFlushInterval: options.progressFlushInterval ?? 2000, // Default: flush every 2 seconds
-      onSubmit: options.onSubmit
+      onSubmit: options.onSubmit,
     };
   }
 
@@ -189,7 +195,9 @@ export class ConcurrentFeedbackCollector {
     process.stdin.removeAllListeners('end');
 
     if (this.options.verbose) {
-      process.stderr.write(`${EOL}[feedback-collector] Stopped. Total submissions: ${this.submissionCount}${EOL}`);
+      process.stderr.write(
+        `${EOL}[feedback-collector] Stopped. Total submissions: ${this.submissionCount}${EOL}`,
+      );
     }
   }
 
@@ -258,16 +266,33 @@ export class ConcurrentFeedbackCollector {
       [
         '',
         chalk.blue.bold('╔' + border + '╗'),
-        chalk.blue.bold('║') + chalk.yellow.bold('  📝 FEEDBACK COLLECTION ENABLED  ') + ' '.repeat(25) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.yellow.bold('  📝 FEEDBACK COLLECTION ENABLED  ') +
+          ' '.repeat(25) +
+          chalk.blue.bold('║'),
         chalk.blue.bold('╠' + border + '╣'),
-        chalk.blue.bold('║') + chalk.white('  MCP progress updates shown normally until you enter feedback mode') + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.green('  • Enter feedback mode: Type F (or f) then press Enter') + ' '.repeat(5) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.green('  • Exit & submit feedback: Type Q (or q) then press Enter') + ' '.repeat(2) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.gray('  Progress updates paused only WHILE in feedback mode') + ' '.repeat(7) + chalk.blue.bold('║'),
-        chalk.blue.bold('║') + chalk.gray('  Exit: Press Ctrl-D (or Ctrl-Z on Windows)') + ' '.repeat(16) + chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.white('  MCP progress updates shown normally until you enter feedback mode') +
+          chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.green('  • Enter feedback mode: Type F (or f) then press Enter') +
+          ' '.repeat(5) +
+          chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.green('  • Exit & submit feedback: Type Q (or q) then press Enter') +
+          ' '.repeat(2) +
+          chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.gray('  Progress updates paused only WHILE in feedback mode') +
+          ' '.repeat(7) +
+          chalk.blue.bold('║'),
+        chalk.blue.bold('║') +
+          chalk.gray('  Exit: Press Ctrl-D (or Ctrl-Z on Windows)') +
+          ' '.repeat(16) +
+          chalk.blue.bold('║'),
         chalk.blue.bold('╚' + border + '╝'),
-        chalk.cyan.bold('> ') + chalk.gray('(Type F+Enter to start giving feedback)')
-      ].join(EOL) + EOL
+        chalk.cyan.bold('> ') + chalk.gray('(Type F+Enter to start giving feedback)'),
+      ].join(EOL) + EOL,
     );
   }
 
@@ -291,11 +316,20 @@ export class ConcurrentFeedbackCollector {
     this.buffer = ''; // Clear any existing buffer
 
     // Show concise 1-line usage guide as requested by user
-    process.stdout.write(EOL + chalk.yellow.bold('📝 FEEDBACK MODE') + chalk.gray(' - Type feedback (multiline ok), then Q+Enter to submit | MCP progress paused') + EOL);
+    process.stdout.write(
+      EOL +
+        chalk.yellow.bold('📝 FEEDBACK MODE') +
+        chalk.gray(
+          ' - Type feedback (multiline ok), then Q+Enter to submit | MCP progress paused',
+        ) +
+        EOL,
+    );
     process.stdout.write(chalk.cyan.bold('> '));
 
     if (this.options.verbose) {
-      process.stderr.write(`[feedback-collector] Entered FEEDBACK mode - MCP progress buffering activated${EOL}`);
+      process.stderr.write(
+        `[feedback-collector] Entered FEEDBACK mode - MCP progress buffering activated${EOL}`,
+      );
     }
   }
 
@@ -307,7 +341,9 @@ export class ConcurrentFeedbackCollector {
     setFeedbackActive(false); // Stop buffering MCP progress
 
     if (this.options.verbose) {
-      process.stderr.write(`[feedback-collector] Exited FEEDBACK mode - MCP progress restored${EOL}`);
+      process.stderr.write(
+        `[feedback-collector] Exited FEEDBACK mode - MCP progress restored${EOL}`,
+      );
     }
   }
 
@@ -322,10 +358,10 @@ export class ConcurrentFeedbackCollector {
     };
 
     // Handle various exit scenarios
-    process.on('SIGINT', cleanup);   // Ctrl-C
-    process.on('SIGTERM', cleanup);  // Termination signal
-    process.on('exit', cleanup);     // Normal exit
-    process.on('uncaughtException', cleanup);  // Uncaught exceptions
+    process.on('SIGINT', cleanup); // Ctrl-C
+    process.on('SIGTERM', cleanup); // Termination signal
+    process.on('exit', cleanup); // Normal exit
+    process.on('uncaughtException', cleanup); // Uncaught exceptions
   }
 
   /**
@@ -368,7 +404,9 @@ export class ConcurrentFeedbackCollector {
       }
 
       if (this.options.verbose) {
-        process.stderr.write(`${EOL}[feedback-collector] EOF received. Total submissions: ${this.submissionCount}${EOL}`);
+        process.stderr.write(
+          `${EOL}[feedback-collector] EOF received. Total submissions: ${this.submissionCount}${EOL}`,
+        );
       }
     });
   }
@@ -388,7 +426,9 @@ export class ConcurrentFeedbackCollector {
       }
       // Ignore other input in NORMAL mode - just show prompt again
       if (trimmed.length > 0) {
-        process.stdout.write(chalk.gray('Type F+Enter to enter feedback mode, or Ctrl-D to exit') + EOL);
+        process.stdout.write(
+          chalk.gray('Type F+Enter to enter feedback mode, or Ctrl-D to exit') + EOL,
+        );
         process.stdout.write(chalk.cyan.bold('> '));
       }
       return;
@@ -401,7 +441,12 @@ export class ConcurrentFeedbackCollector {
         this.exitFeedbackMode();
 
         // Show ready prompt for next feedback
-        process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Type F+Enter for another feedback, or Ctrl-D to exit)') + EOL);
+        process.stdout.write(
+          EOL +
+            chalk.cyan.bold('> ') +
+            chalk.gray('(Type F+Enter for another feedback, or Ctrl-D to exit)') +
+            EOL,
+        );
         return;
       }
 
@@ -422,7 +467,9 @@ export class ConcurrentFeedbackCollector {
       return;
     }
 
-    process.stdout.write(EOL + chalk.green.bold('✅ Feedback registered and being processed...') + EOL);
+    process.stdout.write(
+      EOL + chalk.green.bold('✅ Feedback registered and being processed...') + EOL,
+    );
     if (this.options.verbose) {
       process.stdout.write(chalk.gray('Feedback content:') + EOL);
       process.stdout.write(content + EOL);
@@ -458,7 +505,7 @@ export class ConcurrentFeedbackCollector {
     const submission: FeedbackSubmission = {
       content: input,
       timestamp: new Date(),
-      submissionNumber: n
+      submissionNumber: n,
     };
 
     this.submissions.push(submission);
@@ -466,7 +513,9 @@ export class ConcurrentFeedbackCollector {
     if (this.options.onSubmit) {
       // Use custom submission handler
       if (this.options.verbose) {
-        process.stderr.write(`${EOL}[feedback-collector ${n}] Using custom submission handler${EOL}`);
+        process.stderr.write(
+          `${EOL}[feedback-collector ${n}] Using custom submission handler${EOL}`,
+        );
       }
 
       try {
@@ -474,11 +523,19 @@ export class ConcurrentFeedbackCollector {
         if (this.options.verbose) {
           process.stderr.write(`[feedback-collector ${n}] Custom handler completed${EOL}`);
         }
-        process.stdout.write(EOL + chalk.green('✅ Feedback submitted successfully. You can type another block.') + EOL);
-        process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL);
+        process.stdout.write(
+          EOL +
+            chalk.green('✅ Feedback submitted successfully. You can type another block.') +
+            EOL,
+        );
+        process.stdout.write(
+          EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL,
+        );
       } catch (error) {
         process.stderr.write(`[feedback-collector ${n}] Custom handler error: ${error}${EOL}`);
-        process.stdout.write(EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL);
+        process.stdout.write(
+          EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL,
+        );
       }
     } else {
       // Use command spawning
@@ -491,12 +548,14 @@ export class ConcurrentFeedbackCollector {
    */
   private async runCommandWithInput(n: number, input: string): Promise<void> {
     if (this.options.verbose) {
-      process.stderr.write(`${EOL}[feedback-collector ${n}] Launching "${this.options.command}" ${this.options.commandArgs.join(' ')}${EOL}`);
+      process.stderr.write(
+        `${EOL}[feedback-collector ${n}] Launching "${this.options.command}" ${this.options.commandArgs.join(' ')}${EOL}`,
+      );
     }
 
     return new Promise((resolve) => {
       const child = spawn(this.options.command, this.options.commandArgs, {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       // Pipe child's output to stderr (treat as logs)
@@ -518,10 +577,18 @@ export class ConcurrentFeedbackCollector {
         }
 
         if (code === 0) {
-          process.stdout.write(EOL + chalk.green('✅ Feedback submitted successfully. You can type another block.') + EOL);
-          process.stdout.write(EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL);
+          process.stdout.write(
+            EOL +
+              chalk.green('✅ Feedback submitted successfully. You can type another block.') +
+              EOL,
+          );
+          process.stdout.write(
+            EOL + chalk.cyan.bold('> ') + chalk.gray('(Ready for next feedback)') + EOL,
+          );
         } else {
-          process.stdout.write(EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL);
+          process.stdout.write(
+            EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL,
+          );
         }
 
         resolve();
@@ -529,7 +596,9 @@ export class ConcurrentFeedbackCollector {
 
       child.on('error', (err) => {
         process.stderr.write(`[feedback-collector ${n}] error: ${err.message}${EOL}`);
-        process.stdout.write(EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL);
+        process.stdout.write(
+          EOL + chalk.red('❌ Feedback submission failed. Please try again.') + EOL,
+        );
         resolve();
       });
 
@@ -548,7 +617,9 @@ export class ConcurrentFeedbackCollector {
 /**
  * Create and start a feedback collector
  */
-export function createFeedbackCollector(options?: FeedbackCollectorOptions): ConcurrentFeedbackCollector {
+export function createFeedbackCollector(
+  options?: FeedbackCollectorOptions,
+): ConcurrentFeedbackCollector {
   const collector = new ConcurrentFeedbackCollector(options);
   return collector;
 }

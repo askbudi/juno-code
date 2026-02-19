@@ -45,7 +45,7 @@ export class ProgressBar {
       incomplete: '░',
       clear: true,
       stream: process.stdout,
-      ...config
+      ...config,
     };
   }
 
@@ -76,7 +76,7 @@ export class ProgressBar {
    * Render progress bar
    */
   private render(message?: string): void {
-    const percentage = this.total > 0 ? (this.current / this.total) : 0;
+    const percentage = this.total > 0 ? this.current / this.total : 0;
     const completeLength = Math.round(this.config.width * percentage);
     const incompleteLength = this.config.width - completeLength;
 
@@ -90,9 +90,8 @@ export class ProgressBar {
     const rate = this.current > 0 ? this.current / (elapsed / 1000) : 0;
     const eta = this.current > 0 && rate > 0 ? (this.total - this.current) / rate : 0;
 
-    const timeText = this.current === this.total
-      ? `${(elapsed / 1000).toFixed(1)}s`
-      : `ETA: ${eta.toFixed(0)}s`;
+    const timeText =
+      this.current === this.total ? `${(elapsed / 1000).toFixed(1)}s` : `ETA: ${eta.toFixed(0)}s`;
 
     let output = `\r${chalk.blue(progressText)} ${chalk.gray(timeText)}`;
 
@@ -119,7 +118,7 @@ export class Spinner {
       frames: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
       interval: 80,
       stream: process.stdout,
-      ...config
+      ...config,
     };
   }
 
@@ -219,7 +218,7 @@ export class StepProgress {
   private verbose: boolean;
 
   constructor(steps: string[], verbose: boolean = false) {
-    this.steps = steps.map(name => ({ name, status: 'pending' }));
+    this.steps = steps.map((name) => ({ name, status: 'pending' }));
     this.verbose = verbose;
   }
 
@@ -270,7 +269,7 @@ export class StepProgress {
   private render(): void {
     if (!this.verbose) {
       // Simple single-line progress
-      const completed = this.steps.filter(s => s.status === 'completed').length;
+      const completed = this.steps.filter((s) => s.status === 'completed').length;
       const total = this.steps.length;
       const current = this.currentStepIndex >= 0 ? this.steps[this.currentStepIndex].name : '';
 
@@ -366,7 +365,7 @@ export class ProgressEventFormatter {
     // If this is a raw JSON event (from shell backend with outputRawJson=true),
     // output the full content without truncation
     const content = event.metadata?.rawJson
-      ? event.content  // Full JSON output
+      ? event.content // Full JSON output
       : event.content; // Original content (already formatted)
 
     return `${chalk.gray(timestamp)} ${backend}${toolId} ${typeColor(event.type)}: ${content}`;
@@ -377,9 +376,8 @@ export class ProgressEventFormatter {
    */
   private formatSimple(event: ProgressEvent): string {
     const icon = this.getEventTypeIcon(event.type);
-    const preview = event.content.length > 50
-      ? event.content.substring(0, 50) + '...'
-      : event.content;
+    const preview =
+      event.content.length > 50 ? event.content.substring(0, 50) + '...' : event.content;
 
     return `${icon} ${chalk.gray(preview)}`;
   }
@@ -462,10 +460,7 @@ export class ProgressFactory {
   /**
    * Create progress indicator based on mode
    */
-  static create(
-    type: 'bar' | 'spinner' | 'steps' | 'events' | 'quiet',
-    options: any = {}
-  ): any {
+  static create(type: 'bar' | 'spinner' | 'steps' | 'events' | 'quiet', options: any = {}): any {
     switch (type) {
       case 'bar':
         return new ProgressBar(options.total, options.config);

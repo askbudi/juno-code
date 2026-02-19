@@ -50,7 +50,7 @@ describe('Environment Detection', () => {
 
   afterEach(() => {
     // Restore environment variables individually
-    Object.keys(process.env).forEach(key => {
+    Object.keys(process.env).forEach((key) => {
       if (!(key in originalEnv)) {
         delete process.env[key];
       } else {
@@ -58,7 +58,7 @@ describe('Environment Detection', () => {
       }
     });
     // Add any missing original variables
-    Object.keys(originalEnv).forEach(key => {
+    Object.keys(originalEnv).forEach((key) => {
       if (!(key in process.env)) {
         process.env[key] = originalEnv[key];
       }
@@ -113,9 +113,9 @@ describe('Environment Detection', () => {
         'CIRCLECI',
       ];
 
-      ciIndicators.forEach(indicator => {
+      ciIndicators.forEach((indicator) => {
         // Clear environment
-        Object.keys(process.env).forEach(key => {
+        Object.keys(process.env).forEach((key) => {
           if (ciIndicators.includes(key)) {
             delete process.env[key];
           }
@@ -138,7 +138,7 @@ describe('Environment Detection', () => {
         'CIRCLECI',
       ];
 
-      ciIndicators.forEach(indicator => {
+      ciIndicators.forEach((indicator) => {
         delete process.env[indicator];
       });
 
@@ -198,7 +198,7 @@ describe('Environment Variables', () => {
 
   afterEach(() => {
     // Restore environment variables individually
-    Object.keys(process.env).forEach(key => {
+    Object.keys(process.env).forEach((key) => {
       if (!(key in originalEnv)) {
         delete process.env[key];
       } else {
@@ -206,7 +206,7 @@ describe('Environment Variables', () => {
       }
     });
     // Add any missing original variables
-    Object.keys(originalEnv).forEach(key => {
+    Object.keys(originalEnv).forEach((key) => {
       if (!(key in process.env)) {
         process.env[key] = originalEnv[key];
       }
@@ -359,7 +359,7 @@ describe('Terminal Capabilities', () => {
 
     afterEach(() => {
       // Restore environment variables individually
-      Object.keys(process.env).forEach(key => {
+      Object.keys(process.env).forEach((key) => {
         if (!(key in originalEnv)) {
           delete process.env[key];
         } else {
@@ -367,7 +367,7 @@ describe('Terminal Capabilities', () => {
         }
       });
       // Add any missing original variables
-      Object.keys(originalEnv).forEach(key => {
+      Object.keys(originalEnv).forEach((key) => {
         if (!(key in process.env)) {
           process.env[key] = originalEnv[key];
         }
@@ -409,7 +409,7 @@ describe('Terminal Capabilities', () => {
 
     afterEach(() => {
       // Restore environment variables individually
-      Object.keys(process.env).forEach(key => {
+      Object.keys(process.env).forEach((key) => {
         if (!(key in originalEnv)) {
           delete process.env[key];
         } else {
@@ -417,7 +417,7 @@ describe('Terminal Capabilities', () => {
         }
       });
       // Add any missing original variables
-      Object.keys(originalEnv).forEach(key => {
+      Object.keys(originalEnv).forEach((key) => {
         if (!(key in process.env)) {
           process.env[key] = originalEnv[key];
         }
@@ -480,7 +480,7 @@ describe('Platform Information', () => {
 
     afterEach(() => {
       // Restore environment variables individually
-      Object.keys(process.env).forEach(key => {
+      Object.keys(process.env).forEach((key) => {
         if (!(key in originalEnv)) {
           delete process.env[key];
         } else {
@@ -488,7 +488,7 @@ describe('Platform Information', () => {
         }
       });
       // Add any missing original variables
-      Object.keys(originalEnv).forEach(key => {
+      Object.keys(originalEnv).forEach((key) => {
         if (!(key in process.env)) {
           process.env[key] = originalEnv[key];
         }

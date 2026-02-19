@@ -36,7 +36,7 @@ export const DEFAULT_HOOKS: Hooks = {
   // Executes once at the beginning of a run (before all iterations)
   // Use for: setup, environment checks, notifications, pre-run cleanup
   START_RUN: {
-    commands: []
+    commands: [],
   },
 
   // Executes at the start of each iteration
@@ -48,29 +48,29 @@ export const DEFAULT_HOOKS: Hooks = {
 
       // Monitor AGENTS.md file size
       'file="AGENTS.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban "[Critical] file $file is too large, keep it lean and useful for every run of the agent."; fi',
-      "./.juno_task/scripts/cleanup_feedback.sh",
-    ]
+      './.juno_task/scripts/cleanup_feedback.sh',
+    ],
   },
 
   // Executes at the end of each iteration
   // Use for: validation, logging, per-iteration cleanup, progress tracking
   END_ITERATION: {
-    commands: []
+    commands: [],
   },
 
   // Executes once at the end of a run (after all iterations complete)
   // Use for: final cleanup, notifications, reports, post-run actions
   END_RUN: {
-    commands: []
+    commands: [],
   },
 
   // Executes when stale iteration is detected in run_until_completion.sh
   // Use for: alerts, notifications, logging when agent is not making progress
   ON_STALE: {
     commands: [
-      './.juno_task/scripts/kanban.sh create "Warning: You haven\'t done anything on the kanban in the past run. You need to process a task, or if you find it unsuitable or unresolvable, you need to archive the task" --status todo'
-    ]
-  }
+      './.juno_task/scripts/kanban.sh create "Warning: You haven\'t done anything on the kanban in the past run. You need to process a task, or if you find it unsuitable or unresolvable, you need to archive the task" --status todo',
+    ],
+  },
 };
 
 /**

@@ -347,7 +347,7 @@ export class RuntimeError extends CLIError {
     this.suggestions = [
       'Check file/directory permissions',
       'Verify path exists and is accessible',
-      'Use absolute paths to avoid ambiguity'
+      'Use absolute paths to avoid ambiguity',
     ];
   }
 }
@@ -399,7 +399,7 @@ export const ENVIRONMENT_MAPPINGS = {
   JUNO_CODE_ENABLE_FEEDBACK: 'enableFeedback',
 
   // Special aliases
-  JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback'  // Alias for enableFeedback
+  JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback', // Alias for enableFeedback
 } as const;
 
 /**
@@ -410,7 +410,7 @@ export type EnvironmentVariable = keyof typeof ENVIRONMENT_MAPPINGS;
 /**
  * Type for CLI option keys
  */
-export type CLIOptionKey = typeof ENVIRONMENT_MAPPINGS[EnvironmentVariable];
+export type CLIOptionKey = (typeof ENVIRONMENT_MAPPINGS)[EnvironmentVariable];
 
 // ============================================================================
 // Configuration Types
@@ -495,10 +495,10 @@ export function isRuntimeError(error: unknown): error is RuntimeError {
  */
 export const SUBAGENT_ALIASES: Record<string, SubagentType> = {
   'claude-code': 'claude',
-  'claude_code': 'claude',
+  claude_code: 'claude',
   'gemini-cli': 'gemini',
   'cursor-agent': 'cursor',
-  'pi-agent': 'pi'
+  'pi-agent': 'pi',
 };
 
 /**
@@ -509,7 +509,7 @@ export const COMMAND_CATEGORIES = {
   PROJECT: ['init', 'setup-git'],
   TESTING: ['test'],
   SESSION: ['session'],
-  FEEDBACK: ['feedback']
+  FEEDBACK: ['feedback'],
 } as const;
 
 /**
@@ -521,7 +521,7 @@ export const EXIT_CODES = {
   CONFIGURATION_ERROR: 2,
   COMMAND_NOT_FOUND: 3,
   RUNTIME_ERROR: 5,
-  UNEXPECTED_ERROR: 99
+  UNEXPECTED_ERROR: 99,
 } as const;
 
-export type ExitCode = typeof EXIT_CODES[keyof typeof EXIT_CODES];
+export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

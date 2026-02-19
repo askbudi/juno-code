@@ -330,7 +330,7 @@ export enum ErrorCode {
   INTERNAL_DEADLOCK = 'INTERNAL_DEADLOCK',
 
   /** Resource leak detected */
-  INTERNAL_RESOURCE_LEAK = 'INTERNAL_RESOURCE_LEAK'
+  INTERNAL_RESOURCE_LEAK = 'INTERNAL_RESOURCE_LEAK',
 }
 
 /**
@@ -347,7 +347,7 @@ export const ERROR_CODE_CATEGORIES: Record<string, string> = {
   TUI: 'tui',
   NETWORK: 'network',
   SECURITY: 'security',
-  INTERNAL: 'internal'
+  INTERNAL: 'internal',
 };
 
 /**
@@ -372,7 +372,7 @@ export function isRetriableErrorCode(code: ErrorCode): boolean {
     ErrorCode.NETWORK_TIMEOUT,
     ErrorCode.NETWORK_DNS_ERROR,
     ErrorCode.NETWORK_UNREACHABLE,
-    ErrorCode.NETWORK_REQUEST_INTERRUPTED
+    ErrorCode.NETWORK_REQUEST_INTERRUPTED,
   ];
 
   return retriableCodes.includes(code);
@@ -395,7 +395,7 @@ export function requiresUserIntervention(code: ErrorCode): boolean {
     ErrorCode.CLI_INVALID_ARGUMENTS,
     ErrorCode.CLI_MISSING_ARGUMENTS,
     ErrorCode.SECURITY_AUTH_FAILED,
-    ErrorCode.SECURITY_INVALID_CREDENTIALS
+    ErrorCode.SECURITY_INVALID_CREDENTIALS,
   ];
 
   return userInterventionCodes.includes(code);

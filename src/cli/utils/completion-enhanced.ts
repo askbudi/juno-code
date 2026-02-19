@@ -46,7 +46,7 @@ const MODEL_SUGGESTIONS = {
   claude: ['sonnet-4', 'opus-4.1', 'haiku-4', 'claude-3-5-sonnet-20241022'],
   cursor: ['gpt-5', 'sonnet-4', 'sonnet-4-thinking', 'gpt-4o', 'o1-preview'],
   codex: ['gpt-5', 'gpt-4o', 'o1-preview', 'o1-mini'],
-  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']
+  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
 } as const;
 
 export class ContextAwareCompletion {
@@ -78,9 +78,10 @@ export class ContextAwareCompletion {
 
       // Apply filters
       if (filter?.extensions && filter.extensions.length > 0) {
-        const extPattern = filter.extensions.length === 1
-          ? filter.extensions[0]
-          : `{${filter.extensions.join(',')}}`;
+        const extPattern =
+          filter.extensions.length === 1
+            ? filter.extensions[0]
+            : `{${filter.extensions.join(',')}}`;
         pattern = path.join(dirPath, `${baseName}*${extPattern}`);
       }
 
@@ -90,14 +91,14 @@ export class ContextAwareCompletion {
         nodir: !(filter?.includeDirectories ?? true),
         maxDepth: filter?.maxDepth || 3,
         absolute: false,
-        mark: true
+        mark: true,
       };
 
       const results = await glob(pattern, options);
 
       // Convert back to relative paths and filter
       return results
-        .map(result => {
+        .map((result) => {
           if (partial.startsWith('./')) {
             return `./${result}`;
           } else if (partial.startsWith('../')) {
@@ -124,8 +125,8 @@ export class ContextAwareCompletion {
 
       const sessions = await fs.readdir(sessionDir);
       return sessions
-        .filter(name => name.match(/^session_\d+$/))
-        .map(name => name.replace('session_', ''))
+        .filter((name) => name.match(/^session_\d+$/))
+        .map((name) => name.replace('session_', ''))
         .sort((a, b) => parseInt(b) - parseInt(a)); // Most recent first
     } catch {
       return [];
@@ -147,8 +148,8 @@ export class ContextAwareCompletion {
       if (await fs.pathExists(customTemplatesDir)) {
         const files = await fs.readdir(customTemplatesDir);
         customTemplates = files
-          .filter(name => name.endsWith('.md') || name.endsWith('.hbs'))
-          .map(name => path.basename(name, path.extname(name)));
+          .filter((name) => name.endsWith('.md') || name.endsWith('.hbs'))
+          .map((name) => path.basename(name, path.extname(name)));
       }
 
       return [...builtinTemplates, ...customTemplates].sort();
@@ -167,7 +168,7 @@ export class ContextAwareCompletion {
       '.juno_task/config.toml',
       'juno-task.config.js',
       'juno-task.config.json',
-      'pyproject.toml'
+      'pyproject.toml',
     ];
 
     const existingConfigs: string[] = [];
@@ -205,11 +206,11 @@ export class ContextAwareCompletion {
       return paths;
     }
 
-    return paths.filter(filePath => {
+    return paths.filter((filePath) => {
       const ext = path.extname(filePath).toLowerCase();
-      return extensions.some(allowedExt =>
-        allowedExt.toLowerCase() === ext ||
-        allowedExt.toLowerCase() === ext.replace('.', '')
+      return extensions.some(
+        (allowedExt) =>
+          allowedExt.toLowerCase() === ext || allowedExt.toLowerCase() === ext.replace('.', ''),
       );
     });
   }
@@ -248,12 +249,7 @@ export class ProjectStateCompletion {
    */
   async getRecentPrompts(): Promise<string[]> {
     try {
-      const patterns = [
-        '.juno_task/*.md',
-        '.juno_task/prompts/*.md',
-        'prompts/*.md',
-        '*.md'
-      ];
+      const patterns = ['.juno_task/*.md', '.juno_task/prompts/*.md', 'prompts/*.md', '*.md'];
 
       const promptFiles: string[] = [];
 
@@ -261,7 +257,7 @@ export class ProjectStateCompletion {
         try {
           const matches = await glob(pattern, {
             cwd: process.cwd(),
-            ignore: ['node_modules/**', '.git/**']
+            ignore: ['node_modules/**', '.git/**'],
           });
           promptFiles.push(...matches);
         } catch {
@@ -278,14 +274,14 @@ export class ProjectStateCompletion {
           } catch {
             return null;
           }
-        })
+        }),
       );
 
       return filesWithStats
         .filter(Boolean)
         .sort((a, b) => b!.mtime.getTime() - a!.mtime.getTime())
         .slice(0, 10)
-        .map(item => item!.file);
+        .map((item) => item!.file);
     } catch {
       return [];
     }
@@ -299,13 +295,13 @@ export class ProjectStateCompletion {
       const { execa } = await import('execa');
       const result = await execa('git', ['remote', '-v'], {
         cwd: process.cwd(),
-        reject: false
+        reject: false,
       });
 
       if (result.exitCode === 0) {
         return result.stdout
           .split('\n')
-          .map(line => line.split('\t')[1]?.split(' ')[0])
+          .map((line) => line.split('\t')[1]?.split(' ')[0])
           .filter(Boolean)
           .filter((url, index, arr) => arr.indexOf(url) === index); // Remove duplicates
       }
@@ -322,7 +318,7 @@ export class ProjectStateCompletion {
     try {
       const templatePaths = [
         path.join(process.cwd(), '.juno_task', 'templates', `${templateName}.hbs`),
-        path.join(process.cwd(), '.juno_task', 'templates', `${templateName}.md`)
+        path.join(process.cwd(), '.juno_task', 'templates', `${templateName}.md`),
       ];
 
       for (const templatePath of templatePaths) {
@@ -333,8 +329,8 @@ export class ProjectStateCompletion {
           const variables = content.match(/\{\{([^}]+)\}\}/g);
           if (variables) {
             return variables
-              .map(match => match.replace(/[{}]/g, '').trim())
-              .filter(variable => !variable.includes(' ')) // Simple variables only
+              .map((match) => match.replace(/[{}]/g, '').trim())
+              .filter((variable) => !variable.includes(' ')) // Simple variables only
               .filter((variable, index, arr) => arr.indexOf(variable) === index); // Remove duplicates
           }
         }
@@ -370,7 +366,7 @@ export class ProjectStateCompletion {
       'mcpServerPath',
       'sessionDir',
       'templateDir',
-      'gitUrl'
+      'gitUrl',
     ].sort();
   }
 }
@@ -418,12 +414,17 @@ export class CompletionInstaller {
 
       // Add sourcing to shell config if needed (not for fish)
       if (shell !== 'fish') {
-        const isPresent = await this.shellDetector.isSourceCommandPresent(configPath, sourceCommand);
+        const isPresent = await this.shellDetector.isSourceCommandPresent(
+          configPath,
+          sourceCommand,
+        );
         if (!isPresent) {
           try {
             await fs.appendFile(configPath, `\n\n${sourceCommand}\n`);
           } catch (error) {
-            warnings.push(`Could not automatically update ${configPath}. Please add manually: ${sourceCommand}`);
+            warnings.push(
+              `Could not automatically update ${configPath}. Please add manually: ${sourceCommand}`,
+            );
           }
         }
       }
@@ -433,15 +434,14 @@ export class CompletionInstaller {
         installPath: completionPath,
         configPath,
         message: `Completion installed for ${shell}. ${shell === 'fish' ? 'Ready to use!' : 'Restart shell or source config file.'}`,
-        warnings
+        warnings,
       };
-
     } catch (error) {
       return {
         success: false,
         installPath: '',
         configPath: '',
-        message: `Failed to install completion for ${shell}: ${error instanceof Error ? error.message : 'Unknown error'}`
+        message: `Failed to install completion for ${shell}: ${error instanceof Error ? error.message : 'Unknown error'}`,
       };
     }
   }
@@ -956,5 +956,5 @@ complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor code
 export default {
   ContextAwareCompletion,
   ProjectStateCompletion,
-  CompletionInstaller
+  CompletionInstaller,
 };

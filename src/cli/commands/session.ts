@@ -14,7 +14,7 @@ import type {
   SessionListOptions,
   SessionInfoOptions,
   SessionRemoveOptions,
-  SessionCleanOptions
+  SessionCleanOptions,
 } from '../types.js';
 import { RuntimeError, ConfigurationError } from '../types.js';
 import type {
@@ -22,7 +22,7 @@ import type {
   SessionInfo,
   Session,
   SessionListFilter,
-  CleanupOptions
+  CleanupOptions,
 } from '../../core/session.js';
 import type { SessionStatus } from '../../types/index.js';
 
@@ -53,7 +53,9 @@ class SessionDisplayFormatter {
       const statusColor = this.getStatusColor(status as SessionStatus);
       const statusIcon = this.getStatusIcon(status as SessionStatus);
 
-      console.log(statusColor.bold(`${statusIcon} ${status.toUpperCase()} (${sessionList.length})`));
+      console.log(
+        statusColor.bold(`${statusIcon} ${status.toUpperCase()} (${sessionList.length})`),
+      );
 
       for (const session of sessionList) {
         this.formatSessionSummary(session);
@@ -96,17 +98,19 @@ class SessionDisplayFormatter {
     // Tags
     if (info.tags.length > 0) {
       console.log(chalk.white.bold('\nTags:'));
-      console.log(`   ${info.tags.map(tag => chalk.cyan(`#${tag}`)).join(' ')}`);
+      console.log(`   ${info.tags.map((tag) => chalk.cyan(`#${tag}`)).join(' ')}`);
     }
 
     // Recent history
     if (history.length > 0) {
       console.log(chalk.white.bold('\nRecent History:'));
       const recentEntries = history.slice(-5);
-      recentEntries.forEach(entry => {
+      recentEntries.forEach((entry) => {
         const time = entry.timestamp.toLocaleTimeString();
         const typeColor = this.getHistoryTypeColor(entry.type);
-        console.log(`   ${chalk.gray(time)} ${typeColor(entry.type)}: ${entry.content.substring(0, 80)}${entry.content.length > 80 ? '...' : ''}`);
+        console.log(
+          `   ${chalk.gray(time)} ${typeColor(entry.type)}: ${entry.content.substring(0, 80)}${entry.content.length > 80 ? '...' : ''}`,
+        );
       });
 
       if (history.length > 5) {
@@ -122,7 +126,9 @@ class SessionDisplayFormatter {
         console.log(`   Error: ${chalk.red(session.result.error)}`);
       }
       if (session.result.output) {
-        console.log(`   Output: ${session.result.output.substring(0, 200)}${session.result.output.length > 200 ? '...' : ''}`);
+        console.log(
+          `   Output: ${session.result.output.substring(0, 200)}${session.result.output.length > 200 ? '...' : ''}`,
+        );
       }
     }
   }
@@ -133,10 +139,12 @@ class SessionDisplayFormatter {
       ? this.formatDuration(session.completedAt.getTime() - session.createdAt.getTime())
       : this.formatDuration(Date.now() - session.createdAt.getTime());
 
-    console.log(`   ${chalk.cyan(session.id.substring(0, 8))} ${chalk.white(session.name || 'Unnamed')} ${chalk.gray(ageText)} ${chalk.magenta(session.subagent)} ${chalk.gray(durationText)}`);
+    console.log(
+      `   ${chalk.cyan(session.id.substring(0, 8))} ${chalk.white(session.name || 'Unnamed')} ${chalk.gray(ageText)} ${chalk.magenta(session.subagent)} ${chalk.gray(durationText)}`,
+    );
 
     if (session.tags.length > 0 && this.verbose) {
-      console.log(`     Tags: ${session.tags.map(tag => chalk.cyan(`#${tag}`)).join(' ')}`);
+      console.log(`     Tags: ${session.tags.map((tag) => chalk.cyan(`#${tag}`)).join(' ')}`);
     }
   }
 
@@ -145,10 +153,10 @@ class SessionDisplayFormatter {
       running: [],
       completed: [],
       failed: [],
-      cancelled: []
+      cancelled: [],
     };
 
-    sessions.forEach(session => {
+    sessions.forEach((session) => {
       groups[session.status].push(session);
     });
 
@@ -239,7 +247,6 @@ class SessionDisplayFormatter {
       return `${seconds}s`;
     }
   }
-
 }
 
 /**
@@ -248,7 +255,7 @@ class SessionDisplayFormatter {
 async function handleSessionList(
   args: string[],
   options: SessionListOptions,
-  sessionManager: SessionManager
+  sessionManager: SessionManager,
 ): Promise<void> {
   const filter: SessionListFilter = {};
 
@@ -280,7 +287,7 @@ async function handleSessionList(
 async function handleSessionInfo(
   args: string[],
   options: SessionInfoOptions,
-  sessionManager: SessionManager
+  sessionManager: SessionManager,
 ): Promise<void> {
   const sessionId = args[0];
 
@@ -309,7 +316,7 @@ async function handleSessionInfo(
 async function handleSessionRemove(
   args: string[],
   options: SessionRemoveOptions,
-  sessionManager: SessionManager
+  sessionManager: SessionManager,
 ): Promise<void> {
   const sessionIds = args;
 
@@ -334,7 +341,9 @@ async function handleSessionRemove(
 
       if (!options.force) {
         // In real implementation, would prompt for confirmation
-        console.log(chalk.yellow(`Would remove session: ${sessionId} (${session.info.name || 'Unnamed'})`));
+        console.log(
+          chalk.yellow(`Would remove session: ${sessionId} (${session.info.name || 'Unnamed'})`),
+        );
         console.log(chalk.gray('Use --force to skip confirmation'));
         continue;
       }
@@ -342,7 +351,6 @@ async function handleSessionRemove(
       await sessionManager.removeSession(sessionId);
       console.log(chalk.green(`✅ Removed session: ${sessionId}`));
       successCount++;
-
     } catch (error) {
       console.log(chalk.red(`❌ Failed to remove session ${sessionId}: ${error}`));
       errorCount++;
@@ -358,10 +366,10 @@ async function handleSessionRemove(
 async function handleSessionClean(
   args: string[],
   options: SessionCleanOptions,
-  sessionManager: SessionManager
+  sessionManager: SessionManager,
 ): Promise<void> {
   const cleanupOptions: CleanupOptions = {
-    dryRun: !options.force
+    dryRun: !options.force,
   };
 
   if (options.days) {
@@ -401,7 +409,7 @@ async function handleSessionClean(
 export async function sessionCommandHandler(
   args: string[],
   options: any,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     const subcommand = args[0];
@@ -418,8 +426,8 @@ export async function sessionCommandHandler(
       cliConfig: {
         verbose: options.verbose || false,
         quiet: options.quiet || false,
-        logLevel: options.logLevel || 'info'
-      }
+        logLevel: options.logLevel || 'info',
+      },
     });
 
     // Create session manager
@@ -453,7 +461,6 @@ export async function sessionCommandHandler(
         console.log(chalk.gray('Available subcommands: list, info, remove, clean'));
         process.exit(1);
     }
-
   } catch (error) {
     if (error instanceof ConfigurationError || error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ Session Error'));
@@ -461,7 +468,7 @@ export async function sessionCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -503,7 +510,9 @@ export function configureSessionCommand(program: Command): void {
     });
 
   // Add help text
-  sessionCommand.addHelpText('after', `
+  sessionCommand.addHelpText(
+    'after',
+    `
 Subcommands:
   list, ls                    List all sessions (default)
   info <id>, show <id>        Show detailed session information
@@ -529,5 +538,6 @@ Notes:
   - Use --verbose for detailed information
   - Clean operations show preview unless --force is used
   - Sessions are automatically cleaned up based on age and status
-    `);
+    `,
+  );
 }

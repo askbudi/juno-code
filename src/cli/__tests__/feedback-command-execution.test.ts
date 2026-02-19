@@ -84,13 +84,9 @@ async function executeFeedbackCommandWithArgs(
     timeout?: number;
     cwd?: string;
     env?: Record<string, string>;
-  } = {}
+  } = {},
 ): Promise<{ result: ExecaReturnValue; filesCreated: string[] }> {
-  const {
-    timeout = FEEDBACK_COMMAND_TIMEOUT,
-    cwd = tempDir,
-    env = {}
-  } = options;
+  const { timeout = FEEDBACK_COMMAND_TIMEOUT, cwd = tempDir, env = {} } = options;
 
   // Record files before execution
   const filesBefore = await getDirectoryFiles(cwd);
@@ -102,7 +98,7 @@ async function executeFeedbackCommandWithArgs(
     NODE_ENV: 'development',
     JUNO_CODE_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
-    ...env
+    ...env,
   };
 
   try {
@@ -111,17 +107,17 @@ async function executeFeedbackCommandWithArgs(
       env: testEnv,
       timeout,
       reject: false,
-      all: true
+      all: true,
     });
 
     // Record files after execution
     const filesAfter = await getDirectoryFiles(cwd);
-    const filesCreated = filesAfter.filter(f => !filesBefore.includes(f));
+    const filesCreated = filesAfter.filter((f) => !filesBefore.includes(f));
 
     return { result, filesCreated };
   } catch (error: any) {
     const filesAfter = await getDirectoryFiles(cwd);
-    const filesCreated = filesAfter.filter(f => !filesBefore.includes(f));
+    const filesCreated = filesAfter.filter((f) => !filesBefore.includes(f));
 
     return { result: error, filesCreated };
   }
@@ -133,7 +129,7 @@ async function executeFeedbackCommandWithArgs(
 async function getDirectoryFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
 
-  if (!await fs.pathExists(dir)) {
+  if (!(await fs.pathExists(dir))) {
     return files;
   }
 
@@ -159,7 +155,7 @@ async function getDirectoryFiles(dir: string): Promise<string[]> {
  */
 async function analyzeFileSystemChanges(
   filesCreated: string[],
-  workingDir: string
+  workingDir: string,
 ): Promise<FeedbackCommandTestResult['fileSystemAnalysis']> {
   const junoTaskPath = path.join(workingDir, '.juno_task');
   const junoTaskFolderCreated = await fs.pathExists(junoTaskPath);
@@ -174,7 +170,7 @@ async function analyzeFileSystemChanges(
   return {
     junoTaskFolderCreated,
     userFeedbackMd,
-    feedbackContent
+    feedbackContent,
   };
 }
 
@@ -184,7 +180,7 @@ async function analyzeFileSystemChanges(
 function validateFeedbackContent(
   content: string,
   expectedIssue?: string,
-  expectedTestCriteria?: string
+  expectedTestCriteria?: string,
 ): FeedbackCommandTestResult['contentValidation'] {
   const hasOpenIssues = content.includes('<OPEN_ISSUES>') || content.includes('<OPEN_ISSUES>');
   const hasIssueTag = /<ISSUE>[\s\S]*?<\/ISSUE>/.test(content);
@@ -205,7 +201,7 @@ function validateFeedbackContent(
     hasTestCriteria,
     hasDate,
     issueContent,
-    testCriteriaContent
+    testCriteriaContent,
   };
 }
 
@@ -214,7 +210,7 @@ function validateFeedbackContent(
  */
 async function saveTestOutput(
   testName: string,
-  testResult: FeedbackCommandTestResult
+  testResult: FeedbackCommandTestResult,
 ): Promise<string> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outputFileName = `${testName}-${timestamp}.md`;
@@ -246,7 +242,7 @@ ${testResult.output.stderr}
 \`\`\`
 
 ## Files Created
-${testResult.output.filesCreated.length > 0 ? testResult.output.filesCreated.map(f => `- \`${f}\``).join('\n') : 'No files created'}
+${testResult.output.filesCreated.length > 0 ? testResult.output.filesCreated.map((f) => `- \`${f}\``).join('\n') : 'No files created'}
 
 ## File System Analysis
 
@@ -276,27 +272,38 @@ ${testResult.contentValidation.testCriteriaContent || 'No test criteria found'}
 
 ## Analysis Notes
 ### Command Success Analysis
-${testResult.output.success ?
-  'The feedback command completed successfully. USER_FEEDBACK.md should be present with proper structure.' :
-  'The feedback command failed. Check stderr for error details.'}
+${
+  testResult.output.success
+    ? 'The feedback command completed successfully. USER_FEEDBACK.md should be present with proper structure.'
+    : 'The feedback command failed. Check stderr for error details.'
+}
 
 ### File Creation Analysis
-${testResult.fileSystemAnalysis.junoTaskFolderCreated && testResult.fileSystemAnalysis.userFeedbackMd ?
-  '✅ USER_FEEDBACK.md was created successfully.' :
-  '❌ USER_FEEDBACK.md is missing. The feedback process may not have completed properly.'}
+${
+  testResult.fileSystemAnalysis.junoTaskFolderCreated &&
+  testResult.fileSystemAnalysis.userFeedbackMd
+    ? '✅ USER_FEEDBACK.md was created successfully.'
+    : '❌ USER_FEEDBACK.md is missing. The feedback process may not have completed properly.'
+}
 
 ### Content Validation Analysis
-${testResult.contentValidation.hasOpenIssues &&
+${
+  testResult.contentValidation.hasOpenIssues &&
   testResult.contentValidation.hasIssueTag &&
-  testResult.contentValidation.hasDate ?
-  '✅ Feedback content structure is correct.' :
-  '❌ Feedback content structure is invalid or incomplete.'}
+  testResult.contentValidation.hasDate
+    ? '✅ Feedback content structure is correct.'
+    : '❌ Feedback content structure is invalid or incomplete.'
+}
 
 ### Recommendations
-${testResult.output.success && testResult.fileSystemAnalysis.userFeedbackMd &&
-  testResult.contentValidation.hasIssueTag && testResult.contentValidation.hasDate ?
-  'Test completed successfully. Review the output to ensure the feedback was saved correctly.' :
-  'Test failed. Review stderr and consider if the failure is due to environmental issues or actual bugs.'}
+${
+  testResult.output.success &&
+  testResult.fileSystemAnalysis.userFeedbackMd &&
+  testResult.contentValidation.hasIssueTag &&
+  testResult.contentValidation.hasDate
+    ? 'Test completed successfully. Review the output to ensure the feedback was saved correctly.'
+    : 'Test failed. Review stderr and consider if the failure is due to environmental issues or actual bugs.'
+}
 
 ---
 *Generated by Feedback Command Execution Test Framework*
@@ -324,7 +331,7 @@ describe('Feedback Command Execution Tests', () => {
 
   afterEach(async () => {
     // Clean up temporary directory
-    if (tempDir && await fs.pathExists(tempDir)) {
+    if (tempDir && (await fs.pathExists(tempDir))) {
       if (process.env.PRESERVE_TMP === '1') {
         // eslint-disable-next-line no-console
         console.log(`🛑 PRESERVE_TMP=1 set. Temp kept at: ${tempDir}`);
@@ -334,184 +341,195 @@ describe('Feedback Command Execution Tests', () => {
     }
   });
 
-  it('should execute feedback command with issue and test criteria flags', async () => {
-    const startTime = performance.now();
-    const testName = 'feedback-command-with-criteria';
+  it(
+    'should execute feedback command with issue and test criteria flags',
+    async () => {
+      const startTime = performance.now();
+      const testName = 'feedback-command-with-criteria';
 
-    const commandArgs = [
-      'feedback',
-      '--issue', 'This is a test issue description',
-      '--test', 'This is the test criteria for validation'
-    ];
-
-    try {
-      const { result, filesCreated } = await executeFeedbackCommandWithArgs(commandArgs);
-
-      const duration = performance.now() - startTime;
-
-      // Analyze file system changes
-      const fileSystemAnalysis = await analyzeFileSystemChanges(filesCreated, tempDir);
-
-      // Validate content
-      const contentValidation = validateFeedbackContent(
-        fileSystemAnalysis.feedbackContent,
+      const commandArgs = [
+        'feedback',
+        '--issue',
         'This is a test issue description',
-        'This is the test criteria for validation'
-      );
+        '--test',
+        'This is the test criteria for validation',
+      ];
 
-      const testResult: FeedbackCommandTestResult = {
-        testName,
-        timestamp: new Date(),
-        duration,
-        command: commandArgs,
-        workingDirectory: tempDir,
-        output: {
-          success: result.exitCode === 0,
-          exitCode: result.exitCode,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          filesCreated
-        },
-        fileSystemAnalysis,
-        contentValidation,
-        outputPath: ''
-      };
+      try {
+        const { result, filesCreated } = await executeFeedbackCommandWithArgs(commandArgs);
 
-      // Save test output to file
-      const outputPath = await saveTestOutput(testName, testResult);
-      testResult.outputPath = outputPath;
+        const duration = performance.now() - startTime;
 
-      // eslint-disable-next-line no-console
-      console.log(`\n📊 Test report saved: ${outputPath}`);
-      // eslint-disable-next-line no-console
-      console.log(`⏱️  Duration: ${duration.toFixed(0)}ms`);
-      // eslint-disable-next-line no-console
-      console.log(`📁 Files created: ${filesCreated.length}`);
-      // eslint-disable-next-line no-console
-      console.log(`🎯 Exit code: ${result.exitCode}`);
-      // eslint-disable-next-line no-console
-      console.log(`📂 Test directory: ${tempDir}`);
+        // Analyze file system changes
+        const fileSystemAnalysis = await analyzeFileSystemChanges(filesCreated, tempDir);
 
-      // Assertions
-      expect(typeof result.exitCode).toBe('number');
+        // Validate content
+        const contentValidation = validateFeedbackContent(
+          fileSystemAnalysis.feedbackContent,
+          'This is a test issue description',
+          'This is the test criteria for validation',
+        );
 
-      // Verify .juno_task folder was created
-      expect(fileSystemAnalysis.junoTaskFolderCreated).toBe(true);
+        const testResult: FeedbackCommandTestResult = {
+          testName,
+          timestamp: new Date(),
+          duration,
+          command: commandArgs,
+          workingDirectory: tempDir,
+          output: {
+            success: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            filesCreated,
+          },
+          fileSystemAnalysis,
+          contentValidation,
+          outputPath: '',
+        };
 
-      // Verify USER_FEEDBACK.md exists
-      expect(fileSystemAnalysis.userFeedbackMd).toBe(true);
+        // Save test output to file
+        const outputPath = await saveTestOutput(testName, testResult);
+        testResult.outputPath = outputPath;
 
-      // Verify content structure
-      expect(contentValidation.hasOpenIssues).toBe(true);
-      expect(contentValidation.hasIssueTag).toBe(true);
-      expect(contentValidation.hasTestCriteria).toBe(true);
-      expect(contentValidation.hasDate).toBe(true);
+        // eslint-disable-next-line no-console
+        console.log(`\n📊 Test report saved: ${outputPath}`);
+        // eslint-disable-next-line no-console
+        console.log(`⏱️  Duration: ${duration.toFixed(0)}ms`);
+        // eslint-disable-next-line no-console
+        console.log(`📁 Files created: ${filesCreated.length}`);
+        // eslint-disable-next-line no-console
+        console.log(`🎯 Exit code: ${result.exitCode}`);
+        // eslint-disable-next-line no-console
+        console.log(`📂 Test directory: ${tempDir}`);
 
-      // Verify issue content
-      expect(contentValidation.issueContent).toContain('This is a test issue description');
+        // Assertions
+        expect(typeof result.exitCode).toBe('number');
 
-      // Verify test criteria content
-      expect(contentValidation.testCriteriaContent).toContain('This is the test criteria for validation');
+        // Verify .juno_task folder was created
+        expect(fileSystemAnalysis.junoTaskFolderCreated).toBe(true);
 
-      // eslint-disable-next-line no-console
-      console.log('\n📋 Test Summary:');
-      // eslint-disable-next-line no-console
-      console.log(`   Success: ${testResult.output.success ? '✅' : '❌'}`);
-      // eslint-disable-next-line no-console
-      console.log(`   .juno_task folder: ${fileSystemAnalysis.junoTaskFolderCreated ? '✅' : '❌'}`);
-      // eslint-disable-next-line no-console
-      console.log(`   USER_FEEDBACK.md: ${fileSystemAnalysis.userFeedbackMd ? '✅' : '❌'}`);
-      // eslint-disable-next-line no-console
-      console.log(`   Issue content: ${contentValidation.hasIssueTag ? '✅' : '❌'}`);
-      // eslint-disable-next-line no-console
-      console.log(`   Test criteria: ${contentValidation.hasTestCriteria ? '✅' : '❌'}`);
+        // Verify USER_FEEDBACK.md exists
+        expect(fileSystemAnalysis.userFeedbackMd).toBe(true);
 
-    } catch (error) {
-      const duration = performance.now() - startTime;
+        // Verify content structure
+        expect(contentValidation.hasOpenIssues).toBe(true);
+        expect(contentValidation.hasIssueTag).toBe(true);
+        expect(contentValidation.hasTestCriteria).toBe(true);
+        expect(contentValidation.hasDate).toBe(true);
 
-      // Record failed test
-      const failedResult: FeedbackCommandTestResult = {
-        testName,
-        timestamp: new Date(),
-        duration,
-        command: commandArgs,
-        workingDirectory: tempDir,
-        output: {
-          success: false,
-          exitCode: -1,
-          stdout: '',
-          stderr: error instanceof Error ? error.message : String(error),
-          filesCreated: []
-        },
-        fileSystemAnalysis: {
-          junoTaskFolderCreated: false,
-          userFeedbackMd: false,
-          feedbackContent: ''
-        },
-        contentValidation: {
-          hasOpenIssues: false,
-          hasIssueTag: false,
-          hasTestCriteria: false,
-          hasDate: false,
-          issueContent: '',
-          testCriteriaContent: ''
-        },
-        outputPath: ''
-      };
+        // Verify issue content
+        expect(contentValidation.issueContent).toContain('This is a test issue description');
 
-      // Save failed test output
-      const outputPath = await saveTestOutput(testName, failedResult);
-      // eslint-disable-next-line no-console
-      console.log(`\n❌ Test failed. Report saved: ${outputPath}`);
+        // Verify test criteria content
+        expect(contentValidation.testCriteriaContent).toContain(
+          'This is the test criteria for validation',
+        );
 
-      throw error;
-    }
-  }, FEEDBACK_COMMAND_TIMEOUT);
+        // eslint-disable-next-line no-console
+        console.log('\n📋 Test Summary:');
+        // eslint-disable-next-line no-console
+        console.log(`   Success: ${testResult.output.success ? '✅' : '❌'}`);
+        // eslint-disable-next-line no-console
+        console.log(
+          `   .juno_task folder: ${fileSystemAnalysis.junoTaskFolderCreated ? '✅' : '❌'}`,
+        );
+        // eslint-disable-next-line no-console
+        console.log(`   USER_FEEDBACK.md: ${fileSystemAnalysis.userFeedbackMd ? '✅' : '❌'}`);
+        // eslint-disable-next-line no-console
+        console.log(`   Issue content: ${contentValidation.hasIssueTag ? '✅' : '❌'}`);
+        // eslint-disable-next-line no-console
+        console.log(`   Test criteria: ${contentValidation.hasTestCriteria ? '✅' : '❌'}`);
+      } catch (error) {
+        const duration = performance.now() - startTime;
 
-  it('should execute feedback command with issue only (no test criteria)', async () => {
-    const startTime = performance.now();
-    const testName = 'feedback-command-issue-only';
+        // Record failed test
+        const failedResult: FeedbackCommandTestResult = {
+          testName,
+          timestamp: new Date(),
+          duration,
+          command: commandArgs,
+          workingDirectory: tempDir,
+          output: {
+            success: false,
+            exitCode: -1,
+            stdout: '',
+            stderr: error instanceof Error ? error.message : String(error),
+            filesCreated: [],
+          },
+          fileSystemAnalysis: {
+            junoTaskFolderCreated: false,
+            userFeedbackMd: false,
+            feedbackContent: '',
+          },
+          contentValidation: {
+            hasOpenIssues: false,
+            hasIssueTag: false,
+            hasTestCriteria: false,
+            hasDate: false,
+            issueContent: '',
+            testCriteriaContent: '',
+          },
+          outputPath: '',
+        };
 
-    const commandArgs = [
-      'feedback',
-      '--issue', 'This is a test issue without test criteria'
-    ];
+        // Save failed test output
+        const outputPath = await saveTestOutput(testName, failedResult);
+        // eslint-disable-next-line no-console
+        console.log(`\n❌ Test failed. Report saved: ${outputPath}`);
 
-    try {
-      const { result, filesCreated } = await executeFeedbackCommandWithArgs(commandArgs);
+        throw error;
+      }
+    },
+    FEEDBACK_COMMAND_TIMEOUT,
+  );
 
-      const duration = performance.now() - startTime;
+  it(
+    'should execute feedback command with issue only (no test criteria)',
+    async () => {
+      const startTime = performance.now();
+      const testName = 'feedback-command-issue-only';
 
-      // Analyze file system changes
-      const fileSystemAnalysis = await analyzeFileSystemChanges(filesCreated, tempDir);
+      const commandArgs = ['feedback', '--issue', 'This is a test issue without test criteria'];
 
-      // Validate content
-      const contentValidation = validateFeedbackContent(
-        fileSystemAnalysis.feedbackContent,
-        'This is a test issue without test criteria'
-      );
+      try {
+        const { result, filesCreated } = await executeFeedbackCommandWithArgs(commandArgs);
 
-      // Verify USER_FEEDBACK.md exists
-      expect(fileSystemAnalysis.userFeedbackMd).toBe(true);
+        const duration = performance.now() - startTime;
 
-      // Verify content structure (should NOT have test criteria)
-      expect(contentValidation.hasOpenIssues).toBe(true);
-      expect(contentValidation.hasIssueTag).toBe(true);
-      expect(contentValidation.hasTestCriteria).toBe(false); // Should NOT have test criteria
-      expect(contentValidation.hasDate).toBe(true);
+        // Analyze file system changes
+        const fileSystemAnalysis = await analyzeFileSystemChanges(filesCreated, tempDir);
 
-      // Verify issue content
-      expect(contentValidation.issueContent).toContain('This is a test issue without test criteria');
+        // Validate content
+        const contentValidation = validateFeedbackContent(
+          fileSystemAnalysis.feedbackContent,
+          'This is a test issue without test criteria',
+        );
 
-      // eslint-disable-next-line no-console
-      console.log(`\n✅ Test completed: ${testName}`);
-      // eslint-disable-next-line no-console
-      console.log(`📂 Test directory: ${tempDir}`);
+        // Verify USER_FEEDBACK.md exists
+        expect(fileSystemAnalysis.userFeedbackMd).toBe(true);
 
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.log(`\n❌ Test failed: ${testName}`);
-      throw error;
-    }
-  }, FEEDBACK_COMMAND_TIMEOUT);
+        // Verify content structure (should NOT have test criteria)
+        expect(contentValidation.hasOpenIssues).toBe(true);
+        expect(contentValidation.hasIssueTag).toBe(true);
+        expect(contentValidation.hasTestCriteria).toBe(false); // Should NOT have test criteria
+        expect(contentValidation.hasDate).toBe(true);
+
+        // Verify issue content
+        expect(contentValidation.issueContent).toContain(
+          'This is a test issue without test criteria',
+        );
+
+        // eslint-disable-next-line no-console
+        console.log(`\n✅ Test completed: ${testName}`);
+        // eslint-disable-next-line no-console
+        console.log(`📂 Test directory: ${tempDir}`);
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.log(`\n❌ Test failed: ${testName}`);
+        throw error;
+      }
+    },
+    FEEDBACK_COMMAND_TIMEOUT,
+  );
 });

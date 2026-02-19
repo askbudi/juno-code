@@ -364,9 +364,7 @@ describe('Configuration Validation', () => {
         JUNO_TASK_DEFAULT_SUBAGENT: 'invalid-agent',
       };
 
-      expect(() => validateEnvironmentVars(envVars)).toThrow(
-        /JUNO_TASK_DEFAULT_SUBAGENT/
-      );
+      expect(() => validateEnvironmentVars(envVars)).toThrow(/JUNO_TASK_DEFAULT_SUBAGENT/);
     });
 
     it('should return empty config for empty input', () => {

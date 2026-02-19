@@ -81,7 +81,11 @@ export class ScriptInstaller {
    * @param silent - If true, suppresses console output
    * @returns true if script was installed, false if installation was skipped or failed
    */
-  static async installScript(projectDir: string, scriptName: string, silent = false): Promise<boolean> {
+  static async installScript(
+    projectDir: string,
+    scriptName: string,
+    silent = false,
+  ): Promise<boolean> {
     try {
       const packageScriptsDir = this.getPackageScriptsDir();
       if (!packageScriptsDir) {
@@ -92,7 +96,7 @@ export class ScriptInstaller {
       }
 
       const sourcePath = path.join(packageScriptsDir, scriptName);
-      if (!await fs.pathExists(sourcePath)) {
+      if (!(await fs.pathExists(sourcePath))) {
         if (!silent && process.env.JUNO_CODE_DEBUG === '1') {
           console.error(`[DEBUG] ScriptInstaller: Source script not found: ${sourcePath}`);
         }
@@ -145,7 +149,7 @@ export class ScriptInstaller {
     const missing: string[] = [];
 
     for (const script of this.REQUIRED_SCRIPTS) {
-      if (!await this.scriptExists(projectDir, script)) {
+      if (!(await this.scriptExists(projectDir, script))) {
         missing.push(script);
       }
     }
@@ -164,7 +168,7 @@ export class ScriptInstaller {
     try {
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
-      if (!await fs.pathExists(junoTaskDir)) {
+      if (!(await fs.pathExists(junoTaskDir))) {
         // Project not initialized, skip
         return false;
       }
@@ -207,7 +211,11 @@ export class ScriptInstaller {
    * @param silent - If true, suppresses console output
    * @returns true if script was updated
    */
-  static async updateScriptIfNewer(projectDir: string, scriptName: string, silent = true): Promise<boolean> {
+  static async updateScriptIfNewer(
+    projectDir: string,
+    scriptName: string,
+    silent = true,
+  ): Promise<boolean> {
     try {
       const packageScriptsDir = this.getPackageScriptsDir();
       if (!packageScriptsDir) {
@@ -218,7 +226,7 @@ export class ScriptInstaller {
       const destPath = path.join(projectDir, '.juno_task', 'scripts', scriptName);
 
       // If destination doesn't exist, install it
-      if (!await fs.pathExists(destPath)) {
+      if (!(await fs.pathExists(destPath))) {
         return this.installScript(projectDir, scriptName, silent);
       }
 
@@ -250,7 +258,10 @@ export class ScriptInstaller {
       return false;
     } catch (error) {
       if (process.env.JUNO_CODE_DEBUG === '1') {
-        console.error(`[DEBUG] ScriptInstaller: updateScriptIfNewer error for ${scriptName}:`, error);
+        console.error(
+          `[DEBUG] ScriptInstaller: updateScriptIfNewer error for ${scriptName}:`,
+          error,
+        );
       }
       return false;
     }
@@ -266,7 +277,9 @@ export class ScriptInstaller {
   /**
    * List all required scripts and their installation status
    */
-  static async listRequiredScripts(projectDir: string): Promise<{ name: string; installed: boolean }[]> {
+  static async listRequiredScripts(
+    projectDir: string,
+  ): Promise<{ name: string; installed: boolean }[]> {
     const results = [];
 
     for (const script of this.REQUIRED_SCRIPTS) {
@@ -297,12 +310,12 @@ export class ScriptInstaller {
       const destPath = path.join(projectDir, '.juno_task', 'scripts', script);
 
       // Skip if source doesn't exist
-      if (!await fs.pathExists(sourcePath)) {
+      if (!(await fs.pathExists(sourcePath))) {
         continue;
       }
 
       // If destination doesn't exist, it's missing not outdated
-      if (!await fs.pathExists(destPath)) {
+      if (!(await fs.pathExists(destPath))) {
         continue;
       }
 
@@ -334,7 +347,7 @@ export class ScriptInstaller {
     try {
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
-      if (!await fs.pathExists(junoTaskDir)) {
+      if (!(await fs.pathExists(junoTaskDir))) {
         return false;
       }
 
@@ -367,7 +380,7 @@ export class ScriptInstaller {
 
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
-      if (!await fs.pathExists(junoTaskDir)) {
+      if (!(await fs.pathExists(junoTaskDir))) {
         return false;
       }
 
@@ -377,7 +390,9 @@ export class ScriptInstaller {
         // Force update: reinstall all required scripts
         scriptsToUpdate = [...this.REQUIRED_SCRIPTS];
         if (debug) {
-          console.error(`[DEBUG] ScriptInstaller: Force update - reinstalling all ${scriptsToUpdate.length} scripts`);
+          console.error(
+            `[DEBUG] ScriptInstaller: Force update - reinstalling all ${scriptsToUpdate.length} scripts`,
+          );
         }
       } else {
         const missing = await this.getMissingScripts(projectDir);
@@ -457,7 +472,7 @@ export class ScriptInstaller {
           const output = execSync(`${installScript} --force-update`, {
             cwd: projectDir,
             encoding: 'utf8',
-            stdio: 'pipe'
+            stdio: 'pipe',
           });
 
           if (output && output.trim() && (debug || !silent)) {

@@ -12,14 +12,14 @@ import {
   ExecutionStatus,
   DEFAULT_ERROR_RECOVERY_CONFIG,
   DEFAULT_RATE_LIMIT_CONFIG,
-  DEFAULT_PROGRESS_CONFIG
+  DEFAULT_PROGRESS_CONFIG,
 } from '../engine.js';
 import {
   MCPRateLimitError,
   MCPConnectionError,
   MCPTimeoutError,
   MCPValidationError,
-  MCPToolError
+  MCPToolError,
 } from '../errors.js';
 import type {
   MCPClient,
@@ -38,7 +38,7 @@ class MockMCPClient extends EventEmitter implements MCPClient {
   getConnectionState = vi.fn().mockReturnValue('connected' as const);
   getRateLimitInfo = vi.fn().mockResolvedValue({
     remaining: 100,
-    resetTime: new Date(Date.now() + 60000)
+    resetTime: new Date(Date.now() + 60000),
   });
   onProgress = vi.fn().mockImplementation((callback) => {
     this.progressCallback = callback;
@@ -62,28 +62,28 @@ const createMockConfig = (): JunoTaskConfig => ({
     serverArgs: [],
     timeout: 30000,
     maxConnections: 1,
-    retryAttempts: 3
+    retryAttempts: 3,
   },
   subagents: {
     default: 'claude',
-    available: ['claude', 'cursor', 'codex', 'gemini', 'pi']
+    available: ['claude', 'cursor', 'codex', 'gemini', 'pi'],
   },
   execution: {
     maxIterations: 10,
     timeout: 300000,
     workingDirectory: process.cwd(),
-    parallelism: 1
+    parallelism: 1,
   },
   ai: {
     model: 'claude-3-5-sonnet-20241022',
     temperature: 0.1,
-    maxTokens: 4096
+    maxTokens: 4096,
   },
   templates: {
     searchPaths: ['./templates'],
     builtInEnabled: true,
-    customEnabled: true
-  }
+    customEnabled: true,
+  },
 });
 
 describe.skip('ExecutionEngine', () => {
@@ -102,7 +102,7 @@ describe.skip('ExecutionEngine', () => {
       mcpClient: mockMCPClient,
       errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,
       rateLimitConfig: DEFAULT_RATE_LIMIT_CONFIG,
-      progressConfig: DEFAULT_PROGRESS_CONFIG
+      progressConfig: DEFAULT_PROGRESS_CONFIG,
     };
 
     engine = new ExecutionEngine(engineConfig);
@@ -132,7 +132,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       // Should not throw
@@ -145,7 +145,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: '',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       expect(() => engine['validateRequest'](request)).toThrow('Instruction is required');
@@ -157,7 +157,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: '' as any,
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       expect(() => engine['validateRequest'](request)).toThrow('Subagent is required');
@@ -169,10 +169,12 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 0
+        maxIterations: 0,
       };
 
-      expect(() => engine['validateRequest'](request)).toThrow('Max iterations must be a positive number or -1 for unlimited');
+      expect(() => engine['validateRequest'](request)).toThrow(
+        'Max iterations must be a positive number or -1 for unlimited',
+      );
     });
 
     it('should reject request with NaN iterations (Issue #57 fix)', () => {
@@ -183,10 +185,12 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: NaN
+        maxIterations: NaN,
       };
 
-      expect(() => engine['validateRequest'](request)).toThrow('Max iterations must be a positive number or -1 for unlimited');
+      expect(() => engine['validateRequest'](request)).toThrow(
+        'Max iterations must be a positive number or -1 for unlimited',
+      );
     });
   });
 
@@ -197,7 +201,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -213,7 +217,7 @@ describe.skip('ExecutionEngine', () => {
       // Mock tool call - engine will run maxIterations times
       mockMCPClient.callTool.mockResolvedValue({
         success: true,
-        result: 'Iteration result'
+        result: 'Iteration result',
       });
 
       const request: ExecutionRequest = {
@@ -221,7 +225,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Multi-iteration test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const result = await engine.execute(request);
@@ -236,7 +240,7 @@ describe.skip('ExecutionEngine', () => {
       mockMCPClient.callTool.mockResolvedValue({
         success: true,
         result: 'Continue iteration',
-        shouldContinue: true
+        shouldContinue: true,
       });
 
       const request: ExecutionRequest = {
@@ -244,7 +248,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Limited iterations test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const result = await engine.execute(request);
@@ -264,7 +268,7 @@ describe.skip('ExecutionEngine', () => {
         endTime: new Date(),
         duration: 100,
         progressEvents: [],
-        request: {} as any
+        request: {} as any,
       });
 
       const request: ExecutionRequest = {
@@ -272,11 +276,13 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Cancellation test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       abortController.abort();
-      await expect(engine.execute(request, abortController.signal)).rejects.toThrow('Execution aborted');
+      await expect(engine.execute(request, abortController.signal)).rejects.toThrow(
+        'Execution aborted',
+      );
     });
   });
 
@@ -293,7 +299,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Rate limit test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -311,7 +317,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Connection error test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -330,7 +336,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Timeout error test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -348,7 +354,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Validation error test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -366,7 +372,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Unknown error test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -389,7 +395,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Progress test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       await engine.execute(request);
@@ -407,7 +413,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Progress events test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       // Start execution and simulate progress events
@@ -418,7 +424,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'Starting execution',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       });
 
       await executionPromise;
@@ -456,7 +462,7 @@ describe.skip('ExecutionEngine', () => {
     it('should cancel active executions during shutdown', async () => {
       // Mock slow tool call
       mockMCPClient.callTool.mockImplementation(async () => {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         return { success: true, result: 'Test result' };
       });
 
@@ -465,7 +471,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Shutdown test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       // Start execution and shutdown immediately
@@ -502,7 +508,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       const sessionContext = engine['createSessionContext'](request);
@@ -520,7 +526,7 @@ describe.skip('ExecutionEngine', () => {
         subagent: 'claude',
         workingDirectory: process.cwd(),
         maxIterations: 5,
-        sessionMetadata: { customField: 'test-value' }
+        sessionMetadata: { customField: 'test-value' },
       };
 
       const sessionContext = engine['createSessionContext'](request);
@@ -547,7 +553,7 @@ describe.skip('ExecutionEngine', () => {
             endTime: new Date(),
             duration: 100,
             progressEvents: [],
-            request: {} as any
+            request: {} as any,
           };
         }
         return {
@@ -557,7 +563,7 @@ describe.skip('ExecutionEngine', () => {
           endTime: new Date(),
           duration: 100,
           progressEvents: [],
-          request: {} as any
+          request: {} as any,
         };
       });
 
@@ -566,7 +572,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Unlimited iterations test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: -1
+        maxIterations: -1,
       };
 
       const result = await engine.execute(request);
@@ -583,7 +589,7 @@ describe.skip('ExecutionEngine', () => {
         workingDirectory: process.cwd(),
         maxIterations: 1,
         model: 'gpt-4',
-        timeoutMs: 60000
+        timeoutMs: 60000,
       };
 
       await engine.execute(request);
@@ -591,10 +597,10 @@ describe.skip('ExecutionEngine', () => {
       expect(mockMCPClient.callTool).toHaveBeenCalledWith(
         expect.objectContaining({
           arguments: expect.objectContaining({
-            model: 'gpt-4'
+            model: 'gpt-4',
           }),
-          timeout: 60000
-        })
+          timeout: 60000,
+        }),
       );
     });
 
@@ -605,15 +611,15 @@ describe.skip('ExecutionEngine', () => {
         subagent: 'claude',
         workingDirectory: process.cwd(),
         maxIterations: 1,
-        priority: 'high'
+        priority: 'high',
       };
 
       await engine.execute(request);
 
       expect(mockMCPClient.callTool).toHaveBeenCalledWith(
         expect.objectContaining({
-          priority: 'high'
-        })
+          priority: 'high',
+        }),
       );
     });
 
@@ -625,7 +631,7 @@ describe.skip('ExecutionEngine', () => {
         subagent: 'claude',
         workingDirectory: process.cwd(),
         maxIterations: 1,
-        progressCallbacks: [customProgressCallback]
+        progressCallbacks: [customProgressCallback],
       };
 
       const result = await engine.execute(request);
@@ -636,7 +642,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'Processing...',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       };
 
       await mockMCPClient.emitProgress(progressEvent);
@@ -657,7 +663,7 @@ describe.skip('ExecutionEngine', () => {
         endTime: new Date(),
         duration: 150,
         progressEvents: [],
-        request: {} as any
+        request: {} as any,
       });
 
       const request: ExecutionRequest = {
@@ -665,7 +671,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Statistics test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 3
+        maxIterations: 3,
       };
 
       const result = await engine.execute(request);
@@ -683,14 +689,16 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Performance test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const result = await engine.execute(request);
 
       expect(result.statistics.performanceMetrics).toBeDefined();
       expect(result.statistics.performanceMetrics.memoryUsage).toBeGreaterThan(0);
-      expect(result.statistics.performanceMetrics.throughput.iterationsPerMinute).toBeGreaterThan(0);
+      expect(result.statistics.performanceMetrics.throughput.iterationsPerMinute).toBeGreaterThan(
+        0,
+      );
     });
 
     it('should aggregate statistics across multiple executions', () => {
@@ -714,10 +722,10 @@ describe.skip('ExecutionEngine', () => {
             throughput: {
               iterationsPerMinute: 60,
               progressEventsPerSecond: 2,
-              toolCallsPerMinute: 60
-            }
-          }
-        }
+              toolCallsPerMinute: 60,
+            },
+          },
+        },
       };
 
       const context2 = {
@@ -730,7 +738,7 @@ describe.skip('ExecutionEngine', () => {
           totalProgressEvents: 8,
           rateLimitEncounters: 1,
           rateLimitWaitTime: 1000,
-          errorBreakdown: { 'timeout': 1 },
+          errorBreakdown: { timeout: 1 },
           performanceMetrics: {
             cpuUsage: 70,
             memoryUsage: 2000000,
@@ -739,10 +747,10 @@ describe.skip('ExecutionEngine', () => {
             throughput: {
               iterationsPerMinute: 40,
               progressEventsPerSecond: 3,
-              toolCallsPerMinute: 40
-            }
-          }
-        }
+              toolCallsPerMinute: 40,
+            },
+          },
+        },
       };
 
       const avgDuration = engine['calculateAverageIterationDuration']([context1, context2] as any);
@@ -763,13 +771,13 @@ describe.skip('ExecutionEngine', () => {
       const customErrorRecoveryConfig = {
         ...DEFAULT_ERROR_RECOVERY_CONFIG,
         customStrategies: {
-          'connection': customRecoveryStrategy
-        }
+          connection: customRecoveryStrategy,
+        },
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        errorRecovery: customErrorRecoveryConfig
+        errorRecovery: customErrorRecoveryConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
@@ -777,24 +785,22 @@ describe.skip('ExecutionEngine', () => {
 
       // First call fails, second succeeds due to recovery
       const connectionError = MCPConnectionError.serverNotFound('test-server');
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(connectionError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Recovered successfully',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(connectionError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Recovered successfully',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-recovery',
         instruction: 'Recovery test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const result = await customEngine.execute(request);
@@ -811,37 +817,35 @@ describe.skip('ExecutionEngine', () => {
         ...DEFAULT_ERROR_RECOVERY_CONFIG,
         retryDelays: {
           ...DEFAULT_ERROR_RECOVERY_CONFIG.retryDelays,
-          'connection': 100 // 100ms delay
-        }
+          connection: 100, // 100ms delay
+        },
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        errorRecovery: customErrorRecoveryConfig
+        errorRecovery: customErrorRecoveryConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
       customEngine.setMaxListeners(20);
 
       const connectionError = MCPConnectionError.serverNotFound('test-server');
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(connectionError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Success after delay',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(connectionError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Success after delay',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-delay',
         instruction: 'Delay test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const startTime = Date.now();
@@ -859,12 +863,12 @@ describe.skip('ExecutionEngine', () => {
     it('should handle rate limits exceeding maximum wait time', async () => {
       const customRateLimitConfig = {
         ...DEFAULT_RATE_LIMIT_CONFIG,
-        maxWaitTimeMs: 1000 // 1 second max
+        maxWaitTimeMs: 1000, // 1 second max
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        rateLimitConfig: customRateLimitConfig
+        rateLimitConfig: customRateLimitConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
@@ -873,7 +877,7 @@ describe.skip('ExecutionEngine', () => {
       // Rate limit with reset time way in the future
       const rateLimitError = MCPRateLimitError.hourly(
         new Date(Date.now() + 3600000), // 1 hour from now
-        0
+        0,
       );
       mockMCPClient.callTool.mockRejectedValue(rateLimitError);
 
@@ -882,7 +886,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Rate limit exceeded test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await customEngine.execute(request);
@@ -899,26 +903,24 @@ describe.skip('ExecutionEngine', () => {
       const rateLimitError = new MCPRateLimitError(
         'Rate limit exceeded',
         undefined, // No reset time
-        0
+        0,
       );
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(rateLimitError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Success after default wait',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(rateLimitError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Success after default wait',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-no-reset-time',
         instruction: 'No reset time test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -931,12 +933,12 @@ describe.skip('ExecutionEngine', () => {
     it('should disable rate limit handling when configured', async () => {
       const customRateLimitConfig = {
         ...DEFAULT_RATE_LIMIT_CONFIG,
-        enabled: false
+        enabled: false,
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        rateLimitConfig: customRateLimitConfig
+        rateLimitConfig: customRateLimitConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
@@ -950,7 +952,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Disabled rate limit test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await customEngine.execute(request);
@@ -968,17 +970,17 @@ describe.skip('ExecutionEngine', () => {
       // Production code works correctly (verified by USER_FEEDBACK.md)
       const progressFilter = {
         type: 'custom' as const,
-        predicate: (event: ProgressEvent) => event.message.includes('important')
+        predicate: (event: ProgressEvent) => event.message.includes('important'),
       };
 
       const customProgressConfig = {
         ...DEFAULT_PROGRESS_CONFIG,
-        filters: [progressFilter]
+        filters: [progressFilter],
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        progressConfig: customProgressConfig
+        progressConfig: customProgressConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
@@ -992,7 +994,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Filter test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const executionPromise = customEngine.execute(request);
@@ -1003,7 +1005,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'important update',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       });
 
       await mockMCPClient.emitProgress({
@@ -1011,7 +1013,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'regular update',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       });
 
       await executionPromise;
@@ -1024,17 +1026,17 @@ describe.skip('ExecutionEngine', () => {
     it('should use custom progress processors', async () => {
       const customProcessor = {
         name: 'test-processor',
-        process: vi.fn().mockResolvedValue(undefined)
+        process: vi.fn().mockResolvedValue(undefined),
       };
 
       const customProgressConfig = {
         ...DEFAULT_PROGRESS_CONFIG,
-        processors: [customProcessor]
+        processors: [customProcessor],
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        progressConfig: customProgressConfig
+        progressConfig: customProgressConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
@@ -1045,7 +1047,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Processor test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const executionPromise = customEngine.execute(request);
@@ -1055,7 +1057,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'test message',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       });
 
       await executionPromise;
@@ -1073,7 +1075,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       expect(() => engine['validateRequest'](request)).toThrow('Request ID is required');
@@ -1085,7 +1087,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test instruction',
         subagent: 'claude',
         workingDirectory: '',
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       expect(() => engine['validateRequest'](request)).toThrow('Working directory is required');
@@ -1097,7 +1099,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: '\t\n  ',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       expect(() => engine['validateRequest'](request)).toThrow();
@@ -1111,7 +1113,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test context creation',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 5
+        maxIterations: 5,
       };
 
       const externalAbort = new AbortController();
@@ -1165,8 +1167,8 @@ describe.skip('ExecutionEngine', () => {
         sessionMetadata: {
           customKey: 'customValue',
           userId: 'test-user',
-          projectId: 'test-project'
-        }
+          projectId: 'test-project',
+        },
       };
 
       const sessionContext = engine['createSessionContext'](request);
@@ -1190,7 +1192,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test stop iteration',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 3
+        maxIterations: 3,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1225,7 +1227,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test abort check',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1310,7 +1312,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test no continue error',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 3
+        maxIterations: 3,
       };
 
       const result = await engine.execute(request);
@@ -1328,40 +1330,38 @@ describe.skip('ExecutionEngine', () => {
         ...DEFAULT_ERROR_RECOVERY_CONFIG,
         continueOnError: {
           ...DEFAULT_ERROR_RECOVERY_CONFIG.continueOnError,
-          'connection': true
+          connection: true,
         },
         customStrategies: {
-          'connection': customRecoveryStrategy
-        }
+          connection: customRecoveryStrategy,
+        },
       };
 
       const customEngineConfig = {
         ...engineConfig,
-        errorRecovery: customErrorRecoveryConfig
+        errorRecovery: customErrorRecoveryConfig,
       };
 
       const customEngine = new ExecutionEngine(customEngineConfig);
       customEngine.setMaxListeners(20);
 
       const connectionError = MCPConnectionError.serverNotFound('test-server');
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(connectionError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Success after failed recovery',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(connectionError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Success after failed recovery',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-recovery-failure',
         instruction: 'Recovery failure test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       const result = await customEngine.execute(request);
@@ -1381,7 +1381,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test performance zero duration',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1413,15 +1413,15 @@ describe.skip('ExecutionEngine', () => {
         {
           statistics: {
             totalIterations: 0,
-            averageIterationDuration: 100
-          }
+            averageIterationDuration: 100,
+          },
         },
         {
           statistics: {
             totalIterations: 0,
-            averageIterationDuration: 200
-          }
-        }
+            averageIterationDuration: 200,
+          },
+        },
       ];
 
       const avgDuration = engine['calculateAverageIterationDuration'](contexts as any);
@@ -1433,25 +1433,25 @@ describe.skip('ExecutionEngine', () => {
         {
           statistics: {
             errorBreakdown: {
-              'connection': 2,
-              'timeout': 1
-            }
-          }
+              connection: 2,
+              timeout: 1,
+            },
+          },
         },
         {
           statistics: {
             errorBreakdown: {
-              'connection': 1,
-              'validation': 3,
-              'rate_limit': 1
-            }
-          }
+              connection: 1,
+              validation: 3,
+              rate_limit: 1,
+            },
+          },
         },
         {
           statistics: {
-            errorBreakdown: {}
-          }
-        }
+            errorBreakdown: {},
+          },
+        },
       ];
 
       const breakdown = engine['aggregateErrorBreakdown'](contexts as any);
@@ -1468,7 +1468,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test failed stats',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1480,7 +1480,7 @@ describe.skip('ExecutionEngine', () => {
         duration: 250,
         toolResult: {} as any,
         progressEvents: [],
-        error: MCPTimeoutError.toolExecution('test-tool', 30000)
+        error: MCPTimeoutError.toolExecution('test-tool', 30000),
       };
 
       engine['updateStatistics'](context, iterationResult);
@@ -1500,7 +1500,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test result creation',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1529,7 +1529,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test result with error',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1549,7 +1549,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test no end time',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const context = engine['createExecutionContext'](request);
@@ -1572,24 +1572,22 @@ describe.skip('ExecutionEngine', () => {
       engine.on('rate-limit:end', rateLimitEndSpy);
 
       const rateLimitError = MCPRateLimitError.hourly(new Date(Date.now() + 500), 0);
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(rateLimitError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Success after rate limit',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(rateLimitError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Success after rate limit',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-rate-limit-events',
         instruction: 'Rate limit events test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -1598,8 +1596,8 @@ describe.skip('ExecutionEngine', () => {
       expect(rateLimitStartSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           error: rateLimitError,
-          waitTimeMs: expect.any(Number)
-        })
+          waitTimeMs: expect.any(Number),
+        }),
       );
       expect(rateLimitEndSpy).toHaveBeenCalled();
     });
@@ -1609,27 +1607,25 @@ describe.skip('ExecutionEngine', () => {
         'Rate limit exceeded',
         new Date(Date.now() + 1000),
         5,
-        'premium'
+        'premium',
       );
 
-      mockMCPClient.callTool
-        .mockRejectedValueOnce(rateLimitError)
-        .mockResolvedValueOnce({
-          status: 'completed' as any,
-          content: 'Success with tier',
-          startTime: new Date(),
-          endTime: new Date(),
-          duration: 100,
-          progressEvents: [],
-          request: {} as any
-        });
+      mockMCPClient.callTool.mockRejectedValueOnce(rateLimitError).mockResolvedValueOnce({
+        status: 'completed' as any,
+        content: 'Success with tier',
+        startTime: new Date(),
+        endTime: new Date(),
+        duration: 100,
+        progressEvents: [],
+        request: {} as any,
+      });
 
       const request: ExecutionRequest = {
         requestId: 'test-rate-limit-tier',
         instruction: 'Rate limit tier test',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -1650,7 +1646,7 @@ describe.skip('ExecutionEngine', () => {
         maxIterations: 1,
         model: 'gpt-4',
         timeoutMs: 45000,
-        priority: 'high'
+        priority: 'high',
       };
 
       await engine.execute(request);
@@ -1662,15 +1658,15 @@ describe.skip('ExecutionEngine', () => {
             instruction: 'Test with metadata',
             project_path: '/test/path',
             model: 'gpt-4',
-            iteration: 1
+            iteration: 1,
           }),
           timeout: 45000,
           priority: 'high',
           metadata: expect.objectContaining({
-            iterationNumber: 1
+            iterationNumber: 1,
           }),
-          progressCallback: expect.any(Function)
-        })
+          progressCallback: expect.any(Function),
+        }),
       );
     });
 
@@ -1686,7 +1682,7 @@ describe.skip('ExecutionEngine', () => {
           endTime: new Date(),
           duration: 100,
           progressEvents: [],
-          request: toolRequest
+          request: toolRequest,
         };
       });
 
@@ -1695,13 +1691,13 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test progress callback',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const executionPromise = engine.execute(request);
 
       // Wait a bit for the execution to start
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Simulate progress event
       if (capturedProgressCallback) {
@@ -1710,7 +1706,7 @@ describe.skip('ExecutionEngine', () => {
           timestamp: new Date(),
           message: 'Progress update',
           sessionId: 'test-session',
-          metadata: {}
+          metadata: {},
         });
       }
 
@@ -1730,7 +1726,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test tool error',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 1
+        maxIterations: 1,
       };
 
       const result = await engine.execute(request);
@@ -1756,7 +1752,7 @@ describe.skip('ExecutionEngine', () => {
         instruction: 'Test iteration events',
         subagent: 'claude',
         workingDirectory: process.cwd(),
-        maxIterations: 2
+        maxIterations: 2,
       };
 
       await engine.execute(request);
@@ -1785,7 +1781,7 @@ describe.skip('ExecutionEngine', () => {
         workingDirectory: '/custom/path',
         maxIterations: 25,
         model: 'gpt-4',
-        requestId: 'custom-123'
+        requestId: 'custom-123',
       });
 
       expect(request.instruction).toBe('Test instruction');
@@ -1800,7 +1796,7 @@ describe.skip('ExecutionEngine', () => {
       const { createExecutionRequest } = require('../engine.js');
 
       const request = createExecutionRequest({
-        instruction: 'Test instruction'
+        instruction: 'Test instruction',
       });
 
       expect(request.instruction).toBe('Test instruction');
@@ -1833,7 +1829,7 @@ describe.skip('ExecutionEngine', () => {
     it('should handle getRateLimitInfo', async () => {
       mockMCPClient.getRateLimitInfo.mockResolvedValue({
         remaining: 42,
-        resetTime: new Date(Date.now() + 30000)
+        resetTime: new Date(Date.now() + 30000),
       });
 
       const rateLimitInfo = await engine.getRateLimitInfo();
@@ -1893,7 +1889,7 @@ describe.skip('ExecutionEngine', () => {
         timestamp: new Date(),
         message: 'Test progress',
         sessionId: 'test-session',
-        metadata: {}
+        metadata: {},
       };
 
       await mockMCPClient.emitProgress(progressEvent);

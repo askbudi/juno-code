@@ -26,16 +26,13 @@ async function loadInitPrompt(directory: string): Promise<string> {
   if (!(await fs.pathExists(junoTaskDir))) {
     throw new RuntimeError(
       'No .juno_task directory found. Run "juno-code init" first.',
-      junoTaskDir
+      junoTaskDir,
     );
   }
 
   // Check if init.md exists
   if (!(await fs.pathExists(initFile))) {
-    throw new RuntimeError(
-      'No init.md file found in .juno_task directory',
-      initFile
-    );
+    throw new RuntimeError('No init.md file found in .juno_task directory', initFile);
   }
 
   // Read init.md content
@@ -43,10 +40,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
     const content = await fs.readFile(initFile, 'utf-8');
 
     if (!content.trim()) {
-      throw new RuntimeError(
-        'init.md file is empty. Please add task instructions.',
-        initFile
-      );
+      throw new RuntimeError('init.md file is empty. Please add task instructions.', initFile);
     }
 
     return content.trim();
@@ -55,10 +49,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
       throw error;
     }
 
-    throw new RuntimeError(
-      `Failed to read init.md: ${error}`,
-      initFile
-    );
+    throw new RuntimeError(`Failed to read init.md: ${error}`, initFile);
   }
 }
 
@@ -70,7 +61,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
 export async function startCommandHandler(
   args: any,
   options: StartCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Get working directory from options or use current directory
@@ -88,8 +79,8 @@ export async function startCommandHandler(
         verbose: options.verbose || false,
         quiet: options.quiet || false,
         logLevel: (options as any).logLevel || 'info',
-        workingDirectory
-      }
+        workingDirectory,
+      },
     });
 
     // The subagent should come from:
@@ -122,9 +113,8 @@ export async function startCommandHandler(
       // Validate init.md exists and has content
       console.log(chalk.white('\nInit Prompt:'));
       console.log(chalk.gray('─'.repeat(50)));
-      const promptPreview = initPrompt.length > 200
-        ? initPrompt.substring(0, 200) + '...'
-        : initPrompt;
+      const promptPreview =
+        initPrompt.length > 200 ? initPrompt.substring(0, 200) + '...' : initPrompt;
       console.log(chalk.gray(promptPreview));
       console.log(chalk.gray('─'.repeat(50)));
       console.log(chalk.gray(`  (${initPrompt.length} characters total)`));
@@ -179,12 +169,11 @@ export async function startCommandHandler(
       interactive: false,
       interactivePrompt: false,
       // Pass through --no-hooks flag (Commander sets options.hooks to false when --no-hooks is used)
-      hooks: (options as any).hooks
+      hooks: (options as any).hooks,
     };
 
     // Delegate to mainCommandHandler with the prompt from init.md
     await mainCommandHandler([], mainOptions, command);
-
   } catch (error) {
     // Re-throw errors - mainCommandHandler will handle them
     if (error instanceof RuntimeError) {
@@ -193,7 +182,7 @@ export async function startCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -216,19 +205,27 @@ export function configureStartCommand(program: Command): void {
     .option('-b, --backend <type>', 'Backend to use (mcp, shell)')
     .option('-i, --max-iterations <number>', 'Maximum number of iterations', parseInt)
     .option('-m, --model <name>', 'Model to use for execution')
-    .option('--agents <config>', 'Agents configuration (forwarded to shell backend, ignored for MCP)')
+    .option(
+      '--agents <config>',
+      'Agents configuration (forwarded to shell backend, ignored for MCP)',
+    )
     .option('-d, --directory <path>', 'Project directory (default: current)')
     .option('--enable-feedback', 'Enable concurrent feedback collection during execution')
     .option('--show-metrics', 'Display performance metrics summary after execution')
     .option('--show-dashboard', 'Show interactive performance dashboard after execution')
     .option('--show-trends', 'Display performance trends from historical data')
-    .option('--save-metrics [file]', 'Save performance metrics to file (default: .juno_task/metrics.json)')
+    .option(
+      '--save-metrics [file]',
+      'Save performance metrics to file (default: .juno_task/metrics.json)',
+    )
     .option('--metrics-file <path>', 'Specify custom path for metrics file')
     .option('--dry-run', 'Validate configuration and exit without executing')
     .action(async (options, command) => {
       // Merge global options with command-specific options
       // Global options include: -v/--verbose, -q/--quiet, -c/--config, etc.
-      const allOptions = command.optsWithGlobals ? command.optsWithGlobals() : { ...command.opts(), ...options };
+      const allOptions = command.optsWithGlobals
+        ? command.optsWithGlobals()
+        : { ...command.opts(), ...options };
 
       // Set default metrics file if save-metrics is used without value
       if (allOptions.saveMetrics === true) {
@@ -237,7 +234,9 @@ export function configureStartCommand(program: Command): void {
       }
       await startCommandHandler([], allOptions, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code start                                   # Start execution in current directory
   $ juno-code start -s claude                        # Use claude subagent
@@ -291,5 +290,6 @@ Backend Options:
   shell                        Use shell script backend
                                Executes scripts from ~/.juno_code/services/
                                Supports subagent.py, subagent.sh, or subagent-specific scripts
-    `);
+    `,
+    );
 }

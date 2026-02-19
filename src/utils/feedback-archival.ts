@@ -34,7 +34,7 @@ export async function archiveResolvedIssues(options: ArchivalOptions): Promise<A
     archiveDir = path.join(path.dirname(feedbackFile), 'archives'),
     openIssuesThreshold = 10,
     dryRun = false,
-    verbose = false
+    verbose = false,
   } = options;
 
   // Ensure feedback file exists
@@ -69,7 +69,7 @@ export async function archiveResolvedIssues(options: ArchivalOptions): Promise<A
       archivedCount: 0,
       openIssuesCount: parsed.openIssues.length,
       archiveFile: '',
-      warningsGenerated
+      warningsGenerated,
     };
   }
 
@@ -103,7 +103,7 @@ export async function archiveResolvedIssues(options: ArchivalOptions): Promise<A
     archivedCount: parsed.resolvedIssues.length,
     openIssuesCount: parsed.openIssues.length,
     archiveFile,
-    warningsGenerated
+    warningsGenerated,
   };
 }
 
@@ -142,7 +142,7 @@ function parseUserFeedback(content: string): {
 
   // Find the last resolved issue end and get everything after
   const lastResolvedEnd = content.lastIndexOf('</RESOLVED_ISSUE>');
-  let headerMetadata = beforeOpenIssues.trim();
+  const headerMetadata = beforeOpenIssues.trim();
 
   // If there's a header before open issues, use it
   if (headerMetadata) {
@@ -192,11 +192,11 @@ This file contains resolved issues that have been archived from USER_FEEDBACK.md
     const currentCount = (archiveContent.match(/<RESOLVED_ISSUE>/g) || []).length;
     archiveContent = archiveContent.replace(
       /- Total archived issues: \d+/,
-      `- Total archived issues: ${currentCount}`
+      `- Total archived issues: ${currentCount}`,
     );
     archiveContent = archiveContent.replace(
       /- Last updated: [\d-]+/,
-      `- Last updated: ${timestamp}`
+      `- Last updated: ${timestamp}`,
     );
   }
 
@@ -223,7 +223,8 @@ function generateCompactedFeedback(openIssues: string[], metadata: string): stri
     }
   }
 
-  content += '</OPEN_ISSUES>\n\n## Resolved Issues - VALIDATED FIXES ONLY\n\n<!-- Resolved issues have been archived to preserve space -->\n<!-- Check .juno_task/archives/ for historical resolved issues -->\n';
+  content +=
+    '</OPEN_ISSUES>\n\n## Resolved Issues - VALIDATED FIXES ONLY\n\n<!-- Resolved issues have been archived to preserve space -->\n<!-- Check .juno_task/archives/ for historical resolved issues -->\n';
 
   return content;
 }
@@ -244,11 +245,14 @@ export async function countOpenIssues(feedbackFile: string): Promise<number> {
 /**
  * Check if archival is needed based on thresholds
  */
-export async function shouldArchive(feedbackFile: string, options: {
-  openIssuesThreshold?: number;
-  fileSizeThreshold?: number;
-  lineCountThreshold?: number;
-} = {}): Promise<{
+export async function shouldArchive(
+  feedbackFile: string,
+  options: {
+    openIssuesThreshold?: number;
+    fileSizeThreshold?: number;
+    lineCountThreshold?: number;
+  } = {},
+): Promise<{
   shouldArchive: boolean;
   reasons: string[];
   stats: {
@@ -261,14 +265,14 @@ export async function shouldArchive(feedbackFile: string, options: {
   const {
     openIssuesThreshold = 10,
     fileSizeThreshold = 50 * 1024, // 50KB
-    lineCountThreshold = 500
+    lineCountThreshold = 500,
   } = options;
 
   if (!(await fs.pathExists(feedbackFile))) {
     return {
       shouldArchive: false,
       reasons: [],
-      stats: { openIssuesCount: 0, resolvedIssuesCount: 0, fileSizeBytes: 0, lineCount: 0 }
+      stats: { openIssuesCount: 0, resolvedIssuesCount: 0, fileSizeBytes: 0, lineCount: 0 },
     };
   }
 
@@ -284,11 +288,15 @@ export async function shouldArchive(feedbackFile: string, options: {
   }
 
   if (parsed.openIssues.length > openIssuesThreshold) {
-    reasons.push(`${parsed.openIssues.length} open issues exceeds threshold (${openIssuesThreshold})`);
+    reasons.push(
+      `${parsed.openIssues.length} open issues exceeds threshold (${openIssuesThreshold})`,
+    );
   }
 
   if (stats.size > fileSizeThreshold) {
-    reasons.push(`File size ${(stats.size / 1024).toFixed(1)}KB exceeds threshold (${fileSizeThreshold / 1024}KB)`);
+    reasons.push(
+      `File size ${(stats.size / 1024).toFixed(1)}KB exceeds threshold (${fileSizeThreshold / 1024}KB)`,
+    );
   }
 
   if (lineCount > lineCountThreshold) {
@@ -302,7 +310,7 @@ export async function shouldArchive(feedbackFile: string, options: {
       openIssuesCount: parsed.openIssues.length,
       resolvedIssuesCount: parsed.resolvedIssues.length,
       fileSizeBytes: stats.size,
-      lineCount
-    }
+      lineCount,
+    },
   };
 }

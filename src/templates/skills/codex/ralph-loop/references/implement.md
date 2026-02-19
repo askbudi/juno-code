@@ -3,6 +3,7 @@ description: Study kanban.sh and Execute the implementation plan by processing a
 ---
 
 ## User Input
+
 ```text
 A.
 **ALWAYS check remaing tasks and user feedbacks. Integrate it into the plan,
@@ -40,27 +41,28 @@ it would be ok to include past reasoning and root causing to the open issue, You
 
 C. Using parallel subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
 
-D. Choose the most important 1 things, ( Based on Open Issue  and Also Tasks ), Think hard about what is the most important Task. 
+D. Choose the most important 1 things, ( Based on Open Issue  and Also Tasks ), Think hard about what is the most important Task.
 
 E. update status of most important task on ./juno_task/scripts/kanban.sh.
 (if the task is not on ./juno_task/scripts/kanban.sh, create it ! Kanban is our source of truth)
 `./juno_task/scripts/kanban.sh mark in_progress --ID {Task_ID}`
 
 
-F. Implement the most important 1 thing following the outline. 
+F. Implement the most important 1 thing following the outline.
 
 ```
 
 You **MUST** consider the user input before proceeding (if not empty).
 
 ## Outline
-  
+
 . Execute implementation following the task plan:
-   - **Phase-by-phase execution**: Complete each phase before moving to the next
-   - **Respect dependencies**: Run sequential tasks in order, parallel tasks [P] can run together  
-   - **Follow TDD approach**: Execute test tasks before their corresponding implementation tasks
-   - **File-based coordination**: Tasks affecting the same files must run sequentially
-   - **Validation checkpoints**: Verify each phase completion before proceeding
+
+- **Phase-by-phase execution**: Complete each phase before moving to the next
+- **Respect dependencies**: Run sequential tasks in order, parallel tasks [P] can run together
+- **Follow TDD approach**: Execute test tasks before their corresponding implementation tasks
+- **File-based coordination**: Tasks affecting the same files must run sequentially
+- **Validation checkpoints**: Verify each phase completion before proceeding
 
 7. Implementation execution rules:
    - **Setup first**: Initialize project structure, dependencies, configuration
@@ -77,8 +79,8 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Suggest next steps if implementation cannot proceed
    - **IMPORTANT** For completed tasks, make sure to mark the task off as [X] in the tasks file.
    - **IMPORTANT** Keep ./juno_task/scripts/kanban.sh up-to-date
-   When the issue is resolved always update ./juno_task/scripts/kanban.sh
-   `./juno_task/scripts/kanban.sh --status {status} --ID {task_id} --response "{key actions you take, and how you did test it}"`
+     When the issue is resolved always update ./juno_task/scripts/kanban.sh
+     `./juno_task/scripts/kanban.sh --status {status} --ID {task_id} --response "{key actions you take, and how you did test it}"`
 
 9. Completion validation:
    - Verify all required tasks are completed
@@ -87,13 +89,11 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Confirm the implementation follows the technical plan
    - Report final status with summary of completed work
    - When the issue is resolved always update ./juno_task/scripts/kanban.sh
-   `./juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}"`
+     `./juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}"`
 
 10. Git
 
-   When the tests pass update ./juno_task/scripts/kanban.sh, then add changed code with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
-   Use commit message as a backlog of what has achieved. So later on we would know exactly what we achieved in each commit.
-   Update the task in ./juno_task/scripts/kanban.sh with the commit hash so later on we could map each task to a specific git commit
-   `./juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`
-
-
+When the tests pass update ./juno_task/scripts/kanban.sh, then add changed code with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
+Use commit message as a backlog of what has achieved. So later on we would know exactly what we achieved in each commit.
+Update the task in ./juno_task/scripts/kanban.sh with the commit hash so later on we could map each task to a specific git commit
+`./juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`

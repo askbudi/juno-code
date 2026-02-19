@@ -17,7 +17,7 @@ export enum LogLevel {
   INFO = 2,
   WARN = 3,
   ERROR = 4,
-  FATAL = 5
+  FATAL = 5,
 }
 
 export enum LogContext {
@@ -28,7 +28,7 @@ export enum LogContext {
   TEMPLATE = 'TEMPLATE',
   CONFIG = 'CONFIG',
   PERFORMANCE = 'PERFORMANCE',
-  SYSTEM = 'SYSTEM'
+  SYSTEM = 'SYSTEM',
 }
 
 export interface LogEntry {
@@ -64,7 +64,7 @@ export class AdvancedLogger {
       showLevel: true,
       colorize: true,
       output: 'console',
-      ...options
+      ...options,
     };
   }
 
@@ -117,7 +117,7 @@ export class AdvancedLogger {
       level,
       context,
       message,
-      data
+      data,
     };
 
     const formatted = this.formatSimple(entry);
@@ -195,7 +195,7 @@ export class AdvancedLogger {
 export class ContextLogger {
   constructor(
     private parent: AdvancedLogger,
-    private context: LogContext
+    private context: LogContext,
   ) {}
 
   trace(message: string, data?: any): void {
@@ -230,7 +230,7 @@ export class ContextLogger {
 export const logger = new AdvancedLogger({
   level: LogLevel.INFO,
   colorize: true,
-  output: 'console'
+  output: 'console',
 });
 
 // Export context-specific loggers

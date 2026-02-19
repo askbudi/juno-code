@@ -13,12 +13,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type {
-  JunoTaskConfig,
-  SubagentType,
-  ProgressEventType,
-  BackendType,
-} from '../types/index';
+import type { JunoTaskConfig, SubagentType, ProgressEventType, BackendType } from '../types/index';
 import type {
   ProgressEvent,
   ProgressCallback,
@@ -26,10 +21,7 @@ import type {
   ToolCallResult,
   SessionContext,
 } from '../types/execution.js';
-import {
-  ExecutionError,
-  RateLimitError,
-} from './errors';
+import { ExecutionError, RateLimitError } from './errors';
 import { executeHook } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
 import type { Backend } from './backend-manager.js';
@@ -502,10 +494,7 @@ export class ExecutionEngine extends EventEmitter {
    * @param abortSignal - Optional abort signal for cancellation
    * @returns Promise resolving to execution result
    */
-  async execute(
-    request: ExecutionRequest,
-    abortSignal?: AbortSignal
-  ): Promise<ExecutionResult> {
+  async execute(request: ExecutionRequest, abortSignal?: AbortSignal): Promise<ExecutionResult> {
     this.validateRequest(request);
 
     const context = this.createExecutionContext(request, abortSignal);
@@ -574,15 +563,15 @@ export class ExecutionEngine extends EventEmitter {
 
     try {
       // Cancel all active executions
-      const cancellationPromises = Array.from(this.activeExecutions.values()).map(
-        context => this.cancelExecution(context)
+      const cancellationPromises = Array.from(this.activeExecutions.values()).map((context) =>
+        this.cancelExecution(context),
       );
 
       // Wait for cancellations with timeout
       await Promise.race([
         Promise.all(cancellationPromises),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Shutdown timeout')), timeoutMs)
+          setTimeout(() => reject(new Error('Shutdown timeout')), timeoutMs),
         ),
       ]);
 
@@ -593,7 +582,7 @@ export class ExecutionEngine extends EventEmitter {
       }
 
       // Run cleanup tasks
-      await Promise.all(this.cleanupTasks.map(task => task()));
+      await Promise.all(this.cleanupTasks.map((task) => task()));
 
       this.emit('engine:shutdown:complete');
     } catch (error) {
@@ -614,15 +603,30 @@ export class ExecutionEngine extends EventEmitter {
 
     return {
       totalIterations: contexts.reduce((sum, ctx) => sum + ctx.statistics.totalIterations, 0),
-      successfulIterations: contexts.reduce((sum, ctx) => sum + ctx.statistics.successfulIterations, 0),
+      successfulIterations: contexts.reduce(
+        (sum, ctx) => sum + ctx.statistics.successfulIterations,
+        0,
+      ),
       failedIterations: contexts.reduce((sum, ctx) => sum + ctx.statistics.failedIterations, 0),
       averageIterationDuration: this.calculateAverageIterationDuration(contexts),
       totalToolCalls: contexts.reduce((sum, ctx) => sum + ctx.statistics.totalToolCalls, 0),
-      totalProgressEvents: contexts.reduce((sum, ctx) => sum + ctx.statistics.totalProgressEvents, 0),
-      rateLimitEncounters: contexts.reduce((sum, ctx) => sum + ctx.statistics.rateLimitEncounters, 0),
+      totalProgressEvents: contexts.reduce(
+        (sum, ctx) => sum + ctx.statistics.totalProgressEvents,
+        0,
+      ),
+      rateLimitEncounters: contexts.reduce(
+        (sum, ctx) => sum + ctx.statistics.rateLimitEncounters,
+        0,
+      ),
       rateLimitWaitTime: contexts.reduce((sum, ctx) => sum + ctx.statistics.rateLimitWaitTime, 0),
-      quotaLimitEncounters: contexts.reduce((sum, ctx) => sum + (ctx.statistics.quotaLimitEncounters ?? 0), 0),
-      quotaLimitWaitTime: contexts.reduce((sum, ctx) => sum + (ctx.statistics.quotaLimitWaitTime ?? 0), 0),
+      quotaLimitEncounters: contexts.reduce(
+        (sum, ctx) => sum + (ctx.statistics.quotaLimitEncounters ?? 0),
+        0,
+      ),
+      quotaLimitWaitTime: contexts.reduce(
+        (sum, ctx) => sum + (ctx.statistics.quotaLimitWaitTime ?? 0),
+        0,
+      ),
       errorBreakdown: this.aggregateErrorBreakdown(contexts),
       performanceMetrics: this.calculatePerformanceMetrics(contexts),
     };
@@ -686,7 +690,9 @@ export class ExecutionEngine extends EventEmitter {
 
     const isAvailable = await backend.isAvailable();
     if (!isAvailable) {
-      throw new Error('Shell backend is not available. Ensure ~/.juno_code/services/ exists and contains service scripts.');
+      throw new Error(
+        'Shell backend is not available. Ensure ~/.juno_code/services/ exists and contains service scripts.',
+      );
     }
 
     this.currentBackend = backend;
@@ -700,9 +706,7 @@ export class ExecutionEngine extends EventEmitter {
         }
 
         // Notify all registered callbacks
-        await Promise.all([
-          ...this.progressCallbacks.map(callback => callback(event)),
-        ]);
+        await Promise.all([...this.progressCallbacks.map((callback) => callback(event))]);
 
         this.emit('progress:event', event);
       } catch (error) {
@@ -733,7 +737,11 @@ export class ExecutionEngine extends EventEmitter {
       throw new Error('Working directory is required');
     }
 
-    if (Number.isNaN(request.maxIterations) || request.maxIterations < -1 || request.maxIterations === 0) {
+    if (
+      Number.isNaN(request.maxIterations) ||
+      request.maxIterations < -1 ||
+      request.maxIterations === 0
+    ) {
       throw new Error('Max iterations must be a positive number or -1 for unlimited');
     }
   }
@@ -743,7 +751,7 @@ export class ExecutionEngine extends EventEmitter {
    */
   private createExecutionContext(
     request: ExecutionRequest,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
   ): ExecutionContext {
     const abortController = new AbortController();
 
@@ -835,21 +843,26 @@ export class ExecutionEngine extends EventEmitter {
     // Execute START_RUN hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook('START_RUN', this.engineConfig.config.hooks, {
-          workingDirectory: context.request.workingDirectory,
-          sessionId: context.sessionContext.sessionId,
-          runId: context.request.requestId,
-          metadata: {
+        await executeHook(
+          'START_RUN',
+          this.engineConfig.config.hooks,
+          {
+            workingDirectory: context.request.workingDirectory,
             sessionId: context.sessionContext.sessionId,
-            requestId: context.request.requestId,
-            subagent: context.request.subagent,
-            backend: context.request.backend,
-            maxIterations: context.request.maxIterations,
-            instruction: context.request.instruction,
-          }
-        }, {
-          commandTimeout: this.engineConfig.config.hookCommandTimeout,
-        });
+            runId: context.request.requestId,
+            metadata: {
+              sessionId: context.sessionContext.sessionId,
+              requestId: context.request.requestId,
+              subagent: context.request.subagent,
+              backend: context.request.backend,
+              maxIterations: context.request.maxIterations,
+              instruction: context.request.instruction,
+            },
+          },
+          {
+            commandTimeout: this.engineConfig.config.hookCommandTimeout,
+          },
+        );
       }
     } catch (error) {
       engineLogger.warn('Hook START_RUN failed', { error });
@@ -879,23 +892,30 @@ export class ExecutionEngine extends EventEmitter {
     // Execute END_RUN hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook('END_RUN', this.engineConfig.config.hooks, {
-          workingDirectory: context.request.workingDirectory,
-          sessionId: context.sessionContext.sessionId,
-          runId: context.request.requestId,
-          metadata: {
+        await executeHook(
+          'END_RUN',
+          this.engineConfig.config.hooks,
+          {
+            workingDirectory: context.request.workingDirectory,
             sessionId: context.sessionContext.sessionId,
-            requestId: context.request.requestId,
-            status: context.status,
-            totalIterations: context.statistics.totalIterations,
-            successfulIterations: context.statistics.successfulIterations,
-            failedIterations: context.statistics.failedIterations,
-            duration: context.endTime ? context.endTime.getTime() - context.startTime.getTime() : 0,
-            success: context.status === ExecutionStatus.COMPLETED,
-          }
-        }, {
-          commandTimeout: this.engineConfig.config.hookCommandTimeout,
-        });
+            runId: context.request.requestId,
+            metadata: {
+              sessionId: context.sessionContext.sessionId,
+              requestId: context.request.requestId,
+              status: context.status,
+              totalIterations: context.statistics.totalIterations,
+              successfulIterations: context.statistics.successfulIterations,
+              failedIterations: context.statistics.failedIterations,
+              duration: context.endTime
+                ? context.endTime.getTime() - context.startTime.getTime()
+                : 0,
+              success: context.status === ExecutionStatus.COMPLETED,
+            },
+          },
+          {
+            commandTimeout: this.engineConfig.config.hookCommandTimeout,
+          },
+        );
       }
     } catch (error) {
       engineLogger.warn('Hook END_RUN failed', { error });
@@ -951,64 +971,79 @@ export class ExecutionEngine extends EventEmitter {
    * Execute a single iteration
    * @returns QuotaLimitInfo if a quota limit was detected, null otherwise
    */
-  private async executeIteration(context: ExecutionContext, iterationNumber: number): Promise<QuotaLimitInfo | null> {
+  private async executeIteration(
+    context: ExecutionContext,
+    iterationNumber: number,
+  ): Promise<QuotaLimitInfo | null> {
     const iterationStart = new Date();
 
     // Execute START_ITERATION hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook('START_ITERATION', this.engineConfig.config.hooks, {
-          workingDirectory: context.request.workingDirectory,
-          sessionId: context.sessionContext.sessionId,
-          runId: context.request.requestId,
-          iteration: iterationNumber,
-          totalIterations: context.request.maxIterations,
-          metadata: {
+        await executeHook(
+          'START_ITERATION',
+          this.engineConfig.config.hooks,
+          {
+            workingDirectory: context.request.workingDirectory,
             sessionId: context.sessionContext.sessionId,
-            requestId: context.request.requestId,
-            iterationNumber,
-            maxIterations: context.request.maxIterations,
-            subagent: context.request.subagent,
-          }
-        }, {
-          commandTimeout: this.engineConfig.config.hookCommandTimeout,
-        });
+            runId: context.request.requestId,
+            iteration: iterationNumber,
+            totalIterations: context.request.maxIterations,
+            metadata: {
+              sessionId: context.sessionContext.sessionId,
+              requestId: context.request.requestId,
+              iterationNumber,
+              maxIterations: context.request.maxIterations,
+              subagent: context.request.subagent,
+            },
+          },
+          {
+            commandTimeout: this.engineConfig.config.hookCommandTimeout,
+          },
+        );
       }
     } catch (error) {
       engineLogger.warn('Hook START_ITERATION failed', { error, iterationNumber });
       // Continue execution despite hook failure
     }
 
-
     this.emit('iteration:start', { context, iterationNumber });
 
     const toolRequest: ToolCallRequest = {
-        toolName: this.getToolNameForSubagent(context.request.subagent),
-        arguments: {
-          instruction: context.request.instruction,
-          project_path: context.request.workingDirectory,
-          ...(context.request.model !== undefined && { model: context.request.model }),
-          ...(context.request.agents !== undefined && { agents: context.request.agents }),
-          ...(context.request.tools !== undefined && { tools: context.request.tools }),
-          ...(context.request.allowedTools !== undefined && { allowedTools: context.request.allowedTools }),
-          ...(context.request.appendAllowedTools !== undefined && { appendAllowedTools: context.request.appendAllowedTools }),
-          ...(context.request.disallowedTools !== undefined && { disallowedTools: context.request.disallowedTools }),
-          ...(context.request.resume !== undefined && { resume: context.request.resume }),
-          ...(context.request.continueConversation !== undefined && { continueConversation: context.request.continueConversation }),
-          iteration: iterationNumber,
-        },
-        timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
-        priority: context.request.priority || 'normal',
-        metadata: {
-          sessionId: context.sessionContext.sessionId,
-          iterationNumber,
-        },
-        progressCallback: async (event: ProgressEvent) => {
-          context.progressEvents.push(event);
-          context.statistics.totalProgressEvents++;
-          await this.processProgressEvent(context, event);
-        },
-      };
+      toolName: this.getToolNameForSubagent(context.request.subagent),
+      arguments: {
+        instruction: context.request.instruction,
+        project_path: context.request.workingDirectory,
+        ...(context.request.model !== undefined && { model: context.request.model }),
+        ...(context.request.agents !== undefined && { agents: context.request.agents }),
+        ...(context.request.tools !== undefined && { tools: context.request.tools }),
+        ...(context.request.allowedTools !== undefined && {
+          allowedTools: context.request.allowedTools,
+        }),
+        ...(context.request.appendAllowedTools !== undefined && {
+          appendAllowedTools: context.request.appendAllowedTools,
+        }),
+        ...(context.request.disallowedTools !== undefined && {
+          disallowedTools: context.request.disallowedTools,
+        }),
+        ...(context.request.resume !== undefined && { resume: context.request.resume }),
+        ...(context.request.continueConversation !== undefined && {
+          continueConversation: context.request.continueConversation,
+        }),
+        iteration: iterationNumber,
+      },
+      timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
+      priority: context.request.priority || 'normal',
+      metadata: {
+        sessionId: context.sessionContext.sessionId,
+        iterationNumber,
+      },
+      progressCallback: async (event: ProgressEvent) => {
+        context.progressEvents.push(event);
+        context.statistics.totalProgressEvents++;
+        await this.processProgressEvent(context, event);
+      },
+    };
 
     try {
       if (!this.currentBackend) {
@@ -1027,7 +1062,8 @@ export class ExecutionEngine extends EventEmitter {
         duration,
         toolResult,
         progressEvents: toolResult.progressEvents,
-        ...(toolResult.error !== undefined && toolResult.error !== null && { error: toolResult.error }),
+        ...(toolResult.error !== undefined &&
+          toolResult.error !== null && { error: toolResult.error }),
       };
 
       context.iterations.push(iterationResult);
@@ -1038,23 +1074,28 @@ export class ExecutionEngine extends EventEmitter {
       // Execute END_ITERATION hook for successful iteration
       try {
         if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-          await executeHook('END_ITERATION', this.engineConfig.config.hooks, {
-            workingDirectory: context.request.workingDirectory,
-            sessionId: context.sessionContext.sessionId,
-            runId: context.request.requestId,
-            iteration: iterationNumber,
-            totalIterations: context.request.maxIterations,
-            metadata: {
+          await executeHook(
+            'END_ITERATION',
+            this.engineConfig.config.hooks,
+            {
+              workingDirectory: context.request.workingDirectory,
               sessionId: context.sessionContext.sessionId,
-              requestId: context.request.requestId,
-              iterationNumber,
-              success: iterationResult.success,
-              duration: iterationResult.duration,
-              toolCallStatus: iterationResult.toolResult.status,
-            }
-          }, {
-            commandTimeout: this.engineConfig.config.hookCommandTimeout,
-          });
+              runId: context.request.requestId,
+              iteration: iterationNumber,
+              totalIterations: context.request.maxIterations,
+              metadata: {
+                sessionId: context.sessionContext.sessionId,
+                requestId: context.request.requestId,
+                iterationNumber,
+                success: iterationResult.success,
+                duration: iterationResult.duration,
+                toolCallStatus: iterationResult.toolResult.status,
+              },
+            },
+            {
+              commandTimeout: this.engineConfig.config.hookCommandTimeout,
+            },
+          );
         }
       } catch (error) {
         engineLogger.warn('Hook END_ITERATION failed', { error, iterationNumber });
@@ -1097,24 +1138,29 @@ export class ExecutionEngine extends EventEmitter {
       // Execute END_ITERATION hook for failed iteration
       try {
         if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-          await executeHook('END_ITERATION', this.engineConfig.config.hooks, {
-            workingDirectory: context.request.workingDirectory,
-            sessionId: context.sessionContext.sessionId,
-            runId: context.request.requestId,
-            iteration: iterationNumber,
-            totalIterations: context.request.maxIterations,
-            metadata: {
+          await executeHook(
+            'END_ITERATION',
+            this.engineConfig.config.hooks,
+            {
+              workingDirectory: context.request.workingDirectory,
               sessionId: context.sessionContext.sessionId,
-              requestId: context.request.requestId,
-              iterationNumber,
-              success: false,
-              duration: iterationResult.duration,
-              error: mcpError.message,
-              errorType: mcpError.type,
-            }
-          }, {
-            commandTimeout: this.engineConfig.config.hookCommandTimeout,
-          });
+              runId: context.request.requestId,
+              iteration: iterationNumber,
+              totalIterations: context.request.maxIterations,
+              metadata: {
+                sessionId: context.sessionContext.sessionId,
+                requestId: context.request.requestId,
+                iterationNumber,
+                success: false,
+                duration: iterationResult.duration,
+                error: mcpError.message,
+                errorType: mcpError.type,
+              },
+            },
+            {
+              commandTimeout: this.engineConfig.config.hookCommandTimeout,
+            },
+          );
         }
       } catch (hookError) {
         engineLogger.warn('Hook END_ITERATION failed', { error: hookError, iterationNumber });
@@ -1137,7 +1183,9 @@ export class ExecutionEngine extends EventEmitter {
 
     const waitTimeMs = this.calculateRateLimitWaitTime(error);
     if (waitTimeMs > this.engineConfig.rateLimitConfig.maxWaitTimeMs) {
-      throw new Error(`Rate limit wait time (${waitTimeMs}ms) exceeds maximum allowed (${this.engineConfig.rateLimitConfig.maxWaitTimeMs}ms)`);
+      throw new Error(
+        `Rate limit wait time (${waitTimeMs}ms) exceeds maximum allowed (${this.engineConfig.rateLimitConfig.maxWaitTimeMs}ms)`,
+      );
     }
 
     context.statistics.rateLimitWaitTime += waitTimeMs;
@@ -1180,7 +1228,10 @@ export class ExecutionEngine extends EventEmitter {
    * Handle Claude quota limit with automatic sleep and retry
    * @returns true if we should retry the iteration, false otherwise
    */
-  private async handleQuotaLimit(context: ExecutionContext, quotaInfo: QuotaLimitInfo): Promise<boolean> {
+  private async handleQuotaLimit(
+    context: ExecutionContext,
+    quotaInfo: QuotaLimitInfo,
+  ): Promise<boolean> {
     if (!quotaInfo.detected || !quotaInfo.sleepDurationMs) {
       return false;
     }
@@ -1198,14 +1249,16 @@ export class ExecutionEngine extends EventEmitter {
             hour: 'numeric',
             minute: '2-digit',
             hour12: true,
-            timeZoneName: 'short'
+            timeZoneName: 'short',
           })
         : 'unknown';
 
       const sourceLabel = quotaInfo.source === 'codex' ? 'Codex' : 'Claude';
 
       engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
-      engineLogger.info(`║  ${sourceLabel} Quota Limit Reached${' '.repeat(44 - sourceLabel.length - ' Quota Limit Reached'.length)}║`);
+      engineLogger.info(
+        `║  ${sourceLabel} Quota Limit Reached${' '.repeat(44 - sourceLabel.length - ' Quota Limit Reached'.length)}║`,
+      );
       engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
       engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
       engineLogger.info(`║  Behavior:        raise (exit immediately)                     ║`);
@@ -1219,7 +1272,9 @@ export class ExecutionEngine extends EventEmitter {
 
       // Return false to NOT retry, which will cause the iteration loop to continue
       // but since this is an error condition, we need to throw to actually exit
-      throw new Error(`${sourceLabel} quota limit reached. Quota resets at ${resetTimeStr}. Use --on-hourly-limit wait to auto-retry.`);
+      throw new Error(
+        `${sourceLabel} quota limit reached. Quota resets at ${resetTimeStr}. Use --on-hourly-limit wait to auto-retry.`,
+      );
     }
 
     // onHourlyLimit === 'wait' - proceed with waiting behavior
@@ -1228,7 +1283,9 @@ export class ExecutionEngine extends EventEmitter {
     // Cap the wait time at 12 hours to prevent excessive waits
     const maxWaitTimeMs = 12 * 60 * 60 * 1000; // 12 hours
     if (waitTimeMs > maxWaitTimeMs) {
-      engineLogger.warn(`Quota limit wait time (${formatDuration(waitTimeMs)}) exceeds maximum allowed (12 hours). Will not auto-retry.`);
+      engineLogger.warn(
+        `Quota limit wait time (${formatDuration(waitTimeMs)}) exceeds maximum allowed (12 hours). Will not auto-retry.`,
+      );
       return false;
     }
 
@@ -1240,7 +1297,7 @@ export class ExecutionEngine extends EventEmitter {
           hour: 'numeric',
           minute: '2-digit',
           hour12: true,
-          timeZoneName: 'short'
+          timeZoneName: 'short',
         })
       : 'unknown';
 
@@ -1250,7 +1307,9 @@ export class ExecutionEngine extends EventEmitter {
     const waitSourceLabel = quotaInfo.source === 'codex' ? 'Codex' : 'Claude';
 
     engineLogger.info(`╔════════════════════════════════════════════════════════════════╗`);
-    engineLogger.info(`║  ${waitSourceLabel} Quota Limit Reached${' '.repeat(44 - waitSourceLabel.length - ' Quota Limit Reached'.length)}║`);
+    engineLogger.info(
+      `║  ${waitSourceLabel} Quota Limit Reached${' '.repeat(44 - waitSourceLabel.length - ' Quota Limit Reached'.length)}║`,
+    );
     engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
     engineLogger.info(`║  Quota resets at: ${resetTimeStr.padEnd(44)}║`);
     engineLogger.info(`║  Sleeping for:    ${durationStr.padEnd(44)}║`);
@@ -1277,7 +1336,10 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Sleep with periodic progress updates
    */
-  private async sleepWithProgress(totalMs: number, onProgress: (remainingMs: number) => void): Promise<void> {
+  private async sleepWithProgress(
+    totalMs: number,
+    onProgress: (remainingMs: number) => void,
+  ): Promise<void> {
     const updateIntervalMs = 60000; // Update every minute
     let remaining = totalMs;
 
@@ -1304,9 +1366,10 @@ export class ExecutionEngine extends EventEmitter {
 
     // Try to parse from content if metadata doesn't have it
     try {
-      const content = typeof toolResult.content === 'string'
-        ? JSON.parse(toolResult.content)
-        : toolResult.content;
+      const content =
+        typeof toolResult.content === 'string'
+          ? JSON.parse(toolResult.content)
+          : toolResult.content;
 
       if (content?.quota_limit?.detected) {
         return content.quota_limit;
@@ -1324,12 +1387,13 @@ export class ExecutionEngine extends EventEmitter {
   private async handleIterationError(
     context: ExecutionContext,
     error: unknown,
-    iterationNumber: number
+    iterationNumber: number,
   ): Promise<boolean> {
     const mcpError = this.wrapError(error);
     const errorType = mcpError.type;
 
-    context.statistics.errorBreakdown[errorType] = (context.statistics.errorBreakdown[errorType] || 0) + 1;
+    context.statistics.errorBreakdown[errorType] =
+      (context.statistics.errorBreakdown[errorType] || 0) + 1;
 
     // Check if we should continue on this error type
     const shouldContinue = this.engineConfig.errorRecovery.continueOnError[errorType] ?? false;
@@ -1347,7 +1411,12 @@ export class ExecutionEngine extends EventEmitter {
           return true;
         }
       } catch (recoveryError) {
-        this.emit('error:recovery-failed', { context, error: mcpError, recoveryError, iterationNumber });
+        this.emit('error:recovery-failed', {
+          context,
+          error: mcpError,
+          recoveryError,
+          iterationNumber,
+        });
       }
     }
 
@@ -1364,7 +1433,10 @@ export class ExecutionEngine extends EventEmitter {
   /**
    * Process individual progress events
    */
-  private async processProgressEvent(context: ExecutionContext, event: ProgressEvent): Promise<void> {
+  private async processProgressEvent(
+    context: ExecutionContext,
+    event: ProgressEvent,
+  ): Promise<void> {
     // Apply filters
     for (const filter of this.engineConfig.progressConfig.filters) {
       if (!filter.predicate(event)) {
@@ -1397,7 +1469,8 @@ export class ExecutionEngine extends EventEmitter {
     }
 
     // Update average iteration duration
-    const totalDuration = stats.averageIterationDuration * (stats.totalIterations - 1) + iteration.duration;
+    const totalDuration =
+      stats.averageIterationDuration * (stats.totalIterations - 1) + iteration.duration;
     stats.averageIterationDuration = totalDuration / stats.totalIterations;
 
     // Update performance metrics
@@ -1421,7 +1494,8 @@ export class ExecutionEngine extends EventEmitter {
     if (durationMinutes > 0) {
       metrics.throughput.iterationsPerMinute = context.statistics.totalIterations / durationMinutes;
       metrics.throughput.toolCallsPerMinute = context.statistics.totalToolCalls / durationMinutes;
-      metrics.throughput.progressEventsPerSecond = context.statistics.totalProgressEvents / (duration / 1000);
+      metrics.throughput.progressEventsPerSecond =
+        context.statistics.totalProgressEvents / (duration / 1000);
     }
   }
 
@@ -1489,7 +1563,7 @@ export class ExecutionEngine extends EventEmitter {
       'socket hang up',
       'err_socket_closed',
       'connection reset by peer',
-    ].some(token => lower.includes(token));
+    ].some((token) => lower.includes(token));
 
     if (isConnectionLike) {
       return {
@@ -1564,8 +1638,9 @@ export class ExecutionEngine extends EventEmitter {
   private calculateAverageIterationDuration(contexts: ExecutionContext[]): number {
     if (contexts.length === 0) return 0;
 
-    const totalDuration = contexts.reduce((sum, ctx) =>
-      sum + ctx.statistics.averageIterationDuration * ctx.statistics.totalIterations, 0
+    const totalDuration = contexts.reduce(
+      (sum, ctx) => sum + ctx.statistics.averageIterationDuration * ctx.statistics.totalIterations,
+      0,
     );
     const totalIterations = contexts.reduce((sum, ctx) => sum + ctx.statistics.totalIterations, 0);
 
@@ -1606,27 +1681,37 @@ export class ExecutionEngine extends EventEmitter {
     }
 
     // Aggregate metrics from all contexts
-    const avgMetrics = contexts.reduce((acc, ctx) => ({
-      cpuUsage: acc.cpuUsage + ctx.statistics.performanceMetrics.cpuUsage,
-      memoryUsage: acc.memoryUsage + ctx.statistics.performanceMetrics.memoryUsage,
-      networkRequests: acc.networkRequests + ctx.statistics.performanceMetrics.networkRequests,
-      fileSystemOperations: acc.fileSystemOperations + ctx.statistics.performanceMetrics.fileSystemOperations,
-      throughput: {
-        iterationsPerMinute: acc.throughput.iterationsPerMinute + ctx.statistics.performanceMetrics.throughput.iterationsPerMinute,
-        progressEventsPerSecond: acc.throughput.progressEventsPerSecond + ctx.statistics.performanceMetrics.throughput.progressEventsPerSecond,
-        toolCallsPerMinute: acc.throughput.toolCallsPerMinute + ctx.statistics.performanceMetrics.throughput.toolCallsPerMinute,
+    const avgMetrics = contexts.reduce(
+      (acc, ctx) => ({
+        cpuUsage: acc.cpuUsage + ctx.statistics.performanceMetrics.cpuUsage,
+        memoryUsage: acc.memoryUsage + ctx.statistics.performanceMetrics.memoryUsage,
+        networkRequests: acc.networkRequests + ctx.statistics.performanceMetrics.networkRequests,
+        fileSystemOperations:
+          acc.fileSystemOperations + ctx.statistics.performanceMetrics.fileSystemOperations,
+        throughput: {
+          iterationsPerMinute:
+            acc.throughput.iterationsPerMinute +
+            ctx.statistics.performanceMetrics.throughput.iterationsPerMinute,
+          progressEventsPerSecond:
+            acc.throughput.progressEventsPerSecond +
+            ctx.statistics.performanceMetrics.throughput.progressEventsPerSecond,
+          toolCallsPerMinute:
+            acc.throughput.toolCallsPerMinute +
+            ctx.statistics.performanceMetrics.throughput.toolCallsPerMinute,
+        },
+      }),
+      {
+        cpuUsage: 0,
+        memoryUsage: 0,
+        networkRequests: 0,
+        fileSystemOperations: 0,
+        throughput: {
+          iterationsPerMinute: 0,
+          progressEventsPerSecond: 0,
+          toolCallsPerMinute: 0,
+        },
       },
-    }), {
-      cpuUsage: 0,
-      memoryUsage: 0,
-      networkRequests: 0,
-      fileSystemOperations: 0,
-      throughput: {
-        iterationsPerMinute: 0,
-        progressEventsPerSecond: 0,
-        toolCallsPerMinute: 0,
-      },
-    });
+    );
 
     // Average the metrics
     const count = contexts.length;
@@ -1647,7 +1732,7 @@ export class ExecutionEngine extends EventEmitter {
    * Sleep utility for delays
    */
   private async sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
@@ -1682,9 +1767,7 @@ interface ExecutionContext {
  * @param config - Base juno-task configuration
  * @returns Configured execution engine
  */
-export function createExecutionEngine(
-  config: JunoTaskConfig,
-): ExecutionEngine {
+export function createExecutionEngine(config: JunoTaskConfig): ExecutionEngine {
   return new ExecutionEngine({
     config,
     errorRecovery: DEFAULT_ERROR_RECOVERY_CONFIG,

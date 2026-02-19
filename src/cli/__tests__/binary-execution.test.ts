@@ -41,7 +41,7 @@ async function executeCLI(
     input?: string;
     binary?: 'js' | 'mjs';
     expectError?: boolean;
-  } = {}
+  } = {},
 ): Promise<ExecaReturnValue> {
   const {
     timeout = BINARY_TIMEOUT,
@@ -49,7 +49,7 @@ async function executeCLI(
     env = {},
     input,
     binary = 'mjs',
-    expectError = false
+    expectError = false,
   } = options;
 
   const binaryPath = binary === 'js' ? BINARY_JS : BINARY_MJS;
@@ -64,7 +64,7 @@ async function executeCLI(
     // Override any user config
     JUNO_CODE_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
-    ...env
+    ...env,
   };
 
   try {
@@ -74,12 +74,12 @@ async function executeCLI(
       timeout,
       input,
       reject: false, // Never reject - we'll handle errors ourselves
-      all: true // Capture both stdout and stderr
+      all: true, // Capture both stdout and stderr
     });
 
     // Ensure exitCode is always a number (can be undefined in edge cases)
     if (result.exitCode === undefined) {
-      result.exitCode = result.timedOut ? 124 : (result.failed ? 1 : 0);
+      result.exitCode = result.timedOut ? 124 : result.failed ? 1 : 0;
     }
 
     // If we don't expect an error but got one, throw it
@@ -104,7 +104,10 @@ async function executeCLI(
  * Create a mock project structure in temp directory
  */
 async function createMockProject(structure: Record<string, string | object> = {}): Promise<void> {
-  async function createStructure(basePath: string, obj: Record<string, string | object>): Promise<void> {
+  async function createStructure(
+    basePath: string,
+    obj: Record<string, string | object>,
+  ): Promise<void> {
     for (const [name, content] of Object.entries(obj)) {
       const fullPath = path.join(basePath, name);
 
@@ -130,9 +133,7 @@ describe('Binary Execution Tests', () => {
     const mjsExists = await fs.pathExists(BINARY_MJS);
 
     if (!jsExists && !mjsExists) {
-      throw new Error(
-        `Neither ${BINARY_JS} nor ${BINARY_MJS} exists. Run 'npm run build' first.`
-      );
+      throw new Error(`Neither ${BINARY_JS} nor ${BINARY_MJS} exists. Run 'npm run build' first.`);
     }
   });
 
@@ -143,13 +144,13 @@ describe('Binary Execution Tests', () => {
 
   afterEach(async () => {
     // Clean up temporary directory with retry for stubborn files
-    if (tempDir && await fs.pathExists(tempDir)) {
+    if (tempDir && (await fs.pathExists(tempDir))) {
       try {
         await fs.remove(tempDir);
       } catch (error: any) {
         // Retry with force rm for stubborn directories (e.g., .venv_juno)
         if (error.code === 'ENOTEMPTY' || error.code === 'EBUSY') {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 100));
           try {
             await fs.remove(tempDir);
           } catch {
@@ -211,7 +212,7 @@ describe('Binary Execution Tests', () => {
       // This test verifies we handle the error appropriately
       const result = await executeCLI(['--version'], {
         binary: 'js',
-        expectError: true
+        expectError: true,
       });
 
       // Either it works (if bundling is fixed) or fails with known error
@@ -219,10 +220,9 @@ describe('Binary Execution Tests', () => {
         expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
       } else {
         const err = result.stderr || '';
-        expect(
-          err.includes('ERR_REQUIRE_ASYNC_MODULE') ||
-          err.includes('ERR_REQUIRE_ESM')
-        ).toBe(true);
+        expect(err.includes('ERR_REQUIRE_ASYNC_MODULE') || err.includes('ERR_REQUIRE_ESM')).toBe(
+          true,
+        );
       }
     });
   });
@@ -251,8 +251,8 @@ describe('Binary Execution Tests', () => {
       // Create an existing .juno_task directory
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Existing init file'
-        }
+          'init.md': '# Existing init file',
+        },
       });
 
       const result = await executeCLI(['init', '--force'], { expectError: true });
@@ -265,14 +265,16 @@ describe('Binary Execution Tests', () => {
       // Create an existing .juno_task directory
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Existing init file'
-        }
+          'init.md': '# Existing init file',
+        },
       });
 
       const result = await executeCLI(['init'], { expectError: true });
 
       expect(result.exitCode).not.toBe(0);
-      expect(result.stderr || result.stdout).toMatch(/exists|already.*initialized|already.*present/i);
+      expect(result.stderr || result.stdout).toMatch(
+        /exists|already.*initialized|already.*present/i,
+      );
     });
 
     it('should handle init with working directory option', async () => {
@@ -283,7 +285,9 @@ describe('Binary Execution Tests', () => {
     }, 60000); // Allow 60 seconds for init (can be slow with template processing)
 
     it('should validate template names', async () => {
-      const result = await executeCLI(['init', '--template', 'nonexistent-template'], { expectError: true });
+      const result = await executeCLI(['init', '--template', 'nonexistent-template'], {
+        expectError: true,
+      });
 
       // The template validation might not be strict, so we accept any exit code
       // The important thing is that the CLI doesn't crash
@@ -296,10 +300,11 @@ describe('Binary Execution Tests', () => {
       // Create a basic project structure for start command
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Test Project\n\nThis is a test project for binary execution tests.\n\n## Goals\n- Test the CLI binary\n- Verify command execution\n',
+          'init.md':
+            '# Test Project\n\nThis is a test project for binary execution tests.\n\n## Goals\n- Test the CLI binary\n- Verify command execution\n',
           'plan.md': '# Project Plan\n\n## Current Status\nTesting binary execution\n',
-          'prompt.md': '# Prompt\n\nTest prompt for binary execution'
-        }
+          'prompt.md': '# Prompt\n\nTest prompt for binary execution',
+        },
       });
     });
 
@@ -319,7 +324,9 @@ describe('Binary Execution Tests', () => {
       const result = await executeCLI(['start'], { expectError: true });
 
       expect(result.exitCode).not.toBe(0);
-      expect(result.stderr || result.stdout).toMatch(/init\.md|not found|missing|juno_task.*directory.*found|run.*init/i);
+      expect(result.stderr || result.stdout).toMatch(
+        /init\.md|not found|missing|juno_task.*directory.*found|run.*init/i,
+      );
     });
 
     it.skip('should handle start with max-iterations option', async () => {
@@ -327,7 +334,7 @@ describe('Binary Execution Tests', () => {
       // Testing this would require complex mocking that defeats the purpose of binary testing
       const result = await executeCLI(['start', '--max-iterations', '3'], {
         expectError: true,
-        timeout: 5000 // 5 second timeout
+        timeout: 5000, // 5 second timeout
       });
 
       // This might fail due to MCP/template issues, but the option should be recognized
@@ -339,7 +346,7 @@ describe('Binary Execution Tests', () => {
       // Testing this would require complex mocking that defeats the purpose of binary testing
       const result = await executeCLI(['start', '--model', 'claude-3-sonnet'], {
         expectError: true,
-        timeout: 5000 // 5 second timeout
+        timeout: 5000, // 5 second timeout
       });
 
       // This might fail due to MCP/template issues, but the option should be recognized
@@ -348,7 +355,9 @@ describe('Binary Execution Tests', () => {
 
     it.skip('should validate max-iterations as number', async () => {
       // SKIP: This test times out due to actual command execution
-      const result = await executeCLI(['start', '--max-iterations', 'not-a-number'], { expectError: true });
+      const result = await executeCLI(['start', '--max-iterations', 'not-a-number'], {
+        expectError: true,
+      });
 
       expect(result.exitCode).not.toBe(0);
     });
@@ -365,7 +374,10 @@ describe('Binary Execution Tests', () => {
     });
 
     it('should handle feedback collection in non-interactive mode', async () => {
-      const result = await executeCLI(['feedback', '--file', path.join(tempDir, 'feedback.md'), 'Test feedback'], { expectError: true });
+      const result = await executeCLI(
+        ['feedback', '--file', path.join(tempDir, 'feedback.md'), 'Test feedback'],
+        { expectError: true },
+      );
 
       // This might succeed or fail depending on implementation
       expect(typeof result.exitCode).toBe('number');
@@ -373,7 +385,9 @@ describe('Binary Execution Tests', () => {
 
     it('should handle feedback with custom file option', async () => {
       const feedbackFile = path.join(tempDir, 'custom-feedback.md');
-      const result = await executeCLI(['feedback', '--file', feedbackFile, 'Test feedback'], { expectError: true });
+      const result = await executeCLI(['feedback', '--file', feedbackFile, 'Test feedback'], {
+        expectError: true,
+      });
 
       // This might succeed or fail depending on implementation
       expect(typeof result.exitCode).toBe('number');
@@ -397,10 +411,14 @@ describe('Binary Execution Tests', () => {
 
     it('should handle config file option', async () => {
       const configFile = path.join(tempDir, 'test-config.json');
-      await fs.writeFile(configFile, JSON.stringify({
-        defaultSubagent: 'claude',
-        workingDirectory: tempDir
-      }), 'utf-8');
+      await fs.writeFile(
+        configFile,
+        JSON.stringify({
+          defaultSubagent: 'claude',
+          workingDirectory: tempDir,
+        }),
+        'utf-8',
+      );
 
       const result = await executeCLI(['--config', configFile, '--version']);
 
@@ -423,7 +441,7 @@ describe('Binary Execution Tests', () => {
   describe('Environment Variables Tests', () => {
     it('should respect JUNO_CODE_VERBOSE environment variable', async () => {
       const result = await executeCLI(['--version'], {
-        env: { JUNO_CODE_VERBOSE: 'true' }
+        env: { JUNO_CODE_VERBOSE: 'true' },
       });
 
       expect(result.exitCode).toBe(0);
@@ -431,7 +449,7 @@ describe('Binary Execution Tests', () => {
 
     it('should respect JUNO_TASK_VERBOSE environment variable (backward compatibility)', async () => {
       const result = await executeCLI(['--version'], {
-        env: { JUNO_TASK_VERBOSE: 'true' }
+        env: { JUNO_TASK_VERBOSE: 'true' },
       });
 
       expect(result.exitCode).toBe(0);
@@ -439,7 +457,7 @@ describe('Binary Execution Tests', () => {
 
     it('should respect NO_COLOR environment variable', async () => {
       const result = await executeCLI(['--help'], {
-        env: { NO_COLOR: '1' }
+        env: { NO_COLOR: '1' },
       });
 
       expect(result.exitCode).toBe(0);
@@ -449,19 +467,22 @@ describe('Binary Execution Tests', () => {
 
     it('should respect CI environment variable for quiet mode', async () => {
       const result = await executeCLI(['--version'], {
-        env: { CI: 'true' }
+        env: { CI: 'true' },
       });
 
       expect(result.exitCode).toBe(0);
     });
-
   });
 
   describe('Error Handling and Edge Cases', () => {
-    it('should handle SIGINT gracefully', async () => {
-      // This test is complex to implement reliably in CI
-      // We'll skip it for now but document the requirement
-    }, { skip: true });
+    it(
+      'should handle SIGINT gracefully',
+      async () => {
+        // This test is complex to implement reliably in CI
+        // We'll skip it for now but document the requirement
+      },
+      { skip: true },
+    );
 
     it('should handle invalid JSON config file', async () => {
       const configFile = path.join(tempDir, 'invalid-config.json');
@@ -484,7 +505,7 @@ describe('Binary Execution Tests', () => {
 
         const result = await executeCLI(['init'], {
           cwd: readOnlyDir,
-          expectError: true
+          expectError: true,
         });
 
         expect(result.exitCode).not.toBe(0);
@@ -515,11 +536,13 @@ describe('Binary Execution Tests', () => {
       // Test with a very large max-iterations to see if CLI handles it
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Test Project\n\nTest content'
-        }
+          'init.md': '# Test Project\n\nTest content',
+        },
       });
 
-      const result = await executeCLI(['start', '--max-iterations', '999999'], { expectError: true });
+      const result = await executeCLI(['start', '--max-iterations', '999999'], {
+        expectError: true,
+      });
 
       // Should either work or fail gracefully
       expect(typeof result.exitCode).toBe('number');
@@ -529,13 +552,13 @@ describe('Binary Execution Tests', () => {
       // SKIP: This test times out due to actual command execution
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Test Project\n\nTest content'
-        }
+          'init.md': '# Test Project\n\nTest content',
+        },
       });
 
       const result = await executeCLI(['start'], {
         env: { JUNO_CODE_MCP_TIMEOUT: '1' }, // Very short timeout
-        expectError: true
+        expectError: true,
       });
 
       // Should handle timeout gracefully
@@ -545,7 +568,9 @@ describe('Binary Execution Tests', () => {
 
   describe('Real Execution Flow Tests', () => {
     it('should create actual project files with init command (non-dry-run)', async () => {
-      const result = await executeCLI(['init', '--template', 'default', '--force'], { expectError: true });
+      const result = await executeCLI(['init', '--template', 'default', '--force'], {
+        expectError: true,
+      });
 
       // This might succeed or fail depending on template availability
       // We're testing that the CLI handles it appropriately
@@ -566,8 +591,9 @@ describe('Binary Execution Tests', () => {
       // Create a basic init.md file manually
       await createMockProject({
         '.juno_task': {
-          'init.md': '# Test Project\n\nThis is a test project for binary execution tests.\n\n## Goals\n- Test the CLI binary\n- Verify command execution\n'
-        }
+          'init.md':
+            '# Test Project\n\nThis is a test project for binary execution tests.\n\n## Goals\n- Test the CLI binary\n- Verify command execution\n',
+        },
       });
 
       // Then try to start it
@@ -581,7 +607,7 @@ describe('Binary Execution Tests', () => {
       // Try to init in a directory where we can't write
       const result = await executeCLI(['init'], {
         cwd: '/', // Root directory where we likely can't write
-        expectError: true
+        expectError: true,
       });
 
       expect(result.exitCode).not.toBe(0);
@@ -618,12 +644,12 @@ describe('Binary Execution Tests', () => {
 
     it('should handle multiple concurrent executions', async () => {
       const promises = Array.from({ length: 3 }, (_, i) =>
-        executeCLI(['--version'], { timeout: 10000 })
+        executeCLI(['--version'], { timeout: 10000 }),
       );
 
       const results = await Promise.all(promises);
 
-      results.forEach(result => {
+      results.forEach((result) => {
         expect(result.exitCode).toBe(0);
       });
     });

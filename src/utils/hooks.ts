@@ -142,7 +142,7 @@ export async function executeHook(
   hookType: HookType,
   hooks: HooksConfig,
   context: HookExecutionContext = {},
-  options: HookExecutionOptions = {}
+  options: HookExecutionOptions = {},
 ): Promise<HookExecutionResult> {
   const startTime = Date.now();
   const {
@@ -220,7 +220,7 @@ export async function executeHook(
           Object.entries(context.metadata || {}).map(([key, value]) => [
             `JUNO_${key.toUpperCase()}`,
             String(value),
-          ])
+          ]),
         ),
       };
 
@@ -303,7 +303,9 @@ export async function executeHook(
 
         // If we shouldn't continue on error, break the loop
         if (!continueOnError) {
-          contextLogger.warn(`Stopping hook execution due to command failure (continueOnError=false)`);
+          contextLogger.warn(
+            `Stopping hook execution due to command failure (continueOnError=false)`,
+          );
           break;
         }
       }
@@ -349,7 +351,9 @@ export async function executeHook(
 
       // If we shouldn't continue on error, break the loop
       if (!continueOnError) {
-        contextLogger.warn(`Stopping hook execution due to command failure (continueOnError=false)`);
+        contextLogger.warn(
+          `Stopping hook execution due to command failure (continueOnError=false)`,
+        );
         break;
       }
     }
@@ -396,7 +400,7 @@ export async function executeHooks(
   hookTypes: HookType[],
   hooks: HooksConfig,
   context: HookExecutionContext = {},
-  options: HookExecutionOptions = {}
+  options: HookExecutionOptions = {},
 ): Promise<HookExecutionResult[]> {
   const results: HookExecutionResult[] = [];
 
@@ -410,7 +414,7 @@ export async function executeHooks(
     results.push(result);
   }
 
-  const totalSuccess = results.every(r => r.success);
+  const totalSuccess = results.every((r) => r.success);
   const totalCommands = results.reduce((sum, r) => sum + r.commandsExecuted, 0);
   const totalFailed = results.reduce((sum, r) => sum + r.commandsFailed, 0);
 
@@ -442,12 +446,20 @@ export function validateHooksConfig(hooks: HooksConfig): {
   const issues: string[] = [];
   const warnings: string[] = [];
 
-  const validHookTypes: HookType[] = ['START_RUN', 'START_ITERATION', 'END_ITERATION', 'END_RUN', 'ON_STALE'];
+  const validHookTypes: HookType[] = [
+    'START_RUN',
+    'START_ITERATION',
+    'END_ITERATION',
+    'END_RUN',
+    'ON_STALE',
+  ];
 
   for (const [hookType, hook] of Object.entries(hooks)) {
     // Check if hook type is valid
     if (!validHookTypes.includes(hookType as HookType)) {
-      warnings.push(`Unknown hook type: ${hookType}. Valid types are: ${validHookTypes.join(', ')}`);
+      warnings.push(
+        `Unknown hook type: ${hookType}. Valid types are: ${validHookTypes.join(', ')}`,
+      );
     }
 
     // Check if hook has commands array
@@ -472,12 +484,7 @@ export function validateHooksConfig(hooks: HooksConfig): {
     }
 
     // Warn about potentially dangerous commands
-    const dangerousPatterns = [
-      /rm\s+-rf\s+\//,
-      /sudo\s+rm/,
-      /format\s+c:/i,
-      /del\s+\/s/i,
-    ];
+    const dangerousPatterns = [/rm\s+-rf\s+\//, /sudo\s+rm/, /format\s+c:/i, /del\s+\/s/i];
 
     for (const command of hook.commands) {
       if (typeof command === 'string') {

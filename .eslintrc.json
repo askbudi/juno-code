@@ -1,0 +1,57 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "plugins": ["@typescript-eslint"],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "rules": {
+    "@typescript-eslint/no-unused-vars": ["warn", {
+      "argsIgnorePattern": "^_",
+      "varsIgnorePattern": "^_",
+      "caughtErrorsIgnorePattern": "^_"
+    }],
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-non-null-assertion": "warn",
+    "@typescript-eslint/no-require-imports": "off",
+    "@typescript-eslint/no-var-requires": "off",
+    "no-async-promise-executor": "warn",
+    "no-console": "off",
+    "no-control-regex": "off",
+    "no-empty": "warn",
+    "no-useless-escape": "warn",
+    "no-case-declarations": "warn",
+    "no-useless-catch": "warn",
+    "prefer-const": "error",
+    "no-var": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.spec.ts", "**/__tests__/**/*.ts"],
+      "rules": {
+        "@typescript-eslint/no-unused-vars": "off",
+        "@typescript-eslint/no-explicit-any": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "dist/",
+    "node_modules/",
+    "coverage/",
+    "*.js",
+    "*.mjs",
+    "*.cjs",
+    "templates/"
+  ]
+}

@@ -31,7 +31,7 @@ import {
   isJunoTaskError,
   hasErrorCode,
   hasErrorCategory,
-  formatError
+  formatError,
 } from '../index';
 
 describe('Unified Error Hierarchy', () => {
@@ -139,20 +139,15 @@ describe('Unified Error Hierarchy', () => {
       expect(cliError.category).toBe(ErrorCategory.CLI);
       expect(cliError.code).toBe(ErrorCode.CLI_COMMAND_NOT_FOUND);
     });
-
   });
 
   describe('Error Context', () => {
     it('should create error context correctly', () => {
-      const context = createErrorContext(
-        ErrorCode.SYSTEM_FILE_NOT_FOUND,
-        ErrorCategory.SYSTEM,
-        {
-          component: 'file-reader',
-          operation: 'readFile',
-          isRetriable: true
-        }
-      );
+      const context = createErrorContext(ErrorCode.SYSTEM_FILE_NOT_FOUND, ErrorCategory.SYSTEM, {
+        component: 'file-reader',
+        operation: 'readFile',
+        isRetriable: true,
+      });
 
       expect(context.code).toBe(ErrorCode.SYSTEM_FILE_NOT_FOUND);
       expect(context.category).toBe(ErrorCategory.SYSTEM);
@@ -245,7 +240,10 @@ describe('Unified Error Hierarchy', () => {
       };
 
       await expect(createAsyncError()).rejects.toThrow(FileNotFoundError);
-      await expect(createAsyncError()).rejects.toHaveProperty('code', ErrorCode.SYSTEM_FILE_NOT_FOUND);
+      await expect(createAsyncError()).rejects.toHaveProperty(
+        'code',
+        ErrorCode.SYSTEM_FILE_NOT_FOUND,
+      );
     });
 
     it('should support instanceof checks with inheritance', () => {
@@ -265,12 +263,14 @@ describe('Unified Error Hierarchy', () => {
     it('should provide user-friendly messages', () => {
       const error = new RequiredFieldError('username', {
         fieldPath: 'user.credentials.username',
-        expectedType: 'string'
+        expectedType: 'string',
       });
 
       const userMessage = error.getUserMessage();
 
-      expect(userMessage).toContain('Required field \'username\' is missing at path: user.credentials.username');
+      expect(userMessage).toContain(
+        "Required field 'username' is missing at path: user.credentials.username",
+      );
       expect(userMessage).toContain('Suggestions:');
       expect(userMessage).toContain('Expected type: string');
     });

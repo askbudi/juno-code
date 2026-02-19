@@ -73,4 +73,3 @@ export async function promptInputOnce(question: string, defaultValue = ''): Prom
     });
   });
 }
-

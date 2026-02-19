@@ -47,13 +47,10 @@ Test task for validation purposes.
       START_RUN: { commands: [] },
       START_ITERATION: { commands: [] },
       END_ITERATION: { commands: [] },
-      END_RUN: { commands: [] }
-    }
+      END_RUN: { commands: [] },
+    },
   };
-  await fs.writeFile(
-    path.join(junoTaskDir, 'config.json'),
-    JSON.stringify(configContent, null, 2)
-  );
+  await fs.writeFile(path.join(junoTaskDir, 'config.json'), JSON.stringify(configContent, null, 2));
 
   // Create basic mcp.json
   const mcpContent = {
@@ -63,21 +60,18 @@ Test task for validation purposes.
         command: 'node',
         args: ['--version'],
         timeout: 7200.0,
-        env: {}
-      }
+        env: {},
+      },
     },
     default_server: 'roundtable-ai',
     global_settings: {
       connection_timeout: 300.0,
       default_retries: 3,
       enable_progress_streaming: true,
-      log_level: 'info'
-    }
+      log_level: 'info',
+    },
   };
-  await fs.writeFile(
-    path.join(junoTaskDir, 'mcp.json'),
-    JSON.stringify(mcpContent, null, 2)
-  );
+  await fs.writeFile(path.join(junoTaskDir, 'mcp.json'), JSON.stringify(mcpContent, null, 2));
 
   return tempDir;
 }

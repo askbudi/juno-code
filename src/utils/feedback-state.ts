@@ -72,7 +72,7 @@ class FeedbackState {
     const event: ProgressEvent = {
       content,
       prefix,
-      timestamp: new Date()
+      timestamp: new Date(),
     };
 
     this._progressBuffer.push(event);
@@ -109,8 +109,14 @@ class FeedbackState {
     const bufferCount = this._progressBuffer.length;
 
     // Show colored status message before flushing
-    console.error(chalk.yellow.bold(`\n⏸️  Agent working - ${bufferCount} buffered update${bufferCount > 1 ? 's' : ''} (live updates paused while you type)`));
-    console.error(chalk.gray('   Updates will resume after you submit feedback or 2min of inactivity\n'));
+    console.error(
+      chalk.yellow.bold(
+        `\n⏸️  Agent working - ${bufferCount} buffered update${bufferCount > 1 ? 's' : ''} (live updates paused while you type)`,
+      ),
+    );
+    console.error(
+      chalk.gray('   Updates will resume after you submit feedback or 2min of inactivity\n'),
+    );
 
     // Display buffered progress events
     // Note: We don't add separators - just display the progress naturally
@@ -154,7 +160,7 @@ class FeedbackState {
   getBufferStats(): { count: number; maxSize: number } {
     return {
       count: this._progressBuffer.length,
-      maxSize: this._maxBufferSize
+      maxSize: this._maxBufferSize,
     };
   }
 }

@@ -7,7 +7,7 @@ import os from 'node:os';
 const loadInstallerWithTempHome = async (homeDir: string) => {
   vi.doMock('node:os', () => ({
     homedir: () => homeDir,
-    default: { homedir: () => homeDir }
+    default: { homedir: () => homeDir },
   }));
   const mod = await import('../service-installer.js');
   return mod.ServiceInstaller;
@@ -37,7 +37,9 @@ describe('ServiceInstaller', () => {
     const sourceServicesDir = path.join(process.cwd(), 'src', 'templates', 'services');
     await fs.copy(sourceServicesDir, packageServicesDir);
 
-    const packageSpy = vi.spyOn(ServiceInstaller as any, 'getPackageServicesDir').mockReturnValue(packageServicesDir);
+    const packageSpy = vi
+      .spyOn(ServiceInstaller as any, 'getPackageServicesDir')
+      .mockReturnValue(packageServicesDir);
 
     await ServiceInstaller.install(true);
 
@@ -71,9 +73,13 @@ describe('ServiceInstaller', () => {
     await fs.writeFile(path.join(incompletePackageDir, 'claude.py'), '# claude');
     await fs.writeFile(path.join(incompletePackageDir, 'pi.py'), '# pi');
 
-    const packageSpy = vi.spyOn(ServiceInstaller as any, 'getPackageServicesDir').mockReturnValue(incompletePackageDir);
+    const packageSpy = vi
+      .spyOn(ServiceInstaller as any, 'getPackageServicesDir')
+      .mockReturnValue(incompletePackageDir);
 
-    await expect(ServiceInstaller.install(true)).rejects.toThrow(/missing required service scripts/i);
+    await expect(ServiceInstaller.install(true)).rejects.toThrow(
+      /missing required service scripts/i,
+    );
 
     packageSpy.mockRestore();
   });

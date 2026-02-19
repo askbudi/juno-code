@@ -12,7 +12,7 @@ import {
   validateConfig,
   DEFAULT_CONFIG,
   ENV_VAR_MAPPING,
-  JunoTaskConfigSchema
+  JunoTaskConfigSchema,
 } from '../config.js';
 import type { JunoTaskConfig } from '../../types/index.js';
 
@@ -80,7 +80,7 @@ describe('Configuration Module', () => {
         workingDirectory: '/test/path',
         sessionDirectory: '/test/sessions',
         hooks: {},
-        onHourlyLimit: 'raise'
+        onHourlyLimit: 'raise',
       };
 
       const result = validateConfig(validConfig);
@@ -90,7 +90,7 @@ describe('Configuration Module', () => {
     it('should reject invalid subagent', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        defaultSubagent: 'invalid-subagent'
+        defaultSubagent: 'invalid-subagent',
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/defaultSubagent/);
@@ -99,7 +99,7 @@ describe('Configuration Module', () => {
     it('should reject invalid log level', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        logLevel: 'invalid-level'
+        logLevel: 'invalid-level',
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/logLevel/);
@@ -108,7 +108,7 @@ describe('Configuration Module', () => {
     it('should reject invalid max iterations', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        defaultMaxIterations: 0
+        defaultMaxIterations: 0,
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/defaultMaxIterations/);
@@ -117,7 +117,7 @@ describe('Configuration Module', () => {
     it('should reject max iterations too high', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        defaultMaxIterations: 1001
+        defaultMaxIterations: 1001,
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/defaultMaxIterations/);
@@ -126,7 +126,7 @@ describe('Configuration Module', () => {
     it('should reject invalid timeout values', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpTimeout: 500 // Too low
+        mcpTimeout: 500, // Too low
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpTimeout/);
@@ -135,7 +135,7 @@ describe('Configuration Module', () => {
     it('should reject timeout too high', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpTimeout: 90000000 // Too high (exceeds 86400000 max = 24 hours)
+        mcpTimeout: 90000000, // Too high (exceeds 86400000 max = 24 hours)
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpTimeout/);
@@ -144,7 +144,7 @@ describe('Configuration Module', () => {
     it('should reject invalid retry count', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpRetries: -1
+        mcpRetries: -1,
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpRetries/);
@@ -153,7 +153,7 @@ describe('Configuration Module', () => {
     it('should reject retries too high', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        mcpRetries: 15
+        mcpRetries: 15,
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow(/mcpRetries/);
@@ -162,7 +162,7 @@ describe('Configuration Module', () => {
     it('should reject extra properties', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
-        extraProperty: 'not-allowed'
+        extraProperty: 'not-allowed',
       };
 
       expect(() => validateConfig(invalidConfig)).toThrow();
@@ -173,7 +173,7 @@ describe('Configuration Module', () => {
         ...DEFAULT_CONFIG,
         defaultModel: 'gpt-4',
         logFile: '/var/log/juno.log',
-        mcpServerPath: '/usr/bin/mcp-server'
+        mcpServerPath: '/usr/bin/mcp-server',
       };
 
       expect(() => validateConfig(configWithOptionals)).not.toThrow();
@@ -254,7 +254,6 @@ describe('Configuration Module', () => {
 
       expect(config.defaultMaxIterations).toBe('not-a-number');
     });
-
   });
 
   describe('JSON configuration files', () => {
@@ -264,7 +263,7 @@ describe('Configuration Module', () => {
         defaultMaxIterations: 30,
         logLevel: 'warn',
         verbose: true,
-        mcpTimeout: 60000
+        mcpTimeout: 60000,
       };
 
       const configPath = path.join(tempDir, 'juno-code.config.json');
@@ -299,7 +298,7 @@ describe('Configuration Module', () => {
     it('should auto-discover configuration files', async () => {
       const configData = {
         defaultSubagent: 'codex',
-        logLevel: 'error'
+        logLevel: 'error',
       };
 
       // Test multiple file formats in order of preference
@@ -317,11 +316,11 @@ describe('Configuration Module', () => {
     it('should prefer files in order of precedence', async () => {
       // Create multiple config files
       await fs.writeJson(path.join(tempDir, 'juno-code.config.json'), {
-        defaultSubagent: 'claude'
+        defaultSubagent: 'claude',
       });
 
       await fs.writeJson(path.join(tempDir, '.juno-coderc.json'), {
-        defaultSubagent: 'cursor'
+        defaultSubagent: 'cursor',
       });
 
       const loader = new ConfigLoader(tempDir);
@@ -339,8 +338,8 @@ describe('Configuration Module', () => {
         junoCode: {
           defaultSubagent: 'gemini',
           logLevel: 'trace',
-          verbose: true
-        }
+          verbose: true,
+        },
       };
 
       const packagePath = path.join(tempDir, 'package.json');
@@ -358,7 +357,7 @@ describe('Configuration Module', () => {
     it('should handle package.json without junoCode field', async () => {
       const packageJson = {
         name: 'test-package',
-        version: '1.0.0'
+        version: '1.0.0',
       };
 
       const packagePath = path.join(tempDir, 'package.json');
@@ -429,7 +428,7 @@ logLevel: info
       const fileConfig = {
         defaultSubagent: 'claude',
         logLevel: 'info',
-        verbose: false
+        verbose: false,
       };
       const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
@@ -441,7 +440,7 @@ logLevel: info
       // Setup CLI config
       const cliConfig = {
         defaultSubagent: 'gemini',
-        logLevel: 'debug'
+        logLevel: 'debug',
       };
 
       const loader = new ConfigLoader(tempDir);
@@ -461,7 +460,7 @@ logLevel: info
 
     it('should use defaults for unspecified values', async () => {
       const partialConfig = {
-        defaultSubagent: 'cursor'
+        defaultSubagent: 'cursor',
       };
 
       const loader = new ConfigLoader(tempDir);
@@ -480,7 +479,7 @@ logLevel: info
         workingDirectory: './relative/path',
         sessionDirectory: '../sessions',
         logFile: 'logs/app.log',
-        mcpServerPath: './bin/server'
+        mcpServerPath: './bin/server',
       };
 
       const loader = new ConfigLoader(tempDir);
@@ -496,7 +495,7 @@ logLevel: info
     it('should preserve absolute paths', async () => {
       const absolutePath = path.resolve('/absolute/path');
       const configData = {
-        workingDirectory: absolutePath
+        workingDirectory: absolutePath,
       };
 
       const loader = new ConfigLoader(tempDir);
@@ -511,7 +510,7 @@ logLevel: info
       await fs.ensureDir(customBaseDir);
 
       const configData = {
-        workingDirectory: './project'
+        workingDirectory: './project',
       };
 
       const loader = new ConfigLoader(customBaseDir);
@@ -527,7 +526,7 @@ logLevel: info
       // Setup file
       const fileConfig = {
         defaultSubagent: 'claude',
-        logLevel: 'info'
+        logLevel: 'info',
       };
       const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
@@ -537,12 +536,12 @@ logLevel: info
 
       // Setup CLI
       const cliConfig = {
-        defaultMaxIterations: 100
+        defaultMaxIterations: 100,
       };
 
       const config = await loadConfig({
         baseDir: tempDir,
-        cliConfig
+        cliConfig,
       });
 
       expect(config.defaultSubagent).toBe('claude');
@@ -554,14 +553,14 @@ logLevel: info
     it('should load from specific config file', async () => {
       const customConfig = {
         defaultSubagent: 'codex',
-        logLevel: 'warn'
+        logLevel: 'warn',
       };
       const customConfigPath = path.join(tempDir, 'custom.json');
       await fs.writeJson(customConfigPath, customConfig);
 
       const config = await loadConfig({
         baseDir: tempDir,
-        configFile: customConfigPath
+        configFile: customConfigPath,
       });
 
       expect(config.defaultSubagent).toBe('codex');
@@ -570,20 +569,20 @@ logLevel: info
 
     it('should validate final merged configuration', async () => {
       const invalidConfig = {
-        defaultSubagent: 'invalid-agent'
+        defaultSubagent: 'invalid-agent',
       };
 
       await expect(
         loadConfig({
           baseDir: tempDir,
-          cliConfig: invalidConfig
-        })
+          cliConfig: invalidConfig,
+        }),
       ).rejects.toThrow(/Configuration validation failed/);
     });
 
     it('should handle missing config files gracefully', async () => {
       const config = await loadConfig({
-        baseDir: tempDir
+        baseDir: tempDir,
       });
 
       // Should use defaults when no config file found
@@ -594,10 +593,10 @@ logLevel: info
           START_ITERATION: {
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),
-              expect.stringContaining('AGENTS.md')
-            ])
-          }
-        }
+              expect.stringContaining('AGENTS.md'),
+            ]),
+          },
+        },
       });
     });
   });
@@ -606,9 +605,7 @@ logLevel: info
     it('should support method chaining', async () => {
       const loader = new ConfigLoader(tempDir);
 
-      const result = loader
-        .fromEnvironment()
-        .fromCli({ verbose: true });
+      const result = loader.fromEnvironment().fromCli({ verbose: true });
 
       expect(result).toBe(loader);
     });
@@ -654,7 +651,9 @@ logLevel: info
       await fs.writeFile(tomlPath, 'key = "value"');
 
       const loader = new ConfigLoader(tempDir);
-      await expect(loader.fromFile(tomlPath)).rejects.toThrow(/TOML configuration files are not yet supported/);
+      await expect(loader.fromFile(tomlPath)).rejects.toThrow(
+        /TOML configuration files are not yet supported/,
+      );
     });
 
     it('should reject JavaScript files', async () => {
@@ -662,7 +661,9 @@ logLevel: info
       await fs.writeFile(jsPath, 'module.exports = {};');
 
       const loader = new ConfigLoader(tempDir);
-      await expect(loader.fromFile(jsPath)).rejects.toThrow(/JavaScript configuration files are not yet supported/);
+      await expect(loader.fromFile(jsPath)).rejects.toThrow(
+        /JavaScript configuration files are not yet supported/,
+      );
     });
 
     it('should reject unknown file extensions', async () => {
@@ -691,7 +692,7 @@ logLevel: info
       const configWithNulls = {
         defaultSubagent: 'claude',
         defaultModel: null,
-        logFile: null
+        logFile: null,
       };
       const configPath = path.join(tempDir, 'nulls.json');
       await fs.writeJson(configPath, configWithNulls);
@@ -721,7 +722,7 @@ logLevel: info
       const invalidConfig = {
         defaultSubagent: 'invalid',
         defaultMaxIterations: -5,
-        logLevel: 'badlevel'
+        logLevel: 'badlevel',
       };
 
       try {
@@ -873,9 +874,15 @@ logLevel: info
       expect(resolvePath('/absolute/path', customBase)).toBe('/absolute/path');
 
       // Relative paths should be resolved against base
-      expect(resolvePath('relative/path', customBase)).toBe(path.resolve(customBase, 'relative/path'));
-      expect(resolvePath('./current/path', customBase)).toBe(path.resolve(customBase, './current/path'));
-      expect(resolvePath('../parent/path', customBase)).toBe(path.resolve(customBase, '../parent/path'));
+      expect(resolvePath('relative/path', customBase)).toBe(
+        path.resolve(customBase, 'relative/path'),
+      );
+      expect(resolvePath('./current/path', customBase)).toBe(
+        path.resolve(customBase, './current/path'),
+      );
+      expect(resolvePath('../parent/path', customBase)).toBe(
+        path.resolve(customBase, '../parent/path'),
+      );
 
       // Default base should be process.cwd()
       expect(resolvePath('relative/path')).toBe(path.resolve(process.cwd(), 'relative/path'));
@@ -887,7 +894,7 @@ logLevel: info
         defaultSubagent: 'claude',
         logLevel: 'info',
         verbose: false,
-        mcpTimeout: 25000
+        mcpTimeout: 25000,
       };
       const configPath = path.join(tempDir, 'complex.json');
       await fs.writeJson(configPath, fileConfig);
@@ -901,7 +908,7 @@ logLevel: info
       const cliConfig = {
         logLevel: 'debug',
         mcpTimeout: 60000,
-        quiet: true
+        quiet: true,
       };
 
       const loader = new ConfigLoader(tempDir);
@@ -923,14 +930,14 @@ logLevel: info
     it('should validate schema with all possible valid configurations', () => {
       // Test all valid subagent types
       const subagentTypes = ['claude', 'cursor', 'codex', 'gemini', 'pi'] as const;
-      subagentTypes.forEach(subagent => {
+      subagentTypes.forEach((subagent) => {
         const config = { ...DEFAULT_CONFIG, defaultSubagent: subagent };
         expect(() => validateConfig(config)).not.toThrow();
       });
 
       // Test all valid log levels
       const logLevels = ['error', 'warn', 'info', 'debug', 'trace'] as const;
-      logLevels.forEach(logLevel => {
+      logLevels.forEach((logLevel) => {
         const config = { ...DEFAULT_CONFIG, logLevel };
         expect(() => validateConfig(config)).not.toThrow();
       });
@@ -942,10 +949,10 @@ logLevel: info
         { ...DEFAULT_CONFIG, mcpTimeout: 1000 }, // Minimum
         { ...DEFAULT_CONFIG, mcpTimeout: 300000 }, // Maximum
         { ...DEFAULT_CONFIG, mcpRetries: 0 }, // Minimum
-        { ...DEFAULT_CONFIG, mcpRetries: 10 } // Maximum
+        { ...DEFAULT_CONFIG, mcpRetries: 10 }, // Maximum
       ];
 
-      boundaryConfigs.forEach(config => {
+      boundaryConfigs.forEach((config) => {
         expect(() => validateConfig(config)).not.toThrow();
       });
     });
@@ -1012,7 +1019,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       const configs = await Promise.all([
         loadConfig({ baseDir: tempDir }),
         loadConfig({ baseDir: tempDir }),
-        loadConfig({ baseDir: tempDir })
+        loadConfig({ baseDir: tempDir }),
       ]);
 
       // All configs should be identical
@@ -1025,10 +1032,10 @@ mcpServerPath: "/usr/local/bin/mcp-server"
           START_ITERATION: {
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),
-              expect.stringContaining('AGENTS.md')
-            ])
-          }
-        }
+              expect.stringContaining('AGENTS.md'),
+            ]),
+          },
+        },
       });
     });
 
@@ -1038,15 +1045,15 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       await expect(
         loadConfig({
           baseDir: tempDir,
-          configFile: nonExistentPath
-        })
+          configFile: nonExistentPath,
+        }),
       ).rejects.toThrow(/Failed to load configuration file/);
     });
 
     it('should handle loadAll with all parameters', async () => {
       const fileConfig = {
         defaultSubagent: 'gemini',
-        logLevel: 'warn'
+        logLevel: 'warn',
       };
       const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
@@ -1056,7 +1063,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
 
       const cliOverrides = {
         quiet: true,
-        mcpRetries: 8
+        mcpRetries: 8,
       };
 
       const loader = new ConfigLoader(tempDir);

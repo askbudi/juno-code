@@ -11,17 +11,17 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '../../core/engine.js';
+import {
+  createExecutionEngine,
+  createExecutionRequest,
+  ExecutionStatus,
+} from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
 import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
 import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
-import type {
-  ExecutionRequest,
-  ExecutionResult,
-  ProgressEvent
-} from '../../core/engine.js';
+import type { ExecutionRequest, ExecutionResult, ProgressEvent } from '../../core/engine.js';
 import type { SessionManager, Session } from '../../core/session.js';
 
 // ============================================================================
@@ -87,23 +87,23 @@ const TEST_SUBAGENT_SPECIALIZATIONS = {
   claude: {
     strengths: ['analytical', 'comprehensive', 'documentation'],
     bestFor: ['complex-systems', 'integration-tests', 'architecture-validation'],
-    capabilities: ['semantic-analysis', 'dependency-mapping', 'contract-testing']
+    capabilities: ['semantic-analysis', 'dependency-mapping', 'contract-testing'],
   },
   cursor: {
     strengths: ['code-centric', 'debugging', 'optimization'],
     bestFor: ['unit-tests', 'component-tests', 'performance-tests'],
-    capabilities: ['static-analysis', 'edge-cases', 'performance-profiling']
+    capabilities: ['static-analysis', 'edge-cases', 'performance-profiling'],
   },
   codex: {
     strengths: ['versatile', 'general-purpose', 'quick-generation'],
     bestFor: ['basic-tests', 'boilerplate', 'simple-scenarios'],
-    capabilities: ['template-filling', 'pattern-matching', 'basic-scenarios']
+    capabilities: ['template-filling', 'pattern-matching', 'basic-scenarios'],
   },
   gemini: {
     strengths: ['creative', 'alternative-approaches', 'edge-cases'],
     bestFor: ['edge-case-testing', 'security-tests', 'unusual-scenarios'],
-    capabilities: ['unusual-scenarios', 'security-analysis', 'stress-testing']
-  }
+    capabilities: ['unusual-scenarios', 'security-analysis', 'stress-testing'],
+  },
 };
 
 // ============================================================================
@@ -152,9 +152,8 @@ class TestProgressDisplay {
 
     if (this.verbose) {
       const timestamp = event.timestamp.toLocaleTimeString();
-      const content = event.content.length > 100
-        ? event.content.substring(0, 100) + '...'
-        : event.content;
+      const content =
+        event.content.length > 100 ? event.content.substring(0, 100) + '...' : event.content;
 
       console.log(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
     } else {
@@ -198,7 +197,11 @@ class TestProgressDisplay {
       console.log(chalk.yellow(`   Skipped: ${results.skippedTests}`));
     }
 
-    console.log(chalk.white(`   Success Rate: ${((results.passedTests / results.totalTests) * 100).toFixed(1)}%`));
+    console.log(
+      chalk.white(
+        `   Success Rate: ${((results.passedTests / results.totalTests) * 100).toFixed(1)}%`,
+      ),
+    );
     console.log(chalk.white(`   Execution Time: ${results.executionTime}ms`));
     console.log(chalk.white(`   Framework: ${results.framework}`));
 
@@ -207,7 +210,9 @@ class TestProgressDisplay {
       console.log(chalk.white(`   Lines: ${results.coverage.lines?.toFixed(1) || 'N/A'}%`));
       console.log(chalk.white(`   Functions: ${results.coverage.functions?.toFixed(1) || 'N/A'}%`));
       console.log(chalk.white(`   Branches: ${results.coverage.branches?.toFixed(1) || 'N/A'}%`));
-      console.log(chalk.white(`   Statements: ${results.coverage.statements?.toFixed(1) || 'N/A'}%`));
+      console.log(
+        chalk.white(`   Statements: ${results.coverage.statements?.toFixed(1) || 'N/A'}%`),
+      );
     }
   }
 
@@ -222,7 +227,7 @@ class TestProgressDisplay {
     const json = JSON.stringify(obj, null, 2);
 
     // Apply colors to different JSON elements
-    let colored = json
+    const colored = json
       // Keys (property names)
       .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
       // String values
@@ -282,7 +287,7 @@ class TestGenerationEngine {
   constructor(
     config: JunoTaskConfig,
     sessionManager: SessionManager,
-    progressDisplay: TestProgressDisplay
+    progressDisplay: TestProgressDisplay,
   ) {
     this.config = config;
     this.sessionManager = sessionManager;
@@ -302,7 +307,10 @@ class TestGenerationEngine {
       // Create test files using AI subagent
       const testFiles = await this.createTestFiles(request, scenarios);
 
-      this.progressDisplay.phaseComplete('Test generation', `Generated ${testFiles.length} test files`);
+      this.progressDisplay.phaseComplete(
+        'Test generation',
+        `Generated ${testFiles.length} test files`,
+      );
 
       return testFiles;
     } catch (error) {
@@ -326,15 +334,20 @@ Please provide:
 4. Testability assessment
 5. Recommended test scenarios
 
-Focus on ${request.intelligence === 'basic' ? 'basic functionality' :
-  request.intelligence === 'smart' ? 'comprehensive scenarios' : 'exhaustive analysis'}.
+Focus on ${
+      request.intelligence === 'basic'
+        ? 'basic functionality'
+        : request.intelligence === 'smart'
+          ? 'comprehensive scenarios'
+          : 'exhaustive analysis'
+    }.
 `;
 
     const executionRequest = createExecutionRequest({
       instruction,
       subagent: request.subagent,
       workingDirectory: request.workingDirectory,
-      maxIterations: 3
+      maxIterations: 3,
     });
 
     // Execute with shell backend
@@ -361,48 +374,60 @@ Focus on ${request.intelligence === 'basic' ? 'basic functionality' :
 
     // Generate scenarios based on intelligence level
     if (request.intelligence === 'basic') {
-      scenarios.push(...await this.generateBasicScenarios(request, analysis));
+      scenarios.push(...(await this.generateBasicScenarios(request, analysis)));
     } else if (request.intelligence === 'smart') {
-      scenarios.push(...await this.generateBasicScenarios(request, analysis));
-      scenarios.push(...await this.generateSmartScenarios(request, analysis));
+      scenarios.push(...(await this.generateBasicScenarios(request, analysis)));
+      scenarios.push(...(await this.generateSmartScenarios(request, analysis)));
     } else {
-      scenarios.push(...await this.generateBasicScenarios(request, analysis));
-      scenarios.push(...await this.generateSmartScenarios(request, analysis));
-      scenarios.push(...await this.generateComprehensiveScenarios(request, analysis));
+      scenarios.push(...(await this.generateBasicScenarios(request, analysis)));
+      scenarios.push(...(await this.generateSmartScenarios(request, analysis)));
+      scenarios.push(...(await this.generateComprehensiveScenarios(request, analysis)));
     }
 
     return scenarios;
   }
 
-  private async generateBasicScenarios(request: TestGenerationRequest, analysis: any): Promise<any[]> {
+  private async generateBasicScenarios(
+    request: TestGenerationRequest,
+    analysis: any,
+  ): Promise<any[]> {
     // Basic happy path and error scenarios
     return [
       { type: 'happy-path', description: 'Basic functionality test' },
       { type: 'error-handling', description: 'Error scenarios test' },
-      { type: 'edge-cases', description: 'Boundary value tests' }
+      { type: 'edge-cases', description: 'Boundary value tests' },
     ];
   }
 
-  private async generateSmartScenarios(request: TestGenerationRequest, analysis: any): Promise<any[]> {
+  private async generateSmartScenarios(
+    request: TestGenerationRequest,
+    analysis: any,
+  ): Promise<any[]> {
     // Integration and complex scenarios
     return [
       { type: 'integration', description: 'Component integration tests' },
       { type: 'performance', description: 'Performance benchmark tests' },
-      { type: 'security', description: 'Basic security tests' }
+      { type: 'security', description: 'Basic security tests' },
     ];
   }
 
-  private async generateComprehensiveScenarios(request: TestGenerationRequest, analysis: any): Promise<any[]> {
+  private async generateComprehensiveScenarios(
+    request: TestGenerationRequest,
+    analysis: any,
+  ): Promise<any[]> {
     // Advanced scenarios based on subagent specialization
     const specialization = TEST_SUBAGENT_SPECIALIZATIONS[request.subagent];
 
-    return specialization.capabilities.map(capability => ({
+    return specialization.capabilities.map((capability) => ({
       type: capability,
-      description: `Advanced ${capability} tests`
+      description: `Advanced ${capability} tests`,
     }));
   }
 
-  private async createTestFiles(request: TestGenerationRequest, scenarios: any[]): Promise<string[]> {
+  private async createTestFiles(
+    request: TestGenerationRequest,
+    scenarios: any[],
+  ): Promise<string[]> {
     const template = await this.selectTemplate(request);
     const testFiles: string[] = [];
 
@@ -508,7 +533,7 @@ describe('{{testName}}', () => {
   private async generateTestContent(
     request: TestGenerationRequest,
     scenario: any,
-    template: string
+    template: string,
   ): Promise<string> {
     const instruction = `
 Generate test content for the following scenario:
@@ -527,7 +552,7 @@ Return only the test code that should be placed in the template.
       instruction,
       subagent: request.subagent,
       workingDirectory: request.workingDirectory,
-      maxIterations: 2
+      maxIterations: 2,
     });
 
     // Execute with MCP (similar to analyzeTarget)
@@ -563,7 +588,12 @@ Return only the test code that should be placed in the template.
     const extension = this.getTestFileExtension(request.framework);
 
     if (request.type === 'e2e') {
-      return path.join(request.workingDirectory, 'tests', 'e2e', `${testName}.e2e.test${extension}`);
+      return path.join(
+        request.workingDirectory,
+        'tests',
+        'e2e',
+        `${testName}.e2e.test${extension}`,
+      );
     } else {
       return path.join(request.workingDirectory, target, `${testName}.test${extension}`);
     }
@@ -615,14 +645,14 @@ class TestExecutionEngine {
         ...testResults,
         coverage,
         executionTime: Date.now() - startTime,
-        framework: request.framework
+        framework: request.framework,
       });
 
       return {
         ...testResults,
         coverage,
         executionTime: Date.now() - startTime,
-        framework: request.framework
+        framework: request.framework,
       };
     } catch (error) {
       this.progressDisplay.showError(error as Error);
@@ -654,7 +684,7 @@ class TestExecutionEngine {
 
     // Add reporters
     if (request.reporters && request.reporters.length > 0) {
-      request.reporters.forEach(reporter => {
+      request.reporters.forEach((reporter) => {
         command.push('--reporter', reporter);
       });
     }
@@ -688,24 +718,26 @@ class TestExecutionEngine {
     try {
       const result = await execa(command[0], command.slice(1), {
         cwd,
-        stdio: this.progressDisplay.verbose ? 'inherit' : 'pipe'
+        stdio: this.progressDisplay.verbose ? 'inherit' : 'pipe',
       });
 
       return {
         stdout: result.stdout,
         stderr: result.stderr,
-        exitCode: result.exitCode
+        exitCode: result.exitCode,
       };
     } catch (error: any) {
       return {
         stdout: error.stdout || '',
         stderr: error.stderr || '',
-        exitCode: error.exitCode || 1
+        exitCode: error.exitCode || 1,
       };
     }
   }
 
-  private parseTestResults(result: any): Omit<TestExecutionResult, 'coverage' | 'executionTime' | 'framework'> {
+  private parseTestResults(
+    result: any,
+  ): Omit<TestExecutionResult, 'coverage' | 'executionTime' | 'framework'> {
     // Parse test results from output
     // This is a simplified parser - real implementation would be more robust
 
@@ -714,9 +746,15 @@ class TestExecutionEngine {
 
     // Try to extract test counts from output
     const totalMatch = stdout.match(/(\d+)\s+test(s?)/i) || stderr.match(/(\d+)\s+test(s?)/i);
-    const passedMatch = stdout.match(/(\d+)\s+passing|(\d+)\s+passed/i) || stderr.match(/(\d+)\s+passing|(\d+)\s+passed/i);
-    const failedMatch = stdout.match(/(\d+)\s+failing|(\d+)\s+failed/i) || stderr.match(/(\d+)\s+failing|(\d+)\s+failed/i);
-    const skippedMatch = stdout.match(/(\d+)\s+skipping|(\d+)\s+skipped/i) || stderr.match(/(\d+)\s+skipping|(\d+)\s+skipped/i);
+    const passedMatch =
+      stdout.match(/(\d+)\s+passing|(\d+)\s+passed/i) ||
+      stderr.match(/(\d+)\s+passing|(\d+)\s+passed/i);
+    const failedMatch =
+      stdout.match(/(\d+)\s+failing|(\d+)\s+failed/i) ||
+      stderr.match(/(\d+)\s+failing|(\d+)\s+failed/i);
+    const skippedMatch =
+      stdout.match(/(\d+)\s+skipping|(\d+)\s+skipped/i) ||
+      stderr.match(/(\d+)\s+skipping|(\d+)\s+skipped/i);
 
     const totalTests = totalMatch ? parseInt(totalMatch[1]) : 0;
     const passedTests = passedMatch ? parseInt(passedMatch[1] || passedMatch[2]) : 0;
@@ -728,7 +766,7 @@ class TestExecutionEngine {
       totalTests,
       passedTests,
       failedTests,
-      skippedTests
+      skippedTests,
     };
   }
 
@@ -742,7 +780,7 @@ class TestExecutionEngine {
           lines: coverageData.total?.lines?.pct || 0,
           functions: coverageData.total?.functions?.pct || 0,
           branches: coverageData.total?.branches?.pct || 0,
-          statements: coverageData.total?.statements?.pct || 0
+          statements: coverageData.total?.statements?.pct || 0,
         };
       }
     } catch (error) {
@@ -765,7 +803,7 @@ class TestAnalysisEngine {
   constructor(
     config: JunoTaskConfig,
     sessionManager: SessionManager,
-    progressDisplay: TestProgressDisplay
+    progressDisplay: TestProgressDisplay,
   ) {
     this.config = config;
     this.sessionManager = sessionManager;
@@ -798,7 +836,7 @@ class TestAnalysisEngine {
         insights,
         suggestions,
         quality: this.assessQuality(metrics),
-        recommendations: this.generateRecommendations(metrics, insights)
+        recommendations: this.generateRecommendations(metrics, insights),
       };
     } catch (error) {
       this.progressDisplay.showError(error as Error);
@@ -821,7 +859,7 @@ class TestAnalysisEngine {
       skipRate,
       executionTime: results.executionTime,
       framework: results.framework,
-      coverage: coverage || {}
+      coverage: coverage || {},
     };
   }
 
@@ -847,7 +885,7 @@ Focus on actionable insights that can improve test quality and effectiveness.
       instruction,
       subagent: request.subagent,
       workingDirectory: process.cwd(),
-      maxIterations: 2
+      maxIterations: 2,
     });
 
     // Execute with MCP (similar to generation)
@@ -856,7 +894,7 @@ Focus on actionable insights that can improve test quality and effectiveness.
       `Test pass rate of ${metrics.passRate.toFixed(1)}% is ${metrics.passRate >= 90 ? 'excellent' : metrics.passRate >= 75 ? 'good' : 'needs improvement'}`,
       `Coverage analysis shows ${metrics.coverage.lines?.toFixed(1) || 'N/A'}% line coverage`,
       `Test execution time of ${metrics.executionTime}ms is ${metrics.executionTime < 5000 ? 'optimal' : 'could be optimized'}`,
-      'Consider adding more edge case tests for comprehensive coverage'
+      'Consider adding more edge case tests for comprehensive coverage',
     ];
   }
 
@@ -883,7 +921,7 @@ Focus on actionable insights that can improve test quality and effectiveness.
     }
 
     // Add AI-generated suggestions
-    suggestions.push(...insights.map(insight => `🤖 AI Insight: ${insight}`));
+    suggestions.push(...insights.map((insight) => `🤖 AI Insight: ${insight}`));
 
     return suggestions;
   }
@@ -904,16 +942,16 @@ Focus on actionable insights that can improve test quality and effectiveness.
     score += (metrics.passRate / 100) * 40;
 
     // Coverage (30% weight)
-    const avgCoverage = (
-      (metrics.coverage.lines || 0) +
-      (metrics.coverage.functions || 0) +
-      (metrics.coverage.branches || 0) +
-      (metrics.coverage.statements || 0)
-    ) / 4;
+    const avgCoverage =
+      ((metrics.coverage.lines || 0) +
+        (metrics.coverage.functions || 0) +
+        (metrics.coverage.branches || 0) +
+        (metrics.coverage.statements || 0)) /
+      4;
     score += (avgCoverage / 100) * 30;
 
     // Performance (20% weight)
-    const performanceScore = Math.max(0, 100 - (metrics.executionTime / 1000));
+    const performanceScore = Math.max(0, 100 - metrics.executionTime / 1000);
     score += (performanceScore / 100) * 20;
 
     // Test count (10% weight)
@@ -958,7 +996,11 @@ class TestReportEngine {
       case 'json':
         return await this.generateJSONReport(request.analysis, outputPath);
       case 'html':
-        return await this.generateHTMLReport(request.analysis, outputPath, request.includeVisualizations);
+        return await this.generateHTMLReport(
+          request.analysis,
+          outputPath,
+          request.includeVisualizations,
+        );
       case 'markdown':
         return await this.generateMarkdownReport(request.analysis, outputPath);
       case 'console':
@@ -980,12 +1022,12 @@ class TestReportEngine {
         totalTests: analysis.metrics.totalTests,
         passRate: analysis.metrics.passRate,
         quality: analysis.quality,
-        coverage: analysis.metrics.coverage
+        coverage: analysis.metrics.coverage,
       },
       metrics: analysis.metrics,
       insights: analysis.insights,
       suggestions: analysis.suggestions,
-      recommendations: analysis.recommendations
+      recommendations: analysis.recommendations,
     };
 
     await fs.ensureDir(path.dirname(outputPath));
@@ -994,7 +1036,11 @@ class TestReportEngine {
     return outputPath;
   }
 
-  private async generateHTMLReport(analysis: any, outputPath: string, includeVisualizations: boolean): Promise<string> {
+  private async generateHTMLReport(
+    analysis: any,
+    outputPath: string,
+    includeVisualizations: boolean,
+  ): Promise<string> {
     const html = `
 <!DOCTYPE html>
 <html>
@@ -1041,14 +1087,14 @@ class TestReportEngine {
   <div class="insights">
     <h2>AI Insights</h2>
     <ul>
-      ${analysis.insights.map(insight => `<li>${insight}</li>`).join('')}
+      ${analysis.insights.map((insight) => `<li>${insight}</li>`).join('')}
     </ul>
   </div>
 
   <div class="suggestions">
     <h2>Suggestions</h2>
     <ul>
-      ${analysis.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('')}
+      ${analysis.suggestions.map((suggestion) => `<li>${suggestion}</li>`).join('')}
     </ul>
   </div>
 </body>
@@ -1107,15 +1153,15 @@ class TestReportEngine {
 
 ## AI Insights
 
-${analysis.insights.map(insight => `- ${insight}`).join('\n')}
+${analysis.insights.map((insight) => `- ${insight}`).join('\n')}
 
 ## Suggestions
 
-${analysis.suggestions.map(suggestion => `- ${suggestion}`).join('\n')}
+${analysis.suggestions.map((suggestion) => `- ${suggestion}`).join('\n')}
 
 ## Recommendations
 
-${analysis.recommendations.map(rec => `- ${rec}`).join('\n')}
+${analysis.recommendations.map((rec) => `- ${rec}`).join('\n')}
     `.trim();
 
     await fs.ensureDir(path.dirname(outputPath));
@@ -1141,26 +1187,28 @@ ${analysis.recommendations.map(rec => `- ${rec}`).join('\n')}
       console.log(chalk.white(`   Lines: ${analysis.metrics.coverage.lines.toFixed(1)}%`));
       console.log(chalk.white(`   Functions: ${analysis.metrics.coverage.functions.toFixed(1)}%`));
       console.log(chalk.white(`   Branches: ${analysis.metrics.coverage.branches.toFixed(1)}%`));
-      console.log(chalk.white(`   Statements: ${analysis.metrics.coverage.statements.toFixed(1)}%`));
+      console.log(
+        chalk.white(`   Statements: ${analysis.metrics.coverage.statements.toFixed(1)}%`),
+      );
     }
 
     if (analysis.insights.length > 0) {
       console.log(chalk.blue('\n🤖 AI Insights:'));
-      analysis.insights.forEach(insight => {
+      analysis.insights.forEach((insight) => {
         console.log(chalk.white(`   • ${insight}`));
       });
     }
 
     if (analysis.suggestions.length > 0) {
       console.log(chalk.blue('\n💡 Suggestions:'));
-      analysis.suggestions.forEach(suggestion => {
+      analysis.suggestions.forEach((suggestion) => {
         console.log(chalk.white(`   • ${suggestion}`));
       });
     }
 
     if (analysis.recommendations.length > 0) {
       console.log(chalk.blue('\n🎯 Recommendations:'));
-      analysis.recommendations.forEach(rec => {
+      analysis.recommendations.forEach((rec) => {
         console.log(chalk.white(`   • ${rec}`));
       });
     }
@@ -1176,7 +1224,7 @@ ${analysis.recommendations.map(rec => `- ${rec}`).join('\n')}
 export async function testCommandHandler(
   args: string[],
   options: TestCommandOptions,
-  command: Command
+  command: Command,
 ): Promise<void> {
   try {
     // Get global options from command's parent program
@@ -1186,9 +1234,9 @@ export async function testCommandHandler(
     console.log(chalk.blue.bold('🧪 Juno Task - AI-Powered Testing Framework'));
 
     // Set logging level based on options
-    const logLevel = allOptions.logLevel ?
-      (allOptions.logLevel.toUpperCase() as keyof typeof LogLevel) :
-      'INFO';
+    const logLevel = allOptions.logLevel
+      ? (allOptions.logLevel.toUpperCase() as keyof typeof LogLevel)
+      : 'INFO';
     cliLogger.startTimer('test_command_total');
     cliLogger.info('Starting test command', { options: allOptions, args });
 
@@ -1201,8 +1249,8 @@ export async function testCommandHandler(
         verbose: allOptions.verbose || false,
         quiet: allOptions.quiet || false,
         logLevel: allOptions.logLevel || 'info',
-        workingDirectory: allOptions.directory || process.cwd()
-      }
+        workingDirectory: allOptions.directory || process.cwd(),
+      },
     });
     cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
 
@@ -1222,8 +1270,8 @@ export async function testCommandHandler(
         generate: allOptions.generate,
         run: allOptions.run,
         analyze: allOptions.analyze,
-        report: allOptions.report
-      }
+        report: allOptions.report,
+      },
     });
 
     let generatedFiles: string[] = [];
@@ -1236,7 +1284,7 @@ export async function testCommandHandler(
         engineLogger.info('Starting test generation', {
           subagent: allOptions.subagent || config.defaultSubagent,
           intelligence: allOptions.intelligence,
-          target: args
+          target: args,
         });
 
         const generationEngine = new TestGenerationEngine(config, sessionManager, progressDisplay);
@@ -1245,16 +1293,16 @@ export async function testCommandHandler(
           type: allOptions.type || 'all',
           intelligence: allOptions.intelligence || 'comprehensive',
           template: allOptions.template,
-          framework: allOptions.framework as TestFramework || 'vitest',
+          framework: (allOptions.framework as TestFramework) || 'vitest',
           subagent: allOptions.subagent || config.defaultSubagent,
-          workingDirectory: config.workingDirectory
+          workingDirectory: config.workingDirectory,
         });
 
         await sessionManager.addHistoryEntry(session.info.id, {
           type: 'test_generation',
           content: `Generated ${generatedFiles.length} test files`,
           data: { files: generatedFiles },
-          iteration: 1
+          iteration: 1,
         });
       }
 
@@ -1263,25 +1311,25 @@ export async function testCommandHandler(
         engineLogger.info('Starting test execution', {
           framework: allOptions.framework,
           coverage: allOptions.coverage,
-          watch: allOptions.watch
+          watch: allOptions.watch,
         });
 
         const executionEngine = new TestExecutionEngine(progressDisplay);
         testResults = await executionEngine.executeTests({
           target: args.length > 0 ? args : generatedFiles,
-          framework: allOptions.framework as TestFramework || 'vitest',
+          framework: (allOptions.framework as TestFramework) || 'vitest',
           coverage: allOptions.coverage,
           watch: allOptions.watch,
           reporters: allOptions.reporters,
           config: allOptions.config,
-          workingDirectory: config.workingDirectory
+          workingDirectory: config.workingDirectory,
         });
 
         await sessionManager.addHistoryEntry(session.info.id, {
           type: 'test_execution',
           content: `Executed ${testResults.totalTests} tests with ${testResults.passRate.toFixed(1)}% pass rate`,
           data: testResults,
-          iteration: 2
+          iteration: 2,
         });
       }
 
@@ -1289,7 +1337,7 @@ export async function testCommandHandler(
       if ((allOptions.analyze || testResults) && testResults) {
         engineLogger.info('Starting test analysis', {
           quality: allOptions.quality,
-          suggestions: allOptions.suggestions
+          suggestions: allOptions.suggestions,
         });
 
         const analysisEngine = new TestAnalysisEngine(config, sessionManager, progressDisplay);
@@ -1298,14 +1346,14 @@ export async function testCommandHandler(
           coverage: testResults.coverage,
           quality: allOptions.quality || 'thorough',
           suggestions: allOptions.suggestions !== false,
-          subagent: allOptions.subagent || config.defaultSubagent
+          subagent: allOptions.subagent || config.defaultSubagent,
         });
 
         await sessionManager.addHistoryEntry(session.info.id, {
           type: 'test_analysis',
           content: `Analyzed test quality: ${analysis.quality}`,
           data: analysis,
-          iteration: 3
+          iteration: 3,
         });
       }
 
@@ -1313,7 +1361,7 @@ export async function testCommandHandler(
       if ((allOptions.report || analysis) && analysis) {
         engineLogger.info('Generating test report', {
           format: allOptions.format,
-          outputPath: allOptions.report
+          outputPath: allOptions.report,
         });
 
         const reportEngine = new TestReportEngine();
@@ -1321,14 +1369,14 @@ export async function testCommandHandler(
           analysis,
           format: (allOptions.format as ReportFormat) || 'markdown',
           outputPath: typeof allOptions.report === 'string' ? allOptions.report : undefined,
-          includeVisualizations: true
+          includeVisualizations: true,
         });
 
         await sessionManager.addHistoryEntry(session.info.id, {
           type: 'test_reporting',
           content: `Generated ${allOptions.format} report: ${reportPath}`,
           data: { reportPath, format: allOptions.format },
-          iteration: 4
+          iteration: 4,
         });
 
         if (allOptions.format !== 'console') {
@@ -1344,8 +1392,8 @@ export async function testCommandHandler(
           generatedFiles: generatedFiles.length,
           testResults,
           analysis,
-          sessionId: session.info.id
-        }
+          sessionId: session.info.id,
+        },
       });
 
       // Complete command timing
@@ -1354,16 +1402,14 @@ export async function testCommandHandler(
       // Set exit code based on test results
       const exitCode = testResults && !testResults.success ? 1 : 0;
       process.exit(exitCode);
-
     } catch (error) {
       // Complete session with error
       await sessionManager.completeSession(session.info.id, {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
       throw error;
     }
-
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(chalk.red.bold('\n❌ Validation Error'));
@@ -1371,7 +1417,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1385,7 +1431,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1399,7 +1445,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach(suggestion => {
+        error.suggestions.forEach((suggestion) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1459,19 +1505,23 @@ export function configureTestCommand(program: Command): void {
         template: options.template,
         framework: options.framework,
         watch: options.watch,
-        reporters: options.reporters ? options.reporters.split(',').map((r: string) => r.trim()) : undefined,
+        reporters: options.reporters
+          ? options.reporters.split(',').map((r: string) => r.trim())
+          : undefined,
         // Global options
         verbose: options.verbose,
         quiet: options.quiet,
         config: options.config,
         logFile: options.logFile,
         logLevel: options.logLevel,
-        directory: options.directory
+        directory: options.directory,
       };
 
       await testCommandHandler(target, testOptions, command);
     })
-    .addHelpText('after', `
+    .addHelpText(
+      'after',
+      `
 Examples:
   $ juno-code test --generate                          # Generate tests for current project
   $ juno-code test --run                              # Run existing tests
@@ -1524,5 +1574,6 @@ Notes:
   - Reports can be generated in multiple formats for different audiences
   - Session tracking maintains complete test operation history
   - Performance metrics help optimize test execution time
-    `);
+    `,
+    );
 }
