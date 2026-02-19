@@ -242,7 +242,7 @@ export abstract class ExecutionError extends Error {
   public readonly metadata?: Readonly<Record<string, unknown>>;
 
   /** Cause error for error chaining */
-  public readonly cause?: Error;
+  public override readonly cause?: Error;
 
   constructor(
     message: string,

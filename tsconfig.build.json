@@ -1,18 +1,27 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    // Relax strict checks for successful DTS build
+    // Relax strict checks for successful DTS build.
+    // The codebase has pre-existing strict-mode violations;
+    // these are relaxed here for DTS generation while the base
+    // tsconfig.json retains full strict mode for IDE/editor feedback.
+    "strict": false,
+    "strictNullChecks": false,
+    "strictPropertyInitialization": false,
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "noImplicitReturns": false,
+    "noImplicitOverride": false,
     "exactOptionalPropertyTypes": false,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "noImplicitReturns": false,
     "noUncheckedIndexedAccess": false,
-    "strictNullChecks": false,
-    "noImplicitAny": false,
+    "noFallthroughCasesInSwitch": false,
     "noEmitOnError": false,
 
-    // Keep essential checks
-    "strict": false,
+    // Keep essential structure checks
     "skipLibCheck": true,
     "noEmit": false
   },

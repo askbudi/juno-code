@@ -162,7 +162,7 @@ export interface IterationResult {
   readonly progressEvents: readonly ProgressEvent[];
 
   /** Any error that occurred during iteration */
-  readonly error?: ExecutionError;
+  readonly error?: Error;
 }
 
 /**
@@ -621,6 +621,8 @@ export class ExecutionEngine extends EventEmitter {
       totalProgressEvents: contexts.reduce((sum, ctx) => sum + ctx.statistics.totalProgressEvents, 0),
       rateLimitEncounters: contexts.reduce((sum, ctx) => sum + ctx.statistics.rateLimitEncounters, 0),
       rateLimitWaitTime: contexts.reduce((sum, ctx) => sum + ctx.statistics.rateLimitWaitTime, 0),
+      quotaLimitEncounters: contexts.reduce((sum, ctx) => sum + (ctx.statistics.quotaLimitEncounters ?? 0), 0),
+      quotaLimitWaitTime: contexts.reduce((sum, ctx) => sum + (ctx.statistics.quotaLimitWaitTime ?? 0), 0),
       errorBreakdown: this.aggregateErrorBreakdown(contexts),
       performanceMetrics: this.calculatePerformanceMetrics(contexts),
     };

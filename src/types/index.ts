@@ -18,7 +18,7 @@ export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 export type OnHourlyLimit = 'wait' | 'raise';
 
 // Hook types
-export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN';
+export type HookType = 'START_RUN' | 'START_ITERATION' | 'END_ITERATION' | 'END_RUN' | 'ON_STALE';
 
 // Hook configuration
 export interface Hook {

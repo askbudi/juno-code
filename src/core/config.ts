@@ -15,9 +15,6 @@ import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
 import type {
   JunoTaskConfig,
-  Hooks,
-  HookType,
-  Hook
 } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 
@@ -461,30 +458,6 @@ async function findProjectConfigFile(searchDir: string = process.cwd()): Promise
  * @returns Path to found global config file, or null if none found
  */
 async function findGlobalConfigFile(searchDir: string = process.cwd()): Promise<string | null> {
-  for (const fileName of GLOBAL_CONFIG_FILE_NAMES) {
-    const filePath = path.join(searchDir, fileName);
-
-    try {
-      await fsPromises.access(filePath, nodeFs.constants.R_OK);
-      return filePath;
-    } catch {
-      // File doesn't exist or isn't readable, continue searching
-      continue;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Find configuration file in the specified directory (legacy function for backward compatibility)
- * Searches for config files in order of preference
- *
- * @param searchDir - Directory to search for configuration files
- * @returns Path to found configuration file, or null if none found
- * @deprecated Use findProjectConfigFile and findGlobalConfigFile for proper precedence handling
- */
-async function findConfigFile(searchDir: string = process.cwd()): Promise<string | null> {
   for (const fileName of GLOBAL_CONFIG_FILE_NAMES) {
     const filePath = path.join(searchDir, fileName);
 

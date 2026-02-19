@@ -61,7 +61,7 @@ export interface RecoveryContext {
   readonly previousAttempts: readonly RecoveryAttempt[];
 
   /** Current attempt number */
-  readonly attemptNumber: number;
+  attemptNumber: number;
 
   /** Operation context */
   readonly operationContext?: Record<string, unknown>;
@@ -70,7 +70,7 @@ export interface RecoveryContext {
   readonly userPreferences?: RecoveryPreferences;
 
   /** Time budget for recovery */
-  readonly timeBudget?: number;
+  timeBudget?: number;
 
   /** Available resources for recovery */
   readonly availableResources?: Record<string, unknown>;

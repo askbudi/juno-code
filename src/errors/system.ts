@@ -14,8 +14,8 @@ import type { ErrorContext } from './context';
  * Base class for all system-related errors
  */
 export abstract class SystemError extends JunoTaskError {
-  public readonly category = ErrorCategory.SYSTEM;
-  public abstract readonly code: ErrorCode;
+  public override readonly category = ErrorCategory.SYSTEM;
+  public abstract override readonly code: ErrorCode;
 }
 
 /**

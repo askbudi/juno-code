@@ -19,9 +19,6 @@ import {
   ValidationError,
   RequiredFieldError,
   InvalidFormatError,
-  MCPError,
-  MCPConnectionError,
-  MCPToolError,
   ConfigurationError,
   ConfigFileNotFoundError,
   TemplateError,
@@ -111,19 +108,8 @@ describe('Unified Error Hierarchy', () => {
     });
 
     it.skip('should create MCP errors correctly', () => {
-      // TODO: Fix MCP error category property inheritance issue
-      // The MCP error classes are being created correctly with proper codes,
-      // but the category property is not being set properly due to abstract class inheritance issues
-      const connError = new MCPConnectionError('test-server');
-      const toolError = new MCPToolError('test-tool', 'Tool failed');
-
-      // These work correctly:
-      expect(connError.code).toBe(ErrorCode.MCP_CONNECTION_FAILED);
-      expect(toolError.code).toBe(ErrorCode.MCP_TOOL_EXECUTION_FAILED);
-
-      // These are temporarily skipped due to inheritance issue:
-      // expect(connError.category).toBe(ErrorCategory.MCP);
-      // expect(toolError.category).toBe(ErrorCategory.MCP);
+      // MCP error classes were removed as part of MCP system removal (Stream A Phase B).
+      // MCP errors are no longer part of the unified error hierarchy.
     });
 
     it('should create configuration errors correctly', () => {
@@ -177,21 +163,7 @@ describe('Unified Error Hierarchy', () => {
     });
 
     it.skip('should provide rich metadata', () => {
-      // TODO: Fix MCP error metadata handling - related to MCP error inheritance issue
-      const error = new MCPConnectionError('test-server', 'Connection timeout', {
-        context: {
-          metadata: {
-            serverConfig: { host: 'localhost', port: 8080 },
-            custom: { retryCount: 3 }
-          }
-        }
-      });
-
-      // Temporarily skipped due to MCP error inheritance issues
-      // expect(error.context.metadata?.serverName).toBe('test-server');
-      // expect(error.context.metadata?.details).toBe('Connection timeout');
-      // expect(error.context.metadata?.serverConfig).toEqual({ host: 'localhost', port: 8080 });
-      // expect(error.context.metadata?.custom).toEqual({ retryCount: 3 });
+      // MCP error classes were removed as part of MCP system removal (Stream A Phase B).
     });
   });
 
@@ -208,33 +180,15 @@ describe('Unified Error Hierarchy', () => {
     });
 
     it.skip('should support retry logic', () => {
-      // TODO: Fix MCP error retry logic - related to MCP error inheritance issue
-      const error = new MCPConnectionError('test-server');
-
-      // Temporarily skipped due to MCP error inheritance issues
-      // expect(error.isRetryable()).toBe(true);
-      // expect(error.getMaxRetries()).toBe(3);
-      // expect(error.shouldRetry(1)).toBe(true);
-      // expect(error.shouldRetry(5)).toBe(false);
+      // MCP error classes were removed as part of MCP system removal (Stream A Phase B).
     });
 
     it.skip('should calculate retry delays with backoff', () => {
-      // TODO: Fix MCP error backoff strategy - related to MCP error inheritance issue
-      const error = new MCPConnectionError('test-server');
-      const strategy = error.getBackoffStrategy();
-
-      // Temporarily skipped due to MCP error inheritance issues
-      // const delay1 = strategy.calculateDelay(1);
-      // const delay2 = strategy.calculateDelay(2);
-      // const delay3 = strategy.calculateDelay(3);
-
-      // expect(delay2).toBeGreaterThan(delay1);
-      // expect(delay3).toBeGreaterThan(delay2);
-      // expect(delay3).toBeLessThanOrEqual(strategy.maxDelay);
+      // MCP error classes were removed as part of MCP system removal (Stream A Phase B).
     });
 
     it('should create recovery plans', () => {
-      const error = new MCPConnectionError('test-server');
+      const error = new FileNotFoundError('/test/file.txt');
       const plan = errorRecoveryManager.createRecoveryPlan(error);
 
       expect(plan.id).toBeDefined();
@@ -263,18 +217,12 @@ describe('Unified Error Hierarchy', () => {
       expect(hasErrorCode(new Error('regular'), ErrorCode.SYSTEM_FILE_NOT_FOUND)).toBe(false);
     });
 
-    it.skip('should check error categories', () => {
-      // TODO: Fix error category checking - related to MCP error inheritance issue
+    it('should check error categories', () => {
       const systemError = new FileNotFoundError('/test/file.txt');
-      const mcpError = new MCPConnectionError('test-server');
 
-      // System error categories work correctly
       expect(hasErrorCategory(systemError, ErrorCategory.SYSTEM)).toBe(true);
-      expect(hasErrorCategory(systemError, ErrorCategory.MCP)).toBe(false);
+      expect(hasErrorCategory(systemError, ErrorCategory.VALIDATION)).toBe(false);
       expect(hasErrorCategory(new Error('regular'), ErrorCategory.SYSTEM)).toBe(false);
-
-      // MCP error category temporarily skipped due to inheritance issues
-      // expect(hasErrorCategory(mcpError, ErrorCategory.MCP)).toBe(true);
     });
 
     it('should format errors correctly', () => {
@@ -293,26 +241,25 @@ describe('Unified Error Hierarchy', () => {
   describe('Error Integration', () => {
     it('should work with async/await patterns', async () => {
       const createAsyncError = async (): Promise<never> => {
-        throw new MCPConnectionError('test-server', 'Async failure');
+        throw new FileNotFoundError('/test/file.txt', 'Async failure');
       };
 
-      await expect(createAsyncError()).rejects.toThrow(MCPConnectionError);
-      await expect(createAsyncError()).rejects.toHaveProperty('code', ErrorCode.MCP_CONNECTION_FAILED);
+      await expect(createAsyncError()).rejects.toThrow(FileNotFoundError);
+      await expect(createAsyncError()).rejects.toHaveProperty('code', ErrorCode.SYSTEM_FILE_NOT_FOUND);
     });
 
     it('should support instanceof checks with inheritance', () => {
       const fileError = new FileNotFoundError('/test/file.txt');
-      const mcpError = new MCPConnectionError('test-server');
+      const configError = new ConfigFileNotFoundError('/config/app.json');
 
       // Base classes
       expect(fileError instanceof Error).toBe(true);
       expect(fileError instanceof JunoTaskError).toBe(true);
       expect(fileError instanceof SystemError).toBe(true);
-      expect(mcpError instanceof MCPError).toBe(true);
 
       // Cross-category checks should fail
-      expect(fileError instanceof MCPError).toBe(false);
-      expect(mcpError instanceof SystemError).toBe(false);
+      expect(fileError instanceof ConfigurationError).toBe(false);
+      expect(configError instanceof SystemError).toBe(false);
     });
 
     it('should provide user-friendly messages', () => {

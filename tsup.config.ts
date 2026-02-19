@@ -9,6 +9,7 @@ export default defineConfig({
   format: ['esm', 'cjs'],
   target: 'node18',
   platform: 'node',
+  tsconfig: 'tsconfig.build.json',
 
   // Code splitting and bundling
   splitting: false,
@@ -19,8 +20,8 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
 
-  // TypeScript declarations - disabled for successful build (can be re-enabled later)
-  dts: false,
+  // TypeScript declarations
+  dts: true,
 
   // External dependencies (don't bundle)
   external: [

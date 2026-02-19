@@ -159,7 +159,7 @@ export abstract class JunoTaskError extends Error implements Recoverable, Retrya
   public readonly correlation: ErrorCorrelation;
 
   /** Original cause of this error */
-  public readonly cause?: Error;
+  public override readonly cause?: Error;
 
   /** Error impact assessment */
   public readonly impact?: ErrorImpact;

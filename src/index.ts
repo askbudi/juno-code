@@ -11,7 +11,16 @@ export * from './core/engine';
 export * from './core/session';
 // Utility exports (excluding validateConfig to avoid conflicts)
 export * from './utils/environment';
-export * from './utils/hooks';
+export {
+  executeHook,
+  executeHooks,
+  validateHooksConfig,
+  type HooksConfig,
+  type HookExecutionContext,
+  type HookExecutionOptions,
+  type HookExecutionResult,
+  type CommandExecutionResult,
+} from './utils/hooks';
 export {
   SubagentSchema,
   LogLevelSchema,

@@ -68,6 +68,9 @@ export interface ErrorContext {
  * Additional metadata that can be attached to errors
  */
 export interface ErrorMetadata {
+  /** Allow additional domain-specific metadata */
+  readonly [key: string]: unknown;
+
   /** File path related to error */
   readonly filePath?: string;
 
@@ -88,7 +91,7 @@ export interface ErrorMetadata {
   readonly actualValue?: unknown;
 
   /** Performance metrics at time of error */
-  readonly performanceMetrics?: PerformanceMetrics;
+  readonly performanceMetrics?: ErrorPerformanceMetrics;
 
   /** Environment information */
   readonly environment?: EnvironmentInfo;
@@ -112,7 +115,7 @@ export interface ErrorMetadata {
 /**
  * Performance metrics at time of error
  */
-export interface PerformanceMetrics {
+export interface ErrorPerformanceMetrics {
   /** Memory usage in bytes */
   readonly memoryUsage?: number;
 
@@ -184,13 +187,13 @@ export interface ExternalServiceInfo {
   readonly isAvailable?: boolean;
 
   /** Rate limit information */
-  readonly rateLimitInfo?: RateLimitInfo;
+  readonly rateLimitInfo?: ErrorRateLimitInfo;
 }
 
 /**
- * Rate limit information
+ * Rate limit information for error context
  */
-export interface RateLimitInfo {
+export interface ErrorRateLimitInfo {
   /** Remaining requests */
   readonly remaining?: number;
 

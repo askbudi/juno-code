@@ -66,18 +66,18 @@ function runCommandWithInput(input: string): Promise<number> {
   process.stderr.write(`${EOL}[submit ${n}] launching "${cmd}" ${cmdArgs.join(' ')}${EOL}`);
 
   return new Promise((resolve) => {
-    const child = spawn(cmd, cmdArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(cmd as string, cmdArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 
     // Pipe child's output to stderr (treat as logs)
-    child.stdout?.on('data', (d) => process.stderr.write(`[submit ${n}] stdout: ${d}`));
-    child.stderr?.on('data', (d) => process.stderr.write(`[submit ${n}] stderr: ${d}`));
+    child.stdout?.on('data', (d: Buffer) => process.stderr.write(`[submit ${n}] stdout: ${d}`));
+    child.stderr?.on('data', (d: Buffer) => process.stderr.write(`[submit ${n}] stderr: ${d}`));
 
-    child.on('close', (code) => {
+    child.on('close', (code: number | null) => {
       process.stderr.write(`[submit ${n}] exit code ${code ?? 0}${EOL}`);
       resolve(code ?? 0);
     });
 
-    child.on('error', (err) => {
+    child.on('error', (err: Error) => {
       process.stderr.write(`[submit ${n}] error: ${err.message}${EOL}`);
       resolve(1);
     });

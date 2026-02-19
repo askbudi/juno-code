@@ -1005,6 +1005,7 @@ export const SUBAGENT_TOOL_MAPPING: Record<SubagentType, string> = {
   cursor: 'cursor_subagent',
   codex: 'codex_subagent',
   gemini: 'gemini_subagent',
+  pi: 'pi_subagent',
 } as const;
 
 /**

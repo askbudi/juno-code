@@ -65,7 +65,7 @@ All sensitive credentials are expected to be provided by users at runtime via en
 
 **Status:** SECURE - Uses GitHub Secrets
 
-**File:** `DEPLOYMENT.md` (line 274)
+**Note:** Previously documented in `DEPLOYMENT.md` (now deleted as stale). CI/CD workflow uses GitHub Secrets.
 ```yaml
 NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
 ```
@@ -187,12 +187,11 @@ These are documented in README.md and service help text.
 
 Non-sensitive backup files found that could be cleaned up:
 - `.juno_task/plan.md.bak`
-- `CLAUDE.md.backup`
 - `src/mcp/client.ts.bak`
 - `src/cli/commands/init-complex-backup.ts`
 - `src/cli/commands/feedback.ts.backup`
 
-**Note:** These contain no secrets, just development artifacts.
+**Note:** These contain no secrets, just development artifacts. (`CLAUDE.md.backup` was deleted as part of stale docs cleanup.)
 
 ---
 
