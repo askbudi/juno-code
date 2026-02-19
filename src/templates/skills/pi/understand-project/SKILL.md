@@ -1,11 +1,15 @@
 ---
 name: understand-project
-description: Understand current project and create/update specs under @.juno_task/specs/* , it allows you understand dependencies and prepare for implementation. Use when user explicitly asks you, or when asking to understand the project first and then implement.
+description: Understand current project and create/update specs under @.juno_task/specs/* , it allows you understand dependencies. and prepare for implementation. Use when user explicitly ask you, or when asking for understand the project, first see how it works and then do [main task] with respect to [constraints]
+argument-hint: [Main Task] [Constraints] [Ultimate Goal]
+enable-shell-directives: true
 ---
 
 ## Main Task
 
-The user will provide the main task, constraints, and ultimate goal as input to this skill.
+!`jq -r '.mainTask' ./.juno_task/config.json`
+
+$1
 
 ### Task 1
 
@@ -32,3 +36,11 @@ Consider missing steps and plan. If the step is missing then author the specific
 - GenZ module names and without conflict to another module name.
 - Start with Priority in Codebase, Example: P0-core-module.md
 - the goal is when we run `ls` command in the specs folder we could understand what are the cornerstone of the project with one glance.
+
+### Constraints
+
+$2
+
+---
+
+$ARGUMENTS

@@ -37,6 +37,17 @@ interface SkillGroup {
   destDir: string;
 }
 
+/**
+ * Mapping from extension group name to the destination directory relative to project root.
+ * Each group corresponds to a subdirectory under src/templates/extensions/.
+ */
+interface ExtensionGroup {
+  /** Name used as sub-folder under templates/extensions/ */
+  name: string;
+  /** Destination directory relative to project root */
+  destDir: string;
+}
+
 export class SkillInstaller {
   /**
    * Skill groups define which template folders map to which project directories.
@@ -46,6 +57,14 @@ export class SkillInstaller {
     { name: 'codex', destDir: '.agents/skills' },
     { name: 'claude', destDir: '.claude/skills' },
     { name: 'pi', destDir: '.pi/skills' },
+  ];
+
+  /**
+   * Extension groups define which template folders map to which project directories.
+   * Extensions are loaded by the agent at runtime (e.g., Pi loads from .pi/extensions/).
+   */
+  private static readonly EXTENSION_GROUPS: ExtensionGroup[] = [
+    { name: 'pi', destDir: '.pi/extensions' },
   ];
 
   /**
@@ -68,6 +87,30 @@ export class SkillInstaller {
     if (process.env.JUNO_CODE_DEBUG === '1') {
       console.error('[DEBUG] SkillInstaller: Could not find templates/skills directory');
       console.error('[DEBUG] Tried:', candidates);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the templates extensions directory from the package
+   */
+  private static getPackageExtensionsDir(): string | null {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+    const candidates = [
+      path.join(__dirname, '..', '..', 'templates', 'extensions'), // dist (production)
+      path.join(__dirname, '..', 'templates', 'extensions'), // src (development)
+    ];
+
+    for (const extPath of candidates) {
+      if (fs.existsSync(extPath)) {
+        return extPath;
+      }
+    }
+
+    if (process.env.JUNO_CODE_DEBUG === '1') {
+      console.error('[DEBUG] SkillInstaller: Could not find templates/extensions directory');
     }
 
     return null;
@@ -198,6 +241,94 @@ export class SkillInstaller {
   }
 
   /**
+   * Install extensions for a single extension group.
+   * Uses the same content-based copy strategy as skill installation.
+   *
+   * @param projectDir - The project root directory
+   * @param group - The extension group to install
+   * @param silent - If true, suppresses console output
+   * @param force - If true, overwrite even if content is identical
+   * @returns number of files installed or updated
+   */
+  private static async installExtensionGroup(
+    projectDir: string,
+    group: ExtensionGroup,
+    silent = true,
+    force = false,
+  ): Promise<number> {
+    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const packageExtDir = this.getPackageExtensionsDir();
+
+    if (!packageExtDir) {
+      if (debug) {
+        console.error('[DEBUG] SkillInstaller: Package extensions directory not found');
+      }
+      return 0;
+    }
+
+    const sourceGroupDir = path.join(packageExtDir, group.name);
+    const destGroupDir = path.join(projectDir, group.destDir);
+
+    const extFiles = await this.getSkillFiles(sourceGroupDir);
+
+    if (extFiles.length === 0) {
+      if (debug) {
+        console.error(
+          `[DEBUG] SkillInstaller: No extension files found for group '${group.name}'`,
+        );
+      }
+      return 0;
+    }
+
+    await fs.ensureDir(destGroupDir);
+
+    let installed = 0;
+
+    for (const relFile of extFiles) {
+      const srcPath = path.join(sourceGroupDir, relFile);
+      const destPath = path.join(destGroupDir, relFile);
+
+      const destParent = path.dirname(destPath);
+      await fs.ensureDir(destParent);
+
+      let shouldCopy = force;
+
+      if (!shouldCopy) {
+        if (!(await fs.pathExists(destPath))) {
+          shouldCopy = true;
+        } else {
+          const [srcContent, destContent] = await Promise.all([
+            fs.readFile(srcPath, 'utf-8'),
+            fs.readFile(destPath, 'utf-8'),
+          ]);
+          if (srcContent !== destContent) {
+            shouldCopy = true;
+          }
+        }
+      }
+
+      if (shouldCopy) {
+        await fs.copy(srcPath, destPath, { overwrite: true });
+        installed++;
+
+        if (debug) {
+          console.error(
+            `[DEBUG] SkillInstaller: Installed extension ${group.name}/${relFile} -> ${destPath}`,
+          );
+        }
+      }
+    }
+
+    if (installed > 0 && !silent) {
+      console.log(
+        `✓ Installed ${installed} extension file(s) for ${group.name} -> ${group.destDir}`,
+      );
+    }
+
+    return installed;
+  }
+
+  /**
    * Install skills for all skill groups.
    * This copies skill files to the appropriate project directories while
    * preserving any existing files the user may have added.
@@ -227,6 +358,26 @@ export class SkillInstaller {
       }
     }
 
+    // Install extensions for all extension groups
+    for (const group of this.EXTENSION_GROUPS) {
+      try {
+        const count = await this.installExtensionGroup(projectDir, group, silent, force);
+        totalInstalled += count;
+      } catch (error) {
+        if (debug) {
+          console.error(
+            `[DEBUG] SkillInstaller: Error installing extensions for '${group.name}':`,
+            error,
+          );
+        }
+        if (!silent) {
+          console.error(
+            `⚠️  Failed to install extensions for ${group.name}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+
     // Provision Pi settings file (create only if missing, never overwrite)
     try {
       await this.ensurePiSettings(projectDir, silent);
@@ -237,7 +388,7 @@ export class SkillInstaller {
     }
 
     if (totalInstalled > 0 && !silent) {
-      console.log(`✓ Total: ${totalInstalled} skill file(s) installed/updated`);
+      console.log(`✓ Total: ${totalInstalled} skill/extension file(s) installed/updated`);
     }
 
     return totalInstalled > 0;
@@ -326,6 +477,34 @@ export class SkillInstaller {
         }
       }
 
+      // Check extension groups
+      const packageExtDir = this.getPackageExtensionsDir();
+      if (packageExtDir) {
+        for (const group of this.EXTENSION_GROUPS) {
+          const sourceGroupDir = path.join(packageExtDir, group.name);
+          const destGroupDir = path.join(projectDir, group.destDir);
+
+          const extFiles = await this.getSkillFiles(sourceGroupDir);
+
+          for (const relFile of extFiles) {
+            const srcPath = path.join(sourceGroupDir, relFile);
+            const destPath = path.join(destGroupDir, relFile);
+
+            if (!(await fs.pathExists(destPath))) {
+              return true;
+            }
+
+            const [srcContent, destContent] = await Promise.all([
+              fs.readFile(srcPath, 'utf-8'),
+              fs.readFile(destPath, 'utf-8'),
+            ]);
+            if (srcContent !== destContent) {
+              return true;
+            }
+          }
+        }
+      }
+
       return false;
     } catch {
       return false;
@@ -379,6 +558,44 @@ export class SkillInstaller {
 
       results.push({
         name: group.name,
+        destDir: group.destDir,
+        files,
+      });
+    }
+
+    // Include extension groups
+    const packageExtDir = this.getPackageExtensionsDir();
+    for (const group of this.EXTENSION_GROUPS) {
+      const sourceGroupDir = packageExtDir ? path.join(packageExtDir, group.name) : '';
+      const destGroupDir = path.join(projectDir, group.destDir);
+
+      const extFiles = packageExtDir ? await this.getSkillFiles(sourceGroupDir) : [];
+
+      const files = [];
+      for (const relFile of extFiles) {
+        const srcPath = path.join(sourceGroupDir, relFile);
+        const destPath = path.join(destGroupDir, relFile);
+
+        const installed = await fs.pathExists(destPath);
+        let upToDate = false;
+
+        if (installed) {
+          try {
+            const [srcContent, destContent] = await Promise.all([
+              fs.readFile(srcPath, 'utf-8'),
+              fs.readFile(destPath, 'utf-8'),
+            ]);
+            upToDate = srcContent === destContent;
+          } catch {
+            upToDate = false;
+          }
+        }
+
+        files.push({ name: relFile, installed, upToDate });
+      }
+
+      results.push({
+        name: `ext:${group.name}`,
         destDir: group.destDir,
         files,
       });

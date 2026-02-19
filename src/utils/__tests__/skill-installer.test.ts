@@ -121,13 +121,15 @@ describe('SkillInstaller', () => {
   describe('listSkillGroups', () => {
     it('should return all configured skill groups', async () => {
       const groups = await SkillInstaller.listSkillGroups(testDir);
-      expect(groups.length).toBe(3);
+      expect(groups.length).toBe(4);
       expect(groups[0].name).toBe('codex');
       expect(groups[0].destDir).toBe('.agents/skills');
       expect(groups[1].name).toBe('claude');
       expect(groups[1].destDir).toBe('.claude/skills');
       expect(groups[2].name).toBe('pi');
       expect(groups[2].destDir).toBe('.pi/skills');
+      expect(groups[3].name).toBe('ext:pi');
+      expect(groups[3].destDir).toBe('.pi/extensions');
     });
 
     it('should show files as not installed when destination is empty', async () => {

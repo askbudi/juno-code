@@ -1,6 +1,8 @@
 ---
 name: plan-kanban-tasks
-description: Generate Product Development Requirements (PDR) and create tasks on kanban. Use when user explicitly asks for creating a task, planning a feature, or registering a task on kanban.
+description: Generate Product Development Requirments(PDR) and create task on kanban. Use when user explictly ask for, or ask for creating a task, planing a feature, register a task on kaban. "Generate PDR"
+argument-hint: [Required Features] [Constraints] [Specification] [Test Criteria]
+enable-shell-directives: true
 ---
 
 Ultrathink for this task
@@ -25,4 +27,6 @@ For each chunk of the required feature create a seperate task, we want tasks, sm
 
 Current state of specs under @.juno_task/specs/
 
-The user will provide the required features, constraints, specifications, and test criteria as input to this skill.
+!`ls -lrt .juno_task/specs/`
+
+$ARGUMENTS
