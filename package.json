@@ -67,6 +67,8 @@
     "prepack": "npm run clean && npm run build",
     "cli": "tsx src/bin/cli.ts",
     "completion:install": "tsx src/bin/cli.ts --install-completion",
+    "build:exp": "npm run build && bash scripts/install-exp.sh install",
+    "uninstall:exp": "bash scripts/install-exp.sh uninstall",
     "deploy": "bash scripts/publish-all.sh patch",
     "deploy:minor": "bash scripts/publish-all.sh minor",
     "deploy:major": "bash scripts/publish-all.sh major",
