@@ -410,16 +410,14 @@ This project uses AI-assisted development with juno-code to achieve: ${variables
 
     await fs.writeFile(path.join(specsDir, 'architecture.md'), architectureContent);
 
-    // Write CLAUDE.md
+    // Write CLAUDE.md and AGENTS.md (single template, parameterised by doc type)
     await fs.writeFile(
       path.join(targetDirectory, 'CLAUDE.md'),
-      generateClaudeContent(subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+      generateAgentDocContent('CLAUDE.md', subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
     );
-
-    // Write AGENTS.md
     await fs.writeFile(
       path.join(targetDirectory, 'AGENTS.md'),
-      generateAgentsContent(subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
+      generateAgentDocContent('AGENTS.md', subagent, task, targetDirectory, gitUrl, currentDate, venvPath)
     );
 
     // Create enhanced README.md in root
@@ -1371,11 +1369,20 @@ function generateUserFeedbackContent(): string {
 `;
 }
 
-function generateClaudeContent(
+/**
+ * Single template for both CLAUDE.md and AGENTS.md.
+ * The two files were 95% identical — consolidated into one source of truth.
+ */
+function generateAgentDocContent(
+  docType: 'CLAUDE.md' | 'AGENTS.md',
   subagent: string, task: string, projectPath: string,
   gitUrl: string, currentDate: string, venvPath: string
 ): string {
-  return `# Claude Code Session Documentation
+  const title = docType === 'CLAUDE.md'
+    ? '# Claude Code Session Documentation'
+    : '# AGENTS.md Session Documentation';
+
+  return `${title}
 
 ## Current Project Configuration
 
@@ -1412,91 +1419,6 @@ Important: You need to get maximum 3 tasks done in one go.
 - **Interaction Style:** Professional and detail-oriented
 - **Code Quality:** Focus on production-ready, well-documented code
 - **Testing:** Comprehensive unit and integration tests required
-
-## Build & Test Commands
-
-**Environment Setup:**
-\`\`\`bash
-# Activate virtual environment (if applicable)
-source ${venvPath}/bin/activate
-
-# Navigate to project
-cd ${projectPath}
-\`\`\`
-
-**Testing:**
-\`\`\`bash
-# Run tests
-python -m pytest tests/ -v
-
-# Run with coverage
-python -m pytest tests/ --cov=src --cov-report=term-missing
-\`\`\`
-
-**Development Notes:**
-- Keep this file updated with important learnings and optimizations
-- Document any environment-specific setup requirements
-- Record successful command patterns for future reference
-
-## Session History
-
-| Date | Agent | Task Summary | Status |
-|------|-------|--------------|---------|
-| ${currentDate} | ${subagent} | Project initialization | ✅ Completed |
-
-## Agent Performance Notes
-
-### ${subagent} Observations:
-- Initial setup: Successful
-- Code quality: To be evaluated
-- Test coverage: To be assessed
-- Documentation: To be reviewed
-
-*Note: Update this section with actual performance observations during development*`;
-}
-
-function generateAgentsContent(
-  subagent: string, task: string, projectPath: string,
-  gitUrl: string, currentDate: string, venvPath: string
-): string {
-  return `# AGENTS.md Session Documentation
-
-## Current Project Configuration
-
-**Selected Coding Agent:** ${subagent}
-**Main Task:** ${task}
-**Project Path:** ${projectPath}
-**Git Repository:** ${gitUrl}
-**Configuration Date:** ${currentDate}
-
-## Agent-Specific Instructions
-
-### ${subagent} Configuration
-- **Recommended Model:** Latest available model for ${subagent}
-- **Interaction Style:** Professional and detail-oriented
-- **Code Quality:** Focus on production-ready, well-documented code
-- **Testing:** Comprehensive unit and integration tests required
-
-## Kanban Task Management
-
-\`\`\`bash
-# List tasks
-./.juno_task/scripts/kanban.sh list --limit 5 --sort asc
-./.juno_task/scripts/kanban.sh list --status [backlog|todo|in_progress|done] --sort asc
-
-# Task operations
-./.juno_task/scripts/kanban.sh get {TASK_ID}
-./.juno_task/scripts/kanban.sh mark [in_progress|done|todo] --id {TASK_ID} --response "message"
-./.juno_task/scripts/kanban.sh update {TASK_ID} --commit {COMMIT_HASH}
-\`\`\`
-
-When a task on kanban, has related_tasks key, you need to get the task to understand the complete picture of tasks related to the current current task, you can get all the context through
-\`./.juno_task/scripts/kanban.sh get {TASK_ID}\`
-
-
-When creating a task, relevant to another task, you can add the following format anywhere in the body of the task : \`[task_id]{Ref_TASK_ID}[/task_id]\` , using ref task id, help kanban organize dependecies between tasks better.
-
-Important: You need to get maximum 3 tasks done in one go.
 
 ## Build & Test Commands
 

@@ -170,8 +170,22 @@ ensure_python_environment() {
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Navigate to project root (parent of scripts directory)
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/../../../.." && pwd )"
+# Auto-discover project root by walking up the directory tree looking for .juno_task/
+# This makes kanban.sh work from any installation depth (e.g. .juno_task/scripts/,
+# .claude/skills/ralph-loop/scripts/, etc.) without a hardcoded relative path.
+PROJECT_ROOT=""
+_dir="$SCRIPT_DIR"
+while [[ "$_dir" != "/" ]]; do
+    if [[ -d "$_dir/.juno_task" ]]; then
+        PROJECT_ROOT="$_dir"
+        break
+    fi
+    _dir="$( cd "$_dir/.." && pwd )"
+done
+if [[ -z "$PROJECT_ROOT" ]]; then
+    echo "ERROR: Could not find project root (no .juno_task/ directory found above $SCRIPT_DIR)" >&2
+    exit 1
+fi
 
 # Change to project root
 cd "$PROJECT_ROOT"
