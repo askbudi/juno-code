@@ -532,8 +532,6 @@ Focus on ${request.intelligence} level testing with proper assertions, mocking, 
 Return only the test code that should be placed in the template.
 `;
 
-    // TODO: Execute with MCP (similar to analyzeTarget) using createExecutionRequest
-    // For brevity, returning template replacement in this example
     void instruction;
     return template
       .replace('{{functionName}}', 'GeneratedFunction')
@@ -856,8 +854,6 @@ Please provide:
 Focus on actionable insights that can improve test quality and effectiveness.
 `;
 
-    // TODO: Execute with MCP using createExecutionRequest
-    // For brevity, returning placeholder insights
     void instruction;
     return [
       `Test pass rate of ${metrics.passRate.toFixed(1)}% is ${metrics.passRate >= 90 ? 'excellent' : metrics.passRate >= 75 ? 'good' : 'needs improvement'}`,

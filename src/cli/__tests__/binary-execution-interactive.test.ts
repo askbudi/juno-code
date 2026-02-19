@@ -152,8 +152,16 @@ async function getDirectoryFiles(dir: string): Promise<string[]> {
     const items = await fs.readdir(currentDir);
     for (const item of items) {
       const itemPath = path.join(currentDir, item);
-      const stats = await fs.stat(itemPath);
-      if (stats.isFile()) {
+      // Use lstat to avoid following broken symlinks
+      let stats;
+      try {
+        stats = await fs.lstat(itemPath);
+      } catch {
+        continue; // skip entries that cannot be stat'd
+      }
+      if (stats.isSymbolicLink()) {
+        continue; // skip symlinks entirely
+      } else if (stats.isFile()) {
         files.push(path.relative(dir, itemPath));
       } else if (stats.isDirectory()) {
         await walkDir(itemPath);
