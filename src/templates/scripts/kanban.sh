@@ -221,7 +221,7 @@ normalize_arguments() {
                 fi
                 ;;
             # Global flags that don't take a value
-            -p|--pretty|--raw|-v|--verbose|-h|--help|--version)
+            -p|--pretty|--raw|-v|--verbose|--version)
                 NORMALIZED_GLOBAL_FLAGS+=("$1")
                 shift
                 ;;
