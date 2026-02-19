@@ -40,6 +40,3 @@ export * from './types';
 
 // Version information
 export { version } from './version';
-
-// Error exports (unified error hierarchy)
-export * from './errors';
