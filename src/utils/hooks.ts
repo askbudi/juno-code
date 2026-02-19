@@ -8,7 +8,7 @@
  */
 
 import { execa } from 'execa';
-import { logger, LogContext, LogLevel } from '../cli/utils/advanced-logger.js';
+import { logger, LogContext } from '../cli/utils/advanced-logger.js';
 
 /**
  * Supported hook types for lifecycle execution
@@ -103,7 +103,7 @@ export interface HookExecutionOptions {
 /**
  * Create a context-specific logger for hook execution
  */
-const hookLogger = logger.child(LogContext.SYSTEM, { component: 'hooks' });
+const hookLogger = logger.child(LogContext.SYSTEM);
 
 /**
  * Execute a specific hook type with the provided context
@@ -153,12 +153,7 @@ export async function executeHook(
   } = options;
 
   // Create context-specific logger
-  const contextLogger = logger.child(logContext, {
-    hookType,
-    iteration: context.iteration,
-    sessionId: context.sessionId,
-    runId: context.runId,
-  });
+  const contextLogger = logger.child(logContext);
 
   contextLogger.info(`Starting hook execution: ${hookType}`, {
     context,

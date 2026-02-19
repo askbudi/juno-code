@@ -127,7 +127,7 @@ describe('GitManager', () => {
       );
     });
 
-    it('should throw FileSystemError when git init fails', async () => {
+    it('should throw RuntimeError when git init fails', async () => {
       mockExeca.mockRejectedValue(new Error('Permission denied'));
 
       await expect(gitManager.initRepository()).rejects.toThrow(
@@ -287,17 +287,17 @@ describe('GitManager', () => {
       expect(info.lastCommit).toBeUndefined();
     });
 
-    it('should throw FileSystemError when critical git operations fail', async () => {
+    it('should throw RuntimeError when critical git operations fail', async () => {
       mockExeca
         .mockResolvedValueOnce({ stdout: '.git' }) // rev-parse --git-dir
         .mockRejectedValueOnce(new Error('Fatal error')); // branch --show-current throws
 
-      // Mock the dynamic import for FileSystemError
+      // Mock the dynamic import for RuntimeError
       vi.doMock('../cli/types.js', () => ({
-        FileSystemError: class extends Error {
+        RuntimeError: class extends Error {
           constructor(message: string, path: string) {
             super(message);
-            this.name = 'FileSystemError';
+            this.name = 'RuntimeError';
           }
         }
       }));
@@ -476,7 +476,7 @@ describe('GitManager', () => {
       await expect(gitManager.setupUpstream(url)).resolves.not.toThrow();
     });
 
-    it('should throw FileSystemError for git operation failures', async () => {
+    it('should throw RuntimeError for git operation failures', async () => {
       const url = 'https://github.com/user/repo.git';
 
       mockExeca
@@ -527,13 +527,13 @@ describe('GitManager', () => {
       );
     });
 
-    it('should throw FileSystemError when removal fails', async () => {
-      // Mock the dynamic import for FileSystemError
+    it('should throw RuntimeError when removal fails', async () => {
+      // Mock the dynamic import for RuntimeError
       vi.doMock('../cli/types.js', () => ({
-        FileSystemError: class extends Error {
+        RuntimeError: class extends Error {
           constructor(message: string, path: string) {
             super(message);
-            this.name = 'FileSystemError';
+            this.name = 'RuntimeError';
           }
         }
       }));
@@ -606,7 +606,7 @@ describe('GitManager', () => {
       expect(mockExeca).toHaveBeenCalledTimes(1); // Only the branch check
     });
 
-    it('should throw FileSystemError when branch operations fail', async () => {
+    it('should throw RuntimeError when branch operations fail', async () => {
       mockExeca
         .mockResolvedValueOnce({ stdout: 'master' }) // branch --show-current
         .mockRejectedValueOnce(new Error('Branch rename failed')); // branch -m
@@ -669,7 +669,7 @@ describe('GitManager', () => {
       );
     });
 
-    it('should throw FileSystemError when commit fails', async () => {
+    it('should throw RuntimeError when commit fails', async () => {
       mockExeca
         .mockResolvedValueOnce({ stdout: '' }) // git add .
         .mockResolvedValueOnce({ stdout: 'A  file.txt' }) // status --porcelain
@@ -716,13 +716,13 @@ describe('GitManager', () => {
       );
     });
 
-    it('should throw FileSystemError when push fails', async () => {
-      // Mock the dynamic import for FileSystemError
+    it('should throw RuntimeError when push fails', async () => {
+      // Mock the dynamic import for RuntimeError
       vi.doMock('../cli/types.js', () => ({
-        FileSystemError: class extends Error {
+        RuntimeError: class extends Error {
           constructor(message: string, path: string) {
             super(message);
-            this.name = 'FileSystemError';
+            this.name = 'RuntimeError';
           }
         }
       }));

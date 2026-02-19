@@ -8,7 +8,7 @@
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
-import type { ValidationError, FileSystemError } from '../cli/types.js';
+import type { ValidationError, RuntimeError } from '../cli/types.js';
 
 // Git URL validation schemas
 const GitHttpsUrlSchema = z.string().url().refine(
@@ -138,8 +138,8 @@ export class GitManager {
       // Set up default branch as 'main'
       await this.setupDefaultBranch('main');
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to initialize Git repository: ${error}`,
         this.workingDirectory
       );
@@ -252,8 +252,8 @@ export class GitManager {
         status
       };
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to get Git repository information: ${error}`,
         this.workingDirectory
       );
@@ -333,8 +333,8 @@ export class GitManager {
         throw error;
       }
 
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to setup upstream: ${error}`,
         this.workingDirectory
       );
@@ -359,8 +359,8 @@ export class GitManager {
 
       return true;
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to remove upstream: ${error}`,
         this.workingDirectory
       );
@@ -396,8 +396,8 @@ export class GitManager {
         });
       }
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to setup default branch: ${error}`,
         this.workingDirectory
       );
@@ -428,8 +428,8 @@ export class GitManager {
         cwd: this.workingDirectory
       });
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to create initial commit: ${error}`,
         this.workingDirectory
       );
@@ -461,8 +461,8 @@ export class GitManager {
         stdio: 'inherit' // Show progress to user
       });
     } catch (error) {
-      const { FileSystemError } = await import('../cli/types.js');
-      throw new FileSystemError(
+      const { RuntimeError } = await import('../cli/types.js');
+      throw new RuntimeError(
         `Failed to push to upstream: ${error}`,
         this.workingDirectory
       );

@@ -290,7 +290,7 @@ describe('Main Command', () => {
           mainCommandHandler([], options, mockCommand)
         ).rejects.toThrow('process.exit called');
 
-        expect(processExitSpy).toHaveBeenCalledWith(5); // FileSystemError
+        expect(processExitSpy).toHaveBeenCalledWith(5); // RuntimeError
       });
 
       it.skip('should handle --prompt-file flag', async () => {
@@ -637,12 +637,12 @@ describe('Main Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(2);
       });
 
-      it.skip('should handle FileSystemError', async () => {
+      it.skip('should handle RuntimeError', async () => {
         // SKIP: Test infrastructure issue - same as other error handling tests
         // Production code works correctly (see main.ts filesystem error handling)
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
         const fileError = new Error('File error');
-        fileError.constructor.name = 'FileSystemError';
+        fileError.constructor.name = 'RuntimeError';
         fileError.suggestions = ['Check file permissions'];
         vi.mocked(fs.readFile).mockRejectedValueOnce(fileError);
 

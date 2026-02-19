@@ -13,7 +13,7 @@ import { Command } from 'commander';
 import { mainCommandHandler } from './main.js';
 import { loadConfig } from '../../core/config.js';
 import type { StartCommandOptions, MainCommandOptions } from '../types.js';
-import { FileSystemError } from '../types.js';
+import { RuntimeError } from '../types.js';
 
 /**
  * Load init.md content from .juno_task directory
@@ -24,7 +24,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
 
   // Check if .juno_task directory exists
   if (!(await fs.pathExists(junoTaskDir))) {
-    throw new FileSystemError(
+    throw new RuntimeError(
       'No .juno_task directory found. Run "juno-code init" first.',
       junoTaskDir
     );
@@ -32,7 +32,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
 
   // Check if init.md exists
   if (!(await fs.pathExists(initFile))) {
-    throw new FileSystemError(
+    throw new RuntimeError(
       'No init.md file found in .juno_task directory',
       initFile
     );
@@ -43,7 +43,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
     const content = await fs.readFile(initFile, 'utf-8');
 
     if (!content.trim()) {
-      throw new FileSystemError(
+      throw new RuntimeError(
         'init.md file is empty. Please add task instructions.',
         initFile
       );
@@ -51,11 +51,11 @@ async function loadInitPrompt(directory: string): Promise<string> {
 
     return content.trim();
   } catch (error) {
-    if (error instanceof FileSystemError) {
+    if (error instanceof RuntimeError) {
       throw error;
     }
 
-    throw new FileSystemError(
+    throw new RuntimeError(
       `Failed to read init.md: ${error}`,
       initFile
     );
@@ -98,8 +98,8 @@ export async function startCommandHandler(
     // 3. Default fallback ('claude')
     const subagent = options.subagent || config.defaultSubagent || 'claude';
     const backend = options.backend || config.defaultBackend || 'shell';
-    const maxIterations = options.maxIterations ?? config.maxIterations ?? 50;
-    const model = options.model || config.model;
+    const maxIterations = options.maxIterations ?? config.defaultMaxIterations ?? 50;
+    const model = options.model || config.defaultModel;
 
     // Handle dry-run mode - validate configuration and exit without executing
     if (options.dryRun) {
@@ -163,12 +163,11 @@ export async function startCommandHandler(
       disallowedTools: options.disallowedTools,
       resume: options.resume,
       continue: options.continue,
-      directory: options.directory,
+      cwd: options.directory,
       verbose: options.verbose,
       quiet: options.quiet,
       config: (options as any).config,
       logLevel: (options as any).logLevel,
-      mcpTimeout: (options as any).mcpTimeout,
       // Pass through performance/metrics options
       showMetrics: options.showMetrics,
       showDashboard: options.showDashboard,
@@ -188,7 +187,7 @@ export async function startCommandHandler(
 
   } catch (error) {
     // Re-throw errors - mainCommandHandler will handle them
-    if (error instanceof FileSystemError) {
+    if (error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ File System Error'));
       console.error(chalk.red(`   ${error.message}`));
 

@@ -13,40 +13,17 @@ export * from './core/session';
 export * from './utils/environment';
 export * from './utils/hooks';
 export {
-  ValidationError,
   SubagentSchema,
   LogLevelSchema,
   SessionStatusSchema,
   IterationsSchema,
-  FilePathSchema,
-  DirectoryPathSchema,
-  GitUrlSchema,
-  SessionIdSchema,
   ModelSchema,
-  CLIOptionsSchema,
   ConfigValidationSchema,
   validateSubagent,
   validateModel,
   validateIterations,
   validateLogLevel,
-  validatePaths,
-  isValidSubagent,
-  isValidSessionStatus,
-  isValidLogLevel,
-  isValidPath,
-  sanitizePromptText,
-  sanitizeFilePath,
-  sanitizeGitUrl,
-  sanitizeSessionId,
-  formatValidationError,
-  validateWithFallback,
   validateEnvironmentVars,
-  validateCommandOptions,
-  isDefined,
-  validateJson,
-  validateUniqueArray,
-  validateNumberRange,
-  validateStringLength
 } from './utils/validation';
 
 // Type exports (consolidated to avoid conflicts)

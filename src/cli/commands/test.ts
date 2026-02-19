@@ -15,7 +15,7 @@ import { createExecutionEngine, createExecutionRequest, ExecutionStatus } from '
 import { createSessionManager } from '../../core/session.js';
 import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
-import { ValidationError, ConfigurationError, FileSystemError } from '../types.js';
+import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
 import type {
   ExecutionRequest,
@@ -1393,7 +1393,7 @@ export async function testCommandHandler(
       process.exit(2);
     }
 
-    if (error instanceof FileSystemError) {
+    if (error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ File System Error'));
       console.error(chalk.red(`   ${error.message}`));
 

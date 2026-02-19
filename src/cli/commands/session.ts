@@ -5,8 +5,6 @@
  * operations with detailed statistics, filtering, and cleanup capabilities.
  */
 
-import * as path from 'node:path';
-import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
@@ -18,16 +16,15 @@ import type {
   SessionRemoveOptions,
   SessionCleanOptions
 } from '../types.js';
-import { SessionError, ConfigurationError } from '../types.js';
+import { RuntimeError, ConfigurationError } from '../types.js';
 import type {
   SessionManager,
   SessionInfo,
   Session,
   SessionListFilter,
-  ArchiveOptions,
   CleanupOptions
 } from '../../core/session.js';
-import type { SubagentType, SessionStatus } from '../../types/index.js';
+import type { SessionStatus } from '../../types/index.js';
 
 /**
  * Session display formatter for consistent output
@@ -88,48 +85,13 @@ class SessionDisplayFormatter {
     // Context information
     console.log(chalk.white.bold('\nContext:'));
     console.log(`   Working Directory: ${chalk.cyan(context.workingDirectory)}`);
-    console.log(`   Node Version: ${chalk.gray(context.processInfo.nodeVersion)}`);
-    console.log(`   Platform: ${chalk.gray(context.processInfo.platform)} (${context.processInfo.arch})`);
-    console.log(`   PID: ${chalk.gray(context.processInfo.pid)}`);
-
-    if (context.gitInfo) {
-      console.log(chalk.white.bold('\nGit Information:'));
-      if (context.gitInfo.branch) {
-        console.log(`   Branch: ${chalk.yellow(context.gitInfo.branch)}`);
-      }
-      if (context.gitInfo.commit) {
-        console.log(`   Commit: ${chalk.gray(context.gitInfo.commit)}`);
-      }
-      if (context.gitInfo.isDirty) {
-        console.log(`   Status: ${chalk.red('dirty')}`);
-      }
-    }
 
     // Statistics
     console.log(chalk.white.bold('\nStatistics:'));
     console.log(`   Duration: ${this.formatDuration(statistics.duration)}`);
     console.log(`   Iterations: ${chalk.cyan(statistics.iterations)}`);
     console.log(`   Tool Calls: ${chalk.cyan(statistics.toolCalls)}`);
-    console.log(`   Success Rate: ${this.formatPercentage(statistics.successRate)}`);
     console.log(`   Errors: ${chalk.red(statistics.errorCount)}`);
-    console.log(`   Warnings: ${chalk.yellow(statistics.warningCount)}`);
-
-    // Performance metrics
-    if (this.verbose && statistics.performance) {
-      console.log(chalk.white.bold('\nPerformance:'));
-      console.log(`   Avg Iteration Time: ${statistics.performance.avgIterationTime.toFixed(0)}ms`);
-      console.log(`   Avg Tool Call Time: ${statistics.performance.avgToolCallTime.toFixed(0)}ms`);
-      console.log(`   Total Thinking Time: ${(statistics.performance.totalThinkingTime / 1000).toFixed(1)}s`);
-    }
-
-    // Tool statistics
-    if (Object.keys(statistics.toolStats).length > 0) {
-      console.log(chalk.white.bold('\nTool Usage:'));
-      Object.values(statistics.toolStats).forEach(tool => {
-        const successRate = tool.count > 0 ? (tool.successCount / tool.count) * 100 : 0;
-        console.log(`   ${chalk.cyan(tool.name)}: ${tool.count} calls, ${successRate.toFixed(1)}% success, ${tool.averageTime.toFixed(0)}ms avg`);
-      });
-    }
 
     // Tags
     if (info.tags.length > 0) {
@@ -278,11 +240,6 @@ class SessionDisplayFormatter {
     }
   }
 
-  private formatPercentage(value: number): string {
-    const percentage = (value * 100).toFixed(1);
-    const color = value >= 0.9 ? chalk.green : value >= 0.7 ? chalk.yellow : chalk.red;
-    return color(`${percentage}%`);
-  }
 }
 
 /**
@@ -498,7 +455,7 @@ export async function sessionCommandHandler(
     }
 
   } catch (error) {
-    if (error instanceof ConfigurationError || error instanceof SessionError) {
+    if (error instanceof ConfigurationError || error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ Session Error'));
       console.error(chalk.red(`   ${error.message}`));
 

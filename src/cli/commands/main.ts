@@ -11,13 +11,11 @@
 
 import * as path from 'node:path';
 import fs from 'fs-extra';
-import * as readline from 'node:readline';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
-import { createSessionManager } from '../../core/session.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type {
@@ -26,15 +24,15 @@ import type {
 import {
   ValidationError,
   ConfigurationError,
-  FileSystemError
+  RuntimeError
 } from '../types.js';
-import type { SubagentType, JunoTaskConfig } from '../../types/index.js';
+import type { SubagentType } from '../../types/index.js';
 import type {
   ExecutionRequest,
-  ExecutionResult,
-  ProgressEvent
+  ExecutionResult
 } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
+import type { ProgressEvent } from '../../types/execution.js';
 
 /**
  * Get the default model for a given subagent type.
@@ -172,7 +170,7 @@ class PromptProcessor {
       const content = await fs.readFile(resolvedPath, 'utf-8');
 
       if (!content.trim()) {
-        throw new FileSystemError(
+        throw new RuntimeError(
           'Prompt file is empty',
           resolvedPath
         );
@@ -181,11 +179,11 @@ class PromptProcessor {
       console.error(chalk.blue(`📄 Loaded prompt from: ${chalk.cyan(path.relative(process.cwd(), resolvedPath))}`));
       return content.trim();
     } catch (error) {
-      if (error instanceof FileSystemError) {
+      if (error instanceof RuntimeError) {
         throw error;
       }
 
-      throw new FileSystemError(
+      throw new RuntimeError(
         `Failed to read prompt file: ${error}`,
         filePath
       );
@@ -226,7 +224,7 @@ class PromptProcessor {
       });
 
       process.stdin.on('error', (error) => {
-        reject(new FileSystemError(
+        reject(new RuntimeError(
           `Failed to read interactive input: ${error}`,
           'stdin'
         ));
@@ -691,7 +689,7 @@ export async function mainCommandHandler(
       process.exit(2);
     }
 
-    if (error instanceof FileSystemError) {
+    if (error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ File System Error'));
       console.error(chalk.red(`   ${error.message}`));
 

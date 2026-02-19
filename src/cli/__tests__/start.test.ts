@@ -314,7 +314,7 @@ describe('Start Command', () => {
           startCommandHandler([], options, mockCommand)
         ).rejects.toThrow('Process exit called');
 
-        expect(mockExit).toHaveBeenCalledWith(5); // FileSystemError
+        expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('No init.md file found in .juno_task directory')
         );
@@ -359,7 +359,7 @@ describe('Start Command', () => {
           startCommandHandler([], options, mockCommand)
         ).rejects.toThrow('Process exit called');
 
-        expect(mockExit).toHaveBeenCalledWith(5); // FileSystemError
+        expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('init.md file is empty')
         );
@@ -404,7 +404,7 @@ describe('Start Command', () => {
           startCommandHandler([], options, mockCommand)
         ).rejects.toThrow('Process exit called');
 
-        expect(mockExit).toHaveBeenCalledWith(5); // FileSystemError
+        expect(mockExit).toHaveBeenCalledWith(5); // RuntimeError
         expect(console.error).toHaveBeenCalledWith(
           expect.stringContaining('Failed to read init.md')
         );
@@ -595,7 +595,7 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            directory: '/project'
+            cwd: '/project'
           }),
           mockCommand
         );

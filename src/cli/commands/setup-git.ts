@@ -12,7 +12,7 @@ import { Command } from 'commander';
 import * as readline from 'node:readline';
 
 import { GitManager, GitUrlUtils, type GitRepositoryInfo } from '../../core/git.js';
-import type { SetupGitOptions, ValidationError, FileSystemError } from '../types.js';
+import type { SetupGitOptions } from '../types.js';
 
 // Import environment detector for headless mode checks
 import { isHeadlessEnvironment } from '../../utils/environment.js';
@@ -433,9 +433,9 @@ export async function setupGitCommandHandler(
     }
 
   } catch (error) {
-    const { ValidationError, FileSystemError } = await import('../types.js');
+    const { ValidationError, RuntimeError } = await import('../types.js');
 
-    if (error instanceof ValidationError || error instanceof FileSystemError) {
+    if (error instanceof ValidationError || error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ Git Setup Failed'));
       console.error(chalk.red(`   ${error.message}`));
 

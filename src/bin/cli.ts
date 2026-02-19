@@ -13,7 +13,6 @@ inspect.defaultOptions.breakLength = Infinity;
 
 import { Command, Option } from 'commander';
 import chalk from 'chalk';
-import { loadConfig } from '../core/config.js';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 
 // Import command configurations
@@ -552,44 +551,6 @@ async function main(): Promise<void> {
   // Display banner if verbose
   const isVerbose = process.argv.includes('--verbose') || process.argv.includes('-v');
   displayBanner(isVerbose);
-
-  // Validate JSON configuration files on startup
-  // Skip validation for help/version commands or when no arguments provided to avoid unnecessary checks
-  const isHelpOrVersion = process.argv.includes('--help') ||
-                         process.argv.includes('-h') ||
-                         process.argv.includes('--version') ||
-                         process.argv.includes('-V');
-
-  // Skip validation when no arguments provided (will show default help)
-  const hasNoArguments = process.argv.length <= 2;
-
-  // Skip validation for init command - it handles its own directory checks
-  const isInitCommand = process.argv.includes('init');
-
-  // Check if project is initialized - only validate if .juno_task exists
-  const fs = await import('fs-extra');
-  const path = await import('node:path');
-  const junoTaskDir = path.join(process.cwd(), '.juno_task');
-  const isInitialized = await fs.pathExists(junoTaskDir);
-
-  // Only run validation for initialized projects (has .juno_task folder) and not for help/version/init/no-args
-  if (!isHelpOrVersion && !hasNoArguments && !isInitCommand && isInitialized) {
-    try {
-      const { validateStartupConfigs } = await import('../utils/startup-validation.js');
-      const validationPassed = await validateStartupConfigs(process.cwd(), isVerbose);
-
-      if (!validationPassed) {
-        console.log(chalk.red('💥 Cannot continue with invalid configuration. Please fix the errors above.\n'));
-        process.exit(EXIT_CODES.CONFIGURATION_ERROR);
-      }
-    } catch (validationError) {
-      // Validation system error - log but don't block startup
-      console.log(chalk.yellow('⚠️  Configuration validation unavailable, continuing with startup...'));
-      if (isVerbose) {
-        console.log(chalk.gray(`   Validation error: ${validationError instanceof Error ? validationError.message : String(validationError)}`));
-      }
-    }
-  }
 
   // Configure all commands
   configureInitCommand(program);

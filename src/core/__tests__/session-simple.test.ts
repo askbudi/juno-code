@@ -3,18 +3,17 @@
  * Focus on core logic without filesystem mocking complexity
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventEmitter } from 'node:events';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   SessionManager,
-  SessionUtils,
   createSessionManager,
   type Session,
   type SessionInfo,
-  type SessionContext,
   type SessionStatistics,
   type SessionHistoryEntry,
   type SessionStorage,
+  type SessionListFilter,
+  type CleanupOptions,
 } from '../session.js';
 import type { JunoTaskConfig, SubagentType, SessionStatus } from '../../types/index.js';
 
@@ -59,10 +58,6 @@ class MockSessionStorage implements SessionStorage {
     return this.sessions.has(sessionId);
   }
 
-  async archiveSessions(): Promise<string[]> {
-    return [];
-  }
-
   async cleanup(): Promise<void> {
     // Mock cleanup
   }
@@ -91,19 +86,18 @@ describe('SessionManager (Core Logic)', () => {
   beforeEach(() => {
     mockStorage = new MockSessionStorage();
     sessionManager = new SessionManager(mockStorage);
-    sessionManager.setMaxListeners(20);
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    sessionManager.removeAllListeners();
     vi.clearAllMocks();
   });
 
   describe('initialization', () => {
     it('should create SessionManager instance', () => {
       expect(sessionManager).toBeInstanceOf(SessionManager);
-      expect(sessionManager).toBeInstanceOf(EventEmitter);
+    });
+
+    it('should NOT be an EventEmitter', () => {
+      // SessionManager is a plain class, not an EventEmitter
+      expect(typeof (sessionManager as any).on).not.toBe('function');
+      expect(typeof (sessionManager as any).emit).not.toBe('function');
     });
   });
 
@@ -148,11 +142,8 @@ describe('SessionManager (Core Logic)', () => {
       expect(session.info.metadata).toEqual({});
     });
 
-    it('should emit session_created event', async () => {
+    it('should have simplified context with workingDirectory and config', async () => {
       const config = createMockConfig();
-
-      const eventSpy = vi.fn();
-      sessionManager.on('session_created', eventSpy);
 
       const sessionOptions = {
         subagent: 'claude' as SubagentType,
@@ -161,42 +152,36 @@ describe('SessionManager (Core Logic)', () => {
 
       const session = await sessionManager.createSession(sessionOptions);
 
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'session_created',
-        sessionId: session.info.id,
-        timestamp: expect.any(Date),
-        data: { session: session.info },
+      // Simplified context: just workingDirectory and config
+      expect(session.context.workingDirectory).toBe(config.workingDirectory);
+      expect(session.context.config).toBeDefined();
+      // No environment, gitInfo, or processInfo
+      expect((session.context as any).environment).toBeUndefined();
+      expect((session.context as any).gitInfo).toBeUndefined();
+      expect((session.context as any).processInfo).toBeUndefined();
+    });
+
+    it('should have simplified statistics with only essential counters', async () => {
+      const config = createMockConfig();
+
+      const session = await sessionManager.createSession({
+        subagent: 'claude' as SubagentType,
+        config,
       });
-    });
 
-    it('should capture process information correctly', async () => {
-      const config = createMockConfig();
+      expect(session.statistics).toEqual({
+        duration: 0,
+        iterations: 0,
+        toolCalls: 0,
+        errorCount: 0,
+      });
 
-      const sessionOptions = {
-        subagent: 'claude' as SubagentType,
-        config,
-      };
-
-      const session = await sessionManager.createSession(sessionOptions);
-
-      expect(session.context.processInfo.pid).toBe(process.pid);
-      expect(session.context.processInfo.nodeVersion).toBe(process.version);
-      expect(session.context.processInfo.platform).toBe(process.platform);
-      expect(session.context.processInfo.arch).toBe(process.arch);
-    });
-
-    it('should capture environment variables', async () => {
-      const config = createMockConfig();
-
-      const sessionOptions = {
-        subagent: 'claude' as SubagentType,
-        config,
-      };
-
-      const session = await sessionManager.createSession(sessionOptions);
-
-      expect(session.context.environment).toBeDefined();
-      expect(typeof session.context.environment).toBe('object');
+      // No toolStats, successRate, warningCount, memoryUsage, performance
+      expect((session.statistics as any).toolStats).toBeUndefined();
+      expect((session.statistics as any).successRate).toBeUndefined();
+      expect((session.statistics as any).warningCount).toBeUndefined();
+      expect((session.statistics as any).memoryUsage).toBeUndefined();
+      expect((session.statistics as any).performance).toBeUndefined();
     });
   });
 
@@ -230,28 +215,6 @@ describe('SessionManager (Core Logic)', () => {
       await expect(
         sessionManager.updateSession('nonexistent-session', { status: 'completed' })
       ).rejects.toThrow('Session nonexistent-session not found');
-    });
-
-    it('should emit session_updated event', async () => {
-      const config = createMockConfig();
-
-      const session = await sessionManager.createSession({
-        subagent: 'claude' as SubagentType,
-        config,
-      });
-
-      const eventSpy = vi.fn();
-      sessionManager.on('session_updated', eventSpy);
-
-      const updates = { status: 'completed' as SessionStatus };
-      await sessionManager.updateSession(session.info.id, updates);
-
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'session_updated',
-        sessionId: session.info.id,
-        timestamp: expect.any(Date),
-        data: { updates },
-      });
     });
 
     it('should merge metadata correctly', async () => {
@@ -321,28 +284,6 @@ describe('SessionManager (Core Logic)', () => {
       expect(completedSession!.info.status).toBe('failed');
       expect(completedSession!.result).toEqual(result);
     });
-
-    it('should emit session_completed event', async () => {
-      const config = createMockConfig();
-
-      const session = await sessionManager.createSession({
-        subagent: 'claude' as SubagentType,
-        config,
-      });
-
-      const eventSpy = vi.fn();
-      sessionManager.on('session_completed', eventSpy);
-
-      const result = { success: true };
-      await sessionManager.completeSession(session.info.id, result);
-
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'session_completed',
-        sessionId: session.info.id,
-        timestamp: expect.any(Date),
-        data: { result },
-      });
-    });
   });
 
   describe('addHistoryEntry', () => {
@@ -383,7 +324,7 @@ describe('SessionManager (Core Logic)', () => {
   });
 
   describe('recordToolCall', () => {
-    it('should record new tool call', async () => {
+    it('should increment toolCalls counter', async () => {
       const config = createMockConfig();
 
       const session = await sessionManager.createSession({
@@ -401,18 +342,12 @@ describe('SessionManager (Core Logic)', () => {
 
       const updatedSession = await sessionManager.getSession(session.info.id);
       expect(updatedSession!.statistics.toolCalls).toBe(1);
-      expect(updatedSession!.statistics.toolStats['test-tool']).toEqual({
-        name: 'test-tool',
-        count: 1,
-        totalTime: 500,
-        averageTime: 500,
-        successCount: 1,
-        errorCount: 0,
-        lastCall: expect.any(Date),
-      });
+      expect(updatedSession!.statistics.errorCount).toBe(0);
+      // No toolStats tracking in simplified version
+      expect((updatedSession!.statistics as any).toolStats).toBeUndefined();
     });
 
-    it('should update existing tool call stats', async () => {
+    it('should increment errorCount for failed tool calls', async () => {
       const config = createMockConfig();
 
       const session = await sessionManager.createSession({
@@ -420,31 +355,49 @@ describe('SessionManager (Core Logic)', () => {
         config,
       });
 
-      // First call
+      await sessionManager.recordToolCall(session.info.id, {
+        name: 'test-tool',
+        duration: 500,
+        success: false,
+      });
+
+      const updatedSession = await sessionManager.getSession(session.info.id);
+      expect(updatedSession!.statistics.toolCalls).toBe(1);
+      expect(updatedSession!.statistics.errorCount).toBe(1);
+    });
+
+    it('should accumulate multiple tool calls', async () => {
+      const config = createMockConfig();
+
+      const session = await sessionManager.createSession({
+        subagent: 'claude' as SubagentType,
+        config,
+      });
+
+      // First call - success
       await sessionManager.recordToolCall(session.info.id, {
         name: 'test-tool',
         duration: 500,
         success: true,
       });
 
-      // Second call
+      // Second call - failure
       await sessionManager.recordToolCall(session.info.id, {
         name: 'test-tool',
         duration: 300,
         success: false,
       });
 
-      const updatedSession = await sessionManager.getSession(session.info.id);
-      expect(updatedSession!.statistics.toolCalls).toBe(2);
-      expect(updatedSession!.statistics.toolStats['test-tool']).toEqual({
-        name: 'test-tool',
-        count: 2,
-        totalTime: 800,
-        averageTime: 400,
-        successCount: 1,
-        errorCount: 1,
-        lastCall: expect.any(Date),
+      // Third call - success with different tool
+      await sessionManager.recordToolCall(session.info.id, {
+        name: 'other-tool',
+        duration: 200,
+        success: true,
       });
+
+      const updatedSession = await sessionManager.getSession(session.info.id);
+      expect(updatedSession!.statistics.toolCalls).toBe(3);
+      expect(updatedSession!.statistics.errorCount).toBe(1);
     });
   });
 
@@ -484,7 +437,8 @@ describe('SessionManager (Core Logic)', () => {
       expect(context).toContain('Iterations: 0');
       expect(context).toContain('Tool Calls: 0');
       expect(context).toContain('Duration: 0ms');
-      expect(context).toContain('Success Rate: 0.0%');
+      // No Success Rate in simplified version
+      expect(context).not.toContain('Success Rate');
     });
 
     it('should return not found message for missing session', async () => {
@@ -511,20 +465,16 @@ describe('SessionManager (Core Logic)', () => {
         errorCount: 2,
       });
 
-      await sessionManager.recordToolCall(session.info.id, {
-        name: 'test-tool',
-        duration: 500,
-        success: true,
-      });
-
       const summary = await sessionManager.getSessionSummary(session.info.id);
 
       expect(summary).toBeDefined();
       expect(summary!.info.id).toBe(session.info.id);
       expect(summary!.summary.totalDuration).toBe('5m 0s');
       expect(summary!.summary.iterationsPerMinute).toBe(1);
-      expect(summary!.summary.toolCallsPerIteration).toBeCloseTo(3.2);
-      expect(summary!.summary.mostUsedTool).toBe('test-tool');
+      expect(summary!.summary.toolCallsPerIteration).toBe(3);
+      expect(summary!.summary.errorRate).toBeCloseTo(0.133, 2);
+      // No mostUsedTool in simplified version
+      expect((summary!.summary as any).mostUsedTool).toBeUndefined();
     });
 
     it('should return null for missing session', async () => {
@@ -545,6 +495,46 @@ describe('SessionManager (Core Logic)', () => {
 
       expect(summary!.summary.iterationsPerMinute).toBe(0);
     });
+
+    it('should handle zero iterations for toolCallsPerIteration', async () => {
+      const config = createMockConfig();
+
+      const session = await sessionManager.createSession({
+        subagent: 'claude' as SubagentType,
+        config,
+      });
+
+      await sessionManager.updateStatistics(session.info.id, {
+        duration: 60000,
+        iterations: 0,
+        toolCalls: 5,
+        errorCount: 0,
+      });
+
+      const summary = await sessionManager.getSessionSummary(session.info.id);
+
+      expect(summary!.summary.toolCallsPerIteration).toBe(0);
+    });
+
+    it('should calculate errorRate as errorCount / toolCalls', async () => {
+      const config = createMockConfig();
+
+      const session = await sessionManager.createSession({
+        subagent: 'claude' as SubagentType,
+        config,
+      });
+
+      await sessionManager.updateStatistics(session.info.id, {
+        duration: 60000,
+        iterations: 2,
+        toolCalls: 10,
+        errorCount: 3,
+      });
+
+      const summary = await sessionManager.getSessionSummary(session.info.id);
+
+      expect(summary!.summary.errorRate).toBe(0.3);
+    });
   });
 
   describe('cancelSession', () => {
@@ -560,26 +550,6 @@ describe('SessionManager (Core Logic)', () => {
 
       const cancelledSession = await sessionManager.getSession(session.info.id);
       expect(cancelledSession!.info.status).toBe('cancelled');
-    });
-
-    it('should emit session_cancelled event', async () => {
-      const config = createMockConfig();
-
-      const session = await sessionManager.createSession({
-        subagent: 'claude' as SubagentType,
-        config,
-      });
-
-      const eventSpy = vi.fn();
-      sessionManager.on('session_cancelled', eventSpy);
-
-      await sessionManager.cancelSession(session.info.id);
-
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'session_cancelled',
-        sessionId: session.info.id,
-        timestamp: expect.any(Date),
-      });
     });
   });
 
@@ -607,45 +577,6 @@ describe('SessionManager (Core Logic)', () => {
     });
   });
 
-  describe('searchSessions', () => {
-    it('should search sessions by query', async () => {
-      const config = createMockConfig();
-
-      const session1 = await sessionManager.createSession({
-        name: 'Test Session',
-        subagent: 'claude' as SubagentType,
-        config,
-      });
-
-      const session2 = await sessionManager.createSession({
-        name: 'Production Task',
-        subagent: 'claude' as SubagentType,
-        config,
-        tags: ['test'],
-      });
-
-      const result = await sessionManager.searchSessions({ query: 'test' });
-
-      expect(result).toHaveLength(2);
-      expect(result.map(s => s.id)).toContain(session1.info.id); // Name contains "test"
-      expect(result.map(s => s.id)).toContain(session2.info.id); // Tag contains "test"
-    });
-
-    it('should return all sessions when no query provided', async () => {
-      const config = createMockConfig();
-
-      const session = await sessionManager.createSession({
-        subagent: 'claude' as SubagentType,
-        config,
-      });
-
-      const result = await sessionManager.searchSessions({});
-
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe(session.info.id);
-    });
-  });
-
   describe('removeSession', () => {
     it('should remove session', async () => {
       const config = createMockConfig();
@@ -663,35 +594,10 @@ describe('SessionManager (Core Logic)', () => {
   });
 
   describe('cleanupSessions', () => {
-    it('should cleanup sessions and emit event', async () => {
-      const eventSpy = vi.fn();
-      sessionManager.on('cleanup_completed', eventSpy);
-
+    it('should cleanup sessions without emitting events', async () => {
+      // cleanupSessions is a plain method call, no events
       await sessionManager.cleanupSessions({ removeOlderThanDays: 30 });
-
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'cleanup_completed',
-        sessionId: 'all',
-        timestamp: expect.any(Date),
-        data: { options: { removeOlderThanDays: 30 } },
-      });
-    });
-  });
-
-  describe('archiveSessions', () => {
-    it('should archive sessions and emit event', async () => {
-      const eventSpy = vi.fn();
-      sessionManager.on('archive_completed', eventSpy);
-
-      const archivedIds = await sessionManager.archiveSessions({ olderThanDays: 30 });
-
-      expect(archivedIds).toEqual([]);
-      expect(eventSpy).toHaveBeenCalledWith({
-        type: 'archive_completed',
-        sessionId: 'multiple',
-        timestamp: expect.any(Date),
-        data: { archivedIds: [], options: { olderThanDays: 30 } },
-      });
+      // No event assertions - SessionManager is not an EventEmitter
     });
   });
 
@@ -827,182 +733,8 @@ describe('SessionManager (Core Logic)', () => {
   });
 });
 
-describe('Utility Functions', () => {
-  describe('formatDuration', () => {
-    it('should format duration correctly', () => {
-      const config = createMockConfig();
-      const sessionManager = new SessionManager(new MockSessionStorage());
-
-      // Access private method through bracket notation
-      const formatDuration = (sessionManager as any).formatDuration;
-
-      expect(formatDuration(1000)).toBe('1s');
-      expect(formatDuration(65000)).toBe('1m 5s');
-      expect(formatDuration(3665000)).toBe('1h 1m 5s');
-      expect(formatDuration(500)).toBe('0s');
-    });
-  });
-
-  describe('createSessionManager', () => {
-    it('should create SessionManager with proper initialization', () => {
-      // Test basic functionality of createSessionManager
-      const config = createMockConfig();
-
-      // Since FileSessionStorage requires fs operations, we'll just test that the function exists
-      expect(typeof createSessionManager).toBe('function');
-    });
-  });
-});
-
-describe('SessionUtils', () => {
-  describe('generateTimestampId', () => {
-    it('should generate timestamp-based ID', () => {
-      const id = SessionUtils.generateTimestampId();
-
-      expect(id).toMatch(/^\d{15}$/);
-      expect(id.length).toBe(15);
-    });
-
-    it('should generate unique IDs', () => {
-      const id1 = SessionUtils.generateTimestampId();
-      const id2 = SessionUtils.generateTimestampId();
-
-      expect(id1).not.toBe(id2);
-    });
-  });
-
-  describe('parseSessionTimestamp', () => {
-    it('should parse timestamp ID correctly', () => {
-      const timestampId = '20240101T100000';
-      const date = SessionUtils.parseSessionTimestamp(timestampId);
-
-      expect(date).toBeInstanceOf(Date);
-      expect(date!.getFullYear()).toBe(2024);
-      expect(date!.getMonth()).toBe(0); // January (0-based)
-      expect(date!.getDate()).toBe(1);
-      expect(date!.getHours()).toBe(10);
-    });
-
-    it('should return null for UUID format', () => {
-      const uuidId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
-      const date = SessionUtils.parseSessionTimestamp(uuidId);
-
-      expect(date).toBeNull();
-    });
-
-    it('should return null for invalid timestamp', () => {
-      const invalidId = 'invalid-timestamp';
-      const date = SessionUtils.parseSessionTimestamp(invalidId);
-
-      expect(date).toBeNull();
-    });
-
-    it('should return null for short timestamp', () => {
-      const shortId = '202401';
-      const date = SessionUtils.parseSessionTimestamp(shortId);
-
-      expect(date).toBeNull();
-    });
-  });
-
-  describe('isValidSessionId', () => {
-    it('should validate UUID format', () => {
-      const uuidId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
-      expect(SessionUtils.isValidSessionId(uuidId)).toBe(true);
-    });
-
-    it('should validate timestamp format', () => {
-      const timestampId = '20240101T100000';
-      expect(SessionUtils.isValidSessionId(timestampId)).toBe(true);
-    });
-
-    it('should reject invalid UUID', () => {
-      const invalidUuid = 'f47ac10b-58cc-4372-a567-invalid';
-      expect(SessionUtils.isValidSessionId(invalidUuid)).toBe(false);
-    });
-
-    it('should reject invalid timestamp', () => {
-      const invalidTimestamp = '2024-01-01T10:00:00';
-      expect(SessionUtils.isValidSessionId(invalidTimestamp)).toBe(false);
-    });
-
-    it('should reject random string', () => {
-      const randomString = 'not-a-valid-session-id';
-      expect(SessionUtils.isValidSessionId(randomString)).toBe(false);
-    });
-
-    it('should handle empty string', () => {
-      expect(SessionUtils.isValidSessionId('')).toBe(false);
-    });
-  });
-
-  describe('calculateStatistics', () => {
-    it('should calculate statistics from history', () => {
-      const history: SessionHistoryEntry[] = [
-        {
-          id: '1',
-          timestamp: new Date(),
-          type: 'tool_call',
-          content: 'Tool call 1',
-        },
-        {
-          id: '2',
-          timestamp: new Date(),
-          type: 'tool_call',
-          content: 'Tool call 2',
-        },
-        {
-          id: '3',
-          timestamp: new Date(),
-          type: 'error',
-          content: 'Error occurred',
-        },
-        {
-          id: '4',
-          timestamp: new Date(),
-          type: 'response',
-          content: 'Response',
-        },
-      ];
-
-      const stats = SessionUtils.calculateStatistics(history);
-
-      expect(stats.toolCalls).toBe(2);
-      expect(stats.errorCount).toBe(1);
-      expect(stats.warningCount).toBe(0);
-      expect(stats.successRate).toBe(0.75); // 3 out of 4 entries were not errors
-    });
-
-    it('should handle empty history', () => {
-      const stats = SessionUtils.calculateStatistics([]);
-
-      expect(stats.toolCalls).toBe(0);
-      expect(stats.errorCount).toBe(0);
-      expect(stats.warningCount).toBe(0);
-      expect(stats.successRate).toBe(0);
-    });
-
-    it('should handle history with only errors', () => {
-      const history: SessionHistoryEntry[] = [
-        {
-          id: '1',
-          timestamp: new Date(),
-          type: 'error',
-          content: 'Error 1',
-        },
-        {
-          id: '2',
-          timestamp: new Date(),
-          type: 'error',
-          content: 'Error 2',
-        },
-      ];
-
-      const stats = SessionUtils.calculateStatistics(history);
-
-      expect(stats.toolCalls).toBe(0);
-      expect(stats.errorCount).toBe(2);
-      expect(stats.successRate).toBe(0);
-    });
+describe('createSessionManager', () => {
+  it('should be a function', () => {
+    expect(typeof createSessionManager).toBe('function');
   });
 });

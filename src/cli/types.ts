@@ -1,76 +1,16 @@
 /**
  * CLI Types Module for juno-code
  *
- * Comprehensive TypeScript interfaces and types for the CLI framework,
- * supporting all commands, options, error handling, and help systems.
+ * TypeScript interfaces and types for the CLI framework,
+ * supporting commands, options, error handling, and constants.
  */
 
 import { Command } from 'commander';
-import { SubagentType, SessionStatus, LogLevel, BackendType, JunoTaskConfig } from '../types/index';
+import { SubagentType, SessionStatus, LogLevel, BackendType } from '../types/index';
 
 // ============================================================================
 // Command Structure Types
 // ============================================================================
-
-/**
- * Interface for CLI command definitions
- */
-export interface CLICommand {
-  /** Command name used in CLI */
-  name: string;
-  /** Human-readable description of the command */
-  description: string;
-  /** Command aliases (short forms) */
-  aliases?: string[];
-  /** Command arguments specification */
-  arguments?: CommandArgument[];
-  /** Command options specification */
-  options: CommandOption[];
-  /** Command handler function */
-  handler: CommandHandler;
-  /** Usage examples for help system */
-  examples?: CommandExample[];
-  /** Subcommands for grouped commands */
-  subcommands?: CLICommand[];
-}
-
-/**
- * Interface for command arguments
- */
-export interface CommandArgument {
-  /** Argument name (with optional/required indicators) */
-  name: string;
-  /** Argument description */
-  description: string;
-  /** Whether argument is required */
-  required?: boolean;
-  /** Valid choices for argument */
-  choices?: string[];
-  /** Default value if not provided */
-  defaultValue?: any;
-}
-
-/**
- * Interface for command options
- */
-export interface CommandOption {
-  /** Option flags (short and long forms) */
-  flags: string;
-  /** Option description */
-  description: string;
-  /** Default value */
-  defaultValue?: any;
-  /** Whether option is required */
-  required?: boolean;
-  /** Valid choices for option value */
-  choices?: string[];
-  /** Options that conflict with this one */
-  conflicts?: string[];
-  /** Options that this option implies */
-  implies?: string[];
-  /** Environment variable that can set this option */
-  env?: string;
-}
 
 /**
  * Interface for usage examples
@@ -81,15 +21,6 @@ export interface CommandExample {
   /** Description of what the example does */
   description: string;
 }
-
-/**
- * Command handler function signature
- */
-export type CommandHandler = (
-  args: any,
-  options: any,
-  command: Command
-) => Promise<void>;
 
 // ============================================================================
 // CLI Options Types
@@ -360,99 +291,6 @@ export interface OptionValidationResult {
 }
 
 // ============================================================================
-// Help System Types
-// ============================================================================
-
-/**
- * Help content structure
- */
-export interface HelpContent {
-  /** Command name */
-  command: string;
-  /** Command description */
-  description: string;
-  /** Usage syntax */
-  usage: string;
-  /** Available options */
-  options: HelpOption[];
-  /** Available subcommands */
-  subcommands?: HelpSubcommand[];
-  /** Usage examples */
-  examples: CommandExample[];
-  /** Additional notes */
-  notes?: string[];
-}
-
-/**
- * Help option representation
- */
-export interface HelpOption {
-  /** Option flags */
-  flags: string;
-  /** Option description */
-  description: string;
-  /** Default value (if any) */
-  defaultValue?: any;
-  /** Valid choices (if any) */
-  choices?: string[];
-}
-
-/**
- * Help subcommand representation
- */
-export interface HelpSubcommand {
-  /** Subcommand name */
-  name: string;
-  /** Subcommand description */
-  description: string;
-  /** Subcommand aliases */
-  aliases?: string[];
-}
-
-/**
- * Shell completion types
- */
-export type ShellType = 'bash' | 'zsh' | 'fish';
-
-/**
- * Shell completion configuration
- */
-export interface CompletionConfig {
-  /** Shell type */
-  shell: ShellType;
-  /** Command name for completion */
-  commandName: string;
-  /** Available commands for completion */
-  commands: string[];
-  /** Available options for completion */
-  options: string[];
-  /** Custom completion handlers */
-  customHandlers?: Record<string, CompletionHandler>;
-}
-
-/**
- * Completion handler function
- */
-export type CompletionHandler = (
-  partial: string,
-  context: CompletionContext
-) => string[];
-
-/**
- * Completion context
- */
-export interface CompletionContext {
-  /** Current command being completed */
-  command?: string;
-  /** Current subcommand being completed */
-  subcommand?: string;
-  /** Previous arguments */
-  previousArgs: string[];
-  /** Current word being completed */
-  currentWord: string;
-}
-
-// ============================================================================
 // Error Types
 // ============================================================================
 
@@ -499,45 +337,10 @@ export class ConfigurationError extends CLIError {
 }
 
 /**
- * Command not found error
+ * Runtime error (file system operations, process failures, etc.)
  */
-export class CommandNotFoundError extends CLIError {
-  code = 'COMMAND_NOT_FOUND';
-
-  constructor(command: string, availableCommands: string[] = []) {
-    super(`Unknown command: ${command}`);
-    this.showHelp = true;
-
-    if (availableCommands.length > 0) {
-      this.suggestions = [
-        `Available commands: ${availableCommands.join(', ')}`,
-        `Use 'juno-code --help' for usage information`
-      ];
-    }
-  }
-}
-
-/**
- * MCP-related error
- */
-export class MCPError extends CLIError {
-  code = 'MCP_ERROR';
-
-  constructor(message: string, operation?: string) {
-    super(operation ? `MCP ${operation}: ${message}` : message);
-    this.suggestions = [
-      'Check MCP server configuration',
-      'Verify MCP server is running',
-      'Use --verbose for detailed error information'
-    ];
-  }
-}
-
-/**
- * File system error
- */
-export class FileSystemError extends CLIError {
-  code = 'FILESYSTEM_ERROR';
+export class RuntimeError extends CLIError {
+  code = 'RUNTIME_ERROR';
 
   constructor(message: string, path?: string) {
     super(path ? `${message}: ${path}` : message);
@@ -549,48 +352,16 @@ export class FileSystemError extends CLIError {
   }
 }
 
-/**
- * Session error
- */
-export class SessionError extends CLIError {
-  code = 'SESSION_ERROR';
-
-  constructor(message: string) {
-    super(message);
-    this.suggestions = [
-      'Check session directory permissions',
-      'Verify sufficient disk space',
-      'Use juno-code session clean to remove old sessions'
-    ];
-  }
-}
-
-/**
- * Template error
- */
-export class TemplateError extends CLIError {
-  code = 'TEMPLATE_ERROR';
-
-  constructor(message: string) {
-    super(message);
-    this.suggestions = [
-      'Verify template syntax',
-      'Check required template variables',
-      'Use --template to specify different template'
-    ];
-  }
-}
-
 // ============================================================================
 // Environment Variables
 // ============================================================================
 
 /**
  * Environment variable mappings for CLI options
- * Updated to use JUNO_CODE_* prefix with backward compatibility for JUNO_TASK_*
+ * Uses JUNO_CODE_* prefix exclusively (legacy JUNO_TASK_* removed)
  */
 export const ENVIRONMENT_MAPPINGS = {
-  // Core options (new JUNO_CODE_* names)
+  // Core options
   JUNO_CODE_SUBAGENT: 'subagent',
   JUNO_CODE_AGENT: 'backend',
   JUNO_CODE_BACKEND: 'backend',
@@ -604,51 +375,28 @@ export const ENVIRONMENT_MAPPINGS = {
   JUNO_CODE_INTERACTIVE: 'interactive',
   JUNO_CODE_CONFIG: 'config',
 
-  // MCP options (new JUNO_CODE_* names)
+  // MCP options
   JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
   JUNO_CODE_MCP_TIMEOUT: 'mcpTimeout',
   JUNO_CODE_MCP_RETRIES: 'mcpRetries',
 
-  // Session options (new JUNO_CODE_* names)
+  // Session options
   JUNO_CODE_SESSION_DIR: 'sessionDir',
   JUNO_CODE_LOG_LEVEL: 'logLevel',
 
-  // Template options (new JUNO_CODE_* names)
+  // Template options
   JUNO_CODE_TEMPLATE: 'template',
   JUNO_CODE_FORCE: 'force',
 
-  // Git options (new JUNO_CODE_* names)
+  // Git options
   JUNO_CODE_GIT_URL: 'gitUrl',
 
-  // UI options (new JUNO_CODE_* names)
+  // UI options
   JUNO_CODE_NO_COLOR: 'noColor',
   JUNO_CODE_HEADLESS: 'headless',
 
-  // Feedback options (new JUNO_CODE_* names)
+  // Feedback options
   JUNO_CODE_ENABLE_FEEDBACK: 'enableFeedback',
-
-  // Legacy JUNO_TASK_* names for backward compatibility
-  JUNO_TASK_SUBAGENT: 'subagent',
-  JUNO_TASK_PROMPT: 'prompt',
-  JUNO_TASK_CWD: 'cwd',
-  JUNO_TASK_MAX_ITERATIONS: 'maxIterations',
-  JUNO_TASK_MODEL: 'model',
-  JUNO_TASK_LOG_FILE: 'logFile',
-  JUNO_TASK_VERBOSE: 'verbose',
-  JUNO_TASK_QUIET: 'quiet',
-  JUNO_TASK_INTERACTIVE: 'interactive',
-  JUNO_TASK_CONFIG: 'config',
-  JUNO_TASK_MCP_SERVER_PATH: 'mcpServerPath',
-  JUNO_TASK_MCP_TIMEOUT: 'mcpTimeout',
-  JUNO_TASK_MCP_RETRIES: 'mcpRetries',
-  JUNO_TASK_SESSION_DIR: 'sessionDir',
-  JUNO_TASK_LOG_LEVEL: 'logLevel',
-  JUNO_TASK_TEMPLATE: 'template',
-  JUNO_TASK_FORCE: 'force',
-  JUNO_TASK_GIT_URL: 'gitUrl',
-  JUNO_TASK_NO_COLOR: 'noColor',
-  JUNO_TASK_HEADLESS: 'headless',
-  JUNO_TASK_ENABLE_FEEDBACK: 'enableFeedback',
 
   // Special aliases
   JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback'  // Alias for enableFeedback
@@ -667,31 +415,6 @@ export type CLIOptionKey = typeof ENVIRONMENT_MAPPINGS[EnvironmentVariable];
 // ============================================================================
 // Configuration Types
 // ============================================================================
-
-/**
- * CLI configuration structure
- */
-export interface CLIConfig extends JunoTaskConfig {
-  /** Command completion settings */
-  completion: {
-    enabled: boolean;
-    installedShells: ShellType[];
-  };
-
-  /** Help system settings */
-  help: {
-    showExamples: boolean;
-    showEnvironmentVars: boolean;
-    colorOutput: boolean;
-  };
-
-  /** Error handling settings */
-  errorHandling: {
-    showStackTrace: boolean;
-    suggestSolutions: boolean;
-    exitOnError: boolean;
-  };
-}
 
 /**
  * Initialization data for project setup
@@ -716,20 +439,6 @@ export interface InitializationData {
 }
 
 /**
- * Template generation result
- */
-export interface TemplateGenerationResult {
-  /** Generated file name */
-  fileName: string;
-  /** Generated file path */
-  filePath: string;
-  /** Whether file was created or updated */
-  action: 'created' | 'updated' | 'skipped';
-  /** File size in bytes */
-  size: number;
-}
-
-/**
  * Command execution result
  */
 export interface CommandExecutionResult {
@@ -744,52 +453,6 @@ export interface CommandExecutionResult {
   /** Error messages */
   errors: string[];
 }
-
-// ============================================================================
-// Utility Types
-// ============================================================================
-
-/**
- * Make specific properties required
- */
-export type WithRequired<T, K extends keyof T> = T & Required<Pick<T, K>>;
-
-/**
- * Make specific properties optional
- */
-export type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
-
-/**
- * Extract option types from command options interface
- */
-export type ExtractOptions<T> = T extends { options: infer O } ? O : never;
-
-/**
- * Union of all command option types
- */
-export type AllCommandOptions =
-  | MainCommandOptions
-  | InitCommandOptions
-  | StartCommandOptions
-  | FeedbackCommandOptions
-  | SessionListOptions
-  | SessionInfoOptions
-  | SessionRemoveOptions
-  | SessionCleanOptions
-  | SetupGitOptions
-  | TestCommandOptions;
-
-/**
- * Union of all CLI error types
- */
-export type AllCLIErrors =
-  | ValidationError
-  | ConfigurationError
-  | CommandNotFoundError
-  | MCPError
-  | FileSystemError
-  | SessionError
-  | TemplateError;
 
 // ============================================================================
 // Type Guards
@@ -817,35 +480,15 @@ export function isConfigurationError(error: unknown): error is ConfigurationErro
 }
 
 /**
- * Type guard for MCP errors
+ * Type guard for runtime errors
  */
-export function isMCPError(error: unknown): error is MCPError {
-  return error instanceof MCPError;
+export function isRuntimeError(error: unknown): error is RuntimeError {
+  return error instanceof RuntimeError;
 }
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-/**
- * Default CLI configuration values
- */
-export const DEFAULT_CLI_CONFIG: Partial<CLIConfig> = {
-  completion: {
-    enabled: true,
-    installedShells: []
-  },
-  help: {
-    showExamples: true,
-    showEnvironmentVars: true,
-    colorOutput: true
-  },
-  errorHandling: {
-    showStackTrace: false,
-    suggestSolutions: true,
-    exitOnError: true
-  }
-};
 
 /**
  * Supported subagent aliases
@@ -877,10 +520,7 @@ export const EXIT_CODES = {
   VALIDATION_ERROR: 1,
   CONFIGURATION_ERROR: 2,
   COMMAND_NOT_FOUND: 3,
-  MCP_ERROR: 4,
-  FILESYSTEM_ERROR: 5,
-  SESSION_ERROR: 6,
-  TEMPLATE_ERROR: 7,
+  RUNTIME_ERROR: 5,
   UNEXPECTED_ERROR: 99
 } as const;
 
