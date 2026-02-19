@@ -6,7 +6,7 @@
  */
 
 import chalk from 'chalk';
-import type { ProgressEvent, ProgressEventType } from '../../types/index.js';
+import type { ProgressEvent, ProgressEventType } from '../../types/execution.js';
 
 /**
  * Progress bar configuration
@@ -227,14 +227,14 @@ export class StepProgress {
    */
   nextStep(): void {
     // Complete current step if running
-    if (this.currentStepIndex >= 0 && this.steps[this.currentStepIndex].status === 'running') {
-      this.steps[this.currentStepIndex].status = 'completed';
+    if (this.currentStepIndex >= 0 && this.steps[this.currentStepIndex]!.status === 'running') {
+      this.steps[this.currentStepIndex]!.status = 'completed';
     }
 
     // Start next step
     this.currentStepIndex++;
     if (this.currentStepIndex < this.steps.length) {
-      this.steps[this.currentStepIndex].status = 'running';
+      this.steps[this.currentStepIndex]!.status = 'running';
       this.render();
     }
   }
@@ -244,7 +244,7 @@ export class StepProgress {
    */
   fail(message?: string): void {
     if (this.currentStepIndex >= 0) {
-      this.steps[this.currentStepIndex].status = 'failed';
+      this.steps[this.currentStepIndex]!.status = 'failed';
       this.render();
 
       if (message) {
@@ -258,7 +258,7 @@ export class StepProgress {
    */
   complete(): void {
     if (this.currentStepIndex >= 0) {
-      this.steps[this.currentStepIndex].status = 'completed';
+      this.steps[this.currentStepIndex]!.status = 'completed';
     }
     this.render();
   }
@@ -271,7 +271,7 @@ export class StepProgress {
       // Simple single-line progress
       const completed = this.steps.filter((s) => s.status === 'completed').length;
       const total = this.steps.length;
-      const current = this.currentStepIndex >= 0 ? this.steps[this.currentStepIndex].name : '';
+      const current = this.currentStepIndex >= 0 ? this.steps[this.currentStepIndex]!.name : '';
 
       process.stdout.write(`\r[${completed}/${total}] ${current}`);
 
@@ -281,7 +281,7 @@ export class StepProgress {
     } else {
       // Detailed multi-line progress
       console.log(chalk.blue('\n📋 Progress:'));
-      this.steps.forEach((step, index) => {
+      this.steps.forEach((step) => {
         const icon = this.getStepIcon(step.status);
         const color = this.getStepColor(step.status);
         console.log(`   ${color(icon)} ${step.name}`);

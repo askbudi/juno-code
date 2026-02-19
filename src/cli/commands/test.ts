@@ -14,15 +14,14 @@ import { loadConfig } from '../../core/config.js';
 import {
   createExecutionEngine,
   createExecutionRequest,
-  ExecutionStatus,
 } from '../../core/engine.js';
 import { createSessionManager } from '../../core/session.js';
-import { cliLogger, engineLogger, LogLevel } from '../utils/advanced-logger.js';
+import { cliLogger, engineLogger } from '../utils/advanced-logger.js';
 import type { TestCommandOptions } from '../types.js';
 import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
-import type { ExecutionRequest, ExecutionResult, ProgressEvent } from '../../core/engine.js';
-import type { SessionManager, Session } from '../../core/session.js';
+import type { ProgressEvent } from '../../types/execution.js';
+import type { SessionManager } from '../../core/session.js';
 
 // ============================================================================
 // Test Framework Types
@@ -83,7 +82,11 @@ interface TestExecutionResult {
 // AI Subagent Specialization
 // ============================================================================
 
-const TEST_SUBAGENT_SPECIALIZATIONS = {
+const TEST_SUBAGENT_SPECIALIZATIONS: Record<SubagentType, {
+  strengths: string[];
+  bestFor: string[];
+  capabilities: string[];
+}> = {
   claude: {
     strengths: ['analytical', 'comprehensive', 'documentation'],
     bestFor: ['complex-systems', 'integration-tests', 'architecture-validation'],
@@ -104,6 +107,11 @@ const TEST_SUBAGENT_SPECIALIZATIONS = {
     bestFor: ['edge-case-testing', 'security-tests', 'unusual-scenarios'],
     capabilities: ['unusual-scenarios', 'security-analysis', 'stress-testing'],
   },
+  pi: {
+    strengths: ['code-generation', 'task-execution', 'automation'],
+    bestFor: ['automated-tasks', 'code-generation', 'scripting'],
+    capabilities: ['code-generation', 'task-automation', 'script-execution'],
+  },
 };
 
 // ============================================================================
@@ -112,8 +120,7 @@ const TEST_SUBAGENT_SPECIALIZATIONS = {
 
 class TestProgressDisplay {
   private startTime: Date = new Date();
-  private verbose: boolean;
-  private currentPhase: string = '';
+  public verbose: boolean;
 
   constructor(verbose: boolean = false) {
     this.verbose = verbose;
@@ -121,7 +128,6 @@ class TestProgressDisplay {
 
   start(operation: string): void {
     this.startTime = new Date();
-    this.currentPhase = operation;
     console.log(chalk.blue.bold(`\n🧪 ${operation}`));
   }
 
@@ -158,13 +164,14 @@ class TestProgressDisplay {
       console.log(chalk.gray(`[${timestamp}] ${event.type}: ${content}`));
     } else {
       // Show meaningful progress for test operations
-      if (event.type === 'test_generation') {
+      const eventType = event.type as string;
+      if (eventType === 'test_generation') {
         process.stdout.write(chalk.blue(`\r🤖 Generating tests: ${event.content}`));
-      } else if (event.type === 'test_execution') {
+      } else if (eventType === 'test_execution') {
         process.stdout.write(chalk.green(`\r▶️  Running: ${event.content}`));
-      } else if (event.type === 'test_analysis') {
+      } else if (eventType === 'test_analysis') {
         process.stdout.write(chalk.yellow(`\r📊 Analyzing: ${event.content}`));
-      } else if (event.type === 'test_reporting') {
+      } else if (eventType === 'test_reporting') {
         process.stdout.write(chalk.cyan(`\r📋 Reporting: ${event.content}`));
       }
     }
@@ -229,34 +236,15 @@ class TestProgressDisplay {
     // Apply colors to different JSON elements
     const colored = json
       // Keys (property names)
-      .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
+      .replace(/"([^"]+)":/g, (_match, key) => `${chalk.blue(`"${key}"`)}:`)
       // String values
-      .replace(/: "([^"]*)"/g, (match, value) => `: ${chalk.green(`"${value}"`)}`)
+      .replace(/: "([^"]*)"/g, (_match, value) => `: ${chalk.green(`"${value}"`)}`)
       // Numbers
-      .replace(/: (\d+\.?\d*)/g, (match, num) => `: ${chalk.yellow(num)}`)
+      .replace(/: (\d+\.?\d*)/g, (_match, num) => `: ${chalk.yellow(num)}`)
       // Booleans and null
-      .replace(/: (true|false|null)/g, (match, val) => `: ${chalk.magenta(val)}`);
+      .replace(/: (true|false|null)/g, (_match, val) => `: ${chalk.magenta(val)}`);
 
     return colored;
-  }
-
-  /**
-   * Get color for event type (MCP-style)
-   */
-  private getEventTypeColor(type: string): typeof chalk.green {
-    switch (type) {
-      case 'tool_start':
-        return chalk.blue;
-      case 'tool_result':
-        return chalk.green;
-      case 'thinking':
-        return chalk.yellow;
-      case 'error':
-        return chalk.red;
-      case 'info':
-      default:
-        return chalk.white;
-    }
   }
 
   private getElapsedTime(): string {
@@ -282,15 +270,13 @@ class TestProgressDisplay {
 class TestGenerationEngine {
   private progressDisplay: TestProgressDisplay;
   private config: JunoTaskConfig;
-  private sessionManager: SessionManager;
 
   constructor(
     config: JunoTaskConfig,
-    sessionManager: SessionManager,
+    _sessionManager: SessionManager,
     progressDisplay: TestProgressDisplay,
   ) {
     this.config = config;
-    this.sessionManager = sessionManager;
     this.progressDisplay = progressDisplay;
   }
 
@@ -369,7 +355,6 @@ Focus on ${
   }
 
   private async generateScenarios(request: TestGenerationRequest, analysis: any): Promise<any[]> {
-    const specialization = TEST_SUBAGENT_SPECIALIZATIONS[request.subagent];
     const scenarios = [];
 
     // Generate scenarios based on intelligence level
@@ -388,8 +373,8 @@ Focus on ${
   }
 
   private async generateBasicScenarios(
-    request: TestGenerationRequest,
-    analysis: any,
+    _request: TestGenerationRequest,
+    _analysis: any,
   ): Promise<any[]> {
     // Basic happy path and error scenarios
     return [
@@ -400,8 +385,8 @@ Focus on ${
   }
 
   private async generateSmartScenarios(
-    request: TestGenerationRequest,
-    analysis: any,
+    _request: TestGenerationRequest,
+    _analysis: any,
   ): Promise<any[]> {
     // Integration and complex scenarios
     return [
@@ -413,12 +398,12 @@ Focus on ${
 
   private async generateComprehensiveScenarios(
     request: TestGenerationRequest,
-    analysis: any,
+    _analysis: any,
   ): Promise<any[]> {
     // Advanced scenarios based on subagent specialization
     const specialization = TEST_SUBAGENT_SPECIALIZATIONS[request.subagent];
 
-    return specialization.capabilities.map((capability) => ({
+    return specialization.capabilities.map((capability: string) => ({
       type: capability,
       description: `Advanced ${capability} tests`,
     }));
@@ -445,9 +430,8 @@ Focus on ${
 
   private async selectTemplate(request: TestGenerationRequest): Promise<string> {
     // Select appropriate template based on type and framework
-    const templateName = request.template || `${request.type}-${request.framework}`;
-
     // In a real implementation, this would load from a templates directory
+    // Template selection would use: request.template || `${request.type}-${request.framework}`
     return this.getDefaultTemplate(request.type, request.framework);
   }
 
@@ -548,15 +532,9 @@ Focus on ${request.intelligence} level testing with proper assertions, mocking, 
 Return only the test code that should be placed in the template.
 `;
 
-    const executionRequest = createExecutionRequest({
-      instruction,
-      subagent: request.subagent,
-      workingDirectory: request.workingDirectory,
-      maxIterations: 2,
-    });
-
-    // Execute with MCP (similar to analyzeTarget)
+    // TODO: Execute with MCP (similar to analyzeTarget) using createExecutionRequest
     // For brevity, returning template replacement in this example
+    void instruction;
     return template
       .replace('{{functionName}}', 'GeneratedFunction')
       .replace('{{testCases}}', this.generatePlaceholderTestCases(scenario))
@@ -714,11 +692,12 @@ class TestExecutionEngine {
 
   private async runTestCommand(command: string[], cwd: string): Promise<any> {
     const { execa } = await import('execa');
+    const cmd = command[0] || 'npm';
 
     try {
-      const result = await execa(command[0], command.slice(1), {
+      const result = await execa(cmd, command.slice(1), {
         cwd,
-        stdio: this.progressDisplay.verbose ? 'inherit' : 'pipe',
+        stdio: this.progressDisplay.verbose ? 'inherit' as const : 'pipe' as const,
       });
 
       return {
@@ -797,16 +776,12 @@ class TestExecutionEngine {
 
 class TestAnalysisEngine {
   private progressDisplay: TestProgressDisplay;
-  private config: JunoTaskConfig;
-  private sessionManager: SessionManager;
 
   constructor(
-    config: JunoTaskConfig,
-    sessionManager: SessionManager,
+    _config: JunoTaskConfig,
+    _sessionManager: SessionManager,
     progressDisplay: TestProgressDisplay,
   ) {
-    this.config = config;
-    this.sessionManager = sessionManager;
     this.progressDisplay = progressDisplay;
   }
 
@@ -818,13 +793,13 @@ class TestAnalysisEngine {
       const metrics = this.calculateMetrics(request.results, request.coverage);
 
       // Generate AI-powered insights if requested
-      let insights = [];
+      let insights: string[] = [];
       if (request.quality === 'thorough' || request.quality === 'exhaustive') {
         insights = await this.generateInsights(request, metrics);
       }
 
       // Generate suggestions if requested
-      let suggestions = [];
+      let suggestions: string[] = [];
       if (request.suggestions) {
         suggestions = await this.generateSuggestions(metrics, insights);
       }
@@ -881,15 +856,9 @@ Please provide:
 Focus on actionable insights that can improve test quality and effectiveness.
 `;
 
-    const executionRequest = createExecutionRequest({
-      instruction,
-      subagent: request.subagent,
-      workingDirectory: process.cwd(),
-      maxIterations: 2,
-    });
-
-    // Execute with MCP (similar to generation)
+    // TODO: Execute with MCP using createExecutionRequest
     // For brevity, returning placeholder insights
+    void instruction;
     return [
       `Test pass rate of ${metrics.passRate.toFixed(1)}% is ${metrics.passRate >= 90 ? 'excellent' : metrics.passRate >= 75 ? 'good' : 'needs improvement'}`,
       `Coverage analysis shows ${metrics.coverage.lines?.toFixed(1) || 'N/A'}% line coverage`,
@@ -961,7 +930,7 @@ Focus on actionable insights that can improve test quality and effectiveness.
     return Math.round(score);
   }
 
-  private generateRecommendations(metrics: any, insights: string[]): string[] {
+  private generateRecommendations(metrics: any, _insights: string[]): string[] {
     const recommendations = [];
     const quality = this.assessQuality(metrics);
 
@@ -1087,14 +1056,14 @@ class TestReportEngine {
   <div class="insights">
     <h2>AI Insights</h2>
     <ul>
-      ${analysis.insights.map((insight) => `<li>${insight}</li>`).join('')}
+      ${analysis.insights.map((insight: string) => `<li>${insight}</li>`).join('')}
     </ul>
   </div>
 
   <div class="suggestions">
     <h2>Suggestions</h2>
     <ul>
-      ${analysis.suggestions.map((suggestion) => `<li>${suggestion}</li>`).join('')}
+      ${analysis.suggestions.map((suggestion: string) => `<li>${suggestion}</li>`).join('')}
     </ul>
   </div>
 </body>
@@ -1153,15 +1122,15 @@ class TestReportEngine {
 
 ## AI Insights
 
-${analysis.insights.map((insight) => `- ${insight}`).join('\n')}
+${analysis.insights.map((insight: string) => `- ${insight}`).join('\n')}
 
 ## Suggestions
 
-${analysis.suggestions.map((suggestion) => `- ${suggestion}`).join('\n')}
+${analysis.suggestions.map((suggestion: string) => `- ${suggestion}`).join('\n')}
 
 ## Recommendations
 
-${analysis.recommendations.map((rec) => `- ${rec}`).join('\n')}
+${analysis.recommendations.map((rec: string) => `- ${rec}`).join('\n')}
     `.trim();
 
     await fs.ensureDir(path.dirname(outputPath));
@@ -1194,21 +1163,21 @@ ${analysis.recommendations.map((rec) => `- ${rec}`).join('\n')}
 
     if (analysis.insights.length > 0) {
       console.log(chalk.blue('\n🤖 AI Insights:'));
-      analysis.insights.forEach((insight) => {
+      analysis.insights.forEach((insight: string) => {
         console.log(chalk.white(`   • ${insight}`));
       });
     }
 
     if (analysis.suggestions.length > 0) {
       console.log(chalk.blue('\n💡 Suggestions:'));
-      analysis.suggestions.forEach((suggestion) => {
+      analysis.suggestions.forEach((suggestion: string) => {
         console.log(chalk.white(`   • ${suggestion}`));
       });
     }
 
     if (analysis.recommendations.length > 0) {
       console.log(chalk.blue('\n🎯 Recommendations:'));
-      analysis.recommendations.forEach((rec) => {
+      analysis.recommendations.forEach((rec: string) => {
         console.log(chalk.white(`   • ${rec}`));
       });
     }
@@ -1224,53 +1193,48 @@ ${analysis.recommendations.map((rec) => `- ${rec}`).join('\n')}
 export async function testCommandHandler(
   args: string[],
   options: TestCommandOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
+  const verbose = options.verbose || false;
   try {
-    // Get global options from command's parent program
-    const globalOptions = command.parent?.opts() || {};
-    const allOptions = { ...options, ...globalOptions };
-
     console.log(chalk.blue.bold('🧪 Juno Task - AI-Powered Testing Framework'));
 
-    // Set logging level based on options
-    const logLevel = allOptions.logLevel
-      ? (allOptions.logLevel.toUpperCase() as keyof typeof LogLevel)
-      : 'INFO';
-    cliLogger.startTimer('test_command_total');
-    cliLogger.info('Starting test command', { options: allOptions, args });
+    cliLogger.info('Starting test command', { options, args });
 
     // Load configuration
-    cliLogger.startTimer('config_loading');
-    const config = await loadConfig({
-      baseDir: allOptions.directory || process.cwd(),
-      configFile: allOptions.config,
+    const workingDir = process.cwd();
+    const loadConfigOptions: Parameters<typeof loadConfig>[0] = {
+      baseDir: workingDir,
       cliConfig: {
-        verbose: allOptions.verbose || false,
-        quiet: allOptions.quiet || false,
-        logLevel: allOptions.logLevel || 'info',
-        workingDirectory: allOptions.directory || process.cwd(),
+        verbose: options.verbose || false,
+        quiet: options.quiet || false,
+        logLevel: options.logLevel || 'info',
+        workingDirectory: workingDir,
       },
-    });
-    cliLogger.endTimer('config_loading', 'Configuration loaded successfully');
+    };
+    if (options.config) {
+      loadConfigOptions.configFile = options.config;
+    }
+    const config = await loadConfig(loadConfigOptions);
+    cliLogger.info('Configuration loaded successfully');
 
     // Create session manager and progress display
     const sessionManager = await createSessionManager(config);
-    const progressDisplay = new TestProgressDisplay(allOptions.verbose);
+    const progressDisplay = new TestProgressDisplay(options.verbose);
 
     // Create test session
     const session = await sessionManager.createSession({
       name: `Test Session ${new Date().toISOString()}`,
-      subagent: allOptions.subagent || config.defaultSubagent,
+      subagent: options.subagent || config.defaultSubagent,
       config: config,
       tags: ['test', 'testing', 'framework'],
       metadata: {
-        testType: allOptions.type,
-        intelligence: allOptions.intelligence,
-        generate: allOptions.generate,
-        run: allOptions.run,
-        analyze: allOptions.analyze,
-        report: allOptions.report,
+        testType: options.type,
+        intelligence: options.intelligence,
+        generate: options.generate,
+        run: options.run,
+        analyze: options.analyze,
+        report: options.report,
       },
     });
 
@@ -1280,26 +1244,29 @@ export async function testCommandHandler(
 
     try {
       // Phase 1: Generate Tests (if requested)
-      if (allOptions.generate) {
+      if (options.generate) {
         engineLogger.info('Starting test generation', {
-          subagent: allOptions.subagent || config.defaultSubagent,
-          intelligence: allOptions.intelligence,
+          subagent: options.subagent || config.defaultSubagent,
+          intelligence: options.intelligence,
           target: args,
         });
 
         const generationEngine = new TestGenerationEngine(config, sessionManager, progressDisplay);
-        generatedFiles = await generationEngine.generateTests({
+        const generateRequest: TestGenerationRequest = {
           target: args.length > 0 ? args : ['src'],
-          type: allOptions.type || 'all',
-          intelligence: allOptions.intelligence || 'comprehensive',
-          template: allOptions.template,
-          framework: (allOptions.framework as TestFramework) || 'vitest',
-          subagent: allOptions.subagent || config.defaultSubagent,
+          type: options.type || 'all',
+          intelligence: options.intelligence || 'comprehensive',
+          framework: (options.framework as TestFramework) || 'vitest',
+          subagent: options.subagent || config.defaultSubagent,
           workingDirectory: config.workingDirectory,
-        });
+        };
+        if (options.template) {
+          generateRequest.template = options.template;
+        }
+        generatedFiles = await generationEngine.generateTests(generateRequest);
 
         await sessionManager.addHistoryEntry(session.info.id, {
-          type: 'test_generation',
+          type: 'system',
           content: `Generated ${generatedFiles.length} test files`,
           data: { files: generatedFiles },
           iteration: 1,
@@ -1307,50 +1274,66 @@ export async function testCommandHandler(
       }
 
       // Phase 2: Execute Tests (if requested or if generated tests)
-      if (allOptions.run || allOptions.generate) {
+      if (options.run || options.generate) {
         engineLogger.info('Starting test execution', {
-          framework: allOptions.framework,
-          coverage: allOptions.coverage,
-          watch: allOptions.watch,
+          framework: options.framework,
+          coverage: options.coverage,
+          watch: options.watch,
         });
 
         const executionEngine = new TestExecutionEngine(progressDisplay);
-        testResults = await executionEngine.executeTests({
-          target: args.length > 0 ? args : generatedFiles,
-          framework: (allOptions.framework as TestFramework) || 'vitest',
-          coverage: allOptions.coverage,
-          watch: allOptions.watch,
-          reporters: allOptions.reporters,
-          config: allOptions.config,
+        const execRequest: TestExecutionRequest = {
+          framework: (options.framework as TestFramework) || 'vitest',
           workingDirectory: config.workingDirectory,
-        });
+        };
+        if (args.length > 0) {
+          execRequest.target = args;
+        } else if (generatedFiles.length > 0) {
+          execRequest.target = generatedFiles;
+        }
+        if (options.coverage !== undefined) {
+          execRequest.coverage = options.coverage;
+        }
+        if (options.watch !== undefined) {
+          execRequest.watch = options.watch;
+        }
+        if (options.reporters !== undefined) {
+          execRequest.reporters = options.reporters;
+        }
+        if (options.config !== undefined) {
+          execRequest.config = options.config;
+        }
+        testResults = await executionEngine.executeTests(execRequest);
 
+        const passRate = testResults.totalTests > 0
+          ? ((testResults.passedTests / testResults.totalTests) * 100).toFixed(1)
+          : '0.0';
         await sessionManager.addHistoryEntry(session.info.id, {
-          type: 'test_execution',
-          content: `Executed ${testResults.totalTests} tests with ${testResults.passRate.toFixed(1)}% pass rate`,
+          type: 'system',
+          content: `Executed ${testResults.totalTests} tests with ${passRate}% pass rate`,
           data: testResults,
           iteration: 2,
         });
       }
 
       // Phase 3: Analyze Results (if requested or if tests were executed)
-      if ((allOptions.analyze || testResults) && testResults) {
+      if ((options.analyze || testResults) && testResults) {
         engineLogger.info('Starting test analysis', {
-          quality: allOptions.quality,
-          suggestions: allOptions.suggestions,
+          quality: options.quality,
+          suggestions: options.suggestions,
         });
 
         const analysisEngine = new TestAnalysisEngine(config, sessionManager, progressDisplay);
         analysis = await analysisEngine.analyzeTests({
           results: testResults,
           coverage: testResults.coverage,
-          quality: allOptions.quality || 'thorough',
-          suggestions: allOptions.suggestions !== false,
-          subagent: allOptions.subagent || config.defaultSubagent,
+          quality: options.quality || 'thorough',
+          suggestions: options.suggestions !== false,
+          subagent: options.subagent || config.defaultSubagent,
         });
 
         await sessionManager.addHistoryEntry(session.info.id, {
-          type: 'test_analysis',
+          type: 'system',
           content: `Analyzed test quality: ${analysis.quality}`,
           data: analysis,
           iteration: 3,
@@ -1358,28 +1341,31 @@ export async function testCommandHandler(
       }
 
       // Phase 4: Generate Report (if requested or if analysis was performed)
-      if ((allOptions.report || analysis) && analysis) {
+      if ((options.report || analysis) && analysis) {
         engineLogger.info('Generating test report', {
-          format: allOptions.format,
-          outputPath: allOptions.report,
+          format: options.format,
+          outputPath: options.report,
         });
 
         const reportEngine = new TestReportEngine();
-        const reportPath = await reportEngine.generateReport({
+        const reportRequest: TestReportRequest = {
           analysis,
-          format: (allOptions.format as ReportFormat) || 'markdown',
-          outputPath: typeof allOptions.report === 'string' ? allOptions.report : undefined,
+          format: (options.format as ReportFormat) || 'markdown',
           includeVisualizations: true,
-        });
+        };
+        if (typeof options.report === 'string') {
+          reportRequest.outputPath = options.report;
+        }
+        const reportPath = await reportEngine.generateReport(reportRequest);
 
         await sessionManager.addHistoryEntry(session.info.id, {
-          type: 'test_reporting',
-          content: `Generated ${allOptions.format} report: ${reportPath}`,
-          data: { reportPath, format: allOptions.format },
+          type: 'system',
+          content: `Generated ${options.format} report: ${reportPath}`,
+          data: { reportPath, format: options.format },
           iteration: 4,
         });
 
-        if (allOptions.format !== 'console') {
+        if (options.format !== 'console') {
           console.log(chalk.green(`\n📄 Report generated: ${reportPath}`));
         }
       }
@@ -1397,7 +1383,7 @@ export async function testCommandHandler(
       });
 
       // Complete command timing
-      cliLogger.endTimer('test_command_total', 'Test command completed successfully');
+      cliLogger.info('Test command completed successfully');
 
       // Set exit code based on test results
       const exitCode = testResults && !testResults.success ? 1 : 0;
@@ -1417,7 +1403,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach((suggestion) => {
+        error.suggestions.forEach((suggestion: string) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1431,7 +1417,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach((suggestion) => {
+        error.suggestions.forEach((suggestion: string) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1445,7 +1431,7 @@ export async function testCommandHandler(
 
       if (error.suggestions?.length) {
         console.error(chalk.yellow('\n💡 Suggestions:'));
-        error.suggestions.forEach((suggestion) => {
+        error.suggestions.forEach((suggestion: string) => {
           console.error(chalk.yellow(`   • ${suggestion}`));
         });
       }
@@ -1457,7 +1443,7 @@ export async function testCommandHandler(
     console.error(chalk.red.bold('\n❌ Unexpected Error'));
     console.error(chalk.red(`   ${error}`));
 
-    if (allOptions.verbose) {
+    if (verbose) {
       console.error('\n📍 Stack Trace:');
       console.error(error);
     }
@@ -1514,7 +1500,6 @@ export function configureTestCommand(program: Command): void {
         config: options.config,
         logFile: options.logFile,
         logLevel: options.logLevel,
-        directory: options.directory,
       };
 
       await testCommandHandler(target, testOptions, command);

@@ -279,7 +279,7 @@ async function processWithPager(filePath: string, options: ViewLogCommandOptions
 export async function viewLogCommandHandler(
   logFilePath: string,
   options: ViewLogCommandOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     // Validate file exists

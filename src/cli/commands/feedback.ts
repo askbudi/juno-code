@@ -20,7 +20,6 @@ import {
 } from '../../utils/file-compaction.js';
 import {
   archiveResolvedIssues,
-  countOpenIssues,
   shouldArchive,
 } from '../../utils/feedback-archival.js';
 
@@ -57,7 +56,7 @@ class SimpleFeedbackTUI {
     console.log(chalk.green('\n✅ Feedback submitted successfully!'));
     console.log(chalk.gray('   Thank you for your input.'));
 
-    return { issue, testCriteria };
+    return { issue, ...(testCriteria !== undefined ? { testCriteria } : {}) };
   }
 
   private async promptForFeedback(): Promise<string> {
@@ -170,18 +169,20 @@ List any features you'd like to see added or bugs you've encountered.
 
     if (openIssuesMatch) {
       const openIssuesSection = openIssuesMatch[1];
-      const closingTag = '</OPEN_ISSUES>';
-      const insertionPoint = openIssuesSection.lastIndexOf(closingTag);
+      if (openIssuesSection) {
+        const closingTag = '</OPEN_ISSUES>';
+        const insertionPoint = openIssuesSection.lastIndexOf(closingTag);
 
-      if (insertionPoint !== -1) {
-        const updatedSection =
-          openIssuesSection.slice(0, insertionPoint) +
-          '\n' +
-          newIssue +
-          '\n' +
-          openIssuesSection.slice(insertionPoint);
+        if (insertionPoint !== -1) {
+          const updatedSection =
+            openIssuesSection.slice(0, insertionPoint) +
+            '\n' +
+            newIssue +
+            '\n' +
+            openIssuesSection.slice(insertionPoint);
 
-        return content.replace(openIssuesSection, updatedSection);
+          return content.replace(openIssuesSection, updatedSection);
+        }
       }
     }
 
@@ -494,7 +495,7 @@ async function handleArchiveCommand(options: FeedbackCommandOptions): Promise<vo
 export async function feedbackCommandHandler(
   args: string[],
   options: FeedbackCommandOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     // Handle explicit --issue/--detail/--description flags (headless mode)

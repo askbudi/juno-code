@@ -122,7 +122,7 @@ function parseUserFeedback(content: string): {
   // Extract open issues section
   const openIssuesMatch = content.match(/<OPEN_ISSUES>([\s\S]*?)<\/OPEN_ISSUES>/);
   if (openIssuesMatch) {
-    const openIssuesContent = openIssuesMatch[1];
+    const openIssuesContent = openIssuesMatch[1]!;
     const issueMatches = openIssuesContent.match(/<ISSUE>[\s\S]*?<\/ISSUE>/g) || [];
 
     for (const issueMatch of issueMatches) {
@@ -136,12 +136,8 @@ function parseUserFeedback(content: string): {
     resolvedIssues.push(resolvedMatch.trim());
   }
 
-  // Extract metadata (everything before OPEN_ISSUES and after resolved issues)
+  // Extract metadata (everything before OPEN_ISSUES)
   const beforeOpenIssues = content.split('<OPEN_ISSUES>')[0] || '';
-  const afterResolvedIssues = content.split(/<\/RESOLVED_ISSUE>[\s\S]*?$/)[0] || content;
-
-  // Find the last resolved issue end and get everything after
-  const lastResolvedEnd = content.lastIndexOf('</RESOLVED_ISSUE>');
   const headerMetadata = beforeOpenIssues.trim();
 
   // If there's a header before open issues, use it

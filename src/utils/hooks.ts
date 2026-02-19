@@ -91,13 +91,13 @@ export interface HookExecutionResult {
  */
 export interface HookExecutionOptions {
   /** Maximum timeout per command in milliseconds (default: 300000 = 5 minutes) */
-  commandTimeout?: number;
+  commandTimeout?: number | undefined;
   /** Environment variables to pass to commands */
-  env?: Record<string, string>;
+  env?: Record<string, string> | undefined;
   /** Whether to continue executing commands if one fails (default: true) */
-  continueOnError?: boolean;
+  continueOnError?: boolean | undefined;
   /** Custom logger context (default: 'SYSTEM') */
-  logContext?: LogContext;
+  logContext?: LogContext | undefined;
 }
 
 /**
@@ -196,7 +196,7 @@ export async function executeHook(
 
   // Execute each command sequentially
   for (let i = 0; i < hook.commands.length; i++) {
-    const command = hook.commands[i];
+    const command = hook.commands[i]!;
     const commandStartTime = Date.now();
 
     contextLogger.info(`Executing command ${i + 1}/${hook.commands.length}: ${command}`, {
@@ -265,7 +265,7 @@ export async function executeHook(
 
       const commandResult: CommandExecutionResult = {
         command,
-        exitCode: result.exitCode,
+        exitCode: result.exitCode ?? -1,
         stdout: result.stdout || '',
         stderr: result.stderr || '',
         duration,

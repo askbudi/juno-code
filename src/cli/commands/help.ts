@@ -325,9 +325,9 @@ function searchHelpTopics(searchTerm: string): void {
  * Main help command handler
  */
 export async function helpCommandHandler(
-  args: any,
+  _args: any,
   options: HelpCommandOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     const formatter = new RichFormatter();

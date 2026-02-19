@@ -10,7 +10,7 @@
 
 import fs from 'fs-extra';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath as _fileURLToPath } from 'node:url';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -52,8 +52,8 @@ export class JunoLogger {
 
     // Generate timestamp matching Python version
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T');
-    const dateStr = timestamp[0];
-    const timeStr = timestamp[1].split('-')[0].substring(0, 6); // HH-MM-SS
+    const dateStr = timestamp[0]!;
+    const timeStr = timestamp[1]!.split('-')[0]!.substring(0, 6); // HH-MM-SS
     const fullTimestamp = `${dateStr}_${timeStr}`;
 
     // Generate log file name matching Python version: subagent_loop_{subagent}_{timestamp}.log

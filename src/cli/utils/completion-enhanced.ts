@@ -50,10 +50,8 @@ const MODEL_SUGGESTIONS = {
 } as const;
 
 export class ContextAwareCompletion {
-  private shellDetector: ShellDetector;
-
   constructor() {
-    this.shellDetector = new ShellDetector();
+    // ShellDetector available for future context-aware completions
   }
 
   /**
@@ -61,7 +59,7 @@ export class ContextAwareCompletion {
    */
   getModelSuggestions(subagent: string): string[] {
     const normalizedSubagent = subagent.toLowerCase() as keyof typeof MODEL_SUGGESTIONS;
-    return MODEL_SUGGESTIONS[normalizedSubagent] || [];
+    return [...(MODEL_SUGGESTIONS[normalizedSubagent] ?? [])];
   }
 
   /**
@@ -302,7 +300,7 @@ export class ProjectStateCompletion {
         return result.stdout
           .split('\n')
           .map((line) => line.split('\t')[1]?.split(' ')[0])
-          .filter(Boolean)
+          .filter((url): url is string => Boolean(url))
           .filter((url, index, arr) => arr.indexOf(url) === index); // Remove duplicates
       }
     } catch {
@@ -377,11 +375,9 @@ export class ProjectStateCompletion {
 
 export class CompletionInstaller {
   private shellDetector: ShellDetector;
-  private contextCompletion: ContextAwareCompletion;
 
   constructor() {
     this.shellDetector = new ShellDetector();
-    this.contextCompletion = new ContextAwareCompletion();
   }
 
   /**

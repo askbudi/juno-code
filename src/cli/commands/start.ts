@@ -59,7 +59,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
  * This implements: juno-code start {args} = juno-code -p "$(cat .juno_task/init.md)" {args}
  */
 export async function startCommandHandler(
-  args: any,
+  _args: any,
   options: StartCommandOptions,
   command: Command,
 ): Promise<void> {
@@ -140,36 +140,32 @@ export async function startCommandHandler(
 
     // Convert StartCommandOptions to MainCommandOptions
     // The start command should pass through all options to the main command
+    // Build MainCommandOptions, omitting undefined values to satisfy exactOptionalPropertyTypes
     const mainOptions: MainCommandOptions = {
       subagent: subagent as any, // Will be validated by mainCommandHandler
       prompt: initPrompt, // Use init.md content as the prompt
-      backend: options.backend,
-      maxIterations: options.maxIterations,
-      model: options.model,
-      agents: options.agents,
-      tools: options.tools,
-      allowedTools: options.allowedTools,
-      appendAllowedTools: options.appendAllowedTools,
-      disallowedTools: options.disallowedTools,
-      resume: options.resume,
-      continue: options.continue,
-      cwd: options.directory,
-      verbose: options.verbose,
-      quiet: options.quiet,
-      config: (options as any).config,
-      logLevel: (options as any).logLevel,
-      // Pass through performance/metrics options
-      showMetrics: options.showMetrics,
-      showDashboard: options.showDashboard,
-      showTrends: options.showTrends,
-      saveMetrics: options.saveMetrics,
-      metricsFile: options.metricsFile,
-      enableFeedback: options.enableFeedback,
       // Start command never uses interactive modes
       interactive: false,
       interactivePrompt: false,
+      // Spread optional properties only when defined
+      ...(options.backend !== undefined ? { backend: options.backend } : {}),
+      ...(options.maxIterations !== undefined ? { maxIterations: options.maxIterations } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.agents !== undefined ? { agents: options.agents } : {}),
+      ...(options.tools !== undefined ? { tools: options.tools } : {}),
+      ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
+      ...(options.appendAllowedTools !== undefined ? { appendAllowedTools: options.appendAllowedTools } : {}),
+      ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
+      ...(options.resume !== undefined ? { resume: options.resume } : {}),
+      ...(options.continue !== undefined ? { continue: options.continue } : {}),
+      ...(options.directory !== undefined ? { cwd: options.directory } : {}),
+      ...(options.verbose !== undefined ? { verbose: options.verbose } : {}),
+      ...(options.quiet !== undefined ? { quiet: options.quiet } : {}),
+      ...((options as any).config !== undefined ? { config: (options as any).config } : {}),
+      ...((options as any).logLevel !== undefined ? { logLevel: (options as any).logLevel } : {}),
+      ...(options.enableFeedback !== undefined ? { enableFeedback: options.enableFeedback } : {}),
       // Pass through --no-hooks flag (Commander sets options.hooks to false when --no-hooks is used)
-      hooks: (options as any).hooks,
+      ...((options as any).hooks !== undefined ? { hooks: (options as any).hooks } : {}),
     };
 
     // Delegate to mainCommandHandler with the prompt from init.md

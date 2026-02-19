@@ -382,6 +382,9 @@ export interface ToolExecutionMetadata {
 
   /** Original raw output emitted by the tool (pre-structuring) */
   readonly rawOutput?: string;
+
+  /** Quota limit information detected during execution */
+  readonly quotaLimitInfo?: any;
 }
 
 /**

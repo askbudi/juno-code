@@ -16,7 +16,7 @@
  *
  * Shipped via juno-code's SkillInstaller to .pi/extensions/.
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, InputEvent } from "@mariozechner/pi-coding-agent";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
@@ -50,14 +50,14 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, string
 	if (!match) return { frontmatter: {}, body: content };
 
 	const yaml = match[1];
-	const body = match[2];
+	const body = match[2] ?? '';
 	const frontmatter: Record<string, string | boolean> = {};
 
-	for (const line of yaml.split("\n")) {
-		const colonIndex = line.indexOf(":");
+	for (const rawLine of yaml!.split("\n")) {
+		const colonIndex = rawLine.indexOf(":");
 		if (colonIndex === -1) continue;
-		const key = line.slice(0, colonIndex).trim();
-		const value = line.slice(colonIndex + 1).trim();
+		const key = rawLine.slice(0, colonIndex).trim();
+		const value = rawLine.slice(colonIndex + 1).trim();
 		if (value === "true") {
 			frontmatter[key] = true;
 		} else if (value === "false") {
@@ -184,7 +184,7 @@ function processShellDirectives(content: string, cwd: string, timeout: number = 
  * directive processing, then returns the fully expanded skill block.
  */
 export default function junoSkillPreprocessor(pi: ExtensionAPI) {
-	pi.on("input", (event) => {
+	pi.on("input", (event: InputEvent) => {
 		const text = typeof event.text === "string" ? event.text : "";
 		if (!text.startsWith("/skill:")) return { action: "continue" };
 

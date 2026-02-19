@@ -87,7 +87,7 @@ interface MarkdownSection {
   isEssential: boolean;
   isHistorical: boolean;
   containsDate: boolean;
-  dateFound?: Date;
+  dateFound?: Date | undefined;
 }
 
 interface CompactionAnalysis {
@@ -131,7 +131,7 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
 
   // Process each line
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
 
     // Check for section headers (### or ##)
     const headerMatch = line.match(/^(#{2,3})\s+(.+)$/);
@@ -156,7 +156,7 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
 
       // Start new section
       currentSection = {
-        title: headerMatch[2].trim(),
+        title: headerMatch[2]!.trim(),
         startLine: i,
       };
       sectionLines = [line];
@@ -207,7 +207,7 @@ function analyzeMarkdownStructure(content: string): CompactionAnalysis {
 
     // Extract date if present
     const dateMatch = content.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-    const dateFound = dateMatch ? new Date(dateMatch[1]) : undefined;
+    const dateFound = dateMatch ? new Date(dateMatch[1]!) : undefined;
     const containsDate = !!dateFound;
 
     return {

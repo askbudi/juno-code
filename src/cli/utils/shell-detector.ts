@@ -8,8 +8,9 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
 import fs from 'fs-extra';
+// @ts-expect-error -- which v4 ships no type declarations
 import whichPkg from 'which';
-const { which } = whichPkg;
+const { which } = whichPkg as { which: (cmd: string) => Promise<string> };
 
 export type ShellType = 'bash' | 'zsh' | 'fish' | 'powershell' | 'cmd';
 
@@ -196,7 +197,7 @@ export class ShellDetector {
   /**
    * Check if source command is already present in config file
    */
-  async isSourceCommandPresent(configPath: string, sourceCommand: string): Promise<boolean> {
+  async isSourceCommandPresent(configPath: string, _sourceCommand: string): Promise<boolean> {
     try {
       if (!(await fs.pathExists(configPath))) {
         return false;
@@ -246,9 +247,9 @@ export class ShellDetector {
         statuses.push({
           shell: shell.name,
           isInstalled: completionExists && (shell.name === 'fish' || isSourced),
-          installPath: completionExists ? shell.completionPath : undefined,
+          ...(completionExists ? { installPath: shell.completionPath } : {}),
           configPath: shell.configPath,
-          lastInstalled,
+          ...(lastInstalled !== undefined ? { lastInstalled } : {}),
         });
       } catch (error) {
         statuses.push({

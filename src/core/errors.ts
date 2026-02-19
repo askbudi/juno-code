@@ -108,22 +108,22 @@ export const RATE_LIMIT_PATTERNS = [
  */
 export interface ExecutionErrorOptions {
   /** Error code for programmatic handling */
-  readonly code?: ExecutionErrorCode;
+  readonly code?: ExecutionErrorCode | undefined;
 
   /** Operation context when error occurred */
-  readonly context?: string;
+  readonly context?: string | undefined;
 
   /** Retry information */
-  readonly retryInfo?: RetryInfo;
+  readonly retryInfo?: RetryInfo | undefined;
 
   /** Recovery suggestions for the user */
-  readonly recoverySuggestions?: readonly string[];
+  readonly recoverySuggestions?: readonly string[] | undefined;
 
   /** Cause error for error chaining */
-  readonly cause?: Error;
+  readonly cause?: Error | undefined;
 
   /** Additional metadata */
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /**
@@ -230,19 +230,19 @@ export abstract class ExecutionError extends Error {
   public readonly timestamp: Date;
 
   /** Operation context */
-  public readonly context?: string;
+  public readonly context?: string | undefined;
 
   /** Retry information */
-  public readonly retryInfo?: RetryInfo;
+  public readonly retryInfo?: RetryInfo | undefined;
 
   /** Recovery suggestions */
-  public readonly recoverySuggestions?: readonly string[];
+  public readonly recoverySuggestions?: readonly string[] | undefined;
 
   /** Additional metadata */
-  public readonly metadata?: Readonly<Record<string, unknown>>;
+  public readonly metadata?: Readonly<Record<string, unknown>> | undefined;
 
   /** Cause error for error chaining */
-  public override readonly cause?: Error;
+  public override readonly cause?: Error | undefined;
 
   constructor(
     message: string,
@@ -349,7 +349,7 @@ export abstract class ExecutionError extends Error {
  */
 export class ConnectionError extends ExecutionError {
   /** Server information */
-  public readonly serverInfo?: ServerInfo;
+  public readonly serverInfo?: ServerInfo | undefined;
 
   constructor(
     message: string,
@@ -445,13 +445,13 @@ export class ToolError extends ExecutionError {
   public readonly toolInfo: ToolInfo;
 
   /** Execution details */
-  public readonly executionDetails?: ToolExecutionDetails;
+  public readonly executionDetails?: ToolExecutionDetails | undefined;
 
   constructor(
     message: string,
     toolInfo: ToolInfo,
     context?: string,
-    options?: ExecutionErrorOptions & { executionDetails?: ToolExecutionDetails },
+    options?: ExecutionErrorOptions & { executionDetails?: ToolExecutionDetails | undefined },
   ) {
     const code = options?.code ?? ExecutionErrorCode.TOOL_EXECUTION_FAILED;
     const suggestions = options?.recoverySuggestions ?? [
@@ -628,16 +628,16 @@ export class TimeoutError extends ExecutionError {
  */
 export class RateLimitError extends ExecutionError {
   /** Rate limit reset time */
-  public readonly resetTime?: Date;
+  public readonly resetTime?: Date | undefined;
 
   /** Current rate limit tier */
-  public readonly tier?: string;
+  public readonly tier?: string | undefined;
 
   /** Requests remaining */
   public readonly remaining: number;
 
   /** Rate limit window */
-  public readonly window?: string;
+  public readonly window?: string | undefined;
 
   constructor(
     message: string,
@@ -683,7 +683,7 @@ export class RateLimitError extends ExecutionError {
 
     // Extract remaining requests if available
     const remainingMatch = message.match(/(\d+)\s*(?:requests?|calls?)\s*remaining/i);
-    const remaining = remainingMatch ? parseInt(remainingMatch[1], 10) : 0;
+    const remaining = remainingMatch ? parseInt(remainingMatch[1]!, 10) : 0;
 
     // Extract tier information if available
     const tierMatch = message.match(/tier[:\s]*([a-zA-Z0-9_-]+)/i);
@@ -760,10 +760,10 @@ export class ValidationError extends ExecutionError {
   public readonly value: unknown;
 
   /** Expected format/value */
-  public readonly expected?: string;
+  public readonly expected?: string | undefined;
 
   /** Field path for nested validation */
-  public readonly field?: string;
+  public readonly field?: string | undefined;
 
   constructor(
     message: string,
@@ -909,7 +909,7 @@ function parseTimeFromMatch(match: RegExpMatchArray): Date | undefined {
 
   // Handle duration-based patterns
   if (time2 && (time2.includes('minute') || time2.includes('hour') || time2.includes('second'))) {
-    const duration = parseInt(time1, 10);
+    const duration = parseInt(time1!, 10);
     const unit = time2.toLowerCase();
     const now = new Date();
 
@@ -1105,7 +1105,7 @@ export function createErrorChain(errors: Error[]): ExecutionError {
   }
 
   if (errors.length === 1) {
-    const error = errors[0];
+    const error = errors[0]!;
     if (isExecutionError(error)) {
       return error;
     }
@@ -1114,7 +1114,7 @@ export function createErrorChain(errors: Error[]): ExecutionError {
     });
   }
 
-  const primaryError = errors[0];
+  const primaryError = errors[0]!;
   const additionalErrors = errors.slice(1);
 
   return new ConnectionError(

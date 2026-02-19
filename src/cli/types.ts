@@ -5,8 +5,7 @@
  * supporting commands, options, error handling, and constants.
  */
 
-import { Command } from 'commander';
-import { SubagentType, SessionStatus, LogLevel, BackendType } from '../types/index';
+import type { SubagentType, SessionStatus, LogLevel, BackendType } from '../types/index';
 
 // ============================================================================
 // Command Structure Types

@@ -86,6 +86,33 @@ export interface ProgressBarOptions {
 // Rich Formatter Class
 // ============================================================================
 
+/**
+ * Map a color name string to a chalk styling function.
+ * Chalk v5 removed `.keyword()`, so we map names to built-in methods.
+ */
+function chalkColor(color: string): (text: string) => string {
+  const colorMap: Record<string, (text: string) => string> = {
+    red: chalk.red,
+    green: chalk.green,
+    blue: chalk.blue,
+    yellow: chalk.yellow,
+    cyan: chalk.cyan,
+    magenta: chalk.magenta,
+    white: chalk.white,
+    gray: chalk.gray,
+    grey: chalk.grey,
+    black: chalk.black,
+    redBright: chalk.redBright,
+    greenBright: chalk.greenBright,
+    blueBright: chalk.blueBright,
+    yellowBright: chalk.yellowBright,
+    cyanBright: chalk.cyanBright,
+    magentaBright: chalk.magentaBright,
+    whiteBright: chalk.whiteBright,
+  };
+  return colorMap[color] ?? chalk.white;
+}
+
 export class RichFormatter {
   private colorSupport: boolean;
   private terminalWidth: number;
@@ -106,7 +133,7 @@ export class RichFormatter {
       const headers = options.headers || data.headers || [];
       if (options.colors?.headers && this.colorSupport) {
         const coloredHeaders = headers.map((header) =>
-          chalk.keyword(options.colors!.headers!)(header),
+          chalkColor(options.colors!.headers!)(header),
         );
         table.push(coloredHeaders);
       }
@@ -123,7 +150,7 @@ export class RichFormatter {
     if (options.title) {
       const titleColor = options.colors?.title || 'blue';
       const coloredTitle = this.colorSupport
-        ? chalk.keyword(titleColor).bold(options.title)
+        ? chalk.bold(chalkColor(titleColor)(options.title))
         : options.title;
 
       const titleLine = this.centerText(coloredTitle, this.getTableWidth(options));
@@ -185,7 +212,6 @@ export class RichFormatter {
     processedLines.forEach((line) => {
       const alignedContent = this.alignText(line, contentWidth, align);
       const paddedContent = ' '.repeat(padding) + alignedContent + ' '.repeat(padding);
-      const contentLine = borderChars.vertical + paddedContent + borderChars.vertical;
 
       const coloredContent =
         this.colorize(borderChars.vertical, styleColors.border) +
@@ -213,18 +239,6 @@ export class RichFormatter {
    * Create a tree view display
    */
   tree(data: TreeData, options: TreeOptions = {}): string {
-    const {
-      showFiles = true,
-      showMetadata = false,
-      maxDepth = 10,
-      icons = true,
-      colors = {
-        directory: 'blue',
-        file: 'white',
-        metadata: 'gray',
-      },
-    } = options;
-
     return this.renderTreeNode(data, 0, '', options, true);
   }
 
@@ -238,7 +252,7 @@ export class RichFormatter {
       incomplete = '░',
       showPercentage = true,
       showBar = true,
-      style = 'bar',
+      style: _style = 'bar',
       colors = {
         completed: 'green',
         incomplete: 'gray',
@@ -480,7 +494,7 @@ export class RichFormatter {
 
   private colorize(text: string, color?: string): string {
     if (!this.colorSupport || !color) return text;
-    return (chalk as any).keyword(color)(text);
+    return chalkColor(color)(text);
   }
 
   private centerText(text: string, width: number): string {

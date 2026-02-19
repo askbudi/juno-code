@@ -8,7 +8,6 @@
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
-import type { ValidationError, RuntimeError } from '../cli/types.js';
 
 // Git URL validation schemas
 const GitHttpsUrlSchema = z
@@ -52,7 +51,7 @@ export interface GitRepositoryInfo {
   /** Total number of commits */
   commitCount: number;
   /** Last commit information */
-  lastCommit?: GitCommitInfo;
+  lastCommit?: GitCommitInfo | undefined;
   /** Repository status summary */
   status: GitRepositoryStatus;
 }
@@ -93,7 +92,7 @@ export type GitRepositoryStatus =
  */
 export interface GitUpstreamConfig {
   /** Upstream URL */
-  url?: string;
+  url?: string | undefined;
   /** Remote name (usually 'origin') */
   remote: string;
   /** Default branch name */
@@ -204,13 +203,13 @@ export class GitManager {
             { cwd: this.workingDirectory },
           );
 
-          const [fullHash, hash, message, author, email, dateStr, timestamp] =
+          const [fullHash, hash, message, author, email, , timestamp] =
             commitResult.stdout.split('|');
 
           // Get files changed count
           const diffResult = await execa(
             'git',
-            ['diff-tree', '--no-commit-id', '--name-only', '-r', fullHash],
+            ['diff-tree', '--no-commit-id', '--name-only', '-r', fullHash ?? ''],
             { cwd: this.workingDirectory },
           );
           const filesChanged = diffResult.stdout
@@ -219,12 +218,12 @@ export class GitManager {
             .filter((line) => line).length;
 
           lastCommit = {
-            hash,
-            fullHash,
-            message,
-            author,
-            email,
-            date: new Date(parseInt(timestamp) * 1000),
+            hash: hash ?? '',
+            fullHash: fullHash ?? '',
+            message: message ?? '',
+            author: author ?? '',
+            email: email ?? '',
+            date: new Date(parseInt(timestamp ?? '0') * 1000),
             filesChanged,
           };
         } catch {
@@ -474,7 +473,7 @@ export class GitManager {
 
       if (frontmatterMatch) {
         // Update existing frontmatter
-        let frontmatter = frontmatterMatch[1];
+        let frontmatter = frontmatterMatch[1] ?? '';
 
         if (frontmatter.includes('GIT_URL:')) {
           frontmatter = frontmatter.replace(/GIT_URL:.*$/m, `GIT_URL: ${gitUrl}`);
@@ -530,8 +529,8 @@ GIT_URL: ${gitUrl}
 
     for (const line of output.split('\n')) {
       const match = line.match(/^(\w+)\s+(.+?)\s+\(fetch\)$/);
-      if (match) {
-        remotes[match[1]] = match[2];
+      if (match && match[1] !== undefined) {
+        remotes[match[1]] = match[2] ?? '';
       }
     }
 
@@ -573,9 +572,9 @@ export class GitUrlUtils {
     const httpsMatch = url.match(/^https:\/\/([^\/]+)\/([^\/]+)\/([^\/]+?)(?:\.git)?$/);
     if (httpsMatch) {
       return {
-        provider: httpsMatch[1],
-        owner: httpsMatch[2],
-        repo: httpsMatch[3],
+        provider: httpsMatch[1] ?? '',
+        owner: httpsMatch[2] ?? '',
+        repo: httpsMatch[3] ?? '',
         isSSH: false,
       };
     }
@@ -584,9 +583,9 @@ export class GitUrlUtils {
     const sshMatch = url.match(/^git@([^:]+):([^\/]+)\/([^\/]+?)(?:\.git)?$/);
     if (sshMatch) {
       return {
-        provider: sshMatch[1],
-        owner: sshMatch[2],
-        repo: sshMatch[3],
+        provider: sshMatch[1] ?? '',
+        owner: sshMatch[2] ?? '',
+        repo: sshMatch[3] ?? '',
         isSSH: true,
       };
     }

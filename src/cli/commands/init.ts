@@ -37,8 +37,6 @@ interface InitializationContext {
  * Project Root → Main Task [Multi line] → select menu [Coding Editors] → Git Setup? yes | No → Save → Already exists? Override | Cancel → Done
  */
 class SimpleInitTUI {
-  private context: Partial<InitializationContext> = {};
-
   // Simple single-line input helper is provided by utils
 
   /**
@@ -76,7 +74,7 @@ class SimpleInitTUI {
       targetDirectory,
       task,
       subagent: editor, // Use selected editor as subagent
-      gitUrl,
+      ...(gitUrl ? { gitUrl } : {}),
       variables,
       force: false,
       interactive: true,
@@ -561,7 +559,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     await this.setupGitRepository();
 
     console.log(chalk.green.bold('\n✅ Project initialization complete!'));
-    this.printNextSteps(targetDirectory, variables.EDITOR);
+    this.printNextSteps(targetDirectory, String(variables.EDITOR || 'claude'));
   }
 
   private async createConfigFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
@@ -609,15 +607,6 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   private async createMcpFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
     const projectName = path.basename(targetDirectory);
     const timestamp = new Date().toISOString();
-
-    // Get the current directory in ESM way
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-
-    // Get the roundtable server path - use environment variable or default
-    const roundtablePath =
-      process.env.JUNO_TASK_MCP_SERVER_PATH ||
-      path.join(__dirname, '../../../roundtable_mcp_server/roundtable_mcp_server/server.py');
 
     const mcpContent = {
       mcpServers: {
@@ -984,7 +973,7 @@ class SimpleHeadlessInit {
       targetDirectory,
       task,
       subagent: selectedSubagent,
-      gitUrl,
+      ...(gitUrl ? { gitUrl } : {}),
       variables,
       force: this.options.force || false,
       interactive: false,
@@ -1019,7 +1008,7 @@ class SimpleHeadlessInit {
  * Main simplified init command handler
  */
 export async function initCommandHandler(
-  args: any,
+  _args: any,
   options: InitCommandOptions,
   command: Command,
 ): Promise<void> {

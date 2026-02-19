@@ -3,6 +3,8 @@
  * This file is loaded before all tests
  */
 
+/// <reference types="vitest/globals" />
+
 import '@testing-library/jest-dom';
 
 // Mock environment variables for tests
@@ -34,6 +36,6 @@ expect.extend({
 });
 
 // Global test utilities
-global.testUtils = {
+(globalThis as Record<string, unknown>).testUtils = {
   // Add global test utilities here
 };

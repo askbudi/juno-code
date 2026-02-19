@@ -12,12 +12,11 @@
  * Can be used standalone or integrated into other commands.
  */
 
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { EOL } from 'node:os';
 import chalk from 'chalk';
 import {
   setFeedbackActive,
-  isFeedbackActive,
   flushBufferedProgress,
   setInputRedisplayCallback,
 } from './feedback-state.js';
@@ -92,8 +91,8 @@ export class ConcurrentFeedbackCollector {
   private pending: Promise<void> = Promise.resolve();
   private buffer: string = '';
   private carry: string = '';
-  private progressTimer?: NodeJS.Timeout;
-  private progressFlushTimer?: NodeJS.Timeout;
+  private progressTimer?: NodeJS.Timeout | undefined;
+  // progressFlushTimer removed — no longer needed in f+enter/q+enter mode
   private progressTick: number = 0;
   private startTime: Date = new Date();
   private isActive: boolean = false;
@@ -108,7 +107,7 @@ export class ConcurrentFeedbackCollector {
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,
       progressFlushInterval: options.progressFlushInterval ?? 2000, // Default: flush every 2 seconds
-      onSubmit: options.onSubmit,
+      ...(options.onSubmit !== undefined && { onSubmit: options.onSubmit }),
     };
   }
 

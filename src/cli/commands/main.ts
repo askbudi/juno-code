@@ -178,7 +178,7 @@ class PromptProcessor {
     }
   }
 
-  private async launchTUIPromptEditor(initialValue?: string): Promise<string> {
+  private async launchTUIPromptEditor(_initialValue?: string): Promise<string> {
     // TUI system has been removed; redirect to readline-based interactive prompt
     console.error(chalk.yellow('Using interactive prompt mode...'));
     return await this.collectInteractivePrompt();
@@ -329,34 +329,15 @@ class MainProgressDisplay {
     // Apply colors to different JSON elements
     const colored = json
       // Keys (property names)
-      .replace(/"([^"]+)":/g, (match, key) => `${chalk.blue(`"${key}"`)}:`)
+      .replace(/"([^"]+)":/g, (_match, key) => `${chalk.blue(`"${key}"`)}:`)
       // String values
-      .replace(/: "([^"]*)"/g, (match, value) => `: ${chalk.green(`"${value}"`)}`)
+      .replace(/: "([^"]*)"/g, (_match, value) => `: ${chalk.green(`"${value}"`)}`)
       // Numbers
-      .replace(/: (\d+\.?\d*)/g, (match, num) => `: ${chalk.yellow(num)}`)
+      .replace(/: (\d+\.?\d*)/g, (_match, num) => `: ${chalk.yellow(num)}`)
       // Booleans and null
-      .replace(/: (true|false|null)/g, (match, val) => `: ${chalk.magenta(val)}`);
+      .replace(/: (true|false|null)/g, (_match, val) => `: ${chalk.magenta(val)}`);
 
     return colored;
-  }
-
-  /**
-   * Get color for event type (MCP-style)
-   */
-  private getEventTypeColor(type: string): typeof chalk.green {
-    switch (type) {
-      case 'tool_start':
-        return chalk.blue;
-      case 'tool_result':
-        return chalk.green;
-      case 'thinking':
-        return chalk.yellow;
-      case 'error':
-        return chalk.red;
-      case 'info':
-      default:
-        return chalk.white;
-    }
   }
 
   onIterationStart(iteration: number): void {
@@ -416,7 +397,7 @@ class MainProgressDisplay {
     if (shouldPrintResult) {
       console.error(chalk.blue('\n📄 Result:'));
       // Final result goes to STDOUT for variable capture
-      console.log(lastIteration.toolResult.content);
+      console.log(lastIteration!.toolResult.content);
     }
 
     // Show statistics on STDERR if verbose
@@ -549,16 +530,16 @@ class MainExecutionCoordinator {
  * Main command handler
  */
 export async function mainCommandHandler(
-  args: string[],
+  _args: string[],
   options: MainCommandOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     // Load configuration first so we can resolve defaults from config.json
     // Load configuration
     const config = await loadConfig({
       baseDir: options.cwd || process.cwd(),
-      configFile: options.config,
+      ...(options.config !== undefined ? { configFile: options.config } : {}),
       cliConfig: {
         verbose: options.verbose || false,
         quiet: options.quiet || false,
@@ -659,13 +640,13 @@ export async function mainCommandHandler(
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations ?? config.defaultMaxIterations,
       model: resolvedModel,
-      agents: options.agents,
-      tools: options.tools,
-      allowedTools: options.allowedTools,
-      appendAllowedTools: options.appendAllowedTools,
-      disallowedTools: options.disallowedTools,
-      resume: options.resume,
-      continueConversation: options.continue,
+      ...(options.agents !== undefined ? { agents: options.agents } : {}),
+      ...(options.tools !== undefined ? { tools: options.tools } : {}),
+      ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
+      ...(options.appendAllowedTools !== undefined ? { appendAllowedTools: options.appendAllowedTools } : {}),
+      ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
+      ...(options.resume !== undefined ? { resume: options.resume } : {}),
+      ...(options.continue !== undefined ? { continueConversation: options.continue } : {}),
     });
 
     // Execute

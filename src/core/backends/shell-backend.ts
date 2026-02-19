@@ -11,6 +11,10 @@ import * as path from 'node:path';
 import os from 'node:os';
 import fsExtra from 'fs-extra';
 import type { Backend } from '../backend-manager.js';
+import {
+  ProgressEventType,
+  ToolExecutionStatus,
+} from '../../types/execution.js';
 import type {
   ToolCallRequest,
   ToolCallResult,
@@ -61,16 +65,6 @@ interface ScriptExecutionResult {
   duration: number;
   subAgentResponse?: any;
   metadata?: Record<string, any>;
-}
-
-/**
- * JSON streaming event from shell script
- */
-interface StreamingEvent {
-  type: 'progress' | 'result' | 'error' | 'thinking' | 'tool_start' | 'tool_result';
-  content: string;
-  metadata?: Record<string, any>;
-  timestamp?: string;
 }
 
 /**
@@ -139,10 +133,10 @@ function parseResetTime(message: string): { resetTime: Date; timezone: string } 
     return null;
   }
 
-  let hours = parseInt(match[1], 10);
-  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  let hours = parseInt(match[1]!, 10);
+  const minutes = match[2] ? parseInt(match[2]!, 10) : 0;
   const ampm = match[3]?.toLowerCase();
-  const timezone = match[4].trim();
+  const timezone = match[4]!.trim();
 
   // Convert to 24-hour format
   if (ampm === 'pm' && hours !== 12) {
@@ -159,10 +153,6 @@ function parseResetTime(message: string): { resetTime: Date; timezone: string } 
   const resetTime = new Date();
 
   if (timezoneOffset !== undefined) {
-    // Calculate the current time in the target timezone
-    const utcNow = now.getTime() + now.getTimezoneOffset() * 60000;
-    const targetNow = new Date(utcNow + timezoneOffset * 3600000);
-
     // Set the reset time in the target timezone
     resetTime.setUTCHours(hours - timezoneOffset, minutes, 0, 0);
 
@@ -200,12 +190,12 @@ function parseCodexResetTime(message: string): { resetTime: Date } | null {
     return null;
   }
 
-  const monthStr = match[1];
-  const day = parseInt(match[2], 10);
-  const year = parseInt(match[3], 10);
-  let hours = parseInt(match[4], 10);
-  const minutes = parseInt(match[5], 10);
-  const ampm = match[6].toUpperCase();
+  const monthStr = match[1]!;
+  const day = parseInt(match[2]!, 10);
+  const year = parseInt(match[3]!, 10);
+  let hours = parseInt(match[4]!, 10);
+  const minutes = parseInt(match[5]!, 10);
+  const ampm = match[6]!.toUpperCase();
 
   // Convert month name to number
   const MONTH_MAP: Record<string, number> = {
@@ -420,7 +410,7 @@ export class ShellBackend implements Backend {
       timestamp: new Date(),
       backend: 'shell',
       count: ++this.eventCounter,
-      type: 'tool_start',
+      type: ProgressEventType.TOOL_START,
       content: `Starting ${request.toolName} via shell script`,
       toolId,
       metadata: {
@@ -445,7 +435,7 @@ export class ShellBackend implements Backend {
         timestamp: new Date(),
         backend: 'shell',
         count: ++this.eventCounter,
-        type: 'tool_result',
+        type: ProgressEventType.TOOL_RESULT,
         content: `${request.toolName} completed successfully (${duration}ms)`,
         toolId,
         metadata: {
@@ -458,19 +448,22 @@ export class ShellBackend implements Backend {
 
       const structuredResult = this.buildStructuredOutput(subagentType, result);
 
-      return {
+      const toolResult: Record<string, unknown> = {
         content: structuredResult.content,
-        status: result.success ? 'completed' : 'failed',
+        status: result.success ? ToolExecutionStatus.COMPLETED : ToolExecutionStatus.FAILED,
         startTime: new Date(startTime),
         endTime: new Date(),
         duration,
-        error: result.error
-          ? { type: 'shell_execution', message: result.error, timestamp: new Date() }
-          : undefined,
-        progressEvents: [], // Progress events are handled via callbacks
-        ...(structuredResult.metadata ? { metadata: structuredResult.metadata } : undefined),
+        progressEvents: [] as ProgressEvent[],
         request,
       };
+      if (result.error) {
+        toolResult.error = new Error(result.error);
+      }
+      if (structuredResult.metadata) {
+        toolResult.metadata = structuredResult.metadata;
+      }
+      return toolResult as unknown as ToolCallResult;
     } catch (error) {
       const duration = Date.now() - startTime;
 
@@ -480,7 +473,7 @@ export class ShellBackend implements Backend {
         timestamp: new Date(),
         backend: 'shell',
         count: ++this.eventCounter,
-        type: 'error',
+        type: ProgressEventType.ERROR,
         content: `${request.toolName} failed: ${error instanceof Error ? error.message : String(error)}`,
         toolId,
         metadata: {
@@ -690,14 +683,14 @@ export class ShellBackend implements Backend {
       const isGemini = subagentType === 'gemini';
 
       // Prepare environment variables
-      const env = {
+      const env: Record<string, string | undefined> = {
         ...process.env,
         ...this.config!.environment,
         // Pass request data as environment variables
-        JUNO_INSTRUCTION: request.arguments?.instruction || '',
-        JUNO_PROJECT_PATH: request.arguments?.project_path || this.config!.workingDirectory,
-        JUNO_MODEL: request.arguments?.model || '',
-        JUNO_ITERATION: String(request.arguments?.iteration || 1),
+        JUNO_INSTRUCTION: String(request.arguments?.instruction ?? ''),
+        JUNO_PROJECT_PATH: String(request.arguments?.project_path ?? this.config!.workingDirectory),
+        JUNO_MODEL: String(request.arguments?.model ?? ''),
+        JUNO_ITERATION: String(request.arguments?.iteration ?? 1),
         JUNO_TOOL_ID: toolId,
       };
 
@@ -728,12 +721,12 @@ export class ShellBackend implements Backend {
 
       // For Python scripts, add the prompt as -p argument
       if (isPython && request.arguments?.instruction) {
-        args.push('-p', request.arguments.instruction);
+        args.push('-p', String(request.arguments.instruction));
       }
 
       // For Python scripts, add the model as -m argument if provided
       if (isPython && request.arguments?.model) {
-        args.push('-m', request.arguments.model);
+        args.push('-m', String(request.arguments.model));
       }
 
       // For Gemini, force stream-json output format by default to preserve headless parity
@@ -743,13 +736,13 @@ export class ShellBackend implements Backend {
 
       // For Python scripts, add the agents configuration if provided
       if (isPython && request.arguments?.agents) {
-        args.push('--agents', request.arguments.agents);
+        args.push('--agents', String(request.arguments.agents));
       }
 
       // For Python scripts, add available tools from built-in set if provided (--tools)
       if (isPython && request.arguments?.tools && Array.isArray(request.arguments.tools)) {
         args.push('--tools');
-        args.push(...request.arguments.tools);
+        args.push(...(request.arguments.tools as string[]));
       }
 
       // For Python scripts, add permission-based allowed tools if provided (--allowedTools)
@@ -759,7 +752,7 @@ export class ShellBackend implements Backend {
         Array.isArray(request.arguments.allowedTools)
       ) {
         args.push('--allowedTools');
-        args.push(...request.arguments.allowedTools);
+        args.push(...(request.arguments.allowedTools as string[]));
       }
 
       // For Python scripts, add append allowed tools if provided (--appendAllowedTools)
@@ -769,7 +762,7 @@ export class ShellBackend implements Backend {
         Array.isArray(request.arguments.appendAllowedTools)
       ) {
         args.push('--appendAllowedTools');
-        args.push(...request.arguments.appendAllowedTools);
+        args.push(...(request.arguments.appendAllowedTools as string[]));
       }
 
       // For Python scripts, add disallowed tools if provided (--disallowedTools)
@@ -779,12 +772,12 @@ export class ShellBackend implements Backend {
         Array.isArray(request.arguments.disallowedTools)
       ) {
         args.push('--disallowedTools');
-        args.push(...request.arguments.disallowedTools);
+        args.push(...(request.arguments.disallowedTools as string[]));
       }
 
       // For Python scripts, add resume flag if provided (--resume SESSION_ID)
       if (isPython && request.arguments?.resume) {
-        args.push('--resume', request.arguments.resume);
+        args.push('--resume', String(request.arguments.resume));
       }
 
       // For Python scripts, add continue flag if provided (--continue)
@@ -794,7 +787,7 @@ export class ShellBackend implements Backend {
 
       // For Pi subagent, explicitly pass --cd for working directory
       if (isPython && subagentType === 'pi' && request.arguments?.project_path) {
-        args.push('--cd', request.arguments.project_path);
+        args.push('--cd', String(request.arguments.project_path));
       }
 
       // For Python scripts, pass verbose flag if verbose mode is enabled
@@ -851,6 +844,7 @@ export class ShellBackend implements Backend {
             this.parseAndEmitStreamingEvents(
               data,
               (request.metadata?.sessionId as string) || 'unknown',
+              toolId,
             );
           } catch (error) {
             if (this.config!.debug) {
@@ -880,8 +874,9 @@ export class ShellBackend implements Backend {
             timestamp: new Date(),
             backend: 'shell',
             count: ++this.eventCounter,
-            type: 'thinking',
+            type: ProgressEventType.THINKING,
             content: line,
+            toolId,
             metadata: {
               format: 'text',
               source: 'stderr',
@@ -940,14 +935,19 @@ export class ShellBackend implements Backend {
             engineLogger.debug(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
           }
 
-          resolve({
+          const execResult: ScriptExecutionResult = {
             success,
             output: stdout,
-            error: stderr || undefined,
             exitCode: exitCode || 0,
             duration,
-            ...(subAgentResponse ? { subAgentResponse } : undefined),
-          });
+          };
+          if (stderr) {
+            execResult.error = stderr;
+          }
+          if (subAgentResponse) {
+            execResult.subAgentResponse = subAgentResponse;
+          }
+          resolve(execResult);
         })();
       });
 
@@ -1033,14 +1033,18 @@ export class ShellBackend implements Backend {
         ...(quotaLimitInfo.detected && { quota_limit: quotaLimitInfo }),
       };
 
-      const metadata: ToolExecutionMetadata = {
-        ...(claudeEvent ? { subAgentResponse: claudeEvent } : undefined),
+      const metadataObj: Record<string, unknown> = {
         structuredOutput: true,
         contentType: 'application/json',
         rawOutput: result.output,
-        // Add quota limit info to metadata as well for engine consumption
-        ...(quotaLimitInfo.detected && { quotaLimitInfo }),
       };
+      if (claudeEvent) {
+        metadataObj.subAgentResponse = claudeEvent;
+      }
+      if (quotaLimitInfo.detected) {
+        metadataObj.quotaLimitInfo = quotaLimitInfo;
+      }
+      const metadata = metadataObj as ToolExecutionMetadata;
 
       return {
         content: JSON.stringify(structuredPayload),
@@ -1215,10 +1219,13 @@ export class ShellBackend implements Backend {
       };
     }
 
-    return {
+    const returnValue: { content: string; metadata?: ToolExecutionMetadata } = {
       content: result.output,
-      metadata: result.metadata as ToolExecutionMetadata | undefined,
     };
+    if (result.metadata) {
+      returnValue.metadata = result.metadata as ToolExecutionMetadata;
+    }
+    return returnValue;
   }
 
   /**
@@ -1277,7 +1284,7 @@ export class ShellBackend implements Backend {
 
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
-        const parsed = JSON.parse(lines[i]);
+        const parsed = JSON.parse(lines[i]!);
         if (parsed && typeof parsed === 'object') {
           return parsed;
         }
@@ -1298,13 +1305,15 @@ export class ShellBackend implements Backend {
    * 2. If JSON parsing fails, treat as TEXT streaming (for Codex and other text-based subagents)
    * 3. Emit all text lines (including whitespace-only) as progress events for real-time display
    */
-  private parseAndEmitStreamingEvents(data: string, sessionId: string): void {
+  private parseAndEmitStreamingEvents(data: string, sessionId: string, toolId?: string): void {
     // Handle partial lines by maintaining a buffer
     if (!this.jsonBuffer) {
       this.jsonBuffer = '';
     }
 
     this.jsonBuffer += data;
+
+    const streamToolId = toolId || `stream_${Date.now()}`;
 
     // Split by lines, but keep the last potentially incomplete line in buffer
     const lines = this.jsonBuffer.split('\n');
@@ -1324,8 +1333,9 @@ export class ShellBackend implements Backend {
           timestamp: new Date(),
           backend: 'shell',
           count: ++this.eventCounter,
-          type: 'thinking',
+          type: ProgressEventType.THINKING,
           content: rawLine,
+          toolId: streamToolId,
           metadata: {
             format: 'text',
             raw: true,
@@ -1353,7 +1363,7 @@ export class ShellBackend implements Backend {
         if (this.isClaudeCliEvent(jsonEvent)) {
           // Handle Claude CLI specific format
           // Pass the original trimmedLine for raw JSON output mode
-          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, rawLine);
+          progressEvent = this.convertClaudeEventToProgress(jsonEvent, sessionId, rawLine, streamToolId);
           isJsonParsed = true;
         } else if (this.isGenericStreamingEvent(jsonEvent)) {
           // Handle generic StreamingEvent format
@@ -1362,8 +1372,9 @@ export class ShellBackend implements Backend {
             timestamp: jsonEvent.timestamp ? new Date(jsonEvent.timestamp) : new Date(),
             backend: 'shell',
             count: ++this.eventCounter,
-            type: jsonEvent.type as any,
+            type: jsonEvent.type as ProgressEventType,
             content: jsonEvent.content,
+            toolId: streamToolId,
             metadata: jsonEvent.metadata,
           };
           isJsonParsed = true;
@@ -1397,8 +1408,9 @@ export class ShellBackend implements Backend {
           timestamp: new Date(),
           backend: 'shell',
           count: ++this.eventCounter,
-          type: 'thinking',
+          type: ProgressEventType.THINKING,
           content: rawLine,
+          toolId: streamToolId,
           metadata: {
             format: 'text',
             raw: true,
@@ -1440,10 +1452,12 @@ export class ShellBackend implements Backend {
     event: any,
     sessionId: string,
     originalLine?: string,
+    toolId?: string,
   ): ProgressEvent {
-    let type: ProgressEvent['type'];
+    let type: ProgressEventType;
     let content: string;
     const metadata: Record<string, any> = {};
+    const eventToolId = toolId || `claude_${Date.now()}`;
 
     // If outputRawJson is enabled, pass the original JSON line for jq-style formatting
     // This allows the progress display to format it with colors and indentation
@@ -1451,16 +1465,16 @@ export class ShellBackend implements Backend {
       // Determine event type based on Claude CLI format
       switch (event.type) {
         case 'system':
-          type = 'tool_start';
+          type = ProgressEventType.TOOL_START;
           break;
         case 'assistant':
-          type = 'thinking';
+          type = ProgressEventType.THINKING;
           break;
         case 'result':
-          type = event.is_error || event.subtype === 'error' ? 'error' : 'tool_result';
+          type = event.is_error || event.subtype === 'error' ? ProgressEventType.ERROR : ProgressEventType.TOOL_RESULT;
           break;
         default:
-          type = 'thinking';
+          type = ProgressEventType.THINKING;
       }
 
       // Pass the raw JSON for jq-style formatting in the display layer
@@ -1476,6 +1490,7 @@ export class ShellBackend implements Backend {
         count: ++this.eventCounter,
         type,
         content,
+        toolId: eventToolId,
         metadata,
       };
     }
@@ -1484,7 +1499,7 @@ export class ShellBackend implements Backend {
     switch (event.type) {
       case 'system':
         // System/init event
-        type = 'tool_start';
+        type = ProgressEventType.TOOL_START;
         content = `Initializing Claude session`;
         metadata.subtype = event.subtype;
         metadata.sessionId = event.session_id;
@@ -1495,7 +1510,7 @@ export class ShellBackend implements Backend {
 
       case 'assistant':
         // Assistant message event
-        type = 'thinking';
+        type = ProgressEventType.THINKING;
         // Check if this is pretty-formatted JSON from claude.py
         if (!event.message && (event.content !== undefined || event.tool_use !== undefined)) {
           // Pretty-formatted: { "type": "assistant", "datetime": "...", "content": "...", "counter": "..." }
@@ -1527,10 +1542,10 @@ export class ShellBackend implements Backend {
       case 'result':
         // Result event
         if (event.is_error || event.subtype === 'error') {
-          type = 'error';
+          type = ProgressEventType.ERROR;
           content = event.result || event.error || 'Execution failed';
         } else {
-          type = 'tool_result';
+          type = ProgressEventType.TOOL_RESULT;
           content = event.result || 'Execution completed';
         }
         metadata.subtype = event.subtype;
@@ -1542,7 +1557,7 @@ export class ShellBackend implements Backend {
 
       default:
         // Fallback to thinking
-        type = 'thinking';
+        type = ProgressEventType.THINKING;
         content = JSON.stringify(event);
         metadata.unknownType = event.type;
     }
@@ -1554,92 +1569,11 @@ export class ShellBackend implements Backend {
       count: ++this.eventCounter,
       type,
       content,
+      toolId: eventToolId,
       metadata,
     };
   }
 
-  /**
-   * Format Claude CLI event into MCP-style human-readable format
-   * Extracts key fields like num_turns, result, type, subtype, is_error and formats them
-   */
-  private formatClaudeEventMCPStyle(event: any): string {
-    const parts: string[] = [];
-
-    switch (event.type) {
-      case 'system':
-        // System initialization event
-        parts.push(`type=${event.type}`);
-        if (event.subtype) parts.push(`subtype=${event.subtype}`);
-        if (event.session_id) parts.push(`session=${event.session_id}`);
-        if (event.model) parts.push(`model=${event.model}`);
-        if (event.cwd) parts.push(`cwd=${event.cwd}`);
-        if (event.tools && Array.isArray(event.tools)) {
-          parts.push(`tools=[${event.tools.join(', ')}]`);
-        }
-        break;
-
-      case 'assistant':
-        // Assistant message event
-        parts.push(`type=${event.type}`);
-        if (event.num_turns !== undefined) parts.push(`num_turns=${event.num_turns}`);
-        if (event.message?.id) parts.push(`message_id=${event.message.id}`);
-        if (event.message?.model) parts.push(`model=${event.message.model}`);
-
-        // Extract and show the actual message content
-        if (event.message?.content && Array.isArray(event.message.content)) {
-          const textContent = event.message.content.find((c: any) => c.type === 'text');
-          if (textContent?.text) {
-            const preview =
-              textContent.text.length > 100
-                ? textContent.text.substring(0, 100) + '...'
-                : textContent.text;
-            parts.push(`content="${preview}"`);
-          }
-        }
-
-        // Show usage/token information if available
-        if (event.message?.usage) {
-          const usage = event.message.usage;
-          parts.push(`tokens=${usage.input_tokens || 0}/${usage.output_tokens || 0}`);
-        }
-        break;
-
-      case 'result':
-        // Result event
-        parts.push(`type=${event.type}`);
-        if (event.subtype) parts.push(`subtype=${event.subtype}`);
-        if (event.num_turns !== undefined) parts.push(`num_turns=${event.num_turns}`);
-        if (event.is_error !== undefined) parts.push(`is_error=${event.is_error}`);
-
-        // Show result/error content
-        if (event.result) {
-          const resultPreview =
-            event.result.length > 150 ? event.result.substring(0, 150) + '...' : event.result;
-          parts.push(`result="${resultPreview}"`);
-        }
-
-        // Show performance metrics
-        if (event.duration_ms !== undefined) parts.push(`duration=${event.duration_ms}ms`);
-        if (event.total_cost_usd !== undefined)
-          parts.push(`cost=$${event.total_cost_usd.toFixed(6)}`);
-
-        // Show usage summary if available
-        if (event.usage) {
-          const usage = event.usage;
-          parts.push(`total_tokens=${usage.input_tokens || 0}+${usage.output_tokens || 0}`);
-        }
-        break;
-
-      default:
-        // Fallback for unknown event types
-        parts.push(`type=${event.type}`);
-        // Show a preview of the full JSON for debugging
-        const jsonPreview = JSON.stringify(event).substring(0, 100) + '...';
-        parts.push(`data=${jsonPreview}`);
-    }
-
-    return parts.join(' | ');
-  }
 
   /**
    * Emit progress event to all callbacks

@@ -20,7 +20,7 @@ import chalk from 'chalk';
 
 export interface ProgressEvent {
   content: any;
-  prefix?: string;
+  prefix?: string | undefined;
   timestamp: Date;
 }
 

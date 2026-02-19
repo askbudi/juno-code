@@ -253,7 +253,7 @@ class SessionDisplayFormatter {
  * Session list command handler
  */
 async function handleSessionList(
-  args: string[],
+  _args: string[],
   options: SessionListOptions,
   sessionManager: SessionManager,
 ): Promise<void> {
@@ -364,7 +364,7 @@ async function handleSessionRemove(
  * Session clean command handler
  */
 async function handleSessionClean(
-  args: string[],
+  _args: string[],
   options: SessionCleanOptions,
   sessionManager: SessionManager,
 ): Promise<void> {
@@ -409,7 +409,7 @@ async function handleSessionClean(
 export async function sessionCommandHandler(
   args: string[],
   options: any,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     const subcommand = args[0];

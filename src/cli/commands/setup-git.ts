@@ -5,8 +5,6 @@
  * branch setup, remote configuration, and integration with project templates.
  */
 
-import * as path from 'node:path';
-import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
 import * as readline from 'node:readline';
@@ -302,7 +300,7 @@ class GitSetupInteractive {
 export async function setupGitCommandHandler(
   args: string[],
   options: SetupGitOptions,
-  command: Command,
+  _command: Command,
 ): Promise<void> {
   try {
     const workingDirectory = process.cwd();
