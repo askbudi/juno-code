@@ -206,7 +206,7 @@ normalize_arguments() {
     local found_command=false
 
     # Known subcommands
-    local commands="create search get show update archive mark list merge"
+    local commands="create search get show update archive mark list merge ready deps order"
 
     while [[ $# -gt 0 ]]; do
         case $1 in
