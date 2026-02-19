@@ -9,12 +9,17 @@
  * Destination directories:
  *   - Codex skills  -> {projectDir}/.agents/skills/
  *   - Claude skills -> {projectDir}/.claude/skills/
+ *   - Pi skills     -> {projectDir}/.pi/skills/
+ *
+ * Pi integration:
+ *   When Pi skills are installed, a `.pi/settings.json` is created (if missing)
+ *   that tells Pi to also load skills from `.claude/skills/`. This enables
+ *   cross-agent skill sharing without duplicating skill files.
+ *   Existing settings files are never overwritten to preserve user configuration.
  *
  * Template source directories (in package):
- *   - src/templates/skills/codex/   (development)
- *   - src/templates/skills/claude/  (development)
- *   - dist/templates/skills/codex/  (production)
- *   - dist/templates/skills/claude/ (production)
+ *   - src/templates/skills/{codex,claude,pi}/   (development)
+ *   - dist/templates/skills/{codex,claude,pi}/  (production)
  */
 
 import fs from 'fs-extra';
@@ -222,6 +227,15 @@ export class SkillInstaller {
       }
     }
 
+    // Provision Pi settings file (create only if missing, never overwrite)
+    try {
+      await this.ensurePiSettings(projectDir, silent);
+    } catch (error) {
+      if (debug) {
+        console.error('[DEBUG] SkillInstaller: Error provisioning Pi settings:', error);
+      }
+    }
+
     if (totalInstalled > 0 && !silent) {
       console.log(`✓ Total: ${totalInstalled} skill file(s) installed/updated`);
     }
@@ -371,6 +385,45 @@ export class SkillInstaller {
     }
 
     return results;
+  }
+
+  /**
+   * Ensure Pi agent settings file exists with cross-agent skill loading.
+   *
+   * Creates `.pi/settings.json` if it does not exist, configured to also
+   * load skills from `.claude/skills/`. If the file already exists, it is
+   * left untouched to preserve any user-defined configuration.
+   *
+   * @param projectDir - The project root directory
+   * @param silent - If true, suppresses console output
+   */
+  static async ensurePiSettings(projectDir: string, silent = true): Promise<void> {
+    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const piDir = path.join(projectDir, '.pi');
+    const settingsPath = path.join(piDir, 'settings.json');
+
+    if (await fs.pathExists(settingsPath)) {
+      if (debug) {
+        console.error('[DEBUG] SkillInstaller: Pi settings.json already exists, skipping');
+      }
+      return;
+    }
+
+    await fs.ensureDir(piDir);
+
+    const settings = {
+      skills: ['.claude/skills'],
+    };
+
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+
+    if (debug) {
+      console.error(`[DEBUG] SkillInstaller: Created Pi settings.json at ${settingsPath}`);
+    }
+
+    if (!silent) {
+      console.log('✓ Created .pi/settings.json (loads Claude skills by default)');
+    }
   }
 
   /**

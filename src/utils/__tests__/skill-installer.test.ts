@@ -5,9 +5,13 @@
  * The SkillInstaller copies skill files from package templates into project directories:
  *   - codex skills -> .agents/skills/
  *   - claude skills -> .claude/skills/
+ *   - pi skills    -> .pi/skills/
+ *
+ * It also provisions `.pi/settings.json` (if missing) so Pi can cross-load
+ * Claude skills from `.claude/skills/`.
  *
  * These tests verify correct behavior for installation, content-based updates,
- * file listing, and auto-update logic.
+ * file listing, auto-update logic, and Pi settings provisioning.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -477,6 +481,17 @@ describe('SkillInstaller', () => {
       ).toBe(true);
     });
 
+    it('should create Pi settings.json during install', async () => {
+      const projectDir = path.join(testDir, 'project');
+      await SkillInstaller.install(projectDir, true);
+
+      const settingsPath = path.join(projectDir, '.pi', 'settings.json');
+      expect(await fs.pathExists(settingsPath)).toBe(true);
+
+      const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+      expect(settings.skills).toEqual(['.claude/skills']);
+    });
+
     it('should handle deeply nested directories (3+ levels)', async () => {
       // Add deeply nested structure
       const codexDir = path.join(mockSkillsDir, 'codex');
@@ -505,6 +520,64 @@ describe('SkillInstaller', () => {
       // .py files should be executable
       const stat = await fs.stat(deepFile);
       expect(stat.mode & 0o100).toBeTruthy();
+    });
+  });
+
+  describe('ensurePiSettings', () => {
+    it('should create .pi/settings.json when it does not exist', async () => {
+      await SkillInstaller.ensurePiSettings(testDir);
+
+      const settingsPath = path.join(testDir, '.pi', 'settings.json');
+      expect(await fs.pathExists(settingsPath)).toBe(true);
+
+      const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+      expect(settings).toEqual({ skills: ['.claude/skills'] });
+    });
+
+    it('should not overwrite existing .pi/settings.json', async () => {
+      const piDir = path.join(testDir, '.pi');
+      const settingsPath = path.join(piDir, 'settings.json');
+      await fs.ensureDir(piDir);
+
+      const userSettings = { skills: ['.claude/skills', '/custom/path'], theme: 'dark' };
+      await fs.writeFile(settingsPath, JSON.stringify(userSettings, null, 2));
+
+      await SkillInstaller.ensurePiSettings(testDir);
+
+      const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+      expect(settings).toEqual(userSettings);
+    });
+
+    it('should create .pi directory if it does not exist', async () => {
+      const piDir = path.join(testDir, '.pi');
+      expect(await fs.pathExists(piDir)).toBe(false);
+
+      await SkillInstaller.ensurePiSettings(testDir);
+
+      expect(await fs.pathExists(piDir)).toBe(true);
+      expect(await fs.pathExists(path.join(piDir, 'settings.json'))).toBe(true);
+    });
+
+    it('should be called during install()', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await SkillInstaller.install(testDir, true);
+
+      const settingsPath = path.join(testDir, '.pi', 'settings.json');
+      expect(await fs.pathExists(settingsPath)).toBe(true);
+    });
+
+    it('should not interfere with repeated install() calls', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+
+      // First install creates settings
+      await SkillInstaller.install(testDir, true);
+      const settingsPath = path.join(testDir, '.pi', 'settings.json');
+      const firstContent = await fs.readFile(settingsPath, 'utf-8');
+
+      // Second install should not modify settings
+      await SkillInstaller.install(testDir, true);
+      const secondContent = await fs.readFile(settingsPath, 'utf-8');
+      expect(secondContent).toBe(firstContent);
     });
   });
 });
