@@ -18,6 +18,10 @@ import * as fs from 'fs-extra';
 import { mainCommandHandler } from '../commands/main.js';
 
 import type { MainCommandOptions } from '../types.js';
+import { ConfigurationError } from '../types.js';
+
+import { loadConfig } from '../../core/config.js';
+import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 
 import type {
   ExecutionRequest,
@@ -40,9 +44,16 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/engine.js', () => ({
+  ExecutionStatus: {
+    PENDING: 'pending',
+    RUNNING: 'running',
+    COMPLETED: 'completed',
+    FAILED: 'failed',
+    CANCELLED: 'cancelled',
+  },
   createExecutionEngine: vi.fn().mockReturnValue({
     execute: vi.fn().mockResolvedValue({
-      status: 'COMPLETED',
+      status: 'completed',
       iterations: [
         {
           toolResult: { content: 'Test result' },
@@ -79,10 +90,13 @@ vi.mock('../../core/session.js', () => ({
   }),
 }));
 
-vi.mock('fs-extra', () => ({
-  pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
-  readFile: vi.fn().mockResolvedValue('mock file content'),
-}));
+vi.mock('fs-extra', () => {
+  const mock = {
+    pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
+    readFile: vi.fn().mockResolvedValue('mock file content'),
+  };
+  return { ...mock, default: mock };
+});
 
 vi.mock('chalk', () => {
   const createChainableFunction = (color: string) => {
@@ -118,7 +132,6 @@ describe('Main Command', () => {
     processExitSpy = vi
       .spyOn(process, 'exit')
       .mockImplementation((code: string | number | null | undefined = 1) => {
-        // Mock successful exit for tests - these command handlers expect to call process.exit(0) on success
         return undefined as never;
       });
 
@@ -126,6 +139,47 @@ describe('Main Command', () => {
     processStdinSpy = vi.spyOn(process.stdin, 'on').mockImplementation(() => process.stdin);
     vi.spyOn(process.stdin, 'setEncoding').mockImplementation(() => process.stdin);
     vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
+
+    // Re-set mock implementations (mockReset: true in vitest config clears them between tests)
+    vi.mocked(loadConfig).mockResolvedValue({
+      workingDirectory: '/test/dir',
+      defaultMaxIterations: 5,
+      defaultModel: 'test-model',
+      mcpServerPath: '/test/mcp',
+      mcpTimeout: 30000,
+      mcpRetries: 3,
+      verbose: false,
+    } as any);
+
+    vi.mocked(createExecutionEngine).mockReturnValue({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [{ toolResult: { content: 'Test result' } }],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 1,
+          failedIterations: 0,
+          averageIterationDuration: 1000,
+          totalToolCalls: 5,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    vi.mocked(createExecutionRequest).mockImplementation((opts: any) => ({
+      requestId: 'test-request',
+      instruction: opts.instruction,
+      subagent: opts.subagent,
+      workingDirectory: opts.workingDirectory,
+      maxIterations: opts.maxIterations,
+      model: opts.model,
+    }));
+
+    vi.mocked(fs.pathExists).mockResolvedValue(false as any);
+    vi.mocked(fs.readFile).mockResolvedValue('mock file content' as any);
   });
 
   afterEach(() => {
@@ -139,7 +193,7 @@ describe('Main Command', () => {
     const mockCommand = new Command();
 
     describe('subagent validation', () => {
-      it.skip('should accept valid subagents', async () => {
+      it('should accept valid subagents', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',
@@ -157,10 +211,7 @@ describe('Main Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
-      it.skip('should reject invalid subagents', async () => {
-        // SKIP: Test expects process.exit to throw but validation might not trigger in test context
-        // Production code validation works (see main.ts lines 412-423)
-        // Needs investigation of test mock setup vs production error handling
+      it('should reject invalid subagents', async () => {
         const options: MainCommandOptions = {
           subagent: 'invalid' as any,
           prompt: 'test prompt',
@@ -173,17 +224,14 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
 
       it.skip('should accept subagent aliases', async () => {
         // SKIP: Alias normalization not implemented yet
-        // Issue: 'claude-code' is not in validSubagents list, so validation rejects it
-        // Production code correctly validates subagents (see main.ts lines 412-423)
+        // 'claude-code' is not in validSubagents list, so validation rejects it
         // TODO: Implement alias normalization if needed for user experience
         const options: MainCommandOptions = {
           subagent: 'claude-code' as any,
@@ -197,20 +245,13 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        // Note: The alias normalization happens in the framework,
-        // so we test that it doesn't immediately fail
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
+        expect(processExitSpy).toHaveBeenCalledWith(0);
       });
     });
 
     describe('prompt processing', () => {
-      it.skip('should handle inline prompt', async () => {
-        // SKIP: Test infrastructure issue - createExecutionRequest mock not being called
-        // Issue: mainCommandHandler may be exiting early or mock setup problem
-        // Production code works correctly (see main.ts execution flow)
-        // Similar test "should handle file prompt" passes, indicating isolated issue
+      it('should handle inline prompt', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test inline prompt',
@@ -233,10 +274,7 @@ describe('Main Command', () => {
         );
       });
 
-      it.skip('should handle file prompt', async () => {
-        // SKIP: Test infrastructure issue - fs.readFile and createExecutionRequest not being called
-        // Issue: Same as "should handle inline prompt" - mainCommandHandler exiting early
-        // Production code works correctly (see main.ts PromptProcessor implementation)
+      it('should handle file prompt', async () => {
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
         vi.mocked(fs.readFile).mockResolvedValueOnce('file prompt content');
 
@@ -264,10 +302,7 @@ describe('Main Command', () => {
         );
       });
 
-      it.skip('should handle empty file error', async () => {
-        // SKIP: Test infrastructure issue - same as other prompt processing tests
-        // Issue: mainCommandHandler not reaching error handling (process.exit not throwing)
-        // Production code correctly validates empty files (see main.ts PromptProcessor)
+      it('should handle empty file error', async () => {
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
         vi.mocked(fs.readFile).mockResolvedValueOnce('   ');
 
@@ -283,17 +318,12 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(5); // RuntimeError
       });
 
-      it.skip('should handle --prompt-file flag', async () => {
-        // SKIP: Test infrastructure issue - same as other prompt processing tests
-        // The --prompt-file flag reads a file and uses its contents as the prompt
-        // It calls loadPromptFromFile() directly, bypassing the isFilePath heuristic
+      it('should handle --prompt-file flag', async () => {
         vi.mocked(fs.readFile).mockResolvedValueOnce('prompt from file');
 
         const options: MainCommandOptions = {
@@ -324,10 +354,7 @@ describe('Main Command', () => {
       });
 
       it.skip('should handle interactive prompt', async () => {
-        // SKIP: Test infrastructure issue - same as other prompt processing tests
-        // Issue: createExecutionRequest mock not being called (mainCommandHandler exiting early)
-        // Production code works correctly (see main.ts PromptProcessor interactive mode)
-        // Mock stdin interaction
+        // SKIP: Microtask timing issue — stdin callbacks not set up before test invokes them
         let dataCallback: (chunk: string) => void;
         let endCallback: () => void;
 
@@ -369,10 +396,7 @@ describe('Main Command', () => {
         );
       });
 
-      it.skip('should handle missing prompt error', async () => {
-        // SKIP: Test infrastructure issue - same as other prompt processing tests
-        // Issue: process.exit mock not throwing when handler validates missing prompt
-        // Production code correctly validates (see main.ts PromptProcessor)
+      it('should handle missing prompt error', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: undefined,
@@ -385,17 +409,13 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
       });
 
       it.skip('should handle interactive prompt cancellation', async () => {
-        // SKIP: Test infrastructure issue - same as other interactive tests
-        // Production code correctly validates empty prompts (see main.ts PromptProcessor)
-        // Mock stdin interaction with empty input
+        // SKIP: Microtask timing issue — stdin callbacks not set up before test invokes them
         let dataCallback: (chunk: string) => void;
         let endCallback: () => void;
 
@@ -433,9 +453,7 @@ describe('Main Command', () => {
     });
 
     describe('execution', () => {
-      it.skip('should execute successfully and exit with code 0', async () => {
-        // SKIP: Test infrastructure issue - createExecutionRequest mock not being called
-        // Production code works correctly (see main.ts execution flow)
+      it('should execute successfully and exit with code 0', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',
@@ -452,24 +470,25 @@ describe('Main Command', () => {
         await mainCommandHandler([], options, mockCommand);
 
         const { createExecutionRequest } = await import('../../core/engine.js');
-        expect(createExecutionRequest).toHaveBeenCalledWith({
-          instruction: 'test prompt',
-          subagent: 'claude',
-          workingDirectory: '/test/dir', // From config mock
-          maxIterations: 5,
-          model: 'custom-model',
-        });
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'test prompt',
+            subagent: 'claude',
+            workingDirectory: '/test/dir',
+            maxIterations: 5,
+            model: 'custom-model',
+            backend: 'shell',
+          }),
+        );
 
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
-      it.skip('should handle execution failure and exit with code 1', async () => {
-        // SKIP: Test infrastructure issue - same as execution test above
-        // Production code works correctly (see main.ts execution failure handling)
+      it('should handle execution failure and exit with code 1', async () => {
         const { createExecutionEngine } = await import('../../core/engine.js');
         const mockEngine = {
           execute: vi.fn().mockResolvedValue({
-            status: 'FAILED',
+            status: 'failed',
             iterations: [],
             statistics: {
               totalIterations: 0,
@@ -503,9 +522,7 @@ describe('Main Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
 
-      it.skip('should use default values from config', async () => {
-        // SKIP: Test infrastructure issue - same as other execution tests
-        // Production code works correctly (see main.ts config handling)
+      it('should use default values from config', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',
@@ -522,18 +539,18 @@ describe('Main Command', () => {
         await mainCommandHandler([], options, mockCommand);
 
         const { createExecutionRequest } = await import('../../core/engine.js');
-        expect(createExecutionRequest).toHaveBeenCalledWith({
-          instruction: 'test prompt',
-          subagent: 'claude',
-          workingDirectory: '/test/dir', // From config
-          maxIterations: 5, // From config defaultMaxIterations
-          model: 'test-model', // From config defaultModel
-        });
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'test prompt',
+            subagent: 'claude',
+            workingDirectory: '/test/dir',
+            maxIterations: 5,
+            backend: 'shell',
+          }),
+        );
       });
 
-      it.skip('should setup progress callbacks', async () => {
-        // SKIP: Test infrastructure issue - same as other execution tests
-        // Production code works correctly (see main.ts progress handling)
+      it('should setup progress callbacks', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',
@@ -557,9 +574,7 @@ describe('Main Command', () => {
         expect(engine.on).toHaveBeenCalledWith('execution:error', expect.any(Function));
       });
 
-      it.skip('should cleanup resources', async () => {
-        // SKIP: Test infrastructure issue - same as other execution tests
-        // Production code works correctly (see main.ts resource cleanup)
+      it('should cleanup resources', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
           prompt: 'test prompt',
@@ -582,9 +597,7 @@ describe('Main Command', () => {
     });
 
     describe('error handling', () => {
-      it.skip('should handle ValidationError', async () => {
-        // SKIP: Test infrastructure issue - error handling not triggering as expected
-        // Production code works correctly (see main.ts error handling)
+      it('should handle ValidationError', async () => {
         const options: MainCommandOptions = {
           subagent: 'invalid' as any,
           prompt: 'test prompt',
@@ -597,20 +610,14 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
       });
 
-      it.skip('should handle ConfigurationError', async () => {
-        // SKIP: Test infrastructure issue - same as other error handling tests
-        // Production code works correctly (see main.ts configuration error handling)
+      it('should handle ConfigurationError', async () => {
         const { loadConfig } = await import('../../core/config.js');
-        const configError = new Error('Config error');
-        configError.constructor.name = 'ConfigurationError';
-        configError.suggestions = ['Check config file'];
+        const configError = new ConfigurationError('Config error', ['Check config file']);
         vi.mocked(loadConfig).mockRejectedValueOnce(configError);
 
         const options: MainCommandOptions = {
@@ -625,21 +632,14 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(2);
       });
 
-      it.skip('should handle RuntimeError', async () => {
-        // SKIP: Test infrastructure issue - same as other error handling tests
-        // Production code works correctly (see main.ts filesystem error handling)
+      it('should handle RuntimeError', async () => {
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
-        const fileError = new Error('File error');
-        fileError.constructor.name = 'RuntimeError';
-        fileError.suggestions = ['Check file permissions'];
-        vi.mocked(fs.readFile).mockRejectedValueOnce(fileError);
+        vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('File error'));
 
         const options: MainCommandOptions = {
           subagent: 'claude',
@@ -653,16 +653,13 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
+        // loadPromptFromFile wraps non-RuntimeError into RuntimeError
         expect(processExitSpy).toHaveBeenCalledWith(5);
       });
 
-      it.skip('should handle unexpected errors', async () => {
-        // SKIP: Test infrastructure issue - same as other error handling tests
-        // Production code works correctly (see main.ts unexpected error handling)
+      it('should handle unexpected errors', async () => {
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockRejectedValueOnce(new Error('Unexpected error'));
 
@@ -678,16 +675,12 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(99);
       });
 
-      it.skip('should show stack trace in verbose mode on unexpected error', async () => {
-        // SKIP: Test infrastructure issue - same as other error handling tests
-        // Production code works correctly (see main.ts stack trace display)
+      it('should show stack trace in verbose mode on unexpected error', async () => {
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockRejectedValueOnce(new Error('Unexpected error'));
 
@@ -703,9 +696,7 @@ describe('Main Command', () => {
           logLevel: 'info',
         };
 
-        await expect(mainCommandHandler([], options, mockCommand)).rejects.toThrow(
-          'process.exit called',
-        );
+        await mainCommandHandler([], options, mockCommand);
 
         expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Stack Trace'));
       });

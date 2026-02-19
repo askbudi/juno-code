@@ -673,9 +673,8 @@ export async function mainCommandHandler(
       }
 
       process.exit(1);
-    }
-
-    if (error instanceof ConfigurationError) {
+      return;
+    } else if (error instanceof ConfigurationError) {
       console.error(chalk.red.bold('\n❌ Configuration Error'));
       console.error(chalk.red(`   ${error.message}`));
 
@@ -687,9 +686,8 @@ export async function mainCommandHandler(
       }
 
       process.exit(2);
-    }
-
-    if (error instanceof RuntimeError) {
+      return;
+    } else if (error instanceof RuntimeError) {
       console.error(chalk.red.bold('\n❌ File System Error'));
       console.error(chalk.red(`   ${error.message}`));
 
@@ -701,18 +699,20 @@ export async function mainCommandHandler(
       }
 
       process.exit(5);
+      return;
+    } else {
+      // Unexpected error
+      console.error(chalk.red.bold('\n❌ Unexpected Error'));
+      console.error(chalk.red(`   ${error}`));
+
+      if (options.verbose) {
+        console.error('\n📍 Stack Trace:');
+        console.error(error);
+      }
+
+      process.exit(99);
+      return;
     }
-
-    // Unexpected error
-    console.error(chalk.red.bold('\n❌ Unexpected Error'));
-    console.error(chalk.red(`   ${error}`));
-
-    if (options.verbose) {
-      console.error('\n📍 Stack Trace:');
-      console.error(error);
-    }
-
-    process.exit(99);
   }
 }
 

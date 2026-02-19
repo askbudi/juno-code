@@ -534,9 +534,15 @@ def test_codex_verbose_flag_prints_command_to_stderr():
     buf_stdout = io.StringIO()
     buf_stderr = io.StringIO()
 
-    import contextlib
-    with redirect_stdout(buf_stdout), contextlib.redirect_stderr(buf_stderr):
-        code = svc.run_codex(cmd, verbose=True)
+    # Clear JUNO_SUBAGENT_CAPTURE_PATH so verbose output isn't suppressed
+    saved = os.environ.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
+    try:
+        import contextlib
+        with redirect_stdout(buf_stdout), contextlib.redirect_stderr(buf_stderr):
+            code = svc.run_codex(cmd, verbose=True)
+    finally:
+        if saved is not None:
+            os.environ["JUNO_SUBAGENT_CAPTURE_PATH"] = saved
 
     stderr_out = buf_stderr.getvalue()
     assert code == 0
