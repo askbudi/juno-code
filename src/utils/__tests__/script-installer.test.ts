@@ -108,6 +108,11 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'log_scanner.sh'),
         '#!/bin/bash\necho "log_scanner"',
       );
+      // Parallel execution
+      await fs.writeFile(
+        path.join(scriptsDir, 'parallel_runner.sh'),
+        '#!/usr/bin/env python3\nprint("parallel")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -182,6 +187,8 @@ describe('ScriptInstaller', () => {
         { name: 'hooks/session_counter.sh', installed: false },
         // Log scanning utility
         { name: 'log_scanner.sh', installed: false },
+        // Parallel execution
+        { name: 'parallel_runner.sh', installed: false },
       ]);
     });
 
@@ -234,6 +241,11 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'log_scanner.sh'),
         '#!/bin/bash\necho "log_scanner"',
       );
+      // Parallel execution
+      await fs.writeFile(
+        path.join(scriptsDir, 'parallel_runner.sh'),
+        '#!/usr/bin/env python3\nprint("parallel")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -255,6 +267,8 @@ describe('ScriptInstaller', () => {
         { name: 'hooks/session_counter.sh', installed: true },
         // Log scanning utility
         { name: 'log_scanner.sh', installed: true },
+        // Parallel execution
+        { name: 'parallel_runner.sh', installed: true },
       ]);
     });
   });
