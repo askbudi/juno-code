@@ -227,10 +227,6 @@ class SimpleProjectGenerator {
     console.log(chalk.blue('⚙️ Creating project configuration...'));
     await this.createConfigFile(junoTaskDir, targetDirectory);
 
-    // Create mcp.json with MCP server configuration
-    console.log(chalk.blue('🔧 Setting up MCP configuration...'));
-    await this.createMcpFile(junoTaskDir, targetDirectory);
-
     console.log(chalk.blue('📄 Creating production-ready project files...'));
 
     // Derive template variables
@@ -580,10 +576,9 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       verbose: false,
       quiet: false,
 
-      // MCP settings
+      // Shell backend settings
       mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
       mcpRetries: 3,
-      mcpServerName: 'roundtable-ai',
 
       // TUI settings
       interactive: true,
@@ -604,64 +599,6 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       chalk.green(
         `   ✓ Created .juno_task/config.json with ${this.context.subagent} as default subagent`,
       ),
-    );
-  }
-
-  private async createMcpFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
-    const projectName = path.basename(targetDirectory);
-    const timestamp = new Date().toISOString();
-
-    const mcpContent = {
-      mcpServers: {
-        'roundtable-ai': {
-          name: 'roundtable-ai',
-          command: 'roundtable-ai',
-          args: [],
-          timeout: 7200.0,
-          enable_default_progress_callback: true,
-          suppress_subprocess_logs: true,
-          env: {
-            ROUNDTABLE_DEBUG: 'false',
-          },
-          _metadata: {
-            description:
-              'Roundtable AI MCP Server - Multi-agent orchestration with claude, cursor, codex, and gemini subagents',
-            capabilities: [
-              'claude_subagent - Advanced reasoning and code quality',
-              'cursor_subagent - Real-time collaboration and editing',
-              'codex_subagent - Code generation and completion',
-              'gemini_subagent - Multimodal analysis and generation',
-            ],
-            working_directory: targetDirectory,
-            verbose: false,
-            created_at: timestamp,
-            project_name: projectName,
-            main_task: this.context.task || 'Project initialization',
-          },
-        },
-      },
-      default_server: 'roundtable-ai',
-      global_settings: {
-        connection_timeout: 300.0,
-        default_retries: 3,
-        enable_progress_streaming: true,
-        log_level: 'info',
-        debug_mode: false,
-      },
-      project_config: {
-        name: projectName,
-        main_task: this.context.task || 'Project initialization',
-        preferred_subagent: this.context.subagent || 'claude',
-        created_at: timestamp,
-        version: '1.0.0',
-      },
-    };
-
-    const mcpPath = path.join(junoTaskDir, 'mcp.json');
-    await fs.writeFile(mcpPath, JSON.stringify(mcpContent, null, 2));
-
-    console.log(
-      chalk.green(`   ✓ Created .juno_task/mcp.json with roundtable-ai server configuration`),
     );
   }
 
@@ -762,7 +699,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
   /**
    * Execute install_requirements.sh script to install Python dependencies
-   * This runs automatically during init to install juno-kanban and roundtable-ai
+   * This runs automatically during init to install juno-kanban and other Python dependencies
    */
   private async executeInstallRequirements(junoTaskDir: string): Promise<void> {
     try {
@@ -777,7 +714,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           ),
         );
         console.log(
-          chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'),
+          chalk.gray('   You can install dependencies manually: juno-kanban'),
         );
         return;
       }
@@ -826,7 +763,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           console.log(
             chalk.gray('   Please install uv or pip manually to install Python dependencies'),
           );
-          console.log(chalk.gray('   Required packages: juno-kanban, roundtable-ai'));
+          console.log(chalk.gray('   Required packages: juno-kanban'));
         } else {
           console.log(chalk.yellow('   ⚠️  Failed to install Python requirements'));
           console.log(chalk.gray(`   Error: ${errorMsg}`));
@@ -843,7 +780,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         chalk.gray(`   Error: ${error instanceof Error ? error.message : String(error)}`),
       );
       console.log(
-        chalk.gray('   You can install dependencies manually: juno-kanban, roundtable-ai'),
+        chalk.gray('   You can install dependencies manually: juno-kanban'),
       );
     }
   }

@@ -13,7 +13,7 @@
 #    - If inside venv: installs into venv
 #    - If externally managed Python detected: uses pipx or creates temporary venv
 #    - If outside venv (non-managed): uses --system flag for system-wide installation
-# 6. Installs required packages: juno-kanban, roundtable-ai
+# 6. Installs required packages: juno-kanban
 # 7. Reports if requirements are already satisfied
 #
 # Usage: ./install_requirements.sh
@@ -54,7 +54,7 @@ NC='\033[0m' # No Color
 # Required packages
 # Note: requests and python-dotenv are required by github.py
 # slack_sdk is required by Slack integration scripts (slack_fetch.py, slack_respond.py)
-REQUIRED_PACKAGES=("juno-kanban" "roundtable-ai" "requests" "python-dotenv" "slack_sdk")
+REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
 
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)

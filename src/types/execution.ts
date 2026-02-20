@@ -83,13 +83,13 @@ export enum ToolExecutionStatus {
  * @example
  * ```typescript
  * const config: MCPServerConfig = {
- *   serverPath: './roundtable_mcp_server',
+ *   serverPath: './mcp_server',
  *   timeout: 3600,
  *   retries: 3,
  *   retryDelay: 1000,
  *   workingDirectory: process.cwd(),
  *   environment: {
- *     'ROUNDTABLE_API_KEY': 'your-key'
+ *     'API_KEY': 'your-key'
  *   }
  * };
  * ```

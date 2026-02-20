@@ -151,7 +151,7 @@ export const JunoTaskConfigSchema = z
     mcpServerName: z
       .string()
       .optional()
-      .describe('Named MCP server to connect to (e.g., "roundtable-ai")'),
+      .describe('Named MCP server to connect to'),
 
     // Hook settings
     hookCommandTimeout: z
@@ -207,7 +207,6 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   // MCP settings (also used by shell backend)
   mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
   mcpRetries: 3,
-  mcpServerName: 'roundtable-ai', // Default to roundtable-ai server
 
   // Quota/hourly limit settings
   onHourlyLimit: 'raise', // Default to exit immediately when hourly limit is reached

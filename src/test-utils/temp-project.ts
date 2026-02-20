@@ -52,27 +52,6 @@ Test task for validation purposes.
   };
   await fs.writeFile(path.join(junoTaskDir, 'config.json'), JSON.stringify(configContent, null, 2));
 
-  // Create basic mcp.json
-  const mcpContent = {
-    mcpServers: {
-      'roundtable-ai': {
-        name: 'roundtable-ai',
-        command: 'node',
-        args: ['--version'],
-        timeout: 7200.0,
-        env: {},
-      },
-    },
-    default_server: 'roundtable-ai',
-    global_settings: {
-      connection_timeout: 300.0,
-      default_retries: 3,
-      enable_progress_streaming: true,
-      log_level: 'info',
-    },
-  };
-  await fs.writeFile(path.join(junoTaskDir, 'mcp.json'), JSON.stringify(mcpContent, null, 2));
-
   return tempDir;
 }
 
