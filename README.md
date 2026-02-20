@@ -73,7 +73,7 @@ juno-code -b shell -s claude -m :opus -i 5 -v
 ./.juno_task/scripts/run_until_completion.sh -s claude -i 1 -v
 
 # Unlimited (like Ralph) - when you really want that
-juno-code -b shell -s claude 
+juno-code -b shell -s claude
 ```
 
 ### Task Tracking: Structured, Not Prose
@@ -89,6 +89,25 @@ Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Unlike
 ./.juno_task/scripts/kanban.sh list --limit 5  # Shows only what matters
 ```
 
+### Task Dependencies
+Declare what must be done first. The kanban system builds a dependency graph so agents work in the right order:
+```bash
+# Create a task that depends on another
+./.juno_task/scripts/kanban.sh create "Deploy API" --blocked-by A1b2C3
+
+# Or use body markup (4 synonym tags supported)
+./.juno_task/scripts/kanban.sh create "Deploy API [blocked_by]A1b2C3[/blocked_by]"
+
+# What's ready to work on right now?
+./.juno_task/scripts/kanban.sh ready
+
+# Dependency-aware execution order
+./.juno_task/scripts/kanban.sh order --scores
+
+# Inspect a task's dependency info
+./.juno_task/scripts/kanban.sh deps TASK_ID
+```
+
 ### Backend Choice: Use Any AI
 Switch between Claude, Codex, Gemini, Pi, or Cursor with one flag:
 ```bash
@@ -97,6 +116,22 @@ juno-code -b shell -s claude -m :opus -i 1 -v
 juno-code -b shell -s codex -m :codex -i 1 -v
 juno-code -b shell -s gemini -m :flash -i 1 -v
 juno-code -b shell -s pi -m :sonnet -i 1 -v
+```
+
+### Parallel Execution
+Run multiple tasks simultaneously with the parallel runner:
+```bash
+# Run 3 kanban tasks in parallel
+./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
+
+# Visual monitoring in tmux
+./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 5
+
+# Process a CSV file with custom prompt
+./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file instructions.md --strict
+
+# Dependency-aware parallel execution
+./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
 ```
 
 ### Full Traceability: Every Change Tracked
@@ -141,7 +176,7 @@ npm install -g juno-code
 # Initialize project
 juno-code init --task "Add user authentication..." --subagent claude
 
-# Start execution - uses .juno_task/int.md (optimized Ralph prompt)
+# Start execution - uses .juno_task/init.md (optimized Ralph prompt)
 juno-code start -b shell -s claude -i 1 -v
 
 # Or with a custom prompt
@@ -175,6 +210,10 @@ juno-code codex "your task"
 juno-code gemini "your task"
 juno-code pi "your task"
 
+# AI-powered test generation
+juno-code test --generate --framework vitest
+juno-code test --run
+
 # View and parse log files
 juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit 50
 ```
@@ -183,7 +222,7 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 
 | Flag | Description |
 |------|-------------|
-| `-b, --backend <type>` | Backend: `mcp`, `shell` |
+| `-b, --backend <type>` | Backend: `shell` |
 | `-s, --subagent <name>` | Service: `claude`, `codex`, `gemini`, `pi`, `cursor` |
 | `-m, --model <name>` | Model (supports shorthands like `:opus`, `:haiku`) |
 | `-i, --max-iterations <n>` | Iteration limit (-1 for unlimited) |
@@ -218,6 +257,192 @@ juno-code feedback --interactive
 juno-code start -b shell -s claude --enable-feedback -i 10
 ```
 
+### Skills Management
+
+Skills are Markdown instruction files (with YAML frontmatter) installed into agent-specific directories so each coding agent reads them as context. juno-code auto-provisions skills on every CLI run.
+
+```bash
+# List installed skills
+juno-code skills list
+
+# Install/update skills
+juno-code skills install
+juno-code skills install --force
+
+# Check skill status
+juno-code skills status
+```
+
+**Skill groups by agent:**
+
+| Agent | Directory | Skills |
+|-------|-----------|--------|
+| Claude | `.claude/skills/` | `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
+| Codex | `.agents/skills/` | `ralph-loop` |
+| Pi | `.pi/skills/` | (planned) |
+
+### Service Management
+
+```bash
+# View installed services
+juno-code services list
+
+# Check service status
+juno-code services status
+
+# Force reinstall (get latest)
+juno-code services install --force
+```
+
+## Backends & Services
+
+### Supported Services
+
+| Service | Default Model | Shorthands |
+|---------|---------------|------------|
+| claude | `claude-sonnet-4-6` | `:haiku`, `:sonnet`, `:opus` |
+| codex | `gpt-5.3-codex` | `:codex`, `:codex-mini`, `:gpt-5`, `:mini` |
+| gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
+| pi | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:codex`, `:gemini-pro` |
+
+> **Pi** is a multi-provider coding agent that supports Anthropic, OpenAI, Google, Groq, xAI, and more.
+> It requires separate installation: `npm install -g @mariozechner/pi-coding-agent`
+
+### Custom Backends
+
+Service scripts live in `~/.juno_code/services/`. Each is a Python script that accepts standard args (`-p/--prompt`, `-m/--model`, `-v/--verbose`) and outputs JSON events to stdout.
+
+## Hook System
+
+Hooks allow user-defined shell commands at execution lifecycle points. Configure in `.juno_task/config.json`:
+
+| Hook | When | Example Use |
+|------|------|-------------|
+| `START_RUN` | Before all iterations | Environment setup |
+| `START_ITERATION` | Each iteration start | File size monitoring, linting |
+| `END_ITERATION` | Each iteration end | Test execution |
+| `END_RUN` | After all iterations | Cleanup, reports |
+| `ON_STALE` | Stale iteration detected | Alert, auto-create task |
+
+**Default hooks** (set up by `juno-code init`):
+- `START_ITERATION`: CLAUDE.md / AGENTS.md file size checks, feedback cleanup
+- `ON_STALE`: Creates a kanban warning task when no progress detected
+
+Example config:
+```json
+{
+  "hooks": {
+    "START_ITERATION": {
+      "commands": [
+        "test ! -f CLAUDE.md || [ $(wc -c < CLAUDE.md) -lt 40000 ] || echo 'WARNING: CLAUDE.md exceeds 40KB'",
+        "./.juno_task/scripts/cleanup_feedback.sh"
+      ]
+    },
+    "END_ITERATION": {
+      "commands": ["npm test"]
+    }
+  }
+}
+```
+
+## Autonomous Execution
+
+### run_until_completion.sh
+
+Continuously runs juno-code until all kanban tasks are completed. Uses a do-while loop: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
+
+```bash
+# Run until all tasks complete
+./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
+
+# With custom backend and model
+./.juno_task/scripts/run_until_completion.sh -b shell -s codex -m :codex -i 10
+```
+
+#### Stale Detection
+
+Tracks kanban state between iterations. After 3 consecutive iterations with no task changes (configurable), executes `ON_STALE` hook and exits.
+
+```bash
+# Custom stale threshold
+./.juno_task/scripts/run_until_completion.sh -s claude -i 5 --stale-threshold 5
+
+# Disable stale checking
+./.juno_task/scripts/run_until_completion.sh -s claude -i 5 --no-stale-check
+```
+
+#### Pre-run Commands & Hooks
+
+Execute commands or named hooks before the main loop:
+
+```bash
+# Single pre-run command
+./.juno_task/scripts/run_until_completion.sh --pre-run "./scripts/lint.sh" -s claude -i 5
+
+# Named hooks from config.json
+./.juno_task/scripts/run_until_completion.sh --pre-run-hook SLACK_SYNC -s claude -i 5
+
+# Multiple pre-run commands (executed in order)
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run "./scripts/sync.sh" \
+  --pre-run "npm run build" \
+  -s claude -i 5 -v
+```
+
+**Execution order** when both hooks and commands are specified:
+1. Hooks from `JUNO_PRE_RUN_HOOK` env var
+2. Hooks from `--pre-run-hook` flags (in order)
+3. Commands from `JUNO_PRE_RUN` env var
+4. Commands from `--pre-run` flags (in order)
+5. Main juno-code loop begins
+
+### Parallel Runner
+
+Orchestrate N concurrent juno-code processes with queue management, structured output, and optional tmux visualization.
+
+#### Input Modes
+
+| Input | Description |
+|-------|-------------|
+| `--kanban T1,T2,T3` | Kanban task IDs |
+| `--kanban-filter '--tag X --status Y'` | Query kanban, auto-extract IDs |
+| `--kanban-filter 'ready'` | Dependency-aware: only unblocked tasks |
+| `--items "a,b,c"` | Generic item list |
+| `--items-file data.csv` | File input (JSONL, CSV, TSV, XLSX) |
+
+#### Execution Modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| Headless | (default) | ThreadPoolExecutor, output to log files |
+| Tmux Windows | `--tmux` | Each worker = tmux window |
+| Tmux Panes | `--tmux panes` | Workers as split panes |
+
+```bash
+# Headless parallel execution
+./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
+
+# Tmux visualization with 5 workers
+./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 5
+
+# Process file with extraction
+./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file crawl.md --strict
+
+# Use different AI backend
+./.juno_task/scripts/parallel_runner.sh -s codex -m :codex --kanban T1,T2
+
+# Session control
+./.juno_task/scripts/parallel_runner.sh --stop --name my-batch
+./.juno_task/scripts/parallel_runner.sh --stop-all
+```
+
+#### Output & Extraction
+
+- **Per-task JSON**: `{output_dir}/{task_id}.json` with exit code, wall time, extracted response
+- **Aggregation JSON**: All tasks merged into one file
+- **Code block extraction**: Finds last fenced code block in output. `--strict` fails the task if not found
+- **Pause/resume**: `touch .juno_task/scripts/logs/.pause_{name}` / remove to resume
+
 ## Slack Integration
 
 juno-code includes built-in Slack integration for team collaboration. The system monitors Slack channels and creates kanban tasks from messages, then posts agent responses as threaded replies.
@@ -227,8 +452,6 @@ juno-code includes built-in Slack integration for team collaboration. The system
 1. **Fetch**: `slack_fetch.sh` monitors a Slack channel and creates kanban tasks from new messages
 2. **Process**: The AI agent processes tasks and records responses in the kanban
 3. **Respond**: `slack_respond.sh` sends agent responses back to Slack as threaded replies
-
-This enables a workflow where team members can submit tasks via Slack and receive AI-generated responses without leaving their chat interface.
 
 ### Setup
 
@@ -265,8 +488,6 @@ This enables a workflow where team members can submit tasks via Slack and receiv
    ```
 
 ### Automated Slack Workflow with Hooks
-
-Use the `--pre-run` flag to sync with Slack before each juno-code run:
 
 ```bash
 # Fetch Slack messages before starting work
@@ -306,8 +527,6 @@ juno-code includes built-in GitHub integration for issue tracking and automated 
 2. **Process**: The AI agent processes tasks and records responses in the kanban
 3. **Respond**: `github.py respond` posts agent responses as comments on GitHub issues and closes them
 
-This enables a workflow where team members can submit tasks via GitHub issues and receive AI-generated responses with automatic issue closure.
-
 ### Setup
 
 1. **Create a GitHub Personal Access Token**:
@@ -342,202 +561,94 @@ This enables a workflow where team members can submit tasks via GitHub issues an
    # Continuous sync mode with interval
    ./.juno_task/scripts/github.py sync --repo owner/repo --continuous --interval 600
 
-   # One-time sync
-   ./.juno_task/scripts/github.py sync --repo owner/repo --once
-
    # Dry run to preview what would be posted
    ./.juno_task/scripts/github.py respond --dry-run --verbose
    ```
 
-### Key Features
-
-- **Tag-based identification**: Uses `github_issue_owner_repo_123` format for O(1) lookups
-- **State tracking**: Maintains state in `.juno_task/github/state.ndjson` and `responses.ndjson`
-- **Automatic closure**: Issues are automatically closed after posting the agent response
-- **Commit linking**: Includes commit hash in comment if available
-- **Response format**: Posts `agent_response` field from completed kanban tasks
-
 ### Automated GitHub Workflow with Hooks
-
-Use the `--pre-run` flag to sync with GitHub before each juno-code run:
-
-```bash
-# Fetch GitHub issues before starting work
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run "./.juno_task/scripts/github.py fetch --repo owner/repo" \
-  -s claude -i 5 -v
-```
-
-Or configure hooks in `.juno_task/config.json`:
-
-```json
-{
-  "hooks": {
-    "GITHUB_SYNC": {
-      "commands": [
-        "./.juno_task/scripts/github.py fetch --repo owner/repo --labels bug",
-        "./.juno_task/scripts/github.py respond --tag github-issue"
-      ]
-    }
-  }
-}
-```
-
-Then run with the hook:
 
 ```bash
 ./.juno_task/scripts/run_until_completion.sh --pre-run-hook GITHUB_SYNC -s claude -i 5 -v
 ```
 
-## run_until_completion.sh
+## Log Scanner
 
-The `run_until_completion.sh` script continuously runs juno-code until all kanban tasks are completed. It uses a do-while loop pattern: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
-
-### Basic Usage
+Proactive error detection that scans log files and auto-creates kanban bug reports:
 
 ```bash
-# Run until all tasks complete
-./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
+# Scan for errors and create tasks
+./.juno_task/scripts/log_scanner.sh
 
-# With custom backend and model
-./.juno_task/scripts/run_until_completion.sh -b shell -s codex -m :codex -i 10
+# Dry run (report only)
+./.juno_task/scripts/log_scanner.sh --dry-run --verbose
+
+# Check scan status
+./.juno_task/scripts/log_scanner.sh --status
+
+# Reset scan state (re-scan everything)
+./.juno_task/scripts/log_scanner.sh --reset
 ```
 
-### Pre-run Commands (--pre-run)
+Detects Python errors (Traceback, ValueError, TypeError), Node.js errors (UnhandledPromiseRejection, ECONNREFUSED), and general patterns (FATAL, CRITICAL, PANIC, OOM). Uses ripgrep for high-performance scanning with grep fallback.
 
-Execute commands before the main loop starts. Useful for syncing with external services, running linters, or preparing the environment.
-
-```bash
-# Single pre-run command
-./.juno_task/scripts/run_until_completion.sh --pre-run "./scripts/lint.sh" -s claude -i 5
-
-# Multiple pre-run commands (executed in order)
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run "./scripts/sync.sh" \
-  --pre-run "npm run build" \
-  -s claude -i 5 -v
-
-# Alternative: use environment variable
-JUNO_PRE_RUN="./scripts/prepare.sh" \
-  ./.juno_task/scripts/run_until_completion.sh -s claude -i 5
-```
-
-### Pre-run Hooks (--pre-run-hook)
-
-Execute named hooks defined in `.juno_task/config.json`. Hooks group multiple commands that run together.
-
-**Define hooks in config.json:**
+Use as a pre-run hook so the agent finds and fixes errors automatically:
 ```json
 {
   "hooks": {
     "START_ITERATION": {
-      "commands": [
-        "./scripts/lint.sh",
-        "npm run typecheck"
-      ]
-    },
-    "SLACK_SYNC": {
-      "commands": [
-        "./.juno_task/scripts/slack_fetch.sh --channel bugs",
-        "./.juno_task/scripts/slack_respond.sh"
-      ]
+      "commands": ["./.juno_task/scripts/log_scanner.sh"]
     }
   }
 }
 ```
-
-**Use hooks:**
-```bash
-# Single hook
-./.juno_task/scripts/run_until_completion.sh --pre-run-hook START_ITERATION -s claude -i 5
-
-# Multiple hooks (executed in order)
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run-hook SLACK_SYNC \
-  --pre-run-hook START_ITERATION \
-  -s claude -i 5
-
-# Alternative: use environment variable
-JUNO_PRE_RUN_HOOK="START_ITERATION" \
-  ./.juno_task/scripts/run_until_completion.sh -s claude -i 5
-```
-
-### Execution Order
-
-When both hooks and pre-run commands are specified, the execution order is:
-1. Hooks from `JUNO_PRE_RUN_HOOK` env var
-2. Hooks from `--pre-run-hook` flags (in order)
-3. Commands from `JUNO_PRE_RUN` env var
-4. Commands from `--pre-run` flags (in order)
-5. Main juno-code loop begins
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `JUNO_DEBUG=true` | Show debug diagnostic messages |
-| `JUNO_VERBOSE=true` | Show informational status messages |
-| `JUNO_PRE_RUN` | Pre-run command (runs before --pre-run flags) |
-| `JUNO_PRE_RUN_HOOK` | Pre-run hook name (runs before --pre-run-hook flags) |
-| `JUNO_RUN_UNTIL_MAX_ITERATIONS` | Maximum iterations (0 = unlimited) |
 
 ## Kanban Commands
 
 The kanban.sh script wraps juno-kanban. Here are the actual commands:
 
 ```bash
-# List tasks
-./.juno_task/scripts/kanban.sh list --limit 5
-./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
-
-# Get task details
+# Task CRUD
+./.juno_task/scripts/kanban.sh create "Task body" --tags feature,backend
 ./.juno_task/scripts/kanban.sh get TASK_ID
+./.juno_task/scripts/kanban.sh update TASK_ID --response "Fixed it" --commit abc123
+./.juno_task/scripts/kanban.sh mark done --id TASK_ID --response "Completed, tests pass"
+./.juno_task/scripts/kanban.sh archive TASK_ID
 
-# Mark task status (backlog, todo, in_progress, done)
-./.juno_task/scripts/kanban.sh mark in_progress --ID TASK_ID
-./.juno_task/scripts/kanban.sh mark done --ID TASK_ID --response "Fixed auth, added tests"
+# List & search
+./.juno_task/scripts/kanban.sh list --limit 5 --status backlog todo in_progress
+./.juno_task/scripts/kanban.sh search --tag backend --status todo
 
-# Update task with git commit reference
-./.juno_task/scripts/kanban.sh update TASK_ID --commit abc123
+# Dependencies
+./.juno_task/scripts/kanban.sh create "Deploy" --blocked-by A1b2C3,X4y5Z6
+./.juno_task/scripts/kanban.sh deps TASK_ID                    # Show blockers & dependents
+./.juno_task/scripts/kanban.sh deps add --id T1 --blocked-by T2  # Add dependency
+./.juno_task/scripts/kanban.sh deps remove --id T1 --blocked-by T2
+./.juno_task/scripts/kanban.sh ready                           # Tasks with no unmet blockers
+./.juno_task/scripts/kanban.sh order --scores                  # Topological execution order
+
+# Merge (monorepo support)
+./.juno_task/scripts/kanban.sh merge source/ --into target/ --strategy keep-newer
 ```
 
-## Backends & Services
+**Task schema**: `{id, status, body, commit_hash, agent_response, created_date, last_modified, feature_tags[], related_tasks[], blocked_by[]}`
 
-### Available Backends
+**Status lifecycle**: `backlog → todo → in_progress → done → archive`
 
-- **shell** - Direct execution via service scripts (recommended for headless)
-- **mcp** - Model Context Protocol servers (full tool integration)
+**Body markup** (auto-parsed on create):
+- `[task_id]ID1, ID2[/task_id]` → `related_tasks`
+- `[blocked_by]ID1, ID2[/blocked_by]` → `blocked_by` (synonyms: `block_by`, `block`, `parent_task`)
 
-### Supported Services
+## Configuration
 
-| Service | Default Model | Shorthands |
-|---------|---------------|------------|
-| claude | `claude-sonnet-4-6` | `:haiku`, `:sonnet`, `:opus` |
-| codex | `gpt-5.3-codex` | `:codex`, `:codex-mini`, `:gpt-5`, `:mini` |
-| gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
-| pi | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:codex`, `:gemini-pro` |
+### Hierarchy (highest to lowest priority)
 
-> **Pi** is a multi-provider coding agent that supports Anthropic, OpenAI, Google, Groq, xAI, and more.
-> It requires separate installation: `npm install -g @mariozechner/pi-coding-agent`
+1. CLI arguments
+2. Environment variables (`JUNO_CODE_*`)
+3. Project config (`.juno_task/config.json`)
+4. Global config files
+5. Hardcoded defaults
 
-### Custom Backends
-
-Service scripts live in `~/.juno_code/services/`. Each is a Python script:
-
-```bash
-# View installed services
-juno-code services list
-
-# Force reinstall (get latest)
-juno-code services install --force
-```
-
-To add a custom backend:
-1. Create a Python script in `~/.juno_code/services/`
-2. Accept standard args: `-p/--prompt`, `-m/--model`, `-v/--verbose`
-3. Output JSON events to stdout for structured parsing
-
-## Project Structure
+### Project Structure
 
 After `juno-code init`:
 
@@ -547,13 +658,22 @@ your-project/
 │   ├── init.md           # Task breakdown (your input)
 │   ├── prompt.md         # AI instructions (Ralph-style prompt)
 │   ├── plan.md           # Progress tracking
-│   ├── USER_FEEDBACK.md  # Issue tracking
-│   ├── config.json       # Configuration
+│   ├── USER_FEEDBACK.md  # Issue tracking (write here while agent runs)
+│   ├── config.json       # Hooks, agent config, project settings
 │   ├── scripts/          # Auto-installed utilities
-│   │   ├── run_until_completion.sh
 │   │   ├── kanban.sh
-│   │   └── install_requirements.sh
-│   └── tasks/            # Kanban tasks (ndjson)
+│   │   ├── run_until_completion.sh
+│   │   ├── parallel_runner.sh
+│   │   ├── log_scanner.sh
+│   │   ├── install_requirements.sh
+│   │   ├── slack_fetch.sh / slack_fetch.py
+│   │   ├── slack_respond.sh / slack_respond.py
+│   │   ├── github.py
+│   │   └── hooks/session_counter.sh
+│   ├── tasks/            # Kanban tasks (NDJSON)
+│   └── logs/             # Agent session logs
+├── .claude/skills/       # Claude agent skills (auto-provisioned)
+├── .agents/skills/       # Codex agent skills (auto-provisioned)
 ├── CLAUDE.md             # Session learnings
 └── AGENTS.md             # Agent performance
 ```
@@ -570,7 +690,23 @@ export JUNO_CODE_MAX_ITERATIONS=10
 # Service-specific
 export CODEX_HIDE_STREAM_TYPES="turn_diff,token_count"
 export GEMINI_API_KEY=your-key
-export CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE=4
+
+# Execution control
+export JUNO_STALE_THRESHOLD=3            # Stale iteration limit
+export JUNO_PRE_RUN="./scripts/sync.sh"  # Pre-run command
+export JUNO_PRE_RUN_HOOK="SLACK_SYNC"    # Pre-run hook name
+export JUNO_RUN_UNTIL_MAX_ITERATIONS=0   # Max iterations (0=unlimited)
+export JUNO_SESSION_COUNTER_THRESHOLD=100 # Session length warning threshold
+
+# Integration
+export SLACK_BOT_TOKEN=xoxb-your-token
+export SLACK_CHANNEL=bug-reports
+export GITHUB_TOKEN=ghp_your-token
+export GITHUB_REPO=owner/repo
+
+# Debug
+export JUNO_DEBUG=true                   # Enable [DEBUG] output
+export JUNO_VERBOSE=true                 # Enable [INFO] output
 
 # Pi requires the pi-coding-agent CLI installed globally
 # npm install -g @mariozechner/pi-coding-agent
@@ -604,17 +740,44 @@ juno-code -b shell -s codex -p "Same investigation" -i 3
 juno-code -b shell -s pi -m :sonnet -p "Same investigation" -i 3
 ```
 
-### Iterative Feature Development
+### Parallel Batch Processing
 
 ```bash
-# Tasks are tracked via kanban
-# (Tasks created by agent or imported)
+# Process 100 kanban tasks with 5 workers
+./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,...,T100 --parallel 5
 
-# Run until all tasks complete
-./.juno_task/scripts/run_until_completion.sh -s claude -i 10 -v
+# Visual monitoring
+./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 3
 
-# Each completed task has a git commit for traceability
-git log --oneline
+# Process a CSV dataset
+./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file process.md --strict --file-format csv
+```
+
+### Dependency-Aware Workflow
+
+```bash
+# Create tasks with dependencies
+./.juno_task/scripts/kanban.sh create "Setup database" --tags infra
+./.juno_task/scripts/kanban.sh create "Build API [blocked_by]DBID[/blocked_by]" --tags backend
+./.juno_task/scripts/kanban.sh create "Build UI [blocked_by]APIID[/blocked_by]" --tags frontend
+
+# See what's ready to work on
+./.juno_task/scripts/kanban.sh ready
+
+# Execution order respecting dependencies
+./.juno_task/scripts/kanban.sh order --scores
+
+# Run only unblocked tasks in parallel
+./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
+```
+
+### Slack-Driven Development
+
+```bash
+# Full automated loop: Slack → Agent → Slack
+./.juno_task/scripts/run_until_completion.sh \
+  --pre-run-hook SLACK_SYNC \
+  -s claude -i 5 -v
 ```
 
 ## Comparison: Ralph vs juno-code
@@ -625,38 +788,16 @@ git log --oneline
 | **Core Loop** | `while :; do claude; done` | Controlled iterations |
 | **Stopping** | Ctrl+C (guesswork) | `-i N` or "until tasks done" |
 | **Source of Truth** | Markdown files (TASKS.md, PLANNING.md) | Structured kanban over bash |
-| **Format Integrity** | Relies on LLM instruction-following | Strict format, always parseable |
+| **Format Integrity** | Relies on LLM instruction-following | Strict NDJSON, always parseable |
 | **Multiple AIs** | Claude only | Claude, Codex, Gemini, Pi, Cursor |
+| **Dependencies** | None | blocked_by, ready, topological sort |
+| **Parallelism** | None | parallel_runner with N workers |
 | **Traceability** | None | Every task → git commit |
+| **Integrations** | None | Slack, GitHub Issues |
 | **Hooks** | Claude-specific | Works with any backend |
+| **Error Detection** | None | Log scanner with auto bug reports |
 | **Verbose** | Raw JSON | Human-readable + jq-friendly |
 | **Feedback** | None | Real-time during execution |
-
-### Why Structured Kanban Over Markdown?
-
-Ralph uses markdown files (TASKS.md, PLANNING.md) as its source of truth. This works for **one-time tasks** like "migrate the whole repo from TypeScript to Rust."
-
-But for **iterative development**, markdown files break down:
-
-- **No strict format**: LLMs can corrupt the structure, add extra formatting, forget sections
-- **Context bloat**: Long plan.md files confuse agents and waste tokens
-- **No query capability**: Can't ask "what's in progress?" without parsing prose
-- **No task isolation**: Changes to one task can accidentally affect others
-
-juno-code uses **structured kanban over bash**:
-
-```bash
-# Always parseable - the format can never break
-./.juno_task/scripts/kanban.sh list --status in_progress
-
-# Query specific tasks
-./.juno_task/scripts/kanban.sh get TASK_ID
-
-# Tasks stored as NDJSON - one line per task
-# Each task is self-contained and isolated
-```
-
-This lets juno-code scale Ralph's insight (AI works better in loops) to **thousands of tasks** without the agent losing track or corrupting state.
 
 ## Troubleshooting
 
@@ -675,6 +816,43 @@ juno-code -v -b shell -s codex -m :codex -p "test"
 ### Kanban not finding tasks
 ```bash
 ./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
+```
+
+### Skills not appearing
+```bash
+juno-code skills list
+juno-code skills install --force
+```
+
+### Python environment issues
+```bash
+# Force reinstall Python dependencies
+./.juno_task/scripts/install_requirements.sh --force-update
+```
+
+## Build from Source
+
+```bash
+cd juno-code
+
+# Build
+npm run build
+
+# Build as exp-juno-code (local testing)
+npm run build:exp
+
+# Remove exp-juno-code
+npm run uninstall:exp
+
+# Run tests
+npm test              # Fast tests
+npm run test:full     # Full suite
+npm run test:coverage # With coverage
+
+# Lint & format
+npm run lint
+npm run format:check
+npm run typecheck
 ```
 
 ## Credits
