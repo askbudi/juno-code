@@ -47,6 +47,7 @@ const MODEL_SUGGESTIONS = {
   cursor: ['gpt-5', 'sonnet-4', 'sonnet-4-thinking', 'gpt-4o', 'o1-preview'],
   codex: ['gpt-5', 'gpt-4o', 'o1-preview', 'o1-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+  pi: ['auto'],
 } as const;
 
 export class ContextAwareCompletion {
@@ -511,7 +512,7 @@ _${commandName}_completion() {
     prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
     # Commands
-    local commands="init start feedback session setup-git claude cursor codex gemini completion"
+    local commands="init start feedback session setup-git claude cursor codex gemini pi completion"
 
     # Global options
     local global_opts="--verbose --quiet --config --log-file --no-color --log-level --help --version"
@@ -531,6 +532,9 @@ _${commandName}_completion() {
                 ;;
             gemini)
                 COMPREPLY=( \$(compgen -W "gemini-2.5-pro gemini-2.5-flash gemini-1.5-pro gemini-1.5-flash" -- \$cur) )
+                ;;
+            pi)
+                COMPREPLY=( \$(compgen -W "auto" -- \$cur) )
                 ;;
         esac
     }
@@ -560,7 +564,7 @@ _${commandName}_completion() {
             opts="--force --task --subagent --git-url --interactive --template --var \$global_opts"
             case "\$prev" in
                 --subagent|-s)
-                    COMPREPLY=( \$(compgen -W "claude cursor codex gemini" -- \$cur) )
+                    COMPREPLY=( \$(compgen -W "claude cursor codex gemini pi" -- \$cur) )
                     return 0
                     ;;
                 --template)
@@ -602,7 +606,7 @@ _${commandName}_completion() {
                     opts="--limit --subagent --status \$global_opts"
                     case "\$prev" in
                         --subagent)
-                            COMPREPLY=( \$(compgen -W "claude cursor codex gemini" -- \$cur) )
+                            COMPREPLY=( \$(compgen -W "claude cursor codex gemini pi" -- \$cur) )
                             return 0
                             ;;
                         --status)
@@ -648,7 +652,7 @@ _${commandName}_completion() {
                     ;;
             esac
             ;;
-        claude|cursor|codex|gemini)
+        claude|cursor|codex|gemini|pi)
             opts="--max-iterations --model --cwd --interactive --interactive-prompt \$global_opts"
             case "\$prev" in
                 --model)
@@ -712,6 +716,7 @@ _${commandName}() {
             cursor) models=(gpt-5 sonnet-4 sonnet-4-thinking gpt-4o o1-preview) ;;
             codex) models=(gpt-5 gpt-4o o1-preview o1-mini) ;;
             gemini) models=(gemini-2.5-pro gemini-2.5-flash gemini-1.5-pro gemini-1.5-flash) ;;
+            pi) models=(auto) ;;
         esac
         _describe 'models' models
     }
@@ -742,6 +747,7 @@ _${commandName}() {
         'cursor:Execute with Cursor subagent'
         'codex:Execute with Codex subagent'
         'gemini:Execute with Gemini subagent'
+        'pi:Execute with Pi subagent'
     )
 
     local global_opts=(
@@ -770,7 +776,7 @@ _${commandName}() {
                     _arguments \\
                         '(-f --force)'{-f,--force}'[Force overwrite existing files]' \\
                         '(-t --task)'{-t,--task}'[Main task description]:task:' \\
-                        '(-s --subagent)'{-s,--subagent}'[Preferred subagent]:subagent:(claude cursor codex gemini)' \\
+                        '(-s --subagent)'{-s,--subagent}'[Preferred subagent]:subagent:(claude cursor codex gemini pi)' \\
                         '(-g --git-url)'{-g,--git-url}'[Git repository URL]:url:' \\
                         '(-i --interactive)'{-i,--interactive}'[Launch interactive setup]' \\
                         '--template[Template variant]:template:_${commandName}_templates' \\
@@ -830,7 +836,7 @@ _${commandName}() {
                             ;;
                     esac
                     ;;
-                claude|cursor|codex|gemini)
+                claude|cursor|codex|gemini|pi)
                     _arguments \\
                         '(-m --max-iterations)'{-m,--max-iterations}'[Maximum iterations]:number:' \\
                         '--model[Model to use]:model:_${commandName}_models' \\
@@ -867,6 +873,8 @@ function __${commandName}_complete_models
             echo -e "gpt-5\\ngpt-4o\\no1-preview\\no1-mini"
         case gemini
             echo -e "gemini-2.5-pro\\ngemini-2.5-flash\\ngemini-1.5-pro\\ngemini-1.5-flash"
+        case pi
+            echo -e "auto"
     end
 end
 
@@ -893,6 +901,7 @@ complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'claude' -d 'Execute
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'cursor' -d 'Execute with Cursor'
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'codex' -d 'Execute with Codex'
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'gemini' -d 'Execute with Gemini'
+complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'pi' -d 'Execute with Pi'
 
 # Global options
 complete -c ${commandName} -s v -l verbose -d 'Enable verbose output'
@@ -907,7 +916,7 @@ complete -c ${commandName} -s V -l version -d 'Show version'
 # Init command options
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s f -l force -d 'Force overwrite'
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s t -l task -d 'Main task description' -r
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s s -l subagent -d 'Preferred subagent' -xa 'claude cursor codex gemini'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s s -l subagent -d 'Preferred subagent' -xa 'claude cursor codex gemini pi'
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s g -l git-url -d 'Git repository URL' -r
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -s i -l interactive -d 'Interactive setup'
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from init' -l template -d 'Template variant' -a '(__${commandName}_complete_templates)'
@@ -939,11 +948,11 @@ complete -c ${commandName} -f -n '__fish_seen_subcommand_from completion' -a 'st
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from completion; and __fish_seen_subcommand_from install uninstall' -a 'bash zsh fish'
 
 # Subagent command options
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini' -s m -l max-iterations -d 'Maximum iterations' -r
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini' -l model -d 'Model to use' -a '(__${commandName}_complete_models)'
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini' -l cwd -d 'Working directory' -xa '(__fish_complete_directories)'
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini' -s i -l interactive -d 'Interactive mode'
-complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini' -l interactive-prompt -d 'TUI prompt editor'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini pi' -s m -l max-iterations -d 'Maximum iterations' -r
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini pi' -l model -d 'Model to use' -a '(__${commandName}_complete_models)'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini pi' -l cwd -d 'Working directory' -xa '(__fish_complete_directories)'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini pi' -s i -l interactive -d 'Interactive mode'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from claude cursor codex gemini pi' -l interactive-prompt -d 'TUI prompt editor'
 `;
   }
 }

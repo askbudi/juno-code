@@ -110,6 +110,7 @@ class SimpleInitTUI {
     console.log(chalk.gray('   2) Codex'));
     console.log(chalk.gray('   3) Gemini'));
     console.log(chalk.gray('   4) Cursor'));
+    console.log(chalk.gray('   5) Pi'));
 
     const answer = await promptInputOnce('Subagent choice', '1');
     const choice = parseInt(answer) || 1;
@@ -123,6 +124,8 @@ class SimpleInitTUI {
         return 'gemini';
       case 4:
         return 'cursor';
+      case 5:
+        return 'pi';
       default:
         return 'claude';
     }
@@ -668,6 +671,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       codex: ':codex', // Expands to gpt-5.3-codex in codex.py
       gemini: ':pro', // Expands to gemini-2.5-pro in gemini.py
       cursor: 'auto',
+      pi: 'auto',
     };
     return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
   }
@@ -1110,7 +1114,7 @@ export function configureInitCommand(program: Command): void {
       '[description]',
       'Task description for inline mode (optional - triggers inline mode if provided)',
     )
-    .option('-s, --subagent <name>', 'AI subagent to use (claude, codex, gemini, cursor)')
+    .option('-s, --subagent <name>', 'AI subagent to use (claude, codex, gemini, cursor, pi)')
     .option('-g, --git-repo <url>', 'Git repository URL')
     .option('-d, --directory <path>', 'Target directory (default: current directory)')
     .option('-f, --force', 'Force overwrite existing files')
@@ -1164,7 +1168,7 @@ Examples:
 
 Arguments & Options:
   [description]              Task description (optional - triggers inline mode)
-  -s, --subagent <name>      AI subagent: claude, codex, gemini, cursor (default: claude)
+  -s, --subagent <name>      AI subagent: claude, codex, gemini, cursor, pi (default: claude)
   -g, --git-repo <url>       Git repository URL
   -d, --directory <path>     Target directory (default: current directory)
   -f, --force                Force overwrite existing files
