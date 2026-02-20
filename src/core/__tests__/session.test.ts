@@ -157,11 +157,10 @@ describe('FileSessionStorage', () => {
     tempDir = path.join(tmpdir(), 'test-sessions', Date.now().toString());
     storage = new FileSessionStorage(tempDir);
 
-    // Get mocked fs module
+    // Get mocked fs module — mockReset: true wipes implementations between tests,
+    // so each test must set up its own mocks explicitly.
     const fs = await import('node:fs');
     mockFs = fs;
-
-    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -294,7 +293,7 @@ describe('FileSessionStorage', () => {
   });
 
   describe('listSessions', () => {
-    it.skip('should list all sessions with no filter', async () => {
+    it('should list all sessions with no filter', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1' } as any }),
         createMockSession({ info: { id: 'session-2', status: 'completed' } as any }),
@@ -353,7 +352,7 @@ describe('FileSessionStorage', () => {
       expect(result.map((s) => s.id)).toContain('session-2');
     });
 
-    it.skip('should filter sessions by status', async () => {
+    it('should filter sessions by status', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1', status: 'running' } as any }),
         createMockSession({ info: { id: 'session-2', status: 'completed' } as any }),
@@ -408,7 +407,7 @@ describe('FileSessionStorage', () => {
       expect(result[0].status).toBe('completed');
     });
 
-    it.skip('should filter sessions by subagent', async () => {
+    it('should filter sessions by subagent', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1', subagent: 'claude' } as any }),
         createMockSession({ info: { id: 'session-2', subagent: 'cursor' } as any }),
@@ -463,7 +462,7 @@ describe('FileSessionStorage', () => {
       expect(result[0].subagent).toBe('cursor');
     });
 
-    it.skip('should filter sessions by date range', async () => {
+    it('should filter sessions by date range', async () => {
       const sessions = [
         createMockSession({
           info: {
@@ -532,7 +531,7 @@ describe('FileSessionStorage', () => {
       expect(result[0].id).toBe('session-1');
     });
 
-    it.skip('should filter sessions by tags', async () => {
+    it('should filter sessions by tags', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1', tags: ['development', 'test'] } as any }),
         createMockSession({ info: { id: 'session-2', tags: ['production', 'deploy'] } as any }),
@@ -586,7 +585,7 @@ describe('FileSessionStorage', () => {
       expect(result[0].id).toBe('session-1');
     });
 
-    it.skip('should sort sessions correctly', async () => {
+    it('should sort sessions correctly', async () => {
       const sessions = [
         createMockSession({
           info: {
@@ -655,7 +654,7 @@ describe('FileSessionStorage', () => {
       expect(result[1].name).toBe('B Session');
     });
 
-    it.skip('should apply limit and offset', async () => {
+    it('should apply limit and offset', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1' } as any }),
         createMockSession({ info: { id: 'session-2' } as any }),
@@ -734,7 +733,7 @@ describe('FileSessionStorage', () => {
       expect(result).toHaveLength(1);
     });
 
-    it.skip('should handle corrupted session files gracefully', async () => {
+    it('should handle corrupted session files gracefully', async () => {
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['session-1.json', 'corrupted.json']);
 
@@ -784,7 +783,7 @@ describe('FileSessionStorage', () => {
       expect(result).toEqual([]);
     });
 
-    it.skip('should handle sorting with undefined values', async () => {
+    it('should handle sorting with undefined values', async () => {
       const sessions = [
         createMockSession({ info: { id: 'session-1', name: undefined } as any }),
         createMockSession({ info: { id: 'session-2', name: 'Named Session' } as any }),
@@ -799,6 +798,7 @@ describe('FileSessionStorage', () => {
             ...sessions[0],
             info: {
               ...sessions[0].info,
+              name: undefined, // JSON.stringify omits undefined → parsed name will be undefined
               createdAt:
                 sessions[0].info.createdAt?.toISOString() ||
                 new Date('2024-01-01T10:00:00.000Z').toISOString(),
@@ -841,7 +841,7 @@ describe('FileSessionStorage', () => {
   });
 
   describe('removeSession', () => {
-    it.skip('should remove session file', async () => {
+    it('should remove session file', async () => {
       mockFs.promises.unlink.mockResolvedValue(undefined);
 
       await storage.removeSession('test-session-123');
@@ -859,7 +859,7 @@ describe('FileSessionStorage', () => {
       await expect(storage.removeSession('nonexistent-session')).resolves.not.toThrow();
     });
 
-    it.skip('should throw error for other file system errors', async () => {
+    it('should throw error for other file system errors', async () => {
       const error = new Error('Permission denied');
       mockFs.promises.unlink.mockRejectedValue(error);
 
@@ -870,7 +870,7 @@ describe('FileSessionStorage', () => {
   });
 
   describe('sessionExists', () => {
-    it.skip('should return true when session exists', async () => {
+    it('should return true when session exists', async () => {
       mockFs.promises.access.mockResolvedValue(undefined);
 
       const exists = await storage.sessionExists('test-session-123');
@@ -892,7 +892,7 @@ describe('FileSessionStorage', () => {
   });
 
   describe('cleanup', () => {
-    it.skip('should remove sessions older than specified days', async () => {
+    it('should remove sessions older than specified days', async () => {
       const session = createMockSession({
         info: createMockSessionInfo({
           createdAt: new Date('2024-01-01T10:00:00.000Z'),
@@ -935,7 +935,7 @@ describe('FileSessionStorage', () => {
       vi.useRealTimers();
     });
 
-    it.skip('should remove sessions with specific status', async () => {
+    it('should remove sessions with specific status', async () => {
       const session = createMockSession({
         info: createMockSessionInfo({ status: 'failed' }),
       });
@@ -971,7 +971,7 @@ describe('FileSessionStorage', () => {
       );
     });
 
-    it.skip('should remove empty sessions', async () => {
+    it('should remove empty sessions', async () => {
       const session = createMockSession({
         history: [],
         result: undefined,
@@ -1008,7 +1008,7 @@ describe('FileSessionStorage', () => {
       );
     });
 
-    it.skip('should respect dry run mode', async () => {
+    it('should respect dry run mode', async () => {
       const session = createMockSession({
         info: createMockSessionInfo({ status: 'failed' }),
       });
@@ -1041,7 +1041,7 @@ describe('FileSessionStorage', () => {
       expect(mockFs.promises.unlink).not.toHaveBeenCalled();
     });
 
-    it.skip('should handle corrupted sessions during cleanup', async () => {
+    it('should handle corrupted sessions during cleanup', async () => {
       mockFs.promises.mkdir.mockResolvedValue(undefined);
       mockFs.promises.readdir.mockResolvedValue(['test-session-123.json']);
       mockFs.promises.readFile.mockRejectedValue(new Error('Corrupted file'));
@@ -1749,7 +1749,7 @@ describe('SessionManager', () => {
 });
 
 describe('createSessionManager', () => {
-  it.skip('should create SessionManager with FileSessionStorage', async () => {
+  it('should create SessionManager with FileSessionStorage', async () => {
     const fsModule = await import('node:fs');
     const mockFs = fsModule as any;
 

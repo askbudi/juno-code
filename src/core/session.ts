@@ -4,7 +4,6 @@
  */
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { promises as fsPromises } from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type { JunoTaskConfig, SessionStatus, SubagentType } from '../types/index';
 
@@ -92,7 +91,7 @@ export class FileSessionStorage implements SessionStorage {
   }
 
   async initialize(): Promise<void> {
-    await fsPromises.mkdir(this.sessionsDir, { recursive: true });
+    await fs.promises.mkdir(this.sessionsDir, { recursive: true });
   }
 
   private getSessionPath(sessionId: string): string {
@@ -115,13 +114,13 @@ export class FileSessionStorage implements SessionStorage {
         timestamp: entry.timestamp.toISOString(),
       })),
     };
-    await fsPromises.writeFile(sessionPath, JSON.stringify(serializable, null, 2), 'utf-8');
+    await fs.promises.writeFile(sessionPath, JSON.stringify(serializable, null, 2), 'utf-8');
   }
 
   async loadSession(sessionId: string): Promise<Session | null> {
     const sessionPath = this.getSessionPath(sessionId);
     try {
-      const data = await fsPromises.readFile(sessionPath, 'utf-8');
+      const data = await fs.promises.readFile(sessionPath, 'utf-8');
       const parsed = JSON.parse(data);
       return {
         ...parsed,
@@ -145,7 +144,7 @@ export class FileSessionStorage implements SessionStorage {
   async listSessions(filter?: SessionListFilter): Promise<SessionInfo[]> {
     await this.initialize();
     try {
-      const files = await fsPromises.readdir(this.sessionsDir);
+      const files = await fs.promises.readdir(this.sessionsDir);
       const sessionFiles = files.filter((file) => file.endsWith('.json'));
       const sessions: SessionInfo[] = [];
       for (const file of sessionFiles) {
@@ -195,7 +194,7 @@ export class FileSessionStorage implements SessionStorage {
 
   async removeSession(sessionId: string): Promise<void> {
     try {
-      await fsPromises.unlink(this.getSessionPath(sessionId));
+      await fs.promises.unlink(this.getSessionPath(sessionId));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
         throw new Error(`Failed to remove session ${sessionId}: ${error}`);
@@ -204,7 +203,7 @@ export class FileSessionStorage implements SessionStorage {
 
   async sessionExists(sessionId: string): Promise<boolean> {
     try {
-      await fsPromises.access(this.getSessionPath(sessionId), fs.constants.F_OK);
+      await fs.promises.access(this.getSessionPath(sessionId), fs.constants.F_OK);
       return true;
     } catch {
       return false;
@@ -213,24 +212,34 @@ export class FileSessionStorage implements SessionStorage {
 
   async cleanup(options: CleanupOptions): Promise<void> {
     await this.initialize();
-    const sessions = await this.listSessions();
-    for (const info of sessions) {
+    const files = await fs.promises.readdir(this.sessionsDir);
+    const sessionFiles = files.filter((f) => f.endsWith('.json'));
+
+    for (const file of sessionFiles) {
+      const sessionId = path.basename(file, '.json');
       let shouldRemove = false;
-      if (options.removeOlderThanDays) {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - options.removeOlderThanDays);
-        if (info.createdAt < cutoff) shouldRemove = true;
+      let session: Session | null = null;
+
+      try {
+        session = await this.loadSession(sessionId);
+      } catch {
+        // Corrupted/unreadable file — treat as removable when removeEmpty is set
+        if (options.removeEmpty) shouldRemove = true;
       }
-      if (options.removeStatus && options.removeStatus.includes(info.status)) shouldRemove = true;
-      if (options.removeEmpty) {
-        try {
-          const session = await this.loadSession(info.id);
-          if (session && session.history.length === 0 && !session.result) shouldRemove = true;
-        } catch {
-          shouldRemove = true;
+
+      if (session) {
+        if (options.removeOlderThanDays) {
+          const cutoff = new Date();
+          cutoff.setDate(cutoff.getDate() - options.removeOlderThanDays);
+          if (session.info.createdAt < cutoff) shouldRemove = true;
         }
+        if (options.removeStatus && options.removeStatus.includes(session.info.status))
+          shouldRemove = true;
+        if (options.removeEmpty && session.history.length === 0 && !session.result)
+          shouldRemove = true;
       }
-      if (shouldRemove && !options.dryRun) await this.removeSession(info.id);
+
+      if (shouldRemove && !options.dryRun) await this.removeSession(sessionId);
     }
   }
 }
