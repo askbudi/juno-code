@@ -837,6 +837,12 @@ export class ExecutionEngine extends EventEmitter {
     context.status = ExecutionStatus.RUNNING;
     context.sessionContext = { ...context.sessionContext, state: 'active' as any };
 
+    // Pin JUNO_TASK_ROOT to workingDirectory so juno-kanban always resolves
+    // .juno_task from the project root, not from wherever the agent cds to
+    if (!process.env.JUNO_TASK_ROOT) {
+      process.env.JUNO_TASK_ROOT = context.request.workingDirectory;
+    }
+
     // Initialize backend for this execution request
     await this.initializeBackend(context.request);
 
