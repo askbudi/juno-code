@@ -1398,6 +1398,8 @@ function generateAgentDocContent(
 
 ## Kanban Task Management
 
+For comprehensive kanban usage (all commands, dependency management, best practices), use the \`kanban-workflow\` skill.
+
 \`\`\`bash
 # List tasks
 ./.juno_task/scripts/kanban.sh list --limit 5 --sort asc
