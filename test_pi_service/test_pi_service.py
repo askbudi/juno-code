@@ -1089,3 +1089,289 @@ class TestResultEventCapture:
     def test_initial_last_result_event_is_none(self):
         """last_result_event starts as None."""
         assert self.svc.last_result_event is None
+
+
+# ===================================================================
+# 8. Message counter in prettifier output
+# ===================================================================
+
+class TestPiPrettifierCounter:
+    """Test that _format_event_pretty() includes counter in all outputs."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_counter_in_agent_start(self):
+        result = self.svc._format_event_pretty({"type": "agent_start"})
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_increments_across_events(self):
+        self.svc._format_event_pretty({"type": "agent_start"})
+        result = self.svc._format_event_pretty({"type": "turn_start"})
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#2"
+
+    def test_counter_in_turn_end(self):
+        result = self.svc._format_event_pretty({"type": "turn_end"})
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+        assert parsed["type"] == "turn_end"
+
+    def test_counter_in_tool_execution_start(self):
+        result = self.svc._format_event_pretty({
+            "type": "tool_execution_start",
+            "toolName": "bash",
+            "args": {"command": "ls"},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+        assert parsed["tool"] == "bash"
+
+    def test_counter_in_tool_execution_end(self):
+        result = self.svc._format_event_pretty({
+            "type": "tool_execution_end",
+            "toolName": "bash",
+            "result": "output",
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_agent_end(self):
+        result = self.svc._format_event_pretty({
+            "type": "agent_end",
+            "messages": [{"role": "assistant", "text": "done"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+        assert parsed["message_count"] == 1
+
+    def test_counter_in_message_update(self):
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_end", "content": "hello"},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+
+class TestCodexPrettifierCounter:
+    """Test that Codex prettifier modes include counter in output."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_counter_in_codex_message(self):
+        """_format_pi_codex_message includes counter for toolResult role."""
+        result = self.svc._format_pi_codex_message({
+            "role": "toolResult",
+            "toolName": "bash",
+            "content": [{"type": "text", "text": "ok"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_codex_event_text_end(self):
+        """_format_pi_codex_event includes counter for text_end."""
+        result = self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_end", "content": "hello"},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_codex_event_turn_end(self):
+        """_format_pi_codex_event includes counter for turn_end."""
+        result = self.svc._format_pi_codex_event({
+            "type": "turn_end",
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_codex_schema_event(self):
+        """_format_event_pretty_codex includes counter in header."""
+        result = self.svc._format_event_pretty_codex({
+            "type": "item.agent_reasoning",
+            "item": {"type": "agent_reasoning", "text": "thinking..."},
+        })
+        parsed = json.loads(result)
+        assert "counter" in parsed
+        assert parsed["counter"] == "#1"
+
+    def test_codex_schema_counter_increments(self):
+        """Counter increments across _format_event_pretty_codex calls."""
+        self.svc._format_event_pretty_codex({
+            "type": "item.agent_reasoning",
+            "item": {"type": "agent_reasoning", "text": "first"},
+        })
+        result = self.svc._format_event_pretty_codex({
+            "type": "item.agent_message",
+            "item": {"type": "agent_message", "message": "second"},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#2"
+
+
+class TestLivePrettifierCounter:
+    """Test that _format_event_live() includes counter in non-delta events."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_counter_in_text_start(self):
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_start"},
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_text_end(self):
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_end"},
+        })
+        # text_end prepends \n before JSON
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_thinking_start(self):
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_start"},
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_thinking_end(self):
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_end"},
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_toolcall_end(self):
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+        assert parsed["tool"] == "bash"
+
+    def test_counter_in_tool_execution_start(self):
+        result = self.svc._format_event_live({
+            "type": "tool_execution_start",
+            "toolName": "edit",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_tool_execution_end(self):
+        result = self.svc._format_event_live({
+            "type": "tool_execution_end",
+            "toolName": "edit",
+            "result": "done",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_turn_end(self):
+        result = self.svc._format_event_live({
+            "type": "turn_end",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_agent_start(self):
+        result = self.svc._format_event_live({
+            "type": "agent_start",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_agent_end(self):
+        result = self.svc._format_event_live({
+            "type": "agent_end",
+            "messages": [{"role": "assistant", "text": "done"}],
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
+        assert parsed["message_count"] == 1
+
+    def test_no_counter_in_text_delta(self):
+        """text_delta returns raw text, no counter."""
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "hello"},
+        })
+        assert result == "hello"
+        assert self.svc.message_counter == 0  # Not incremented for deltas
+
+    def test_counter_increments_across_live_events(self):
+        """Counter increments sequentially across different live events."""
+        self.svc._format_event_live({"type": "agent_start"})
+        assert self.svc.message_counter == 1
+
+        self.svc._format_event_live({"type": "turn_end"})
+        assert self.svc.message_counter == 2
+
+        result = self.svc._format_event_live({
+            "type": "tool_execution_start",
+            "toolName": "bash",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#3"
+
+    def test_suppressed_events_no_counter(self):
+        """Suppressed events (message_start, message_end) don't increment counter."""
+        self.svc._format_event_live({"type": "message_start"})
+        assert self.svc.message_counter == 0
+
+        self.svc._format_event_live({"type": "message_end"})
+        assert self.svc.message_counter == 0
+
+
+class TestClaudePrettifierCounter:
+    """Test that _format_event_pretty_claude() includes counter in output."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_counter_in_user_message(self):
+        event = {
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Hello"}]},
+        }
+        result = self.svc._format_event_pretty_claude(event)
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_assistant_message(self):
+        event = {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Hi there"}]},
+        }
+        result = self.svc._format_event_pretty_claude(event)
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_increments(self):
+        self.svc._format_event_pretty_claude({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "Q"}]},
+        })
+        result = self.svc._format_event_pretty_claude({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "A"}]},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#2"

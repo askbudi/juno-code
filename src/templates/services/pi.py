@@ -880,7 +880,7 @@ Model shorthands:
             base_type = header_type or msg_type or "message"
 
             def make_header(type_value: str):
-                hdr: Dict = {"type": type_value, "datetime": now}
+                hdr: Dict = {"type": type_value, "datetime": now, "counter": f"#{self.message_counter}"}
                 if item_id:
                     hdr["id"] = item_id
                 if outer_type and msg_type and outer_type != msg_type:
@@ -1279,22 +1279,27 @@ Model shorthands:
 
             # Section start markers
             if ame_type == "text_start":
-                return json.dumps({"type": "text_start", "datetime": now}) + "\n"
+                self.message_counter += 1
+                return json.dumps({"type": "text_start", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
             if ame_type == "thinking_start":
-                return json.dumps({"type": "thinking_start", "datetime": now}) + "\n"
+                self.message_counter += 1
+                return json.dumps({"type": "thinking_start", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
             # Section end markers (text was already streamed)
             if ame_type == "text_end":
-                return "\n" + json.dumps({"type": "text_end", "datetime": now}) + "\n"
+                self.message_counter += 1
+                return "\n" + json.dumps({"type": "text_end", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
             if ame_type == "thinking_end":
-                return "\n" + json.dumps({"type": "thinking_end", "datetime": now}) + "\n"
+                self.message_counter += 1
+                return "\n" + json.dumps({"type": "thinking_end", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
             # Tool call end: show tool info
             if ame_type == "toolcall_end":
+                self.message_counter += 1
                 tc = ame.get("toolCall", {})
-                header = {"type": "toolcall_end", "datetime": now}
+                header = {"type": "toolcall_end", "datetime": now, "counter": f"#{self.message_counter}"}
                 if isinstance(tc, dict):
                     header["tool"] = tc.get("name", "")
                     args = tc.get("arguments", {})
@@ -1316,9 +1321,11 @@ Model shorthands:
 
         # tool_execution_start
         if event_type == "tool_execution_start":
+            self.message_counter += 1
             header = {
                 "type": "tool_execution_start",
                 "datetime": now,
+                "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
             args_val = parsed.get("args")
@@ -1332,9 +1339,11 @@ Model shorthands:
 
         # tool_execution_end
         if event_type == "tool_execution_end":
+            self.message_counter += 1
             header = {
                 "type": "tool_execution_end",
                 "datetime": now,
+                "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
             is_error = parsed.get("isError", False)
@@ -1361,7 +1370,8 @@ Model shorthands:
 
         # turn_end: metadata only
         if event_type == "turn_end":
-            header = {"type": "turn_end", "datetime": now}
+            self.message_counter += 1
+            header = {"type": "turn_end", "datetime": now, "counter": f"#{self.message_counter}"}
             tool_results = parsed.get("toolResults")
             if isinstance(tool_results, list):
                 header["tool_results_count"] = len(tool_results)
@@ -1369,11 +1379,13 @@ Model shorthands:
 
         # agent_start, turn_start
         if event_type in ("agent_start", "turn_start"):
-            return json.dumps({"type": event_type, "datetime": now}) + "\n"
+            self.message_counter += 1
+            return json.dumps({"type": event_type, "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
         # agent_end
         if event_type == "agent_end":
-            header = {"type": "agent_end", "datetime": now}
+            self.message_counter += 1
+            header = {"type": "agent_end", "datetime": now, "counter": f"#{self.message_counter}"}
             messages = parsed.get("messages")
             if isinstance(messages, list):
                 header["message_count"] = len(messages)
