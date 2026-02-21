@@ -23,9 +23,14 @@ TARGET="$PROJECT_DIR/dist/bin/juno-code.sh"
 
 case "$ACTION" in
   install)
+    # Build from source to ensure we have the latest code
+    echo "Building juno-code from source..."
+    (cd "$PROJECT_DIR" && npm run build)
+    echo ""
+
     # Verify build output exists
     if [ ! -f "$TARGET" ]; then
-      echo "Error: dist/bin/juno-code.sh not found. Run 'npm run build' first."
+      echo "Error: dist/bin/juno-code.sh not found. Build failed."
       exit 1
     fi
 
