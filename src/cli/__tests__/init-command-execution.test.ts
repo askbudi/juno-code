@@ -56,7 +56,7 @@
  * ======
  * - Test directory path printed for manual verification: /tmp/juno-init-test-XXXXXX
  * - Detailed report generated: /tmp/juno-init-test-XXXXXX/test-outputs/init-command-complete-workflow-*.md
- * - All required files validated: init.md, prompt.md, USER_FEEDBACK.md, mcp.json, config.json
+ * - All required files validated: init.md, prompt.md, USER_FEEDBACK.md, config.json
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -98,7 +98,6 @@ interface InitCommandTestResult {
       initMd: boolean;
       promptMd: boolean;
       userFeedbackMd: boolean;
-      mcpJson: boolean;
       configJson: boolean;
     };
     additionalFiles: string[];
@@ -213,7 +212,6 @@ async function analyzeFileSystemChanges(
     initMd: await fs.pathExists(path.join(junoTaskPath, 'init.md')),
     promptMd: await fs.pathExists(path.join(junoTaskPath, 'prompt.md')),
     userFeedbackMd: await fs.pathExists(path.join(junoTaskPath, 'USER_FEEDBACK.md')),
-    mcpJson: await fs.pathExists(path.join(junoTaskPath, 'mcp.json')),
     configJson: await fs.pathExists(path.join(junoTaskPath, 'config.json')),
   };
 
@@ -279,7 +277,6 @@ ${testResult.fileSystemAnalysis.junoTaskFolderCreated ? '✅ Yes' : '❌ No'}
 - **init.md**: ${testResult.fileSystemAnalysis.requiredFiles.initMd ? '✅ Created' : '❌ Missing'}
 - **prompt.md**: ${testResult.fileSystemAnalysis.requiredFiles.promptMd ? '✅ Created' : '❌ Missing'}
 - **USER_FEEDBACK.md**: ${testResult.fileSystemAnalysis.requiredFiles.userFeedbackMd ? '✅ Created' : '❌ Missing'}
-- **mcp.json**: ${testResult.fileSystemAnalysis.requiredFiles.mcpJson ? '✅ Created' : '❌ Missing'}
 - **config.json**: ${testResult.fileSystemAnalysis.requiredFiles.configJson ? '✅ Created' : '❌ Missing'}
 
 ### Additional Files
@@ -442,7 +439,6 @@ describe('Init Command Execution Tests', () => {
           expect(fileSystemAnalysis.requiredFiles.initMd).toBe(true);
           expect(fileSystemAnalysis.requiredFiles.promptMd).toBe(true);
           expect(fileSystemAnalysis.requiredFiles.userFeedbackMd).toBe(true);
-          expect(fileSystemAnalysis.requiredFiles.mcpJson).toBe(true);
           expect(fileSystemAnalysis.requiredFiles.configJson).toBe(true);
         }
 
@@ -483,7 +479,6 @@ describe('Init Command Execution Tests', () => {
         console.log(
           `   USER_FEEDBACK.md: ${fileSystemAnalysis.requiredFiles.userFeedbackMd ? '✅' : '❌'}`,
         );
-        console.log(`   mcp.json: ${fileSystemAnalysis.requiredFiles.mcpJson ? '✅' : '❌'}`);
         console.log(`   config.json: ${fileSystemAnalysis.requiredFiles.configJson ? '✅' : '❌'}`);
       } catch (error) {
         const duration = performance.now() - startTime;
@@ -510,7 +505,6 @@ describe('Init Command Execution Tests', () => {
               initMd: false,
               promptMd: false,
               userFeedbackMd: false,
-              mcpJson: false,
               configJson: false,
             },
             additionalFiles: [],
