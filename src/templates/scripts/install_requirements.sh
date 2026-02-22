@@ -60,7 +60,7 @@ REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)
 VERSION_CHECK_CACHE_DIR="${HOME}/.juno_code"
 VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
-VERSION_CHECK_INTERVAL_HOURS=24  # Check for updates once per day
+VERSION_CHECK_INTERVAL_HOURS="${VERSION_CHECK_INTERVAL_HOURS:-24}"  # Check for updates once per day (override via env var)
 
 # Logging functions
 log_info() {
@@ -402,6 +402,38 @@ is_externally_managed_python() {
     return 1  # Not externally managed
 }
 
+# Function to upgrade pip to latest version inside the active venv
+# Why: venv ships with the pip version bundled in the Python distribution,
+# which can be months/years behind. Old pip may fail to resolve modern
+# dependency metadata or miss security fixes. Upgrading pip is fast (<2s)
+# and prevents hard-to-debug install failures downstream.
+upgrade_pip_in_venv() {
+    if ! is_in_virtualenv; then
+        return 0  # Only upgrade pip inside a venv
+    fi
+
+    log_info "Upgrading pip to latest version in venv..."
+
+    # Prefer uv for speed, fall back to pip itself
+    if command -v uv &>/dev/null; then
+        if uv pip install --upgrade pip --quiet 2>/dev/null; then
+            local pip_ver
+            pip_ver=$(python3 -m pip --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+            log_success "pip upgraded to v$pip_ver (via uv)"
+            return 0
+        fi
+    fi
+
+    # Fall back to pip self-upgrade
+    if python3 -m pip install --upgrade pip --quiet 2>/dev/null; then
+        local pip_ver
+        pip_ver=$(python3 -m pip --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+        log_success "pip upgraded to v$pip_ver"
+    else
+        log_warning "Could not upgrade pip (non-fatal, continuing with current version)"
+    fi
+}
+
 # Function to install packages using pipx
 install_with_pipx() {
     log_info "Installing packages using 'pipx' (recommended for Python applications)..."
@@ -492,6 +524,9 @@ install_with_uv() {
             log_error "Virtual environment activation script not found"
             return 1
         fi
+
+        # Upgrade pip to latest version in venv
+        upgrade_pip_in_venv
     fi
 
     local failed_packages=()
@@ -562,6 +597,9 @@ install_with_pip() {
         source "$venv_path/bin/activate"
         log_success "Activated virtual environment"
         python_cmd="python"  # Use the venv's python
+
+        # Upgrade pip to latest version in venv
+        upgrade_pip_in_venv
     fi
 
     local failed_packages=()
