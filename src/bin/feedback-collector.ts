@@ -10,10 +10,10 @@
  * - NO TTY/Raw mode - simple line-based stdin for AI agent compatibility
  *
  * Usage:
- *   juno-collect-feedback <command> [arg1 arg2 ...]
+ *   feedback-juno-code <command> [arg1 arg2 ...]
  * Example:
- *   juno-collect-feedback node dist/bin/cli.mjs feedback
- *   juno-collect-feedback juno-code feedback
+ *   feedback-juno-code node dist/bin/cli.mjs feedback
+ *   feedback-juno-code juno-code feedback
  *
  * OR run standalone:
  *   node dist/bin/feedback-collector.mjs
