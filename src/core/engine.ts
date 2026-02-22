@@ -681,7 +681,10 @@ export class ExecutionEngine extends EventEmitter {
       timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout || 43200000,
       enableJsonStreaming: true,
       outputRawJson: this.engineConfig.config.verbose,
-      environment: process.env,
+      environment: {
+        ...process.env,
+        JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || request.workingDirectory,
+      },
       sessionId: request.requestId,
     });
 

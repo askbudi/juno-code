@@ -190,6 +190,10 @@ fi
 # Change to project root
 cd "$PROJECT_ROOT"
 
+# Export JUNO_TASK_ROOT so juno-kanban resolves .juno_task paths from project root,
+# not from wherever the calling agent happens to be. Respects existing override.
+export JUNO_TASK_ROOT="${JUNO_TASK_ROOT:-$PROJECT_ROOT}"
+
 # Arrays to store normalized arguments (declared at script level for proper handling)
 declare -a NORMALIZED_GLOBAL_FLAGS=()
 declare -a NORMALIZED_COMMAND_ARGS=()
