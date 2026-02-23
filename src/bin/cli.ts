@@ -195,7 +195,7 @@ function setupGlobalOptions(program: Command): void {
 function setupMainCommand(program: Command): void {
   // Main command for direct execution with subagent
   program
-    .option('-p, --prompt <text>', 'Prompt input (file path or inline text)')
+    .option('-p, --prompt [text]', 'Prompt input (file path, inline text, or use with heredoc/stdin)')
     .option('-f, --prompt-file <path>', 'Read prompt from a file (alternative to -p "$(cat file)")')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)

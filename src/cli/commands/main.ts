@@ -100,7 +100,7 @@ class PromptProcessor {
 
     // Handle --interactive-prompt (TUI editor)
     if (interactivePrompt) {
-      return await this.launchTUIPromptEditor(prompt);
+      return await this.launchTUIPromptEditor(typeof prompt === 'string' ? prompt : undefined);
     }
 
     // Handle --prompt-file / -f flag (explicit file-based prompt)
@@ -108,7 +108,11 @@ class PromptProcessor {
       return await this.loadPromptFromFile(promptFile);
     }
 
-    if (!prompt) {
+    // Normalize prompt: Commander sets prompt=true when -p is used without an argument
+    // (e.g. `juno-code -p << 'EOF'` where heredoc redirects stdin)
+    const promptText = typeof prompt === 'string' ? prompt : undefined;
+
+    if (!promptText) {
       // Auto-detect piped stdin (heredoc, pipe, redirect) — no flag needed
       if (!process.stdin.isTTY) {
         return await this.readPipedStdin();
@@ -129,7 +133,7 @@ class PromptProcessor {
             'Provide prompt text: juno-code claude "your prompt here"',
             'Use file input: juno-code claude prompt.txt',
             'Pipe via stdin: echo "prompt" | juno-code claude',
-            'Use heredoc: juno-code claude << \'EOF\'\\nyour prompt\\nEOF',
+            'Use heredoc: juno-code claude -p << \'EOF\'\\nyour prompt\\nEOF',
             'Use interactive mode: juno-code claude --interactive',
             'Create default prompt file: .juno_task/prompt.md',
           ]);
@@ -138,12 +142,12 @@ class PromptProcessor {
     }
 
     // Check if prompt is a file path
-    if (await this.isFilePath(prompt)) {
-      return await this.loadPromptFromFile(prompt);
+    if (await this.isFilePath(promptText)) {
+      return await this.loadPromptFromFile(promptText);
     }
 
     // Direct prompt text
-    return prompt.trim();
+    return promptText.trim();
   }
 
   private async isFilePath(prompt: string): Promise<boolean> {

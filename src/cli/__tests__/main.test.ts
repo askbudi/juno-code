@@ -621,6 +621,53 @@ describe('Main Command', () => {
           expect(processStdinSpy).not.toHaveBeenCalledWith('data', expect.any(Function));
         });
 
+        it('should read stdin when -p flag used with heredoc (prompt=true)', async () => {
+          // When using `juno-code -p << 'EOF'`, Commander sets prompt=true (no string arg)
+          // The fix: treat prompt=true same as prompt=undefined, fall through to stdin
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+
+          let dataCallback: ((chunk: string) => void) | undefined;
+          let endCallback: (() => void) | undefined;
+
+          processStdinSpy.mockImplementation((event: string, callback: any) => {
+            if (event === 'data') {
+              dataCallback = callback;
+            } else if (event === 'end') {
+              endCallback = callback;
+            }
+            return process.stdin;
+          });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: true as any, // Commander sets boolean when -p has no argument
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          const handlerPromise = mainCommandHandler([], options, mockCommand);
+          await new Promise((r) => setTimeout(r, 50));
+
+          // Simulate heredoc content via stdin
+          dataCallback!('/ralph-loop Do Task 45OLrc\n');
+          endCallback!();
+
+          await handlerPromise;
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: '/ralph-loop Do Task 45OLrc',
+            }),
+          );
+          expect(processExitSpy).toHaveBeenCalledWith(0);
+        });
+
         it('should prefer --prompt-file over piped stdin', async () => {
           Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
           vi.mocked(fs.readFile).mockResolvedValueOnce('prompt from file');

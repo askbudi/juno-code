@@ -55,8 +55,8 @@ export interface GlobalCLIOptions {
 export interface MainCommandOptions extends GlobalCLIOptions {
   /** Subagent to use (required) */
   subagent: SubagentType;
-  /** Prompt input (file path or inline text) */
-  prompt?: string;
+  /** Prompt input (file path or inline text). Commander sets to `true` when -p flag used without argument (e.g. heredoc) */
+  prompt?: string | true;
   /** Prompt file path (alternative to -p "$(cat file)") */
   promptFile?: string;
   /** Working directory */
