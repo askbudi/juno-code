@@ -125,6 +125,7 @@ describe('Main Command', () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;
   let processExitSpy: ReturnType<typeof vi.spyOn>;
   let processStdinSpy: ReturnType<typeof vi.spyOn>;
+  let originalIsTTY: boolean | undefined;
 
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -134,6 +135,10 @@ describe('Main Command', () => {
       .mockImplementation((code: string | number | null | undefined = 1) => {
         return undefined as never;
       });
+
+    // Save original isTTY and default to TTY (most tests expect prompt-required behavior)
+    originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, configurable: true });
 
     // Mock stdin for interactive input
     processStdinSpy = vi.spyOn(process.stdin, 'on').mockImplementation(() => process.stdin);
@@ -187,6 +192,8 @@ describe('Main Command', () => {
     consoleSpy.mockRestore();
     processExitSpy.mockRestore();
     processStdinSpy.mockRestore();
+    // Restore original isTTY
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, writable: true, configurable: true });
   });
 
   describe('mainCommandHandler', () => {
@@ -449,6 +456,196 @@ describe('Main Command', () => {
 
         await expect(handlerPromise).rejects.toThrow('process.exit called');
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
+      });
+
+      describe('piped stdin auto-detection', () => {
+        it('should auto-read piped stdin when no -p is provided', async () => {
+          // Simulate piped stdin (not a TTY)
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+
+          let dataCallback: ((chunk: string) => void) | undefined;
+          let endCallback: (() => void) | undefined;
+
+          processStdinSpy.mockImplementation((event: string, callback: any) => {
+            if (event === 'data') {
+              dataCallback = callback;
+            } else if (event === 'end') {
+              endCallback = callback;
+            }
+            return process.stdin;
+          });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: undefined,
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          // Start the handler (it will block on stdin)
+          const handlerPromise = mainCommandHandler([], options, mockCommand);
+
+          // Wait a tick for async code to set up stdin listeners
+          await new Promise((r) => setTimeout(r, 50));
+
+          // Simulate piped input
+          dataCallback!('piped prompt from stdin\n');
+          endCallback!();
+
+          await handlerPromise;
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'piped prompt from stdin',
+            }),
+          );
+          expect(processExitSpy).toHaveBeenCalledWith(0);
+        });
+
+        it('should auto-read multiline piped stdin (heredoc)', async () => {
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+
+          let dataCallback: ((chunk: string) => void) | undefined;
+          let endCallback: (() => void) | undefined;
+
+          processStdinSpy.mockImplementation((event: string, callback: any) => {
+            if (event === 'data') {
+              dataCallback = callback;
+            } else if (event === 'end') {
+              endCallback = callback;
+            }
+            return process.stdin;
+          });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: undefined,
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          const handlerPromise = mainCommandHandler([], options, mockCommand);
+          await new Promise((r) => setTimeout(r, 50));
+
+          // Simulate multiline heredoc
+          dataCallback!('line 1\n');
+          dataCallback!('line 2\n');
+          dataCallback!('line 3\n');
+          endCallback!();
+
+          await handlerPromise;
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'line 1\nline 2\nline 3',
+            }),
+          );
+        });
+
+        it('should reject empty piped stdin', async () => {
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+
+          let dataCallback: ((chunk: string) => void) | undefined;
+          let endCallback: (() => void) | undefined;
+
+          processStdinSpy.mockImplementation((event: string, callback: any) => {
+            if (event === 'data') {
+              dataCallback = callback;
+            } else if (event === 'end') {
+              endCallback = callback;
+            }
+            return process.stdin;
+          });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: undefined,
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          const handlerPromise = mainCommandHandler([], options, mockCommand);
+          await new Promise((r) => setTimeout(r, 50));
+
+          // Simulate empty piped input
+          dataCallback!('   \n  ');
+          endCallback!();
+
+          await handlerPromise;
+
+          expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
+        });
+
+        it('should prefer -p flag over piped stdin', async () => {
+          // Even with piped stdin, -p should take priority
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: 'explicit prompt from -p',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          await mainCommandHandler([], options, mockCommand);
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'explicit prompt from -p',
+            }),
+          );
+          // stdin should NOT have been read
+          expect(processStdinSpy).not.toHaveBeenCalledWith('data', expect.any(Function));
+        });
+
+        it('should prefer --prompt-file over piped stdin', async () => {
+          Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
+          vi.mocked(fs.readFile).mockResolvedValueOnce('prompt from file');
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            promptFile: '/path/to/prompt.txt',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          await mainCommandHandler([], options, mockCommand);
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'prompt from file',
+            }),
+          );
+        });
       });
     });
 

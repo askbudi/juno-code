@@ -717,6 +717,12 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Quick execution with Claude')}
   juno-code claude "Analyze this codebase and suggest improvements"
 
+  ${chalk.gray('# Pipe prompt via stdin (heredoc, pipe, redirect)')}
+  echo "Analyze this codebase" | juno-code -s claude
+  juno-code -s claude << 'EOF'
+  Analyze this codebase and suggest improvements
+  EOF
+
   ${chalk.gray('# Interactive project setup')}
   juno-code init --interactive
 

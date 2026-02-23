@@ -109,6 +109,11 @@ class PromptProcessor {
     }
 
     if (!prompt) {
+      // Auto-detect piped stdin (heredoc, pipe, redirect) — no flag needed
+      if (!process.stdin.isTTY) {
+        return await this.readPipedStdin();
+      }
+
       if (this.options.interactive) {
         return await this.collectInteractivePrompt();
       } else {
@@ -123,8 +128,9 @@ class PromptProcessor {
           throw new ValidationError('Prompt is required for execution', [
             'Provide prompt text: juno-code claude "your prompt here"',
             'Use file input: juno-code claude prompt.txt',
+            'Pipe via stdin: echo "prompt" | juno-code claude',
+            'Use heredoc: juno-code claude << \'EOF\'\\nyour prompt\\nEOF',
             'Use interactive mode: juno-code claude --interactive',
-            'Use TUI editor: juno-code claude --interactive-prompt',
             'Create default prompt file: .juno_task/prompt.md',
           ]);
         }
@@ -182,6 +188,41 @@ class PromptProcessor {
     // TUI system has been removed; redirect to readline-based interactive prompt
     console.error(chalk.yellow('Using interactive prompt mode...'));
     return await this.collectInteractivePrompt();
+  }
+
+  private async readPipedStdin(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let input = '';
+
+      process.stdin.setEncoding('utf8');
+      process.stdin.resume();
+
+      process.stdin.on('data', (chunk) => {
+        input += chunk;
+      });
+
+      process.stdin.on('end', () => {
+        const trimmed = input.trim();
+        if (!trimmed) {
+          reject(
+            new ValidationError('Empty stdin input', [
+              'Provide prompt text via stdin',
+              'Example: echo "your prompt" | juno-code claude',
+              "Example: juno-code claude << 'EOF'\\nyour prompt\\nEOF",
+            ]),
+          );
+        } else {
+          console.error(
+            chalk.blue(`📥 Read prompt from stdin (${trimmed.length} chars)`),
+          );
+          resolve(trimmed);
+        }
+      });
+
+      process.stdin.on('error', (error) => {
+        reject(new RuntimeError(`Failed to read stdin: ${error}`, 'stdin'));
+      });
+    });
   }
 
   private async collectInteractivePrompt(): Promise<string> {
