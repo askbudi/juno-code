@@ -268,6 +268,18 @@ class PromptProcessor {
 }
 
 /**
+ * Module-level session ID tracker — updated during execution, read by SIGINT handler in cli.ts
+ */
+let _activeSessionId: string | null = null;
+
+/**
+ * Get the most recently known sub-agent session ID (for use by signal handlers).
+ */
+export function getActiveSessionId(): string | null {
+  return _activeSessionId;
+}
+
+/**
  * Execution progress display for main command
  */
 class MainProgressDisplay {
@@ -275,6 +287,8 @@ class MainProgressDisplay {
   private currentIteration: number = 0;
   private verbose: boolean;
   private hasStreamedJsonOutput: boolean = false; // Track if we streamed JSON output via progress events
+  private sessionIds: Map<number, string> = new Map(); // iteration# → sub-agent session_id
+  private latestSessionId: string | null = null; // most recent session_id seen
 
   constructor(verbose: boolean = false) {
     this.verbose = verbose;
@@ -314,6 +328,16 @@ class MainProgressDisplay {
 
   onProgress(event: ProgressEvent): void {
     const timestamp = event.timestamp.toLocaleTimeString();
+
+    // Capture sub-agent session_id from progress event metadata (claude/pi emit this)
+    if (event.metadata?.sessionId && typeof event.metadata.sessionId === 'string') {
+      this.latestSessionId = event.metadata.sessionId;
+      if (this.currentIteration > 0) {
+        this.sessionIds.set(this.currentIteration, event.metadata.sessionId);
+      }
+      // Update module-level tracker for SIGINT handler
+      _activeSessionId = this.latestSessionId;
+    }
 
     // If this is raw JSON output from shell backend (jq-style formatting)
     // OR if this is TEXT format streaming from shell backend (codex.py)
@@ -459,6 +483,46 @@ class MainProgressDisplay {
 
       if (stats.rateLimitEncounters > 0) {
         console.error(chalk.yellow(`   Rate Limits: ${stats.rateLimitEncounters}`));
+      }
+    }
+
+    // Show session IDs (always — useful for resuming sessions)
+    this.extractSessionIdsFromResult(result);
+    if (this.sessionIds.size > 0) {
+      console.error(chalk.blue('\n🔑 Session ID(s):'));
+      if (this.sessionIds.size === 1) {
+        const sessionId = [...this.sessionIds.values()][0];
+        console.error(chalk.white(`   ${sessionId}`));
+      } else {
+        for (const [iteration, sessionId] of this.sessionIds) {
+          console.error(chalk.white(`   Iteration ${iteration}: ${sessionId}`));
+        }
+      }
+    } else if (this.latestSessionId) {
+      console.error(chalk.blue('\n🔑 Session ID:'));
+      console.error(chalk.white(`   ${this.latestSessionId}`));
+    } else {
+      console.error(chalk.gray('\n🔑 Session ID: could not be extracted'));
+    }
+  }
+
+  /**
+   * Extract session IDs from iteration results' structured payloads
+   */
+  private extractSessionIdsFromResult(result: ExecutionResult): void {
+    for (const iteration of result.iterations) {
+      // Skip if we already have a session_id for this iteration (from progress events)
+      if (this.sessionIds.has(iteration.iterationNumber)) continue;
+
+      try {
+        const payload = JSON.parse(iteration.toolResult.content);
+        if (payload.session_id && typeof payload.session_id === 'string') {
+          this.sessionIds.set(iteration.iterationNumber, payload.session_id);
+          this.latestSessionId = payload.session_id;
+          _activeSessionId = this.latestSessionId;
+        }
+      } catch {
+        // Not JSON or no session_id — that's fine (e.g., codex)
       }
     }
   }

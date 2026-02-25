@@ -15,6 +15,9 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 
+// Session ID getter — set when main.js is loaded, used by SIGINT handler
+let _getActiveSessionId: (() => string | null) | null = null;
+
 // Import command configurations
 import { configureInitCommand } from '../cli/commands/init.js';
 import { configureStartCommand } from '../cli/commands/start.js';
@@ -359,7 +362,8 @@ function setupMainCommand(program: Command): void {
               if (allOptions.subagent && (allOptions.prompt || (await fs.pathExists(promptFile)))) {
                 console.log(chalk.green('✓ Auto-detected project configuration\n'));
                 // Import and execute with auto-detected options
-                const { mainCommandHandler } = await import('../cli/commands/main.js');
+                const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+                _getActiveSessionId = getActiveSessionId;
                 await mainCommandHandler([], allOptions, command);
                 return;
               }
@@ -392,7 +396,8 @@ function setupMainCommand(program: Command): void {
         }
 
         // Import and execute main command handler dynamically
-        const { mainCommandHandler } = await import('../cli/commands/main.js');
+        const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+        _getActiveSessionId = getActiveSessionId;
         await mainCommandHandler([], { ...options, ...globalOptions }, command);
       } catch (error) {
         handleCLIError(error, options.verbose);
@@ -442,7 +447,8 @@ function setupAliases(program: Command): void {
       .option('-w, --cwd <path>', 'Working directory')
       .action(async (prompt, options, command) => {
         try {
-          const { mainCommandHandler } = await import('../cli/commands/main.js');
+          const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+          _getActiveSessionId = getActiveSessionId;
           const promptText = Array.isArray(prompt) ? prompt.join(' ') : prompt;
           // Get global options and merge with command options
           const globalOptions = program.opts();
@@ -823,9 +829,15 @@ process.on('uncaughtException', async (error) => {
   process.exit(EXIT_CODES.UNEXPECTED_ERROR);
 });
 
-// Handle Ctrl+C gracefully
+// Handle Ctrl+C gracefully — show session ID so user can resume later
 process.on('SIGINT', () => {
-  console.log(chalk.yellow('\n\n⚠️  Execution cancelled by user'));
+  const sessionId = _getActiveSessionId?.();
+  if (sessionId) {
+    console.log(chalk.cyan(`\n\n🔑 Session ID: ${sessionId}`));
+  } else {
+    console.log(''); // blank line before cancellation message
+  }
+  console.log(chalk.yellow('⚠️  Execution cancelled by user'));
   process.exit(EXIT_CODES.SUCCESS);
 });
 
