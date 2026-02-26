@@ -74,6 +74,13 @@ class PiService:
     PRETTIFIER_CODEX = "codex"
     PRETTIFIER_LIVE = "live"
 
+    # ANSI 256-color codes for tool result coloring.
+    # Gray (#8a8a8a) — visible on both dark and light terminal backgrounds.
+    # Red (#ff5f5f) — for error results, matching Pi's error color role.
+    ANSI_GRAY = "\x1b[38;5;245m"
+    ANSI_RED = "\x1b[38;5;203m"
+    ANSI_RESET = "\x1b[0m"
+
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
         self.project_path = os.getcwd()
@@ -93,6 +100,24 @@ class PiService:
         self._codex_tool_result_max_lines = int(os.environ.get("PI_TOOL_RESULT_MAX_LINES", "6"))
         # Keys to hide from intermediate assistant messages in Codex mode
         self._codex_metadata_keys = {"api", "provider", "model", "usage", "stopReason", "timestamp"}
+
+    def _color_enabled(self) -> bool:
+        """Check if ANSI color output is appropriate (TTY + NO_COLOR not set)."""
+        if os.environ.get("NO_COLOR") is not None:
+            return False
+        return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+    def _colorize_result(self, text: str, is_error: bool = False) -> str:
+        """Wrap text in ANSI color for tool result display.
+
+        Success results use gray (visible on both dark/light backgrounds).
+        Error results use red to immediately draw attention.
+        Returns text unchanged when color is disabled (NO_COLOR or non-TTY).
+        """
+        if not self._color_enabled():
+            return text
+        code = self.ANSI_RED if is_error else self.ANSI_GRAY
+        return f"{code}{text}{self.ANSI_RESET}"
 
     def expand_model_shorthand(self, model: str) -> str:
         """Expand shorthand model names (colon-prefixed) to full identifiers."""
@@ -838,6 +863,7 @@ Model shorthands:
             if is_error:
                 header["isError"] = True
             result_val = parsed.get("result")
+            use_color = self._color_enabled()
             if isinstance(result_val, dict):
                 result_content = result_val.get("content")
                 if isinstance(result_content, list):
@@ -845,8 +871,10 @@ Model shorthands:
                         if isinstance(rc_item, dict) and rc_item.get("type") == "text":
                             text = rc_item.get("text", "")
                             truncated = self._truncate_tool_result_text(text)
-                            if "\n" in truncated:
-                                return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + truncated
+                            if "\n" in truncated or use_color:
+                                colored = self._colorize_result(truncated, is_error=bool(is_error))
+                                label = self._colorize_result("result:", is_error=bool(is_error))
+                                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
                             header["result"] = truncated
                             return json.dumps(header, ensure_ascii=False)
             return json.dumps(header, ensure_ascii=False)
@@ -1165,8 +1193,13 @@ Model shorthands:
         elif isinstance(result_val, list):
             result_text = json.dumps(result_val, ensure_ascii=False)
         if result_text:
-            if "\n" in result_text:
-                return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + result_text
+            use_color = self._color_enabled()
+            if "\n" in result_text or use_color:
+                # Multi-line format: ANSI codes work outside JSON; also used for
+                # single-line results when color is enabled so codes aren't escaped.
+                colored = self._colorize_result(result_text, is_error=bool(is_error))
+                label = self._colorize_result("result:", is_error=bool(is_error))
+                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
             header["result"] = result_text
         return json.dumps(header, ensure_ascii=False)
 
@@ -1346,14 +1379,19 @@ Model shorthands:
                 if is_error:
                     header["isError"] = True
                 result_val = payload.get("result")
+                use_color = self._color_enabled()
                 if isinstance(result_val, str) and result_val.strip():
-                    if "\n" in result_val:
-                        return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + result_val
+                    if "\n" in result_val or use_color:
+                        colored = self._colorize_result(result_val, is_error=bool(is_error))
+                        label = self._colorize_result("result:", is_error=bool(is_error))
+                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
                     header["result"] = result_val
                 elif isinstance(result_val, (dict, list)):
                     result_str = json.dumps(result_val, ensure_ascii=False)
-                    if "\n" in result_str or len(result_str) > 200:
-                        return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + result_str
+                    if "\n" in result_str or len(result_str) > 200 or use_color:
+                        colored = self._colorize_result(result_str, is_error=bool(is_error))
+                        label = self._colorize_result("result:", is_error=bool(is_error))
+                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
                     header["result"] = result_val
                 return json.dumps(header, ensure_ascii=False)
 
@@ -1495,10 +1533,13 @@ Model shorthands:
             if is_error:
                 header["isError"] = True
             result_val = parsed.get("result")
+            use_color = self._color_enabled()
             if isinstance(result_val, str) and result_val.strip():
                 truncated = self._truncate_tool_result_text(result_val)
-                if "\n" in truncated:
-                    return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + truncated + "\n"
+                if "\n" in truncated or use_color:
+                    colored = self._colorize_result(truncated, is_error=bool(is_error))
+                    label = self._colorize_result("result:", is_error=bool(is_error))
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
                 header["result"] = truncated
             elif isinstance(result_val, dict):
                 result_content = result_val.get("content")
@@ -1507,8 +1548,10 @@ Model shorthands:
                         if isinstance(rc_item, dict) and rc_item.get("type") == "text":
                             text = rc_item.get("text", "")
                             truncated = self._truncate_tool_result_text(text)
-                            if "\n" in truncated:
-                                return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + truncated + "\n"
+                            if "\n" in truncated or use_color:
+                                colored = self._colorize_result(truncated, is_error=bool(is_error))
+                                label = self._colorize_result("result:", is_error=bool(is_error))
+                                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
                             header["result"] = truncated
                             break
             return json.dumps(header, ensure_ascii=False) + "\n"

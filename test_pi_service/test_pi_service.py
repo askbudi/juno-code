@@ -2197,3 +2197,326 @@ class TestBuildCombinedToolEvent:
         pending2 = {"tool": "bash", "command": "pwd", "datetime": "12:00:02 PM"}
         self.svc._build_combined_tool_event(pending2, {"toolName": "bash", "result": "/tmp"}, "12:00:03 PM")
         assert self.svc.message_counter == 2
+
+
+# ---------------------------------------------------------------------------
+# Tool result color tests
+# ---------------------------------------------------------------------------
+
+class TestColorEnabled:
+    """Test _color_enabled() TTY and NO_COLOR detection."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_non_tty_returns_false(self):
+        """Non-TTY stdout (e.g. piped or captured) disables color."""
+        # In test runners, stdout is not a TTY
+        assert self.svc._color_enabled() is False
+
+    def test_no_color_env_disables(self, monkeypatch):
+        """NO_COLOR environment variable disables color even if TTY."""
+        monkeypatch.setenv("NO_COLOR", "1")
+        assert self.svc._color_enabled() is False
+
+    def test_no_color_empty_string_disables(self, monkeypatch):
+        """NO_COLOR="" (set but empty) still disables color per spec."""
+        monkeypatch.setenv("NO_COLOR", "")
+        assert self.svc._color_enabled() is False
+
+    def test_tty_without_no_color_enables(self, monkeypatch):
+        """TTY stdout without NO_COLOR enables color."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        assert self.svc._color_enabled() is True
+
+
+class TestColorizeResult:
+    """Test _colorize_result() ANSI wrapping behavior."""
+
+    GRAY = "\x1b[38;5;245m"
+    RED = "\x1b[38;5;203m"
+    RESET = "\x1b[0m"
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_no_color_passthrough(self):
+        """When color is disabled, text passes through unchanged."""
+        # Test runs in non-TTY, so color is disabled
+        assert self.svc._colorize_result("hello") == "hello"
+        assert self.svc._colorize_result("error text", is_error=True) == "error text"
+
+    def test_gray_for_success(self, monkeypatch):
+        """Success results get gray ANSI wrapping."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        result = self.svc._colorize_result("ok")
+        assert result == f"{self.GRAY}ok{self.RESET}"
+
+    def test_red_for_error(self, monkeypatch):
+        """Error results get red ANSI wrapping."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        result = self.svc._colorize_result("fail", is_error=True)
+        assert result == f"{self.RED}fail{self.RESET}"
+
+    def test_multiline_text_colored(self, monkeypatch):
+        """Multi-line result text gets fully wrapped (one pair of codes)."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        text = "line1\nline2\nline3"
+        result = self.svc._colorize_result(text)
+        assert result.startswith(self.GRAY)
+        assert result.endswith(self.RESET)
+        assert "line1\nline2\nline3" in result
+
+    def test_no_color_env_suppresses(self, monkeypatch):
+        """NO_COLOR env var prevents ANSI codes even with TTY."""
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        result = self.svc._colorize_result("ok")
+        assert result == "ok"
+        assert "\x1b" not in result
+
+
+class TestCombinedToolEventColor:
+    """Test ANSI color in _build_combined_tool_event output."""
+
+    GRAY = "\x1b[38;5;245m"
+    RED = "\x1b[38;5;203m"
+    RESET = "\x1b[0m"
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_no_color_in_non_tty(self):
+        """Non-TTY: combined event result has no ANSI codes."""
+        pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "file1\nfile2"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert "\x1b" not in result
+        assert "result:" in result
+        assert "file1" in result
+
+    def test_color_with_tty(self, monkeypatch):
+        """TTY: combined event result has gray ANSI codes."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "file1\nfile2"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert self.GRAY in result
+        assert self.RESET in result
+
+    def test_error_result_red(self, monkeypatch):
+        """TTY: error result uses red ANSI code."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "false", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "command failed", "isError": True}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert self.RED in result
+        assert self.RESET in result
+        assert self.GRAY not in result
+
+    def test_inline_result_colored(self, monkeypatch):
+        """TTY: single-line result uses multi-line format so ANSI codes aren't JSON-escaped."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "pwd", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "/home/user"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert self.GRAY in result
+        assert "/home/user" in result
+        # Multi-line format used (ANSI codes outside JSON)
+        assert f"{self.GRAY}result:{self.RESET}" in result
+
+    def test_result_label_colored(self, monkeypatch):
+        """TTY: the 'result:' label is also colored for multiline results."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "a\nb\nc"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        # The result: label should be colored
+        assert f"{self.GRAY}result:{self.RESET}" in result
+
+
+class TestPrettifierFallbackColor:
+    """Test color in fallback tool_execution_end paths (no pending match)."""
+
+    GRAY = "\x1b[38;5;245m"
+    RED = "\x1b[38;5;203m"
+    RESET = "\x1b[0m"
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def _enable_color(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    # --- Pi prettifier (_format_event_pretty) ---
+
+    def test_pi_fallback_multiline_colored(self, monkeypatch):
+        """Pi prettifier: fallback tool_execution_end multiline result is gray."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "line1\nline2",
+        }
+        result = self.svc._format_event_pretty(payload)
+        assert self.GRAY in result
+        assert "line1" in result
+
+    def test_pi_fallback_error_red(self, monkeypatch):
+        """Pi prettifier: fallback tool_execution_end error result is red."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "bash",
+            "result": "command not found",
+            "isError": True,
+        }
+        result = self.svc._format_event_pretty(payload)
+        assert self.RED in result
+
+    def test_pi_fallback_no_color_no_ansi(self):
+        """Pi prettifier: fallback without TTY has no ANSI codes."""
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "line1\nline2",
+        }
+        result = self.svc._format_event_pretty(payload)
+        assert "\x1b" not in result
+
+    # --- Codex prettifier (_format_pi_codex_event) ---
+
+    def test_codex_fallback_multiline_colored(self, monkeypatch):
+        """Codex prettifier: fallback tool_execution_end with content array is colored."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": {
+                "content": [{"type": "text", "text": "line1\nline2"}],
+            },
+        }
+        result = self.svc._format_pi_codex_event(payload)
+        assert self.GRAY in result
+        assert "line1" in result
+
+    def test_codex_fallback_error_red(self, monkeypatch):
+        """Codex prettifier: fallback tool_execution_end error is red."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "bash",
+            "isError": True,
+            "result": {
+                "content": [{"type": "text", "text": "error output"}],
+            },
+        }
+        result = self.svc._format_pi_codex_event(payload)
+        assert self.RED in result
+
+    def test_codex_fallback_no_color_no_ansi(self):
+        """Codex prettifier: fallback without TTY has no ANSI codes."""
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": {
+                "content": [{"type": "text", "text": "line1\nline2"}],
+            },
+        }
+        result = self.svc._format_pi_codex_event(payload)
+        assert "\x1b" not in result
+
+    # --- Live prettifier (_format_event_live) ---
+
+    def test_live_fallback_multiline_colored(self, monkeypatch):
+        """Live prettifier: fallback tool_execution_end multiline result is gray."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "line1\nline2",
+        }
+        result = self.svc._format_event_live(payload)
+        assert self.GRAY in result
+        assert "line1" in result
+
+    def test_live_fallback_error_red(self, monkeypatch):
+        """Live prettifier: fallback tool_execution_end error result is red."""
+        self._enable_color(monkeypatch)
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "bash",
+            "result": "fail\noutput",
+            "isError": True,
+        }
+        result = self.svc._format_event_live(payload)
+        assert self.RED in result
+
+    def test_live_fallback_no_color_no_ansi(self):
+        """Live prettifier: fallback without TTY has no ANSI codes."""
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "line1\nline2",
+        }
+        result = self.svc._format_event_live(payload)
+        assert "\x1b" not in result
+
+    # --- Combined event color via all 3 prettifiers ---
+
+    def test_pi_combined_colored(self, monkeypatch):
+        """Pi prettifier: combined tool event result is colored."""
+        self._enable_color(monkeypatch)
+        # Buffer a toolcall_end
+        tc = {"toolCallId": "tc-color-1", "name": "bash", "arguments": {"command": "ls"}}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        payload = {
+            "type": "tool_execution_end",
+            "toolCallId": "tc-color-1",
+            "toolName": "bash",
+            "result": "file1\nfile2",
+        }
+        result = self.svc._format_event_pretty(payload)
+        assert self.GRAY in result
+        assert "file1" in result
+
+    def test_codex_combined_colored(self, monkeypatch):
+        """Codex prettifier: combined tool event result is colored."""
+        self._enable_color(monkeypatch)
+        tc = {"toolCallId": "tc-color-2", "name": "read", "arguments": {"path": "f.txt"}}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        payload = {
+            "type": "tool_execution_end",
+            "toolCallId": "tc-color-2",
+            "toolName": "read",
+            "result": "contents\nof\nfile",
+        }
+        result = self.svc._format_pi_codex_event(payload)
+        assert self.GRAY in result
+
+    def test_live_combined_colored(self, monkeypatch):
+        """Live prettifier: combined tool event result is colored."""
+        self._enable_color(monkeypatch)
+        tc = {"toolCallId": "tc-color-3", "name": "bash", "arguments": {"command": "pwd"}}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        payload = {
+            "type": "tool_execution_end",
+            "toolCallId": "tc-color-3",
+            "toolName": "bash",
+            "result": "output\nlines",
+        }
+        result = self.svc._format_event_live(payload)
+        assert self.GRAY in result
