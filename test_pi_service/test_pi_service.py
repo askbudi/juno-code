@@ -1188,18 +1188,18 @@ class TestPiPrettifierCounter:
         assert parsed["counter"] == "#1"
         assert parsed["type"] == "turn_end"
 
-    def test_no_counter_in_tool_execution_start(self):
-        """tool_execution_start is not an *_end event — no counter."""
+    def test_tool_execution_start_suppressed(self):
+        """tool_execution_start is always suppressed (returns None)."""
         result = self.svc._format_event_pretty({
             "type": "tool_execution_start",
             "toolName": "bash",
+            "toolCallId": "tc1",
             "args": {"command": "ls"},
         })
-        parsed = json.loads(result)
-        assert "counter" not in parsed
-        assert parsed["tool"] == "bash"
+        assert result is None
 
     def test_counter_in_tool_execution_end(self):
+        """tool_execution_end emits as 'tool' type with counter."""
         result = self.svc._format_event_pretty({
             "type": "tool_execution_end",
             "toolName": "bash",
@@ -1207,6 +1207,7 @@ class TestPiPrettifierCounter:
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#1"
+        assert parsed["type"] == "tool"
 
     def test_counter_in_agent_end(self):
         result = self.svc._format_event_pretty({
@@ -1481,14 +1482,14 @@ class TestCodexPrettifierCounter:
         parsed = json.loads(result)
         assert "counter" not in parsed
 
-    def test_no_counter_in_codex_event_tool_execution_start(self):
-        """_format_pi_codex_event: tool_execution_start has no counter."""
+    def test_codex_event_tool_execution_start_suppressed(self):
+        """_format_pi_codex_event: tool_execution_start is always suppressed."""
         result = self.svc._format_pi_codex_event({
             "type": "tool_execution_start",
             "toolName": "bash",
+            "toolCallId": "tc1",
         })
-        parsed = json.loads(result)
-        assert "counter" not in parsed
+        assert result == ""
 
     def test_codex_event_turn_start_suppressed(self):
         """_format_pi_codex_event: turn_start is suppressed (empty string)."""
@@ -1603,16 +1604,17 @@ class TestLivePrettifierCounter:
         assert parsed["counter"] == "#1"
         assert parsed["tool"] == "bash"
 
-    def test_no_counter_in_tool_execution_start(self):
-        """tool_execution_start is not an *_end event — no counter."""
+    def test_tool_execution_start_suppressed(self):
+        """tool_execution_start is always suppressed in live mode."""
         result = self.svc._format_event_live({
             "type": "tool_execution_start",
             "toolName": "edit",
+            "toolCallId": "tc1",
         })
-        parsed = json.loads(result.strip())
-        assert "counter" not in parsed
+        assert result == ""
 
     def test_counter_in_tool_execution_end(self):
+        """tool_execution_end emits as 'tool' type with counter."""
         result = self.svc._format_event_live({
             "type": "tool_execution_end",
             "toolName": "edit",
@@ -1620,6 +1622,7 @@ class TestLivePrettifierCounter:
         })
         parsed = json.loads(result.strip())
         assert parsed["counter"] == "#1"
+        assert parsed["type"] == "tool"
 
     def test_counter_in_turn_end(self):
         result = self.svc._format_event_live({
@@ -1837,18 +1840,30 @@ class TestPiToolCallGrouping:
         assert "args" in parsed_a
 
     def test_no_pending_fallback(self):
-        """tool_execution_end without pending emits original format."""
+        """tool_execution_end without any buffered data emits 'tool' type."""
         result = self.svc._format_event_pretty(self._tool_exec_end("bash", "output", tc_id="tc-orphan"))
         parsed = json.loads(result)
-        assert parsed["type"] == "tool_execution_end"  # original type, not "tool"
+        assert parsed["type"] == "tool"  # unified type
         assert parsed["tool"] == "bash"
 
-    def test_tool_execution_start_no_pending_emits_normally(self):
-        """tool_execution_start without matching pending emits normally."""
+    def test_tool_execution_start_always_suppressed(self):
+        """tool_execution_start is always suppressed (returns None) and buffers args."""
         result = self.svc._format_event_pretty(self._tool_exec_start("read", {"path": "/tmp/f.txt"}, tc_id="tc-orphan"))
+        assert result is None
+        # Args should be buffered in _pending_exec_starts
+        assert "tc-orphan" in self.svc._pending_exec_starts
+        assert self.svc._pending_exec_starts["tc-orphan"]["tool"] == "read"
+
+    def test_exec_start_args_used_by_exec_end(self):
+        """When toolcall_end is missing, tool_execution_end uses buffered exec_start args."""
+        # Buffer tool_execution_start
+        self.svc._format_event_pretty(self._tool_exec_start("bash", {"command": "echo hi"}, tc_id="tc-late"))
+        # Now tool_execution_end arrives — should use buffered args
+        result = self.svc._format_event_pretty(self._tool_exec_end("bash", "hi", tc_id="tc-late"))
         parsed = json.loads(result)
-        assert parsed["type"] == "tool_execution_start"
-        assert parsed["tool"] == "read"
+        assert parsed["type"] == "tool"
+        assert parsed["tool"] == "bash"
+        assert parsed["command"] == "echo hi"
 
     def test_toolcall_end_without_id_emits_normally(self):
         """toolcall_end without toolCallId emits immediately (no grouping)."""
@@ -1941,7 +1956,7 @@ class TestCodexToolCallGrouping:
         assert "counter" in parsed
 
     def test_no_pending_fallback(self):
-        """tool_execution_end without pending emits original format."""
+        """tool_execution_end without buffered data emits 'tool' type."""
         result = self.svc._format_pi_codex_event({
             "type": "tool_execution_end",
             "toolCallId": "tc-orphan",
@@ -1949,7 +1964,27 @@ class TestCodexToolCallGrouping:
             "result": {"content": [{"type": "text", "text": "output"}]},
         })
         parsed = json.loads(result)
-        assert parsed["type"] == "tool_execution_end"
+        assert parsed["type"] == "tool"
+
+    def test_codex_exec_start_args_used_by_exec_end(self):
+        """When toolcall_end is missing, codex tool_execution_end uses buffered exec_start args."""
+        # Buffer tool_execution_start
+        self.svc._format_pi_codex_event({
+            "type": "tool_execution_start",
+            "toolCallId": "tc-late",
+            "toolName": "bash",
+            "args": {"command": "pwd"},
+        })
+        # Now tool_execution_end arrives — should use buffered args
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-late",
+            "toolName": "bash",
+            "result": {"content": [{"type": "text", "text": "/home"}]},
+        })
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert parsed["command"] == "pwd"
 
     def test_codex_result_content_array_in_combined(self):
         """Combined event correctly extracts text from Codex-style content array."""
@@ -2027,7 +2062,7 @@ class TestLiveToolCallGrouping:
         assert parsed["result"] == "hi"
 
     def test_no_pending_fallback(self):
-        """tool_execution_end without pending emits original format."""
+        """tool_execution_end without buffered data emits 'tool' type."""
         result = self.svc._format_event_live({
             "type": "tool_execution_end",
             "toolCallId": "tc-orphan",
@@ -2035,7 +2070,27 @@ class TestLiveToolCallGrouping:
             "result": "output",
         })
         parsed = json.loads(result.strip())
-        assert parsed["type"] == "tool_execution_end"
+        assert parsed["type"] == "tool"
+
+    def test_live_exec_start_args_used_by_exec_end(self):
+        """When toolcall_end is missing, live tool_execution_end uses buffered exec_start args."""
+        # Buffer tool_execution_start
+        self.svc._format_event_live({
+            "type": "tool_execution_start",
+            "toolCallId": "tc-late",
+            "toolName": "bash",
+            "args": {"command": "date"},
+        })
+        # Now tool_execution_end arrives — should use buffered args
+        result = self.svc._format_event_live({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-late",
+            "toolName": "bash",
+            "result": "Wed Feb 26",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "tool"
+        assert parsed["command"] == "date"
 
     def test_live_multiline_result_combined(self):
         """Combined event with multiline result in live mode."""
