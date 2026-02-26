@@ -134,13 +134,15 @@ class PiService:
 
         Pi CLI always uses its own event protocol (message, turn_end,
         message_update, agent_end, etc.) regardless of the underlying LLM.
-        The exception is Codex models where Pi wraps Codex-format events
-        (agent_reasoning, agent_message, exec_command_end).
+        Codex models also use Pi's event protocol but may additionally emit
+        native Codex events (agent_reasoning, agent_message, exec_command_end).
+        The LIVE prettifier handles both Pi-native and Codex-native events,
+        giving real-time streaming output for all model types.
         Claude models still use Pi's event protocol, NOT Claude CLI events.
         """
         model_lower = model.lower()
         if "codex" in model_lower:
-            return self.PRETTIFIER_CODEX
+            return self.PRETTIFIER_LIVE
         # All non-Codex models (including Claude) use Pi's native event protocol
         return self.PRETTIFIER_PI
 
@@ -1583,6 +1585,108 @@ Model shorthands:
                 header["message_count"] = len(messages)
             return json.dumps(header, ensure_ascii=False) + "\n"
 
+        # --- Role-based messages (Pi-wrapped Codex messages) ---
+        role = parsed.get("role", "")
+        if role == "toolResult":
+            self.message_counter += 1
+            header = {
+                "type": "toolResult",
+                "datetime": now,
+                "counter": f"#{self.message_counter}",
+                "toolName": parsed.get("toolName", ""),
+            }
+            is_error = parsed.get("isError", False)
+            if is_error:
+                header["isError"] = True
+            content = parsed.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_val = item.get("text", "")
+                        truncated = self._truncate_tool_result_text(text_val)
+                        use_color = self._color_enabled()
+                        if "\n" in truncated or use_color:
+                            colored = self._colorize_result(truncated, is_error=bool(is_error))
+                            label = self._colorize_result("content:", is_error=bool(is_error))
+                            return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                        header["content"] = truncated
+                        return json.dumps(header, ensure_ascii=False) + "\n"
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
+        if role == "assistant":
+            self.message_counter += 1
+            content = parsed.get("content")
+            if isinstance(content, list):
+                self._strip_thinking_signature(content)
+            header = {"type": "assistant", "datetime": now, "counter": f"#{self.message_counter}"}
+            text_parts = []
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+                        elif item.get("type") == "thinking":
+                            text_parts.append(f"[thinking] {item.get('thinking', '')}")
+                        elif item.get("type") == "toolCall":
+                            name = item.get("name", "")
+                            args = item.get("arguments", {})
+                            cmd = args.get("command", "") if isinstance(args, dict) else ""
+                            text_parts.append(f"[toolCall] {name}: {cmd}" if cmd else f"[toolCall] {name}")
+            if text_parts:
+                combined = "\n".join(text_parts)
+                if "\n" in combined:
+                    return json.dumps(header, ensure_ascii=False) + "\n" + combined + "\n"
+                header["content"] = combined
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
+        if role:
+            # Other roles — minimal JSON header
+            self.message_counter += 1
+            return json.dumps({"type": role, "datetime": now, "counter": f"#{self.message_counter}"}, ensure_ascii=False) + "\n"
+
+        # --- Native Codex events (agent_reasoning, agent_message, exec_command_end, etc.) ---
+        msg_type, payload, outer_type = self._normalize_codex_event(parsed)
+
+        if msg_type in ("agent_reasoning", "reasoning"):
+            self.message_counter += 1
+            content = self._extract_reasoning_text(payload)
+            header = {"type": msg_type, "datetime": now, "counter": f"#{self.message_counter}"}
+            if "\n" in content:
+                return json.dumps(header, ensure_ascii=False) + "\ntext:\n" + content + "\n"
+            if content:
+                header["text"] = content
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
+        if msg_type in ("agent_message", "assistant_message"):
+            self.message_counter += 1
+            content = self._extract_message_text_codex(payload)
+            header = {"type": msg_type, "datetime": now, "counter": f"#{self.message_counter}"}
+            if "\n" in content:
+                return json.dumps(header, ensure_ascii=False) + "\nmessage:\n" + content + "\n"
+            if content:
+                header["message"] = content
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
+        if msg_type == "exec_command_end":
+            self.message_counter += 1
+            formatted_output = payload.get("formatted_output", "") if isinstance(payload, dict) else ""
+            header = {"type": msg_type, "datetime": now, "counter": f"#{self.message_counter}"}
+            if "\n" in formatted_output:
+                return json.dumps(header, ensure_ascii=False) + "\nformatted_output:\n" + formatted_output + "\n"
+            if formatted_output:
+                header["formatted_output"] = formatted_output
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
+        if msg_type == "command_execution":
+            self.message_counter += 1
+            aggregated_output = self._extract_command_output_text(payload)
+            header = {"type": msg_type, "datetime": now, "counter": f"#{self.message_counter}"}
+            if "\n" in aggregated_output:
+                return json.dumps(header, ensure_ascii=False) + "\naggregated_output:\n" + aggregated_output + "\n"
+            if aggregated_output:
+                header["aggregated_output"] = aggregated_output
+            return json.dumps(header, ensure_ascii=False) + "\n"
+
         # Fallback: not handled
         return None
 
@@ -1936,10 +2040,10 @@ Model shorthands:
         self.prettifier_mode = self._detect_prettifier_mode(self.model_name)
         self.verbose = args.verbose
 
-        # Verbose mode enables live stream prettifier for real-time output,
-        # but only for Pi-native event protocol.  Codex models use a different
-        # event format that the LIVE prettifier doesn't handle — keep codex mode.
-        if args.verbose and self.prettifier_mode != self.PRETTIFIER_CODEX:
+        # Verbose mode enables live stream prettifier for real-time output.
+        # Codex models already default to LIVE; this ensures all models get
+        # real-time streaming when -v is used.
+        if args.verbose:
             self.prettifier_mode = self.PRETTIFIER_LIVE
 
         if self.verbose:

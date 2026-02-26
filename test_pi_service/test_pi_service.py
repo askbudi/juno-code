@@ -366,10 +366,12 @@ class TestPrettifierModeDetection:
         self.svc = _load_pi_service()
 
     def test_codex_model(self):
-        assert self.svc._detect_prettifier_mode("gpt-5.3-codex") == "codex"
+        """Codex models default to LIVE for real-time streaming."""
+        assert self.svc._detect_prettifier_mode("gpt-5.3-codex") == "live"
 
     def test_codex_model_mixed_case(self):
-        assert self.svc._detect_prettifier_mode("openai/GPT-5.3-CODEX") == "codex"
+        """Codex detection is case-insensitive, defaults to LIVE."""
+        assert self.svc._detect_prettifier_mode("openai/GPT-5.3-CODEX") == "live"
 
     def test_sonnet_model(self):
         """Claude models use Pi native prettifier (Pi always emits its own event protocol)."""
@@ -404,8 +406,8 @@ class TestPrettifierModeDetection:
         assert self.svc._detect_prettifier_mode("") == "pi"
 
     def test_codex_in_path(self):
-        """The word 'codex' anywhere in model string triggers codex mode."""
-        assert self.svc._detect_prettifier_mode("openai/gpt-5.3-codex") == "codex"
+        """The word 'codex' anywhere in model string triggers LIVE mode."""
+        assert self.svc._detect_prettifier_mode("openai/gpt-5.3-codex") == "live"
 
     def test_sonnet_in_full_path(self):
         """Claude models use Pi native prettifier (Pi always emits its own event protocol)."""
@@ -417,11 +419,12 @@ class TestPrettifierModeDetection:
 # ===================================================================
 
 class TestVerbosePrettifierInteraction:
-    """Verbose mode should NOT override codex prettifier.
+    """Codex models default to LIVE for real-time streaming.
 
-    Bug gmgFZ5: running `juno-code -s pi -m openai-codex/gpt-5.3-codex -v`
-    caused the prettifier to switch to LIVE instead of staying CODEX, because
-    the verbose flag unconditionally overrode the detected mode.
+    Phase 42 (H5bZwt): Codex models now default to LIVE prettifier instead
+    of CODEX, giving users real-time streaming output. The verbose flag
+    still switches non-codex models from PI to LIVE. For codex models,
+    verbose is a no-op since they already default to LIVE.
     """
 
     @pytest.fixture(autouse=True)
@@ -433,21 +436,25 @@ class TestVerbosePrettifierInteraction:
         self.svc.model_name = self.svc.expand_model_shorthand(model)
         self.svc.prettifier_mode = self.svc._detect_prettifier_mode(self.svc.model_name)
         self.svc.verbose = verbose
-        if verbose and self.svc.prettifier_mode != self.svc.PRETTIFIER_CODEX:
+        if verbose:
             self.svc.prettifier_mode = self.svc.PRETTIFIER_LIVE
         return self.svc.prettifier_mode
 
-    def test_codex_verbose_stays_codex(self):
-        """Codex model + verbose should keep codex prettifier."""
-        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=True) == "codex"
+    def test_codex_defaults_to_live(self):
+        """Codex model without verbose should default to LIVE prettifier."""
+        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=False) == "live"
 
-    def test_codex_shorthand_verbose_stays_codex(self):
-        """Codex shorthand + verbose should keep codex prettifier."""
-        assert self._apply_run_logic(":codex", verbose=True) == "codex"
+    def test_codex_verbose_stays_live(self):
+        """Codex model + verbose should stay LIVE (already default)."""
+        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=True) == "live"
 
-    def test_codex_no_verbose_stays_codex(self):
-        """Codex model without verbose should use codex prettifier."""
-        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=False) == "codex"
+    def test_codex_shorthand_defaults_to_live(self):
+        """Codex shorthand should default to LIVE prettifier."""
+        assert self._apply_run_logic(":codex", verbose=False) == "live"
+
+    def test_codex_shorthand_verbose_stays_live(self):
+        """Codex shorthand + verbose should stay LIVE."""
+        assert self._apply_run_logic(":codex", verbose=True) == "live"
 
     def test_sonnet_verbose_switches_to_live(self):
         """Non-codex model + verbose should switch to LIVE prettifier."""
@@ -465,9 +472,13 @@ class TestVerbosePrettifierInteraction:
         """Gemini model + verbose should switch to LIVE."""
         assert self._apply_run_logic(":gemini-pro", verbose=True) == "live"
 
-    def test_codex_uppercase_verbose_stays_codex(self):
-        """Case-insensitive codex detection should survive verbose."""
-        assert self._apply_run_logic("openai/GPT-5.3-CODEX", verbose=True) == "codex"
+    def test_codex_uppercase_defaults_to_live(self):
+        """Case-insensitive codex detection should use LIVE."""
+        assert self._apply_run_logic("openai/GPT-5.3-CODEX", verbose=False) == "live"
+
+    def test_codex_uppercase_verbose_stays_live(self):
+        """Case-insensitive codex + verbose should stay LIVE."""
+        assert self._apply_run_logic("openai/GPT-5.3-CODEX", verbose=True) == "live"
 
 
 # ===================================================================
@@ -2575,3 +2586,173 @@ class TestPrettifierFallbackColor:
         }
         result = self.svc._format_event_live(payload)
         assert self.GRAY in result
+
+
+# ===================================================================
+# LIVE Prettifier: Codex-Native Event Handling (Phase 42 H5bZwt)
+# ===================================================================
+
+class TestLiveCodexNativeEvents:
+    """LIVE prettifier handles native Codex events for real-time output.
+
+    Phase 42 (H5bZwt): Codex models now default to LIVE prettifier.
+    LIVE must handle native Codex events (agent_reasoning, agent_message,
+    exec_command_end, command_execution) and role-based messages
+    (toolResult, assistant) that may come through.
+    """
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+        self.svc.prettifier_mode = self.svc.PRETTIFIER_LIVE
+
+    # --- Role-based messages ---
+
+    def test_tool_result_role_basic(self):
+        """toolResult role message formats with toolName and content."""
+        event = {
+            "role": "toolResult",
+            "toolName": "bash",
+            "content": [{"type": "text", "text": "hello"}],
+        }
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "toolResult"
+        assert parsed["toolName"] == "bash"
+        assert parsed["content"] == "hello"
+        assert "counter" in parsed
+
+    def test_tool_result_role_multiline(self, monkeypatch):
+        """toolResult with multiline text shows content on separate lines."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr("sys.stdout", type("FakeTTY", (), {"isatty": lambda self: False, "write": lambda self, x: None, "flush": lambda self: None})())
+        event = {
+            "role": "toolResult",
+            "toolName": "bash",
+            "content": [{"type": "text", "text": "line1\nline2\nline3"}],
+        }
+        result = self.svc._format_event_live(event)
+        assert "toolResult" in result
+        assert "line1\nline2\nline3" in result
+
+    def test_tool_result_role_error(self):
+        """toolResult with isError=True includes isError in header."""
+        event = {
+            "role": "toolResult",
+            "toolName": "bash",
+            "isError": True,
+            "content": [{"type": "text", "text": "error msg"}],
+        }
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["isError"] is True
+
+    def test_assistant_role_text(self):
+        """assistant role message extracts text content."""
+        event = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello world"}],
+        }
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "assistant"
+        assert parsed["content"] == "Hello world"
+
+    def test_assistant_role_thinking(self):
+        """assistant role message extracts thinking content."""
+        event = {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "Let me think..."}],
+        }
+        result = self.svc._format_event_live(event)
+        assert "[thinking] Let me think..." in result
+
+    def test_assistant_role_toolcall(self):
+        """assistant role message extracts toolCall content."""
+        event = {
+            "role": "assistant",
+            "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "ls -la"}}],
+        }
+        result = self.svc._format_event_live(event)
+        assert "[toolCall] bash: ls -la" in result
+
+    def test_assistant_role_strips_thinking_signature(self):
+        """assistant role message strips thinkingSignature from content."""
+        event = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "hmm", "thinkingSignature": "sig123"},
+                {"type": "text", "text": "answer"},
+            ],
+        }
+        result = self.svc._format_event_live(event)
+        assert "thinkingSignature" not in result
+        assert "[thinking] hmm" in result
+        assert "answer" in result
+
+    def test_other_role_minimal_header(self):
+        """Unknown role gets minimal JSON header with counter."""
+        event = {"role": "system", "content": "something"}
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "system"
+        assert "counter" in parsed
+
+    # --- Native Codex events ---
+
+    def test_agent_reasoning_event(self):
+        """agent_reasoning event extracts reasoning text."""
+        event = {"type": "agent_reasoning", "msg": {"type": "agent_reasoning", "text": "Thinking about this"}}
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "agent_reasoning"
+        assert parsed["text"] == "Thinking about this"
+
+    def test_agent_reasoning_multiline(self):
+        """agent_reasoning with multiline text shows on separate lines."""
+        event = {"type": "agent_reasoning", "msg": {"type": "agent_reasoning", "text": "Line 1\nLine 2"}}
+        result = self.svc._format_event_live(event)
+        assert "agent_reasoning" in result
+        assert "text:" in result
+        assert "Line 1\nLine 2" in result
+
+    def test_agent_message_event(self):
+        """agent_message event extracts message text."""
+        event = {"type": "agent_message", "msg": {"type": "agent_message", "message": "Here is my answer"}}
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "agent_message"
+        assert parsed["message"] == "Here is my answer"
+
+    def test_exec_command_end_event(self):
+        """exec_command_end event extracts formatted_output."""
+        event = {"type": "exec_command_end", "msg": {"type": "exec_command_end", "formatted_output": "$ ls\nfile.txt"}}
+        result = self.svc._format_event_live(event)
+        assert "exec_command_end" in result
+        assert "file.txt" in result
+
+    def test_command_execution_event(self):
+        """command_execution event extracts aggregated_output."""
+        event = {"type": "command_execution", "msg": {"type": "command_execution", "aggregated_output": "output"}}
+        result = self.svc._format_event_live(event)
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "command_execution"
+        assert parsed["aggregated_output"] == "output"
+
+    def test_codex_default_is_live(self):
+        """Codex model should default to LIVE prettifier."""
+        assert self.svc._detect_prettifier_mode("openai-codex/gpt-5.3-codex") == "live"
+
+    def test_non_codex_default_is_pi(self):
+        """Non-codex model should default to PI prettifier."""
+        assert self.svc._detect_prettifier_mode("anthropic/claude-sonnet") == "pi"
+
+    def test_counter_increments_for_codex_native_events(self):
+        """Counter should increment for each native Codex event handled in LIVE."""
+        self.svc.message_counter = 0
+        self.svc._format_event_live({"type": "agent_reasoning", "msg": {"type": "agent_reasoning", "text": "r1"}})
+        assert self.svc.message_counter == 1
+        self.svc._format_event_live({"type": "agent_message", "msg": {"type": "agent_message", "message": "m1"}})
+        assert self.svc.message_counter == 2
+        self.svc._format_event_live({"role": "assistant", "content": [{"type": "text", "text": "a1"}]})
+        assert self.svc.message_counter == 3
