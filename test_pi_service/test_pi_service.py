@@ -1726,3 +1726,474 @@ class TestClaudePrettifierCounter:
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#2"
+
+
+# ===========================================================================
+# Tool Call Grouping Tests
+# ===========================================================================
+
+
+class TestPiToolCallGrouping:
+    """Test tool call grouping in _format_event_pretty(): toolcall_end + tool_execution_end
+    are combined into a single 'tool' event with args and result together."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def _toolcall_end(self, tool_name, args, tc_id="tc-001"):
+        return {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "toolCallId": tc_id,
+                    "name": tool_name,
+                    "arguments": args,
+                },
+            },
+        }
+
+    def _tool_exec_start(self, tool_name, args, tc_id="tc-001"):
+        return {
+            "type": "tool_execution_start",
+            "toolCallId": tc_id,
+            "toolName": tool_name,
+            "args": args,
+        }
+
+    def _tool_exec_end(self, tool_name, result, tc_id="tc-001", is_error=False):
+        return {
+            "type": "tool_execution_end",
+            "toolCallId": tc_id,
+            "toolName": tool_name,
+            "result": result,
+            "isError": is_error,
+        }
+
+    def test_toolcall_end_with_id_is_suppressed(self):
+        """toolcall_end with toolCallId should be buffered (returns None)."""
+        result = self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "ls"}))
+        assert result is None
+
+    def test_tool_execution_start_suppressed_when_pending(self):
+        """tool_execution_start should be suppressed when matching pending exists."""
+        self.svc._format_event_pretty(self._toolcall_end("read", {"path": "/tmp/f.txt"}))
+        result = self.svc._format_event_pretty(self._tool_exec_start("read", {"path": "/tmp/f.txt"}))
+        assert result is None
+
+    def test_tool_execution_end_emits_combined_event(self):
+        """tool_execution_end with matching pending should emit combined 'tool' event."""
+        self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "ls -la"}))
+        self.svc._format_event_pretty(self._tool_exec_start("bash", {"command": "ls -la"}))
+        result = self.svc._format_event_pretty(self._tool_exec_end("bash", "file1.txt\nfile2.txt"))
+        assert result is not None
+        # Result has multi-line content, so it's formatted with \nresult:\n
+        lines = result.split("\n")
+        header = json.loads(lines[0])
+        assert header["type"] == "tool"
+        assert header["tool"] == "bash"
+        assert header["command"] == "ls -la"
+        assert "counter" in header
+
+    def test_combined_event_single_line_result(self):
+        """Combined event with single-line result has result inline."""
+        self.svc._format_event_pretty(self._toolcall_end("edit", {"file_path": "/tmp/f.py", "old_string": "a", "new_string": "b"}))
+        result = self.svc._format_event_pretty(self._tool_exec_end("edit", "Successfully replaced text."))
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert parsed["tool"] == "edit"
+        assert parsed["result"] == "Successfully replaced text."
+        assert "args" in parsed  # non-command args
+
+    def test_combined_event_counter(self):
+        """Combined event gets exactly one counter (not two)."""
+        self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "echo hi"}))
+        result = self.svc._format_event_pretty(self._tool_exec_end("bash", "hi"))
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+        assert self.svc.message_counter == 1
+
+    def test_combined_event_error_flag(self):
+        """Combined event includes isError when tool execution failed."""
+        self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "false"}))
+        result = self.svc._format_event_pretty(self._tool_exec_end("bash", "command failed", is_error=True))
+        parsed = json.loads(result)
+        assert parsed["isError"] is True
+
+    def test_parallel_tool_calls_grouped_correctly(self):
+        """Multiple concurrent tool calls resolve to their correct pending."""
+        self.svc._format_event_pretty(self._toolcall_end("read", {"path": "/a.txt"}, tc_id="tc-A"))
+        self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "ls"}, tc_id="tc-B"))
+        # Resolve B first
+        result_b = self.svc._format_event_pretty(self._tool_exec_end("bash", "output", tc_id="tc-B"))
+        parsed_b = json.loads(result_b)
+        assert parsed_b["tool"] == "bash"
+        assert parsed_b["command"] == "ls"
+        # Resolve A second
+        result_a = self.svc._format_event_pretty(self._tool_exec_end("read", "file content", tc_id="tc-A"))
+        parsed_a = json.loads(result_a)
+        assert parsed_a["tool"] == "read"
+        assert "args" in parsed_a
+
+    def test_no_pending_fallback(self):
+        """tool_execution_end without pending emits original format."""
+        result = self.svc._format_event_pretty(self._tool_exec_end("bash", "output", tc_id="tc-orphan"))
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool_execution_end"  # original type, not "tool"
+        assert parsed["tool"] == "bash"
+
+    def test_tool_execution_start_no_pending_emits_normally(self):
+        """tool_execution_start without matching pending emits normally."""
+        result = self.svc._format_event_pretty(self._tool_exec_start("read", {"path": "/tmp/f.txt"}, tc_id="tc-orphan"))
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool_execution_start"
+        assert parsed["tool"] == "read"
+
+    def test_toolcall_end_without_id_emits_normally(self):
+        """toolcall_end without toolCallId emits immediately (no grouping)."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["event"] == "toolcall_end"
+        assert parsed["tool"] == "bash"
+        assert "counter" in parsed
+
+    def test_combined_event_dict_result_with_content_array(self):
+        """Combined event handles dict result with content array (Codex-style)."""
+        self.svc._format_event_pretty(self._toolcall_end("read", {"path": "/tmp/f.txt"}))
+        result = self.svc._format_event_pretty(self._tool_exec_end(
+            "read",
+            {"content": [{"type": "text", "text": "file contents here"}]},
+        ))
+        # _build_combined_tool_event extracts text from content array
+        assert "file contents here" in result
+
+    def test_pending_cleared_after_use(self):
+        """Pending tool call is removed after being consumed."""
+        self.svc._format_event_pretty(self._toolcall_end("bash", {"command": "ls"}))
+        assert len(self.svc._pending_tool_calls) == 1
+        self.svc._format_event_pretty(self._tool_exec_end("bash", "output"))
+        assert len(self.svc._pending_tool_calls) == 0
+
+
+class TestCodexToolCallGrouping:
+    """Test tool call grouping in _format_pi_codex_event()."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+        self.svc.prettifier_mode = self.svc.PRETTIFIER_CODEX
+
+    def test_toolcall_end_with_id_is_suppressed(self):
+        """toolcall_end with toolCallId should be suppressed (returns empty string)."""
+        result = self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        assert result == ""
+
+    def test_tool_execution_start_suppressed_when_pending(self):
+        """tool_execution_start suppressed when matching pending exists."""
+        self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "read", "arguments": {"path": "/tmp/f.txt"}},
+            },
+        })
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_start",
+            "toolCallId": "tc-001",
+            "toolName": "read",
+            "args": {"path": "/tmp/f.txt"},
+        })
+        assert result == ""
+
+    def test_tool_execution_end_emits_combined_event(self):
+        """tool_execution_end with matching pending emits combined 'tool' event."""
+        self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "echo test"}},
+            },
+        })
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-001",
+            "toolName": "bash",
+            "result": "test",
+        })
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert parsed["tool"] == "bash"
+        assert parsed["command"] == "echo test"
+        assert parsed["result"] == "test"
+        assert "counter" in parsed
+
+    def test_no_pending_fallback(self):
+        """tool_execution_end without pending emits original format."""
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-orphan",
+            "toolName": "bash",
+            "result": {"content": [{"type": "text", "text": "output"}]},
+        })
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool_execution_end"
+
+    def test_codex_result_content_array_in_combined(self):
+        """Combined event correctly extracts text from Codex-style content array."""
+        self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "read", "arguments": {"path": "/tmp/f.txt"}},
+            },
+        })
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-001",
+            "toolName": "read",
+            "result": {"content": [{"type": "text", "text": "file content"}]},
+        })
+        assert "file content" in result
+
+
+class TestLiveToolCallGrouping:
+    """Test tool call grouping in _format_event_live()."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_toolcall_end_with_id_is_suppressed(self):
+        """toolcall_end with toolCallId should be suppressed (returns empty string)."""
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        assert result == ""
+
+    def test_tool_execution_start_suppressed_when_pending(self):
+        """tool_execution_start suppressed when matching pending exists."""
+        self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "read", "arguments": {"path": "/tmp/f.txt"}},
+            },
+        })
+        result = self.svc._format_event_live({
+            "type": "tool_execution_start",
+            "toolCallId": "tc-001",
+            "toolName": "read",
+            "args": {"path": "/tmp/f.txt"},
+        })
+        assert result == ""
+
+    def test_tool_execution_end_emits_combined_event(self):
+        """tool_execution_end with matching pending emits combined 'tool' event."""
+        self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "echo hi"}},
+            },
+        })
+        result = self.svc._format_event_live({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-001",
+            "toolName": "bash",
+            "result": "hi",
+        })
+        assert result.endswith("\n")  # live mode always ends with \n
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "tool"
+        assert parsed["tool"] == "bash"
+        assert parsed["command"] == "echo hi"
+        assert parsed["result"] == "hi"
+
+    def test_no_pending_fallback(self):
+        """tool_execution_end without pending emits original format."""
+        result = self.svc._format_event_live({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-orphan",
+            "toolName": "bash",
+            "result": "output",
+        })
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "tool_execution_end"
+
+    def test_live_multiline_result_combined(self):
+        """Combined event with multiline result in live mode."""
+        self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        result = self.svc._format_event_live({
+            "type": "tool_execution_end",
+            "toolCallId": "tc-001",
+            "toolName": "bash",
+            "result": "file1.txt\nfile2.txt\nfile3.txt",
+        })
+        assert "result:" in result
+        assert "file1.txt" in result
+
+    def test_toolcall_end_without_id_emits_normally(self):
+        """toolcall_end without toolCallId emits immediately (no grouping)."""
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        assert result.endswith("\n")
+        parsed = json.loads(result.strip())
+        assert parsed["type"] == "toolcall_end"
+        assert parsed["tool"] == "bash"
+
+
+class TestBufferToolCallEnd:
+    """Test the _buffer_tool_call_end() helper method."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_buffers_with_toolcall_id(self):
+        """Returns True and stores pending when toolCallId present."""
+        tc = {"toolCallId": "tc-001", "name": "bash", "arguments": {"command": "ls"}}
+        assert self.svc._buffer_tool_call_end(tc, "12:00:00 PM") is True
+        assert "tc-001" in self.svc._pending_tool_calls
+        assert self.svc._pending_tool_calls["tc-001"]["tool"] == "bash"
+        assert self.svc._pending_tool_calls["tc-001"]["command"] == "ls"
+
+    def test_returns_false_without_toolcall_id(self):
+        """Returns False when no toolCallId."""
+        tc = {"name": "bash", "arguments": {"command": "ls"}}
+        assert self.svc._buffer_tool_call_end(tc, "12:00:00 PM") is False
+        assert len(self.svc._pending_tool_calls) == 0
+
+    def test_buffers_non_command_args(self):
+        """Non-bash tool args stored as JSON string."""
+        tc = {"toolCallId": "tc-002", "name": "read", "arguments": {"path": "/tmp/f.txt", "limit": 100}}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        pending = self.svc._pending_tool_calls["tc-002"]
+        assert pending["tool"] == "read"
+        assert "args" in pending
+        assert "command" not in pending
+
+    def test_buffers_string_args(self):
+        """String arguments are stored directly."""
+        tc = {"toolCallId": "tc-003", "name": "custom", "arguments": "raw args string"}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        pending = self.svc._pending_tool_calls["tc-003"]
+        assert pending["args"] == "raw args string"
+
+    def test_truncates_long_args(self):
+        """Long args are truncated at 200 chars."""
+        long_content = "x" * 300
+        tc = {"toolCallId": "tc-004", "name": "write", "arguments": {"content": long_content}}
+        self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
+        pending = self.svc._pending_tool_calls["tc-004"]
+        assert pending["args"].endswith("...")
+
+    def test_empty_dict_not_treated_as_toolcall(self):
+        """Empty dict (no toolCallId) returns False."""
+        assert self.svc._buffer_tool_call_end({}, "12:00:00 PM") is False
+
+    def test_non_dict_returns_false(self):
+        """Non-dict input returns False."""
+        assert self.svc._buffer_tool_call_end("not a dict", "12:00:00 PM") is False
+        assert self.svc._buffer_tool_call_end(None, "12:00:00 PM") is False
+
+
+class TestBuildCombinedToolEvent:
+    """Test the _build_combined_tool_event() helper method."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_combined_event_with_command(self):
+        """Combined event for bash tool includes command field."""
+        pending = {"tool": "bash", "command": "ls -la", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "file.txt"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert parsed["tool"] == "bash"
+        assert parsed["command"] == "ls -la"
+        assert parsed["result"] == "file.txt"
+        assert parsed["counter"] == "#1"
+
+    def test_combined_event_with_args(self):
+        """Combined event for non-bash tool includes args field."""
+        pending = {"tool": "read", "args": '{"path": "/tmp/f.txt"}', "datetime": "12:00:00 PM"}
+        payload = {"toolName": "read", "result": "file content"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert parsed["args"] == '{"path": "/tmp/f.txt"}'
+        assert parsed["result"] == "file content"
+
+    def test_combined_event_multiline_result(self):
+        """Multiline result is shown after \\nresult:\\n."""
+        pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "a.txt\nb.txt\nc.txt"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        lines = result.split("\n")
+        header = json.loads(lines[0])
+        assert header["type"] == "tool"
+        assert lines[1] == "result:"
+        assert "a.txt" in result
+
+    def test_combined_event_error(self):
+        """Combined event includes isError when set."""
+        pending = {"tool": "bash", "command": "false", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "exit 1", "isError": True}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["isError"] is True
+
+    def test_combined_event_dict_result(self):
+        """Dict result with content array extracts text."""
+        pending = {"tool": "read", "args": '{"path": "/f.txt"}', "datetime": "12:00:00 PM"}
+        payload = {"toolName": "read", "result": {"content": [{"type": "text", "text": "contents"}]}}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert "contents" in result
+
+    def test_combined_event_empty_result(self):
+        """Combined event with no result still produces valid JSON."""
+        pending = {"tool": "bash", "command": "true", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": ""}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["type"] == "tool"
+        assert "result" not in parsed  # empty result omitted
+
+    def test_counter_increments_correctly(self):
+        """Counter increments by 1 per combined event."""
+        pending1 = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
+        self.svc._build_combined_tool_event(pending1, {"toolName": "bash", "result": "ok"}, "12:00:01 PM")
+        assert self.svc.message_counter == 1
+        pending2 = {"tool": "bash", "command": "pwd", "datetime": "12:00:02 PM"}
+        self.svc._build_combined_tool_event(pending2, {"toolName": "bash", "result": "/tmp"}, "12:00:03 PM")
+        assert self.svc.message_counter == 2

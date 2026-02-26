@@ -83,6 +83,8 @@ class PiService:
         self.session_id: Optional[str] = None
         self.message_counter = 0
         self.prettifier_mode = self.PRETTIFIER_PI
+        # Tool call grouping: buffer toolcall_end until tool_execution_end arrives
+        self._pending_tool_calls: Dict[str, dict] = {}  # toolCallId -> {tool, args/command}
         # Claude prettifier state
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
         # Codex prettifier state
@@ -734,10 +736,13 @@ Model shorthands:
                         header["thinking"] = thinking_text
                     return json.dumps(header, ensure_ascii=False)
 
-                # toolcall_end: show tool name and arguments
+                # toolcall_end: buffer for grouping with tool_execution_end
                 if ame_type == "toolcall_end":
-                    self.message_counter += 1
                     tool_call = ame.get("toolCall", {})
+                    if self._buffer_tool_call_end(tool_call, now):
+                        return ""  # suppress — will emit combined event on tool_execution_end
+                    # No toolCallId — fallback to original format
+                    self.message_counter += 1
                     header = {
                         "type": "toolcall_end",
                         "datetime": now,
@@ -796,8 +801,11 @@ Model shorthands:
             }
             return json.dumps(header, ensure_ascii=False)
 
-        # --- tool_execution_start (no counter — only *_end events get counters) ---
+        # --- tool_execution_start: suppress if pending, else emit normally ---
         if event_type == "tool_execution_start":
+            tool_call_id = parsed.get("toolCallId")
+            if tool_call_id and tool_call_id in self._pending_tool_calls:
+                return ""  # suppress — args already buffered
             header = {
                 "type": "tool_execution_start",
                 "datetime": now,
@@ -812,8 +820,13 @@ Model shorthands:
                     header["args"] = args_val
             return json.dumps(header, ensure_ascii=False)
 
-        # --- tool_execution_end ---
+        # --- tool_execution_end: combine with pending if available ---
         if event_type == "tool_execution_end":
+            tool_call_id = parsed.get("toolCallId")
+            pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+            if pending:
+                return self._build_combined_tool_event(pending, parsed, now)
+            # No pending match — fallback to original format
             self.message_counter += 1
             header = {
                 "type": "tool_execution_end",
@@ -826,7 +839,6 @@ Model shorthands:
                 header["isError"] = True
             result_val = parsed.get("result")
             if isinstance(result_val, dict):
-                # Extract text content from result
                 result_content = result_val.get("content")
                 if isinstance(result_content, list):
                     for rc_item in result_content:
@@ -1089,6 +1101,75 @@ Model shorthands:
 
         return ""
 
+    def _buffer_tool_call_end(self, tool_call: dict, now: str) -> bool:
+        """Buffer toolcall_end info for grouping with tool_execution_end.
+
+        Returns True if successfully buffered (caller should suppress output),
+        False if no toolCallId present (caller should emit normally).
+        """
+        tc_id = tool_call.get("toolCallId", "") if isinstance(tool_call, dict) else ""
+        if not tc_id:
+            return False
+        pending: Dict = {"tool": tool_call.get("name", ""), "datetime": now}
+        args = tool_call.get("arguments", {})
+        if isinstance(args, dict):
+            cmd = args.get("command", "")
+            if cmd:
+                pending["command"] = cmd
+            else:
+                args_str = json.dumps(args, ensure_ascii=False)
+                if len(args_str) > 200:
+                    args_str = args_str[:200] + "..."
+                pending["args"] = args_str
+        elif isinstance(args, str) and args.strip():
+            pending["args"] = args[:200] + "..." if len(args) > 200 else args
+        self._pending_tool_calls[tc_id] = pending
+        return True
+
+    def _build_combined_tool_event(self, pending: dict, payload: dict, now: str) -> str:
+        """Build a combined 'tool' event from buffered toolcall_end + tool_execution_end.
+
+        Groups tool call args and execution result into a single JSON object,
+        making it easy for humans to see what was called and what came back.
+        """
+        self.message_counter += 1
+        header: Dict = {
+            "type": "tool",
+            "datetime": now,
+            "counter": f"#{self.message_counter}",
+            "tool": pending.get("tool", payload.get("toolName", "")),
+        }
+        # Args from buffered toolcall_end
+        if "command" in pending:
+            header["command"] = pending["command"]
+        elif "args" in pending:
+            header["args"] = pending["args"]
+        # Error flag
+        is_error = payload.get("isError", False)
+        if is_error:
+            header["isError"] = True
+        # Result extraction (handles string, dict with content array, and list)
+        result_val = payload.get("result")
+        result_text = None
+        if isinstance(result_val, str) and result_val.strip():
+            result_text = self._truncate_tool_result_text(result_val)
+        elif isinstance(result_val, dict):
+            result_content = result_val.get("content")
+            if isinstance(result_content, list):
+                for rc_item in result_content:
+                    if isinstance(rc_item, dict) and rc_item.get("type") == "text":
+                        result_text = self._truncate_tool_result_text(rc_item.get("text", ""))
+                        break
+            if result_text is None:
+                result_text = json.dumps(result_val, ensure_ascii=False)
+        elif isinstance(result_val, list):
+            result_text = json.dumps(result_val, ensure_ascii=False)
+        if result_text:
+            if "\n" in result_text:
+                return json.dumps(header, ensure_ascii=False) + "\nresult:\n" + result_text
+            header["result"] = result_text
+        return json.dumps(header, ensure_ascii=False)
+
     def _format_event_pretty(self, payload: dict) -> Optional[str]:
         """
         Format a Pi JSON streaming event for human-readable output.
@@ -1151,12 +1232,15 @@ Model shorthands:
                 if event_subtype in self._PI_HIDDEN_MESSAGE_UPDATE_EVENTS:
                     return None  # Suppress noisy streaming deltas
 
-                # toolcall_end: show tool name and arguments (*_end → gets counter)
+                # toolcall_end: buffer for grouping with tool_execution_end
                 if isinstance(ame, dict) and ame_type == "toolcall_end":
+                    tool_call = ame.get("toolCall", {})
+                    if self._buffer_tool_call_end(tool_call, now):
+                        return None  # suppress — will emit combined event on tool_execution_end
+                    # No toolCallId — fallback to original format
                     self.message_counter += 1
                     header["counter"] = f"#{self.message_counter}"
                     header["event"] = ame_type
-                    tool_call = ame.get("toolCall", {})
                     if isinstance(tool_call, dict):
                         header["tool"] = tool_call.get("name", "")
                         args = tool_call.get("arguments", {})
@@ -1214,16 +1298,18 @@ Model shorthands:
 
             # --- Tool execution events (start/update: no counter, end: gets counter) ---
             if event_type == "tool_execution_start":
-                header["tool"] = payload.get("toolName", "")
                 tool_call_id = payload.get("toolCallId")
+                # Suppress if we have a pending toolcall_end — args already buffered
+                if tool_call_id and tool_call_id in self._pending_tool_calls:
+                    return None
+                # No pending match — emit normally (fallback)
+                header["tool"] = payload.get("toolName", "")
                 if tool_call_id:
                     header["id"] = tool_call_id
                 args_val = payload.get("args")
                 if isinstance(args_val, dict):
-                    # Show abbreviated args inline
                     args_str = json.dumps(args_val, ensure_ascii=False)
                     if len(args_str) > 200:
-                        # Truncate for readability
                         header["args"] = args_str[:200] + "..."
                     else:
                         header["args"] = args_val
@@ -1246,10 +1332,14 @@ Model shorthands:
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "tool_execution_end":
+                tool_call_id = payload.get("toolCallId")
+                pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+                if pending:
+                    return self._build_combined_tool_event(pending, payload, now)
+                # No pending match — fallback to original format
                 self.message_counter += 1
                 header["counter"] = f"#{self.message_counter}"
                 header["tool"] = payload.get("toolName", "")
-                tool_call_id = payload.get("toolCallId")
                 if tool_call_id:
                     header["id"] = tool_call_id
                 is_error = payload.get("isError", False)
@@ -1341,10 +1431,13 @@ Model shorthands:
                 self.message_counter += 1
                 return "\n" + json.dumps({"type": "thinking_end", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
 
-            # Tool call end: show tool info
+            # Tool call end: buffer for grouping with tool_execution_end
             if ame_type == "toolcall_end":
-                self.message_counter += 1
                 tc = ame.get("toolCall", {})
+                if self._buffer_tool_call_end(tc, now):
+                    return ""  # suppress — will emit combined event on tool_execution_end
+                # No toolCallId — fallback to original format
+                self.message_counter += 1
                 header = {"type": "toolcall_end", "datetime": now, "counter": f"#{self.message_counter}"}
                 if isinstance(tc, dict):
                     header["tool"] = tc.get("name", "")
@@ -1365,8 +1458,11 @@ Model shorthands:
         if event_type in ("message_start", "message_end"):
             return ""
 
-        # tool_execution_start (no counter — only *_end events get counters)
+        # tool_execution_start: suppress if pending, else emit normally
         if event_type == "tool_execution_start":
+            tool_call_id = parsed.get("toolCallId")
+            if tool_call_id and tool_call_id in self._pending_tool_calls:
+                return ""  # suppress — args already buffered
             header = {
                 "type": "tool_execution_start",
                 "datetime": now,
@@ -1381,8 +1477,13 @@ Model shorthands:
                     header["args"] = args_val
             return json.dumps(header, ensure_ascii=False) + "\n"
 
-        # tool_execution_end
+        # tool_execution_end: combine with pending if available
         if event_type == "tool_execution_end":
+            tool_call_id = parsed.get("toolCallId")
+            pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+            if pending:
+                return self._build_combined_tool_event(pending, parsed, now) + "\n"
+            # No pending match — fallback to original format
             self.message_counter += 1
             header = {
                 "type": "tool_execution_end",
