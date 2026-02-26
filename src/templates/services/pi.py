@@ -1146,6 +1146,34 @@ Model shorthands:
                 if event_subtype in self._PI_HIDDEN_MESSAGE_UPDATE_EVENTS:
                     return None  # Suppress noisy streaming deltas
 
+                # toolcall_end: show tool name and arguments
+                if isinstance(ame, dict) and ame_type == "toolcall_end":
+                    header["event"] = ame_type
+                    tool_call = ame.get("toolCall", {})
+                    if isinstance(tool_call, dict):
+                        header["tool"] = tool_call.get("name", "")
+                        args = tool_call.get("arguments", {})
+                        if isinstance(args, dict):
+                            cmd = args.get("command", "")
+                            if cmd:
+                                header["command"] = cmd
+                            else:
+                                args_str = json.dumps(args, ensure_ascii=False)
+                                if len(args_str) > 200:
+                                    args_str = args_str[:200] + "..."
+                                header["args"] = args_str
+                        elif isinstance(args, str) and args.strip():
+                            header["args"] = args[:200] + "..." if len(args) > 200 else args
+                    return json.dumps(header, ensure_ascii=False)
+
+                # thinking_end: show thinking content
+                if isinstance(ame, dict) and ame_type == "thinking_end":
+                    header["event"] = ame_type
+                    thinking_text = ame.get("thinking", "") or ame.get("content", "") or ame.get("text", "")
+                    if isinstance(thinking_text, str) and thinking_text.strip():
+                        header["thinking"] = thinking_text
+                    return json.dumps(header, ensure_ascii=False)
+
                 message = payload.get("message", {})
                 text = self._extract_text_from_message(message) if isinstance(message, dict) else ""
 

@@ -1156,6 +1156,183 @@ class TestPiPrettifierCounter:
         assert parsed["counter"] == "#1"
 
 
+class TestPiPrettifierToolCallArgs:
+    """Test that _format_event_pretty() shows tool call arguments for toolcall_end events."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_toolcall_end_shows_tool_name(self):
+        """toolcall_end should include tool name in output."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "ls"}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["tool"] == "bash"
+        assert parsed["event"] == "toolcall_end"
+
+    def test_toolcall_end_shows_command_arg(self):
+        """Bash tool calls should show 'command' directly."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "git status"}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["command"] == "git status"
+        assert "args" not in parsed
+
+    def test_toolcall_end_shows_non_command_args(self):
+        """Non-bash tool calls should show all args."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "read", "arguments": {"file_path": "/tmp/test.txt", "limit": 100}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["tool"] == "read"
+        # args is a JSON string
+        args_parsed = json.loads(parsed["args"])
+        assert args_parsed["file_path"] == "/tmp/test.txt"
+        assert args_parsed["limit"] == 100
+
+    def test_toolcall_end_shows_edit_args(self):
+        """Edit tool calls should show old_string/new_string args."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "name": "edit",
+                    "arguments": {
+                        "file_path": "/tmp/file.py",
+                        "old_string": "foo",
+                        "new_string": "bar",
+                    },
+                },
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["tool"] == "edit"
+        args_parsed = json.loads(parsed["args"])
+        assert args_parsed["file_path"] == "/tmp/file.py"
+        assert args_parsed["old_string"] == "foo"
+        assert args_parsed["new_string"] == "bar"
+
+    def test_toolcall_end_truncates_long_args(self):
+        """Args longer than 200 chars should be truncated."""
+        long_content = "x" * 300
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "write", "arguments": {"content": long_content}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["args"].endswith("...")
+        assert len(parsed["args"]) <= 203  # 200 + "..."
+
+    def test_toolcall_end_empty_args(self):
+        """Empty arguments dict should show empty args."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "custom_tool", "arguments": {}},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["tool"] == "custom_tool"
+        assert parsed["args"] == "{}"
+
+    def test_toolcall_end_missing_toolCall(self):
+        """toolcall_end with no toolCall should still produce valid output."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "toolcall_end"},
+        })
+        parsed = json.loads(result)
+        assert parsed["event"] == "toolcall_end"
+
+    def test_toolcall_end_string_arguments(self):
+        """Handle case where arguments is a string instead of dict."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": '{"command": "ls"}'},
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["tool"] == "bash"
+        assert parsed["args"] == '{"command": "ls"}'
+
+    def test_toolcall_end_counter(self):
+        """toolcall_end events should include counter."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {"name": "bash", "arguments": {"command": "echo hi"}},
+            },
+        })
+        parsed = json.loads(result)
+        assert "counter" in parsed
+
+
+class TestPiPrettifierThinkingEnd:
+    """Test that _format_event_pretty() shows thinking content for thinking_end events."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_thinking_end_shows_thinking_text(self):
+        """thinking_end should include thinking content."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "thinking_end",
+                "thinking": "Let me analyze this step by step",
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["event"] == "thinking_end"
+        assert parsed["thinking"] == "Let me analyze this step by step"
+
+    def test_thinking_end_empty_content(self):
+        """thinking_end with no content should still produce valid output."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_end"},
+        })
+        parsed = json.loads(result)
+        assert parsed["event"] == "thinking_end"
+        assert "thinking" not in parsed
+
+    def test_thinking_end_content_field_fallback(self):
+        """thinking_end should try 'content' field if 'thinking' not present."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "thinking_end",
+                "content": "Fallback thinking text",
+            },
+        })
+        parsed = json.loads(result)
+        assert parsed["thinking"] == "Fallback thinking text"
+
+
 class TestCodexPrettifierCounter:
     """Test that Codex prettifier modes include counter in output."""
 
