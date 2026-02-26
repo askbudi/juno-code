@@ -773,14 +773,12 @@ Model shorthands:
                 header["tool_results_count"] = len(tool_results)
             return json.dumps(header, ensure_ascii=False)
 
-        # --- message_start: minimal header ---
+        # --- message_start: minimal header (no counter — only *_end events get counters) ---
         if event_type == "message_start":
-            self.message_counter += 1
             message = parsed.get("message", {})
             header = {
                 "type": "message_start",
                 "datetime": now,
-                "counter": f"#{self.message_counter}",
             }
             if isinstance(message, dict):
                 role = message.get("role")
@@ -798,13 +796,11 @@ Model shorthands:
             }
             return json.dumps(header, ensure_ascii=False)
 
-        # --- tool_execution_start ---
+        # --- tool_execution_start (no counter — only *_end events get counters) ---
         if event_type == "tool_execution_start":
-            self.message_counter += 1
             header = {
                 "type": "tool_execution_start",
                 "datetime": now,
-                "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
             args_val = parsed.get("args")
@@ -843,13 +839,15 @@ Model shorthands:
                             return json.dumps(header, ensure_ascii=False)
             return json.dumps(header, ensure_ascii=False)
 
-        # --- agent_start, turn_start: simple headers ---
-        if event_type in ("agent_start", "turn_start"):
-            self.message_counter += 1
+        # --- turn_start: suppress (no user-visible value) ---
+        if event_type == "turn_start":
+            return ""
+
+        # --- agent_start: simple header (no counter — only *_end events get counters) ---
+        if event_type == "agent_start":
             return json.dumps({
                 "type": event_type,
                 "datetime": now,
-                "counter": f"#{self.message_counter}",
             }, ensure_ascii=False)
 
         # --- agent_end: capture and show summary ---
@@ -1099,31 +1097,38 @@ Model shorthands:
         try:
             event_type = payload.get("type", "")
             now = datetime.now().strftime("%I:%M:%S %p")
-            self.message_counter += 1
 
+            # Counter is only added to *_end events (below, per-branch)
             header: Dict = {
                 "type": event_type,
                 "datetime": now,
-                "counter": f"#{self.message_counter}",
             }
 
-            # --- Session header ---
+            # --- Session header (no counter) ---
             if event_type == "session":
                 header["version"] = payload.get("version")
                 header["id"] = payload.get("id")
                 return json.dumps(header, ensure_ascii=False)
 
-            # --- Agent lifecycle events ---
-            if event_type in ("agent_start", "turn_start"):
+            # --- turn_start: suppress (no user-visible value) ---
+            if event_type == "turn_start":
+                return None
+
+            # --- agent_start: simple header (no counter) ---
+            if event_type == "agent_start":
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "agent_end":
+                self.message_counter += 1
+                header["counter"] = f"#{self.message_counter}"
                 messages = payload.get("messages")
                 if isinstance(messages, list):
                     header["message_count"] = len(messages)
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "turn_end":
+                self.message_counter += 1
+                header["counter"] = f"#{self.message_counter}"
                 tool_results = payload.get("toolResults")
                 if isinstance(tool_results, list):
                     header["tool_results_count"] = len(tool_results)
@@ -1146,8 +1151,10 @@ Model shorthands:
                 if event_subtype in self._PI_HIDDEN_MESSAGE_UPDATE_EVENTS:
                     return None  # Suppress noisy streaming deltas
 
-                # toolcall_end: show tool name and arguments
+                # toolcall_end: show tool name and arguments (*_end → gets counter)
                 if isinstance(ame, dict) and ame_type == "toolcall_end":
+                    self.message_counter += 1
+                    header["counter"] = f"#{self.message_counter}"
                     header["event"] = ame_type
                     tool_call = ame.get("toolCall", {})
                     if isinstance(tool_call, dict):
@@ -1166,13 +1173,20 @@ Model shorthands:
                             header["args"] = args[:200] + "..." if len(args) > 200 else args
                     return json.dumps(header, ensure_ascii=False)
 
-                # thinking_end: show thinking content
+                # thinking_end: show thinking content (*_end → gets counter)
                 if isinstance(ame, dict) and ame_type == "thinking_end":
+                    self.message_counter += 1
+                    header["counter"] = f"#{self.message_counter}"
                     header["event"] = ame_type
                     thinking_text = ame.get("thinking", "") or ame.get("content", "") or ame.get("text", "")
                     if isinstance(thinking_text, str) and thinking_text.strip():
                         header["thinking"] = thinking_text
                     return json.dumps(header, ensure_ascii=False)
+
+                # Any other *_end subtypes (e.g. text_end) get counter
+                if isinstance(ame, dict) and ame_type and ame_type.endswith("_end"):
+                    self.message_counter += 1
+                    header["counter"] = f"#{self.message_counter}"
 
                 message = payload.get("message", {})
                 text = self._extract_text_from_message(message) if isinstance(message, dict) else ""
@@ -1193,10 +1207,12 @@ Model shorthands:
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "message_end":
+                self.message_counter += 1
+                header["counter"] = f"#{self.message_counter}"
                 # Skip message text - already displayed by text_end/thinking_end/toolcall_end
                 return json.dumps(header, ensure_ascii=False)
 
-            # --- Tool execution events ---
+            # --- Tool execution events (start/update: no counter, end: gets counter) ---
             if event_type == "tool_execution_start":
                 header["tool"] = payload.get("toolName", "")
                 tool_call_id = payload.get("toolCallId")
@@ -1230,6 +1246,8 @@ Model shorthands:
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "tool_execution_end":
+                self.message_counter += 1
+                header["counter"] = f"#{self.message_counter}"
                 header["tool"] = payload.get("toolName", "")
                 tool_call_id = payload.get("toolCallId")
                 if tool_call_id:
@@ -1260,6 +1278,8 @@ Model shorthands:
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "auto_retry_end":
+                self.message_counter += 1
+                header["counter"] = f"#{self.message_counter}"
                 header["success"] = payload.get("success")
                 header["attempt"] = payload.get("attempt")
                 final_err = payload.get("finalError")
@@ -1305,14 +1325,12 @@ Model shorthands:
                     return delta
                 return ""
 
-            # Section start markers
+            # Section start markers (no counter — only *_end events get counters)
             if ame_type == "text_start":
-                self.message_counter += 1
-                return json.dumps({"type": "text_start", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
+                return json.dumps({"type": "text_start", "datetime": now}) + "\n"
 
             if ame_type == "thinking_start":
-                self.message_counter += 1
-                return json.dumps({"type": "thinking_start", "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
+                return json.dumps({"type": "thinking_start", "datetime": now}) + "\n"
 
             # Section end markers (text was already streamed)
             if ame_type == "text_end":
@@ -1347,13 +1365,11 @@ Model shorthands:
         if event_type in ("message_start", "message_end"):
             return ""
 
-        # tool_execution_start
+        # tool_execution_start (no counter — only *_end events get counters)
         if event_type == "tool_execution_start":
-            self.message_counter += 1
             header = {
                 "type": "tool_execution_start",
                 "datetime": now,
-                "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
             args_val = parsed.get("args")
@@ -1405,10 +1421,13 @@ Model shorthands:
                 header["tool_results_count"] = len(tool_results)
             return json.dumps(header, ensure_ascii=False) + "\n"
 
-        # agent_start, turn_start
-        if event_type in ("agent_start", "turn_start"):
-            self.message_counter += 1
-            return json.dumps({"type": event_type, "datetime": now, "counter": f"#{self.message_counter}"}) + "\n"
+        # turn_start: suppress (no user-visible value)
+        if event_type == "turn_start":
+            return ""
+
+        # agent_start (no counter — only *_end events get counters)
+        if event_type == "agent_start":
+            return json.dumps({"type": event_type, "datetime": now}) + "\n"
 
         # agent_end
         if event_type == "agent_end":

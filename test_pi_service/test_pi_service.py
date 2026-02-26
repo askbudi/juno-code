@@ -1154,22 +1154,33 @@ class TestResultEventCapture:
 # ===================================================================
 
 class TestPiPrettifierCounter:
-    """Test that _format_event_pretty() includes counter in all outputs."""
+    """Test that _format_event_pretty() includes counter ONLY on *_end events."""
 
     @pytest.fixture(autouse=True)
     def service(self):
         self.svc = _load_pi_service()
 
-    def test_counter_in_agent_start(self):
+    def test_no_counter_in_agent_start(self):
+        """agent_start is not an *_end event — no counter."""
         result = self.svc._format_event_pretty({"type": "agent_start"})
         parsed = json.loads(result)
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
 
-    def test_counter_increments_across_events(self):
-        self.svc._format_event_pretty({"type": "agent_start"})
+    def test_turn_start_suppressed(self):
+        """turn_start should be completely suppressed (returns None)."""
         result = self.svc._format_event_pretty({"type": "turn_start"})
-        parsed = json.loads(result)
-        assert parsed["counter"] == "#2"
+        assert result is None
+
+    def test_counter_increments_across_end_events(self):
+        """Counter increments only for *_end events."""
+        result1 = self.svc._format_event_pretty({"type": "turn_end"})
+        parsed1 = json.loads(result1)
+        assert parsed1["counter"] == "#1"
+        result2 = self.svc._format_event_pretty({
+            "type": "tool_execution_end", "toolName": "bash", "result": "ok",
+        })
+        parsed2 = json.loads(result2)
+        assert parsed2["counter"] == "#2"
 
     def test_counter_in_turn_end(self):
         result = self.svc._format_event_pretty({"type": "turn_end"})
@@ -1177,14 +1188,15 @@ class TestPiPrettifierCounter:
         assert parsed["counter"] == "#1"
         assert parsed["type"] == "turn_end"
 
-    def test_counter_in_tool_execution_start(self):
+    def test_no_counter_in_tool_execution_start(self):
+        """tool_execution_start is not an *_end event — no counter."""
         result = self.svc._format_event_pretty({
             "type": "tool_execution_start",
             "toolName": "bash",
             "args": {"command": "ls"},
         })
         parsed = json.loads(result)
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
         assert parsed["tool"] == "bash"
 
     def test_counter_in_tool_execution_end(self):
@@ -1205,10 +1217,45 @@ class TestPiPrettifierCounter:
         assert parsed["counter"] == "#1"
         assert parsed["message_count"] == 1
 
-    def test_counter_in_message_update(self):
+    def test_counter_in_message_update_text_end(self):
+        """text_end is an *_end subtype — gets counter."""
         result = self.svc._format_event_pretty({
             "type": "message_update",
             "assistantMessageEvent": {"type": "text_end", "content": "hello"},
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_no_counter_in_session(self):
+        """session is not an *_end event — no counter."""
+        result = self.svc._format_event_pretty({"type": "session", "version": "1.0", "id": "abc"})
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_no_counter_in_message_start(self):
+        """message_start is not an *_end event — no counter."""
+        result = self.svc._format_event_pretty({"type": "message_start", "message": {"role": "assistant"}})
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_counter_in_message_end(self):
+        """message_end is an *_end event — gets counter."""
+        result = self.svc._format_event_pretty({"type": "message_end"})
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_no_counter_in_auto_retry_start(self):
+        """auto_retry_start is not an *_end event — no counter."""
+        result = self.svc._format_event_pretty({
+            "type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 1000,
+        })
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_counter_in_auto_retry_end(self):
+        """auto_retry_end is an *_end event — gets counter."""
+        result = self.svc._format_event_pretty({
+            "type": "auto_retry_end", "success": True, "attempt": 1,
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#1"
@@ -1392,7 +1439,7 @@ class TestPiPrettifierThinkingEnd:
 
 
 class TestCodexPrettifierCounter:
-    """Test that Codex prettifier modes include counter in output."""
+    """Test that Codex prettifier modes include counter ONLY on *_end events."""
 
     @pytest.fixture(autouse=True)
     def service(self):
@@ -1409,7 +1456,7 @@ class TestCodexPrettifierCounter:
         assert parsed["counter"] == "#1"
 
     def test_counter_in_codex_event_text_end(self):
-        """_format_pi_codex_event includes counter for text_end."""
+        """_format_pi_codex_event includes counter for text_end (*_end event)."""
         result = self.svc._format_pi_codex_event({
             "type": "message_update",
             "assistantMessageEvent": {"type": "text_end", "content": "hello"},
@@ -1418,9 +1465,62 @@ class TestCodexPrettifierCounter:
         assert parsed["counter"] == "#1"
 
     def test_counter_in_codex_event_turn_end(self):
-        """_format_pi_codex_event includes counter for turn_end."""
+        """_format_pi_codex_event includes counter for turn_end (*_end event)."""
         result = self.svc._format_pi_codex_event({
             "type": "turn_end",
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_no_counter_in_codex_event_message_start(self):
+        """_format_pi_codex_event: message_start has no counter."""
+        result = self.svc._format_pi_codex_event({
+            "type": "message_start",
+            "message": {"role": "assistant"},
+        })
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_no_counter_in_codex_event_tool_execution_start(self):
+        """_format_pi_codex_event: tool_execution_start has no counter."""
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_start",
+            "toolName": "bash",
+        })
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_codex_event_turn_start_suppressed(self):
+        """_format_pi_codex_event: turn_start is suppressed (empty string)."""
+        result = self.svc._format_pi_codex_event({"type": "turn_start"})
+        assert result == ""
+
+    def test_no_counter_in_codex_event_agent_start(self):
+        """_format_pi_codex_event: agent_start has no counter."""
+        result = self.svc._format_pi_codex_event({"type": "agent_start"})
+        parsed = json.loads(result)
+        assert "counter" not in parsed
+
+    def test_counter_in_codex_event_agent_end(self):
+        """_format_pi_codex_event: agent_end gets counter (*_end event)."""
+        result = self.svc._format_pi_codex_event({
+            "type": "agent_end",
+            "messages": [{"role": "assistant"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_codex_event_message_end(self):
+        """_format_pi_codex_event: message_end gets counter (*_end event)."""
+        result = self.svc._format_pi_codex_event({"type": "message_end"})
+        parsed = json.loads(result)
+        assert parsed["counter"] == "#1"
+
+    def test_counter_in_codex_event_tool_execution_end(self):
+        """_format_pi_codex_event: tool_execution_end gets counter (*_end event)."""
+        result = self.svc._format_pi_codex_event({
+            "type": "tool_execution_end",
+            "toolName": "bash",
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#1"
@@ -1450,19 +1550,20 @@ class TestCodexPrettifierCounter:
 
 
 class TestLivePrettifierCounter:
-    """Test that _format_event_live() includes counter in non-delta events."""
+    """Test that _format_event_live() includes counter ONLY on *_end events."""
 
     @pytest.fixture(autouse=True)
     def service(self):
         self.svc = _load_pi_service()
 
-    def test_counter_in_text_start(self):
+    def test_no_counter_in_text_start(self):
+        """text_start is not an *_end event — no counter."""
         result = self.svc._format_event_live({
             "type": "message_update",
             "assistantMessageEvent": {"type": "text_start"},
         })
         parsed = json.loads(result.strip())
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
 
     def test_counter_in_text_end(self):
         result = self.svc._format_event_live({
@@ -1473,13 +1574,14 @@ class TestLivePrettifierCounter:
         parsed = json.loads(result.strip())
         assert parsed["counter"] == "#1"
 
-    def test_counter_in_thinking_start(self):
+    def test_no_counter_in_thinking_start(self):
+        """thinking_start is not an *_end event — no counter."""
         result = self.svc._format_event_live({
             "type": "message_update",
             "assistantMessageEvent": {"type": "thinking_start"},
         })
         parsed = json.loads(result.strip())
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
 
     def test_counter_in_thinking_end(self):
         result = self.svc._format_event_live({
@@ -1501,13 +1603,14 @@ class TestLivePrettifierCounter:
         assert parsed["counter"] == "#1"
         assert parsed["tool"] == "bash"
 
-    def test_counter_in_tool_execution_start(self):
+    def test_no_counter_in_tool_execution_start(self):
+        """tool_execution_start is not an *_end event — no counter."""
         result = self.svc._format_event_live({
             "type": "tool_execution_start",
             "toolName": "edit",
         })
         parsed = json.loads(result.strip())
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
 
     def test_counter_in_tool_execution_end(self):
         result = self.svc._format_event_live({
@@ -1525,12 +1628,19 @@ class TestLivePrettifierCounter:
         parsed = json.loads(result.strip())
         assert parsed["counter"] == "#1"
 
-    def test_counter_in_agent_start(self):
+    def test_turn_start_suppressed(self):
+        """turn_start should be completely suppressed (empty string)."""
+        result = self.svc._format_event_live({"type": "turn_start"})
+        assert result == ""
+        assert self.svc.message_counter == 0
+
+    def test_no_counter_in_agent_start(self):
+        """agent_start is not an *_end event — no counter."""
         result = self.svc._format_event_live({
             "type": "agent_start",
         })
         parsed = json.loads(result.strip())
-        assert parsed["counter"] == "#1"
+        assert "counter" not in parsed
 
     def test_counter_in_agent_end(self):
         result = self.svc._format_event_live({
@@ -1550,20 +1660,26 @@ class TestLivePrettifierCounter:
         assert result == "hello"
         assert self.svc.message_counter == 0  # Not incremented for deltas
 
-    def test_counter_increments_across_live_events(self):
-        """Counter increments sequentially across different live events."""
+    def test_counter_increments_across_end_events(self):
+        """Counter increments only for *_end events, not start events."""
+        # agent_start: no counter, no increment
         self.svc._format_event_live({"type": "agent_start"})
+        assert self.svc.message_counter == 0
+
+        # turn_end: counter #1
+        result = self.svc._format_event_live({"type": "turn_end"})
         assert self.svc.message_counter == 1
+        parsed = json.loads(result.strip())
+        assert parsed["counter"] == "#1"
 
-        self.svc._format_event_live({"type": "turn_end"})
-        assert self.svc.message_counter == 2
-
+        # tool_execution_end: counter #2
         result = self.svc._format_event_live({
-            "type": "tool_execution_start",
+            "type": "tool_execution_end",
             "toolName": "bash",
+            "result": "ok",
         })
         parsed = json.loads(result.strip())
-        assert parsed["counter"] == "#3"
+        assert parsed["counter"] == "#2"
 
     def test_suppressed_events_no_counter(self):
         """Suppressed events (message_start, message_end) don't increment counter."""
