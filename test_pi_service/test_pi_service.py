@@ -413,6 +413,64 @@ class TestPrettifierModeDetection:
 
 
 # ===================================================================
+# 3b. Verbose mode + prettifier interaction (gmgFZ5)
+# ===================================================================
+
+class TestVerbosePrettifierInteraction:
+    """Verbose mode should NOT override codex prettifier.
+
+    Bug gmgFZ5: running `juno-code -s pi -m openai-codex/gpt-5.3-codex -v`
+    caused the prettifier to switch to LIVE instead of staying CODEX, because
+    the verbose flag unconditionally overrode the detected mode.
+    """
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def _apply_run_logic(self, model: str, verbose: bool) -> str:
+        """Simulate the prettifier mode assignment from PiService.run()."""
+        self.svc.model_name = self.svc.expand_model_shorthand(model)
+        self.svc.prettifier_mode = self.svc._detect_prettifier_mode(self.svc.model_name)
+        self.svc.verbose = verbose
+        if verbose and self.svc.prettifier_mode != self.svc.PRETTIFIER_CODEX:
+            self.svc.prettifier_mode = self.svc.PRETTIFIER_LIVE
+        return self.svc.prettifier_mode
+
+    def test_codex_verbose_stays_codex(self):
+        """Codex model + verbose should keep codex prettifier."""
+        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=True) == "codex"
+
+    def test_codex_shorthand_verbose_stays_codex(self):
+        """Codex shorthand + verbose should keep codex prettifier."""
+        assert self._apply_run_logic(":codex", verbose=True) == "codex"
+
+    def test_codex_no_verbose_stays_codex(self):
+        """Codex model without verbose should use codex prettifier."""
+        assert self._apply_run_logic("openai-codex/gpt-5.3-codex", verbose=False) == "codex"
+
+    def test_sonnet_verbose_switches_to_live(self):
+        """Non-codex model + verbose should switch to LIVE prettifier."""
+        assert self._apply_run_logic(":sonnet", verbose=True) == "live"
+
+    def test_sonnet_no_verbose_stays_pi(self):
+        """Non-codex model without verbose should use Pi prettifier."""
+        assert self._apply_run_logic(":sonnet", verbose=False) == "pi"
+
+    def test_gpt5_verbose_switches_to_live(self):
+        """Non-codex OpenAI model + verbose should switch to LIVE."""
+        assert self._apply_run_logic("openai/gpt-5", verbose=True) == "live"
+
+    def test_gemini_verbose_switches_to_live(self):
+        """Gemini model + verbose should switch to LIVE."""
+        assert self._apply_run_logic(":gemini-pro", verbose=True) == "live"
+
+    def test_codex_uppercase_verbose_stays_codex(self):
+        """Case-insensitive codex detection should survive verbose."""
+        assert self._apply_run_logic("openai/GPT-5.3-CODEX", verbose=True) == "codex"
+
+
+# ===================================================================
 # 4. Result event detection - _extract_text_from_message()
 # ===================================================================
 

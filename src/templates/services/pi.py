@@ -1768,8 +1768,10 @@ Model shorthands:
         self.prettifier_mode = self._detect_prettifier_mode(self.model_name)
         self.verbose = args.verbose
 
-        # Verbose mode enables live stream prettifier for real-time output
-        if args.verbose:
+        # Verbose mode enables live stream prettifier for real-time output,
+        # but only for Pi-native event protocol.  Codex models use a different
+        # event format that the LIVE prettifier doesn't handle — keep codex mode.
+        if args.verbose and self.prettifier_mode != self.PRETTIFIER_CODEX:
             self.prettifier_mode = self.PRETTIFIER_LIVE
 
         if self.verbose:
