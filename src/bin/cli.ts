@@ -463,20 +463,277 @@ function setupCompletion(program: Command): void {
 }
 
 /**
- * Create command aliases for common operations
+ * Subagent help text definitions.
+ * Each entry provides backend-specific documentation shown via `juno-code <subagent> --help`.
+ */
+const SUBAGENT_HELP: Record<
+  string,
+  { description: string; helpText: string }
+> = {
+  claude: {
+    description: 'Execute with Anthropic Claude subagent',
+    helpText: `
+${chalk.blue.bold('Claude Backend')} — Anthropic Claude Code CLI wrapper
+
+${chalk.blue('Model Shorthands:')}
+  :sonnet              claude-sonnet-4-6       ${chalk.gray('(default)')}
+  :opus                claude-opus-4-6
+  :haiku               claude-haiku-4-5-20251001
+  :claude-sonnet-4-5   claude-sonnet-4-5-20250929
+  :claude-sonnet-4-6   claude-sonnet-4-6
+  :claude-opus-4       claude-opus-4-20250514
+  :claude-opus-4-5     claude-opus-4-5-20251101
+  :claude-opus-4-6     claude-opus-4-6
+  :claude-haiku-4-5    claude-haiku-4-5-20251001
+
+${chalk.blue('Service-Specific Options:')}
+  These are forwarded to claude.py and the Claude CLI:
+  --permission-mode <mode>  Permission mode: acceptEdits, bypassPermissions, default, plan, skip
+  --auto-instruction <txt>  Text prepended to the prompt automatically
+  --agents <config>         Agents configuration (forwarded to Claude CLI)
+  --additional-args <args>  Extra CLI arguments as a space-separated string
+
+${chalk.blue('Tool Configuration:')}
+  --tools <tools...>              Built-in tool set (use "" to disable all)
+  --allowed-tools <tools...>      Replace default allowed tools
+  --append-allowed-tools <t...>   Add to default allowed tools
+  --disallowed-tools <tools...>   Disable specific tools
+
+  Default tools: Task, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write,
+    NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell,
+    Skill, SlashCommand, EnterPlanMode
+
+${chalk.blue('Environment Variables:')}
+  CLAUDE_MODEL                    Model override (default: claude-sonnet-4-6)
+  CLAUDE_PROJECT_PATH             Project directory
+  CLAUDE_AUTO_INSTRUCTION         Auto-instruction text
+  CLAUDE_PERMISSION_MODE          Permission mode (default: default)
+  CLAUDE_PRETTY                   Pretty-print JSON output (true/false)
+  CLAUDE_VERBOSE                  Verbose output (true/false)
+
+${chalk.blue('Examples:')}
+  ${chalk.gray('# Basic execution')}
+  juno-code claude "Analyze this codebase"
+
+  ${chalk.gray('# Choose a model')}
+  juno-code claude -m :opus "Complex refactoring task"
+  juno-code claude -m :haiku "Quick analysis"
+
+  ${chalk.gray('# File-based prompt')}
+  juno-code claude -f prompt.md
+
+  ${chalk.gray('# Resume a session')}
+  juno-code claude --resume <session-id> "Continue the work"
+  juno-code claude --continue "Next step"
+
+  ${chalk.gray('# Tool configuration')}
+  juno-code claude --disallowed-tools Bash "Read-only analysis"
+  juno-code claude --allowed-tools Read Grep "Search only"
+
+  ${chalk.gray('# Pipe prompt via stdin')}
+  echo "Explain this code" | juno-code claude
+  cat prompt.md | juno-code claude
+`,
+  },
+
+  pi: {
+    description: 'Execute with Pi multi-provider coding agent',
+    helpText: `
+${chalk.blue.bold('Pi Backend')} — Multi-provider coding agent (Anthropic, OpenAI, Google, Groq, xAI)
+
+${chalk.blue('Model Shorthands:')}
+  ${chalk.gray('# Anthropic')}
+  :sonnet              anthropic/claude-sonnet-4-6   ${chalk.gray('(default)')}
+  :opus                anthropic/claude-opus-4-6
+  :haiku               anthropic/claude-haiku-4-5-20251001
+  ${chalk.gray('# OpenAI')}
+  :gpt-5               openai/gpt-5
+  :gpt-4o              openai/gpt-4o
+  :o3                  openai/o3
+  :codex               openai-codex/gpt-5.3-codex
+  ${chalk.gray('# Google')}
+  :gemini-pro          google/gemini-2.5-pro
+  :gemini-flash        google/gemini-2.5-flash
+  ${chalk.gray('# Others')}
+  :groq                groq/llama-4-scout-17b-16e-instruct
+  :grok                xai/grok-3
+  :pi, :default        anthropic/claude-sonnet-4-6
+
+${chalk.blue('Service-Specific Options:')}
+  These are forwarded to pi.py and the Pi CLI:
+  --provider <name>         LLM provider override (anthropic, openai, google, groq, xai)
+  --thinking <level>        Extended thinking: off, minimal, low, medium, high, xhigh
+  --tools <list>            Pi tools (comma-separated): read, bash, edit, write, grep, find, ls
+  --no-tools                Disable all built-in Pi tools
+  --system-prompt <text>    Replace Pi's default system prompt
+  --append-system-prompt <text>  Append to Pi's default system prompt
+  --no-extensions           Disable Pi TypeScript extensions
+  --no-skills               Disable Pi skills
+  --no-session              Ephemeral mode — no session persistence
+  --auto-instruction <txt>  Text prepended to the prompt automatically
+  --additional-args <args>  Extra Pi CLI arguments as a space-separated string
+
+${chalk.blue('Environment Variables:')}
+  PI_MODEL                  Model override (default: anthropic/claude-sonnet-4-6)
+  PI_PROVIDER               Provider override
+  PI_PROJECT_PATH           Project directory
+  PI_THINKING               Thinking level
+  PI_TOOLS                  Comma-separated tool list
+  PI_SYSTEM_PROMPT          Custom system prompt
+  PI_APPEND_SYSTEM_PROMPT   Text appended to system prompt
+  PI_AUTO_INSTRUCTION       Auto-instruction text
+  PI_NO_SESSION             Disable sessions (true/false)
+  PI_PRETTY                 Pretty-print JSON output (true/false)
+  PI_VERBOSE                Verbose mode (true/false)
+
+${chalk.blue('Examples:')}
+  ${chalk.gray('# Basic execution')}
+  juno-code pi "Build a REST API endpoint"
+
+  ${chalk.gray('# Use a specific provider and model')}
+  juno-code pi -m :gpt-5 "Refactor this module"
+  juno-code pi -m openai/gpt-4o --provider openai "Task"
+  juno-code pi -m :gemini-pro "Analyze performance"
+
+  ${chalk.gray('# Extended thinking')}
+  juno-code pi --thinking high "Complex architecture redesign"
+
+  ${chalk.gray('# Tool and session control')}
+  juno-code pi --no-tools "Read-only analysis"
+  juno-code pi --no-session "One-off question"
+  juno-code pi --resume <session-id> "Continue work"
+
+  ${chalk.gray('# File-based prompt')}
+  juno-code pi -f instructions.md
+`,
+  },
+
+  codex: {
+    description: 'Execute with OpenAI Codex subagent',
+    helpText: `
+${chalk.blue.bold('Codex Backend')} — OpenAI Codex CLI wrapper
+
+${chalk.blue('Model Shorthands:')}
+  :codex               gpt-5.3-codex        ${chalk.gray('(default)')}
+  :codex-mini          gpt-5.1-codex-mini
+  :gpt-5               gpt-5
+  :mini                gpt-5-codex-mini
+
+${chalk.blue('Service-Specific Options:')}
+  These are forwarded to codex.py and the Codex CLI:
+  -c, --config <args>       Additional codex config arguments (repeatable)
+  --auto-instruction <txt>  Text prepended to the prompt automatically
+
+  Default configs applied automatically:
+    include_apply_patch_tool=true
+    use_experimental_streamable_shell_tool=true
+    sandbox_mode=danger-full-access
+
+${chalk.blue('Environment Variables:')}
+  CODEX_MODEL                     Model override (default: gpt-5.3-codex)
+  CODEX_HIDE_STREAM_TYPES         Stream types to suppress (comma-separated)
+  JUNO_CODE_HIDE_STREAM_TYPES     Alternative stream type filter
+
+${chalk.blue('Examples:')}
+  ${chalk.gray('# Basic execution')}
+  juno-code codex "Fix the failing tests"
+
+  ${chalk.gray('# Use a different model')}
+  juno-code codex -m :gpt-5 "Implement feature X"
+  juno-code codex -m :codex-mini "Quick fix"
+
+  ${chalk.gray('# File-based prompt')}
+  juno-code codex -f prompt.md
+`,
+  },
+
+  gemini: {
+    description: 'Execute with Google Gemini subagent',
+    helpText: `
+${chalk.blue.bold('Gemini Backend')} — Google Gemini CLI wrapper
+
+${chalk.blue('Model Shorthands:')}
+  :pro                 gemini-2.5-pro       ${chalk.gray('(default)')}
+  :flash               gemini-2.5-flash
+  :pro-2.5             gemini-2.5-pro
+  :flash-2.5           gemini-2.5-flash
+  :pro-3               gemini-3.0-pro
+  :flash-3             gemini-3.0-flash
+
+${chalk.blue('Service-Specific Options:')}
+  These are forwarded to gemini.py and the Gemini CLI:
+  --output-format <fmt>         Output format: stream-json, json, text (default: stream-json)
+  --include-directories <dirs>  Comma-separated directories to include for context
+  --approval-mode <mode>        Approval mode (e.g., auto_edit). Defaults to --yolo
+  --yolo                        Auto-approve all actions (default in headless mode)
+  --debug                       Enable Gemini CLI debug output
+
+${chalk.blue('Environment Variables:')}
+  GEMINI_API_KEY                Required API key for authentication
+  GEMINI_MODEL                  Model override (default: gemini-2.5-pro)
+  GEMINI_PROJECT_PATH           Project directory
+  GEMINI_OUTPUT_FORMAT          Output format override
+
+${chalk.blue('Examples:')}
+  ${chalk.gray('# Basic execution')}
+  juno-code gemini "Analyze this codebase"
+
+  ${chalk.gray('# Choose a model')}
+  juno-code gemini -m :flash "Quick analysis"
+  juno-code gemini -m :pro-3 "Complex task"
+
+  ${chalk.gray('# Include specific directories')}
+  juno-code gemini --include-directories "src,tests" "Review code quality"
+
+  ${chalk.gray('# File-based prompt')}
+  juno-code gemini -f prompt.md
+`,
+  },
+
+  cursor: {
+    description: 'Execute with Cursor AI subagent',
+    helpText: `
+${chalk.blue.bold('Cursor Backend')} — Cursor AI editor agent
+
+${chalk.blue('Note:')}
+  Cursor uses the Claude service backend (claude.py).
+  See ${chalk.cyan('juno-code claude --help')} for model shorthands and service options.
+
+${chalk.blue('Examples:')}
+  ${chalk.gray('# Basic execution')}
+  juno-code cursor "Refactor this component"
+
+  ${chalk.gray('# With model selection')}
+  juno-code cursor -m :sonnet "Analyze code"
+
+  ${chalk.gray('# File-based prompt')}
+  juno-code cursor -f prompt.md
+`,
+  },
+};
+
+/**
+ * Create command aliases for each subagent with dedicated help text.
+ * Each subagent command shows backend-specific options, model shorthands, and examples.
  */
 function setupAliases(program: Command): void {
-  // Subagent aliases as direct commands
   const subagents = ['claude', 'cursor', 'codex', 'gemini', 'pi'];
 
   for (const subagent of subagents) {
-    program
-      .command(subagent, { hidden: true })
-      .description(`Execute with ${subagent} subagent`)
+    const help = SUBAGENT_HELP[subagent];
+    const cmd = program
+      .command(subagent)
+      .description(help.description)
       .argument('[prompt...]', 'Prompt text or file path')
-      .option('-i, --max-iterations <number>', 'Maximum iterations', parseInt)
+      .option('-p, --prompt [text]', 'Prompt input (inline text, or use with heredoc/stdin)')
       .option('-f, --prompt-file <path>', 'Read prompt from a file')
       .option('-w, --cwd <path>', 'Working directory')
+      .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
+      .option('-m, --model <name>', 'Model to use (see model shorthands below)')
+      .option('-r, --resume <sessionId>', 'Resume a conversation by session ID')
+      .option('--continue', 'Continue the most recent conversation')
+      .option('-I, --interactive', 'Interactive mode for typing prompts')
+      .addHelpText('after', help.helpText)
       .action(async (prompt, options, command) => {
         try {
           const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
@@ -503,6 +760,9 @@ function setupAliases(program: Command): void {
           handleCLIError(error, options.verbose);
         }
       });
+
+    // Pass through unknown options to the backend service
+    cmd.allowUnknownOption(true);
   }
 }
 
@@ -739,9 +999,9 @@ async function main(): Promise<void> {
   // Setup main command (must be last)
   setupMainCommand(program);
 
-  // Add comprehensive help
+  // Add comprehensive help (scoped to root command only — 'before'/'after' not 'beforeAll'/'afterAll')
   program.addHelpText(
-    'beforeAll',
+    'before',
     `
 ${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestration
 
@@ -749,7 +1009,7 @@ ${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestrat
   );
 
   program.addHelpText(
-    'afterAll',
+    'after',
     `
 ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Initialize new project (interactive mode)')}
