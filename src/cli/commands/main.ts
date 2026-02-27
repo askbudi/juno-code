@@ -16,6 +16,7 @@ import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type { MainCommandOptions } from '../types.js';
@@ -674,6 +675,16 @@ export async function mainCommandHandler(
 
     // Compute effective verbose level (quiet overrides verbose to 0)
     const effectiveVerbose = options.quiet ? 0 : (options.verbose ?? 1);
+
+    // Set logger level based on verbose:
+    //   0 (quiet): WARN — suppress INFO/DEBUG, only show warnings and errors
+    //   1 (normal): INFO — show important INFO (e.g. quota limits), suppress DEBUG (hook execution details)
+    //   2 (verbose): DEBUG — show everything including hook execution tracking
+    if (effectiveVerbose >= 2) {
+      logger.setLevel(LogLevel.DEBUG);
+    } else if (effectiveVerbose === 0) {
+      logger.setLevel(LogLevel.WARN);
+    }
 
     // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
     if (options.hooks === false) {

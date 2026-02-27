@@ -155,7 +155,7 @@ export async function executeHook(
   // Create context-specific logger
   const contextLogger = logger.child(logContext);
 
-  contextLogger.info(`Starting hook execution: ${hookType}`, {
+  contextLogger.debug(`Starting hook execution: ${hookType}`, {
     context,
     workingDirectory: context.workingDirectory || process.cwd(),
     commandTimeout,
@@ -189,7 +189,7 @@ export async function executeHook(
     };
   }
 
-  contextLogger.info(`Executing ${hook.commands.length} commands for hook ${hookType}`);
+  contextLogger.debug(`Executing ${hook.commands.length} commands for hook ${hookType}`);
 
   const commandResults: CommandExecutionResult[] = [];
   let commandsFailed = 0;
@@ -199,7 +199,7 @@ export async function executeHook(
     const command = hook.commands[i]!;
     const commandStartTime = Date.now();
 
-    contextLogger.info(`Executing command ${i + 1}/${hook.commands.length}: ${command}`, {
+    contextLogger.debug(`Executing command ${i + 1}/${hook.commands.length}: ${command}`, {
       commandIndex: i,
       totalCommands: hook.commands.length,
     });
@@ -275,7 +275,7 @@ export async function executeHook(
       commandResults.push(commandResult);
 
       if (success) {
-        contextLogger.info(`Command completed successfully`, {
+        contextLogger.debug(`Command completed successfully`, {
           command,
           exitCode: result.exitCode,
           duration,
@@ -372,7 +372,7 @@ export async function executeHook(
     commandsFailed,
   };
 
-  contextLogger.info(`Hook execution completed`, {
+  contextLogger.debug(`Hook execution completed`, {
     hookType,
     totalDuration,
     commandsExecuted,
@@ -404,7 +404,7 @@ export async function executeHooks(
 ): Promise<HookExecutionResult[]> {
   const results: HookExecutionResult[] = [];
 
-  hookLogger.info(`Starting batch hook execution`, {
+  hookLogger.debug(`Starting batch hook execution`, {
     hookTypes,
     context,
   });
@@ -418,7 +418,7 @@ export async function executeHooks(
   const totalCommands = results.reduce((sum, r) => sum + r.commandsExecuted, 0);
   const totalFailed = results.reduce((sum, r) => sum + r.commandsFailed, 0);
 
-  hookLogger.info(`Batch hook execution completed`, {
+  hookLogger.debug(`Batch hook execution completed`, {
     hookTypes,
     totalHooks: results.length,
     totalCommands,

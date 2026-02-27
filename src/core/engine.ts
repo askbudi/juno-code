@@ -745,7 +745,7 @@ export class ExecutionEngine extends EventEmitter {
       }
     });
 
-    engineLogger.info(`Initialized ${backend.name} backend for execution`);
+    engineLogger.debug(`Initialized ${backend.name} backend for execution`);
   }
 
   /**
