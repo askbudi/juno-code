@@ -29,10 +29,12 @@ export interface CommandExample {
  * Global CLI options available to all commands
  */
 export interface GlobalCLIOptions {
-  /** Enable verbose output with detailed progress */
+  /** Enable verbose output including hook execution (default: true). Accepts boolean or string (false/0/no to disable) */
   verbose?: boolean;
-  /** Disable rich formatting, use plain text */
+  /** Quiet mode: suppress agent messages and hook output (alias: --silent) */
   quiet?: boolean;
+  /** Alias for --quiet */
+  silent?: boolean;
   /** Configuration file path (.json, .toml, pyproject.toml) */
   config?: string;
   /** Log file path (auto-generated if not specified) */

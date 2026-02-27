@@ -1310,3 +1310,308 @@ describe('Positional Prompt CLI Parsing', () => {
     expect(capturedOptions.prompt).toBe(true);
   });
 });
+
+describe('Verbose/Quiet Output Modes', () => {
+  let processExitSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let originalIsTTY: boolean | undefined;
+
+  const mockCommand = new Command('juno-code');
+
+  beforeEach(async () => {
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+
+    originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, configurable: true });
+
+    // Re-establish mocks (mockReset clears them)
+    const { loadConfig } = await import('../../core/config.js');
+    vi.mocked(loadConfig).mockResolvedValue({
+      workingDirectory: '/test/dir',
+      defaultMaxIterations: 5,
+      defaultModel: ':sonnet',
+      mcpTimeout: 30000,
+      mcpRetries: 3,
+      verbose: true,
+      quiet: false,
+    } as any);
+
+    const { createExecutionEngine, createExecutionRequest } = await import('../../core/engine.js');
+    vi.mocked(createExecutionEngine).mockReturnValue({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [{
+          iterationNumber: 1,
+          toolResult: { content: 'Test result', metadata: {} },
+          success: true,
+          duration: 1000,
+        }],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 1,
+          failedIterations: 0,
+          averageIterationDuration: 1000,
+          totalToolCalls: 5,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+    vi.mocked(createExecutionRequest).mockImplementation((opts: any) => ({
+      requestId: 'test-request',
+      instruction: opts.instruction,
+      subagent: opts.subagent,
+      workingDirectory: opts.workingDirectory || '/test/dir',
+      maxIterations: opts.maxIterations || 1,
+      model: opts.model || ':sonnet',
+    }) as any);
+
+    const fsExtra = await import('fs-extra');
+    vi.mocked(fsExtra.pathExists as any).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, writable: true, configurable: true });
+    vi.restoreAllMocks();
+  });
+
+  it('should show model and iterations by default (verbose=true)', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: true,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    // Model and iterations should be shown
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Model:') || c.includes(':sonnet'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(true);
+  });
+
+  it('should show model and iterations even when verbose=false (execution info always shown)', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: false,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    // Model and iterations should still be shown (moved out of verbose guard)
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Model:') || c.includes(':sonnet'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(true);
+  });
+
+  it('should suppress all output in quiet mode', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: true,
+      quiet: true,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    // In quiet mode, no progress/execution info on stderr (only final result on stdout)
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    // Should NOT show execution banner, iterations, etc.
+    expect(allCalls.some((c: string) => c.includes('Executing with'))).toBe(false);
+    expect(allCalls.some((c: string) => c.includes('Model:'))).toBe(false);
+  });
+
+  it('should show verbose-only info (Request ID, Working Directory) only when verbose=true', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: true,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Request ID:'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Working Directory:'))).toBe(true);
+  });
+
+  it('should NOT show Request ID/Working Dir when verbose=false', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: false,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Request ID:'))).toBe(false);
+    expect(allCalls.some((c: string) => c.includes('Working Directory:'))).toBe(false);
+  });
+
+  it('should show subagent source info without verbose guard', async () => {
+    const { loadConfig } = await import('../../core/config.js');
+    vi.mocked(loadConfig).mockResolvedValue({
+      workingDirectory: '/test/dir',
+      defaultMaxIterations: 5,
+      defaultSubagent: 'pi',
+      defaultModel: ':pi',
+      mcpTimeout: 30000,
+      mcpRetries: 3,
+      verbose: false,
+      quiet: false,
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: undefined as any, // Let it resolve from config
+      prompt: 'test prompt',
+      verbose: false,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    // Subagent resolution info should be shown (not gated on verbose)
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Subagent:') || c.includes('pi'))).toBe(true);
+  });
+
+  it('should show statistics only when verbose=true', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: true,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Statistics:'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
+  });
+
+  it('should NOT show statistics when verbose=false', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: false,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Statistics:'))).toBe(false);
+  });
+
+  it('should only print final result to stdout in quiet mode', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: true,
+      quiet: true,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    // stdout should have the final result
+    expect(consoleLogSpy).toHaveBeenCalledWith('Test result');
+  });
+});
+
+describe('normalizeVerbose (Commander.js integration)', () => {
+  it('should parse -v with optional value in Commander.js', async () => {
+    const program = new Command();
+    let capturedVerbose: any = null;
+
+    program
+      .option('-v, --verbose [value]', 'Enable verbose')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((options) => {
+        capturedVerbose = options.verbose;
+      });
+
+    // -v without value → true
+    await program.parseAsync(['-v', '-s', 'claude'], { from: 'user' });
+    expect(capturedVerbose).toBe(true);
+  });
+
+  it('should parse -v false as string "false"', async () => {
+    const program = new Command();
+    let capturedVerbose: any = null;
+
+    program
+      .option('-v, --verbose [value]', 'Enable verbose')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((options) => {
+        capturedVerbose = options.verbose;
+      });
+
+    await program.parseAsync(['-v', 'false', '-s', 'claude'], { from: 'user' });
+    expect(capturedVerbose).toBe('false');
+  });
+
+  it('should parse -v 0 as string "0"', async () => {
+    const program = new Command();
+    let capturedVerbose: any = null;
+
+    program
+      .option('-v, --verbose [value]', 'Enable verbose')
+      .action((options) => {
+        capturedVerbose = options.verbose;
+      });
+
+    await program.parseAsync(['-v', '0'], { from: 'user' });
+    expect(capturedVerbose).toBe('0');
+  });
+
+  it('should parse no -v flag as undefined', async () => {
+    const program = new Command();
+    let capturedVerbose: any = null;
+
+    program
+      .option('-v, --verbose [value]', 'Enable verbose')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((options) => {
+        capturedVerbose = options.verbose;
+      });
+
+    await program.parseAsync(['-s', 'claude'], { from: 'user' });
+    expect(capturedVerbose).toBeUndefined();
+  });
+
+  it('should parse --silent as a flag', async () => {
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .option('-q, --quiet', 'Quiet mode')
+      .option('--silent', 'Alias for --quiet')
+      .action((options) => {
+        capturedOptions = options;
+      });
+
+    await program.parseAsync(['--silent'], { from: 'user' });
+    expect(capturedOptions.silent).toBe(true);
+  });
+});

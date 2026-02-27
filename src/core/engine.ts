@@ -22,7 +22,7 @@ import type {
   SessionContext,
 } from '../types/execution.js';
 import { ExecutionError, RateLimitError } from './errors';
-import { executeHook } from '../utils/hooks.js';
+import { executeHook, type HookExecutionResult } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
 import type { Backend } from './backend-manager.js';
 import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js';
@@ -659,6 +659,31 @@ export class ExecutionEngine extends EventEmitter {
   }
 
   /**
+   * Display hook execution output to stderr when verbose mode is enabled.
+   * When verbose: shows hook name, command stdout/stderr output.
+   * When not verbose or quiet: output is suppressed (hooks still run).
+   */
+  private displayHookOutput(hookResult: HookExecutionResult): void {
+    if (!this.engineConfig.config.verbose) return;
+    for (const cmdResult of hookResult.commandResults) {
+      const prefix = `[hook:${hookResult.hookType}]`;
+      if (cmdResult.stdout) {
+        for (const line of cmdResult.stdout.split('\n')) {
+          if (line.trim()) console.error(`${prefix} ${line}`);
+        }
+      }
+      if (cmdResult.stderr) {
+        for (const line of cmdResult.stderr.split('\n')) {
+          if (line.trim()) console.error(`${prefix} ${line}`);
+        }
+      }
+      if (!cmdResult.success) {
+        console.error(`${prefix} command failed (exit ${cmdResult.exitCode}): ${cmdResult.command}`);
+      }
+    }
+  }
+
+  /**
    * Initialize backend for execution request.
    * Directly creates and configures a ShellBackend (no factory indirection).
    */
@@ -852,7 +877,7 @@ export class ExecutionEngine extends EventEmitter {
     // Execute START_RUN hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook(
+        const hookResult = await executeHook(
           'START_RUN',
           this.engineConfig.config.hooks,
           {
@@ -872,6 +897,7 @@ export class ExecutionEngine extends EventEmitter {
             commandTimeout: this.engineConfig.config.hookCommandTimeout,
           },
         );
+        this.displayHookOutput(hookResult);
       }
     } catch (error) {
       engineLogger.warn('Hook START_RUN failed', { error });
@@ -901,7 +927,7 @@ export class ExecutionEngine extends EventEmitter {
     // Execute END_RUN hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook(
+        const hookResult = await executeHook(
           'END_RUN',
           this.engineConfig.config.hooks,
           {
@@ -925,6 +951,7 @@ export class ExecutionEngine extends EventEmitter {
             commandTimeout: this.engineConfig.config.hookCommandTimeout,
           },
         );
+        this.displayHookOutput(hookResult);
       }
     } catch (error) {
       engineLogger.warn('Hook END_RUN failed', { error });
@@ -989,7 +1016,7 @@ export class ExecutionEngine extends EventEmitter {
     // Execute START_ITERATION hook
     try {
       if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-        await executeHook(
+        const hookResult = await executeHook(
           'START_ITERATION',
           this.engineConfig.config.hooks,
           {
@@ -1010,6 +1037,7 @@ export class ExecutionEngine extends EventEmitter {
             commandTimeout: this.engineConfig.config.hookCommandTimeout,
           },
         );
+        this.displayHookOutput(hookResult);
       }
     } catch (error) {
       engineLogger.warn('Hook START_ITERATION failed', { error, iterationNumber });
@@ -1083,7 +1111,7 @@ export class ExecutionEngine extends EventEmitter {
       // Execute END_ITERATION hook for successful iteration
       try {
         if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-          await executeHook(
+          const hookResult = await executeHook(
             'END_ITERATION',
             this.engineConfig.config.hooks,
             {
@@ -1105,6 +1133,7 @@ export class ExecutionEngine extends EventEmitter {
               commandTimeout: this.engineConfig.config.hookCommandTimeout,
             },
           );
+          this.displayHookOutput(hookResult);
         }
       } catch (error) {
         engineLogger.warn('Hook END_ITERATION failed', { error, iterationNumber });
@@ -1147,7 +1176,7 @@ export class ExecutionEngine extends EventEmitter {
       // Execute END_ITERATION hook for failed iteration
       try {
         if (this.engineConfig.config.hooks && !this.engineConfig.config.skipHooks) {
-          await executeHook(
+          const hookResult = await executeHook(
             'END_ITERATION',
             this.engineConfig.config.hooks,
             {
@@ -1170,6 +1199,7 @@ export class ExecutionEngine extends EventEmitter {
               commandTimeout: this.engineConfig.config.hookCommandTimeout,
             },
           );
+          this.displayHookOutput(hookResult);
         }
       } catch (hookError) {
         engineLogger.warn('Hook END_ITERATION failed', { error: hookError, iterationNumber });

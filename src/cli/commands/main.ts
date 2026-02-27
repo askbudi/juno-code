@@ -286,16 +286,22 @@ class MainProgressDisplay {
   private startTime: Date = new Date();
   private currentIteration: number = 0;
   private verbose: boolean;
+  private quiet: boolean;
   private hasStreamedJsonOutput: boolean = false; // Track if we streamed JSON output via progress events
   private sessionIds: Map<number, string> = new Map(); // iteration# → sub-agent session_id
   private latestSessionId: string | null = null; // most recent session_id seen
 
-  constructor(verbose: boolean = false) {
+  constructor(verbose: boolean = true, quiet: boolean = false) {
     this.verbose = verbose;
+    this.quiet = quiet;
   }
 
   start(request: ExecutionRequest): void {
     this.startTime = new Date();
+
+    // In quiet mode, suppress all start info
+    if (this.quiet) return;
+
     console.error(
       chalk.blue.bold(
         '\n🚀 Executing with ' +
@@ -304,17 +310,20 @@ class MainProgressDisplay {
       ),
     );
 
+    // Execution info: always shown (unless quiet) — model, max iterations
+    if (request.model) {
+      console.error(chalk.gray(`   Model: ${request.model}`));
+    }
+    console.error(
+      chalk.gray(
+        `   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`,
+      ),
+    );
+
+    // Verbose-only: Request ID, Working Directory
     if (this.verbose) {
       console.error(chalk.gray(`   Request ID: ${request.requestId}`));
-      console.error(
-        chalk.gray(
-          `   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`,
-        ),
-      );
       console.error(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
-      if (request.model) {
-        console.error(chalk.gray(`   Model: ${request.model}`));
-      }
     }
 
     console.error(chalk.blue('\n📋 Task:'));
@@ -348,6 +357,9 @@ class MainProgressDisplay {
     ) {
       this.hasStreamedJsonOutput = true;
     }
+
+    // In quiet mode, suppress all streaming output (still track session IDs and hasStreamed)
+    if (this.quiet) return;
 
     // If this is raw JSON output from shell backend (jq-style formatting)
     // Display it with colors and indentation like `claude.py | jq .`
@@ -411,6 +423,7 @@ class MainProgressDisplay {
 
   onIterationStart(iteration: number): void {
     this.currentIteration = iteration;
+    if (this.quiet) return;
     if (!this.verbose) {
       process.stderr.write(chalk.yellow(`\n🔄 Iteration ${iteration} `));
     } else {
@@ -420,6 +433,7 @@ class MainProgressDisplay {
   }
 
   onIterationComplete(success: boolean, duration: number): void {
+    if (this.quiet) return;
     if (!this.verbose) {
       const icon = success ? chalk.green('✓') : chalk.red('✗');
       console.error(` ${icon}`);
@@ -444,6 +458,15 @@ class MainProgressDisplay {
 
   complete(result: ExecutionResult): void {
     const elapsed = this.getElapsedTime();
+
+    // In quiet mode: only show final result on STDOUT, nothing else
+    if (this.quiet) {
+      const lastIteration = result.iterations[result.iterations.length - 1];
+      if (lastIteration?.toolResult.content && !this.hasStreamedJsonOutput) {
+        console.log(lastIteration.toolResult.content);
+      }
+      return;
+    }
 
     // Send completion status to STDERR (progress messages)
     if (result.status === ExecutionStatus.COMPLETED) {
@@ -552,9 +575,9 @@ class MainExecutionCoordinator {
   private feedbackCollector: ConcurrentFeedbackCollector | null = null;
   private enableFeedback: boolean = false;
 
-  constructor(config: any, verbose: boolean = false, enableFeedback: boolean = false) {
+  constructor(config: any, verbose: boolean = true, quiet: boolean = false, enableFeedback: boolean = false) {
     this.config = config;
-    this.progressDisplay = new MainProgressDisplay(verbose);
+    this.progressDisplay = new MainProgressDisplay(verbose, quiet);
     this.enableFeedback = enableFeedback;
 
     // Initialize feedback collector if enabled
@@ -650,7 +673,7 @@ export async function mainCommandHandler(
       baseDir: options.cwd || process.cwd(),
       ...(options.config !== undefined ? { configFile: options.config } : {}),
       cliConfig: {
-        verbose: options.verbose || false,
+        verbose: options.verbose !== undefined ? options.verbose : true,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
         workingDirectory: options.cwd || process.cwd(),
@@ -664,7 +687,7 @@ export async function mainCommandHandler(
     // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
     if (options.hooks === false) {
       config.skipHooks = true;
-      if (options.verbose) {
+      if (!options.quiet) {
         console.error(chalk.gray('   Hooks: disabled (--no-hooks)'));
       }
     }
@@ -673,12 +696,12 @@ export async function mainCommandHandler(
     if (!options.subagent) {
       if (config.defaultSubagent) {
         options.subagent = config.defaultSubagent as SubagentType;
-        if (options.verbose) {
+        if (!options.quiet) {
           console.error(chalk.gray(`   Subagent: ${config.defaultSubagent} (from config.json)`));
         }
       } else {
         options.subagent = 'claude' as SubagentType;
-        if (options.verbose) {
+        if (!options.quiet) {
           console.error(chalk.gray(`   Subagent: claude (default)`));
         }
       }
@@ -762,6 +785,7 @@ export async function mainCommandHandler(
     const coordinator = new MainExecutionCoordinator(
       config,
       options.verbose,
+      options.quiet || false,
       options.enableFeedback || false,
     );
     const result = await coordinator.execute(executionRequest);

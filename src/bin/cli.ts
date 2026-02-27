@@ -43,6 +43,18 @@ const require = createRequire(import.meta.url);
 const packageJson = require(join(__dirname, '../../package.json'));
 const VERSION = packageJson.version;
 
+/**
+ * Normalize verbose flag value to boolean.
+ * -v (no value) → true, -v true/1/yes → true, -v false/0/no → false, undefined → true (default on)
+ */
+function normalizeVerbose(value: unknown): boolean {
+  if (value === undefined) return true; // Default: verbose enabled (C4tqUJ)
+  if (value === true) return true; // -v without value
+  if (value === false) return false;
+  const str = String(value).toLowerCase().trim();
+  return !['false', '0', 'no'].includes(str);
+}
+
 /** Determine if an error is a transient connection/pipe error. */
 function isConnectionLikeError(err: unknown): boolean {
   const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -103,8 +115,12 @@ function handleCLIError(error: unknown, verbose: boolean = false): void {
 function setupGlobalOptions(program: Command): void {
   // Global options available to all commands
   program
-    .option('-v, --verbose', 'Enable verbose output with detailed progress')
-    .option('-q, --quiet', 'Disable rich formatting, use plain text')
+    .option(
+      '-v, --verbose [value]',
+      'Enable verbose output including hook execution (default: true). Disable with -v false, -v 0, or -v no',
+    )
+    .option('-q, --quiet', 'Quiet mode: suppress agent messages and hook output (alias: --silent)')
+    .option('--silent', 'Alias for --quiet')
     .option('-c, --config <path>', 'Configuration file path (.json, .toml, pyproject.toml)')
     .option('-l, --log-file <path>', 'Log file path (auto-generated if not specified)')
     .option('--no-color', 'Disable colored output')
@@ -219,6 +235,14 @@ function setupMainCommand(program: Command): void {
           Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
         );
         const allOptions = { ...definedGlobalOptions, ...options };
+
+        // Normalize verbose: default true, -v false/0/no disables
+        allOptions.verbose = normalizeVerbose(allOptions.verbose);
+
+        // Handle --silent as alias for --quiet
+        if (allOptions.silent) {
+          allOptions.quiet = true;
+        }
 
         // Handle --til-completion flag and its synonyms: invoke run_until_completion.sh
         if (
@@ -339,7 +363,7 @@ function setupMainCommand(program: Command): void {
               const config = await loadConfig({
                 baseDir: cwd,
                 cliConfig: {
-                  verbose: allOptions.verbose || false,
+                  verbose: allOptions.verbose,
                   quiet: allOptions.quiet || false,
                   logLevel: allOptions.logLevel || 'info',
                   workingDirectory: cwd,
@@ -460,11 +484,16 @@ function setupAliases(program: Command): void {
           const promptText = Array.isArray(prompt) ? prompt.join(' ') : prompt;
           // Get global options and merge with command options
           const globalOptions = program.opts();
+          // Normalize verbose and handle --silent alias
+          const normalizedVerbose = normalizeVerbose(globalOptions.verbose);
+          const isQuietAlias = globalOptions.silent || options.silent;
           await mainCommandHandler(
             [],
             {
               ...globalOptions,
               ...options,
+              verbose: normalizedVerbose,
+              quiet: globalOptions.quiet || options.quiet || isQuietAlias || false,
               subagent,
               prompt: promptText,
             },
@@ -510,6 +539,13 @@ function configureEnvironment(): void {
 
       switch (option) {
         case 'verbose':
+          // JUNO_CODE_VERBOSE supports true/false/0/1/no/yes — pass value through for normalization
+          if (value.toLowerCase() === 'false' || value === '0' || value.toLowerCase() === 'no') {
+            process.argv.push('--verbose', 'false');
+          } else if (value.toLowerCase() === 'true' || value === '1' || value.toLowerCase() === 'yes') {
+            process.argv.push('--verbose');
+          }
+          break;
         case 'quiet':
         case 'no-color':
         case 'enable-feedback':
@@ -575,12 +611,10 @@ async function main(): Promise<void> {
 
     const updated = await ServiceInstaller.autoUpdate(isForceUpdate);
 
-    // Show update message in verbose mode or force update mode
+    // Show update message in force update mode or JUNO_CODE_DEBUG
     if (
       updated &&
       (isForceUpdate ||
-        process.argv.includes('--verbose') ||
-        process.argv.includes('-v') ||
         process.env.JUNO_CODE_DEBUG === '1')
     ) {
       if (isForceUpdate) {
@@ -615,13 +649,8 @@ async function main(): Promise<void> {
       // Normal auto-update (only missing/outdated scripts)
       const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
 
-      // Show update message in verbose mode
-      if (
-        updated &&
-        (process.argv.includes('--verbose') ||
-          process.argv.includes('-v') ||
-          process.env.JUNO_CODE_DEBUG === '1')
-      ) {
+      // Show update message in JUNO_CODE_DEBUG mode
+      if (updated && process.env.JUNO_CODE_DEBUG === '1') {
         console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
       }
     }
@@ -647,12 +676,7 @@ async function main(): Promise<void> {
     } else {
       const updated = await SkillInstaller.autoUpdate(process.cwd());
 
-      if (
-        updated &&
-        (process.argv.includes('--verbose') ||
-          process.argv.includes('-v') ||
-          process.env.JUNO_CODE_DEBUG === '1')
-      ) {
+      if (updated && process.env.JUNO_CODE_DEBUG === '1') {
         console.error('[DEBUG] Agent skill files auto-updated');
       }
     }
@@ -675,8 +699,22 @@ async function main(): Promise<void> {
   // Setup global options and behaviors
   setupGlobalOptions(program);
 
-  // Display banner if verbose
-  const isVerbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+  // Display banner if verbose (default: true unless explicitly disabled with -v false/0/no, or --quiet/--silent)
+  const isQuiet = process.argv.includes('--quiet') || process.argv.includes('-q') || process.argv.includes('--silent');
+  const isVerbose = !isQuiet && normalizeVerbose(
+    process.argv.includes('--verbose') || process.argv.includes('-v')
+      ? (() => {
+          // Find the value after -v/--verbose (if any)
+          const idx = process.argv.indexOf('--verbose') !== -1
+            ? process.argv.indexOf('--verbose')
+            : process.argv.indexOf('-v');
+          const next = process.argv[idx + 1];
+          // If next arg exists and doesn't start with '-', it's the value
+          if (next && !next.startsWith('-')) return next;
+          return true; // -v without value
+        })()
+      : undefined, // no -v flag at all → normalizeVerbose returns true (default)
+  );
   displayBanner(isVerbose);
 
   // Configure all commands
@@ -753,10 +791,19 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Setup Git repository')}
   juno-code setup-git https://github.com/askbudi/juno-code
 
+  ${chalk.gray('# Verbose is ON by default. Disable with:')}
+  juno-code -v false -s claude "prompt"
+  juno-code -v 0 -s claude "prompt"
+  juno-code -v no -s claude "prompt"
+
+  ${chalk.gray('# Quiet mode (suppress agent output and hooks):')}
+  juno-code --quiet -s claude "prompt"
+  juno-code --silent -s claude "prompt"
+
 ${chalk.blue.bold('Environment Variables:')}
   JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini, pi)
   JUNO_CODE_CONFIG                Configuration file path
-  JUNO_CODE_VERBOSE               Enable verbose output (true/false)
+  JUNO_CODE_VERBOSE               Verbose output (true/false/0/1/no/yes, default: true)
   JUNO_CODE_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
   JUNO_CODE_MCP_TIMEOUT           Operation timeout in milliseconds
   JUNO_CODE_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
