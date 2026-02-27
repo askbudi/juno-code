@@ -37,3 +37,7 @@ description: should only get executed with explicit user request.
 1012. After reveiwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the Tasks or @AGENTS.md as resolved. You should update it to reflect that the issue is not resolved.
       it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows 1.the issue is still open,2. past approaches to resolve it, what it was, and know that it has failed.
       Tasks , USER_FEEDBACK and @AGENTS.md should repesent truth. User Open Issue is a high level of truth. so you need to reflect it on the files.
+
+<SPECIFIC_INSTRUCTION>
+$ARGUMENTS
+</SPECIFIC_INSTRUCTION>

@@ -89,7 +89,7 @@ class TestModelShorthandExpansion:
         assert self.svc.expand_model_shorthand(":o3") == "openai/o3"
 
     def test_shorthand_codex(self):
-        assert self.svc.expand_model_shorthand(":codex") == "openai/gpt-5.3-codex"
+        assert self.svc.expand_model_shorthand(":codex") == "openai-codex/gpt-5.3-codex"
 
     def test_shorthand_gemini_pro(self):
         assert self.svc.expand_model_shorthand(":gemini-pro") == "google/gemini-2.5-pro"
