@@ -198,13 +198,18 @@ function setupGlobalOptions(program: Command): void {
 function setupMainCommand(program: Command): void {
   // Main command for direct execution with subagent
   program
+    .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
     .option('-p, --prompt [text]', 'Prompt input (file path, inline text, or use with heredoc/stdin)')
     .option('-f, --prompt-file <path>', 'Read prompt from a file (alternative to -p "$(cat file)")')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('-ip, --interactive-prompt', 'Launch interactive prompt editor')
-    .action(async (options, command) => {
+    .action(async (promptArgs: string[], options, command) => {
+      // Merge positional prompt args into options.prompt (if -p not already set)
+      if (promptArgs.length > 0 && options.prompt === undefined) {
+        options.prompt = promptArgs.join(' ');
+      }
       try {
         // Get global options from program
         const globalOptions = program.opts();
@@ -388,7 +393,10 @@ function setupMainCommand(program: Command): void {
           console.log(chalk.gray('  juno-code start                   # Start execution'));
           console.log(chalk.gray('  juno-code test --generate --run   # AI-powered testing'));
           console.log(
-            chalk.gray('  juno-code -s claude -p "prompt"   # Quick execution with Claude'),
+            chalk.gray('  juno-code -s claude "prompt"      # Quick execution with Claude'),
+          );
+          console.log(
+            chalk.gray('  juno-code -s claude -p "prompt"   # Same (explicit -p flag)'),
           );
           console.log(chalk.gray('  juno-code --help                  # Show all commands'));
           console.log('');

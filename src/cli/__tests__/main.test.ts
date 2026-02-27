@@ -694,6 +694,85 @@ describe('Main Command', () => {
           );
         });
       });
+
+      describe('positional prompt (no -p flag)', () => {
+        it('should use positional prompt text as options.prompt', async () => {
+          // Simulates: juno-code -s claude "my positional prompt"
+          // After CLI merging, options.prompt = "my positional prompt"
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: 'my positional prompt',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          await mainCommandHandler([], options, mockCommand);
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'my positional prompt',
+            }),
+          );
+          expect(processExitSpy).toHaveBeenCalledWith(0);
+        });
+
+        it('should handle multi-word positional prompt joined with spaces', async () => {
+          // Simulates: juno-code -s claude "analyze" "this" "codebase"
+          // After CLI merging, options.prompt = "analyze this codebase"
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: 'analyze this codebase',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          await mainCommandHandler([], options, mockCommand);
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'analyze this codebase',
+            }),
+          );
+        });
+
+        it('should prefer -p flag over positional prompt', async () => {
+          // Simulates: juno-code -s claude -p "explicit" "positional"
+          // CLI merging only sets options.prompt from positional if prompt is undefined
+          // Since -p sets it first, positional is ignored
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: 'explicit prompt from -p',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: false,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          await mainCommandHandler([], options, mockCommand);
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'explicit prompt from -p',
+            }),
+          );
+        });
+      });
     });
 
     describe('execution', () => {
@@ -1093,5 +1172,141 @@ describe('Model Compatibility', () => {
         expect(isModelCompatibleWithSubagent(':custom', 'codex')).toBe(true);
       });
     });
+  });
+});
+
+describe('Positional Prompt CLI Parsing', () => {
+  it('should merge positional args into options.prompt when -p is not set', async () => {
+    // Test the merge logic used in setupMainCommand's .action() callback
+    const program = new Command();
+    let capturedOptions: any = null;
+    let capturedArgs: string[] = [];
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((promptArgs: string[], options) => {
+        // Same merge logic as cli.ts setupMainCommand
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedArgs = promptArgs;
+        capturedOptions = options;
+      });
+
+    // Shell passes quoted string as single arg: juno-code -s pi "my positional prompt"
+    await program.parseAsync(['-s', 'pi', 'my positional prompt'], { from: 'user' });
+
+    expect(capturedArgs).toEqual(['my positional prompt']);
+    expect(capturedOptions.prompt).toBe('my positional prompt');
+    expect(capturedOptions.subagent).toBe('pi');
+  });
+
+  it('should join multiple unquoted positional words', async () => {
+    // Shell passes unquoted words as separate args: juno-code -s pi my positional prompt
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((promptArgs: string[], options) => {
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedOptions = options;
+      });
+
+    await program.parseAsync(['-s', 'pi', 'my', 'positional', 'prompt'], { from: 'user' });
+
+    expect(capturedOptions.prompt).toBe('my positional prompt');
+    expect(capturedOptions.subagent).toBe('pi');
+  });
+
+  it('should not override -p flag with positional args', async () => {
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((promptArgs: string[], options) => {
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedOptions = options;
+      });
+
+    await program.parseAsync(['-s', 'pi', '-p', 'explicit prompt'], { from: 'user' });
+
+    expect(capturedOptions.prompt).toBe('explicit prompt');
+  });
+
+  it('should handle quoted positional prompt as single argument', async () => {
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .option('-m, --model <name>', 'Model')
+      .action((promptArgs: string[], options) => {
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedOptions = options;
+      });
+
+    // When shell passes a quoted string, it arrives as one element
+    await program.parseAsync(['-s', 'pi', '-m', 'openai-codex/gpt-5.3-codex', 'MY prompt'], { from: 'user' });
+
+    expect(capturedOptions.prompt).toBe('MY prompt');
+    expect(capturedOptions.subagent).toBe('pi');
+    expect(capturedOptions.model).toBe('openai-codex/gpt-5.3-codex');
+  });
+
+  it('should leave options.prompt undefined when no positional args and no -p flag', async () => {
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((promptArgs: string[], options) => {
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedOptions = options;
+      });
+
+    await program.parseAsync(['-s', 'pi'], { from: 'user' });
+
+    expect(capturedOptions.prompt).toBeUndefined();
+  });
+
+  it('should handle -p with heredoc (prompt=true) and no positional', async () => {
+    const program = new Command();
+    let capturedOptions: any = null;
+
+    program
+      .argument('[prompt_text...]', 'Prompt text (positional)')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .option('-s, --subagent <name>', 'Subagent')
+      .action((promptArgs: string[], options) => {
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+        capturedOptions = options;
+      });
+
+    // -p without argument → Commander sets prompt=true
+    await program.parseAsync(['-s', 'pi', '-p'], { from: 'user' });
+
+    expect(capturedOptions.prompt).toBe(true);
   });
 });
