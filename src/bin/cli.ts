@@ -186,6 +186,10 @@ function setupGlobalOptions(program: Command): void {
     .option(
       '--no-hooks',
       'Skip execution of all lifecycle hooks (START_RUN, START_ITERATION, END_ITERATION, END_RUN)',
+    )
+    .option(
+      '--thinking <level>',
+      'Extended thinking level: off, minimal, low, medium, high, xhigh (forwarded to service backend)',
     );
 
   // Global error handling

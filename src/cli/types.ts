@@ -87,6 +87,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   resume?: string;
   /** Continue the most recent conversation (shell backend only) */
   continue?: boolean;
+  /** Extended thinking level (forwarded to shell backend --thinking flag, pi subagent) */
+  thinking?: string;
 }
 
 /**

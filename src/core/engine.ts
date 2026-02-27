@@ -91,6 +91,9 @@ export interface ExecutionRequest {
 
   /** Continue the most recent conversation (forwarded to shell backend) */
   readonly continueConversation?: boolean;
+
+  /** Extended thinking level (forwarded to shell backend --thinking flag) */
+  readonly thinking?: string;
 }
 
 /**
@@ -1067,6 +1070,7 @@ export class ExecutionEngine extends EventEmitter {
         ...(context.request.continueConversation !== undefined && {
           continueConversation: context.request.continueConversation,
         }),
+        ...(context.request.thinking !== undefined && { thinking: context.request.thinking }),
         iteration: iterationNumber,
       },
       timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
@@ -1837,6 +1841,7 @@ export function createExecutionRequest(options: {
   mcpServerName?: string;
   resume?: string;
   continueConversation?: boolean;
+  thinking?: string;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1881,6 +1886,10 @@ export function createExecutionRequest(options: {
 
   if (options.continueConversation !== undefined) {
     (result as any).continueConversation = options.continueConversation;
+  }
+
+  if (options.thinking !== undefined) {
+    (result as any).thinking = options.thinking;
   }
 
   return result;

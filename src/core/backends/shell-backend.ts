@@ -775,6 +775,11 @@ export class ShellBackend implements Backend {
         args.push(...(request.arguments.disallowedTools as string[]));
       }
 
+      // For Python scripts, add thinking level if provided (--thinking LEVEL)
+      if (isPython && request.arguments?.thinking) {
+        args.push('--thinking', String(request.arguments.thinking));
+      }
+
       // For Python scripts, add resume flag if provided (--resume SESSION_ID)
       if (isPython && request.arguments?.resume) {
         args.push('--resume', String(request.arguments.resume));

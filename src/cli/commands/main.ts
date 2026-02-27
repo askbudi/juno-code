@@ -779,6 +779,7 @@ export async function mainCommandHandler(
       ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
       ...(options.resume !== undefined ? { resume: options.resume } : {}),
       ...(options.continue !== undefined ? { continueConversation: options.continue } : {}),
+      ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
     });
 
     // Execute
