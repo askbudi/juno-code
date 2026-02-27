@@ -913,7 +913,9 @@ export class ShellBackend implements Backend {
                 subAgentResponse = JSON.parse(captured);
               }
             } catch (error) {
-              if (this.config?.debug) {
+              // ENOENT is expected when the subagent exits without producing a result event
+              const isNotFound = (error as NodeJS.ErrnoException)?.code === 'ENOENT';
+              if (!isNotFound && this.config?.debug) {
                 engineLogger.warn(
                   `Failed to read subagent capture: ${error instanceof Error ? error.message : String(error)}`,
                 );

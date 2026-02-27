@@ -730,6 +730,7 @@ function setupAliases(program: Command): void {
 
   for (const subagent of subagents) {
     const help = SUBAGENT_HELP[subagent];
+    if (!help) continue;
     const cmd = program
       .command(subagent)
       .description(help.description)
