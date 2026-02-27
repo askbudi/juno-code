@@ -161,9 +161,13 @@ export function validateEnvironmentVars(
         case 'JUNO_TASK_DEFAULT_MAX_ITERATIONS':
           config.defaultMaxIterations = validateIterations(parseInt(value, 10));
           break;
-        case 'JUNO_TASK_VERBOSE':
-          config.verbose = value.toLowerCase() === 'true';
+        case 'JUNO_TASK_VERBOSE': {
+          const lower = value.toLowerCase();
+          if (lower === 'true' || lower === 'yes') config.verbose = 1;
+          else if (lower === 'false' || lower === 'no') config.verbose = 0;
+          else { const n = Number(value); config.verbose = !isNaN(n) && n >= 0 && n <= 2 ? Math.floor(n) : 1; }
           break;
+        }
         case 'JUNO_TASK_QUIET':
           config.quiet = value.toLowerCase() === 'true';
           break;

@@ -49,7 +49,7 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.defaultSubagent).toBe('claude');
       expect(DEFAULT_CONFIG.defaultMaxIterations).toBe(1);
       expect(DEFAULT_CONFIG.logLevel).toBe('info');
-      expect(DEFAULT_CONFIG.verbose).toBe(false);
+      expect(DEFAULT_CONFIG.verbose).toBe(1);
       expect(DEFAULT_CONFIG.quiet).toBe(false);
       expect(DEFAULT_CONFIG.mcpTimeout).toBe(43200000); // 12 hours in milliseconds
       expect(DEFAULT_CONFIG.mcpRetries).toBe(3);
@@ -71,7 +71,7 @@ describe('Configuration Module', () => {
         defaultBackend: 'shell',
         defaultMaxIterations: 25,
         logLevel: 'debug',
-        verbose: true,
+        verbose: 1,
         quiet: false,
         mcpTimeout: 45000,
         mcpRetries: 5,
@@ -189,7 +189,7 @@ describe('Configuration Module', () => {
       loader.fromEnvironment();
       const config = loader.merge();
 
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.quiet).toBe(false);
     });
 
@@ -201,7 +201,7 @@ describe('Configuration Module', () => {
       loader.fromEnvironment();
       const config = loader.merge();
 
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.quiet).toBe(false);
     });
 
@@ -241,7 +241,7 @@ describe('Configuration Module', () => {
       loader.fromEnvironment();
       const config = loader.merge();
 
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.quiet).toBe(false);
     });
 
@@ -262,7 +262,7 @@ describe('Configuration Module', () => {
         defaultSubagent: 'gemini',
         defaultMaxIterations: 30,
         logLevel: 'warn',
-        verbose: true,
+        verbose: 1,
         mcpTimeout: 60000,
       };
 
@@ -276,7 +276,7 @@ describe('Configuration Module', () => {
       expect(config.defaultSubagent).toBe('gemini');
       expect(config.defaultMaxIterations).toBe(30);
       expect(config.logLevel).toBe('warn');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.mcpTimeout).toBe(60000);
     });
 
@@ -338,7 +338,7 @@ describe('Configuration Module', () => {
         junoCode: {
           defaultSubagent: 'gemini',
           logLevel: 'trace',
-          verbose: true,
+          verbose: 1,
         },
       };
 
@@ -351,7 +351,7 @@ describe('Configuration Module', () => {
 
       expect(config.defaultSubagent).toBe('gemini');
       expect(config.logLevel).toBe('trace');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
     });
 
     it('should handle package.json without junoCode field', async () => {
@@ -378,7 +378,7 @@ describe('Configuration Module', () => {
 defaultSubagent: cursor
 defaultMaxIterations: 40
 logLevel: debug
-verbose: false
+verbose: 0
 mcpTimeout: 50000
 `;
 
@@ -392,7 +392,7 @@ mcpTimeout: 50000
       expect(config.defaultSubagent).toBe('cursor');
       expect(config.defaultMaxIterations).toBe(40);
       expect(config.logLevel).toBe('debug');
-      expect(config.verbose).toBe(false);
+      expect(config.verbose).toBe(0);
       expect(config.mcpTimeout).toBe(50000);
     });
 
@@ -428,7 +428,7 @@ logLevel: info
       const fileConfig = {
         defaultSubagent: 'claude',
         logLevel: 'info',
-        verbose: false,
+        verbose: 0,
       };
       const configPath = path.join(tempDir, 'juno-code.config.json');
       await fs.writeJson(configPath, fileConfig);
@@ -455,7 +455,7 @@ logLevel: info
       expect(config.logLevel).toBe('debug');
 
       // Environment should override file
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
     });
 
     it('should use defaults for unspecified values', async () => {
@@ -546,7 +546,7 @@ logLevel: info
 
       expect(config.defaultSubagent).toBe('claude');
       expect(config.logLevel).toBe('info');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.defaultMaxIterations).toBe(100);
     });
 
@@ -605,7 +605,7 @@ logLevel: info
     it('should support method chaining', async () => {
       const loader = new ConfigLoader(tempDir);
 
-      const result = loader.fromEnvironment().fromCli({ verbose: true });
+      const result = loader.fromEnvironment().fromCli({ verbose: 1 });
 
       expect(result).toBe(loader);
     });
@@ -620,13 +620,13 @@ logLevel: info
       const loader = new ConfigLoader(tempDir);
       await loader.fromFile(configPath);
       loader.fromEnvironment();
-      loader.fromCli({ verbose: true });
+      loader.fromCli({ verbose: 1 });
 
       const config = loader.merge();
 
       expect(config.defaultSubagent).toBe('claude');
       expect(config.logLevel).toBe('debug');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
     });
 
     it('should handle loadAll convenience method', async () => {
@@ -640,7 +640,7 @@ logLevel: info
       const config = await loader.loadAll({ logLevel: 'error' });
 
       expect(config.defaultSubagent).toBe('cursor');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.logLevel).toBe('error');
     });
   });
@@ -811,7 +811,7 @@ logLevel: info
       expect(config.defaultMaxIterations).toBe(42);
       expect(config.mcpTimeout).toBe(42);
       expect(config.mcpRetries).toBe(42);
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.quiet).toBe(true);
       expect(config.interactive).toBe(true);
       expect(config.headlessMode).toBe(true);
@@ -893,7 +893,7 @@ logLevel: info
       const fileConfig = {
         defaultSubagent: 'claude',
         logLevel: 'info',
-        verbose: false,
+        verbose: 0,
         mcpTimeout: 25000,
       };
       const configPath = path.join(tempDir, 'complex.json');
@@ -920,7 +920,7 @@ logLevel: info
       // Verify precedence: CLI > ENV > FILE > DEFAULTS
       expect(config.defaultSubagent).toBe('cursor'); // ENV overrides FILE
       expect(config.logLevel).toBe('debug'); // CLI overrides all
-      expect(config.verbose).toBe(true); // ENV overrides FILE
+      expect(config.verbose).toBe(1); // ENV overrides FILE
       expect(config.mcpTimeout).toBe(60000); // CLI overrides all
       expect(config.mcpRetries).toBe(5); // ENV (no conflicts)
       expect(config.quiet).toBe(true); // CLI (no conflicts)
@@ -963,7 +963,7 @@ logLevel: info
 defaultSubagent: cursor
 defaultMaxIterations: 75
 logLevel: debug
-verbose: true
+verbose: 1
 quiet: false
 mcpTimeout: 45000
 mcpRetries: 7
@@ -986,7 +986,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       expect(config.defaultSubagent).toBe('cursor');
       expect(config.defaultMaxIterations).toBe(75);
       expect(config.logLevel).toBe('debug');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.quiet).toBe(false);
       expect(config.mcpTimeout).toBe(45000);
       expect(config.mcpRetries).toBe(7);
@@ -1071,7 +1071,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
 
       expect(config.defaultSubagent).toBe('gemini');
       expect(config.logLevel).toBe('warn');
-      expect(config.verbose).toBe(true);
+      expect(config.verbose).toBe(1);
       expect(config.mcpTimeout).toBe(50000);
       expect(config.quiet).toBe(true);
       expect(config.mcpRetries).toBe(8);

@@ -127,7 +127,19 @@ export const JunoTaskConfigSchema = z
 
     logFile: z.string().optional().describe('Path to log file (optional)'),
 
-    verbose: z.boolean().describe('Enable verbose output'),
+    verbose: z.preprocess(
+      (val) => {
+        if (val === true) return 1;
+        if (val === false) return 0;
+        if (typeof val === 'string') {
+          const lower = val.toLowerCase().trim();
+          if (lower === 'true' || lower === 'yes') return 1;
+          if (lower === 'false' || lower === 'no') return 0;
+        }
+        return val;
+      },
+      z.number().int().min(0).max(2),
+    ).describe('Verbosity level: 0=quiet, 1=normal+helping texts (default), 2=debug+hooks'),
 
     quiet: z.boolean().describe('Enable quiet mode (minimal output)'),
 
@@ -201,7 +213,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 
   // Logging settings
   logLevel: 'info',
-  verbose: false,
+  verbose: 1,
   quiet: false,
 
   // MCP settings (also used by shell backend)
@@ -299,10 +311,16 @@ function parseEnvValue(value: string): string | number | boolean {
 function loadConfigFromEnv(): Partial<JunoTaskConfig> {
   const config: Partial<JunoTaskConfig> = {};
 
-  for (const [envVar, configKey] of Object.entries(ENV_VAR_MAPPING)) {
+  for (const [envVar, configKey] of Object.entries(ENV_VAR_MAPPING) as [string, string][]) {
     const value = process.env[envVar];
     if (value !== undefined) {
-      (config as any)[configKey] = parseEnvValue(value);
+      let parsed = parseEnvValue(value);
+      // Normalize verbose: convert boolean to numeric level (0-2)
+      if (configKey === 'verbose') {
+        if (parsed === true) parsed = 1;
+        else if (parsed === false) parsed = 0;
+      }
+      (config as any)[configKey] = parsed;
     }
   }
 

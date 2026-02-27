@@ -30,9 +30,9 @@ import type { SessionStatus } from '../../types/index.js';
  * Session display formatter for consistent output
  */
 class SessionDisplayFormatter {
-  private verbose: boolean;
+  private verbose: number;
 
-  constructor(verbose: boolean = false) {
+  constructor(verbose: number = 0) {
     this.verbose = verbose;
   }
 
@@ -424,7 +424,7 @@ export async function sessionCommandHandler(
       baseDir: process.cwd(),
       configFile: options.config,
       cliConfig: {
-        verbose: options.verbose || false,
+        verbose: options.verbose ?? 0,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
       },

@@ -110,7 +110,7 @@ vi.mock('../../core/session.js', () => ({
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
     workingDirectory: '/test/dir',
-    verbose: false,
+    verbose: 0,
   }),
 }));
 
@@ -253,7 +253,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'list',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -271,7 +271,7 @@ describe('Session Command', () => {
         action: 'list',
         status: 'active',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -287,7 +287,7 @@ describe('Session Command', () => {
         action: 'list',
         limit: 1,
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -306,7 +306,7 @@ describe('Session Command', () => {
         action: 'list',
         days: 7,
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -332,7 +332,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'list',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -350,7 +350,7 @@ describe('Session Command', () => {
         action: 'show',
         sessionId: 'session-1',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -366,7 +366,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'show',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -393,7 +393,7 @@ describe('Session Command', () => {
         action: 'show',
         sessionId: 'non-existent',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -412,7 +412,7 @@ describe('Session Command', () => {
         action: 'delete',
         sessionId: 'session-1',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
         force: true,
@@ -432,7 +432,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'delete',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -457,7 +457,7 @@ describe('Session Command', () => {
         action: 'resume',
         sessionId: 'session-1',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -478,7 +478,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'resume',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -500,7 +500,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'invalid' as any,
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -527,7 +527,7 @@ describe('Session Command', () => {
       const options: SessionCommandOptions = {
         action: 'list',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -572,7 +572,7 @@ describe('Feedback Command', () => {
         message: 'This is test feedback',
         type: 'improvement',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -603,7 +603,7 @@ describe('Feedback Command', () => {
         file: './feedback.txt',
         type: 'bug',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -625,7 +625,7 @@ describe('Feedback Command', () => {
       const options: FeedbackCommandOptions = {
         type: 'improvement',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -650,7 +650,7 @@ describe('Feedback Command', () => {
         file: './nonexistent.txt',
         type: 'bug',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -673,7 +673,7 @@ describe('Feedback Command', () => {
         message: 'Test feedback',
         type: 'invalid' as any,
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -698,7 +698,7 @@ describe('Feedback Command', () => {
         type: 'improvement',
         sessionId: 'session-123',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -724,7 +724,7 @@ describe('Feedback Command', () => {
         type: 'bug',
         priority: 'high',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -749,7 +749,7 @@ describe('Feedback Command', () => {
         message: 'Test feedback',
         type: 'improvement',
         cwd: '/project',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -799,7 +799,7 @@ describe('Setup Git Command', () => {
       const options: SetupGitCommandOptions = {
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -830,7 +830,7 @@ describe('Setup Git Command', () => {
         remote: 'https://github.com/user/repo.git',
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -861,7 +861,7 @@ describe('Setup Git Command', () => {
         initialCommit: true,
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -886,7 +886,7 @@ describe('Setup Git Command', () => {
         gitignore: true,
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -908,7 +908,7 @@ describe('Setup Git Command', () => {
         remote: 'invalid-url',
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -930,7 +930,7 @@ describe('Setup Git Command', () => {
       const options: SetupGitCommandOptions = {
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -960,7 +960,7 @@ describe('Setup Git Command', () => {
       const options: SetupGitCommandOptions = {
         cwd: '/project',
         force: true,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -982,7 +982,7 @@ describe('Setup Git Command', () => {
       const options: SetupGitCommandOptions = {
         cwd: '/project',
         force: false,
-        verbose: false,
+        verbose: 0,
         quiet: false,
         logLevel: 'info',
       };
@@ -1007,7 +1007,7 @@ describe('Setup Git Command', () => {
       const options: SetupGitCommandOptions = {
         cwd: '/project',
         force: false,
-        verbose: true,
+        verbose: 1,
         quiet: false,
         logLevel: 'info',
       };

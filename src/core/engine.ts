@@ -662,12 +662,12 @@ export class ExecutionEngine extends EventEmitter {
   }
 
   /**
-   * Display hook execution output to stderr when verbose mode is enabled.
-   * When verbose: shows hook name, command stdout/stderr output.
-   * When not verbose or quiet: output is suppressed (hooks still run).
+   * Display hook execution output to stderr at verbose level 2 (debug+hooks).
+   * At level 2: shows hook name, command stdout/stderr output.
+   * At level 0-1: output is suppressed (hooks still execute).
    */
   private displayHookOutput(hookResult: HookExecutionResult): void {
-    if (!this.engineConfig.config.verbose) return;
+    if (this.engineConfig.config.verbose < 2) return;
     for (const cmdResult of hookResult.commandResults) {
       const prefix = `[hook:${hookResult.hookType}]`;
       if (cmdResult.stdout) {
@@ -705,10 +705,10 @@ export class ExecutionEngine extends EventEmitter {
     (backend as any).configure({
       workingDirectory: request.workingDirectory,
       servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
-      debug: this.engineConfig.config.verbose,
+      debug: this.engineConfig.config.verbose >= 2,
       timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout || 43200000,
       enableJsonStreaming: true,
-      outputRawJson: this.engineConfig.config.verbose,
+      outputRawJson: this.engineConfig.config.verbose >= 1,
       environment: {
         ...process.env,
         JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || request.workingDirectory,

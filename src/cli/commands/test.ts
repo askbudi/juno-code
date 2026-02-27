@@ -120,9 +120,9 @@ const TEST_SUBAGENT_SPECIALIZATIONS: Record<SubagentType, {
 
 class TestProgressDisplay {
   private startTime: Date = new Date();
-  public verbose: boolean;
+  public verbose: number;
 
-  constructor(verbose: boolean = false) {
+  constructor(verbose: number = 0) {
     this.verbose = verbose;
   }
 
@@ -1191,7 +1191,7 @@ export async function testCommandHandler(
   options: TestCommandOptions,
   _command: Command,
 ): Promise<void> {
-  const verbose = options.verbose || false;
+  const verbose = options.verbose ?? 0;
   try {
     console.log(chalk.blue.bold('🧪 Juno Task - AI-Powered Testing Framework'));
 
@@ -1202,7 +1202,7 @@ export async function testCommandHandler(
     const loadConfigOptions: Parameters<typeof loadConfig>[0] = {
       baseDir: workingDir,
       cliConfig: {
-        verbose: options.verbose || false,
+        verbose: options.verbose ?? 0,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
         workingDirectory: workingDir,

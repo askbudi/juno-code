@@ -228,7 +228,7 @@ describe('Configuration Validation', () => {
         defaultBackend: 'shell',
         defaultMaxIterations: 50,
         logLevel: 'info',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         mcpTimeout: 30000,
         mcpRetries: 3,
@@ -252,7 +252,7 @@ describe('Configuration Validation', () => {
         defaultBackend: 'shell',
         defaultMaxIterations: 50,
         logLevel: 'info',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         mcpTimeout: 30000,
         mcpRetries: 3,
@@ -272,7 +272,7 @@ describe('Configuration Validation', () => {
         defaultBackend: 'shell',
         defaultMaxIterations: 50,
         logLevel: 'invalid',
-        verbose: false,
+        verbose: 0,
         quiet: false,
         mcpTimeout: 30000,
         mcpRetries: 3,
@@ -304,7 +304,7 @@ describe('Configuration Validation', () => {
       const result = validateEnvironmentVars(envVars);
       expect(result.defaultSubagent).toBe('claude');
       expect(result.logLevel).toBe('info');
-      expect(result.verbose).toBe(true);
+      expect(result.verbose).toBe(1);
     });
 
     it('should handle boolean environment variables', () => {
@@ -316,7 +316,7 @@ describe('Configuration Validation', () => {
       };
 
       const result = validateEnvironmentVars(envVars);
-      expect(result.verbose).toBe(true);
+      expect(result.verbose).toBe(1);
       expect(result.quiet).toBe(false);
       expect(result.interactive).toBe(true);
       expect(result.headlessMode).toBe(false);

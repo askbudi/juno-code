@@ -44,15 +44,20 @@ const packageJson = require(join(__dirname, '../../package.json'));
 const VERSION = packageJson.version;
 
 /**
- * Normalize verbose flag value to boolean.
- * -v (no value) → true, -v true/1/yes → true, -v false/0/no → false, undefined → true (default on)
+ * Normalize verbose flag value to numeric level.
+ * Levels: 0=quiet, 1=normal+helping texts (default), 2=debug+hooks
+ * -v (no value) → 1, -v 0/false/no → 0, -v 1/true/yes → 1, -v 2 → 2, undefined → 1 (default)
  */
-function normalizeVerbose(value: unknown): boolean {
-  if (value === undefined) return true; // Default: verbose enabled (C4tqUJ)
-  if (value === true) return true; // -v without value
-  if (value === false) return false;
+function normalizeVerbose(value: unknown): number {
+  if (value === undefined) return 1; // Default: level 1 (normal output)
+  if (value === true) return 1; // -v without value
+  if (value === false) return 0;
   const str = String(value).toLowerCase().trim();
-  return !['false', '0', 'no'].includes(str);
+  if (['false', 'no'].includes(str)) return 0;
+  if (['true', 'yes'].includes(str)) return 1;
+  const num = Number(str);
+  if (!isNaN(num) && num >= 0 && num <= 2) return Math.floor(num);
+  return 1; // Default for unrecognized values
 }
 
 /** Determine if an error is a transient connection/pipe error. */
@@ -72,7 +77,7 @@ function isConnectionLikeError(err: unknown): boolean {
 /**
  * Global error handler for CLI operations
  */
-function handleCLIError(error: unknown, verbose: boolean = false): void {
+function handleCLIError(error: unknown, verbose: number = 0): void {
   if (isCLIError(error)) {
     // Handle known CLI errors
     console.error(chalk.red.bold(`\n❌ ${error.constructor.name}`));
@@ -117,7 +122,7 @@ function setupGlobalOptions(program: Command): void {
   program
     .option(
       '-v, --verbose [value]',
-      'Enable verbose output including hook execution (default: true). Disable with -v false, -v 0, or -v no',
+      'Verbosity level: 0=quiet, 1=normal (default), 2=debug+hooks. Use -v 0, -v 1, -v 2, or -v false/true',
     )
     .option('-q, --quiet', 'Quiet mode: suppress agent messages and hook output (alias: --silent)')
     .option('--silent', 'Alias for --quiet')
@@ -200,7 +205,7 @@ function setupGlobalOptions(program: Command): void {
     if (err.code === 'commander.version') {
       process.exit(0);
     }
-    handleCLIError(err, false);
+    handleCLIError(err, 0);
   });
 
   // Custom help formatting
@@ -444,8 +449,8 @@ function setupMainCommand(program: Command): void {
 /**
  * Display welcome banner with version and environment info
  */
-function displayBanner(verbose: boolean = false): void {
-  if (verbose) {
+function displayBanner(verbose: number = 0): void {
+  if (verbose >= 1) {
     console.error(chalk.blue.bold(`\n🎯 Juno Code v${VERSION} - TypeScript CLI`));
     console.error(chalk.gray(`   Node.js ${process.version} on ${process.platform}`));
     console.error(chalk.gray(`   Working directory: ${process.cwd()}`));
@@ -963,9 +968,9 @@ async function main(): Promise<void> {
   // Setup global options and behaviors
   setupGlobalOptions(program);
 
-  // Display banner if verbose (default: true unless explicitly disabled with -v false/0/no, or --quiet/--silent)
+  // Determine verbose level from argv (before Commander parses)
   const isQuiet = process.argv.includes('--quiet') || process.argv.includes('-q') || process.argv.includes('--silent');
-  const isVerbose = !isQuiet && normalizeVerbose(
+  const isVerbose: number = isQuiet ? 0 : normalizeVerbose(
     process.argv.includes('--verbose') || process.argv.includes('-v')
       ? (() => {
           // Find the value after -v/--verbose (if any)
@@ -975,9 +980,9 @@ async function main(): Promise<void> {
           const next = process.argv[idx + 1];
           // If next arg exists and doesn't start with '-', it's the value
           if (next && !next.startsWith('-')) return next;
-          return true; // -v without value
+          return true; // -v without value → level 1
         })()
-      : undefined, // no -v flag at all → normalizeVerbose returns true (default)
+      : undefined, // no -v flag at all → normalizeVerbose returns 1 (default)
   );
   displayBanner(isVerbose);
 

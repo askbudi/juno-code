@@ -33,7 +33,7 @@ vi.mock('../../core/config.js', () => ({
       mcpServerPath: '/test/mcp',
       mcpTimeout: 30000,
       mcpRetries: 3,
-      verbose: false,
+      verbose: 0,
     }),
   ),
 }));
@@ -213,7 +213,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -224,7 +224,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 3,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -258,7 +258,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -269,7 +269,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: undefined,
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -298,7 +298,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -308,7 +308,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -342,7 +342,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -353,7 +353,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -387,7 +387,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -398,7 +398,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -433,13 +433,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -466,13 +466,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -499,7 +499,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -510,7 +510,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 10,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -537,7 +537,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -549,7 +549,7 @@ describe('Start Command', () => {
           directory: '/project',
           maxIterations: 1,
           model: 'custom-model',
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -576,7 +576,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         };
 
         vi.mocked(loadConfig).mockResolvedValueOnce(mockConfig);
@@ -587,7 +587,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -622,13 +622,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -657,14 +657,14 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
           sessionName: undefined,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -687,13 +687,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -723,13 +723,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -752,14 +752,14 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 5,
           model: 'gpt-4',
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -782,13 +782,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: -1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -815,13 +815,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -853,13 +853,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -895,13 +895,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -924,13 +924,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -953,13 +953,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: true,
+          verbose: 1,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: true,
+          verbose: 1,
           quiet: false,
           logLevel: 'info',
         };
@@ -971,7 +971,7 @@ describe('Start Command', () => {
         expect(mainCommandHandler).toHaveBeenCalledWith(
           [],
           expect.objectContaining({
-            verbose: true,
+            verbose: 1,
           }),
           mockCommand,
         );
@@ -988,13 +988,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1026,7 +1026,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         // Set up execution engine mock
@@ -1091,7 +1091,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1115,7 +1115,7 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const { createExecutionEngine, createExecutionRequest } = await import(
@@ -1159,7 +1159,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1182,13 +1182,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1217,7 +1217,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1241,13 +1241,13 @@ describe('Start Command', () => {
           mcpServerPath: '/test/mcp',
           mcpTimeout: 30000,
           mcpRetries: 3,
-          verbose: false,
+          verbose: 0,
         });
 
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1266,7 +1266,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1286,7 +1286,7 @@ describe('Start Command', () => {
         const options: StartCommandOptions = {
           directory: '/project',
           maxIterations: 1,
-          verbose: true,
+          verbose: 1,
           quiet: false,
           logLevel: 'info',
         };

@@ -691,7 +691,7 @@ describe.skip('CLI Test Runner Utilities', () => {
       const results = await testRunnerModule.runTests({
         pattern: '**/*.test.ts',
         coverage: true,
-        verbose: true,
+        verbose: 1,
       });
 
       expect(results).toBeDefined();

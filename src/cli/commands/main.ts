@@ -285,22 +285,20 @@ export function getActiveSessionId(): string | null {
 class MainProgressDisplay {
   private startTime: Date = new Date();
   private currentIteration: number = 0;
-  private verbose: boolean;
-  private quiet: boolean;
+  private verboseLevel: number;
   private hasStreamedJsonOutput: boolean = false; // Track if we streamed JSON output via progress events
   private sessionIds: Map<number, string> = new Map(); // iteration# → sub-agent session_id
   private latestSessionId: string | null = null; // most recent session_id seen
 
-  constructor(verbose: boolean = true, quiet: boolean = false) {
-    this.verbose = verbose;
-    this.quiet = quiet;
+  constructor(verboseLevel: number = 1) {
+    this.verboseLevel = verboseLevel;
   }
 
   start(request: ExecutionRequest): void {
     this.startTime = new Date();
 
-    // In quiet mode, suppress all start info
-    if (this.quiet) return;
+    // Level 0 (quiet): suppress all start info
+    if (this.verboseLevel === 0) return;
 
     console.error(
       chalk.blue.bold(
@@ -310,7 +308,7 @@ class MainProgressDisplay {
       ),
     );
 
-    // Execution info: always shown (unless quiet) — model, max iterations
+    // Level 1+: always show model, max iterations (helping texts)
     if (request.model) {
       console.error(chalk.gray(`   Model: ${request.model}`));
     }
@@ -320,8 +318,8 @@ class MainProgressDisplay {
       ),
     );
 
-    // Verbose-only: Request ID, Working Directory
-    if (this.verbose) {
+    // Level 2 only: Request ID, Working Directory (debug info)
+    if (this.verboseLevel >= 2) {
       console.error(chalk.gray(`   Request ID: ${request.requestId}`));
       console.error(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
     }
@@ -358,8 +356,8 @@ class MainProgressDisplay {
       this.hasStreamedJsonOutput = true;
     }
 
-    // In quiet mode, suppress all streaming output (still track session IDs and hasStreamed)
-    if (this.quiet) return;
+    // Level 0: suppress all streaming output (still track session IDs and hasStreamed)
+    if (this.verboseLevel === 0) return;
 
     // If this is raw JSON output from shell backend (jq-style formatting)
     // Display it with colors and indentation like `claude.py | jq .`
@@ -370,12 +368,11 @@ class MainProgressDisplay {
         const formattedJson = this.colorizeJson(jsonObj);
         const backend = event.backend ? chalk.cyan(`[${event.backend}]`) : '';
 
-        if (this.verbose) {
-          // Verbose mode: Show pretty formatted JSON with timestamp and backend prefix on STDERR
-          // Raw JSON is already printed by stdout (shell backend streams it directly)
+        if (this.verboseLevel >= 2) {
+          // Level 2: Show pretty formatted JSON with timestamp and backend prefix on STDERR
           console.error(`${chalk.gray(timestamp)} ${backend} ${formattedJson}`);
         } else {
-          // Non-verbose mode: Show JSON with backend prefix on STDERR
+          // Level 1: Show JSON with backend prefix on STDERR
           console.error(`${backend} ${formattedJson}`);
         }
         return;
@@ -423,44 +420,35 @@ class MainProgressDisplay {
 
   onIterationStart(iteration: number): void {
     this.currentIteration = iteration;
-    if (this.quiet) return;
-    if (!this.verbose) {
-      process.stderr.write(chalk.yellow(`\n🔄 Iteration ${iteration} `));
-    } else {
-      const elapsed = this.getElapsedTime();
-      console.error(chalk.yellow(`\n🔄 Iteration ${iteration} started (${elapsed})`));
-    }
+    if (this.verboseLevel === 0) return;
+    const elapsed = this.getElapsedTime();
+    console.error(chalk.yellow(`\n🔄 Iteration ${iteration} started (${elapsed})`));
   }
 
   onIterationComplete(success: boolean, duration: number): void {
-    if (this.quiet) return;
-    if (!this.verbose) {
-      const icon = success ? chalk.green('✓') : chalk.red('✗');
-      console.error(` ${icon}`);
+    if (this.verboseLevel === 0) return;
+    const elapsed = this.getElapsedTime();
+    const durationText = `${duration.toFixed(0)}ms`;
+    if (success) {
+      console.error(
+        chalk.green(
+          `✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`,
+        ),
+      );
     } else {
-      const elapsed = this.getElapsedTime();
-      const durationText = `${duration.toFixed(0)}ms`;
-      if (success) {
-        console.error(
-          chalk.green(
-            `✅ Iteration ${this.currentIteration} completed (${durationText}, total: ${elapsed})`,
-          ),
-        );
-      } else {
-        console.error(
-          chalk.red(
-            `❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`,
-          ),
-        );
-      }
+      console.error(
+        chalk.red(
+          `❌ Iteration ${this.currentIteration} failed (${durationText}, total: ${elapsed})`,
+        ),
+      );
     }
   }
 
   complete(result: ExecutionResult): void {
     const elapsed = this.getElapsedTime();
 
-    // In quiet mode: only show final result on STDOUT, nothing else
-    if (this.quiet) {
+    // Level 0 (quiet): only show final result on STDOUT, nothing else
+    if (this.verboseLevel === 0) {
       const lastIteration = result.iterations[result.iterations.length - 1];
       if (lastIteration?.toolResult.content && !this.hasStreamedJsonOutput) {
         console.log(lastIteration.toolResult.content);
@@ -492,8 +480,8 @@ class MainProgressDisplay {
       console.log(lastIteration!.toolResult.content);
     }
 
-    // Show statistics on STDERR if verbose
-    if (this.verbose) {
+    // Level 1+: show statistics (helping texts: iteration count, time, failures)
+    if (this.verboseLevel >= 1) {
       const stats = result.statistics;
       console.error(chalk.blue('\n📊 Statistics:'));
       console.error(chalk.white(`   Total Iterations: ${stats.totalIterations}`));
@@ -575,9 +563,9 @@ class MainExecutionCoordinator {
   private feedbackCollector: ConcurrentFeedbackCollector | null = null;
   private enableFeedback: boolean = false;
 
-  constructor(config: any, verbose: boolean = true, quiet: boolean = false, enableFeedback: boolean = false) {
+  constructor(config: any, verboseLevel: number = 1, enableFeedback: boolean = false) {
     this.config = config;
-    this.progressDisplay = new MainProgressDisplay(verbose, quiet);
+    this.progressDisplay = new MainProgressDisplay(verboseLevel);
     this.enableFeedback = enableFeedback;
 
     // Initialize feedback collector if enabled
@@ -593,8 +581,8 @@ class MainExecutionCoordinator {
   }
 
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
-    // Log backend selection if verbose
-    if (this.config.verbose) {
+    // Log backend selection at level 2 (debug)
+    if (this.config.verbose >= 2) {
       console.error(chalk.gray(`   Backend: Shell Scripts`));
     }
 
@@ -673,7 +661,7 @@ export async function mainCommandHandler(
       baseDir: options.cwd || process.cwd(),
       ...(options.config !== undefined ? { configFile: options.config } : {}),
       cliConfig: {
-        verbose: options.verbose !== undefined ? options.verbose : true,
+        verbose: options.quiet ? 0 : (options.verbose ?? 1),
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
         workingDirectory: options.cwd || process.cwd(),
@@ -684,10 +672,13 @@ export async function mainCommandHandler(
       },
     });
 
+    // Compute effective verbose level (quiet overrides verbose to 0)
+    const effectiveVerbose = options.quiet ? 0 : (options.verbose ?? 1);
+
     // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
     if (options.hooks === false) {
       config.skipHooks = true;
-      if (!options.quiet) {
+      if (effectiveVerbose >= 1) {
         console.error(chalk.gray('   Hooks: disabled (--no-hooks)'));
       }
     }
@@ -696,12 +687,12 @@ export async function mainCommandHandler(
     if (!options.subagent) {
       if (config.defaultSubagent) {
         options.subagent = config.defaultSubagent as SubagentType;
-        if (!options.quiet) {
+        if (effectiveVerbose >= 1) {
           console.error(chalk.gray(`   Subagent: ${config.defaultSubagent} (from config.json)`));
         }
       } else {
         options.subagent = 'claude' as SubagentType;
-        if (!options.quiet) {
+        if (effectiveVerbose >= 1) {
           console.error(chalk.gray(`   Subagent: claude (default)`));
         }
       }
@@ -785,8 +776,7 @@ export async function mainCommandHandler(
     // Execute
     const coordinator = new MainExecutionCoordinator(
       config,
-      options.verbose,
-      options.quiet || false,
+      effectiveVerbose,
       options.enableFeedback || false,
     );
     const result = await coordinator.execute(executionRequest);

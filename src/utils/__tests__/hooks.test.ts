@@ -803,7 +803,7 @@ describe('hooks', () => {
       await fs.writeJson(configPath, {
         defaultSubagent: 'claude',
         logLevel: 'info',
-        verbose: false,
+        verbose: 0,
       });
 
       await loadConfig({ baseDir: testDir });

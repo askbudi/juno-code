@@ -37,7 +37,7 @@ vi.mock('../../core/config.js', () => ({
     defaultSubagent: 'claude',
     mcpServerName: 'test-server',
     mcpRetries: 3,
-    verbose: false,
+    verbose: 0,
   }),
 }));
 

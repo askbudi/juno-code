@@ -96,7 +96,7 @@ const createMockConfig = (): JunoTaskConfig => ({
   defaultMaxIterations: 10,
   defaultBackend: 'shell',
   logLevel: 'info',
-  verbose: false,
+  verbose: 0,
   quiet: false,
   mcpTimeout: 30000,
   mcpRetries: 3,

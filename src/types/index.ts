@@ -45,7 +45,8 @@ export interface JunoTaskConfig {
   // Logging settings
   logLevel: LogLevel;
   logFile?: string;
-  verbose: boolean;
+  /** Verbosity level: 0=quiet, 1=normal+helping texts (default), 2=debug+hooks */
+  verbose: number;
   quiet: boolean;
 
   // MCP settings

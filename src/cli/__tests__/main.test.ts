@@ -39,7 +39,7 @@ vi.mock('../../core/config.js', () => ({
     mcpServerPath: '/test/mcp',
     mcpTimeout: 30000,
     mcpRetries: 3,
-    verbose: false,
+    verbose: 0,
   }),
 }));
 
@@ -153,7 +153,7 @@ describe('Main Command', () => {
       mcpServerPath: '/test/mcp',
       mcpTimeout: 30000,
       mcpRetries: 3,
-      verbose: false,
+      verbose: 0,
     } as any);
 
     vi.mocked(createExecutionEngine).mockReturnValue({
@@ -208,7 +208,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -226,7 +226,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -247,7 +247,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -266,7 +266,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -292,7 +292,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -320,7 +320,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -340,7 +340,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -381,7 +381,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: true,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -411,7 +411,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -442,7 +442,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: true,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -482,7 +482,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -530,7 +530,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -576,7 +576,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -604,7 +604,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -645,7 +645,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -679,7 +679,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -706,7 +706,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -732,7 +732,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -758,7 +758,7 @@ describe('Main Command', () => {
             maxIterations: 1,
             interactive: false,
             interactivePrompt: false,
-            verbose: false,
+            verbose: 0,
             quiet: false,
             logLevel: 'info',
           };
@@ -785,7 +785,7 @@ describe('Main Command', () => {
           model: 'custom-model',
           interactive: false,
           interactivePrompt: false,
-          verbose: true,
+          verbose: 1,
           quiet: false,
           logLevel: 'debug',
         };
@@ -835,7 +835,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -854,7 +854,7 @@ describe('Main Command', () => {
           model: undefined,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -881,7 +881,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -905,7 +905,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -928,7 +928,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -950,7 +950,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -971,7 +971,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -993,7 +993,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: false,
+          verbose: 0,
           quiet: false,
           logLevel: 'info',
         };
@@ -1014,7 +1014,7 @@ describe('Main Command', () => {
           maxIterations: 1,
           interactive: false,
           interactivePrompt: false,
-          verbose: true,
+          verbose: 2,
           quiet: false,
           logLevel: 'info',
         };
@@ -1335,7 +1335,7 @@ describe('Verbose/Quiet Output Modes', () => {
       defaultModel: ':sonnet',
       mcpTimeout: 30000,
       mcpRetries: 3,
-      verbose: true,
+      verbose: 1,
       quiet: false,
     } as any);
 
@@ -1380,11 +1380,11 @@ describe('Verbose/Quiet Output Modes', () => {
     vi.restoreAllMocks();
   });
 
-  it('should show model and iterations by default (verbose=true)', async () => {
+  it('should show model and iterations at verbose level 1', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: true,
+      verbose: 1,
       quiet: false,
       logLevel: 'info',
     };
@@ -1397,28 +1397,28 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(true);
   });
 
-  it('should show model and iterations even when verbose=false (execution info always shown)', async () => {
+  it('should NOT show model and iterations at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: false,
+      verbose: 0,
       quiet: false,
       logLevel: 'info',
     };
 
     await mainCommandHandler([], options, mockCommand);
 
-    // Model and iterations should still be shown (moved out of verbose guard)
+    // At level 0 (quiet), model and iterations should NOT be shown
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
-    expect(allCalls.some((c: string) => c.includes('Model:') || c.includes(':sonnet'))).toBe(true);
-    expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Model:'))).toBe(false);
+    expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(false);
   });
 
   it('should suppress all output in quiet mode', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: true,
+      verbose: 1,
       quiet: true,
       logLevel: 'info',
     };
@@ -1432,11 +1432,11 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Model:'))).toBe(false);
   });
 
-  it('should show verbose-only info (Request ID, Working Directory) only when verbose=true', async () => {
+  it('should show debug info (Request ID, Working Directory) only at verbose level 2', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: true,
+      verbose: 2,
       quiet: false,
       logLevel: 'info',
     };
@@ -1448,11 +1448,11 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Working Directory:'))).toBe(true);
   });
 
-  it('should NOT show Request ID/Working Dir when verbose=false', async () => {
+  it('should NOT show Request ID/Working Dir at verbose level 1', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: false,
+      verbose: 1,
       quiet: false,
       logLevel: 'info',
     };
@@ -1464,7 +1464,7 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Working Directory:'))).toBe(false);
   });
 
-  it('should show subagent source info without verbose guard', async () => {
+  it('should show subagent source info at verbose level 1 (default)', async () => {
     const { loadConfig } = await import('../../core/config.js');
     vi.mocked(loadConfig).mockResolvedValue({
       workingDirectory: '/test/dir',
@@ -1473,30 +1473,30 @@ describe('Verbose/Quiet Output Modes', () => {
       defaultModel: ':pi',
       mcpTimeout: 30000,
       mcpRetries: 3,
-      verbose: false,
+      verbose: 1,
       quiet: false,
     } as any);
 
     const options: MainCommandOptions = {
       subagent: undefined as any, // Let it resolve from config
       prompt: 'test prompt',
-      verbose: false,
+      verbose: 1,
       quiet: false,
       logLevel: 'info',
     };
 
     await mainCommandHandler([], options, mockCommand);
 
-    // Subagent resolution info should be shown (not gated on verbose)
+    // Subagent resolution info should be shown at level 1+ (not gated on level 2)
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
     expect(allCalls.some((c: string) => c.includes('Subagent:') || c.includes('pi'))).toBe(true);
   });
 
-  it('should show statistics only when verbose=true', async () => {
+  it('should show statistics at verbose level 1', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: true,
+      verbose: 1,
       quiet: false,
       logLevel: 'info',
     };
@@ -1508,11 +1508,11 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
   });
 
-  it('should NOT show statistics when verbose=false', async () => {
+  it('should NOT show statistics at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: false,
+      verbose: 0,
       quiet: false,
       logLevel: 'info',
     };
@@ -1527,7 +1527,7 @@ describe('Verbose/Quiet Output Modes', () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
       prompt: 'test prompt',
-      verbose: true,
+      verbose: 1,
       quiet: true,
       logLevel: 'info',
     };

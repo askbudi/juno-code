@@ -76,7 +76,7 @@ export async function startCommandHandler(
       baseDir: workingDirectory,
       configFile: (options as any).config,
       cliConfig: {
-        verbose: options.verbose || false,
+        verbose: options.quiet ? 0 : (options.verbose ?? 1),
         quiet: options.quiet || false,
         logLevel: (options as any).logLevel || 'info',
         workingDirectory,

@@ -573,7 +573,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
       // Logging settings
       logLevel: 'info',
-      verbose: false,
+      verbose: 0,
       quiet: false,
 
       // Shell backend settings

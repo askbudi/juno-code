@@ -22,7 +22,7 @@ import type { InitCommandOptions } from '../types.js';
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
     workingDirectory: '/test/dir',
-    verbose: false,
+    verbose: 0,
   }),
 }));
 

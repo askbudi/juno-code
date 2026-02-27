@@ -29,8 +29,8 @@ export interface CommandExample {
  * Global CLI options available to all commands
  */
 export interface GlobalCLIOptions {
-  /** Enable verbose output including hook execution (default: true). Accepts boolean or string (false/0/no to disable) */
-  verbose?: boolean;
+  /** Verbosity level: 0=quiet, 1=normal+helping texts (default), 2=debug+hooks. Accepts number, boolean, or string */
+  verbose?: number;
   /** Quiet mode: suppress agent messages and hook output (alias: --silent) */
   quiet?: boolean;
   /** Alias for --quiet */
@@ -189,8 +189,7 @@ export interface SessionListOptions extends GlobalCLIOptions {
  * Session info command options
  */
 export interface SessionInfoOptions extends GlobalCLIOptions {
-  /** Show detailed information */
-  verbose?: boolean;
+  /** Show detailed information (inherits verbosity level from GlobalCLIOptions) */
 }
 
 /**

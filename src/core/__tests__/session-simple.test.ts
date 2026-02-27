@@ -71,7 +71,7 @@ const createMockConfig = (): JunoTaskConfig => ({
   defaultMaxIterations: 10,
   defaultModel: 'claude-3-5-sonnet-20241022',
   logLevel: 'info',
-  verbose: false,
+  verbose: 0,
   quiet: false,
   mcpTimeout: 30000,
   mcpRetries: 3,
