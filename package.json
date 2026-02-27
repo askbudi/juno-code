@@ -31,6 +31,7 @@
   },
   "bin": {
     "juno-code": "./dist/bin/juno-code.sh",
+    "yy": "./dist/bin/juno-code.sh",
     "feedback-juno-code": "./dist/bin/feedback-collector.mjs"
   },
   "files": [
