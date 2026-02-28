@@ -180,13 +180,25 @@ juno-code init --task "Add user authentication..." --subagent claude
 juno-code start -b shell -s claude -i 1 -v
 
 # Or with a custom prompt
-juno-code -b shell -s claude -i 5 -p "Fix the login bug"
+juno-code -b shell -s claude -i 5 -p 'Fix the login bug'
 
 # Default Ralph based on kanban , without -p , juno-code uses .juno_task/prompt.md as prompt
 juno-code -b shell -s claude -i 5 -v
 ```
 
 **Key insight**: Running `juno-code start` without `-p` uses `.juno_task/prompt.md`—a production-ready prompt template that implements the Ralph method with guard rails.
+
+### Shell safety for prompts
+
+When prompt text contains shell metacharacters (especially backticks `` `...` `` or `$()`), prefer one of these patterns so your shell does not execute substitutions before juno-code receives the prompt:
+
+```bash
+juno-code -s claude -p 'literal text with `backticks` and $(dollar-parens)'
+juno-code -s claude -f prompt.md
+juno-code -s claude << 'EOF'
+literal text with `backticks`
+EOF
+```
 
 ## CLI Reference
 
@@ -202,13 +214,13 @@ juno-code start -b shell -s claude -i 5 -v
 juno-code start -b shell -s codex -m :codex -i 10
 
 # Direct prompt execution
-juno-code -b shell -s claude -i 3 -p "your prompt"
+juno-code -b shell -s claude -i 3 -p 'your prompt'
 
 # Quick subagent shortcuts
-juno-code claude "your task"
-juno-code codex "your task"
-juno-code gemini "your task"
-juno-code pi "your task"
+juno-code claude 'your task'
+juno-code codex 'your task'
+juno-code gemini 'your task'
+juno-code pi 'your task'
 
 # AI-powered test generation
 juno-code test --generate --framework vitest
@@ -242,8 +254,8 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 ```bash
 juno-code session list           # View all sessions
 juno-code session info abc123    # Session details
-juno-code --resume abc123 -p "continue"  # Resume session
-juno-code --continue -p "keep going"     # Continue most recent
+juno-code --resume abc123 -p 'continue'  # Resume session
+juno-code --continue -p 'keep going'     # Continue most recent
 ```
 
 ### Feedback System

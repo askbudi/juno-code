@@ -131,10 +131,11 @@ class PromptProcessor {
           return await this.loadPromptFromFile(defaultPromptPath);
         } else {
           throw new ValidationError('Prompt is required for execution', [
-            'Provide prompt text: juno-code claude "your prompt here"',
+            "Provide prompt text: juno-code claude 'your prompt here'",
             'Use file input: juno-code claude prompt.txt',
-            'Pipe via stdin: echo "prompt" | juno-code claude',
+            "Pipe via stdin: echo 'prompt' | juno-code claude",
             'Use heredoc: juno-code claude -p << \'EOF\'\\nyour prompt\\nEOF',
+            'Shell safety: use single quotes (or -f/stdin) when prompt contains backticks or $()',
             'Use interactive mode: juno-code claude --interactive',
             'Create default prompt file: .juno_task/prompt.md',
           ]);
@@ -212,7 +213,7 @@ class PromptProcessor {
           reject(
             new ValidationError('Empty stdin input', [
               'Provide prompt text via stdin',
-              'Example: echo "your prompt" | juno-code claude',
+              "Example: echo 'your prompt' | juno-code claude",
               "Example: juno-code claude << 'EOF'\\nyour prompt\\nEOF",
             ]),
           );

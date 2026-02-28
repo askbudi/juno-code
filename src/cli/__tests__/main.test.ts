@@ -419,6 +419,13 @@ describe('Main Command', () => {
         await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(1); // ValidationError
+
+        const stderrOutput = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls
+          .flat()
+          .join('\n');
+        expect(stderrOutput).toContain(
+          'Shell safety: use single quotes (or -f/stdin) when prompt contains backticks or $()',
+        );
       });
 
       it.skip('should handle interactive prompt cancellation', async () => {

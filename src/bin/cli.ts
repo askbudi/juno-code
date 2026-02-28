@@ -224,8 +224,11 @@ function setupMainCommand(program: Command): void {
   // Main command for direct execution with subagent
   program
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
-    .option('-p, --prompt [text]', 'Prompt input (file path, inline text, or use with heredoc/stdin)')
-    .option('-f, --prompt-file <path>', 'Read prompt from a file (alternative to -p "$(cat file)")')
+    .option(
+      '-p, --prompt [text]',
+      'Prompt input (inline text, file path, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+    )
+    .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-I, --interactive', 'Interactive mode for typing prompts')
@@ -426,10 +429,13 @@ function setupMainCommand(program: Command): void {
           console.log(chalk.gray('  juno-code start                   # Start execution'));
           console.log(chalk.gray('  juno-code test --generate --run   # AI-powered testing'));
           console.log(
-            chalk.gray('  juno-code -s claude "prompt"      # Quick execution with Claude'),
+            chalk.gray("  juno-code -s claude 'prompt'      # Quick execution with Claude"),
           );
           console.log(
-            chalk.gray('  juno-code -s claude -p "prompt"   # Same (explicit -p flag)'),
+            chalk.gray("  juno-code -s claude -p 'prompt'   # Same (explicit -p flag)"),
+          );
+          console.log(
+            chalk.gray('  shell safety: use single quotes or -f/stdin for prompts with backticks/$()'),
           );
           console.log(chalk.gray('  juno-code --help                  # Show all commands'));
           console.log('');
@@ -522,26 +528,29 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code claude "Analyze this codebase"
+  juno-code claude 'Analyze this codebase'
 
   ${chalk.gray('# Choose a model')}
-  juno-code claude -m :opus "Complex refactoring task"
-  juno-code claude -m :haiku "Quick analysis"
+  juno-code claude -m :opus 'Complex refactoring task'
+  juno-code claude -m :haiku 'Quick analysis'
 
   ${chalk.gray('# File-based prompt')}
   juno-code claude -f prompt.md
 
   ${chalk.gray('# Resume a session')}
-  juno-code claude --resume <session-id> "Continue the work"
-  juno-code claude --continue "Next step"
+  juno-code claude --resume <session-id> 'Continue the work'
+  juno-code claude --continue 'Next step'
 
   ${chalk.gray('# Tool configuration')}
-  juno-code claude --disallowed-tools Bash "Read-only analysis"
-  juno-code claude --allowed-tools Read Grep "Search only"
+  juno-code claude --disallowed-tools Bash 'Read-only analysis'
+  juno-code claude --allowed-tools Read Grep 'Search only'
 
   ${chalk.gray('# Pipe prompt via stdin')}
-  echo "Explain this code" | juno-code claude
+  echo 'Explain this code' | juno-code claude
   cat prompt.md | juno-code claude
+
+  ${chalk.gray('# Shell safety')}
+  ${chalk.gray('Use single quotes (or -f/stdin) when prompts contain backticks or $()')}
 `,
   },
 
@@ -597,20 +606,20 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code pi "Build a REST API endpoint"
+  juno-code pi 'Build a REST API endpoint'
 
   ${chalk.gray('# Use a specific provider and model')}
-  juno-code pi -m :gpt-5 "Refactor this module"
-  juno-code pi -m openai/gpt-4o --provider openai "Task"
-  juno-code pi -m :gemini-pro "Analyze performance"
+  juno-code pi -m :gpt-5 'Refactor this module'
+  juno-code pi -m openai/gpt-4o --provider openai 'Task'
+  juno-code pi -m :gemini-pro 'Analyze performance'
 
   ${chalk.gray('# Extended thinking')}
-  juno-code pi --thinking high "Complex architecture redesign"
+  juno-code pi --thinking high 'Complex architecture redesign'
 
   ${chalk.gray('# Tool and session control')}
-  juno-code pi --no-tools "Read-only analysis"
-  juno-code pi --no-session "One-off question"
-  juno-code pi --resume <session-id> "Continue work"
+  juno-code pi --no-tools 'Read-only analysis'
+  juno-code pi --no-session 'One-off question'
+  juno-code pi --resume <session-id> 'Continue work'
 
   ${chalk.gray('# File-based prompt')}
   juno-code pi -f instructions.md
@@ -645,11 +654,11 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code codex "Fix the failing tests"
+  juno-code codex 'Fix the failing tests'
 
   ${chalk.gray('# Use a different model')}
-  juno-code codex -m :gpt-5 "Implement feature X"
-  juno-code codex -m :codex-mini "Quick fix"
+  juno-code codex -m :gpt-5 'Implement feature X'
+  juno-code codex -m :codex-mini 'Quick fix'
 
   ${chalk.gray('# File-based prompt')}
   juno-code codex -f prompt.md
@@ -685,14 +694,14 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code gemini "Analyze this codebase"
+  juno-code gemini 'Analyze this codebase'
 
   ${chalk.gray('# Choose a model')}
-  juno-code gemini -m :flash "Quick analysis"
-  juno-code gemini -m :pro-3 "Complex task"
+  juno-code gemini -m :flash 'Quick analysis'
+  juno-code gemini -m :pro-3 'Complex task'
 
   ${chalk.gray('# Include specific directories')}
-  juno-code gemini --include-directories "src,tests" "Review code quality"
+  juno-code gemini --include-directories 'src,tests' 'Review code quality'
 
   ${chalk.gray('# File-based prompt')}
   juno-code gemini -f prompt.md
@@ -710,10 +719,10 @@ ${chalk.blue('Note:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code cursor "Refactor this component"
+  juno-code cursor 'Refactor this component'
 
   ${chalk.gray('# With model selection')}
-  juno-code cursor -m :sonnet "Analyze code"
+  juno-code cursor -m :sonnet 'Analyze code'
 
   ${chalk.gray('# File-based prompt')}
   juno-code cursor -f prompt.md
@@ -735,8 +744,11 @@ function setupAliases(program: Command): void {
       .command(subagent)
       .description(help.description)
       .argument('[prompt...]', 'Prompt text or file path')
-      .option('-p, --prompt [text]', 'Prompt input (inline text, or use with heredoc/stdin)')
-      .option('-f, --prompt-file <path>', 'Read prompt from a file')
+      .option(
+        '-p, --prompt [text]',
+        'Prompt input (inline text, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+      )
+      .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
       .option('-w, --cwd <path>', 'Working directory')
       .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
       .option('-m, --model <name>', 'Model to use (see model shorthands below)')
@@ -1026,7 +1038,7 @@ ${chalk.blue.bold('Examples:')}
   juno-code init
 
   ${chalk.gray('# Initialize with inline mode (automation-friendly)')}
-  juno-code init "Build a REST API" --subagent claude --git-repo https://github.com/user/repo
+  juno-code init 'Build a REST API' --subagent claude --git-repo https://github.com/user/repo
 
   ${chalk.gray('# Start execution using .juno_task/init.md')}
   juno-code start
@@ -1037,13 +1049,16 @@ ${chalk.blue.bold('Examples:')}
   juno-code test --analyze --coverage
 
   ${chalk.gray('# Quick execution with Claude')}
-  juno-code claude "Analyze this codebase and suggest improvements"
+  juno-code claude 'Analyze this codebase and suggest improvements'
 
   ${chalk.gray('# Pipe prompt via stdin (heredoc, pipe, redirect)')}
-  echo "Analyze this codebase" | juno-code -s claude
+  echo 'Analyze this codebase' | juno-code -s claude
   juno-code -s claude << 'EOF'
   Analyze this codebase and suggest improvements
   EOF
+
+  ${chalk.gray('# Shell safety')}
+  ${chalk.gray('Use single quotes or -f/stdin when prompts include backticks or $()')}
 
   ${chalk.gray('# Interactive project setup')}
   juno-code init --interactive
@@ -1062,13 +1077,13 @@ ${chalk.blue.bold('Examples:')}
   juno-code setup-git https://github.com/askbudi/juno-code
 
   ${chalk.gray('# Verbose is ON by default. Disable with:')}
-  juno-code -v false -s claude "prompt"
-  juno-code -v 0 -s claude "prompt"
-  juno-code -v no -s claude "prompt"
+  juno-code -v false -s claude 'prompt'
+  juno-code -v 0 -s claude 'prompt'
+  juno-code -v no -s claude 'prompt'
 
   ${chalk.gray('# Quiet mode (suppress agent output and hooks):')}
-  juno-code --quiet -s claude "prompt"
-  juno-code --silent -s claude "prompt"
+  juno-code --quiet -s claude 'prompt'
+  juno-code --silent -s claude 'prompt'
 
 ${chalk.blue.bold('Environment Variables:')}
   JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini, pi)

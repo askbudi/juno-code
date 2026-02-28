@@ -181,6 +181,15 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Commands:');
     });
 
+    it('should include shell safety guidance for prompt input', async () => {
+      const result = await executeCLI(['--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('Shell safety');
+      expect(result.stdout).toContain('backticks');
+      expect(result.stdout).toContain("single quotes or -f/stdin");
+    });
+
     it('should display version with --version flag', async () => {
       const result = await executeCLI(['--version']);
 
