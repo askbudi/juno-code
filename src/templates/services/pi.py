@@ -119,19 +119,25 @@ class PiService:
             return False
         return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
+    def _colorize_lines(self, text: str, color_code: str) -> str:
+        """Apply ANSI coloring per line so line-based renderers keep colors stable."""
+        if "\n" not in text:
+            return f"{color_code}{text}{self.ANSI_RESET}"
+        return "\n".join(f"{color_code}{line}{self.ANSI_RESET}" for line in text.split("\n"))
+
     def _colorize_result(self, text: str, is_error: bool = False) -> str:
         """Colorize tool output only for errors; success stays terminal-default."""
         if not self._color_enabled():
             return text
         if not is_error:
             return text
-        return f"{self.ANSI_RED}{text}{self.ANSI_RESET}"
+        return self._colorize_lines(text, self.ANSI_RED)
 
     def _colorize_command(self, text: str) -> str:
         """Colorize tool command/args blocks in green when ANSI color is enabled."""
         if not self._color_enabled():
             return text
-        return f"{self.ANSI_GREEN}{text}{self.ANSI_RESET}"
+        return self._colorize_lines(text, self.ANSI_GREEN)
 
     def _normalize_multiline_tool_text(self, text: str) -> str:
         """Render escaped newline sequences as real newlines for tool command/args blocks."""

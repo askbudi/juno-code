@@ -2644,15 +2644,23 @@ class TestCombinedToolEventColor:
         assert "\x1b" not in result
 
     def test_multiline_command_green_with_tty(self, monkeypatch):
-        """TTY: multiline command blocks are green for scan-friendly readability."""
+        """TTY: each multiline command line is explicitly green for line-based renderers."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         pending = {"tool": "bash", "command": "line1\nline2", "datetime": "12:00:00 PM"}
         payload = {"toolName": "bash", "result": "ok"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
         assert "\ncommand:\n" in result
-        assert self.GREEN in result
-        assert self.RESET in result
+        assert f"{self.GREEN}line1{self.RESET}\n{self.GREEN}line2{self.RESET}" in result
+
+    def test_escaped_newline_command_green_with_tty(self, monkeypatch):
+        """TTY: escaped newline commands are humanized and colorized line-by-line."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "line1\\nline2\\nline3", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "ok"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert f"{self.GREEN}line1{self.RESET}\n{self.GREEN}line2{self.RESET}\n{self.GREEN}line3{self.RESET}" in result
 
     def test_error_result_red(self, monkeypatch):
         """TTY: error result uses red ANSI code."""
