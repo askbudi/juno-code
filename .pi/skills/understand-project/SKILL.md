@@ -1,7 +1,7 @@
 ---
 name: understand-project
 description: Understand current project and create/update specs under @.juno_task/specs/* , it allows you understand dependencies. and prepare for implementation. Use when user explicitly ask you, or when asking for understand the project, first see how it works and then do [main task] with respect to [constraints]
-argument-hint: [Main Task] [Constraints] [Ultimate Goal]
+argument-hint: "[Main Task] [Constraints] [Ultimate Goal]"
 enable-shell-directives: true
 ---
 

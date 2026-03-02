@@ -1870,6 +1870,85 @@ Model shorthands:
         """Strip bulky fields (messages, type) from sub_agent_response to reduce token usage."""
         return {k: v for k, v in event.items() if k not in ("messages", "type")}
 
+    @staticmethod
+    def _extract_usage_from_event(event: dict) -> Optional[dict]:
+        """Extract usage payload from Pi event shapes (event/message/messages)."""
+        if not isinstance(event, dict):
+            return None
+
+        direct_usage = event.get("usage")
+        if isinstance(direct_usage, dict):
+            return direct_usage
+
+        message = event.get("message")
+        if isinstance(message, dict):
+            message_usage = message.get("usage")
+            if isinstance(message_usage, dict):
+                return message_usage
+
+        messages = event.get("messages")
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    message_usage = msg.get("usage")
+                    if isinstance(message_usage, dict):
+                        return message_usage
+
+        return None
+
+    @staticmethod
+    def _extract_total_cost_usd(event: dict, usage: Optional[dict] = None) -> Optional[float]:
+        """Extract total USD cost from explicit fields or usage.cost.total."""
+        if not isinstance(event, dict):
+            return None
+
+        for key in ("total_cost_usd", "totalCostUsd", "totalCostUSD"):
+            value = event.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+
+        direct_cost = event.get("cost")
+        if isinstance(direct_cost, (int, float)):
+            return float(direct_cost)
+        if isinstance(direct_cost, dict):
+            total = direct_cost.get("total")
+            if isinstance(total, (int, float)):
+                return float(total)
+
+        usage_payload = usage if isinstance(usage, dict) else None
+        if usage_payload is None:
+            usage_payload = PiService._extract_usage_from_event(event)
+
+        if isinstance(usage_payload, dict):
+            usage_cost = usage_payload.get("cost")
+            if isinstance(usage_cost, dict):
+                total = usage_cost.get("total")
+                if isinstance(total, (int, float)):
+                    return float(total)
+
+        return None
+
+    def _build_success_result_event(self, text: str, event: dict) -> dict:
+        """Build standardized success envelope for shell-backend capture."""
+        usage = self._extract_usage_from_event(event)
+        total_cost_usd = self._extract_total_cost_usd(event, usage)
+
+        result_event: Dict = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": text,
+            "session_id": self.session_id,
+            "sub_agent_response": self._sanitize_sub_agent_response(event),
+        }
+
+        if isinstance(usage, dict):
+            result_event["usage"] = usage
+        if total_cost_usd is not None:
+            result_event["total_cost_usd"] = total_cost_usd
+
+        return result_event
+
     def _write_capture_file(self, capture_path: Optional[str]) -> None:
         """Write final result event to capture file for shell backend."""
         if not capture_path or not self.last_result_event:
@@ -2051,14 +2130,7 @@ Model shorthands:
                                         if text:
                                             break
                             if text:
-                                self.last_result_event = {
-                                    "type": "result",
-                                    "subtype": "success",
-                                    "is_error": False,
-                                    "result": text,
-                                    "session_id": self.session_id,
-                                    "sub_agent_response": self._sanitize_sub_agent_response(parsed),
-                                }
+                                self.last_result_event = self._build_success_result_event(text, parsed)
                             else:
                                 self.last_result_event = parsed
                         elif event_type == "message":
@@ -2067,28 +2139,14 @@ Model shorthands:
                             if isinstance(msg, dict) and msg.get("role") == "assistant":
                                 text = self._extract_text_from_message(msg)
                                 if text:
-                                    self.last_result_event = {
-                                        "type": "result",
-                                        "subtype": "success",
-                                        "is_error": False,
-                                        "result": text,
-                                        "session_id": self.session_id,
-                                        "sub_agent_response": self._sanitize_sub_agent_response(parsed),
-                                    }
+                                    self.last_result_event = self._build_success_result_event(text, parsed)
                         elif event_type == "turn_end":
                             # turn_end may contain the final assistant message
                             msg = parsed.get("message", {})
                             if isinstance(msg, dict):
                                 text = self._extract_text_from_message(msg)
                                 if text:
-                                    self.last_result_event = {
-                                        "type": "result",
-                                        "subtype": "success",
-                                        "is_error": False,
-                                        "result": text,
-                                        "session_id": self.session_id,
-                                        "sub_agent_response": self._sanitize_sub_agent_response(parsed),
-                                    }
+                                    self.last_result_event = self._build_success_result_event(text, parsed)
 
                         # Filter hidden stream types (live mode handles its own filtering)
                         if event_type in hide_types and self.prettifier_mode != self.PRETTIFIER_LIVE:

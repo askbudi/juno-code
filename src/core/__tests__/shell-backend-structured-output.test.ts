@@ -910,6 +910,20 @@ sys.exit(1)
       subtype: 'success',
       is_error: false,
       result: 'Hello from Pi agent',
+      usage: {
+        input: 64,
+        output: 137,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 201,
+        cost: {
+          input: 0.000128,
+          output: 0.000274,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0.000402,
+        },
+      },
       sub_agent_response: {
         type: 'agent_end',
         messages: [
@@ -973,6 +987,8 @@ if capture_path:
     expect(parsed.type).toBe('result');
     expect(parsed.is_error).toBe(false);
     expect(parsed.result).toBe('Hello from Pi agent');
+    expect(parsed.usage).toEqual(captureEvent.usage);
+    expect(parsed.total_cost_usd).toBeCloseTo(0.000402, 10);
 
     // sub_agent_response should exist but without messages array
     expect(parsed.sub_agent_response).toBeDefined();

@@ -1,7 +1,7 @@
 ---
 name: plan-kanban-tasks
 description: Generate Product Development Requirments(PDR) and create task on kanban. Use when user explictly ask for, or ask for creating a task, planing a feature, register a task on kaban. "Generate PDR"
-argument-hint: [Required Features] [Constraints] [Specification] [Test Criteria]
+argument-hint: "[Required Features] [Constraints] [Specification] [Test Criteria]"
 enable-shell-directives: true
 ---
 

@@ -1175,6 +1175,14 @@ export class ShellBackend implements Backend {
             delete inner.type;
             sanitizedPiEvent.sub_agent_response = inner;
           }
+          const usage = piEvent.usage;
+          const totalCostUsd =
+            typeof piEvent.total_cost_usd === 'number'
+              ? piEvent.total_cost_usd
+              : typeof usage?.cost?.total === 'number'
+                ? usage.cost.total
+                : undefined;
+
           const structuredPayload = {
             type: 'result',
             subtype: piEvent.subtype || (isError ? 'error' : 'success'),
@@ -1185,7 +1193,8 @@ export class ShellBackend implements Backend {
             session_id: piEvent.session_id,
             exit_code: result.exitCode,
             duration_ms: piEvent.duration_ms ?? result.duration,
-            usage: piEvent.usage,
+            total_cost_usd: totalCostUsd,
+            usage,
             sub_agent_response: sanitizedPiEvent,
           };
           const metadata: ToolExecutionMetadata = {

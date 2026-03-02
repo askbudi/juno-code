@@ -951,6 +951,72 @@ class TestDefaultModelConstant:
         assert svc.PRETTIFIER_CODEX == "codex"
 
 
+class TestPiUsageAndCostCapture:
+    """Cost/usage extraction used for pi.py result envelopes."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_extract_usage_from_agent_end_messages(self):
+        usage = {
+            "input": 120,
+            "output": 40,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 160,
+            "cost": {"input": 0.0012, "output": 0.0016, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0028},
+        }
+        event = {
+            "type": "agent_end",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [{"type": "text", "text": "done"}], "usage": usage},
+            ],
+        }
+
+        assert self.svc._extract_usage_from_event(event) == usage
+        assert self.svc._extract_total_cost_usd(event) == pytest.approx(0.0028)
+
+    def test_extract_total_cost_usd_prefers_explicit_field(self):
+        event = {
+            "type": "result",
+            "total_cost_usd": 0.77,
+            "usage": {"cost": {"total": 0.12}},
+        }
+
+        assert self.svc._extract_total_cost_usd(event) == pytest.approx(0.77)
+
+    def test_build_success_result_event_includes_usage_and_cost(self):
+        self.svc.session_id = "sess-123"
+        usage = {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 15,
+            "cost": {"input": 0.0001, "output": 0.0002, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0003},
+        }
+        event = {
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done"}],
+                "usage": usage,
+            },
+        }
+
+        result = self.svc._build_success_result_event("done", event)
+
+        assert result["type"] == "result"
+        assert result["subtype"] == "success"
+        assert result["session_id"] == "sess-123"
+        assert result["usage"] == usage
+        assert result["total_cost_usd"] == pytest.approx(0.0003)
+        assert result["sub_agent_response"]["message"]["usage"] == usage
+        assert "type" not in result["sub_agent_response"]
+
+
 # ===================================================================
 # 7. Result event capture (last_result_event in run_pi stream loop)
 # ===================================================================

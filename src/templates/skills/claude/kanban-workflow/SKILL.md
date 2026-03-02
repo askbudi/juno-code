@@ -1,7 +1,7 @@
 ---
 name: kanban-workflow
 description: Comprehensive guide for using juno-kanban task management. Covers all commands (create, list, search, get, mark, update, archive, deps, ready, order, merge), dependency management, best practices, and workflow patterns. Use when you need to interact with the kanban board.
-argument-hint: [command or workflow question]
+argument-hint: "[command or workflow question]"
 ---
 
 ## Kanban CLI Reference
