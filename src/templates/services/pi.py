@@ -37,6 +37,7 @@ class PiService:
         ":gpt-4o": "openai/gpt-4o",
         ":o3": "openai/o3",
         ":codex": "openai-codex/gpt-5.3-codex",
+        ":api-codex": "openai/gpt-5.3-codex",
         # Google
         ":gemini-pro": "google/gemini-2.5-pro",
         ":gemini-flash": "google/gemini-2.5-flash",
@@ -272,6 +273,7 @@ Model shorthands:
   :gpt-4o          -> openai/gpt-4o
   :o3              -> openai/o3
   :codex           -> openai-codex/gpt-5.3-codex
+  :api-codex       -> openai/gpt-5.3-codex
   :gemini-pro      -> google/gemini-2.5-pro
   :gemini-flash    -> google/gemini-2.5-flash
   :groq            -> groq/llama-4-scout-17b-16e-instruct

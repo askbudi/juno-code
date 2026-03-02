@@ -61,7 +61,7 @@ def _make_args(**overrides):
 # ===================================================================
 
 class TestModelShorthandExpansion:
-    """Test all 13 MODEL_SHORTHANDS plus edge cases."""
+    """Test all 14 MODEL_SHORTHANDS plus edge cases."""
 
     @pytest.fixture(autouse=True)
     def service(self):
@@ -93,6 +93,9 @@ class TestModelShorthandExpansion:
 
     def test_shorthand_codex(self):
         assert self.svc.expand_model_shorthand(":codex") == "openai-codex/gpt-5.3-codex"
+
+    def test_shorthand_api_codex(self):
+        assert self.svc.expand_model_shorthand(":api-codex") == "openai/gpt-5.3-codex"
 
     def test_shorthand_gemini_pro(self):
         assert self.svc.expand_model_shorthand(":gemini-pro") == "google/gemini-2.5-pro"
@@ -942,7 +945,7 @@ class TestDefaultModelConstant:
 
     def test_shorthand_count(self):
         svc = _load_pi_service()
-        assert len(svc.MODEL_SHORTHANDS) == 13
+        assert len(svc.MODEL_SHORTHANDS) == 14
 
     def test_prettifier_constants(self):
         svc = _load_pi_service()
