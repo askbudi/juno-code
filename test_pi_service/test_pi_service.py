@@ -1279,6 +1279,33 @@ class TestRunPiRawToolOutputBuffering:
         assert "result:\nRAW-LINE-1\nRAW-LINE-2" in out
         assert out.find("result:\nRAW-LINE-1\nRAW-LINE-2") < out.find('"type": "turn_end"')
 
+    def test_turn_end_is_deferred_until_late_raw_tool_lines_flush(self, monkeypatch, capsys):
+        """Late non-JSON tool lines should still print before turn_end metadata."""
+        stdout_lines = [
+            '{"type":"tool_execution_start","toolCallId":"tc-late","toolName":"bash","args":{"command":"rg -n hi src"}}\n',
+            '{"type":"tool_execution_end","toolCallId":"tc-late","toolName":"bash","result":""}\n',
+            'RAW-LATE-1\n',
+            '{"type":"turn_end","message":{},"toolResults":[]}\n',
+            'RAW-LATE-2\n',
+            '{"type":"agent_end","messages":[]}\n',
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert out.count("RAW-LATE-1") == 1
+        assert out.count("RAW-LATE-2") == 1
+        # Both late lines should appear before turn_end so transcript flow stays readable.
+        turn_idx = out.find('"type": "turn_end"')
+        assert turn_idx != -1
+        assert out.find("RAW-LATE-1") < turn_idx
+        assert out.find("RAW-LATE-2") < turn_idx
+
 
 # ===================================================================
 # 8. Message counter in prettifier output

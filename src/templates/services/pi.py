@@ -2127,6 +2127,138 @@ Model shorthands:
             stderr_thread.start()
 
             if process.stdout:
+                pending_tool_execution_end: Optional[dict] = None
+                pending_turn_end_after_tool: Optional[dict] = None
+
+                def _emit_parsed_event(parsed_event: dict, raw_json_line: Optional[str] = None) -> None:
+                    event_type = parsed_event.get("type", "")
+
+                    # Capture session ID from the session event (sent at stream start)
+                    if event_type == "session":
+                        self.session_id = parsed_event.get("id")
+
+                    # Capture result event for shell backend
+                    if event_type == "agent_end":
+                        # agent_end has a 'messages' array; extract final assistant text
+                        messages = parsed_event.get("messages", [])
+                        text = ""
+                        if isinstance(messages, list):
+                            # Walk messages in reverse to find last assistant message with text
+                            for m in reversed(messages):
+                                if isinstance(m, dict) and m.get("role") == "assistant":
+                                    text = self._extract_text_from_message(m)
+                                    if text:
+                                        break
+                        if text:
+                            self.last_result_event = self._build_success_result_event(text, parsed_event)
+                        else:
+                            self.last_result_event = parsed_event
+                    elif event_type == "message":
+                        # OpenAI-compatible format: capture last assistant message
+                        msg = parsed_event.get("message", {})
+                        if isinstance(msg, dict) and msg.get("role") == "assistant":
+                            text = self._extract_text_from_message(msg)
+                            if text:
+                                self.last_result_event = self._build_success_result_event(text, parsed_event)
+                    elif event_type == "turn_end":
+                        # turn_end may contain the final assistant message
+                        msg = parsed_event.get("message", {})
+                        if isinstance(msg, dict):
+                            text = self._extract_text_from_message(msg)
+                            if text:
+                                self.last_result_event = self._build_success_result_event(text, parsed_event)
+
+                    # Filter hidden stream types (live mode handles its own filtering)
+                    if event_type in hide_types and self.prettifier_mode != self.PRETTIFIER_LIVE:
+                        return
+
+                    # Live stream mode: stream deltas in real-time
+                    if self.prettifier_mode == self.PRETTIFIER_LIVE:
+                        if event_type in hide_types:
+                            # In live mode, still suppress session/compaction/retry events
+                            # but NOT message_start/message_end (handled by _format_event_live)
+                            if event_type not in ("message_start", "message_end"):
+                                return
+                        formatted_live = self._format_event_live(parsed_event)
+                        if formatted_live is not None:
+                            if formatted_live == "":
+                                return
+                            sys.stdout.write(formatted_live)
+                            sys.stdout.flush()
+                        else:
+                            # Fallback: print raw JSON for unhandled event types
+                            print(json.dumps(parsed_event, ensure_ascii=False), flush=True)
+                        return
+
+                    # Format and print using model-appropriate prettifier
+                    if pretty:
+                        if self.prettifier_mode == self.PRETTIFIER_CODEX:
+                            # Try Pi-wrapped Codex format first (role-based messages)
+                            if "role" in parsed_event:
+                                formatted = self._format_pi_codex_message(parsed_event)
+                            else:
+                                # Try Pi event handler (message_update, turn_end, etc.)
+                                formatted = self._format_pi_codex_event(parsed_event)
+                                if formatted is None:
+                                    # Try native Codex event handler
+                                    formatted = self._format_event_pretty_codex(parsed_event)
+                            if formatted is None:
+                                # Sanitize before raw JSON fallback: strip thinkingSignature,
+                                # encrypted_content, and metadata from nested Codex events.
+                                self._sanitize_codex_event(parsed_event, strip_metadata=True)
+                                formatted = json.dumps(parsed_event, ensure_ascii=False)
+                            elif formatted == "":
+                                return
+                        elif self.prettifier_mode == self.PRETTIFIER_CLAUDE:
+                            formatted = self._format_event_pretty_claude(parsed_event)
+                        else:
+                            formatted = self._format_event_pretty(parsed_event)
+                        if formatted is not None:
+                            print(formatted, flush=True)
+                    else:
+                        if raw_json_line is not None:
+                            print(raw_json_line, flush=True)
+                        else:
+                            print(json.dumps(parsed_event, ensure_ascii=False), flush=True)
+
+                def _merge_buffered_tool_stdout_into(event_payload: dict) -> None:
+                    buffered_text = "\n".join(self._buffered_tool_stdout_lines).strip()
+                    if not buffered_text:
+                        self._buffered_tool_stdout_lines.clear()
+                        return
+
+                    result_val = event_payload.get("result")
+                    if result_val in (None, "", [], {}):
+                        event_payload["result"] = buffered_text
+                    elif isinstance(result_val, str):
+                        existing = self._strip_ansi_sequences(result_val)
+                        if existing:
+                            if not existing.endswith("\n"):
+                                existing += "\n"
+                            event_payload["result"] = existing + buffered_text
+                        else:
+                            event_payload["result"] = buffered_text
+                    else:
+                        # Keep complex result structures untouched; print trailing raw lines
+                        # before the next structured event for stable transcript ordering.
+                        print(buffered_text, flush=True)
+
+                    self._buffered_tool_stdout_lines.clear()
+
+                def _flush_pending_tool_events() -> None:
+                    nonlocal pending_tool_execution_end, pending_turn_end_after_tool
+                    if pending_tool_execution_end is not None:
+                        _merge_buffered_tool_stdout_into(pending_tool_execution_end)
+                        _emit_parsed_event(pending_tool_execution_end)
+                        pending_tool_execution_end = None
+
+                    if pending_turn_end_after_tool is not None:
+                        if self._buffered_tool_stdout_lines:
+                            print("\n".join(self._buffered_tool_stdout_lines), flush=True)
+                            self._buffered_tool_stdout_lines.clear()
+                        _emit_parsed_event(pending_turn_end_after_tool)
+                        pending_turn_end_after_tool = None
+
                 try:
                     for raw_line in process.stdout:
                         line = raw_line.rstrip("\n\r")
@@ -2137,9 +2269,14 @@ Model shorthands:
                         try:
                             parsed = json.loads(line)
                         except json.JSONDecodeError:
-                            # Non-JSON output (raw tool stdout). In pretty mode, buffer it
-                            # during tool execution to avoid interleaving with JSON events.
-                            if pretty and self._in_tool_execution:
+                            # Non-JSON output (raw tool stdout). In pretty mode, buffer raw
+                            # lines while tool execution events are pending to avoid
+                            # interleaving with structured events (e.g. turn_end).
+                            if pretty and (
+                                self._in_tool_execution
+                                or pending_tool_execution_end is not None
+                                or pending_turn_end_after_tool is not None
+                            ):
                                 self._buffered_tool_stdout_lines.append(self._strip_ansi_sequences(line))
                                 continue
                             print(line, flush=True)
@@ -2147,103 +2284,37 @@ Model shorthands:
 
                         event_type = parsed.get("type", "")
 
-                        if event_type == "tool_execution_start":
+                        if pretty and event_type == "tool_execution_start":
                             # Reset raw tool stdout buffer per tool execution.
                             self._buffered_tool_stdout_lines.clear()
-                        elif event_type == "tool_execution_end":
-                            buffered_text = "\n".join(self._buffered_tool_stdout_lines).strip()
-                            if buffered_text:
-                                result_val = parsed.get("result")
-                                if result_val in (None, "", [], {}):
-                                    parsed["result"] = buffered_text
-                            self._buffered_tool_stdout_lines.clear()
 
-                        # Capture session ID from the session event (sent at stream start)
-                        if event_type == "session":
-                            self.session_id = parsed.get("id")
-
-                        # Capture result event for shell backend
-                        if event_type == "agent_end":
-                            # agent_end has a 'messages' array; extract final assistant text
-                            messages = parsed.get("messages", [])
-                            text = ""
-                            if isinstance(messages, list):
-                                # Walk messages in reverse to find last assistant message with text
-                                for m in reversed(messages):
-                                    if isinstance(m, dict) and m.get("role") == "assistant":
-                                        text = self._extract_text_from_message(m)
-                                        if text:
-                                            break
-                            if text:
-                                self.last_result_event = self._build_success_result_event(text, parsed)
-                            else:
-                                self.last_result_event = parsed
-                        elif event_type == "message":
-                            # OpenAI-compatible format: capture last assistant message
-                            msg = parsed.get("message", {})
-                            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                                text = self._extract_text_from_message(msg)
-                                if text:
-                                    self.last_result_event = self._build_success_result_event(text, parsed)
-                        elif event_type == "turn_end":
-                            # turn_end may contain the final assistant message
-                            msg = parsed.get("message", {})
-                            if isinstance(msg, dict):
-                                text = self._extract_text_from_message(msg)
-                                if text:
-                                    self.last_result_event = self._build_success_result_event(text, parsed)
-
-                        # Filter hidden stream types (live mode handles its own filtering)
-                        if event_type in hide_types and self.prettifier_mode != self.PRETTIFIER_LIVE:
+                        if pretty and event_type == "tool_execution_end":
+                            # Defer emission so any trailing raw stdout can be grouped before
+                            # downstream structured metadata like turn_end.
+                            pending_tool_execution_end = parsed
                             continue
 
-                        # Live stream mode: stream deltas in real-time
-                        if self.prettifier_mode == self.PRETTIFIER_LIVE:
-                            if event_type in hide_types:
-                                # In live mode, still suppress session/compaction/retry events
-                                # but NOT message_start/message_end (handled by _format_event_live)
-                                if event_type not in ("message_start", "message_end"):
-                                    continue
-                            formatted = self._format_event_live(parsed)
-                            if formatted is not None:
-                                if formatted == "":
-                                    continue
-                                sys.stdout.write(formatted)
-                                sys.stdout.flush()
-                            else:
-                                # Fallback: print raw JSON for unhandled event types
-                                print(json.dumps(parsed, ensure_ascii=False), flush=True)
+                        if pretty and event_type == "turn_end" and pending_tool_execution_end is not None:
+                            # Hold turn_end until buffered trailing raw stdout is flushed with
+                            # the pending tool event.
+                            pending_turn_end_after_tool = parsed
                             continue
 
-                        # Format and print using model-appropriate prettifier
-                        if pretty:
-                            if self.prettifier_mode == self.PRETTIFIER_CODEX:
-                                # Try Pi-wrapped Codex format first (role-based messages)
-                                if "role" in parsed:
-                                    formatted = self._format_pi_codex_message(parsed)
-                                else:
-                                    # Try Pi event handler (message_update, turn_end, etc.)
-                                    formatted = self._format_pi_codex_event(parsed)
-                                    if formatted is not None:
-                                        # Empty string means "suppress this event"
-                                        if formatted == "":
-                                            continue
-                                    else:
-                                        # Try native Codex event handler
-                                        formatted = self._format_event_pretty_codex(parsed)
-                                if formatted is None:
-                                    # Sanitize before raw JSON fallback: strip thinkingSignature,
-                                    # encrypted_content, and metadata from nested Codex events.
-                                    self._sanitize_codex_event(parsed, strip_metadata=True)
-                                    formatted = json.dumps(parsed, ensure_ascii=False)
-                            elif self.prettifier_mode == self.PRETTIFIER_CLAUDE:
-                                formatted = self._format_event_pretty_claude(parsed)
-                            else:
-                                formatted = self._format_event_pretty(parsed)
-                            if formatted is not None:
-                                print(formatted, flush=True)
-                        else:
-                            print(line, flush=True)
+                        if pretty and (
+                            pending_tool_execution_end is not None or pending_turn_end_after_tool is not None
+                        ):
+                            _flush_pending_tool_events()
+
+                        _emit_parsed_event(parsed, raw_json_line=line)
+
+                    # Flush any deferred tool/turn events at end-of-stream.
+                    if pretty and (
+                        pending_tool_execution_end is not None or pending_turn_end_after_tool is not None
+                    ):
+                        _flush_pending_tool_events()
+                    elif self._buffered_tool_stdout_lines:
+                        print("\n".join(self._buffered_tool_stdout_lines), flush=True)
+                        self._buffered_tool_stdout_lines.clear()
 
                 except ValueError:
                     # Watchdog closed stdout — expected when process exits but pipe stays open.
