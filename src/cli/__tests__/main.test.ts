@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
 import { mainCommandHandler } from '../commands/main.js';
+import { logger, LogLevel } from '../utils/advanced-logger.js';
 
 import type { MainCommandOptions } from '../types.js';
 import { ConfigurationError } from '../types.js';
@@ -1528,6 +1529,46 @@ describe('Verbose/Quiet Output Modes', () => {
 
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
     expect(allCalls.some((c: string) => c.includes('Statistics:'))).toBe(false);
+  });
+
+  it('should reset logger to INFO at verbose level 1 after a previous verbose 2 run', async () => {
+    const setLevelSpy = vi.spyOn(logger, 'setLevel');
+
+    await mainCommandHandler([], {
+      subagent: 'claude',
+      prompt: 'debug run',
+      verbose: 2,
+      quiet: false,
+      logLevel: 'info',
+    } as MainCommandOptions, mockCommand);
+
+    await mainCommandHandler([], {
+      subagent: 'claude',
+      prompt: 'normal run',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    } as MainCommandOptions, mockCommand);
+
+    expect(setLevelSpy).toHaveBeenNthCalledWith(1, LogLevel.DEBUG);
+    expect(setLevelSpy).toHaveBeenNthCalledWith(2, LogLevel.INFO);
+  });
+
+  it('should normalize string verbose values from Commander before setting logger/config levels', async () => {
+    const setLevelSpy = vi.spyOn(logger, 'setLevel');
+    const { loadConfig } = await import('../../core/config.js');
+
+    await mainCommandHandler([], {
+      subagent: 'claude',
+      prompt: 'string verbose',
+      verbose: 'false' as any,
+      quiet: false,
+      logLevel: 'info',
+    } as MainCommandOptions, mockCommand);
+
+    expect(setLevelSpy).toHaveBeenCalledWith(LogLevel.WARN);
+    const lastCall = vi.mocked(loadConfig).mock.calls.at(-1)?.[0] as any;
+    expect(lastCall.cliConfig.verbose).toBe(0);
   });
 
   it('should only print final result to stdout in quiet mode', async () => {

@@ -445,9 +445,9 @@ function setupMainCommand(program: Command): void {
         // Import and execute main command handler dynamically
         const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
         _getActiveSessionId = getActiveSessionId;
-        await mainCommandHandler([], { ...options, ...globalOptions }, command);
+        await mainCommandHandler([], allOptions, command);
       } catch (error) {
-        handleCLIError(error, options.verbose);
+        handleCLIError(error, normalizeVerbose(options.verbose));
       }
     });
 }

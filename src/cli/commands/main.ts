@@ -91,6 +91,38 @@ function isModelCompatibleWithSubagent(model: string, subagent: SubagentType): b
 }
 
 /**
+ * Normalize verbose option to numeric level.
+ * Accepts number/boolean/string values because Commander can pass optional args as booleans/strings.
+ */
+function normalizeVerboseLevel(verbose: unknown, quiet: boolean | undefined): number {
+  if (quiet) return 0;
+  if (verbose === undefined || verbose === null) return 1;
+
+  if (typeof verbose === 'number' && Number.isFinite(verbose)) {
+    if (verbose <= 0) return 0;
+    if (verbose >= 2) return 2;
+    return 1;
+  }
+
+  if (typeof verbose === 'boolean') {
+    return verbose ? 1 : 0;
+  }
+
+  const str = String(verbose).toLowerCase().trim();
+  if (['false', 'no', '0'].includes(str)) return 0;
+  if (['true', 'yes', '1'].includes(str)) return 1;
+
+  const num = Number(str);
+  if (!Number.isNaN(num)) {
+    if (num <= 0) return 0;
+    if (num >= 2) return 2;
+    return 1;
+  }
+
+  return 1;
+}
+
+/**
  * Prompt input processor for handling various input types
  */
 class PromptProcessor {
@@ -657,13 +689,15 @@ export async function mainCommandHandler(
   _command: Command,
 ): Promise<void> {
   try {
+    // Normalize verbose early; root CLI path can pass booleans/strings from Commander optional args.
+    const effectiveVerbose = normalizeVerboseLevel(options.verbose, options.quiet);
+
     // Load configuration first so we can resolve defaults from config.json
-    // Load configuration
     const config = await loadConfig({
       baseDir: options.cwd || process.cwd(),
       ...(options.config !== undefined ? { configFile: options.config } : {}),
       cliConfig: {
-        verbose: options.quiet ? 0 : (options.verbose ?? 1),
+        verbose: effectiveVerbose,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
         workingDirectory: options.cwd || process.cwd(),
@@ -674,10 +708,7 @@ export async function mainCommandHandler(
       },
     });
 
-    // Compute effective verbose level (quiet overrides verbose to 0)
-    const effectiveVerbose = options.quiet ? 0 : (options.verbose ?? 1);
-
-    // Set logger level based on verbose:
+    // Set logger level based on effective verbose:
     //   0 (quiet): WARN — suppress INFO/DEBUG, only show warnings and errors
     //   1 (normal): INFO — show important INFO (e.g. quota limits), suppress DEBUG (hook execution details)
     //   2 (verbose): DEBUG — show everything including hook execution tracking
@@ -685,6 +716,8 @@ export async function mainCommandHandler(
       logger.setLevel(LogLevel.DEBUG);
     } else if (effectiveVerbose === 0) {
       logger.setLevel(LogLevel.WARN);
+    } else {
+      logger.setLevel(LogLevel.INFO);
     }
 
     // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
