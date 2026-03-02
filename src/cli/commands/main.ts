@@ -552,6 +552,9 @@ class MainProgressDisplay {
       console.log(lastIteration!.toolResult.content);
     }
 
+    const iterationCosts = this.extractIterationCosts(result);
+    const totalCostUsd = [...iterationCosts.values()].reduce((sum, cost) => sum + cost, 0);
+
     // Level 1+: show statistics (helping texts: iteration count, time, failures)
     if (this.verboseLevel >= 1) {
       const stats = result.statistics;
@@ -564,6 +567,10 @@ class MainProgressDisplay {
       );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
 
+      if (iterationCosts.size > 0) {
+        console.error(chalk.white(`   Total Cost: ${this.formatUsd(totalCostUsd)}`));
+      }
+
       if (stats.rateLimitEncounters > 0) {
         console.error(chalk.yellow(`   Rate Limits: ${stats.rateLimitEncounters}`));
       }
@@ -572,18 +579,45 @@ class MainProgressDisplay {
     // Show session IDs (always — useful for resuming sessions)
     this.extractSessionIdsFromResult(result);
     if (this.sessionIds.size > 0) {
+      const sortedSessionEntries = [...this.sessionIds.entries()].sort((a, b) => a[0] - b[0]);
       console.error(chalk.blue('\n🔑 Session ID(s):'));
-      if (this.sessionIds.size === 1) {
-        const sessionId = [...this.sessionIds.values()][0];
-        console.error(chalk.white(`   ${sessionId}`));
+      if (sortedSessionEntries.length === 1) {
+        const singleSessionEntry = sortedSessionEntries[0];
+        if (singleSessionEntry) {
+          const [iteration, sessionId] = singleSessionEntry;
+          const cost = iterationCosts.get(iteration);
+          if (cost !== undefined) {
+            console.error(chalk.white(`   ${sessionId}    cost: ${this.formatUsd(cost)}`));
+          } else {
+            console.error(chalk.white(`   ${sessionId}`));
+          }
+        }
       } else {
-        for (const [iteration, sessionId] of this.sessionIds) {
-          console.error(chalk.white(`   Iteration ${iteration}: ${sessionId}`));
+        for (const [iteration, sessionId] of sortedSessionEntries) {
+          const cost = iterationCosts.get(iteration);
+          if (cost !== undefined) {
+            console.error(
+              chalk.white(`   Iteration ${iteration}: ${sessionId}    cost: ${this.formatUsd(cost)}`),
+            );
+          } else {
+            console.error(chalk.white(`   Iteration ${iteration}: ${sessionId}`));
+          }
         }
       }
     } else if (this.latestSessionId) {
       console.error(chalk.blue('\n🔑 Session ID:'));
-      console.error(chalk.white(`   ${this.latestSessionId}`));
+      if (iterationCosts.size === 1) {
+        const firstCost = iterationCosts.values().next().value;
+        if (typeof firstCost === 'number') {
+          console.error(
+            chalk.white(`   ${this.latestSessionId}    cost: ${this.formatUsd(firstCost)}`),
+          );
+        } else {
+          console.error(chalk.white(`   ${this.latestSessionId}`));
+        }
+      } else {
+        console.error(chalk.white(`   ${this.latestSessionId}`));
+      }
     } else {
       console.error(chalk.gray('\n🔑 Session ID: could not be extracted'));
     }
@@ -593,14 +627,19 @@ class MainProgressDisplay {
    * Extract session IDs from iteration results' structured payloads
    */
   private extractSessionIdsFromResult(result: ExecutionResult): void {
-    for (const iteration of result.iterations) {
+    for (const [index, iteration] of result.iterations.entries()) {
+      const iterationNumber =
+        typeof iteration.iterationNumber === 'number' && Number.isFinite(iteration.iterationNumber)
+          ? iteration.iterationNumber
+          : index + 1;
+
       // Skip if we already have a session_id for this iteration (from progress events)
-      if (this.sessionIds.has(iteration.iterationNumber)) continue;
+      if (this.sessionIds.has(iterationNumber)) continue;
 
       try {
         const payload = JSON.parse(iteration.toolResult.content);
         if (payload.session_id && typeof payload.session_id === 'string') {
-          this.sessionIds.set(iteration.iterationNumber, payload.session_id);
+          this.sessionIds.set(iterationNumber, payload.session_id);
           this.latestSessionId = payload.session_id;
           _activeSessionId = this.latestSessionId;
         }
@@ -608,6 +647,73 @@ class MainProgressDisplay {
         // Not JSON or no session_id — that's fine (e.g., codex)
       }
     }
+  }
+
+  private extractIterationCosts(result: ExecutionResult): Map<number, number> {
+    const costs = new Map<number, number>();
+
+    for (const [index, iteration] of result.iterations.entries()) {
+      const iterationNumber =
+        typeof iteration.iterationNumber === 'number' && Number.isFinite(iteration.iterationNumber)
+          ? iteration.iterationNumber
+          : index + 1;
+
+      if (typeof iteration.toolResult?.content !== 'string' || !iteration.toolResult.content.trim()) {
+        continue;
+      }
+
+      try {
+        const payload = JSON.parse(iteration.toolResult.content) as Record<string, unknown>;
+        const totalCostUsd = this.extractTotalCostUsd(payload);
+        if (totalCostUsd !== null) {
+          costs.set(iterationNumber, totalCostUsd);
+        }
+      } catch {
+        // Non-JSON content has no structured usage/cost metadata
+      }
+    }
+
+    return costs;
+  }
+
+  private extractTotalCostUsd(payload: Record<string, unknown>): number | null {
+    for (const key of ['total_cost_usd', 'totalCostUsd', 'totalCostUSD'] as const) {
+      const directValue = payload[key];
+      if (typeof directValue === 'number' && Number.isFinite(directValue)) {
+        return directValue;
+      }
+
+      if (typeof directValue === 'string') {
+        const parsed = Number(directValue);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    const usage = payload.usage;
+    if (usage && typeof usage === 'object') {
+      const usageCost = (usage as Record<string, unknown>).cost;
+      if (usageCost && typeof usageCost === 'object') {
+        const total = (usageCost as Record<string, unknown>).total;
+        if (typeof total === 'number' && Number.isFinite(total)) {
+          return total;
+        }
+
+        if (typeof total === 'string') {
+          const parsed = Number(total);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private formatUsd(amount: number): string {
+    return `$${amount.toFixed(6)}`;
   }
 
   onError(error: Error): void {

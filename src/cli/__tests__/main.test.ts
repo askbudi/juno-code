@@ -1540,6 +1540,130 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
   });
 
+  it('should show aggregate and per-iteration costs when result payload includes total_cost_usd', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: JSON.stringify({
+                type: 'result',
+                session_id: 'session-a',
+                total_cost_usd: 0.04,
+              }),
+              metadata: {},
+            },
+            success: true,
+            duration: 1000,
+          },
+          {
+            iterationNumber: 2,
+            toolResult: {
+              content: JSON.stringify({
+                type: 'result',
+                session_id: 'session-b',
+                total_cost_usd: 0.02,
+              }),
+              metadata: {},
+            },
+            success: true,
+            duration: 1200,
+          },
+        ],
+        statistics: {
+          totalIterations: 2,
+          successfulIterations: 2,
+          failedIterations: 0,
+          averageIterationDuration: 1100,
+          totalToolCalls: 6,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Total Cost: $0.060000'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Iteration 1: session-a    cost: $0.040000'))).toBe(
+      true,
+    );
+    expect(allCalls.some((c: string) => c.includes('Iteration 2: session-b    cost: $0.020000'))).toBe(
+      true,
+    );
+  });
+
+  it('should derive cost from usage.cost.total when total_cost_usd is absent', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: JSON.stringify({
+                type: 'result',
+                session_id: 'session-fallback',
+                usage: {
+                  cost: {
+                    total: 0.0055,
+                  },
+                },
+              }),
+              metadata: {},
+            },
+            success: true,
+            duration: 800,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 1,
+          failedIterations: 0,
+          averageIterationDuration: 800,
+          totalToolCalls: 4,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Total Cost: $0.005500'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('session-fallback    cost: $0.005500'))).toBe(
+      true,
+    );
+  });
+
   it('should NOT show statistics at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
