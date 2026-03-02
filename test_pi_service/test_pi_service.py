@@ -1373,11 +1373,16 @@ class TestPiPrettifierCounter:
     def test_counter_in_agent_end(self):
         result = self.svc._format_event_pretty({
             "type": "agent_end",
-            "messages": [{"role": "assistant", "text": "done"}],
+            "messages": [{
+                "role": "assistant",
+                "text": "done",
+                "usage": {"cost": {"total": 0.0025}},
+            }],
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#1"
         assert parsed["message_count"] == 1
+        assert parsed["total_cost_usd"] == pytest.approx(0.0025)
 
     def test_counter_in_message_update_text_end(self):
         """text_end is an *_end subtype — gets counter."""
@@ -1702,10 +1707,11 @@ class TestCodexPrettifierCounter:
         """_format_pi_codex_event: agent_end gets counter (*_end event)."""
         result = self.svc._format_pi_codex_event({
             "type": "agent_end",
-            "messages": [{"role": "assistant"}],
+            "messages": [{"role": "assistant", "usage": {"cost": {"total": 0.0011}}}],
         })
         parsed = json.loads(result)
         assert parsed["counter"] == "#1"
+        assert parsed["total_cost_usd"] == pytest.approx(0.0011)
 
     def test_counter_in_codex_event_message_end(self):
         """_format_pi_codex_event: message_end gets counter (*_end event)."""
@@ -1844,11 +1850,16 @@ class TestLivePrettifierCounter:
     def test_counter_in_agent_end(self):
         result = self.svc._format_event_live({
             "type": "agent_end",
-            "messages": [{"role": "assistant", "text": "done"}],
+            "messages": [{
+                "role": "assistant",
+                "text": "done",
+                "usage": {"cost": {"total": 0.0033}},
+            }],
         })
         parsed = json.loads(result.strip())
         assert parsed["counter"] == "#1"
         assert parsed["message_count"] == 1
+        assert parsed["total_cost_usd"] == pytest.approx(0.0033)
 
     def test_no_counter_in_text_delta(self):
         """text_delta returns raw text, no counter."""

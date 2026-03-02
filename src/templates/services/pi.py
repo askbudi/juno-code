@@ -1041,6 +1041,9 @@ Model shorthands:
             messages = parsed.get("messages")
             if isinstance(messages, list):
                 header["message_count"] = len(messages)
+            total_cost_usd = self._extract_total_cost_usd(parsed)
+            if total_cost_usd is not None:
+                header["total_cost_usd"] = total_cost_usd
             return json.dumps(header, ensure_ascii=False)
 
         # Not a Pi-wrapped event type we handle
@@ -1405,6 +1408,9 @@ Model shorthands:
                 messages = payload.get("messages")
                 if isinstance(messages, list):
                     header["message_count"] = len(messages)
+                total_cost_usd = self._extract_total_cost_usd(payload)
+                if total_cost_usd is not None:
+                    header["total_cost_usd"] = total_cost_usd
                 return json.dumps(header, ensure_ascii=False)
 
             if event_type == "turn_end":
@@ -1801,6 +1807,9 @@ Model shorthands:
             messages = parsed.get("messages")
             if isinstance(messages, list):
                 header["message_count"] = len(messages)
+            total_cost_usd = self._extract_total_cost_usd(parsed)
+            if total_cost_usd is not None:
+                header["total_cost_usd"] = total_cost_usd
             return json.dumps(header, ensure_ascii=False) + "\n"
 
         # --- Role-based messages (Pi-wrapped Codex messages) ---
