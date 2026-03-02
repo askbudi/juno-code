@@ -6,9 +6,12 @@ result event tracking, and Codex prettifier helpers.
 
 import argparse
 import copy
+import io
 import json
 import os
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1160,6 +1163,57 @@ class TestResultEventCapture:
         assert self.svc.last_result_event is None
 
 
+class TestRunPiRawToolOutputBuffering:
+    """run_pi buffers non-JSON tool stdout to avoid interleaving structured events."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    class _FakeProcess:
+        def __init__(self, stdout_lines):
+            self.stdout = io.StringIO("".join(stdout_lines))
+            self.stderr = io.StringIO("")
+            self.stdin = None
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    def test_raw_tool_lines_are_buffered_and_attached_to_tool_event(self, monkeypatch, capsys):
+        """Non-JSON lines during tool execution are not printed out-of-order."""
+        stdout_lines = [
+            '{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"bash","args":{"command":"echo hi"}}\n',
+            'RAW-LINE-1\n',
+            'RAW-LINE-2\n',
+            '{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"bash","result":""}\n',
+            '{"type":"turn_end","message":{},"toolResults":[]}\n',
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        # Raw lines appear once, inside the structured tool result block.
+        assert out.count("RAW-LINE-1") == 1
+        assert out.count("RAW-LINE-2") == 1
+        assert "result:\nRAW-LINE-1\nRAW-LINE-2" in out
+        assert out.find("result:\nRAW-LINE-1\nRAW-LINE-2") < out.find('"type": "turn_end"')
+
+
 # ===================================================================
 # 8. Message counter in prettifier output
 # ===================================================================
@@ -1307,7 +1361,7 @@ class TestPiPrettifierToolCallArgs:
         assert "args" not in parsed
 
     def test_toolcall_end_shows_non_command_args(self):
-        """Non-bash tool calls should show all args."""
+        """Non-bash tool calls should preserve args as JSON object."""
         result = self.svc._format_event_pretty({
             "type": "message_update",
             "assistantMessageEvent": {
@@ -1317,13 +1371,11 @@ class TestPiPrettifierToolCallArgs:
         })
         parsed = json.loads(result)
         assert parsed["tool"] == "read"
-        # args is a JSON string
-        args_parsed = json.loads(parsed["args"])
-        assert args_parsed["file_path"] == "/tmp/test.txt"
-        assert args_parsed["limit"] == 100
+        assert parsed["args"]["file_path"] == "/tmp/test.txt"
+        assert parsed["args"]["limit"] == 100
 
     def test_toolcall_end_shows_edit_args(self):
-        """Edit tool calls should show old_string/new_string args."""
+        """Edit tool calls should show structured old_string/new_string args."""
         result = self.svc._format_event_pretty({
             "type": "message_update",
             "assistantMessageEvent": {
@@ -1340,14 +1392,13 @@ class TestPiPrettifierToolCallArgs:
         })
         parsed = json.loads(result)
         assert parsed["tool"] == "edit"
-        args_parsed = json.loads(parsed["args"])
-        assert args_parsed["file_path"] == "/tmp/file.py"
-        assert args_parsed["old_string"] == "foo"
-        assert args_parsed["new_string"] == "bar"
+        assert parsed["args"]["file_path"] == "/tmp/file.py"
+        assert parsed["args"]["old_string"] == "foo"
+        assert parsed["args"]["new_string"] == "bar"
 
     def test_toolcall_end_truncates_long_args(self):
-        """Args longer than 200 chars should be truncated."""
-        long_content = "x" * 300
+        """Long string arg values are truncated while preserving object shape."""
+        long_content = "x" * 500
         result = self.svc._format_event_pretty({
             "type": "message_update",
             "assistantMessageEvent": {
@@ -1356,11 +1407,11 @@ class TestPiPrettifierToolCallArgs:
             },
         })
         parsed = json.loads(result)
-        assert parsed["args"].endswith("...")
-        assert len(parsed["args"]) <= 203  # 200 + "..."
+        assert parsed["args"]["content"].endswith("...")
+        assert len(parsed["args"]["content"]) <= 403  # 400 + "..."
 
     def test_toolcall_end_empty_args(self):
-        """Empty arguments dict should show empty args."""
+        """Empty arguments dict should remain an empty object."""
         result = self.svc._format_event_pretty({
             "type": "message_update",
             "assistantMessageEvent": {
@@ -1370,7 +1421,7 @@ class TestPiPrettifierToolCallArgs:
         })
         parsed = json.loads(result)
         assert parsed["tool"] == "custom_tool"
-        assert parsed["args"] == "{}"
+        assert parsed["args"] == {}
 
     def test_toolcall_end_missing_toolCall(self):
         """toolcall_end with no toolCall should still produce valid output."""
@@ -2158,12 +2209,14 @@ class TestBufferToolCallEnd:
         assert len(self.svc._pending_tool_calls) == 0
 
     def test_buffers_non_command_args(self):
-        """Non-bash tool args stored as JSON string."""
+        """Non-bash tool args are preserved as structured objects."""
         tc = {"toolCallId": "tc-002", "name": "read", "arguments": {"path": "/tmp/f.txt", "limit": 100}}
         self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
         pending = self.svc._pending_tool_calls["tc-002"]
         assert pending["tool"] == "read"
         assert "args" in pending
+        assert pending["args"]["path"] == "/tmp/f.txt"
+        assert pending["args"]["limit"] == 100
         assert "command" not in pending
 
     def test_buffers_string_args(self):
@@ -2174,12 +2227,13 @@ class TestBufferToolCallEnd:
         assert pending["args"] == "raw args string"
 
     def test_truncates_long_args(self):
-        """Long args are truncated at 200 chars."""
-        long_content = "x" * 300
+        """Long arg values are truncated to keep tool events readable."""
+        long_content = "x" * 500
         tc = {"toolCallId": "tc-004", "name": "write", "arguments": {"content": long_content}}
         self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
         pending = self.svc._pending_tool_calls["tc-004"]
-        assert pending["args"].endswith("...")
+        assert pending["args"]["content"].endswith("...")
+        assert len(pending["args"]["content"]) <= 403
 
     def test_empty_dict_not_treated_as_toolcall(self):
         """Empty dict (no toolCallId) returns False."""
@@ -2211,13 +2265,13 @@ class TestBuildCombinedToolEvent:
         assert parsed["counter"] == "#1"
 
     def test_combined_event_with_args(self):
-        """Combined event for non-bash tool includes args field."""
-        pending = {"tool": "read", "args": '{"path": "/tmp/f.txt"}', "datetime": "12:00:00 PM"}
+        """Combined event for non-bash tool includes structured args field."""
+        pending = {"tool": "read", "args": {"path": "/tmp/f.txt"}, "datetime": "12:00:00 PM"}
         payload = {"toolName": "read", "result": "file content"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
         parsed = json.loads(result)
         assert parsed["type"] == "tool"
-        assert parsed["args"] == '{"path": "/tmp/f.txt"}'
+        assert parsed["args"]["path"] == "/tmp/f.txt"
         assert parsed["result"] == "file content"
 
     def test_combined_event_multiline_result(self):
@@ -2241,7 +2295,7 @@ class TestBuildCombinedToolEvent:
 
     def test_combined_event_dict_result(self):
         """Dict result with content array extracts text."""
-        pending = {"tool": "read", "args": '{"path": "/f.txt"}', "datetime": "12:00:00 PM"}
+        pending = {"tool": "read", "args": {"path": "/f.txt"}, "datetime": "12:00:00 PM"}
         payload = {"toolName": "read", "result": {"content": [{"type": "text", "text": "contents"}]}}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
         assert "contents" in result
@@ -2255,6 +2309,14 @@ class TestBuildCombinedToolEvent:
         assert parsed["type"] == "tool"
         assert "result" not in parsed  # empty result omitted
 
+    def test_combined_event_strips_ansi_from_result(self):
+        """ANSI escape sequences are stripped from tool result text."""
+        pending = {"tool": "bash", "command": "echo ok", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "\x1b[32mok\x1b[0m"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["result"] == "ok"
+
     def test_counter_increments_correctly(self):
         """Counter increments by 1 per combined event."""
         pending1 = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
@@ -2263,6 +2325,23 @@ class TestBuildCombinedToolEvent:
         pending2 = {"tool": "bash", "command": "pwd", "datetime": "12:00:02 PM"}
         self.svc._build_combined_tool_event(pending2, {"toolName": "bash", "result": "/tmp"}, "12:00:03 PM")
         assert self.svc.message_counter == 2
+
+    def test_combined_event_includes_execution_time_from_pending_start(self, monkeypatch):
+        """execution_time is computed from started_at when available."""
+        monkeypatch.setattr(time, "perf_counter", lambda: 10.345)
+        pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM", "started_at": 10.0}
+        payload = {"toolName": "bash", "result": "ok"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["execution_time"] == "0.35s"
+
+    def test_combined_event_includes_execution_time_from_payload_ms(self):
+        """execution_time uses payload duration fields when provided."""
+        pending = {"tool": "read", "args": {"path": "f.txt"}, "datetime": "12:00:00 PM"}
+        payload = {"toolName": "read", "result": "ok", "durationMs": 1250}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        parsed = json.loads(result)
+        assert parsed["execution_time"] == "1.25s"
 
 
 # ---------------------------------------------------------------------------
@@ -2299,9 +2378,8 @@ class TestColorEnabled:
 
 
 class TestColorizeResult:
-    """Test _colorize_result() ANSI wrapping behavior."""
+    """Test _colorize_result() behavior (errors only are colorized)."""
 
-    GRAY = "\x1b[38;5;245m"
     RED = "\x1b[38;5;203m"
     RESET = "\x1b[0m"
 
@@ -2315,12 +2393,12 @@ class TestColorizeResult:
         assert self.svc._colorize_result("hello") == "hello"
         assert self.svc._colorize_result("error text", is_error=True) == "error text"
 
-    def test_gray_for_success(self, monkeypatch):
-        """Success results get gray ANSI wrapping."""
+    def test_success_passthrough_on_tty(self, monkeypatch):
+        """Success output remains terminal-default even when TTY supports color."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         result = self.svc._colorize_result("ok")
-        assert result == f"{self.GRAY}ok{self.RESET}"
+        assert result == "ok"
 
     def test_red_for_error(self, monkeypatch):
         """Error results get red ANSI wrapping."""
@@ -2329,15 +2407,13 @@ class TestColorizeResult:
         result = self.svc._colorize_result("fail", is_error=True)
         assert result == f"{self.RED}fail{self.RESET}"
 
-    def test_multiline_text_colored(self, monkeypatch):
-        """Multi-line result text gets fully wrapped (one pair of codes)."""
+    def test_multiline_success_not_colored(self, monkeypatch):
+        """Multi-line success text remains uncolored."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         text = "line1\nline2\nline3"
         result = self.svc._colorize_result(text)
-        assert result.startswith(self.GRAY)
-        assert result.endswith(self.RESET)
-        assert "line1\nline2\nline3" in result
+        assert result == text
 
     def test_no_color_env_suppresses(self, monkeypatch):
         """NO_COLOR env var prevents ANSI codes even with TTY."""
@@ -2349,9 +2425,8 @@ class TestColorizeResult:
 
 
 class TestCombinedToolEventColor:
-    """Test ANSI color in _build_combined_tool_event output."""
+    """Test tool result coloring policy in _build_combined_tool_event output."""
 
-    GRAY = "\x1b[38;5;245m"
     RED = "\x1b[38;5;203m"
     RESET = "\x1b[0m"
 
@@ -2360,7 +2435,7 @@ class TestCombinedToolEventColor:
         self.svc = _load_pi_service()
 
     def test_no_color_in_non_tty(self):
-        """Non-TTY: combined event result has no ANSI codes."""
+        """Non-TTY: combined event output has no ANSI codes."""
         pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
         payload = {"toolName": "bash", "result": "file1\nfile2"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
@@ -2368,15 +2443,14 @@ class TestCombinedToolEventColor:
         assert "result:" in result
         assert "file1" in result
 
-    def test_color_with_tty(self, monkeypatch):
-        """TTY: combined event result has gray ANSI codes."""
+    def test_success_stays_uncolored_with_tty(self, monkeypatch):
+        """TTY: success result remains uncolored (default terminal color)."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
         payload = {"toolName": "bash", "result": "file1\nfile2"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
-        assert self.GRAY in result
-        assert self.RESET in result
+        assert "\x1b" not in result
 
     def test_error_result_red(self, monkeypatch):
         """TTY: error result uses red ANSI code."""
@@ -2387,35 +2461,31 @@ class TestCombinedToolEventColor:
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
         assert self.RED in result
         assert self.RESET in result
-        assert self.GRAY not in result
 
-    def test_inline_result_colored(self, monkeypatch):
-        """TTY: single-line result uses multi-line format so ANSI codes aren't JSON-escaped."""
+    def test_inline_result_stays_json_inline(self, monkeypatch):
+        """TTY: success single-line results stay inline in JSON header."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         pending = {"tool": "bash", "command": "pwd", "datetime": "12:00:00 PM"}
         payload = {"toolName": "bash", "result": "/home/user"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
-        assert self.GRAY in result
-        assert "/home/user" in result
-        # Multi-line format used (ANSI codes outside JSON)
-        assert f"{self.GRAY}result:{self.RESET}" in result
+        parsed = json.loads(result)
+        assert parsed["result"] == "/home/user"
 
-    def test_result_label_colored(self, monkeypatch):
-        """TTY: the 'result:' label is also colored for multiline results."""
+    def test_result_label_plain_for_success(self, monkeypatch):
+        """TTY: multiline success output keeps plain (uncolored) 'result:' label."""
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         pending = {"tool": "bash", "command": "ls", "datetime": "12:00:00 PM"}
         payload = {"toolName": "bash", "result": "a\nb\nc"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
-        # The result: label should be colored
-        assert f"{self.GRAY}result:{self.RESET}" in result
+        assert "\nresult:\n" in result
+        assert "\x1b" not in result
 
 
 class TestPrettifierFallbackColor:
-    """Test color in fallback tool_execution_end paths (no pending match)."""
+    """Test color behavior in fallback tool_execution_end paths."""
 
-    GRAY = "\x1b[38;5;245m"
     RED = "\x1b[38;5;203m"
     RESET = "\x1b[0m"
 
@@ -2429,8 +2499,8 @@ class TestPrettifierFallbackColor:
 
     # --- Pi prettifier (_format_event_pretty) ---
 
-    def test_pi_fallback_multiline_colored(self, monkeypatch):
-        """Pi prettifier: fallback tool_execution_end multiline result is gray."""
+    def test_pi_fallback_multiline_uncolored_success(self, monkeypatch):
+        """Pi prettifier: fallback success output remains uncolored."""
         self._enable_color(monkeypatch)
         payload = {
             "type": "tool_execution_end",
@@ -2438,7 +2508,7 @@ class TestPrettifierFallbackColor:
             "result": "line1\nline2",
         }
         result = self.svc._format_event_pretty(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
         assert "line1" in result
 
     def test_pi_fallback_error_red(self, monkeypatch):
@@ -2463,10 +2533,22 @@ class TestPrettifierFallbackColor:
         result = self.svc._format_event_pretty(payload)
         assert "\x1b" not in result
 
+    def test_pi_fallback_includes_execution_time(self):
+        """Fallback tool events include execution_time when duration is provided."""
+        payload = {
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "ok",
+            "durationMs": 20,
+        }
+        result = self.svc._format_event_pretty(payload)
+        parsed = json.loads(result)
+        assert parsed["execution_time"] == "0.02s"
+
     # --- Codex prettifier (_format_pi_codex_event) ---
 
-    def test_codex_fallback_multiline_colored(self, monkeypatch):
-        """Codex prettifier: fallback tool_execution_end with content array is colored."""
+    def test_codex_fallback_multiline_uncolored_success(self, monkeypatch):
+        """Codex prettifier: fallback success output remains uncolored."""
         self._enable_color(monkeypatch)
         payload = {
             "type": "tool_execution_end",
@@ -2476,7 +2558,7 @@ class TestPrettifierFallbackColor:
             },
         }
         result = self.svc._format_pi_codex_event(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
         assert "line1" in result
 
     def test_codex_fallback_error_red(self, monkeypatch):
@@ -2507,8 +2589,8 @@ class TestPrettifierFallbackColor:
 
     # --- Live prettifier (_format_event_live) ---
 
-    def test_live_fallback_multiline_colored(self, monkeypatch):
-        """Live prettifier: fallback tool_execution_end multiline result is gray."""
+    def test_live_fallback_multiline_uncolored_success(self, monkeypatch):
+        """Live prettifier: fallback success output remains uncolored."""
         self._enable_color(monkeypatch)
         payload = {
             "type": "tool_execution_end",
@@ -2516,7 +2598,7 @@ class TestPrettifierFallbackColor:
             "result": "line1\nline2",
         }
         result = self.svc._format_event_live(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
         assert "line1" in result
 
     def test_live_fallback_error_red(self, monkeypatch):
@@ -2543,10 +2625,9 @@ class TestPrettifierFallbackColor:
 
     # --- Combined event color via all 3 prettifiers ---
 
-    def test_pi_combined_colored(self, monkeypatch):
-        """Pi prettifier: combined tool event result is colored."""
+    def test_pi_combined_uncolored_success(self, monkeypatch):
+        """Pi prettifier: combined success output remains uncolored."""
         self._enable_color(monkeypatch)
-        # Buffer a toolcall_end
         tc = {"toolCallId": "tc-color-1", "name": "bash", "arguments": {"command": "ls"}}
         self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
         payload = {
@@ -2556,11 +2637,11 @@ class TestPrettifierFallbackColor:
             "result": "file1\nfile2",
         }
         result = self.svc._format_event_pretty(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
         assert "file1" in result
 
-    def test_codex_combined_colored(self, monkeypatch):
-        """Codex prettifier: combined tool event result is colored."""
+    def test_codex_combined_uncolored_success(self, monkeypatch):
+        """Codex prettifier: combined success output remains uncolored."""
         self._enable_color(monkeypatch)
         tc = {"toolCallId": "tc-color-2", "name": "read", "arguments": {"path": "f.txt"}}
         self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
@@ -2571,10 +2652,10 @@ class TestPrettifierFallbackColor:
             "result": "contents\nof\nfile",
         }
         result = self.svc._format_pi_codex_event(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
 
-    def test_live_combined_colored(self, monkeypatch):
-        """Live prettifier: combined tool event result is colored."""
+    def test_live_combined_uncolored_success(self, monkeypatch):
+        """Live prettifier: combined success output remains uncolored."""
         self._enable_color(monkeypatch)
         tc = {"toolCallId": "tc-color-3", "name": "bash", "arguments": {"command": "pwd"}}
         self.svc._buffer_tool_call_end(tc, "12:00:00 PM")
@@ -2585,7 +2666,7 @@ class TestPrettifierFallbackColor:
             "result": "output\nlines",
         }
         result = self.svc._format_event_live(payload)
-        assert self.GRAY in result
+        assert "\x1b" not in result
 
 
 # ===================================================================

@@ -7,6 +7,7 @@ Headless wrapper around the Pi coding agent CLI with JSON streaming and shorthan
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -74,12 +75,13 @@ class PiService:
     PRETTIFIER_CODEX = "codex"
     PRETTIFIER_LIVE = "live"
 
-    # ANSI 256-color codes for tool result coloring.
-    # Gray (#8a8a8a) — visible on both dark and light terminal backgrounds.
-    # Red (#ff5f5f) — for error results, matching Pi's error color role.
-    ANSI_GRAY = "\x1b[38;5;245m"
+    # ANSI color for tool error results (success output stays terminal default).
     ANSI_RED = "\x1b[38;5;203m"
     ANSI_RESET = "\x1b[0m"
+
+    # Keep tool args readable while preventing giant inline payloads.
+    TOOL_ARG_STRING_MAX_CHARS = 400
+    _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
     def __init__(self):
         self.model_name = self.DEFAULT_MODEL
@@ -92,10 +94,12 @@ class PiService:
         self.prettifier_mode = self.PRETTIFIER_PI
         # Tool call grouping: buffer toolcall_end until tool_execution_end arrives
         self._pending_tool_calls: Dict[str, dict] = {}  # toolCallId -> {tool, args/command}
-        # Buffer tool_execution_start data for fallback (when toolcall_end arrives late)
-        self._pending_exec_starts: Dict[str, dict] = {}  # toolCallId -> {tool, args/command}
-        # Track whether we're inside a tool execution (for colorizing raw output lines)
+        # Buffer tool_execution_start data for fallback + timing (when toolcall_end arrives late)
+        self._pending_exec_starts: Dict[str, dict] = {}  # toolCallId -> {tool, args/command, started_at}
+        # Track whether we're inside a tool execution
         self._in_tool_execution: bool = False
+        # Buffer raw non-JSON tool stdout so it doesn't interleave with structured events
+        self._buffered_tool_stdout_lines: List[str] = []
         # Claude prettifier state
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
         # Codex prettifier state
@@ -112,16 +116,58 @@ class PiService:
         return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
     def _colorize_result(self, text: str, is_error: bool = False) -> str:
-        """Wrap text in ANSI color for tool result display.
-
-        Success results use gray (visible on both dark/light backgrounds).
-        Error results use red to immediately draw attention.
-        Returns text unchanged when color is disabled (NO_COLOR or non-TTY).
-        """
+        """Colorize tool output only for errors; success stays terminal-default."""
         if not self._color_enabled():
             return text
-        code = self.ANSI_RED if is_error else self.ANSI_GRAY
-        return f"{code}{text}{self.ANSI_RESET}"
+        if not is_error:
+            return text
+        return f"{self.ANSI_RED}{text}{self.ANSI_RESET}"
+
+    def _strip_ansi_sequences(self, text: str) -> str:
+        """Remove ANSI escape sequences to prevent color bleed in prettified output."""
+        if not isinstance(text, str) or "\x1b" not in text:
+            return text
+        return self._ANSI_ESCAPE_RE.sub("", text)
+
+    def _sanitize_tool_argument_value(self, value):
+        """Recursively sanitize tool args while preserving JSON structure."""
+        if isinstance(value, str):
+            clean = self._strip_ansi_sequences(value)
+            if len(clean) > self.TOOL_ARG_STRING_MAX_CHARS:
+                return clean[:self.TOOL_ARG_STRING_MAX_CHARS] + "..."
+            return clean
+        if isinstance(value, dict):
+            return {k: self._sanitize_tool_argument_value(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._sanitize_tool_argument_value(v) for v in value]
+        return value
+
+    def _format_execution_time(self, payload: dict, pending: Optional[dict] = None) -> Optional[str]:
+        """Return execution time string (e.g. 0.12s) from payload or measured start time."""
+        seconds: Optional[float] = None
+
+        # Prefer explicit durations if Pi adds them in future versions.
+        for key in ("executionTimeSeconds", "durationSeconds", "elapsedSeconds"):
+            value = payload.get(key)
+            if isinstance(value, (int, float)):
+                seconds = float(value)
+                break
+
+        if seconds is None:
+            for key in ("executionTimeMs", "durationMs", "elapsedMs"):
+                value = payload.get(key)
+                if isinstance(value, (int, float)):
+                    seconds = float(value) / 1000.0
+                    break
+
+        if seconds is None and isinstance(pending, dict):
+            started_at = pending.get("started_at")
+            if isinstance(started_at, (int, float)):
+                seconds = max(0.0, time.perf_counter() - started_at)
+
+        if seconds is None:
+            return None
+        return f"{seconds:.2f}s"
 
     def expand_model_shorthand(self, model: str) -> str:
         """Expand shorthand model names (colon-prefixed) to full identifiers."""
@@ -577,6 +623,7 @@ Model shorthands:
             return text
         # Unescape JSON-escaped newlines for human-readable display
         display_text = text.replace("\\n", "\n").replace("\\t", "\t")
+        display_text = self._strip_ansi_sequences(display_text)
         lines = display_text.split("\n")
         max_lines = self._codex_tool_result_max_lines
         if len(lines) <= max_lines:
@@ -676,12 +723,11 @@ Model shorthands:
                             args = item.get("arguments", {})
                             if isinstance(args, dict):
                                 cmd = args.get("command", "")
-                                if cmd:
-                                    parts.append(f"[toolCall] {name}: {cmd}")
+                                if isinstance(cmd, str) and cmd:
+                                    parts.append(f"[toolCall] {name}: {self._sanitize_tool_argument_value(cmd)}")
                                 else:
-                                    args_str = json.dumps(args, ensure_ascii=False)
-                                    if len(args_str) > 200:
-                                        args_str = args_str[:200] + "..."
+                                    args_clean = self._sanitize_tool_argument_value(args)
+                                    args_str = json.dumps(args_clean, ensure_ascii=False)
                                     parts.append(f"[toolCall] {name}: {args_str}")
                             else:
                                 parts.append(f"[toolCall] {name}")
@@ -784,13 +830,12 @@ Model shorthands:
                         args = tool_call.get("arguments", {})
                         if isinstance(args, dict):
                             cmd = args.get("command", "")
-                            if cmd:
-                                header["command"] = cmd
+                            if isinstance(cmd, str) and cmd:
+                                header["command"] = self._sanitize_tool_argument_value(cmd)
                             else:
-                                args_str = json.dumps(args, ensure_ascii=False)
-                                if len(args_str) > 200:
-                                    args_str = args_str[:200] + "..."
-                                header["args"] = args_str if isinstance(args_str, str) else args
+                                header["args"] = self._sanitize_tool_argument_value(args)
+                        elif isinstance(args, str) and args.strip():
+                            header["args"] = self._sanitize_tool_argument_value(args)
                     return json.dumps(header, ensure_ascii=False)
 
             # Other message_update subtypes: suppress by default
@@ -842,14 +887,16 @@ Model shorthands:
         if event_type == "tool_execution_end":
             self._in_tool_execution = False
             tool_call_id = parsed.get("toolCallId")
-            pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
-            if not pending:
-                pending = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
-            else:
-                if tool_call_id:
-                    self._pending_exec_starts.pop(tool_call_id, None)
+
+            pending_tool = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+            pending_exec = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
+            if pending_tool and pending_exec and "started_at" in pending_exec:
+                pending_tool["started_at"] = pending_exec["started_at"]
+            pending = pending_tool or pending_exec
+
             if pending:
                 return self._build_combined_tool_event(pending, parsed, now)
+
             # No buffered data — minimal fallback
             self.message_counter += 1
             header = {
@@ -858,11 +905,28 @@ Model shorthands:
                 "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
+            execution_time = self._format_execution_time(parsed)
+            if execution_time:
+                header["execution_time"] = execution_time
+
             is_error = parsed.get("isError", False)
             if is_error:
                 header["isError"] = True
+
             result_val = parsed.get("result")
-            use_color = self._color_enabled()
+            colorize_error = self._color_enabled() and bool(is_error)
+
+            if isinstance(result_val, str) and result_val.strip():
+                truncated = self._truncate_tool_result_text(result_val)
+                if "\n" in truncated or colorize_error:
+                    label = "result:"
+                    colored = self._colorize_result(truncated, is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                header["result"] = truncated
+                return json.dumps(header, ensure_ascii=False)
+
             if isinstance(result_val, dict):
                 result_content = result_val.get("content")
                 if isinstance(result_content, list):
@@ -870,12 +934,36 @@ Model shorthands:
                         if isinstance(rc_item, dict) and rc_item.get("type") == "text":
                             text = rc_item.get("text", "")
                             truncated = self._truncate_tool_result_text(text)
-                            if "\n" in truncated or use_color:
+                            if "\n" in truncated or colorize_error:
+                                label = "result:"
                                 colored = self._colorize_result(truncated, is_error=bool(is_error))
-                                label = self._colorize_result("result:", is_error=bool(is_error))
+                                if colorize_error:
+                                    label = self._colorize_result(label, is_error=True)
                                 return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
                             header["result"] = truncated
                             return json.dumps(header, ensure_ascii=False)
+
+                result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                if "\n" in result_json or colorize_error:
+                    label = "result:"
+                    colored = self._colorize_result(result_json, is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                header["result"] = result_json
+                return json.dumps(header, ensure_ascii=False)
+
+            if isinstance(result_val, list):
+                result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                if "\n" in result_json or colorize_error:
+                    label = "result:"
+                    colored = self._colorize_result(result_json, is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                header["result"] = result_json
+                return json.dumps(header, ensure_ascii=False)
+
             return json.dumps(header, ensure_ascii=False)
 
         # --- turn_start: suppress (no user-visible value) ---
@@ -1137,52 +1225,46 @@ Model shorthands:
         tc_id = tool_call.get("toolCallId", "") if isinstance(tool_call, dict) else ""
         if not tc_id:
             return False
+
         pending: Dict = {"tool": tool_call.get("name", ""), "datetime": now}
         args = tool_call.get("arguments", {})
+
         if isinstance(args, dict):
             cmd = args.get("command", "")
-            if cmd:
-                pending["command"] = cmd
+            if isinstance(cmd, str) and cmd:
+                pending["command"] = self._sanitize_tool_argument_value(cmd)
             else:
-                args_str = json.dumps(args, ensure_ascii=False)
-                if len(args_str) > 200:
-                    args_str = args_str[:200] + "..."
-                pending["args"] = args_str
+                pending["args"] = self._sanitize_tool_argument_value(args)
         elif isinstance(args, str) and args.strip():
-            pending["args"] = args[:200] + "..." if len(args) > 200 else args
+            pending["args"] = self._sanitize_tool_argument_value(args)
+
         self._pending_tool_calls[tc_id] = pending
         return True
 
     def _buffer_exec_start(self, payload: dict) -> None:
-        """Buffer tool_execution_start data for use by tool_execution_end fallback.
-
-        When toolcall_end arrives after tool_execution_start (late ordering),
-        the tool_execution_end handler can still show args from the buffered start.
-        """
+        """Buffer tool_execution_start data for tool_execution_end fallback + timing."""
         tc_id = payload.get("toolCallId", "")
         if not tc_id:
             return
-        pending: Dict = {"tool": payload.get("toolName", "")}
+
+        pending: Dict = {
+            "tool": payload.get("toolName", ""),
+            "started_at": time.perf_counter(),
+        }
         args_val = payload.get("args")
         if isinstance(args_val, dict):
             cmd = args_val.get("command", "")
-            if cmd:
-                pending["command"] = cmd
+            if isinstance(cmd, str) and cmd:
+                pending["command"] = self._sanitize_tool_argument_value(cmd)
             else:
-                args_str = json.dumps(args_val, ensure_ascii=False)
-                if len(args_str) > 200:
-                    args_str = args_str[:200] + "..."
-                pending["args"] = args_str
+                pending["args"] = self._sanitize_tool_argument_value(args_val)
         elif isinstance(args_val, str) and args_val.strip():
-            pending["args"] = args_val[:200] + "..." if len(args_val) > 200 else args_val
+            pending["args"] = self._sanitize_tool_argument_value(args_val)
+
         self._pending_exec_starts[tc_id] = pending
 
     def _build_combined_tool_event(self, pending: dict, payload: dict, now: str) -> str:
-        """Build a combined 'tool' event from buffered toolcall_end + tool_execution_end.
-
-        Groups tool call args and execution result into a single JSON object,
-        making it easy for humans to see what was called and what came back.
-        """
+        """Build a combined 'tool' event from buffered toolcall_end + tool_execution_end."""
         self.message_counter += 1
         header: Dict = {
             "type": "tool",
@@ -1190,15 +1272,22 @@ Model shorthands:
             "counter": f"#{self.message_counter}",
             "tool": pending.get("tool", payload.get("toolName", "")),
         }
-        # Args from buffered toolcall_end
+
+        # Args from buffered toolcall/tool_execution_start
         if "command" in pending:
             header["command"] = pending["command"]
         elif "args" in pending:
             header["args"] = pending["args"]
-        # Error flag
+
+        # Execution time (source of truth: tool_execution_start -> tool_execution_end)
+        execution_time = self._format_execution_time(payload, pending)
+        if execution_time:
+            header["execution_time"] = execution_time
+
         is_error = payload.get("isError", False)
         if is_error:
             header["isError"] = True
+
         # Result extraction (handles string, dict with content array, and list)
         result_val = payload.get("result")
         result_text = None
@@ -1212,18 +1301,20 @@ Model shorthands:
                         result_text = self._truncate_tool_result_text(rc_item.get("text", ""))
                         break
             if result_text is None:
-                result_text = json.dumps(result_val, ensure_ascii=False)
+                result_text = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
         elif isinstance(result_val, list):
-            result_text = json.dumps(result_val, ensure_ascii=False)
+            result_text = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+
         if result_text:
-            use_color = self._color_enabled()
-            if "\n" in result_text or use_color:
-                # Multi-line format: ANSI codes work outside JSON; also used for
-                # single-line results when color is enabled so codes aren't escaped.
-                colored = self._colorize_result(result_text, is_error=bool(is_error))
-                label = self._colorize_result("result:", is_error=bool(is_error))
-                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+            colorize_error = self._color_enabled() and bool(is_error)
+            if "\n" in result_text or colorize_error:
+                label = "result:"
+                colored_text = self._colorize_result(result_text, is_error=bool(is_error))
+                if colorize_error:
+                    label = self._colorize_result(label, is_error=True)
+                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored_text
             header["result"] = result_text
+
         return json.dumps(header, ensure_ascii=False)
 
     def _format_event_pretty(self, payload: dict) -> Optional[str]:
@@ -1302,15 +1393,12 @@ Model shorthands:
                         args = tool_call.get("arguments", {})
                         if isinstance(args, dict):
                             cmd = args.get("command", "")
-                            if cmd:
-                                header["command"] = cmd
+                            if isinstance(cmd, str) and cmd:
+                                header["command"] = self._sanitize_tool_argument_value(cmd)
                             else:
-                                args_str = json.dumps(args, ensure_ascii=False)
-                                if len(args_str) > 200:
-                                    args_str = args_str[:200] + "..."
-                                header["args"] = args_str
+                                header["args"] = self._sanitize_tool_argument_value(args)
                         elif isinstance(args, str) and args.strip():
-                            header["args"] = args[:200] + "..." if len(args) > 200 else args
+                            header["args"] = self._sanitize_tool_argument_value(args)
                     return json.dumps(header, ensure_ascii=False)
 
                 # thinking_end: show thinking content (*_end → gets counter)
@@ -1368,41 +1456,81 @@ Model shorthands:
             if event_type == "tool_execution_end":
                 self._in_tool_execution = False
                 tool_call_id = payload.get("toolCallId")
-                # Prefer toolcall_end data (has full argument info from the model)
-                pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
-                if not pending:
-                    # Fall back to tool_execution_start data
-                    pending = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
-                else:
-                    # Clean up exec_start buffer if we used toolcall_end data
-                    if tool_call_id:
-                        self._pending_exec_starts.pop(tool_call_id, None)
+
+                pending_tool = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+                pending_exec = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
+                if pending_tool and pending_exec and "started_at" in pending_exec:
+                    pending_tool["started_at"] = pending_exec["started_at"]
+                pending = pending_tool or pending_exec
+
                 if pending:
                     return self._build_combined_tool_event(pending, payload, now)
+
                 # No buffered data at all — minimal fallback
                 self.message_counter += 1
                 header["type"] = "tool"
                 header["counter"] = f"#{self.message_counter}"
                 header["tool"] = payload.get("toolName", "")
+
+                execution_time = self._format_execution_time(payload)
+                if execution_time:
+                    header["execution_time"] = execution_time
+
                 is_error = payload.get("isError", False)
                 if is_error:
                     header["isError"] = True
+
                 result_val = payload.get("result")
-                use_color = self._color_enabled()
+                colorize_error = self._color_enabled() and bool(is_error)
+
                 if isinstance(result_val, str) and result_val.strip():
                     truncated = self._truncate_tool_result_text(result_val)
-                    if "\n" in truncated or use_color:
+                    if "\n" in truncated or colorize_error:
+                        label = "result:"
                         colored = self._colorize_result(truncated, is_error=bool(is_error))
-                        label = self._colorize_result("result:", is_error=bool(is_error))
+                        if colorize_error:
+                            label = self._colorize_result(label, is_error=True)
                         return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
                     header["result"] = truncated
-                elif isinstance(result_val, (dict, list)):
-                    result_str = json.dumps(result_val, ensure_ascii=False)
-                    if "\n" in result_str or len(result_str) > 200 or use_color:
+                    return json.dumps(header, ensure_ascii=False)
+
+                if isinstance(result_val, dict):
+                    result_content = result_val.get("content")
+                    if isinstance(result_content, list):
+                        for rc_item in result_content:
+                            if isinstance(rc_item, dict) and rc_item.get("type") == "text":
+                                text = rc_item.get("text", "")
+                                truncated = self._truncate_tool_result_text(text)
+                                if "\n" in truncated or colorize_error:
+                                    label = "result:"
+                                    colored = self._colorize_result(truncated, is_error=bool(is_error))
+                                    if colorize_error:
+                                        label = self._colorize_result(label, is_error=True)
+                                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                                header["result"] = truncated
+                                return json.dumps(header, ensure_ascii=False)
+
+                    result_str = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                    if "\n" in result_str or len(result_str) > 200 or colorize_error:
+                        label = "result:"
                         colored = self._colorize_result(result_str, is_error=bool(is_error))
-                        label = self._colorize_result("result:", is_error=bool(is_error))
+                        if colorize_error:
+                            label = self._colorize_result(label, is_error=True)
                         return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
-                    header["result"] = result_val
+                    header["result"] = result_str
+                    return json.dumps(header, ensure_ascii=False)
+
+                if isinstance(result_val, list):
+                    result_str = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                    if "\n" in result_str or len(result_str) > 200 or colorize_error:
+                        label = "result:"
+                        colored = self._colorize_result(result_str, is_error=bool(is_error))
+                        if colorize_error:
+                            label = self._colorize_result(label, is_error=True)
+                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                    header["result"] = result_str
+                    return json.dumps(header, ensure_ascii=False)
+
                 return json.dumps(header, ensure_ascii=False)
 
             # --- Retry/compaction events ---
@@ -1492,11 +1620,12 @@ Model shorthands:
                     args = tc.get("arguments", {})
                     if isinstance(args, dict):
                         cmd = args.get("command", "")
-                        if cmd:
-                            header["command"] = cmd
+                        if isinstance(cmd, str) and cmd:
+                            header["command"] = self._sanitize_tool_argument_value(cmd)
                         else:
-                            args_str = json.dumps(args, ensure_ascii=False)
-                            header["args"] = args_str[:200] + "..." if len(args_str) > 200 else args
+                            header["args"] = self._sanitize_tool_argument_value(args)
+                    elif isinstance(args, str) and args.strip():
+                        header["args"] = self._sanitize_tool_argument_value(args)
                 return json.dumps(header, ensure_ascii=False) + "\n"
 
             # Suppress all other message_update subtypes (toolcall_start, toolcall_delta, etc.)
@@ -1516,14 +1645,16 @@ Model shorthands:
         if event_type == "tool_execution_end":
             self._in_tool_execution = False
             tool_call_id = parsed.get("toolCallId")
-            pending = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
-            if not pending:
-                pending = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
-            else:
-                if tool_call_id:
-                    self._pending_exec_starts.pop(tool_call_id, None)
+
+            pending_tool = self._pending_tool_calls.pop(tool_call_id, None) if tool_call_id else None
+            pending_exec = self._pending_exec_starts.pop(tool_call_id, None) if tool_call_id else None
+            if pending_tool and pending_exec and "started_at" in pending_exec:
+                pending_tool["started_at"] = pending_exec["started_at"]
+            pending = pending_tool or pending_exec
+
             if pending:
                 return self._build_combined_tool_event(pending, parsed, now) + "\n"
+
             # No buffered data — minimal fallback
             self.message_counter += 1
             header = {
@@ -1532,31 +1663,65 @@ Model shorthands:
                 "counter": f"#{self.message_counter}",
                 "tool": parsed.get("toolName", ""),
             }
+            execution_time = self._format_execution_time(parsed)
+            if execution_time:
+                header["execution_time"] = execution_time
+
             is_error = parsed.get("isError", False)
             if is_error:
                 header["isError"] = True
+
             result_val = parsed.get("result")
-            use_color = self._color_enabled()
+            colorize_error = self._color_enabled() and bool(is_error)
+
             if isinstance(result_val, str) and result_val.strip():
                 truncated = self._truncate_tool_result_text(result_val)
-                if "\n" in truncated or use_color:
+                if "\n" in truncated or colorize_error:
+                    label = "result:"
                     colored = self._colorize_result(truncated, is_error=bool(is_error))
-                    label = self._colorize_result("result:", is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
                     return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
                 header["result"] = truncated
-            elif isinstance(result_val, dict):
+                return json.dumps(header, ensure_ascii=False) + "\n"
+
+            if isinstance(result_val, dict):
                 result_content = result_val.get("content")
                 if isinstance(result_content, list):
                     for rc_item in result_content:
                         if isinstance(rc_item, dict) and rc_item.get("type") == "text":
                             text = rc_item.get("text", "")
                             truncated = self._truncate_tool_result_text(text)
-                            if "\n" in truncated or use_color:
+                            if "\n" in truncated or colorize_error:
+                                label = "result:"
                                 colored = self._colorize_result(truncated, is_error=bool(is_error))
-                                label = self._colorize_result("result:", is_error=bool(is_error))
+                                if colorize_error:
+                                    label = self._colorize_result(label, is_error=True)
                                 return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
                             header["result"] = truncated
-                            break
+                            return json.dumps(header, ensure_ascii=False) + "\n"
+
+                result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                if "\n" in result_json or colorize_error:
+                    label = "result:"
+                    colored = self._colorize_result(result_json, is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                header["result"] = result_json
+                return json.dumps(header, ensure_ascii=False) + "\n"
+
+            if isinstance(result_val, list):
+                result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
+                if "\n" in result_json or colorize_error:
+                    label = "result:"
+                    colored = self._colorize_result(result_json, is_error=bool(is_error))
+                    if colorize_error:
+                        label = self._colorize_result(label, is_error=True)
+                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                header["result"] = result_json
+                return json.dumps(header, ensure_ascii=False) + "\n"
+
             return json.dumps(header, ensure_ascii=False) + "\n"
 
         # turn_end: metadata only
@@ -1731,6 +1896,7 @@ Model shorthands:
         pretty = args.pretty.lower() != "false"
         capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
         hide_types = self._build_hide_types()
+        self._buffered_tool_stdout_lines.clear()
 
         if verbose:
             # Truncate prompt in display to avoid confusing multi-line output
@@ -1847,15 +2013,26 @@ Model shorthands:
                         try:
                             parsed = json.loads(line)
                         except json.JSONDecodeError:
-                            # Non-JSON output (raw tool stdout) — colorize
-                            # when inside a tool execution for visual distinction
-                            if self._in_tool_execution and self._color_enabled():
-                                print(self._colorize_result(line), flush=True)
-                            else:
-                                print(line, flush=True)
+                            # Non-JSON output (raw tool stdout). In pretty mode, buffer it
+                            # during tool execution to avoid interleaving with JSON events.
+                            if pretty and self._in_tool_execution:
+                                self._buffered_tool_stdout_lines.append(self._strip_ansi_sequences(line))
+                                continue
+                            print(line, flush=True)
                             continue
 
                         event_type = parsed.get("type", "")
+
+                        if event_type == "tool_execution_start":
+                            # Reset raw tool stdout buffer per tool execution.
+                            self._buffered_tool_stdout_lines.clear()
+                        elif event_type == "tool_execution_end":
+                            buffered_text = "\n".join(self._buffered_tool_stdout_lines).strip()
+                            if buffered_text:
+                                result_val = parsed.get("result")
+                                if result_val in (None, "", [], {}):
+                                    parsed["result"] = buffered_text
+                            self._buffered_tool_stdout_lines.clear()
 
                         # Capture session ID from the session event (sent at stream start)
                         if event_type == "session":
