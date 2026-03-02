@@ -660,12 +660,36 @@ The kanban.sh script wraps juno-kanban. Here are the actual commands:
 4. Global config files
 5. Hardcoded defaults
 
+### Project Env Bootstrap (`.env.juno`)
+
+`juno-code` now bootstraps a project env file automatically:
+
+- On `juno-code init`: creates an empty `.env.juno` in project root
+- On any `juno-code` run: ensures `.env.juno` exists (creates if missing)
+- Loads env values before execution so hooks and subagent processes receive them
+- Supports custom env file path via `.juno_task/config.json`
+
+Example config:
+
+```json
+{
+  "envFilePath": ".env.local",
+  "envFileCopied": true
+}
+```
+
+Notes:
+- `envFilePath`: env file to load (relative to project root or absolute path)
+- `envFileCopied`: tracks one-time initialization from `.env.juno` to custom env path
+- Load order: `.env.juno` first, then `envFilePath` (custom file overrides defaults)
+
 ### Project Structure
 
 After `juno-code init`:
 
 ```
 your-project/
+├── .env.juno            # Project env file auto-created and loaded on startup
 ├── .juno_task/
 │   ├── init.md           # Task breakdown (your input)
 │   ├── prompt.md         # AI instructions (Ralph-style prompt)

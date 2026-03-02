@@ -1141,6 +1141,11 @@ ${chalk.blue.bold('Environment Variables:')}
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)
 
+${chalk.blue.bold('Env File Bootstrap:')}
+  Auto-creates ${chalk.cyan('.env.juno')} in project root and loads it on startup.
+  Configure custom env file in ${chalk.cyan('.juno_task/config.json')}:
+    ${chalk.gray('"envFilePath": ".env.local", "envFileCopied": true')}
+
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:
   1. Command line arguments (highest priority)

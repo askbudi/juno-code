@@ -223,6 +223,10 @@ class SimpleProjectGenerator {
     // Create .juno_task directory
     await fs.ensureDir(junoTaskDir);
 
+    // Create project env file
+    console.log(chalk.blue('🌱 Creating project environment file...'));
+    await this.createProjectEnvFile(targetDirectory);
+
     // Create config.json with user's subagent choice and other settings
     console.log(chalk.blue('⚙️ Creating project configuration...'));
     await this.createConfigFile(junoTaskDir, targetDirectory);
@@ -482,6 +486,7 @@ juno-code feedback
 
 \`\`\`
 .
+├── .env.juno              # Project env file auto-loaded by juno-code
 ├── .juno_task/
 │   ├── prompt.md          # Production-ready AI instructions
 │   ├── init.md            # Task breakdown and constraints
@@ -561,6 +566,17 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     this.printNextSteps(targetDirectory, String(variables.EDITOR || 'claude'));
   }
 
+  private async createProjectEnvFile(targetDirectory: string): Promise<void> {
+    const envPath = path.join(targetDirectory, '.env.juno');
+
+    if (!(await fs.pathExists(envPath))) {
+      await fs.writeFile(envPath, '');
+      console.log(chalk.green('   ✓ Created .env.juno'));
+    } else {
+      console.log(chalk.gray('   ℹ️  .env.juno already exists'));
+    }
+  }
+
   private async createConfigFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
     const configContent = {
       // Core settings
@@ -587,6 +603,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       // Paths
       workingDirectory: targetDirectory,
       sessionDirectory: path.join(targetDirectory, '.juno_task'),
+
+      // Project environment bootstrap
+      envFilePath: '.env.juno',
+      envFileCopied: true,
 
       // Hooks configuration with default file size monitoring
       hooks: getDefaultHooks(),

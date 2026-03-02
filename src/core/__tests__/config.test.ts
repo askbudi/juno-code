@@ -57,6 +57,8 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.headlessMode).toBe(false);
       expect(DEFAULT_CONFIG.workingDirectory).toBe(process.cwd());
       expect(DEFAULT_CONFIG.sessionDirectory).toBe(path.join(process.cwd(), '.juno_task'));
+      expect(DEFAULT_CONFIG.envFilePath).toBe('.env.juno');
+      expect(DEFAULT_CONFIG.envFileCopied).toBe(false);
     });
 
     it('should pass schema validation', () => {
@@ -79,6 +81,8 @@ describe('Configuration Module', () => {
         headlessMode: true,
         workingDirectory: '/test/path',
         sessionDirectory: '/test/sessions',
+        envFilePath: '.env.juno',
+        envFileCopied: true,
         hooks: {},
         onHourlyLimit: 'raise',
       };
@@ -598,6 +602,43 @@ logLevel: info
           },
         },
       });
+
+      // New behavior: always bootstrap project env file on load
+      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(true);
+    });
+
+    it('should load env values from .env.juno before reading environment mapping', async () => {
+      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_DEFAULT_MAX_ITERATIONS=12\n');
+
+      const config = await loadConfig({
+        baseDir: tempDir,
+      });
+
+      expect(config.defaultMaxIterations).toBe(12);
+    });
+
+    it('should support custom envFilePath and mark envFileCopied after first bootstrap', async () => {
+      const junoTaskDir = path.join(tempDir, '.juno_task');
+      await fs.ensureDir(junoTaskDir);
+
+      await fs.writeJson(path.join(junoTaskDir, 'config.json'), {
+        ...DEFAULT_CONFIG,
+        envFilePath: '.env.custom',
+        envFileCopied: false,
+        hooks: DEFAULT_CONFIG.hooks,
+      });
+
+      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_LOG_LEVEL=debug\n');
+
+      const config = await loadConfig({
+        baseDir: tempDir,
+      });
+
+      const updatedConfig = await fs.readJson(path.join(junoTaskDir, 'config.json'));
+
+      expect(await fs.pathExists(path.join(tempDir, '.env.custom'))).toBe(true);
+      expect(updatedConfig.envFileCopied).toBe(true);
+      expect(config.logLevel).toBe('debug');
     });
   });
 

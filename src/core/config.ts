@@ -191,6 +191,19 @@ export const JunoTaskConfigSchema = z
 
     sessionDirectory: z.string().describe('Directory for storing session data'),
 
+    // Project environment bootstrap
+    envFilePath: z
+      .string()
+      .optional()
+      .describe(
+        'Path to the project env file loaded before execution (relative to project root or absolute)',
+      ),
+
+    envFileCopied: z
+      .boolean()
+      .optional()
+      .describe('Tracks whether configured env file has been initialized from .env.juno'),
+
     // Hooks configuration
     hooks: HooksSchema.describe(
       'Hook system configuration for executing commands at specific lifecycle events',
@@ -231,6 +244,10 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   workingDirectory: process.cwd(),
   sessionDirectory: path.join(process.cwd(), '.juno_task'),
 
+  // Project environment bootstrap
+  envFilePath: '.env.juno',
+  envFileCopied: false,
+
   // Hooks configuration - populated with default hooks template
   hooks: getDefaultHooks(),
 };
@@ -251,6 +268,11 @@ const GLOBAL_CONFIG_FILE_NAMES = [
  * Project-specific configuration file (highest precedence for project settings)
  */
 const PROJECT_CONFIG_FILE = '.juno_task/config.json';
+
+/**
+ * Default project env file created and loaded on startup
+ */
+const DEFAULT_PROJECT_ENV_FILE = '.env.juno';
 
 /**
  * Supported configuration file formats
@@ -671,6 +693,154 @@ export function validateConfig(config: unknown): JunoTaskConfig {
 }
 
 /**
+ * Parse dotenv-style content into key/value pairs.
+ * Supports comments (#), `export KEY=VALUE`, and quoted values.
+ */
+function parseEnvFileContent(content: string): Record<string, string> {
+  const envVars: Record<string, string> = {};
+  const lines = content.split(/\r?\n/);
+
+  for (const rawLine of lines) {
+    const trimmedLine = rawLine.trim();
+    if (!trimmedLine || trimmedLine.startsWith('#')) {
+      continue;
+    }
+
+    const line = trimmedLine.startsWith('export ') ? trimmedLine.slice(7).trim() : trimmedLine;
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      continue;
+    }
+
+    let value = line.slice(separatorIndex + 1).trim();
+
+    // Handle quoted values
+    if (
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) &&
+      value.length >= 2
+    ) {
+      const quote = value[0];
+      value = value.slice(1, -1);
+      if (quote === '"') {
+        value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+      }
+    } else {
+      // Strip inline comments from unquoted values (`KEY=value # comment`)
+      const inlineCommentIndex = value.indexOf(' #');
+      if (inlineCommentIndex >= 0) {
+        value = value.slice(0, inlineCommentIndex).trimEnd();
+      }
+    }
+
+    envVars[key] = value;
+  }
+
+  return envVars;
+}
+
+/**
+ * Load environment variables from a dotenv-style file into process.env.
+ * Variables from the file override existing process.env values.
+ */
+async function loadEnvFileIntoProcess(envFilePath: string): Promise<void> {
+  try {
+    const content = await fsPromises.readFile(envFilePath, 'utf-8');
+    const parsed = parseEnvFileContent(content);
+
+    for (const [key, value] of Object.entries(parsed)) {
+      process.env[key] = value;
+    }
+  } catch (error) {
+    console.warn(`Warning: Failed to load env file ${envFilePath}: ${error}`);
+  }
+}
+
+/**
+ * Ensure project env files exist and load them before config/env precedence is evaluated.
+ *
+ * Behavior:
+ * - Always ensure `.env.juno` exists in project root.
+ * - Read `.juno_task/config.json` for optional `envFilePath` and `envFileCopied`.
+ * - If a custom env path is configured and not initialized yet, copy `.env.juno` once.
+ * - Load `.env.juno`, then custom env file (if different) so custom values can override defaults.
+ */
+async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
+  const configPath = path.join(baseDir, PROJECT_CONFIG_FILE);
+  const defaultEnvPath = resolvePath(DEFAULT_PROJECT_ENV_FILE, baseDir);
+
+  // Always ensure root .env.juno exists
+  await fs.ensureFile(defaultEnvPath);
+
+  let existingConfig: Record<string, unknown> | null = null;
+
+  if (await fs.pathExists(configPath)) {
+    try {
+      existingConfig = await fs.readJson(configPath);
+    } catch (error) {
+      console.warn(`Warning: Failed to read ${configPath} for env bootstrap: ${error}`);
+    }
+  }
+
+  const configuredEnvPathRaw =
+    existingConfig && typeof existingConfig.envFilePath === 'string' && existingConfig.envFilePath
+      ? existingConfig.envFilePath
+      : DEFAULT_PROJECT_ENV_FILE;
+
+  const configuredEnvPath = resolvePath(configuredEnvPathRaw, baseDir);
+
+  let envFileCopied =
+    existingConfig && typeof existingConfig.envFileCopied === 'boolean'
+      ? existingConfig.envFileCopied
+      : false;
+
+  let needsConfigUpdate = false;
+
+  if (configuredEnvPath !== defaultEnvPath) {
+    const configuredExists = await fs.pathExists(configuredEnvPath);
+
+    if (!configuredExists) {
+      await fs.ensureDir(path.dirname(configuredEnvPath));
+      if (!envFileCopied) {
+        await fsPromises.copyFile(defaultEnvPath, configuredEnvPath);
+      } else {
+        await fs.ensureFile(configuredEnvPath);
+      }
+    }
+
+    if (!envFileCopied) {
+      envFileCopied = true;
+      needsConfigUpdate = true;
+    }
+  }
+
+  if (
+    existingConfig &&
+    (needsConfigUpdate ||
+      typeof existingConfig.envFilePath !== 'string' ||
+      typeof existingConfig.envFileCopied !== 'boolean')
+  ) {
+    const updatedConfig = {
+      ...existingConfig,
+      envFilePath: configuredEnvPathRaw,
+      envFileCopied,
+    };
+    await fs.writeJson(configPath, updatedConfig, { spaces: 2 });
+  }
+
+  // Load default env first, then custom env to allow override semantics.
+  await loadEnvFileIntoProcess(defaultEnvPath);
+  if (configuredEnvPath !== defaultEnvPath) {
+    await loadEnvFileIntoProcess(configuredEnvPath);
+  }
+}
+
+/**
  * Ensure hooks configuration exists in project config file
  *
  * This function handles auto-migration for the hooks configuration:
@@ -734,6 +904,17 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
         needsUpdate = true;
       }
 
+      // Ensure env bootstrap keys exist in project config
+      if (!existingConfig.envFilePath) {
+        existingConfig.envFilePath = DEFAULT_PROJECT_ENV_FILE;
+        needsUpdate = true;
+      }
+
+      if (typeof existingConfig.envFileCopied !== 'boolean') {
+        existingConfig.envFileCopied = false;
+        needsUpdate = true;
+      }
+
       if (needsUpdate) {
         await fs.writeJson(configPath, existingConfig, { spaces: 2 });
       }
@@ -783,6 +964,9 @@ export async function loadConfig(
 
   // Ensure hooks configuration exists in project config (auto-migration)
   await ensureHooksConfig(baseDir);
+
+  // Ensure .env.juno/custom env exists and load env vars before config env precedence is evaluated.
+  await ensureAndLoadProjectEnv(baseDir);
 
   const loader = new ConfigLoader(baseDir);
 

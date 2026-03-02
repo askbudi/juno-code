@@ -69,6 +69,12 @@ export interface JunoTaskConfig {
   workingDirectory: string;
   sessionDirectory: string;
 
+  // Project environment bootstrap
+  /** Path to project env file loaded on startup (relative to workingDirectory or absolute) */
+  envFilePath?: string;
+  /** Tracks whether the configured env file has been initialized from .env.juno */
+  envFileCopied?: boolean;
+
   // Hooks configuration
   hooks?: Hooks;
 

@@ -406,6 +406,11 @@ describe('Init Command', () => {
 
         // init.ts uses inline template literals and fs.writeFile
         expect(fs.writeFile).toHaveBeenCalled();
+        expect(
+          vi
+            .mocked(fs.writeFile)
+            .mock.calls.some(([filePath]) => String(filePath).endsWith('.env.juno')),
+        ).toBe(true);
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
