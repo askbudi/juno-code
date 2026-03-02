@@ -563,7 +563,9 @@ class MainProgressDisplay {
       console.error(chalk.white(`   Successful: ${stats.successfulIterations}`));
       console.error(chalk.white(`   Failed: ${stats.failedIterations}`));
       console.error(
-        chalk.white(`   Average Duration: ${stats.averageIterationDuration.toFixed(0)}ms`),
+        chalk.white(
+          `   Average Duration: ${this.formatAverageDuration(stats.averageIterationDuration)}`,
+        ),
       );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
 
@@ -710,6 +712,32 @@ class MainProgressDisplay {
     }
 
     return null;
+  }
+
+  private formatAverageDuration(durationMs: number): string {
+    if (!Number.isFinite(durationMs)) {
+      return '0ms';
+    }
+
+    const safeDurationMs = Math.max(durationMs, 0);
+    const units = [
+      { label: 'h', divisor: 60 * 60 * 1000 },
+      { label: 'm', divisor: 60 * 1000 },
+      { label: 's', divisor: 1000 },
+    ] as const;
+
+    for (const unit of units) {
+      if (safeDurationMs >= unit.divisor) {
+        const value = safeDurationMs / unit.divisor;
+        return `${this.formatDurationValue(value)}${unit.label}`;
+      }
+    }
+
+    return `${Math.round(safeDurationMs)}ms`;
+  }
+
+  private formatDurationValue(value: number): string {
+    return value.toFixed(2).replace(/\.?0+$/, '');
   }
 
   private formatUsd(amount: number): string {

@@ -1540,6 +1540,171 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
   });
 
+  it('should show average duration in seconds when average is at least 1 second', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: 'Test result',
+              metadata: {},
+            },
+            success: true,
+            duration: 1100,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 1,
+          failedIterations: 0,
+          averageIterationDuration: 1100,
+          totalToolCalls: 5,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Average Duration: 1.1s'))).toBe(true);
+  });
+
+  it('should show average duration in minutes or hours when values exceed those units', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine)
+      .mockReturnValueOnce({
+        execute: vi.fn().mockResolvedValue({
+          status: 'completed',
+          iterations: [
+            {
+              iterationNumber: 1,
+              toolResult: {
+                content: 'Test result',
+                metadata: {},
+              },
+              success: true,
+              duration: 90000,
+            },
+          ],
+          statistics: {
+            totalIterations: 1,
+            successfulIterations: 1,
+            failedIterations: 0,
+            averageIterationDuration: 90000,
+            totalToolCalls: 5,
+            rateLimitEncounters: 0,
+          },
+        }),
+        onProgress: vi.fn(),
+        on: vi.fn(),
+        shutdown: vi.fn(),
+      } as any)
+      .mockReturnValueOnce({
+        execute: vi.fn().mockResolvedValue({
+          status: 'completed',
+          iterations: [
+            {
+              iterationNumber: 1,
+              toolResult: {
+                content: 'Test result',
+                metadata: {},
+              },
+              success: true,
+              duration: 7200000,
+            },
+          ],
+          statistics: {
+            totalIterations: 1,
+            successfulIterations: 1,
+            failedIterations: 0,
+            averageIterationDuration: 7200000,
+            totalToolCalls: 5,
+            rateLimitEncounters: 0,
+          },
+        }),
+        onProgress: vi.fn(),
+        on: vi.fn(),
+        shutdown: vi.fn(),
+      } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Average Duration: 1.5m'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Average Duration: 2h'))).toBe(true);
+  });
+
+  it('should keep average duration in milliseconds when below one second', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'completed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: 'Test result',
+              metadata: {},
+            },
+            success: true,
+            duration: 450,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 1,
+          failedIterations: 0,
+          averageIterationDuration: 450,
+          totalToolCalls: 5,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Average Duration: 450ms'))).toBe(true);
+  });
+
   it('should show aggregate and per-iteration costs when result payload includes total_cost_usd', async () => {
     const { createExecutionEngine } = await import('../../core/engine.js');
 
