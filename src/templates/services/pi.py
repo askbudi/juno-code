@@ -75,7 +75,10 @@ class PiService:
     PRETTIFIER_CODEX = "codex"
     PRETTIFIER_LIVE = "live"
 
-    # ANSI color for tool error results (success output stays terminal default).
+    # ANSI colors for tool prettifier output.
+    # - command/args blocks are green for readability
+    # - error results are red
+    ANSI_GREEN = "\x1b[38;5;40m"
     ANSI_RED = "\x1b[38;5;203m"
     ANSI_RESET = "\x1b[0m"
 
@@ -122,6 +125,48 @@ class PiService:
         if not is_error:
             return text
         return f"{self.ANSI_RED}{text}{self.ANSI_RESET}"
+
+    def _colorize_command(self, text: str) -> str:
+        """Colorize tool command/args blocks in green when ANSI color is enabled."""
+        if not self._color_enabled():
+            return text
+        return f"{self.ANSI_GREEN}{text}{self.ANSI_RESET}"
+
+    def _normalize_multiline_tool_text(self, text: str) -> str:
+        """Render escaped newline sequences as real newlines for tool command/args blocks."""
+        if "\n" in text:
+            return text
+        if "\\n" in text:
+            return text.replace("\\n", "\n")
+        return text
+
+    def _format_tool_invocation_header(self, header: Dict) -> str:
+        """Serialize a tool header and render multiline command/args as separate readable blocks."""
+        metadata = dict(header)
+        block_label: Optional[str] = None
+        block_text: Optional[str] = None
+
+        command_val = metadata.get("command")
+        if isinstance(command_val, str) and command_val.strip():
+            command_text = self._normalize_multiline_tool_text(command_val)
+            if "\n" in command_text:
+                metadata.pop("command", None)
+                block_label = "command:"
+                block_text = self._colorize_command(command_text)
+
+        if block_text is None:
+            args_val = metadata.get("args")
+            if isinstance(args_val, str) and args_val.strip():
+                args_text = self._normalize_multiline_tool_text(args_val)
+                if "\n" in args_text:
+                    metadata.pop("args", None)
+                    block_label = "args:"
+                    block_text = self._colorize_command(args_text)
+
+        output = json.dumps(metadata, ensure_ascii=False)
+        if block_text is None:
+            return output
+        return output + "\n" + block_label + "\n" + block_text
 
     def _strip_ansi_sequences(self, text: str) -> str:
         """Remove ANSI escape sequences to prevent color bleed in prettified output."""
@@ -836,7 +881,7 @@ Model shorthands:
                                 header["args"] = self._sanitize_tool_argument_value(args)
                         elif isinstance(args, str) and args.strip():
                             header["args"] = self._sanitize_tool_argument_value(args)
-                    return json.dumps(header, ensure_ascii=False)
+                    return self._format_tool_invocation_header(header)
 
             # Other message_update subtypes: suppress by default
             return ""
@@ -923,9 +968,9 @@ Model shorthands:
                     colored = self._colorize_result(truncated, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                 header["result"] = truncated
-                return json.dumps(header, ensure_ascii=False)
+                return self._format_tool_invocation_header(header)
 
             if isinstance(result_val, dict):
                 result_content = result_val.get("content")
@@ -939,9 +984,9 @@ Model shorthands:
                                 colored = self._colorize_result(truncated, is_error=bool(is_error))
                                 if colorize_error:
                                     label = self._colorize_result(label, is_error=True)
-                                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                                return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                             header["result"] = truncated
-                            return json.dumps(header, ensure_ascii=False)
+                            return self._format_tool_invocation_header(header)
 
                 result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
                 if "\n" in result_json or colorize_error:
@@ -949,9 +994,9 @@ Model shorthands:
                     colored = self._colorize_result(result_json, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                 header["result"] = result_json
-                return json.dumps(header, ensure_ascii=False)
+                return self._format_tool_invocation_header(header)
 
             if isinstance(result_val, list):
                 result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
@@ -960,11 +1005,11 @@ Model shorthands:
                     colored = self._colorize_result(result_json, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                 header["result"] = result_json
-                return json.dumps(header, ensure_ascii=False)
+                return self._format_tool_invocation_header(header)
 
-            return json.dumps(header, ensure_ascii=False)
+            return self._format_tool_invocation_header(header)
 
         # --- turn_start: suppress (no user-visible value) ---
         if event_type == "turn_start":
@@ -1312,10 +1357,10 @@ Model shorthands:
                 colored_text = self._colorize_result(result_text, is_error=bool(is_error))
                 if colorize_error:
                     label = self._colorize_result(label, is_error=True)
-                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored_text
+                return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored_text
             header["result"] = result_text
 
-        return json.dumps(header, ensure_ascii=False)
+        return self._format_tool_invocation_header(header)
 
     def _format_event_pretty(self, payload: dict) -> Optional[str]:
         """
@@ -1399,7 +1444,7 @@ Model shorthands:
                                 header["args"] = self._sanitize_tool_argument_value(args)
                         elif isinstance(args, str) and args.strip():
                             header["args"] = self._sanitize_tool_argument_value(args)
-                    return json.dumps(header, ensure_ascii=False)
+                    return self._format_tool_invocation_header(header)
 
                 # thinking_end: show thinking content (*_end → gets counter)
                 if isinstance(ame, dict) and ame_type == "thinking_end":
@@ -1490,9 +1535,9 @@ Model shorthands:
                         colored = self._colorize_result(truncated, is_error=bool(is_error))
                         if colorize_error:
                             label = self._colorize_result(label, is_error=True)
-                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                        return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                     header["result"] = truncated
-                    return json.dumps(header, ensure_ascii=False)
+                    return self._format_tool_invocation_header(header)
 
                 if isinstance(result_val, dict):
                     result_content = result_val.get("content")
@@ -1506,9 +1551,9 @@ Model shorthands:
                                     colored = self._colorize_result(truncated, is_error=bool(is_error))
                                     if colorize_error:
                                         label = self._colorize_result(label, is_error=True)
-                                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                                 header["result"] = truncated
-                                return json.dumps(header, ensure_ascii=False)
+                                return self._format_tool_invocation_header(header)
 
                     result_str = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
                     if "\n" in result_str or len(result_str) > 200 or colorize_error:
@@ -1516,9 +1561,9 @@ Model shorthands:
                         colored = self._colorize_result(result_str, is_error=bool(is_error))
                         if colorize_error:
                             label = self._colorize_result(label, is_error=True)
-                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                        return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                     header["result"] = result_str
-                    return json.dumps(header, ensure_ascii=False)
+                    return self._format_tool_invocation_header(header)
 
                 if isinstance(result_val, list):
                     result_str = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
@@ -1527,11 +1572,11 @@ Model shorthands:
                         colored = self._colorize_result(result_str, is_error=bool(is_error))
                         if colorize_error:
                             label = self._colorize_result(label, is_error=True)
-                        return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored
+                        return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored
                     header["result"] = result_str
-                    return json.dumps(header, ensure_ascii=False)
+                    return self._format_tool_invocation_header(header)
 
-                return json.dumps(header, ensure_ascii=False)
+                return self._format_tool_invocation_header(header)
 
             # --- Retry/compaction events ---
             if event_type == "auto_retry_start":
@@ -1626,7 +1671,7 @@ Model shorthands:
                             header["args"] = self._sanitize_tool_argument_value(args)
                     elif isinstance(args, str) and args.strip():
                         header["args"] = self._sanitize_tool_argument_value(args)
-                return json.dumps(header, ensure_ascii=False) + "\n"
+                return self._format_tool_invocation_header(header) + "\n"
 
             # Suppress all other message_update subtypes (toolcall_start, toolcall_delta, etc.)
             return ""
@@ -1681,9 +1726,9 @@ Model shorthands:
                     colored = self._colorize_result(truncated, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored + "\n"
                 header["result"] = truncated
-                return json.dumps(header, ensure_ascii=False) + "\n"
+                return self._format_tool_invocation_header(header) + "\n"
 
             if isinstance(result_val, dict):
                 result_content = result_val.get("content")
@@ -1697,9 +1742,9 @@ Model shorthands:
                                 colored = self._colorize_result(truncated, is_error=bool(is_error))
                                 if colorize_error:
                                     label = self._colorize_result(label, is_error=True)
-                                return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                                return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored + "\n"
                             header["result"] = truncated
-                            return json.dumps(header, ensure_ascii=False) + "\n"
+                            return self._format_tool_invocation_header(header) + "\n"
 
                 result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
                 if "\n" in result_json or colorize_error:
@@ -1707,9 +1752,9 @@ Model shorthands:
                     colored = self._colorize_result(result_json, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored + "\n"
                 header["result"] = result_json
-                return json.dumps(header, ensure_ascii=False) + "\n"
+                return self._format_tool_invocation_header(header) + "\n"
 
             if isinstance(result_val, list):
                 result_json = self._strip_ansi_sequences(json.dumps(result_val, ensure_ascii=False))
@@ -1718,11 +1763,11 @@ Model shorthands:
                     colored = self._colorize_result(result_json, is_error=bool(is_error))
                     if colorize_error:
                         label = self._colorize_result(label, is_error=True)
-                    return json.dumps(header, ensure_ascii=False) + "\n" + label + "\n" + colored + "\n"
+                    return self._format_tool_invocation_header(header) + "\n" + label + "\n" + colored + "\n"
                 header["result"] = result_json
-                return json.dumps(header, ensure_ascii=False) + "\n"
+                return self._format_tool_invocation_header(header) + "\n"
 
-            return json.dumps(header, ensure_ascii=False) + "\n"
+            return self._format_tool_invocation_header(header) + "\n"
 
         # turn_end: metadata only
         if event_type == "turn_end":

@@ -1426,6 +1426,44 @@ class TestPiPrettifierToolCallArgs:
         assert parsed["command"] == "git status"
         assert "args" not in parsed
 
+    def test_toolcall_end_multiline_command_shows_readable_block(self):
+        """Multiline command renders as a separate command block (not escaped JSON)."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "name": "bash",
+                    "arguments": {"command": "python3 - <<'PY'\\nprint('hello')\\nPY"},
+                },
+            },
+        })
+        lines = result.split("\n")
+        header = json.loads(lines[0])
+        assert header["tool"] == "bash"
+        assert "command" not in header
+        assert lines[1] == "command:"
+        assert lines[2] == "python3 - <<'PY'"
+        assert lines[3] == "print('hello')"
+        assert lines[4] == "PY"
+
+    def test_toolcall_end_escaped_newline_sequences_are_humanized(self):
+        """Literal \\n sequences in command strings are shown as real newlines."""
+        result = self.svc._format_event_pretty({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "name": "bash",
+                    "arguments": {"command": r"echo one\necho two"},
+                },
+            },
+        })
+        lines = result.split("\n")
+        assert lines[1] == "command:"
+        assert lines[2] == "echo one"
+        assert lines[3] == "echo two"
+
     def test_toolcall_end_shows_non_command_args(self):
         """Non-bash tool calls should preserve args as JSON object."""
         result = self.svc._format_event_pretty({
@@ -2131,6 +2169,27 @@ class TestCodexToolCallGrouping:
         })
         assert "file content" in result
 
+    def test_codex_toolcall_end_without_id_multiline_command_block(self):
+        """Codex prettifier renders multiline toolcall command as readable command block."""
+        result = self.svc._format_pi_codex_event({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "name": "bash",
+                    "arguments": {"command": "python3 - <<'PY'\\nprint('ok')\\nPY"},
+                },
+            },
+        })
+        lines = result.split("\n")
+        header = json.loads(lines[0])
+        assert header["type"] == "toolcall_end"
+        assert "command" not in header
+        assert lines[1] == "command:"
+        assert lines[2] == "python3 - <<'PY'"
+        assert lines[3] == "print('ok')"
+        assert lines[4] == "PY"
+
 
 class TestLiveToolCallGrouping:
     """Test tool call grouping in _format_event_live()."""
@@ -2252,6 +2311,28 @@ class TestLiveToolCallGrouping:
         assert parsed["type"] == "toolcall_end"
         assert parsed["tool"] == "bash"
 
+    def test_toolcall_end_without_id_multiline_command_block(self):
+        """Live prettifier renders multiline command in a readable command block."""
+        result = self.svc._format_event_live({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "toolCall": {
+                    "name": "bash",
+                    "arguments": {"command": "python - <<'PY'\\nprint('x')\\nPY"},
+                },
+            },
+        })
+        assert result.endswith("\n")
+        lines = result.rstrip("\n").split("\n")
+        header = json.loads(lines[0])
+        assert header["type"] == "toolcall_end"
+        assert "command" not in header
+        assert lines[1] == "command:"
+        assert lines[2] == "python - <<'PY'"
+        assert lines[3] == "print('x')"
+        assert lines[4] == "PY"
+
 
 class TestBufferToolCallEnd:
     """Test the _buffer_tool_call_end() helper method."""
@@ -2329,6 +2410,19 @@ class TestBuildCombinedToolEvent:
         assert parsed["command"] == "ls -la"
         assert parsed["result"] == "file.txt"
         assert parsed["counter"] == "#1"
+
+    def test_combined_event_multiline_command_uses_command_block(self):
+        """Combined tool events render multiline command as readable block."""
+        pending = {"tool": "bash", "command": "line1\nline2", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "ok"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        lines = result.split("\n")
+        header = json.loads(lines[0])
+        assert "command" not in header
+        assert header["result"] == "ok"
+        assert lines[1] == "command:"
+        assert lines[2] == "line1"
+        assert lines[3] == "line2"
 
     def test_combined_event_with_args(self):
         """Combined event for non-bash tool includes structured args field."""
@@ -2493,6 +2587,7 @@ class TestColorizeResult:
 class TestCombinedToolEventColor:
     """Test tool result coloring policy in _build_combined_tool_event output."""
 
+    GREEN = "\x1b[38;5;40m"
     RED = "\x1b[38;5;203m"
     RESET = "\x1b[0m"
 
@@ -2517,6 +2612,17 @@ class TestCombinedToolEventColor:
         payload = {"toolName": "bash", "result": "file1\nfile2"}
         result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
         assert "\x1b" not in result
+
+    def test_multiline_command_green_with_tty(self, monkeypatch):
+        """TTY: multiline command blocks are green for scan-friendly readability."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        pending = {"tool": "bash", "command": "line1\nline2", "datetime": "12:00:00 PM"}
+        payload = {"toolName": "bash", "result": "ok"}
+        result = self.svc._build_combined_tool_event(pending, payload, "12:00:01 PM")
+        assert "\ncommand:\n" in result
+        assert self.GREEN in result
+        assert self.RESET in result
 
     def test_error_result_red(self, monkeypatch):
         """TTY: error result uses red ANSI code."""
