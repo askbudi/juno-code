@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 class PiService:
@@ -104,6 +104,10 @@ class PiService:
         self._in_tool_execution: bool = False
         # Buffer raw non-JSON tool stdout so it doesn't interleave with structured events
         self._buffered_tool_stdout_lines: List[str] = []
+        # Per-run usage/cost accumulation (used for result + agent_end total cost visibility)
+        self._run_usage_totals: Optional[dict] = None
+        self._run_total_cost_usd: Optional[float] = None
+        self._run_seen_usage_keys: Set[str] = set()
         # Claude prettifier state
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
         # Codex prettifier state
@@ -1942,11 +1946,220 @@ Model shorthands:
         """Strip bulky fields (messages, type) from sub_agent_response to reduce token usage."""
         return {k: v for k, v in event.items() if k not in ("messages", "type")}
 
+    def _reset_run_cost_tracking(self) -> None:
+        """Reset per-run usage/cost accumulation state."""
+        self._run_usage_totals = None
+        self._run_total_cost_usd = None
+        self._run_seen_usage_keys.clear()
+
+    @staticmethod
+    def _is_numeric_value(value: object) -> bool:
+        """True for int/float values (excluding bool)."""
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    @staticmethod
+    def _normalize_usage_payload(usage: dict) -> Optional[dict]:
+        """Normalize usage payload into numeric totals for accumulation."""
+        if not isinstance(usage, dict):
+            return None
+
+        usage_cost = usage.get("cost")
+        cost_payload = usage_cost if isinstance(usage_cost, dict) else {}
+
+        input_tokens = float(usage.get("input")) if PiService._is_numeric_value(usage.get("input")) else 0.0
+        output_tokens = float(usage.get("output")) if PiService._is_numeric_value(usage.get("output")) else 0.0
+        cache_read_tokens = float(usage.get("cacheRead")) if PiService._is_numeric_value(usage.get("cacheRead")) else 0.0
+        cache_write_tokens = float(usage.get("cacheWrite")) if PiService._is_numeric_value(usage.get("cacheWrite")) else 0.0
+
+        total_tokens_raw = usage.get("totalTokens")
+        total_tokens = (
+            float(total_tokens_raw)
+            if PiService._is_numeric_value(total_tokens_raw)
+            else input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+        )
+
+        cost_input = float(cost_payload.get("input")) if PiService._is_numeric_value(cost_payload.get("input")) else 0.0
+        cost_output = float(cost_payload.get("output")) if PiService._is_numeric_value(cost_payload.get("output")) else 0.0
+        cost_cache_read = (
+            float(cost_payload.get("cacheRead")) if PiService._is_numeric_value(cost_payload.get("cacheRead")) else 0.0
+        )
+        cost_cache_write = (
+            float(cost_payload.get("cacheWrite")) if PiService._is_numeric_value(cost_payload.get("cacheWrite")) else 0.0
+        )
+
+        cost_total_raw = cost_payload.get("total")
+        cost_total = (
+            float(cost_total_raw)
+            if PiService._is_numeric_value(cost_total_raw)
+            else cost_input + cost_output + cost_cache_read + cost_cache_write
+        )
+
+        has_any_value = any(
+            PiService._is_numeric_value(v)
+            for v in (
+                usage.get("input"),
+                usage.get("output"),
+                usage.get("cacheRead"),
+                usage.get("cacheWrite"),
+                usage.get("totalTokens"),
+                cost_payload.get("input"),
+                cost_payload.get("output"),
+                cost_payload.get("cacheRead"),
+                cost_payload.get("cacheWrite"),
+                cost_payload.get("total"),
+            )
+        )
+
+        if not has_any_value:
+            return None
+
+        return {
+            "input": input_tokens,
+            "output": output_tokens,
+            "cacheRead": cache_read_tokens,
+            "cacheWrite": cache_write_tokens,
+            "totalTokens": total_tokens,
+            "cost": {
+                "input": cost_input,
+                "output": cost_output,
+                "cacheRead": cost_cache_read,
+                "cacheWrite": cost_cache_write,
+                "total": cost_total,
+            },
+        }
+
+    @staticmethod
+    def _merge_usage_payloads(base: Optional[dict], delta: Optional[dict]) -> Optional[dict]:
+        """Merge normalized usage payloads by summing token/cost fields."""
+        if not isinstance(base, dict):
+            return delta
+        if not isinstance(delta, dict):
+            return base
+
+        base_cost = base.get("cost") if isinstance(base.get("cost"), dict) else {}
+        delta_cost = delta.get("cost") if isinstance(delta.get("cost"), dict) else {}
+
+        return {
+            "input": float(base.get("input", 0.0)) + float(delta.get("input", 0.0)),
+            "output": float(base.get("output", 0.0)) + float(delta.get("output", 0.0)),
+            "cacheRead": float(base.get("cacheRead", 0.0)) + float(delta.get("cacheRead", 0.0)),
+            "cacheWrite": float(base.get("cacheWrite", 0.0)) + float(delta.get("cacheWrite", 0.0)),
+            "totalTokens": float(base.get("totalTokens", 0.0)) + float(delta.get("totalTokens", 0.0)),
+            "cost": {
+                "input": float(base_cost.get("input", 0.0)) + float(delta_cost.get("input", 0.0)),
+                "output": float(base_cost.get("output", 0.0)) + float(delta_cost.get("output", 0.0)),
+                "cacheRead": float(base_cost.get("cacheRead", 0.0)) + float(delta_cost.get("cacheRead", 0.0)),
+                "cacheWrite": float(base_cost.get("cacheWrite", 0.0)) + float(delta_cost.get("cacheWrite", 0.0)),
+                "total": float(base_cost.get("total", 0.0)) + float(delta_cost.get("total", 0.0)),
+            },
+        }
+
+    @staticmethod
+    def _aggregate_assistant_usages(messages: list) -> Optional[dict]:
+        """Aggregate assistant usage payloads from an event messages array."""
+        if not isinstance(messages, list):
+            return None
+
+        assistant_usages: List[dict] = []
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    assistant_usages.append(usage)
+
+        if not assistant_usages:
+            return None
+        if len(assistant_usages) == 1:
+            return assistant_usages[0]
+
+        totals: Optional[dict] = None
+        for usage in assistant_usages:
+            normalized = PiService._normalize_usage_payload(usage)
+            totals = PiService._merge_usage_payloads(totals, normalized)
+
+        return totals
+
+    def _assistant_usage_dedupe_key(self, message: dict, usage: dict) -> Optional[str]:
+        """Build a stable dedupe key for assistant usage seen across message/turn_end events."""
+        if not isinstance(message, dict) or not isinstance(usage, dict):
+            return None
+
+        for id_key in ("id", "messageId", "message_id"):
+            value = message.get(id_key)
+            if isinstance(value, str) and value.strip():
+                return f"id:{value.strip()}"
+
+        timestamp = message.get("timestamp")
+        if self._is_numeric_value(timestamp):
+            return f"ts:{int(float(timestamp))}"
+        if isinstance(timestamp, str) and timestamp.strip():
+            return f"ts:{timestamp.strip()}"
+
+        usage_cost = usage.get("cost") if isinstance(usage.get("cost"), dict) else {}
+        signature: Dict[str, object] = {
+            "stopReason": message.get("stopReason") if isinstance(message.get("stopReason"), str) else "",
+            "input": usage.get("input", 0.0),
+            "output": usage.get("output", 0.0),
+            "cacheRead": usage.get("cacheRead", 0.0),
+            "cacheWrite": usage.get("cacheWrite", 0.0),
+            "totalTokens": usage.get("totalTokens", 0.0),
+            "costTotal": usage_cost.get("total", 0.0),
+        }
+
+        text = self._extract_text_from_message(message)
+        if text:
+            signature["text"] = text[:120]
+
+        return "sig:" + json.dumps(signature, sort_keys=True, ensure_ascii=False)
+
+    def _track_assistant_usage_from_event(self, event: dict) -> None:
+        """Accumulate per-run assistant usage from stream events."""
+        if not isinstance(event, dict):
+            return
+
+        event_type = event.get("type")
+        if event_type not in ("message", "message_end", "turn_end"):
+            return
+
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return
+
+        normalized_usage = self._normalize_usage_payload(message.get("usage"))
+        if not isinstance(normalized_usage, dict):
+            return
+
+        usage_key = self._assistant_usage_dedupe_key(message, normalized_usage)
+        if usage_key and usage_key in self._run_seen_usage_keys:
+            return
+        if usage_key:
+            self._run_seen_usage_keys.add(usage_key)
+
+        self._run_usage_totals = self._merge_usage_payloads(self._run_usage_totals, normalized_usage)
+        self._run_total_cost_usd = self._extract_total_cost_usd(
+            {"usage": self._run_usage_totals},
+            self._run_usage_totals,
+        )
+
+    def _get_accumulated_total_cost_usd(self) -> Optional[float]:
+        """Return accumulated per-run total cost when available."""
+        if self._is_numeric_value(self._run_total_cost_usd):
+            return float(self._run_total_cost_usd)
+        if isinstance(self._run_usage_totals, dict):
+            return self._extract_total_cost_usd({"usage": self._run_usage_totals}, self._run_usage_totals)
+        return None
+
     @staticmethod
     def _extract_usage_from_event(event: dict) -> Optional[dict]:
         """Extract usage payload from Pi event shapes (event/message/messages)."""
         if not isinstance(event, dict):
             return None
+
+        messages = event.get("messages")
+        if event.get("type") == "agent_end" and isinstance(messages, list):
+            aggregated = PiService._aggregate_assistant_usages(messages)
+            if isinstance(aggregated, dict):
+                return aggregated
 
         direct_usage = event.get("usage")
         if isinstance(direct_usage, dict):
@@ -1958,13 +2171,10 @@ Model shorthands:
             if isinstance(message_usage, dict):
                 return message_usage
 
-        messages = event.get("messages")
         if isinstance(messages, list):
-            for msg in reversed(messages):
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    message_usage = msg.get("usage")
-                    if isinstance(message_usage, dict):
-                        return message_usage
+            aggregated = PiService._aggregate_assistant_usages(messages)
+            if isinstance(aggregated, dict):
+                return aggregated
 
         return None
 
@@ -1976,15 +2186,15 @@ Model shorthands:
 
         for key in ("total_cost_usd", "totalCostUsd", "totalCostUSD"):
             value = event.get(key)
-            if isinstance(value, (int, float)):
+            if PiService._is_numeric_value(value):
                 return float(value)
 
         direct_cost = event.get("cost")
-        if isinstance(direct_cost, (int, float)):
+        if PiService._is_numeric_value(direct_cost):
             return float(direct_cost)
         if isinstance(direct_cost, dict):
             total = direct_cost.get("total")
-            if isinstance(total, (int, float)):
+            if PiService._is_numeric_value(total):
                 return float(total)
 
         usage_payload = usage if isinstance(usage, dict) else None
@@ -1995,7 +2205,7 @@ Model shorthands:
             usage_cost = usage_payload.get("cost")
             if isinstance(usage_cost, dict):
                 total = usage_cost.get("total")
-                if isinstance(total, (int, float)):
+                if PiService._is_numeric_value(total):
                     return float(total)
 
         return None
@@ -2003,7 +2213,13 @@ Model shorthands:
     def _build_success_result_event(self, text: str, event: dict) -> dict:
         """Build standardized success envelope for shell-backend capture."""
         usage = self._extract_usage_from_event(event)
+        if isinstance(self._run_usage_totals, dict):
+            usage = self._run_usage_totals
+
         total_cost_usd = self._extract_total_cost_usd(event, usage)
+        accumulated_total_cost = self._get_accumulated_total_cost_usd()
+        if accumulated_total_cost is not None:
+            total_cost_usd = accumulated_total_cost
 
         result_event: Dict = {
             "type": "result",
@@ -2048,6 +2264,7 @@ Model shorthands:
         capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
         hide_types = self._build_hide_types()
         self._buffered_tool_stdout_lines.clear()
+        self._reset_run_cost_tracking()
         cancel_delayed_toolcalls = lambda: None
 
         if verbose:
@@ -2270,6 +2487,17 @@ Model shorthands:
                     # Capture session ID from the session event (sent at stream start)
                     if event_type == "session":
                         self.session_id = parsed_event.get("id")
+
+                    # Track per-run assistant usage from stream events.
+                    self._track_assistant_usage_from_event(parsed_event)
+
+                    # Ensure agent_end reflects cumulative per-run totals when available.
+                    if event_type == "agent_end":
+                        accumulated_total_cost = self._get_accumulated_total_cost_usd()
+                        if accumulated_total_cost is not None:
+                            parsed_event["total_cost_usd"] = accumulated_total_cost
+                        if isinstance(self._run_usage_totals, dict):
+                            parsed_event["usage"] = self._run_usage_totals
 
                     # Capture result event for shell backend
                     if event_type == "agent_end":

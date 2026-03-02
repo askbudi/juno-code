@@ -981,6 +981,45 @@ class TestPiUsageAndCostCapture:
         assert self.svc._extract_usage_from_event(event) == usage
         assert self.svc._extract_total_cost_usd(event) == pytest.approx(0.0028)
 
+    def test_extract_usage_and_cost_are_aggregated_for_agent_end_messages(self):
+        usage_1 = {
+            "input": 100,
+            "output": 20,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 120,
+            "cost": {"input": 0.0010, "output": 0.0004, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0014},
+        }
+        usage_2 = {
+            "input": 80,
+            "output": 30,
+            "cacheRead": 10,
+            "cacheWrite": 0,
+            "totalTokens": 120,
+            "cost": {"input": 0.0008, "output": 0.0006, "cacheRead": 0.0001, "cacheWrite": 0.0, "total": 0.0015},
+        }
+        event = {
+            "type": "agent_end",
+            "messages": [
+                {"role": "assistant", "content": [{"type": "text", "text": "first"}], "usage": usage_1},
+                {"role": "assistant", "content": [{"type": "text", "text": "second"}], "usage": usage_2},
+            ],
+        }
+
+        usage = self.svc._extract_usage_from_event(event)
+        assert usage is not None
+        assert usage["input"] == pytest.approx(180)
+        assert usage["output"] == pytest.approx(50)
+        assert usage["cacheRead"] == pytest.approx(10)
+        assert usage["cacheWrite"] == pytest.approx(0)
+        assert usage["totalTokens"] == pytest.approx(240)
+        assert usage["cost"]["input"] == pytest.approx(0.0018)
+        assert usage["cost"]["output"] == pytest.approx(0.0010)
+        assert usage["cost"]["cacheRead"] == pytest.approx(0.0001)
+        assert usage["cost"]["cacheWrite"] == pytest.approx(0.0)
+        assert usage["cost"]["total"] == pytest.approx(0.0029)
+        assert self.svc._extract_total_cost_usd(event) == pytest.approx(0.0029)
+
     def test_extract_total_cost_usd_prefers_explicit_field(self):
         event = {
             "type": "result",
@@ -1391,6 +1430,91 @@ class TestRunPiRawToolOutputBuffering:
         out = capsys.readouterr().out
         assert '"event": "toolcall_end"' in out
         assert '"type": "tool"' in out
+
+    def test_agent_end_and_result_use_run_accumulated_cost_not_last_or_history(self, monkeypatch, capsys):
+        """Per-run accumulation should win over last-message or full-history agent_end payloads."""
+        usage_1 = {
+            "input": 30,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 40,
+            "cost": {"input": 0.0003, "output": 0.0001, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0004},
+        }
+        usage_2 = {
+            "input": 50,
+            "output": 20,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 70,
+            "cost": {"input": 0.0005, "output": 0.0002, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0007},
+        }
+        usage_old_history = {
+            "input": 999,
+            "output": 999,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1998,
+            "cost": {"input": 0.999, "output": 0.111, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 1.11},
+        }
+
+        msg1 = {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "first"}],
+            "usage": usage_1,
+            "timestamp": 101,
+        }
+        msg2 = {
+            "id": "msg-2",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "final"}],
+            "usage": usage_2,
+            "timestamp": 202,
+        }
+
+        stdout_lines = [
+            json.dumps({"type": "message", "message": msg1}) + "\n",
+            json.dumps({"type": "turn_end", "message": msg1, "toolResults": []}) + "\n",
+            json.dumps({"type": "message", "message": msg2}) + "\n",
+            json.dumps({"type": "turn_end", "message": msg2, "toolResults": []}) + "\n",
+            json.dumps(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "id": "old-prev",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "old history"}],
+                            "usage": usage_old_history,
+                            "timestamp": 1,
+                        },
+                        msg1,
+                        msg2,
+                    ],
+                }
+            ) + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        agent_end_events = [
+            json.loads(line)
+            for line in out.splitlines()
+            if line.strip().startswith("{") and '"type": "agent_end"' in line
+        ]
+        assert agent_end_events
+        assert agent_end_events[-1]["total_cost_usd"] == pytest.approx(0.0011)
+
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["total_cost_usd"] == pytest.approx(0.0011)
+        assert self.svc.last_result_event["usage"]["cost"]["total"] == pytest.approx(0.0011)
 
 
 # ===================================================================
