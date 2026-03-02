@@ -1258,6 +1258,46 @@ class TestRunPiRawToolOutputBuffering:
         def kill(self):
             self.returncode = -9
 
+    class _DelayedStdout:
+        def __init__(self, scheduled_lines):
+            self._scheduled_lines = list(scheduled_lines)
+            self._index = 0
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self._index >= len(self._scheduled_lines):
+                raise StopIteration
+            delay, line = self._scheduled_lines[self._index]
+            self._index += 1
+            if delay > 0:
+                time.sleep(delay)
+            return line
+
+        def close(self):
+            self.closed = True
+
+    class _FakeDelayedProcess:
+        def __init__(self, scheduled_lines):
+            self.stdout = TestRunPiRawToolOutputBuffering._DelayedStdout(scheduled_lines)
+            self.stderr = io.StringIO("")
+            self.stdin = None
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
     def test_raw_tool_lines_are_buffered_and_attached_to_tool_event(self, monkeypatch, capsys):
         """Non-JSON lines during tool execution are not printed out-of-order."""
         stdout_lines = [
@@ -1308,6 +1348,49 @@ class TestRunPiRawToolOutputBuffering:
         assert turn_idx != -1
         assert out.find("RAW-LATE-1") < turn_idx
         assert out.find("RAW-LATE-2") < turn_idx
+
+    def test_toolcall_end_is_suppressed_when_tool_finishes_within_delay(self, monkeypatch, capsys):
+        """Fallback toolcall_end should be hidden when tool finishes before delay threshold."""
+        stdout_lines = [
+            '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"name":"bash","arguments":{"command":"echo hi"}}}}\n',
+            '{"type":"tool_execution_start","toolCallId":"tc-fast","toolName":"bash","args":{"command":"echo hi"}}\n',
+            '{"type":"tool_execution_end","toolCallId":"tc-fast","toolName":"bash","result":"hi"}\n',
+            '{"type":"turn_end","message":{},"toolResults":[]}\n',
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+        monkeypatch.setenv("PI_TOOLCALL_END_DELAY_SECONDS", "1")
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert '"event": "toolcall_end"' not in out
+        assert '"type": "tool"' in out
+        assert '"result": "hi"' in out
+
+    def test_toolcall_end_is_emitted_when_tool_exceeds_delay(self, monkeypatch, capsys):
+        """Fallback toolcall_end should appear when tool_execution_end arrives after delay."""
+        scheduled_lines = [
+            (0.0, '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"name":"bash","arguments":{"command":"echo hi"}}}}\n'),
+            (0.08, '{"type":"tool_execution_start","toolCallId":"tc-slow","toolName":"bash","args":{"command":"echo hi"}}\n'),
+            (0.0, '{"type":"tool_execution_end","toolCallId":"tc-slow","toolName":"bash","result":"hi"}\n'),
+            (0.0, '{"type":"turn_end","message":{},"toolResults":[]}\n'),
+        ]
+
+        fake = self._FakeDelayedProcess(scheduled_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+        monkeypatch.setenv("PI_TOOLCALL_END_DELAY_SECONDS", "0.02")
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert '"event": "toolcall_end"' in out
+        assert '"type": "tool"' in out
 
 
 # ===================================================================

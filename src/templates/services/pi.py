@@ -1928,6 +1928,16 @@ Model shorthands:
         return hide_types
 
     @staticmethod
+    def _toolcall_end_delay_seconds() -> float:
+        """Return delay for fallback toolcall_end visibility (default 3s)."""
+        raw = os.environ.get("PI_TOOLCALL_END_DELAY_SECONDS", "3")
+        try:
+            delay = float(raw)
+        except (TypeError, ValueError):
+            delay = 3.0
+        return max(0.0, delay)
+
+    @staticmethod
     def _sanitize_sub_agent_response(event: dict) -> dict:
         """Strip bulky fields (messages, type) from sub_agent_response to reduce token usage."""
         return {k: v for k, v in event.items() if k not in ("messages", "type")}
@@ -2038,6 +2048,7 @@ Model shorthands:
         capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
         hide_types = self._build_hide_types()
         self._buffered_tool_stdout_lines.clear()
+        cancel_delayed_toolcalls = lambda: None
 
         if verbose:
             # Truncate prompt in display to avoid confusing multi-line output
@@ -2143,9 +2154,115 @@ Model shorthands:
             stderr_thread = threading.Thread(target=_stderr_reader, daemon=True)
             stderr_thread.start()
 
+            cancel_delayed_toolcalls = lambda: None
+
             if process.stdout:
                 pending_tool_execution_end: Optional[dict] = None
                 pending_turn_end_after_tool: Optional[dict] = None
+                toolcall_end_delay_seconds = self._toolcall_end_delay_seconds()
+                pending_delayed_toolcalls: Dict[int, dict] = {}
+                delayed_toolcalls_lock = threading.Lock()
+                delayed_toolcall_seq = 0
+
+                def _extract_fallback_toolcall_name(parsed_event: dict) -> Optional[str]:
+                    if parsed_event.get("type") != "message_update":
+                        return None
+                    assistant_event = parsed_event.get("assistantMessageEvent")
+                    if not isinstance(assistant_event, dict) or assistant_event.get("type") != "toolcall_end":
+                        return None
+                    tool_call = assistant_event.get("toolCall")
+                    if not isinstance(tool_call, dict):
+                        return None
+                    tool_call_id = tool_call.get("toolCallId")
+                    if isinstance(tool_call_id, str) and tool_call_id.strip():
+                        return None
+                    name = tool_call.get("name", "")
+                    return name if isinstance(name, str) else ""
+
+                def _format_deferred_toolcall(parsed_event: dict, mode: str) -> Optional[str]:
+                    if mode == self.PRETTIFIER_LIVE:
+                        return self._format_event_live(parsed_event)
+                    if mode == self.PRETTIFIER_CODEX:
+                        return self._format_pi_codex_event(parsed_event)
+                    if mode == self.PRETTIFIER_CLAUDE:
+                        return self._format_event_pretty_claude(parsed_event)
+                    return self._format_event_pretty(parsed_event)
+
+                def _emit_stdout(formatted: str, raw: bool = False) -> None:
+                    if raw:
+                        sys.stdout.write(formatted)
+                        sys.stdout.flush()
+                        return
+                    print(formatted, flush=True)
+
+                def _schedule_delayed_toolcall(parsed_event: dict, tool_name: str, mode: str) -> None:
+                    nonlocal delayed_toolcall_seq
+
+                    def _emit_delayed_toolcall(event_payload: dict, event_mode: str) -> None:
+                        formatted = _format_deferred_toolcall(event_payload, event_mode)
+                        if not formatted:
+                            return
+                        _emit_stdout(formatted, raw=event_mode == self.PRETTIFIER_LIVE)
+
+                    if toolcall_end_delay_seconds <= 0:
+                        _emit_delayed_toolcall(parsed_event, mode)
+                        return
+
+                    delayed_toolcall_seq += 1
+                    entry_id = delayed_toolcall_seq
+                    entry: Dict = {
+                        "id": entry_id,
+                        "tool": tool_name,
+                        "event": parsed_event,
+                        "mode": mode,
+                    }
+
+                    def _timer_emit() -> None:
+                        with delayed_toolcalls_lock:
+                            pending = pending_delayed_toolcalls.pop(entry_id, None)
+                        if not pending:
+                            return
+                        _emit_delayed_toolcall(pending["event"], pending["mode"])
+
+                    timer = threading.Timer(toolcall_end_delay_seconds, _timer_emit)
+                    timer.daemon = True
+                    entry["timer"] = timer
+                    with delayed_toolcalls_lock:
+                        pending_delayed_toolcalls[entry_id] = entry
+                    timer.start()
+
+                def _cancel_delayed_toolcall(tool_name: str) -> None:
+                    with delayed_toolcalls_lock:
+                        if not pending_delayed_toolcalls:
+                            return
+
+                        selected_id: Optional[int] = None
+                        if tool_name:
+                            for entry_id, entry in pending_delayed_toolcalls.items():
+                                if entry.get("tool") == tool_name:
+                                    selected_id = entry_id
+                                    break
+
+                        if selected_id is None:
+                            selected_id = min(pending_delayed_toolcalls.keys())
+
+                        pending = pending_delayed_toolcalls.pop(selected_id, None)
+
+                    if pending:
+                        timer = pending.get("timer")
+                        if timer:
+                            timer.cancel()
+
+                def _cancel_all_delayed_toolcalls() -> None:
+                    with delayed_toolcalls_lock:
+                        pending = list(pending_delayed_toolcalls.values())
+                        pending_delayed_toolcalls.clear()
+                    for entry in pending:
+                        timer = entry.get("timer")
+                        if timer:
+                            timer.cancel()
+
+                cancel_delayed_toolcalls = _cancel_all_delayed_toolcalls
 
                 def _emit_parsed_event(parsed_event: dict, raw_json_line: Optional[str] = None) -> None:
                     event_type = parsed_event.get("type", "")
@@ -2188,6 +2305,14 @@ Model shorthands:
                     # Filter hidden stream types (live mode handles its own filtering)
                     if event_type in hide_types and self.prettifier_mode != self.PRETTIFIER_LIVE:
                         return
+
+                    # Fallback toolcall_end events (without toolCallId) are delayed so
+                    # short tool executions only show the final combined tool event.
+                    if pretty:
+                        fallback_tool_name = _extract_fallback_toolcall_name(parsed_event)
+                        if fallback_tool_name is not None:
+                            _schedule_delayed_toolcall(parsed_event, fallback_tool_name, self.prettifier_mode)
+                            return
 
                     # Live stream mode: stream deltas in real-time
                     if self.prettifier_mode == self.PRETTIFIER_LIVE:
@@ -2306,6 +2431,11 @@ Model shorthands:
                             self._buffered_tool_stdout_lines.clear()
 
                         if pretty and event_type == "tool_execution_end":
+                            # Tool finished before the delayed fallback timer fired — suppress
+                            # the pending fallback toolcall_end preview.
+                            tool_name = parsed.get("toolName", "")
+                            _cancel_delayed_toolcall(tool_name if isinstance(tool_name, str) else "")
+
                             # Defer emission so any trailing raw stdout can be grouped before
                             # downstream structured metadata like turn_end.
                             pending_tool_execution_end = parsed
@@ -2339,6 +2469,7 @@ Model shorthands:
 
             # Signal watchdog that output loop is done
             output_done.set()
+            cancel_delayed_toolcalls()
 
             # Write capture file for shell backend
             self._write_capture_file(capture_path)
@@ -2356,6 +2487,7 @@ Model shorthands:
 
         except KeyboardInterrupt:
             print("\nInterrupted by user", file=sys.stderr)
+            cancel_delayed_toolcalls()
             try:
                 process.terminate()
                 try:
@@ -2370,6 +2502,7 @@ Model shorthands:
 
         except Exception as e:
             print(f"Error executing pi: {e}", file=sys.stderr)
+            cancel_delayed_toolcalls()
             try:
                 if process.poll() is None:
                     process.terminate()
