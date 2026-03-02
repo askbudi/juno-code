@@ -633,6 +633,31 @@ describe('Binary Execution Tests', () => {
       expect(typeof result.exitCode).toBe('number');
     });
 
+    it('should preserve -p prompt value on subagent aliases', async () => {
+      // Regression guard: alias commands used to drop options.prompt and trigger Empty stdin input
+      const result = await executeCLI(['pi', '-p', 'alias prompt', '-i', 'invalid'], {
+        expectError: true,
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('Max iterations must be a valid number');
+      expect(output).not.toContain('Empty stdin input');
+    });
+
+    it('should honor --until-completion on subagent aliases', async () => {
+      // Regression guard: alias path used to ignore this flag and execute main flow instead
+      const result = await executeCLI(
+        ['pi', '--until-completion', '-p', 'alias prompt', '-i', 'invalid'],
+        { expectError: true },
+      );
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('run_until_completion.sh not found');
+      expect(output).not.toContain('Empty stdin input');
+    });
+
     it('should handle completion commands', async () => {
       const result = await executeCLI(['completion', 'bash'], { expectError: true });
 

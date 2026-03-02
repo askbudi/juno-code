@@ -1663,3 +1663,29 @@ describe('normalizeVerbose (Commander.js integration)', () => {
     expect(capturedOptions.silent).toBe(true);
   });
 });
+
+describe('Subagent alias parsing regressions', () => {
+  it('should parse --until-completion as a global option even after subagent alias', async () => {
+    const program = new Command();
+    let captured: any = null;
+
+    program
+      .option('--until-completion', 'Alias for --til-completion')
+      .command('pi')
+      .argument('[prompt...]')
+      .option('-p, --prompt [text]', 'Prompt input')
+      .action((promptArgs, options) => {
+        captured = {
+          promptArgs,
+          options,
+          globalOptions: program.opts(),
+        };
+      });
+
+    await program.parseAsync(['pi', '--until-completion', '-p', 'alias prompt'], { from: 'user' });
+
+    expect(captured.globalOptions.untilCompletion).toBe(true);
+    expect(captured.options.prompt).toBe('alias prompt');
+    expect(captured.promptArgs).toEqual([]);
+  });
+});

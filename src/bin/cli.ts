@@ -217,6 +217,134 @@ function setupGlobalOptions(program: Command): void {
   });
 }
 
+const COMPLETION_FLAGS = [
+  '--til-completion',
+  '--until-completion',
+  '--run-until-completion',
+  '--till-complete',
+] as const;
+
+function isUntilCompletionRequested(options: Record<string, unknown>): boolean {
+  return Boolean(
+    options.tilCompletion ||
+      options.untilCompletion ||
+      options.runUntilCompletion ||
+      options.tillComplete,
+  );
+}
+
+function getForwardedUntilCompletionArgs(): string[] {
+  const args = process.argv.slice(2);
+  const forwardedArgs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg) continue;
+
+    if (COMPLETION_FLAGS.includes(arg as (typeof COMPLETION_FLAGS)[number])) {
+      continue;
+    }
+
+    if (arg === '--pre-run-hook') {
+      // Skip the variadic values for --pre-run-hook until the next option flag
+      while (i + 1 < args.length && !args[i + 1]?.startsWith('-')) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--pre-run-hook=')) {
+      continue;
+    }
+
+    forwardedArgs.push(arg);
+  }
+
+  return forwardedArgs;
+}
+
+async function runUntilCompletionScriptIfRequested(
+  options: Record<string, unknown>,
+): Promise<boolean> {
+  if (!isUntilCompletionRequested(options)) {
+    return false;
+  }
+
+  const { spawn } = await import('node:child_process');
+  const path = await import('node:path');
+  const fs = await import('fs-extra');
+
+  const scriptPath = path.join(process.cwd(), '.juno_task', 'scripts', 'run_until_completion.sh');
+
+  // Check if script exists
+  if (!(await fs.pathExists(scriptPath))) {
+    console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
+    console.error(chalk.red(`   Expected location: ${scriptPath}`));
+    console.error(chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'));
+    process.exit(1);
+    return true;
+  }
+
+  // Build arguments for run_until_completion.sh
+  const scriptArgs: string[] = [];
+
+  // Add --pre-run-hook arguments if provided
+  if (Array.isArray(options.preRunHook)) {
+    for (const hook of options.preRunHook) {
+      scriptArgs.push('--pre-run-hook', String(hook));
+    }
+  }
+
+  // Forward all juno-code arguments except completion flags and pre-run-hook values
+  scriptArgs.push(...getForwardedUntilCompletionArgs());
+
+  // Execute run_until_completion.sh
+  const child = spawn(scriptPath, scriptArgs, {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+  });
+
+  // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
+  // Remove global signal handlers first to prevent conflicts
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+
+  let childExited = false;
+  const signalHandler = (signal: NodeJS.Signals) => {
+    if (!childExited && child.pid) {
+      // Forward signal to child process
+      try {
+        process.kill(child.pid, signal);
+      } catch {
+        // Child might have already exited, ignore errors
+      }
+    }
+  };
+
+  process.on('SIGINT', signalHandler);
+  process.on('SIGTERM', signalHandler);
+
+  child.on('exit', (code) => {
+    childExited = true;
+    // Clean up signal handlers
+    process.removeListener('SIGINT', signalHandler);
+    process.removeListener('SIGTERM', signalHandler);
+    process.exit(code || 0);
+  });
+
+  child.on('error', (error) => {
+    childExited = true;
+    // Clean up signal handlers
+    process.removeListener('SIGINT', signalHandler);
+    process.removeListener('SIGTERM', signalHandler);
+    console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
+    console.error(chalk.red(`   ${error.message}`));
+    process.exit(1);
+  });
+
+  return true;
+}
+
 /**
  * Setup main execution command (default command)
  */
@@ -256,100 +384,7 @@ function setupMainCommand(program: Command): void {
           allOptions.quiet = true;
         }
 
-        // Handle --til-completion flag and its synonyms: invoke run_until_completion.sh
-        if (
-          allOptions.tilCompletion ||
-          allOptions.untilCompletion ||
-          allOptions.runUntilCompletion ||
-          allOptions.tillComplete
-        ) {
-          const { spawn } = await import('node:child_process');
-          const path = await import('node:path');
-          const fs = await import('fs-extra');
-
-          const scriptPath = path.join(
-            process.cwd(),
-            '.juno_task',
-            'scripts',
-            'run_until_completion.sh',
-          );
-
-          // Check if script exists
-          if (!(await fs.pathExists(scriptPath))) {
-            console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
-            console.error(chalk.red(`   Expected location: ${scriptPath}`));
-            console.error(
-              chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'),
-            );
-            process.exit(1);
-          }
-
-          // Build arguments for run_until_completion.sh
-          const scriptArgs: string[] = [];
-
-          // Add --pre-run-hook arguments if provided
-          if (allOptions.preRunHook && Array.isArray(allOptions.preRunHook)) {
-            for (const hook of allOptions.preRunHook) {
-              scriptArgs.push('--pre-run-hook', hook);
-            }
-          }
-
-          // Forward all juno-code arguments (except --til-completion and its synonyms, and --pre-run-hook)
-          const completionFlags = [
-            '--til-completion',
-            '--until-completion',
-            '--run-until-completion',
-            '--till-complete',
-          ];
-          const forwardedArgs = process.argv
-            .slice(2)
-            .filter((arg) => !completionFlags.includes(arg) && !arg.startsWith('--pre-run-hook'));
-          scriptArgs.push(...forwardedArgs);
-
-          // Execute run_until_completion.sh
-          const child = spawn(scriptPath, scriptArgs, {
-            stdio: 'inherit',
-            cwd: process.cwd(),
-          });
-
-          // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
-          // Remove global signal handlers first to prevent conflicts
-          process.removeAllListeners('SIGINT');
-          process.removeAllListeners('SIGTERM');
-
-          let childExited = false;
-          const signalHandler = (signal: NodeJS.Signals) => {
-            if (!childExited && child.pid) {
-              // Forward signal to child process
-              try {
-                process.kill(child.pid, signal);
-              } catch (err) {
-                // Child might have already exited, ignore errors
-              }
-            }
-          };
-
-          process.on('SIGINT', signalHandler);
-          process.on('SIGTERM', signalHandler);
-
-          child.on('exit', (code) => {
-            childExited = true;
-            // Clean up signal handlers
-            process.removeListener('SIGINT', signalHandler);
-            process.removeListener('SIGTERM', signalHandler);
-            process.exit(code || 0);
-          });
-
-          child.on('error', (error) => {
-            childExited = true;
-            // Clean up signal handlers
-            process.removeListener('SIGINT', signalHandler);
-            process.removeListener('SIGTERM', signalHandler);
-            console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
-            console.error(chalk.red(`   ${error.message}`));
-            process.exit(1);
-          });
-
+        if (await runUntilCompletionScriptIfRequested(allOptions)) {
           return;
         }
 
@@ -756,30 +791,40 @@ function setupAliases(program: Command): void {
       .option('--continue', 'Continue the most recent conversation')
       .option('-I, --interactive', 'Interactive mode for typing prompts')
       .addHelpText('after', help.helpText)
-      .action(async (prompt, options, command) => {
+      .action(async (promptArgs: string[], options, command) => {
+        // Merge positional prompt args into options.prompt (if -p not already set)
+        if (promptArgs.length > 0 && options.prompt === undefined) {
+          options.prompt = promptArgs.join(' ');
+        }
+
         try {
           const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
           _getActiveSessionId = getActiveSessionId;
-          const promptText = Array.isArray(prompt) ? prompt.join(' ') : prompt;
-          // Get global options and merge with command options
+
+          // Get global options from program
           const globalOptions = program.opts();
-          // Normalize verbose and handle --silent alias
-          const normalizedVerbose = normalizeVerbose(globalOptions.verbose);
-          const isQuietAlias = globalOptions.silent || options.silent;
-          await mainCommandHandler(
-            [],
-            {
-              ...globalOptions,
-              ...options,
-              verbose: normalizedVerbose,
-              quiet: globalOptions.quiet || options.quiet || isQuietAlias || false,
-              subagent,
-              prompt: promptText,
-            },
-            command,
+          // Merge options with command options taking precedence over global options
+          // Only merge defined global options to avoid overwriting command options with undefined
+          const definedGlobalOptions = Object.fromEntries(
+            Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
           );
+          const allOptions = { ...definedGlobalOptions, ...options, subagent };
+
+          // Normalize verbose: default true, -v false/0/no disables
+          allOptions.verbose = normalizeVerbose(allOptions.verbose);
+
+          // Handle --silent as alias for --quiet
+          if (allOptions.silent) {
+            allOptions.quiet = true;
+          }
+
+          if (await runUntilCompletionScriptIfRequested(allOptions)) {
+            return;
+          }
+
+          await mainCommandHandler([], allOptions, command);
         } catch (error) {
-          handleCLIError(error, options.verbose);
+          handleCLIError(error, normalizeVerbose(options.verbose));
         }
       });
 
