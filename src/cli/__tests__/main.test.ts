@@ -1377,6 +1377,14 @@ describe('Verbose/Quiet Output Modes', () => {
       workingDirectory: opts.workingDirectory || '/test/dir',
       maxIterations: opts.maxIterations || 1,
       model: opts.model || ':sonnet',
+      agents: opts.agents,
+      tools: opts.tools,
+      allowedTools: opts.allowedTools,
+      appendAllowedTools: opts.appendAllowedTools,
+      disallowedTools: opts.disallowedTools,
+      resume: opts.resume,
+      continueConversation: opts.continueConversation,
+      thinking: opts.thinking,
     }) as any);
 
     const fsExtra = await import('fs-extra');
@@ -1403,6 +1411,22 @@ describe('Verbose/Quiet Output Modes', () => {
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
     expect(allCalls.some((c: string) => c.includes('Model:') || c.includes(':sonnet'))).toBe(true);
     expect(allCalls.some((c: string) => c.includes('Max Iterations:'))).toBe(true);
+  });
+
+  it('should show selected runtime options (e.g. thinking) in execution summary', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      thinking: 'xhigh',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
+    expect(allCalls.some((c: string) => c.includes('Thinking: xhigh'))).toBe(true);
   });
 
   it('should NOT show model and iterations at verbose level 0 (quiet)', async () => {

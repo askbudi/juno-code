@@ -352,6 +352,10 @@ class MainProgressDisplay {
       ),
     );
 
+    for (const [label, value] of this.getSelectedExecutionOptions(request)) {
+      console.error(chalk.gray(`   ${label}: ${value}`));
+    }
+
     // Level 2 only: Request ID, Working Directory (debug info)
     if (this.verboseLevel >= 2) {
       console.error(chalk.gray(`   Request ID: ${request.requestId}`));
@@ -365,6 +369,40 @@ class MainProgressDisplay {
         : request.instruction;
     console.error(chalk.white(`   ${preview}`));
     console.error('');
+  }
+
+  private getSelectedExecutionOptions(request: ExecutionRequest): Array<[string, string]> {
+    const selected: Array<[string, string]> = [];
+
+    if (request.thinking) {
+      selected.push(['Thinking', request.thinking]);
+    }
+    if (request.resume) {
+      selected.push(['Resume Session', request.resume]);
+    }
+    if (request.continueConversation) {
+      selected.push(['Continue Conversation', 'latest']);
+    }
+    if (request.agents) {
+      selected.push(['Agents', this.truncateSummaryValue(request.agents)]);
+    }
+
+    const pushListOption = (label: string, values: readonly string[] | undefined): void => {
+      if (!values || values.length === 0) return;
+      selected.push([label, this.truncateSummaryValue(values.join(', '))]);
+    };
+
+    pushListOption('Tools', request.tools);
+    pushListOption('Allowed Tools', request.allowedTools);
+    pushListOption('Append Allowed Tools', request.appendAllowedTools);
+    pushListOption('Disallowed Tools', request.disallowedTools);
+
+    return selected;
+  }
+
+  private truncateSummaryValue(value: string, maxLength: number = 140): string {
+    if (value.length <= maxLength) return value;
+    return `${value.substring(0, maxLength - 3)}...`;
   }
 
   onProgress(event: ProgressEvent): void {
