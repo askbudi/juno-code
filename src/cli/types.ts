@@ -81,6 +81,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   backend?: 'shell';
   /** Interactive mode for typing prompts */
   interactive?: boolean;
+  /** Run Pi subagent in interactive live TUI mode (pi-only) */
+  live?: boolean;
   /** Launch interactive prompt editor */
   interactivePrompt?: boolean;
   /** Resume a conversation by session ID (shell backend only) */

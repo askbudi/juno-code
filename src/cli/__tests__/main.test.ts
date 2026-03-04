@@ -80,6 +80,7 @@ vi.mock('../../core/engine.js', () => ({
     workingDirectory: opts.workingDirectory,
     maxIterations: opts.maxIterations,
     model: opts.model,
+    live: opts.live,
   })),
 }));
 
@@ -182,6 +183,7 @@ describe('Main Command', () => {
       workingDirectory: opts.workingDirectory,
       maxIterations: opts.maxIterations,
       model: opts.model,
+      live: opts.live,
     }));
 
     vi.mocked(fs.pathExists).mockResolvedValue(false as any);
@@ -235,6 +237,56 @@ describe('Main Command', () => {
         await mainCommandHandler([], options, mockCommand);
 
         expect(processExitSpy).toHaveBeenCalledWith(1);
+      });
+
+      it('should reject --live for non-pi subagents with actionable validation guidance', async () => {
+        const options = {
+          subagent: 'claude',
+          prompt: 'test prompt',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          live: true,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        } as MainCommandOptions & { live: boolean };
+
+        await mainCommandHandler([], options as MainCommandOptions, mockCommand);
+
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+
+        const stderrOutput = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls
+          .flat()
+          .join('\n');
+        expect(stderrOutput).toContain('--live is only supported with the pi subagent');
+        expect(stderrOutput).toContain('Use: juno-code pi --live');
+      });
+
+      it('should accept --live for pi and forward live=true into execution request', async () => {
+        const options = {
+          subagent: 'pi',
+          prompt: 'test prompt',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          live: true,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        } as MainCommandOptions & { live: boolean };
+
+        await mainCommandHandler([], options as MainCommandOptions, mockCommand);
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            subagent: 'pi',
+            live: true,
+          }),
+        );
+        expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
       it.skip('should accept subagent aliases', async () => {
@@ -1385,6 +1437,7 @@ describe('Verbose/Quiet Output Modes', () => {
       resume: opts.resume,
       continueConversation: opts.continueConversation,
       thinking: opts.thinking,
+      live: opts.live,
     }) as any);
 
     const fsExtra = await import('fs-extra');
@@ -1427,6 +1480,22 @@ describe('Verbose/Quiet Output Modes', () => {
 
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
     expect(allCalls.some((c: string) => c.includes('Thinking: xhigh'))).toBe(true);
+  });
+
+  it('should show live mode selection in execution summary when --live is enabled for pi', async () => {
+    const options = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      live: true,
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    } as MainCommandOptions & { live: boolean };
+
+    await mainCommandHandler([], options as MainCommandOptions, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Live Mode: enabled'))).toBe(true);
   });
 
   it('should NOT show model and iterations at verbose level 0 (quiet)', async () => {

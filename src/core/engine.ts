@@ -94,6 +94,9 @@ export interface ExecutionRequest {
 
   /** Extended thinking level (forwarded to shell backend --thinking flag) */
   readonly thinking?: string;
+
+  /** Run Pi subagent in interactive live mode (forwarded to shell backend --live flag) */
+  readonly live?: boolean;
 }
 
 /**
@@ -1071,6 +1074,7 @@ export class ExecutionEngine extends EventEmitter {
           continueConversation: context.request.continueConversation,
         }),
         ...(context.request.thinking !== undefined && { thinking: context.request.thinking }),
+        ...(context.request.live !== undefined && { live: context.request.live }),
         iteration: iterationNumber,
       },
       timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
@@ -1842,6 +1846,7 @@ export function createExecutionRequest(options: {
   resume?: string;
   continueConversation?: boolean;
   thinking?: string;
+  live?: boolean;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1890,6 +1895,10 @@ export function createExecutionRequest(options: {
 
   if (options.thinking !== undefined) {
     (result as any).thinking = options.thinking;
+  }
+
+  if (options.live !== undefined) {
+    (result as any).live = options.live;
   }
 
   return result;

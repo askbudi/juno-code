@@ -360,6 +360,7 @@ function setupMainCommand(program: Command): void {
     .option('-w, --cwd <path>', 'Working directory')
     .option('-i, --max-iterations <number>', 'Maximum iterations (-1 for unlimited)', parseInt)
     .option('-I, --interactive', 'Interactive mode for typing prompts')
+    .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
     .option('-ip, --interactive-prompt', 'Launch interactive prompt editor')
     .action(async (promptArgs: string[], options, command) => {
       // Merge positional prompt args into options.prompt (if -p not already set)
@@ -626,6 +627,7 @@ ${chalk.blue('Service-Specific Options:')}
   --no-session              Ephemeral mode — no session persistence
   --auto-instruction <txt>  Text prepended to the prompt automatically
   --additional-args <args>  Extra Pi CLI arguments as a space-separated string
+  --live                    Run Pi in interactive TUI mode (auto-exits on completion)
 
 ${chalk.blue('Environment Variables:')}
   PI_MODEL                  Model override (default: anthropic/claude-sonnet-4-6)
@@ -656,6 +658,9 @@ ${chalk.blue('Examples:')}
   juno-code pi --no-tools 'Read-only analysis'
   juno-code pi --no-session 'One-off question'
   juno-code pi --resume <session-id> 'Continue work'
+
+  ${chalk.gray('# Interactive live TUI mode')}
+  juno-code pi --live -p '/skill:ralph-loop' -i 1
 
   ${chalk.gray('# File-based prompt')}
   juno-code pi -f instructions.md
@@ -791,6 +796,7 @@ function setupAliases(program: Command): void {
       .option('-r, --resume <sessionId>', 'Resume a conversation by session ID')
       .option('--continue', 'Continue the most recent conversation')
       .option('-I, --interactive', 'Interactive mode for typing prompts')
+      .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
       .addHelpText('after', help.helpText)
       .action(async (promptArgs: string[], options, command) => {
         // Merge positional prompt args into options.prompt (if -p not already set)

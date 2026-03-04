@@ -377,6 +377,9 @@ class MainProgressDisplay {
     if (request.thinking) {
       selected.push(['Thinking', request.thinking]);
     }
+    if (request.live) {
+      selected.push(['Live Mode', 'enabled']);
+    }
     if (request.resume) {
       selected.push(['Resume Session', request.resume]);
     }
@@ -925,6 +928,14 @@ export async function mainCommandHandler(
       ]);
     }
 
+    // Validate --live usage (pi-only)
+    if (options.live && options.subagent !== 'pi') {
+      throw new ValidationError('--live is only supported with the pi subagent', [
+        'Use: juno-code pi --live -p "your prompt"',
+        'Remove --live for non-pi subagents',
+      ]);
+    }
+
     // Process prompt
     const promptProcessor = new PromptProcessor(options);
     const instruction = await promptProcessor.processPrompt();
@@ -988,6 +999,7 @@ export async function mainCommandHandler(
       ...(options.resume !== undefined ? { resume: options.resume } : {}),
       ...(options.continue !== undefined ? { continueConversation: options.continue } : {}),
       ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
+      ...(options.live !== undefined ? { live: options.live } : {}),
     });
 
     // Execute
