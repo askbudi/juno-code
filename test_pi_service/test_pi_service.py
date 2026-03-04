@@ -49,6 +49,7 @@ def _make_args(**overrides):
         no_session=False,
         auto_instruction="",
         additional_args="",
+        live=False,
         pretty="true",
         verbose=False,
     )
@@ -188,6 +189,39 @@ class TestBuildPiCommand:
         assert "--mode" in cmd
         mode_idx = cmd.index("--mode")
         assert cmd[mode_idx + 1] == "json"
+
+    def test_live_mode_excludes_mode_json(self):
+        """Live mode should launch Pi TUI path without forcing --mode json."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "test live"
+        args = _make_args(live=True)
+        cmd, _stdin = self.svc.build_pi_command(args)
+
+        assert "--mode" not in cmd
+
+    def test_live_mode_uses_positional_prompt_not_print_flag(self):
+        """Live mode should pass the initial prompt positionally (no -p, no stdin piping)."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "live prompt"
+        args = _make_args(live=True)
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+
+        assert "-p" not in cmd
+        assert stdin_prompt is None
+        assert cmd[-1] == "live prompt"
+
+    def test_non_live_mode_keeps_headless_json_contract(self):
+        """Non-live mode should keep existing --mode json + -p behavior unchanged."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "non-live prompt"
+        args = _make_args(live=False)
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+
+        assert "--mode" in cmd
+        mode_idx = cmd.index("--mode")
+        assert cmd[mode_idx + 1] == "json"
+        assert "-p" in cmd
+        assert stdin_prompt is None
 
     def test_no_session_when_enabled(self):
         """build_pi_command includes --no-session when no_session=True."""
@@ -358,6 +392,22 @@ class TestBuildPiCommand:
         assert stdin_prompt is not None
         assert "line1\nline2\nline3" in stdin_prompt
         assert "-p" not in cmd
+
+
+class TestLiveModeAutoExitExtension:
+    """Red-phase tests for live-mode extension capture/shutdown contract."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_live_extension_source_contains_agent_end_capture_and_shutdown(self):
+        """Live extension must capture agent_end payload and call ctx.shutdown()."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert "agent_end" in source
+        assert "ctx.shutdown()" in source
+        assert "pi-live-capture.json" in source
 
 
 # ===================================================================
