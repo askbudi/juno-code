@@ -795,6 +795,11 @@ export class ShellBackend implements Backend {
         args.push('--cd', String(request.arguments.project_path));
       }
 
+      // For Pi subagent, forward live mode flag when requested
+      if (isPython && subagentType === 'pi' && request.arguments?.live === true) {
+        args.push('--live');
+      }
+
       // For Python scripts, pass verbose flag if verbose mode is enabled
       if (isPython && this.config!.debug) {
         args.push('--verbose');

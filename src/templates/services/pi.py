@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -396,6 +397,13 @@ Model shorthands:
         )
 
         parser.add_argument(
+            "--live",
+            action="store_true",
+            default=os.environ.get("PI_LIVE", "false").lower() == "true",
+            help="Run Pi in interactive/live mode (no --mode json). Uses an auto-exit extension to capture agent_end and shutdown cleanly. (env: PI_LIVE)",
+        )
+
+        parser.add_argument(
             "--pretty",
             type=str,
             default=os.environ.get("PI_PRETTY", "true"),
@@ -423,15 +431,21 @@ Model shorthands:
             print(f"Error reading prompt file: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def build_pi_command(self, args: argparse.Namespace) -> Tuple[List[str], Optional[str]]:
-        """Construct the Pi CLI command for headless JSON streaming execution.
+    def build_pi_command(
+        self,
+        args: argparse.Namespace,
+        live_extension_path: Optional[str] = None,
+    ) -> Tuple[List[str], Optional[str]]:
+        """Construct the Pi CLI command.
 
-        Returns (cmd, stdin_prompt): cmd is the argument list, stdin_prompt is
-        the prompt text to pipe via stdin (or None to pass as positional arg).
-        For multiline or large prompts we pipe via stdin so Pi reads it
-        naturally without command-line quoting issues.
+        Non-live mode keeps the existing headless JSON contract.
+        Live mode switches to Pi interactive defaults (no --mode json, no -p)
+        and passes the initial prompt positionally.
         """
-        cmd = ["pi", "--mode", "json"]
+        is_live_mode = bool(getattr(args, "live", False))
+        cmd = ["pi"]
+        if not is_live_mode:
+            cmd.extend(["--mode", "json"])
 
         # Model: if provider/model format, split and pass separately
         model = self.model_name
@@ -476,16 +490,33 @@ Model shorthands:
         elif args.no_session:
             cmd.append("--no-session")
 
+        # Attach live auto-exit extension when requested.
+        if is_live_mode and live_extension_path:
+            cmd.extend(["-e", live_extension_path])
+
         # Build prompt with optional auto-instruction
         full_prompt = self.prompt
         if args.auto_instruction:
             full_prompt = f"{args.auto_instruction}\n\n{full_prompt}"
 
+        stdin_prompt: Optional[str] = None
+
+        if is_live_mode:
+            # Live mode uses positional prompt input (no -p and no stdin piping).
+            cmd.append(full_prompt)
+
+            # Additional raw arguments should still be honored; place before the
+            # positional prompt so flags remain flags.
+            if args.additional_args:
+                extra = args.additional_args.strip().split()
+                if extra:
+                    cmd = cmd[:-1] + extra + [cmd[-1]]
+            return cmd, None
+
         # For multiline or large prompts, pipe via stdin to avoid command-line
         # argument issues. Pi CLI reads stdin when isTTY is false and
         # automatically prepends it to messages in print mode.
         # For simple single-line prompts, pass as positional arg + -p flag.
-        stdin_prompt: Optional[str] = None
         if "\n" in full_prompt or len(full_prompt) > 4096:
             # Pipe via stdin — Pi auto-enables print mode when stdin has data
             stdin_prompt = full_prompt
@@ -2249,6 +2280,102 @@ Model shorthands:
         except Exception as e:
             print(f"Warning: Could not write capture file: {e}", file=sys.stderr)
 
+    def _build_live_auto_exit_extension_source(self, capture_path: Optional[str]) -> str:
+        """Build a temporary Pi extension source used by --live mode.
+
+        The extension listens for agent_end, writes a compact result envelope to
+        JUNO_SUBAGENT_CAPTURE_PATH-compatible location, then requests
+        graceful shutdown via ctx.shutdown().
+        """
+        capture_literal = json.dumps(capture_path or "")
+        source = """import type { ExtensionAPI } from \"@mariozechner/pi-coding-agent\";
+import * as fs from \"node:fs\";
+
+const capturePath = __CAPTURE_PATH__;
+
+function extractTextFromMessages(messages: any[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== \"assistant\") continue;
+
+    const content = msg.content;
+    if (typeof content === \"string\") {
+      if (content.trim()) return content;
+      continue;
+    }
+
+    if (Array.isArray(content)) {
+      const parts: string[] = [];
+      for (const item of content) {
+        if (typeof item === \"string\" && item.trim()) {
+          parts.push(item);
+          continue;
+        }
+        if (item && item.type === \"text\" && typeof item.text === \"string\" && item.text.trim()) {
+          parts.push(item.text);
+        }
+      }
+      if (parts.length > 0) return parts.join(\"\\n\");
+    }
+  }
+  return \"\";
+}
+
+function extractAssistantUsage(messages: any[]): any | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && msg.role === \"assistant\" && msg.usage && typeof msg.usage === \"object\") {
+      return msg.usage;
+    }
+  }
+  return undefined;
+}
+
+export default function (pi: ExtensionAPI) {
+  let completed = false;
+
+  pi.on(\"agent_end\", async (event, ctx) => {
+    if (completed) return;
+    completed = true;
+
+    try {
+      const messages = Array.isArray(event?.messages) ? event.messages : [];
+      const usage = extractAssistantUsage(messages);
+      const totalCost = typeof usage?.cost?.total === \"number\" ? usage.cost.total : undefined;
+      const payload: any = {
+        type: \"result\",
+        subtype: \"success\",
+        is_error: false,
+        result: extractTextFromMessages(messages),
+        usage,
+        total_cost_usd: totalCost,
+        sub_agent_response: event,
+      };
+
+      if (capturePath) {
+        fs.writeFileSync(capturePath, JSON.stringify(payload), \"utf-8\");
+      }
+    } catch {
+      // Keep shutdown behavior even when capture writing fails.
+    } finally {
+      ctx.shutdown();
+    }
+  });
+}
+"""
+        return source.replace("__CAPTURE_PATH__", capture_literal)
+
+    def _create_live_auto_exit_extension_file(self, capture_path: Optional[str]) -> Optional[Path]:
+        """Create a temporary live-mode extension file and return its path."""
+        try:
+            fd, temp_path = tempfile.mkstemp(prefix="juno-pi-live-auto-exit-", suffix=".ts")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(self._build_live_auto_exit_extension_source(capture_path))
+            return Path(temp_path)
+        except Exception as exc:
+            print(f"Warning: Failed to create live auto-exit extension: {exc}", file=sys.stderr)
+            return None
+
     def run_pi(self, cmd: List[str], args: argparse.Namespace,
                stdin_prompt: Optional[str] = None) -> int:
         """Execute the Pi CLI and stream/format its JSON output.
@@ -2296,6 +2423,8 @@ Model shorthands:
             if not capture_path:
                 print(f"Executing: {' '.join(display_cmd)}", file=sys.stderr)
                 print("-" * 80, file=sys.stderr)
+
+        process: Optional[subprocess.Popen] = None
 
         try:
             process = subprocess.Popen(
@@ -2717,12 +2846,13 @@ Model shorthands:
             print("\nInterrupted by user", file=sys.stderr)
             cancel_delayed_toolcalls()
             try:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process is not None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
             except Exception:
                 pass
             self._write_capture_file(capture_path)
@@ -2732,7 +2862,7 @@ Model shorthands:
             print(f"Error executing pi: {e}", file=sys.stderr)
             cancel_delayed_toolcalls()
             try:
-                if process.poll() is None:
+                if process is not None and process.poll() is None:
                     process.terminate()
                     process.wait(timeout=5)
             except Exception:
@@ -2783,8 +2913,30 @@ Model shorthands:
         else:
             self.prompt = prompt_value
 
-        cmd, stdin_prompt = self.build_pi_command(args)
-        return self.run_pi(cmd, args, stdin_prompt=stdin_prompt)
+        if args.live and args.no_extensions:
+            print("Error: --live requires extensions enabled (remove --no-extensions).", file=sys.stderr)
+            return 1
+
+        live_extension_file: Optional[Path] = None
+        if args.live:
+            capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+            live_extension_file = self._create_live_auto_exit_extension_file(capture_path)
+            if not live_extension_file:
+                print("Error: Could not create live auto-exit extension.", file=sys.stderr)
+                return 1
+
+        try:
+            cmd, stdin_prompt = self.build_pi_command(
+                args,
+                live_extension_path=str(live_extension_file) if live_extension_file else None,
+            )
+            return self.run_pi(cmd, args, stdin_prompt=stdin_prompt)
+        finally:
+            if live_extension_file is not None:
+                try:
+                    live_extension_file.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"Warning: Failed to remove temp live extension: {e}", file=sys.stderr)
 
 
 def main():
