@@ -625,6 +625,179 @@ print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
     expect(parsed.args[cdIdx + 1]).toBe('/my/project/dir');
   });
 
+  it('forwards --live flag to Pi subagent and consumes capture payload when provided', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-cap-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, os, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+if capture_path:
+    captured = {
+      "type": "result",
+      "subtype": "success",
+      "is_error": False,
+      "result": "captured live result",
+      "usage": {"cost": {"total": 0.000777}}
+    }
+    with open(capture_path, "w") as f:
+        f.write(json.dumps(captured))
+
+print(json.dumps({"type": "agent_end", "result": "stdout fallback result"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'test live task',
+        project_path: tempRoot,
+        live: true,
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.result).toBe('captured live result');
+    expect(parsed.total_cost_usd).toBeCloseTo(0.000777, 10);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const argvLine = rawOutput
+      .trim()
+      .split('\n')
+      .find((line: string) => line.includes('"type": "argv"'));
+    expect(argvLine).toBeTruthy();
+    const argvPayload = JSON.parse(argvLine!);
+
+    expect(argvPayload.args).toContain('--live');
+  });
+
+  it('keeps Pi structured fallback stable when live capture file is absent', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-fallback-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "agent_end", "result": "live fallback result"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'live fallback task',
+        project_path: tempRoot,
+        live: true,
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+
+    expect(result.status).toBe('completed');
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.subtype).toBe('success');
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('live fallback result');
+    expect(parsed.sub_agent_response?.type).toBe('agent_end');
+  });
+
+  it('keeps non-live Pi argv unchanged (no --live flag)', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-nonlive-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "agent_end", "result": "non-live result"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'non-live task',
+        project_path: tempRoot,
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const argvLine = rawOutput
+      .trim()
+      .split('\n')
+      .find((line: string) => line.includes('"type": "argv"'));
+    expect(argvLine).toBeTruthy();
+    const argvPayload = JSON.parse(argvLine!);
+
+    expect(argvPayload.args).not.toContain('--live');
+  });
+
   it('passes --continue flag to Claude subagent when continueConversation is set', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-cont-'));
     tempRoots.push(tempRoot);
