@@ -239,15 +239,17 @@ npm install -g @mariozechner/pi-coding-agent
 #### Features
 
 - Multi-provider support (Anthropic, OpenAI, Google, Groq, xAI, etc.)
-- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:gemini-pro`, etc.)
+- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
 - Support for inline prompts or prompt files
-- JSON/text output normalization
+- Headless JSON mode (default) for structured automation output
+- Live interactive mode via `--live` (Pi TUI + auto-exit on `agent_end`)
+- Temporary live extension capture (`JUNO_SUBAGENT_CAPTURE_PATH`) for iteration summaries/cost
 - Verbose mode for debugging
 
 #### Usage
 
 ```bash
-# Basic usage with Anthropic model
+# Basic headless JSON-mode usage with Anthropic model
 ~/.juno_code/services/pi.py -p "Write a hello world function" -m :sonnet
 
 # Use with OpenAI model
@@ -255,6 +257,9 @@ npm install -g @mariozechner/pi-coding-agent
 
 # Use with Gemini model
 ~/.juno_code/services/pi.py -p "Add tests" -m :gemini-pro
+
+# Live interactive mode (Pi TUI + auto-exit extension)
+~/.juno_code/services/pi.py --live -p "Summarize this repo" -m :api-codex
 
 # Specify project directory
 ~/.juno_code/services/pi.py -p "Fix bugs" --cd /path/to/project
@@ -269,17 +274,29 @@ npm install -g @mariozechner/pi-coding-agent
 - `-pp, --prompt-file <path>`: Path to prompt file (required if no --prompt)
 - `--cd <path>`: Project path (default: current directory)
 - `-m, --model <name>`: Model name (supports shorthand aliases)
+- `--live`: Run Pi in interactive mode (no `--mode json`, prompt passed positionally)
+- `--no-extensions`: Disable Pi extensions (incompatible with `--live`)
 - `--verbose`: Enable verbose output
 
 #### Via juno-code
 
 ```bash
-# Run Pi through juno-code
+# Run Pi through juno-code (headless default)
 juno-code -b shell -s pi -m :sonnet -i 1 -v -p "your task"
+
+# Run Pi in live interactive mode (auto-exits on completion)
+juno-code pi --live -p '/skill:ralph-loop' -i 1
+
+# If :pi default model is unavailable in your provider config, set an explicit model
+juno-code pi --live -m :api-codex -p "your task" -i 1
 
 # Quick shortcut
 juno-code pi "your task"
 ```
+
+Notes:
+- `--live` is Pi-only and expects an interactive terminal for clean TUI rendering.
+- Pi TUI should run on a modern Node runtime (Node 20+ recommended).
 
 ## Customization
 
