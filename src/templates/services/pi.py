@@ -2425,8 +2425,26 @@ export default function (pi: ExtensionAPI) {
                 print("-" * 80, file=sys.stderr)
 
         process: Optional[subprocess.Popen] = None
+        is_live_tty_passthrough = (
+            bool(getattr(args, "live", False))
+            and hasattr(sys.stdin, "isatty")
+            and hasattr(sys.stdout, "isatty")
+            and sys.stdin.isatty()
+            and sys.stdout.isatty()
+        )
 
         try:
+            if is_live_tty_passthrough:
+                # Interactive live mode: attach Pi directly to the current terminal.
+                # This preserves full-screen TUI rendering and keyboard input.
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=self.project_path,
+                )
+                process.wait()
+                self._write_capture_file(capture_path)
+                return process.returncode or 0
+
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE if stdin_prompt else subprocess.DEVNULL,

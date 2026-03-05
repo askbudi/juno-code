@@ -696,6 +696,97 @@ print(json.dumps({"type": "agent_end", "result": "stdout fallback result"}))
     expect(argvPayload.args).toContain('--live');
   });
 
+  it('attaches Pi live mode to inherited stdio on TTY while preserving capture payload', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-tty-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, os, sys
+
+print("stdout-live-sentinel")
+
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+if capture_path:
+    captured = {
+      "type": "result",
+      "subtype": "success",
+      "is_error": False,
+      "result": "captured tty live result",
+      "argv": sys.argv[1:]
+    }
+    with open(capture_path, "w") as f:
+        f.write(json.dumps(captured))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true,
+    });
+    await backend.initialize();
+
+    const stdinStream = process.stdin as NodeJS.ReadStream & { isTTY?: boolean };
+    const stdoutStream = process.stdout as NodeJS.WriteStream & { isTTY?: boolean };
+    const originalStdinIsTTY = stdinStream.isTTY;
+    const originalStdoutIsTTY = stdoutStream.isTTY;
+
+    Object.defineProperty(stdinStream, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(stdoutStream, 'isTTY', { value: true, configurable: true });
+
+    try {
+      const request: ToolCallRequest = {
+        toolName: 'pi_subagent',
+        arguments: {
+          instruction: 'interactive live task',
+          project_path: tempRoot,
+          live: true,
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1,
+        },
+      };
+
+      const result = await backend.execute(request);
+
+      const parsed = JSON.parse(result.content);
+      expect(parsed.type).toBe('result');
+      expect(parsed.result).toBe('captured tty live result');
+      expect(parsed.sub_agent_response?.argv).toContain('--live');
+
+      // In inherited-stdio live mode, script stdout is not captured into rawOutput.
+      const rawOutput = (result.metadata as any)?.rawOutput ?? '';
+      expect(rawOutput).not.toContain('stdout-live-sentinel');
+    } finally {
+      if (originalStdinIsTTY === undefined) {
+        delete (stdinStream as Record<string, unknown>).isTTY;
+      } else {
+        Object.defineProperty(stdinStream, 'isTTY', {
+          value: originalStdinIsTTY,
+          configurable: true,
+        });
+      }
+
+      if (originalStdoutIsTTY === undefined) {
+        delete (stdoutStream as Record<string, unknown>).isTTY;
+      } else {
+        Object.defineProperty(stdoutStream, 'isTTY', {
+          value: originalStdoutIsTTY,
+          configurable: true,
+        });
+      }
+    }
+  });
+
   it('keeps Pi structured fallback stable when live capture file is absent', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-fallback-'));
     tempRoots.push(tempRoot);

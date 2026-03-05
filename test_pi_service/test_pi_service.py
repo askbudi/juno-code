@@ -410,6 +410,93 @@ class TestLiveModeAutoExitExtension:
         assert "pi-live-capture.json" in source
 
 
+class TestRunPiLiveTTYPassthrough:
+    """run_pi should attach live sessions to terminal when TTY is available."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    class _FakeTTYProcess:
+        def __init__(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    class _FakePipeProcess:
+        def __init__(self):
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.stdin = None
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    def test_live_mode_with_tty_uses_passthrough_stdio(self, monkeypatch):
+        popen_calls = {}
+        fake_process = self._FakeTTYProcess()
+
+        def _fake_popen(*popen_args, **popen_kwargs):
+            popen_calls["args"] = popen_args
+            popen_calls["kwargs"] = popen_kwargs
+            return fake_process
+
+        monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 0
+        kwargs = popen_calls["kwargs"]
+        assert "stdin" not in kwargs
+        assert "stdout" not in kwargs
+        assert "stderr" not in kwargs
+
+    def test_live_mode_without_tty_keeps_pipe_streaming_path(self, monkeypatch):
+        popen_calls = {}
+        fake_process = self._FakePipeProcess()
+
+        def _fake_popen(*popen_args, **popen_kwargs):
+            popen_calls["args"] = popen_args
+            popen_calls["kwargs"] = popen_kwargs
+            return fake_process
+
+        monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 0
+        kwargs = popen_calls["kwargs"]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.PIPE
+
+
 # ===================================================================
 # 3. Prettifier mode detection
 # ===================================================================
