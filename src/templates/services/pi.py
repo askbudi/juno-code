@@ -2434,14 +2434,101 @@ function extractTextFromMessages(messages: any[]): string {
   return \"\";
 }
 
+function isFiniteNumber(value: any): value is number {
+  return typeof value === \"number\" && Number.isFinite(value);
+}
+
+function normalizeUsage(usage: any): any | undefined {
+  if (!usage || typeof usage !== \"object\") return undefined;
+
+  const cost = usage.cost && typeof usage.cost === \"object\" ? usage.cost : {};
+
+  const input = isFiniteNumber(usage.input) ? usage.input : 0;
+  const output = isFiniteNumber(usage.output) ? usage.output : 0;
+  const cacheRead = isFiniteNumber(usage.cacheRead) ? usage.cacheRead : 0;
+  const cacheWrite = isFiniteNumber(usage.cacheWrite) ? usage.cacheWrite : 0;
+  const totalTokens = isFiniteNumber(usage.totalTokens)
+    ? usage.totalTokens
+    : input + output + cacheRead + cacheWrite;
+
+  const costInput = isFiniteNumber(cost.input) ? cost.input : 0;
+  const costOutput = isFiniteNumber(cost.output) ? cost.output : 0;
+  const costCacheRead = isFiniteNumber(cost.cacheRead) ? cost.cacheRead : 0;
+  const costCacheWrite = isFiniteNumber(cost.cacheWrite) ? cost.cacheWrite : 0;
+  const costTotal = isFiniteNumber(cost.total)
+    ? cost.total
+    : costInput + costOutput + costCacheRead + costCacheWrite;
+
+  const hasAnyValue =
+    isFiniteNumber(usage.input) ||
+    isFiniteNumber(usage.output) ||
+    isFiniteNumber(usage.cacheRead) ||
+    isFiniteNumber(usage.cacheWrite) ||
+    isFiniteNumber(usage.totalTokens) ||
+    isFiniteNumber(cost.input) ||
+    isFiniteNumber(cost.output) ||
+    isFiniteNumber(cost.cacheRead) ||
+    isFiniteNumber(cost.cacheWrite) ||
+    isFiniteNumber(cost.total);
+
+  if (!hasAnyValue) return undefined;
+
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    totalTokens,
+    cost: {
+      input: costInput,
+      output: costOutput,
+      cacheRead: costCacheRead,
+      cacheWrite: costCacheWrite,
+      total: costTotal,
+    },
+  };
+}
+
+function mergeUsage(base: any | undefined, delta: any | undefined): any | undefined {
+  if (!base) return delta;
+  if (!delta) return base;
+
+  const baseCost = base.cost && typeof base.cost === \"object\" ? base.cost : {};
+  const deltaCost = delta.cost && typeof delta.cost === \"object\" ? delta.cost : {};
+
+  return {
+    input: (base.input ?? 0) + (delta.input ?? 0),
+    output: (base.output ?? 0) + (delta.output ?? 0),
+    cacheRead: (base.cacheRead ?? 0) + (delta.cacheRead ?? 0),
+    cacheWrite: (base.cacheWrite ?? 0) + (delta.cacheWrite ?? 0),
+    totalTokens: (base.totalTokens ?? 0) + (delta.totalTokens ?? 0),
+    cost: {
+      input: (baseCost.input ?? 0) + (deltaCost.input ?? 0),
+      output: (baseCost.output ?? 0) + (deltaCost.output ?? 0),
+      cacheRead: (baseCost.cacheRead ?? 0) + (deltaCost.cacheRead ?? 0),
+      cacheWrite: (baseCost.cacheWrite ?? 0) + (deltaCost.cacheWrite ?? 0),
+      total: (baseCost.total ?? 0) + (deltaCost.total ?? 0),
+    },
+  };
+}
+
 function extractAssistantUsage(messages: any[]): any | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg && msg.role === \"assistant\" && msg.usage && typeof msg.usage === \"object\") {
-      return msg.usage;
+  let totals: any | undefined;
+
+  for (const msg of messages) {
+    if (!msg || msg.role !== \"assistant\") {
+      continue;
     }
+
+    const normalized = normalizeUsage(msg.usage);
+    if (!normalized) {
+      continue;
+    }
+
+    totals = mergeUsage(totals, normalized);
   }
-  return undefined;
+
+  return totals;
 }
 
 export default function (pi: ExtensionAPI) {

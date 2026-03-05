@@ -409,6 +409,15 @@ class TestLiveModeAutoExitExtension:
         assert "ctx.shutdown()" in source
         assert "pi-live-capture.json" in source
 
+    def test_live_extension_source_aggregates_assistant_usage_instead_of_last_only(self):
+        """Live extension should sum assistant usage across messages for total_cost_usd."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert "function normalizeUsage" in source
+        assert "function mergeUsage" in source
+        assert "totals = mergeUsage(totals, normalized);" in source
+        assert "return msg.usage;" not in source
+
 
 class TestRunPiLiveTTYPassthrough:
     """run_pi should attach live sessions to terminal when TTY is available."""
