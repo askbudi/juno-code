@@ -418,6 +418,20 @@ class TestLiveModeAutoExitExtension:
         assert "totals = mergeUsage(totals, normalized);" in source
         assert "return msg.usage;" not in source
 
+    def test_live_extension_source_does_not_shutdown_on_aborted_agent_end(self):
+        """Esc-aborted agent_end should keep Pi session open instead of auto-shutdown."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert 'if (stopReason === "aborted")' in source
+        assert "return;" in source
+
+        abort_guard_index = source.index('if (stopReason === "aborted")')
+        completed_index = source.index("completed = true;")
+        payload_index = source.index("const payload")
+        shutdown_index = source.index("ctx.shutdown();")
+
+        assert abort_guard_index < completed_index < payload_index < shutdown_index
+
 
 class TestRunPiLiveTTYPassthrough:
     """run_pi should attach live sessions to terminal when TTY is available."""

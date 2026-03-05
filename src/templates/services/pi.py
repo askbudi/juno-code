@@ -2531,15 +2531,36 @@ function extractAssistantUsage(messages: any[]): any | undefined {
   return totals;
 }
 
+function extractLatestAssistantStopReason(messages: any[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== \"assistant\") {
+      continue;
+    }
+
+    const reason = msg.stopReason;
+    return typeof reason === \"string\" && reason ? reason : undefined;
+  }
+
+  return undefined;
+}
+
 export default function (pi: ExtensionAPI) {
   let completed = false;
 
   pi.on(\"agent_end\", async (event, ctx) => {
+    const messages = Array.isArray(event?.messages) ? event.messages : [];
+    const stopReason = extractLatestAssistantStopReason(messages);
+
+    // Esc-aborted runs should keep Pi open for user interaction.
+    if (stopReason === \"aborted\") {
+      return;
+    }
+
     if (completed) return;
     completed = true;
 
     try {
-      const messages = Array.isArray(event?.messages) ? event.messages : [];
       const usage = extractAssistantUsage(messages);
       const totalCost = typeof usage?.cost?.total === \"number\" ? usage.cost.total : undefined;
       const payload: any = {

@@ -627,7 +627,7 @@ ${chalk.blue('Service-Specific Options:')}
   --no-session              Ephemeral mode — no session persistence
   --auto-instruction <txt>  Text prepended to the prompt automatically
   --additional-args <args>  Extra Pi CLI arguments as a space-separated string
-  --live                    Run Pi in interactive TUI mode (auto-exits on completion)
+  --live                    Run Pi in interactive TUI mode (auto-exits on non-aborted completion)
 
 ${chalk.blue('Environment Variables:')}
   PI_MODEL                  Model override (default: anthropic/claude-sonnet-4-6)

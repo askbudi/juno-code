@@ -242,7 +242,7 @@ npm install -g @mariozechner/pi-coding-agent
 - Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
 - Support for inline prompts or prompt files
 - Headless JSON mode (default) for structured automation output
-- Live interactive mode via `--live` (Pi TUI + auto-exit on `agent_end`)
+- Live interactive mode via `--live` (Pi TUI + auto-exit on non-aborted `agent_end`)
 - Temporary live extension capture (`JUNO_SUBAGENT_CAPTURE_PATH`) for iteration summaries/cost
 - Verbose mode for debugging
 
@@ -258,7 +258,7 @@ npm install -g @mariozechner/pi-coding-agent
 # Use with Gemini model
 ~/.juno_code/services/pi.py -p "Add tests" -m :gemini-pro
 
-# Live interactive mode (Pi TUI + auto-exit extension)
+# Live interactive mode (Pi TUI + auto-exit extension on non-aborted completion)
 ~/.juno_code/services/pi.py --live -p "Summarize this repo" -m :api-codex
 
 # Specify project directory
@@ -284,7 +284,7 @@ npm install -g @mariozechner/pi-coding-agent
 # Run Pi through juno-code (headless default)
 juno-code -b shell -s pi -m :sonnet -i 1 -v -p "your task"
 
-# Run Pi in live interactive mode (auto-exits on completion)
+# Run Pi in live interactive mode (auto-exits on non-aborted completion)
 juno-code pi --live -p '/skill:ralph-loop' -i 1
 
 # If :pi default model is unavailable in your provider config, set an explicit model
@@ -296,6 +296,8 @@ juno-code pi "your task"
 
 Notes:
 - `--live` is Pi-only and expects an interactive terminal for clean TUI rendering.
+- Esc interruptions do not auto-exit Pi: interrupted (`stopReason=aborted`) turns keep the live session open.
+- To manually exit Pi and return control to juno-code, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
 - Pi TUI should run on a modern Node runtime (Node 20+ recommended).
 
 ## Customization

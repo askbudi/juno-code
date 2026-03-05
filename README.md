@@ -222,7 +222,7 @@ juno-code codex 'your task'
 juno-code gemini 'your task'
 juno-code pi 'your task'
 
-# Pi live interactive run (auto-exits after agent_end)
+# Pi live interactive run (auto-exits on non-aborted completion)
 juno-code pi --live -p '/skill:ralph-loop' -i 1
 
 # AI-powered test generation
@@ -246,7 +246,7 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 | `-v, --verbose` | Human-readable verbose output |
 | `-r, --resume <id>` | Resume specific session |
 | `--continue` | Continue most recent session |
-| `--live` | Pi-only: run Pi in interactive TUI mode with auto-exit on completion |
+| `--live` | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
 | `--no-hooks` | Skip lifecycle hooks |
 | `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit) |
 | `--force-update` | Force reinstall all scripts and services |
@@ -339,6 +339,8 @@ juno-code pi --live -m :api-codex -p '/skill:ralph-loop' -i 1
 Notes:
 - `--live` is validated as **Pi-only** (`juno-code pi ...`).
 - `--live` requires extensions enabled (`--no-extensions` is incompatible).
+- Live auto-exit is triggered on non-aborted `agent_end` only. Pressing `Esc` to interrupt the current run keeps Pi open so you can continue interacting.
+- To manually leave Pi and return control to juno-code hooks/loop, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
 - Best experience is an interactive terminal (TTY) so Pi TUI can manage screen state cleanly.
 - Pi TUI depends on the Node runtime used to launch Pi; use a modern Node version (Node 20+) in PATH.
 
