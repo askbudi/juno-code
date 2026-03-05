@@ -1609,6 +1609,23 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
   });
 
+  it('should show human-readable completion time in statistics', async () => {
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    const completedAtLine = allCalls.find((c: string) => c.includes('Completed At:'));
+    expect(completedAtLine).toBeDefined();
+    expect(completedAtLine).toMatch(/Completed At:\s+.+/);
+  });
+
   it('should show average duration in seconds when average is at least 1 second', async () => {
     const { createExecutionEngine } = await import('../../core/engine.js');
 

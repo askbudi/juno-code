@@ -557,6 +557,7 @@ class MainProgressDisplay {
 
     const iterationCosts = this.extractIterationCosts(result);
     const totalCostUsd = [...iterationCosts.values()].reduce((sum, cost) => sum + cost, 0);
+    const completedAt = new Date();
 
     // Level 1+: show statistics (helping texts: iteration count, time, failures)
     if (this.verboseLevel >= 1) {
@@ -571,6 +572,7 @@ class MainProgressDisplay {
         ),
       );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
+      console.error(chalk.white(`   Completed At: ${this.formatHumanDateTime(completedAt)}`));
 
       if (iterationCosts.size > 0) {
         console.error(chalk.white(`   Total Cost: ${this.formatUsd(totalCostUsd)}`));
@@ -741,6 +743,19 @@ class MainProgressDisplay {
 
   private formatDurationValue(value: number): string {
     return value.toFixed(2).replace(/\.?0+$/, '');
+  }
+
+  private formatHumanDateTime(date: Date): string {
+    return new Intl.DateTimeFormat(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+      timeZoneName: 'short',
+    }).format(date);
   }
 
   private formatUsd(amount: number): string {
