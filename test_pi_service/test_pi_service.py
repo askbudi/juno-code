@@ -1568,6 +1568,51 @@ class TestRunPiRawToolOutputBuffering:
         assert '"event": "toolcall_end"' in out
         assert '"type": "tool"' in out
 
+    def test_error_event_sets_error_result_and_forces_nonzero_exit(self, monkeypatch):
+        """JSON type=error stream events must become structured error results."""
+        stdout_lines = [
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "server_error",
+                        "code": "server_error",
+                        "message": "Provider request failed",
+                    },
+                    "sequence_number": 2,
+                }
+            ) + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "Provider request failed" in self.svc.last_result_event["result"]
+
+    def test_stderr_codex_error_sets_error_result_and_forces_nonzero_exit(self, monkeypatch):
+        """stderr `Error: Codex error: {...}` should be treated as terminal failure."""
+        fake = self._FakeProcess([])
+        fake.stderr = io.StringIO(
+            'Error: Codex error: {"type":"error","error":{"type":"server_error","message":"Upstream API failed"}}\n'
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "Upstream API failed" in self.svc.last_result_event["result"]
+
     def test_agent_end_and_result_use_run_accumulated_cost_not_last_or_history(self, monkeypatch, capsys):
         """Per-run accumulation should win over last-message or full-history agent_end payloads."""
         usage_1 = {

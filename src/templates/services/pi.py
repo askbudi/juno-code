@@ -2241,6 +2241,101 @@ Model shorthands:
 
         return None
 
+    @staticmethod
+    def _is_error_result_event(event: Optional[dict]) -> bool:
+        """Return True when event represents a terminal error payload."""
+        if not isinstance(event, dict):
+            return False
+
+        if event.get("is_error") is True:
+            return True
+
+        subtype = event.get("subtype")
+        if isinstance(subtype, str) and subtype.lower() == "error":
+            return True
+
+        event_type = event.get("type")
+        if isinstance(event_type, str) and event_type.lower() in {"error", "turn.failed", "turn_failed"}:
+            return True
+
+        return False
+
+    @staticmethod
+    def _extract_error_message_from_event(event: dict) -> Optional[str]:
+        """Extract a human-readable message from Pi/Codex error event shapes."""
+        if not isinstance(event, dict):
+            return None
+
+        if not PiService._is_error_result_event(event):
+            return None
+
+        def _stringify_error(value: object) -> Optional[str]:
+            if isinstance(value, str):
+                text = value.strip()
+                return text if text else None
+            if isinstance(value, dict):
+                nested_message = value.get("message")
+                if isinstance(nested_message, str) and nested_message.strip():
+                    return nested_message.strip()
+                nested_error = value.get("error")
+                if isinstance(nested_error, str) and nested_error.strip():
+                    return nested_error.strip()
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    return str(value)
+            if value is not None:
+                return str(value)
+            return None
+
+        for key in ("error", "message", "errorMessage", "result"):
+            extracted = _stringify_error(event.get(key))
+            if extracted:
+                return extracted
+
+        return "Unknown Pi error"
+
+    @staticmethod
+    def _extract_error_message_from_text(raw_text: str) -> Optional[str]:
+        """Extract an error message from stderr/plaintext lines."""
+        if not isinstance(raw_text, str):
+            return None
+
+        text = raw_text.strip()
+        if not text:
+            return None
+
+        # Direct JSON line
+        try:
+            parsed = json.loads(text)
+            extracted = PiService._extract_error_message_from_event(parsed)
+            if extracted:
+                return extracted
+        except Exception:
+            pass
+
+        # Prefix + JSON payload pattern (e.g. "Error: Codex error: {...}")
+        json_start = text.find("{")
+        if json_start > 0:
+            json_candidate = text[json_start:]
+            try:
+                parsed = json.loads(json_candidate)
+                extracted = PiService._extract_error_message_from_event(parsed)
+                if extracted:
+                    return extracted
+            except Exception:
+                pass
+
+        lowered = text.lower()
+        if lowered.startswith("error:"):
+            message = text.split(":", 1)[1].strip()
+            return message or text
+
+        if "server_error" in lowered or "codex error" in lowered:
+            return text
+
+        return None
+
     def _build_success_result_event(self, text: str, event: dict) -> dict:
         """Build standardized success envelope for shell-backend capture."""
         usage = self._extract_usage_from_event(event)
@@ -2265,6 +2360,24 @@ Model shorthands:
             result_event["usage"] = usage
         if total_cost_usd is not None:
             result_event["total_cost_usd"] = total_cost_usd
+
+        return result_event
+
+    def _build_error_result_event(self, error_message: str, event: Optional[dict] = None) -> dict:
+        """Build standardized error envelope for shell-backend capture."""
+        message = error_message.strip() if isinstance(error_message, str) else str(error_message)
+
+        result_event: Dict = {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "result": message,
+            "error": message,
+            "session_id": self.session_id,
+        }
+
+        if isinstance(event, dict):
+            result_event["sub_agent_response"] = self._sanitize_sub_agent_response(event)
 
         return result_event
 
@@ -2393,6 +2506,7 @@ export default function (pi: ExtensionAPI) {
         self._buffered_tool_stdout_lines.clear()
         self._reset_run_cost_tracking()
         cancel_delayed_toolcalls = lambda: None
+        stderr_error_messages: List[str] = []
 
         if verbose:
             # Truncate prompt in display to avoid confusing multi-line output
@@ -2507,11 +2621,14 @@ export default function (pi: ExtensionAPI) {
 
             # Stream stderr in a separate thread so Pi diagnostic output is visible
             def _stderr_reader():
-                """Read stderr and forward to our stderr for visibility."""
+                """Read stderr, forward to stderr, and capture terminal error signals."""
                 try:
                     if process.stderr:
                         for stderr_line in process.stderr:
                             print(stderr_line, end="", file=sys.stderr, flush=True)
+                            extracted_error = self._extract_error_message_from_text(stderr_line)
+                            if extracted_error:
+                                stderr_error_messages.append(extracted_error)
                 except (ValueError, OSError):
                     pass
 
@@ -2634,6 +2751,11 @@ export default function (pi: ExtensionAPI) {
                     # Capture session ID from the session event (sent at stream start)
                     if event_type == "session":
                         self.session_id = parsed_event.get("id")
+
+                    # Capture terminal error events even when upstream exits with code 0.
+                    error_message = self._extract_error_message_from_event(parsed_event)
+                    if error_message:
+                        self.last_result_event = self._build_error_result_event(error_message, parsed_event)
 
                     # Track per-run assistant usage from stream events.
                     self._track_assistant_usage_from_event(parsed_event)
@@ -2846,19 +2968,28 @@ export default function (pi: ExtensionAPI) {
             output_done.set()
             cancel_delayed_toolcalls()
 
-            # Write capture file for shell backend
-            self._write_capture_file(capture_path)
-
             # Wait for process cleanup
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
 
-            # Wait for stderr thread to finish
+            # Wait for stderr thread to finish before deriving fallback errors.
             stderr_thread.join(timeout=3)
 
-            return process.returncode or 0
+            # If no structured result was captured from stdout events but stderr
+            # surfaced a terminal error, persist it for shell-backend consumers.
+            if not self.last_result_event and stderr_error_messages:
+                self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
+
+            # Write capture file for shell backend
+            self._write_capture_file(capture_path)
+
+            final_return_code = process.returncode or 0
+            if final_return_code == 0 and self._is_error_result_event(self.last_result_event):
+                final_return_code = 1
+
+            return final_return_code
 
         except KeyboardInterrupt:
             print("\nInterrupted by user", file=sys.stderr)
