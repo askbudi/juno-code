@@ -418,6 +418,13 @@ class TestLiveModeAutoExitExtension:
         assert "totals = mergeUsage(totals, normalized);" in source
         assert "return msg.usage;" not in source
 
+    def test_live_extension_source_includes_session_id_from_session_manager(self):
+        """Live extension payload should include session_id for CLI summary extraction."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert "ctx.sessionManager.getSessionId()" in source
+        assert "session_id" in source
+
     def test_live_extension_source_does_not_shutdown_on_aborted_agent_end(self):
         """Esc-aborted agent_end should keep Pi session open instead of auto-shutdown."""
         source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
@@ -441,8 +448,9 @@ class TestRunPiLiveTTYPassthrough:
         self.svc = _load_pi_service()
 
     class _FakeTTYProcess:
-        def __init__(self):
+        def __init__(self, stderr_text: str = ""):
             self.returncode = 0
+            self.stderr = io.StringIO(stderr_text)
 
         def wait(self, timeout=None):
             return self.returncode
@@ -495,7 +503,27 @@ class TestRunPiLiveTTYPassthrough:
         kwargs = popen_calls["kwargs"]
         assert "stdin" not in kwargs
         assert "stdout" not in kwargs
-        assert "stderr" not in kwargs
+        assert kwargs["stderr"] == subprocess.PIPE
+        assert kwargs["text"] is True
+        assert kwargs["universal_newlines"] is True
+
+    def test_live_tty_stderr_codex_error_sets_error_result_and_nonzero_exit(self, monkeypatch):
+        """TTY passthrough live mode must still capture stderr provider errors."""
+        fake_process = self._FakeTTYProcess(
+            'Error: Codex error: {"type":"error","error":{"type":"server_error","message":"TTY upstream failed"}}\n'
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake_process)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "TTY upstream failed" in self.svc.last_result_event["result"]
 
     def test_live_mode_without_tty_keeps_pipe_streaming_path(self, monkeypatch):
         popen_calls = {}

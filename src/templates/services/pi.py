@@ -2563,6 +2563,10 @@ export default function (pi: ExtensionAPI) {
     try {
       const usage = extractAssistantUsage(messages);
       const totalCost = typeof usage?.cost?.total === \"number\" ? usage.cost.total : undefined;
+      const sessionId =
+        typeof ctx?.sessionManager?.getSessionId === \"function\"
+          ? ctx.sessionManager.getSessionId()
+          : undefined;
       const payload: any = {
         type: \"result\",
         subtype: \"success\",
@@ -2572,6 +2576,10 @@ export default function (pi: ExtensionAPI) {
         total_cost_usd: totalCost,
         sub_agent_response: event,
       };
+
+      if (typeof sessionId === \"string\" && sessionId) {
+        payload.session_id = sessionId;
+      }
 
       if (capturePath) {
         fs.writeFileSync(capturePath, JSON.stringify(payload), \"utf-8\");
@@ -2658,14 +2666,44 @@ export default function (pi: ExtensionAPI) {
         try:
             if is_live_tty_passthrough:
                 # Interactive live mode: attach Pi directly to the current terminal.
-                # This preserves full-screen TUI rendering and keyboard input.
+                # Keep stdout inherited for full-screen TUI rendering/input, but
+                # capture stderr so terminal provider errors can still propagate.
                 process = subprocess.Popen(
                     cmd,
                     cwd=self.project_path,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    universal_newlines=True,
                 )
+
+                def _live_tty_stderr_reader():
+                    """Read stderr during live TTY mode and capture terminal failures."""
+                    try:
+                        if process.stderr:
+                            for stderr_line in process.stderr:
+                                print(stderr_line, end="", file=sys.stderr, flush=True)
+                                extracted_error = self._extract_error_message_from_text(stderr_line)
+                                if extracted_error:
+                                    stderr_error_messages.append(extracted_error)
+                    except (ValueError, OSError):
+                        pass
+
+                stderr_thread = threading.Thread(target=_live_tty_stderr_reader, daemon=True)
+                stderr_thread.start()
+
                 process.wait()
+                stderr_thread.join(timeout=3)
+
+                if not self.last_result_event and stderr_error_messages:
+                    self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
+
                 self._write_capture_file(capture_path)
-                return process.returncode or 0
+
+                final_return_code = process.returncode or 0
+                if final_return_code == 0 and self._is_error_result_event(self.last_result_event):
+                    final_return_code = 1
+
+                return final_return_code
 
             process = subprocess.Popen(
                 cmd,

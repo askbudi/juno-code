@@ -645,6 +645,7 @@ if capture_path:
       "subtype": "success",
       "is_error": False,
       "result": "captured live result",
+      "session_id": "pi-live-session-123",
       "usage": {"cost": {"total": 0.000777}}
     }
     with open(capture_path, "w") as f:
@@ -683,6 +684,7 @@ print(json.dumps({"type": "agent_end", "result": "stdout fallback result"}))
     const parsed = JSON.parse(result.content);
     expect(parsed.type).toBe('result');
     expect(parsed.result).toBe('captured live result');
+    expect(parsed.session_id).toBe('pi-live-session-123');
     expect(parsed.total_cost_usd).toBeCloseTo(0.000777, 10);
 
     const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
