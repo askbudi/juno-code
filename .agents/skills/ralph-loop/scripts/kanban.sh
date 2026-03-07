@@ -194,6 +194,13 @@ cd "$PROJECT_ROOT"
 # not from wherever the calling agent happens to be. Respects existing override.
 export JUNO_TASK_ROOT="${JUNO_TASK_ROOT:-$PROJECT_ROOT}"
 
+# Prefer local juno_kanban source when available (monorepo development).
+# This keeps wrapper behavior aligned with working-tree changes without requiring
+# immediate reinstall from PyPI between local iterations.
+if [[ -d "$PROJECT_ROOT/juno_kanban/src" ]]; then
+    export PYTHONPATH="$PROJECT_ROOT/juno_kanban/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
 # Arrays to store normalized arguments (declared at script level for proper handling)
 declare -a NORMALIZED_GLOBAL_FLAGS=()
 declare -a NORMALIZED_COMMAND_ARGS=()
