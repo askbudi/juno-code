@@ -30,6 +30,7 @@ import { configureViewLogCommand } from '../cli/commands/view-log.js';
 import { configureHelpCommand } from '../cli/commands/help.js';
 import { createServicesCommand } from '../cli/commands/services.js';
 import { createSkillsCommand } from '../cli/commands/skills.js';
+import { createAuthCommand } from '../cli/commands/auth.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -1063,6 +1064,7 @@ async function main(): Promise<void> {
   configureHelpCommand(program);
   program.addCommand(createServicesCommand());
   program.addCommand(createSkillsCommand());
+  program.addCommand(createAuthCommand());
 
   // Setup completion
   setupCompletion(program);
@@ -1124,6 +1126,9 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Collect feedback')}
   juno-code feedback --interactive
+
+  ${chalk.gray('# Import Codex auth into Pi auth.json')}
+  juno-code auth import-codex
 
   ${chalk.gray('# Setup Git repository')}
   juno-code setup-git https://github.com/askbudi/juno-code

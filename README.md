@@ -310,6 +310,18 @@ juno-code services status
 juno-code services install --force
 ```
 
+### Auth Management (Codex → Pi)
+
+```bash
+# Import default Codex auth into Pi auth store
+juno-code auth import-codex
+
+# Use explicit input/output paths (useful for account switching/backup files)
+juno-code auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
+```
+
+This command translates Codex CLI credentials to Pi's `auth.json` format (`type: "oauth"`) and writes/updates the `openai-codex` provider entry.
+
 ## Backends & Services
 
 ### Supported Services
