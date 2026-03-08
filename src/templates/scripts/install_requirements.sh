@@ -276,10 +276,22 @@ check_all_for_updates() {
     log_info "Performing periodic version check..."
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
-        check_and_upgrade_package "$package" "true"
-        local result=$?
+        local result=0
+
+        # check_and_upgrade_package can return 2 when an update is available.
+        # With `set -e`, calling it directly would abort the script before we
+        # can process that status. Wrap it in an if/else so we can capture and
+        # handle non-zero return codes intentionally.
+        if check_and_upgrade_package "$package" "true"; then
+            result=0
+        else
+            result=$?
+        fi
+
         if [ $result -eq 2 ]; then
             packages_needing_upgrade+=("$package")
+        elif [ $result -ne 0 ]; then
+            log_warning "Skipping upgrade decision for $package due to check error"
         fi
     done
 
