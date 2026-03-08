@@ -492,6 +492,7 @@ describe('SkillInstaller', () => {
 
       const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
       expect(settings.skills).toEqual(['.claude/skills']);
+      expect(settings.quietStartup).toBe(true);
     });
 
     it('should handle deeply nested directories (3+ levels)', async () => {
@@ -533,7 +534,20 @@ describe('SkillInstaller', () => {
       expect(await fs.pathExists(settingsPath)).toBe(true);
 
       const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
-      expect(settings).toEqual({ skills: ['.claude/skills'] });
+      expect(settings).toEqual({ skills: ['.claude/skills'], quietStartup: true });
+    });
+
+    it('should upgrade legacy auto-generated settings with quietStartup', async () => {
+      const piDir = path.join(testDir, '.pi');
+      const settingsPath = path.join(piDir, 'settings.json');
+      await fs.ensureDir(piDir);
+
+      await fs.writeFile(settingsPath, JSON.stringify({ skills: ['.claude/skills'] }, null, 2));
+
+      await SkillInstaller.ensurePiSettings(testDir);
+
+      const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+      expect(settings).toEqual({ skills: ['.claude/skills'], quietStartup: true });
     });
 
     it('should not overwrite existing .pi/settings.json', async () => {

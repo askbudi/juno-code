@@ -13,9 +13,12 @@
  *
  * Pi integration:
  *   When Pi skills are installed, a `.pi/settings.json` is created (if missing)
- *   that tells Pi to also load skills from `.claude/skills/`. This enables
- *   cross-agent skill sharing without duplicating skill files.
- *   Existing settings files are never overwritten to preserve user configuration.
+ *   that tells Pi to also load skills from `.claude/skills/`.
+ *   We also default `quietStartup: true` to keep Pi startup output clean in
+ *   subagent/live workflows where duplicate skill names can generate noisy
+ *   collision warnings while still loading the selected canonical skill.
+ *   Existing settings are preserved; only the legacy auto-generated file shape
+ *   (`{ skills: [".claude/skills"] }`) is upgraded in-place with `quietStartup`.
  *
  * Template source directories (in package):
  *   - src/templates/skills/{codex,claude,pi}/   (development)
@@ -66,6 +69,11 @@ export class SkillInstaller {
   private static readonly EXTENSION_GROUPS: ExtensionGroup[] = [
     { name: 'pi', destDir: '.pi/extensions' },
   ];
+
+  private static readonly DEFAULT_PI_SETTINGS = {
+    skills: ['.claude/skills'],
+    quietStartup: true,
+  };
 
   /**
    * Get the templates skills directory from the package
@@ -604,12 +612,31 @@ export class SkillInstaller {
     return results;
   }
 
+  private static isLegacyGeneratedPiSettings(settings: unknown): settings is { skills: string[] } {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return false;
+    }
+
+    const settingsObject = settings as Record<string, unknown>;
+    const keys = Object.keys(settingsObject);
+    if (keys.length !== 1 || keys[0] !== 'skills') {
+      return false;
+    }
+
+    const skills = settingsObject.skills;
+    return Array.isArray(skills) && skills.length === 1 && skills[0] === '.claude/skills';
+  }
+
   /**
    * Ensure Pi agent settings file exists with cross-agent skill loading.
    *
    * Creates `.pi/settings.json` if it does not exist, configured to also
-   * load skills from `.claude/skills/`. If the file already exists, it is
-   * left untouched to preserve any user-defined configuration.
+   * load skills from `.claude/skills/` and with `quietStartup: true` to
+   * reduce noisy startup diagnostics in subagent runs.
+   *
+   * Existing user settings are preserved. The only in-place update is a
+   * one-time upgrade for the legacy auto-generated settings shape
+   * (`{ skills: ['.claude/skills'] }`) by appending `quietStartup: true`.
    *
    * @param projectDir - The project root directory
    * @param silent - If true, suppresses console output
@@ -620,26 +647,46 @@ export class SkillInstaller {
     const settingsPath = path.join(piDir, 'settings.json');
 
     if (await fs.pathExists(settingsPath)) {
-      if (debug) {
-        console.error('[DEBUG] SkillInstaller: Pi settings.json already exists, skipping');
+      try {
+        const existing = JSON.parse(await fs.readFile(settingsPath, 'utf-8')) as unknown;
+
+        if (this.isLegacyGeneratedPiSettings(existing)) {
+          const upgraded = { ...existing, quietStartup: true };
+          await fs.writeFile(settingsPath, JSON.stringify(upgraded, null, 2) + '\n');
+
+          if (debug) {
+            console.error(
+              `[DEBUG] SkillInstaller: Upgraded legacy Pi settings with quietStartup at ${settingsPath}`,
+            );
+          }
+
+          if (!silent) {
+            console.log('✓ Updated .pi/settings.json (enabled quietStartup for cleaner output)');
+          }
+        } else if (debug) {
+          console.error('[DEBUG] SkillInstaller: Pi settings.json already exists, preserving user config');
+        }
+      } catch (error) {
+        if (debug) {
+          console.error(
+            '[DEBUG] SkillInstaller: Failed to parse existing Pi settings.json, preserving as-is:',
+            error,
+          );
+        }
       }
       return;
     }
 
     await fs.ensureDir(piDir);
 
-    const settings = {
-      skills: ['.claude/skills'],
-    };
-
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    await fs.writeFile(settingsPath, JSON.stringify(this.DEFAULT_PI_SETTINGS, null, 2) + '\n');
 
     if (debug) {
       console.error(`[DEBUG] SkillInstaller: Created Pi settings.json at ${settingsPath}`);
     }
 
     if (!silent) {
-      console.log('✓ Created .pi/settings.json (loads Claude skills by default)');
+      console.log('✓ Created .pi/settings.json (loads Claude skills + quiet startup by default)');
     }
   }
 
