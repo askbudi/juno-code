@@ -617,6 +617,26 @@ logLevel: info
       expect(config.defaultMaxIterations).toBe(12);
     });
 
+    it('should unescape double-quoted env values so JSON snapshots remain parseable', async () => {
+      const snapshot = JSON.stringify({ version: 1, subagent: 'pi', model: ':api-codex' });
+      const escapedSnapshot = snapshot.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await fs.writeFile(
+        path.join(tempDir, '.env.juno'),
+        `JUNO_CODE_LAST_EXECUTION_SETTINGS="${escapedSnapshot}"\n`,
+      );
+
+      await loadConfig({
+        baseDir: tempDir,
+      });
+
+      expect(process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBe(snapshot);
+      expect(JSON.parse(process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS || '{}')).toEqual({
+        version: 1,
+        subagent: 'pi',
+        model: ':api-codex',
+      });
+    });
+
     it('should support custom envFilePath and mark envFileCopied after first bootstrap', async () => {
       const junoTaskDir = path.join(tempDir, '.juno_task');
       await fs.ensureDir(junoTaskDir);

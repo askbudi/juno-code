@@ -728,7 +728,12 @@ function parseEnvFileContent(content: string): Record<string, string> {
       const quote = value[0];
       value = value.slice(1, -1);
       if (quote === '"') {
-        value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+        value = value
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
       }
     } else {
       // Strip inline comments from unquoted values (`KEY=value # comment`)
