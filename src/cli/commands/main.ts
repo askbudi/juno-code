@@ -148,6 +148,25 @@ interface SessionHistoryDocument {
 const SESSION_HISTORY_VERSION = 1;
 const SESSION_HISTORY_FILE_NAME = 'session_history.json';
 
+const CONTINUE_SESSION_ENV_KEY = 'JUNO_CODE_LAST_SESSION_ID';
+const CONTINUE_SETTINGS_ENV_KEY = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
+const CONTINUE_SETTINGS_VERSION = 1;
+const DEFAULT_ENV_FILE_NAME = '.env.juno';
+
+interface ContinueSettingsSnapshot {
+  version: number;
+  subagent: SubagentType;
+  model?: string;
+  maxIterations?: number;
+  thinking?: string;
+  live?: boolean;
+  agents?: string;
+  tools?: string[];
+  allowedTools?: string[];
+  appendAllowedTools?: string[];
+  disallowedTools?: string[];
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -191,6 +210,164 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return null;
+}
+
+function toStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveContinueEnvFilePath(workingDirectory: string, configuredPath?: string): string {
+  const candidate = configuredPath && configuredPath.trim() ? configuredPath.trim() : DEFAULT_ENV_FILE_NAME;
+  return path.isAbsolute(candidate) ? candidate : path.join(workingDirectory, candidate);
+}
+
+function upsertEnvVariable(content: string, key: string, value: string): string {
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const line = `${key}="${escaped}"`;
+  const pattern = new RegExp(`^(?:export\\s+)?${key}=.*$`, 'm');
+
+  if (pattern.test(content)) {
+    return content.replace(pattern, line);
+  }
+
+  if (!content) {
+    return `${line}\n`;
+  }
+
+  return `${content.replace(/\s*$/, '')}\n${line}\n`;
+}
+
+function buildContinueSettingsSnapshot(request: ExecutionRequest): ContinueSettingsSnapshot {
+  const snapshot: ContinueSettingsSnapshot = {
+    version: CONTINUE_SETTINGS_VERSION,
+    subagent: request.subagent,
+  };
+
+  if (request.model) snapshot.model = request.model;
+  if (isFiniteNumber(request.maxIterations)) snapshot.maxIterations = request.maxIterations;
+  if (request.thinking) snapshot.thinking = request.thinking;
+  if (request.live) snapshot.live = true;
+  if (request.agents) snapshot.agents = request.agents;
+  if (request.tools) snapshot.tools = [...request.tools];
+  if (request.allowedTools) snapshot.allowedTools = [...request.allowedTools];
+  if (request.appendAllowedTools) snapshot.appendAllowedTools = [...request.appendAllowedTools];
+  if (request.disallowedTools) snapshot.disallowedTools = [...request.disallowedTools];
+
+  return snapshot;
+}
+
+function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | null {
+  const parsed = parseJsonObject(raw);
+  if (!parsed) return null;
+
+  const subagent = parsed.subagent;
+  const validSubagents: SubagentType[] = ['claude', 'cursor', 'codex', 'gemini', 'pi'];
+  if (typeof subagent !== 'string' || !validSubagents.includes(subagent as SubagentType)) {
+    return null;
+  }
+
+  const snapshot: ContinueSettingsSnapshot = {
+    version: toNumber(parsed.version) ?? CONTINUE_SETTINGS_VERSION,
+    subagent: subagent as SubagentType,
+  };
+
+  if (typeof parsed.model === 'string' && parsed.model.trim()) snapshot.model = parsed.model.trim();
+  const maxIterations = toNumber(parsed.maxIterations);
+  if (maxIterations !== null) snapshot.maxIterations = maxIterations;
+  if (typeof parsed.thinking === 'string' && parsed.thinking.trim()) snapshot.thinking = parsed.thinking.trim();
+  if (typeof parsed.live === 'boolean') snapshot.live = parsed.live;
+  if (typeof parsed.agents === 'string' && parsed.agents.trim()) snapshot.agents = parsed.agents;
+
+  const tools = toStringArray(parsed.tools);
+  if (tools) snapshot.tools = tools;
+  const allowedTools = toStringArray(parsed.allowedTools);
+  if (allowedTools) snapshot.allowedTools = allowedTools;
+  const appendAllowedTools = toStringArray(parsed.appendAllowedTools);
+  if (appendAllowedTools) snapshot.appendAllowedTools = appendAllowedTools;
+  const disallowedTools = toStringArray(parsed.disallowedTools);
+  if (disallowedTools) snapshot.disallowedTools = disallowedTools;
+
+  return snapshot;
+}
+
+function applyContinueContextFromEnvironment(options: MainCommandOptions): void {
+  const sessionId = process.env[CONTINUE_SESSION_ENV_KEY]?.trim();
+  if (!sessionId) {
+    throw new ValidationError('No previous session found to continue', [
+      'Run a regular juno-code command first to create a resumable session snapshot',
+      'Then retry: juno-code continue "your next prompt"',
+    ]);
+  }
+
+  const rawSettings = process.env[CONTINUE_SETTINGS_ENV_KEY];
+  const settings = rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
+  if (!settings) {
+    throw new ValidationError('Previous execution settings are missing or invalid', [
+      'Run a regular juno-code command again to refresh the continue snapshot',
+      'Then retry: juno-code continue "your next prompt"',
+    ]);
+  }
+
+  options.resume = options.resume || sessionId;
+  if (!options.subagent) options.subagent = settings.subagent;
+  if (options.model === undefined && settings.model) options.model = settings.model;
+  if (options.maxIterations === undefined && settings.maxIterations !== undefined) {
+    options.maxIterations = settings.maxIterations;
+  }
+  if (options.thinking === undefined && settings.thinking) options.thinking = settings.thinking;
+  if (options.live === undefined && settings.live !== undefined) options.live = settings.live;
+  if (options.agents === undefined && settings.agents !== undefined) options.agents = settings.agents;
+  if (options.tools === undefined && settings.tools !== undefined) options.tools = [...settings.tools];
+  if (options.allowedTools === undefined && settings.allowedTools !== undefined) {
+    options.allowedTools = [...settings.allowedTools];
+  }
+  if (options.appendAllowedTools === undefined && settings.appendAllowedTools !== undefined) {
+    options.appendAllowedTools = [...settings.appendAllowedTools];
+  }
+  if (options.disallowedTools === undefined && settings.disallowedTools !== undefined) {
+    options.disallowedTools = [...settings.disallowedTools];
+  }
+}
+
+async function persistContinueContext(
+  result: ExecutionResult,
+  config: { workingDirectory: string; envFilePath?: string },
+  verboseLevel: number,
+): Promise<void> {
+  try {
+    const sessionIds = extractSessionIds(result);
+    const latestSessionId = sessionIds[sessionIds.length - 1];
+    if (!latestSessionId) {
+      return;
+    }
+
+    const settings = buildContinueSettingsSnapshot(result.request);
+    const serializedSettings = JSON.stringify(settings);
+
+    process.env[CONTINUE_SESSION_ENV_KEY] = latestSessionId;
+    process.env[CONTINUE_SETTINGS_ENV_KEY] = serializedSettings;
+
+    const envFilePath = resolveContinueEnvFilePath(config.workingDirectory, config.envFilePath);
+    await fs.ensureDir(path.dirname(envFilePath));
+
+    let currentContent = '';
+    if (await fs.pathExists(envFilePath)) {
+      currentContent = await fs.readFile(envFilePath, 'utf-8');
+    }
+
+    currentContent = upsertEnvVariable(currentContent, CONTINUE_SESSION_ENV_KEY, latestSessionId);
+    currentContent = upsertEnvVariable(currentContent, CONTINUE_SETTINGS_ENV_KEY, serializedSettings);
+
+    await fs.writeFile(envFilePath, currentContent, 'utf-8');
+  } catch (error) {
+    if (verboseLevel >= 2) {
+      console.error(chalk.yellow(`Warning: Failed to persist continue context: ${error}`));
+    }
+  }
 }
 
 function extractCostFromPayload(payload: Record<string, unknown>): number | null {
@@ -1231,6 +1408,11 @@ export async function mainCommandHandler(
       },
     });
 
+    // Continue command flow: hydrate resume/session settings from persisted env snapshot.
+    if (options.continueFromLatest) {
+      applyContinueContextFromEnvironment(options);
+    }
+
     // Set logger level based on effective verbose:
     //   0 (quiet): WARN — suppress INFO/DEBUG, only show warnings and errors
     //   1 (normal): INFO — show important INFO (e.g. quota limits), suppress DEBUG (hook execution details)
@@ -1359,6 +1541,7 @@ export async function mainCommandHandler(
     const result = await coordinator.execute(executionRequest);
 
     await persistSessionHistory(result, effectiveVerbose);
+    await persistContinueContext(result, config, effectiveVerbose);
 
     // Set exit code based on result
     const exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;

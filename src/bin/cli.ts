@@ -347,6 +347,57 @@ async function runUntilCompletionScriptIfRequested(
 }
 
 /**
+ * Setup continue command.
+ * Reuses the most recent persisted session ID + runtime settings, requiring only a new prompt.
+ */
+function setupContinueCommand(program: Command): void {
+  const continueCommand = program
+    .command('continue')
+    .description('Continue the most recent juno-code session with saved settings')
+    .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
+    .option(
+      '-p, --prompt [text]',
+      'Prompt input (inline text, file path, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+    )
+    .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('-i, --max-iterations <number>', 'Override max iterations for this continue run', parseInt)
+    .option('-m, --model <name>', 'Override model for this continue run')
+    .option('-s, --subagent <name>', 'Override subagent for this continue run')
+    .option('-I, --interactive', 'Interactive mode for typing prompts')
+    .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
+    .option('--thinking <level>', 'Override thinking level for this continue run')
+    .action(async (promptArgs: string[], options, command) => {
+      if (promptArgs.length > 0 && options.prompt === undefined) {
+        options.prompt = promptArgs.join(' ');
+      }
+
+      try {
+        const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+        _getActiveSessionId = getActiveSessionId;
+
+        const globalOptions = program.opts();
+        const definedGlobalOptions = Object.fromEntries(
+          Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
+        );
+        const allOptions = { ...definedGlobalOptions, ...options, continueFromLatest: true };
+
+        allOptions.verbose = normalizeVerbose(allOptions.verbose);
+
+        if (allOptions.silent) {
+          allOptions.quiet = true;
+        }
+
+        await mainCommandHandler([], allOptions as any, command);
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  continueCommand.allowUnknownOption(true);
+}
+
+/**
  * Setup main execution command (default command)
  */
 function setupMainCommand(program: Command): void {
@@ -1074,6 +1125,9 @@ async function main(): Promise<void> {
   // Setup aliases
   setupAliases(program);
 
+  // Continue from latest session snapshot
+  setupContinueCommand(program);
+
   // Setup main command (must be last)
   setupMainCommand(program);
 
@@ -1118,6 +1172,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Interactive project setup')}
   juno-code init --interactive
+
+  ${chalk.gray('# Continue the last session without retyping settings')}
+  juno-code continue 'Implement the next step'
+  juno-code continue -p 'Continue from here' 
 
   ${chalk.gray('# Manage sessions')}
   juno-code session list

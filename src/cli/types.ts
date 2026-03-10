@@ -55,8 +55,8 @@ export interface GlobalCLIOptions {
  * Main execution command options
  */
 export interface MainCommandOptions extends GlobalCLIOptions {
-  /** Subagent to use (required) */
-  subagent: SubagentType;
+  /** Subagent to use (optional; falls back to config/defaults) */
+  subagent?: SubagentType;
   /** Prompt input (file path or inline text). Commander sets to `true` when -p flag used without argument (e.g. heredoc) */
   prompt?: string | true;
   /** Prompt file path (alternative to -p "$(cat file)") */
@@ -89,6 +89,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   resume?: string;
   /** Continue the most recent conversation (shell backend only) */
   continue?: boolean;
+  /** Load last persisted session+settings snapshot and auto-populate resume/options */
+  continueFromLatest?: boolean;
   /** Extended thinking level (forwarded to shell backend --thinking flag, pi subagent) */
   thinking?: string;
 }

@@ -256,10 +256,11 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 ### Session Management
 
 ```bash
-juno-code session list           # View all sessions
-juno-code session info abc123    # Session details
-juno-code --resume abc123 -p 'continue'  # Resume session
-juno-code --continue -p 'keep going'     # Continue most recent
+juno-code session list                # View all sessions
+juno-code session info abc123         # Session details
+juno-code --resume abc123 -p 'continue'   # Resume session
+juno-code --continue -p 'keep going'      # Continue most recent (backend-native)
+juno-code continue 'next prompt'          # Reuse last session id + runtime settings snapshot
 ```
 
 Each `juno-code` run also appends execution history to:
@@ -267,6 +268,10 @@ Each `juno-code` run also appends execution history to:
 - `.juno_task/session_history.json` (unlimited, newest-first)
 
 Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
+
+For `juno-code continue`, the latest session context is also persisted into the project env file (`.env.juno` by default) via:
+- `JUNO_CODE_LAST_SESSION_ID`
+- `JUNO_CODE_LAST_EXECUTION_SETTINGS` (JSON snapshot of runtime settings)
 
 ### Feedback System
 

@@ -96,6 +96,7 @@ vi.mock('fs-extra', () => {
   const mock = {
     pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
     readFile: vi.fn().mockResolvedValue('mock file content'),
+    writeFile: vi.fn().mockResolvedValue(undefined),
     readJson: vi.fn().mockResolvedValue({ version: 1, sessions: [] }),
     writeJson: vi.fn().mockResolvedValue(undefined),
     ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -191,12 +192,15 @@ describe('Main Command', () => {
 
     vi.mocked(fs.pathExists).mockResolvedValue(false as any);
     vi.mocked(fs.readFile).mockResolvedValue('mock file content' as any);
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined as any);
     vi.mocked(fs.readJson).mockResolvedValue({ version: 1, sessions: [] } as any);
     vi.mocked(fs.writeJson).mockResolvedValue(undefined as any);
     vi.mocked(fs.ensureDir).mockResolvedValue(undefined as any);
   });
 
   afterEach(() => {
+    delete process.env.JUNO_CODE_LAST_SESSION_ID;
+    delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
     vi.clearAllMocks();
     consoleSpy.mockRestore();
     processExitSpy.mockRestore();
@@ -1051,6 +1055,144 @@ describe('Main Command', () => {
         expect(payload.sessions).toHaveLength(2);
         expect(payload.sessions[0]?.id).toBe('test-request');
         expect(payload.sessions[1]?.id).toBe('existing-run');
+      });
+
+      it('should persist latest session + runtime settings into env snapshot for continue command', async () => {
+        const { createExecutionEngine } = await import('../../core/engine.js');
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'continue-snapshot-run',
+              instruction: 'initial prompt',
+              subagent: 'codex',
+              workingDirectory: '/test/dir',
+              maxIterations: 3,
+              model: ':codex',
+              thinking: 'xhigh',
+              allowedTools: ['Read', 'Edit'],
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: JSON.stringify({
+                    type: 'result',
+                    session_id: 'session-continue-123',
+                  }),
+                  metadata: {},
+                },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('.env.juno'),
+        );
+        vi.mocked(fs.readFile).mockResolvedValueOnce('FOO=bar\n');
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'codex',
+            prompt: 'initial prompt',
+            cwd: '/test',
+            maxIterations: 3,
+            model: ':codex',
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 1,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const envWriteCall = vi.mocked(fs.writeFile).mock.calls.at(-1);
+        expect(envWriteCall?.[0]).toBe('/test/dir/.env.juno');
+        expect(String(envWriteCall?.[1])).toContain('JUNO_CODE_LAST_SESSION_ID="session-continue-123"');
+        expect(String(envWriteCall?.[1])).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS="');
+        expect(process.env.JUNO_CODE_LAST_SESSION_ID).toBe('session-continue-123');
+      });
+
+      it('should hydrate resume and runtime options from env snapshot when continueFromLatest is set', async () => {
+        process.env.JUNO_CODE_LAST_SESSION_ID = 'resume-me-001';
+        process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          model: ':api-codex',
+          maxIterations: 4,
+          thinking: 'high',
+          live: true,
+          allowedTools: ['Read'],
+        });
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'next step prompt',
+            cwd: '/test',
+            continueFromLatest: true,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 1,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'next step prompt',
+            subagent: 'pi',
+            model: ':api-codex',
+            maxIterations: 4,
+            resume: 'resume-me-001',
+            thinking: 'high',
+            live: true,
+            allowedTools: ['Read'],
+          }),
+        );
+      });
+
+      it('should fail fast when continueFromLatest is requested without snapshot env vars', async () => {
+        delete process.env.JUNO_CODE_LAST_SESSION_ID;
+        delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'next step prompt',
+            cwd: '/test',
+            continueFromLatest: true,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(createExecutionRequest).not.toHaveBeenCalled();
       });
 
       it('should handle execution failure and exit with code 1', async () => {
