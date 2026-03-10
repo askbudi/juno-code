@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execa, type ExecaReturnValue } from 'execa';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
@@ -28,6 +29,25 @@ const BINARY_TIMEOUT = 30000; // 30 seconds
 
 // Temp directory for testing
 let tempDir: string;
+
+function buildContinueSnapshotEnv(scope: string): Record<string, string> {
+  const digest = createHash('sha256')
+    .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+    .digest('hex')
+    .slice(0, 16)
+    .toUpperCase();
+  const scopeHash = `SCOPE_${digest}`;
+
+  return {
+    JUNO_CODE_CONTINUE_SCOPE: scope,
+    [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'session-continue-stdin',
+    [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
+      version: 1,
+      subagent: 'claude',
+      maxIterations: 5,
+    }),
+  };
+}
 
 /**
  * Execute CLI binary with given arguments and return result
@@ -655,6 +675,34 @@ describe('Binary Execution Tests', () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(output).toContain('run_until_completion.sh not found');
+      expect(output).not.toContain('Empty stdin input');
+    });
+
+    it('should read continue prompt from stdin without -p (heredoc/pipe flow)', async () => {
+      const result = await executeCLI(['continue', '-i', 'invalid'], {
+        expectError: true,
+        input: 'continue prompt from stdin\n',
+        env: buildContinueSnapshotEnv('binary-continue-stdin-no-flag'),
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('Max iterations must be a valid number');
+      expect(output).not.toContain('Prompt is required for execution');
+      expect(output).not.toContain('Empty stdin input');
+    });
+
+    it('should read continue prompt from stdin when -p is used without argument', async () => {
+      const result = await executeCLI(['continue', '-p', '-i', 'invalid'], {
+        expectError: true,
+        input: 'continue prompt from -p heredoc\n',
+        env: buildContinueSnapshotEnv('binary-continue-stdin-p-flag'),
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('Max iterations must be a valid number');
+      expect(output).not.toContain('Prompt is required for execution');
       expect(output).not.toContain('Empty stdin input');
     });
 

@@ -101,6 +101,11 @@ vi.mock('fs-extra', () => {
     readJson: vi.fn().mockResolvedValue({ version: 1, sessions: [] }),
     writeJson: vi.fn().mockResolvedValue(undefined),
     ensureDir: vi.fn().mockResolvedValue(undefined),
+    fstatSync: vi.fn().mockReturnValue({
+      isFIFO: () => false,
+      isFile: () => false,
+      isSocket: () => false,
+    }),
   };
   return { ...mock, default: mock };
 });
@@ -197,6 +202,11 @@ describe('Main Command', () => {
     vi.mocked(fs.readJson).mockResolvedValue({ version: 1, sessions: [] } as any);
     vi.mocked(fs.writeJson).mockResolvedValue(undefined as any);
     vi.mocked(fs.ensureDir).mockResolvedValue(undefined as any);
+    vi.mocked(fs.fstatSync as any).mockReturnValue({
+      isFIFO: () => false,
+      isFile: () => false,
+      isSocket: () => false,
+    });
   });
 
   afterEach(() => {
@@ -584,6 +594,57 @@ describe('Main Command', () => {
               instruction: 'piped prompt from stdin',
             }),
           );
+          expect(processExitSpy).toHaveBeenCalledWith(0);
+        });
+
+        it('should auto-read stdin when redirected fd is detected even if isTTY is true', async () => {
+          Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, configurable: true });
+
+          vi.mocked(fs.fstatSync as any).mockReturnValue({
+            isFIFO: () => true,
+            isFile: () => false,
+            isSocket: () => false,
+          });
+
+          let dataCallback: ((chunk: string) => void) | undefined;
+          let endCallback: (() => void) | undefined;
+
+          processStdinSpy.mockImplementation((event: string, callback: any) => {
+            if (event === 'data') {
+              dataCallback = callback;
+            } else if (event === 'end') {
+              endCallback = callback;
+            }
+            return process.stdin;
+          });
+
+          const options: MainCommandOptions = {
+            subagent: 'claude',
+            prompt: undefined,
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          };
+
+          const handlerPromise = mainCommandHandler([], options, mockCommand);
+          await new Promise((r) => setTimeout(r, 50));
+
+          dataCallback!('continue from redirected stdin\n');
+          endCallback!();
+
+          await handlerPromise;
+
+          const { createExecutionRequest } = await import('../../core/engine.js');
+          expect(createExecutionRequest).toHaveBeenCalledWith(
+            expect.objectContaining({
+              instruction: 'continue from redirected stdin',
+            }),
+          );
+          expect(fs.fstatSync).toHaveBeenCalledWith(0);
           expect(processExitSpy).toHaveBeenCalledWith(0);
         });
 

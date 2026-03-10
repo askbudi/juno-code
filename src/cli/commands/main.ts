@@ -733,7 +733,7 @@ class PromptProcessor {
 
     if (!promptText) {
       // Auto-detect piped stdin (heredoc, pipe, redirect) — no flag needed
-      if (!process.stdin.isTTY) {
+      if (this.hasRedirectedStdin()) {
         return await this.readPipedStdin();
       }
 
@@ -768,6 +768,19 @@ class PromptProcessor {
 
     // Direct prompt text
     return promptText.trim();
+  }
+
+  private hasRedirectedStdin(): boolean {
+    if (process.stdin.isTTY !== true) {
+      return true;
+    }
+
+    try {
+      const descriptor = fs.fstatSync(0);
+      return descriptor.isFIFO() || descriptor.isFile() || descriptor.isSocket();
+    } catch {
+      return false;
+    }
   }
 
   private async isFilePath(prompt: string): Promise<boolean> {
