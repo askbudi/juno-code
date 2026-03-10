@@ -262,6 +262,12 @@ juno-code --resume abc123 -p 'continue'  # Resume session
 juno-code --continue -p 'keep going'     # Continue most recent
 ```
 
+Each `juno-code` run also appends execution history to:
+
+- `.juno_task/session_history.json` (unlimited, newest-first)
+
+Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
+
 ### Feedback System
 
 ```bash

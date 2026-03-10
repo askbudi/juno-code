@@ -96,6 +96,9 @@ vi.mock('fs-extra', () => {
   const mock = {
     pathExists: vi.fn().mockResolvedValue(false), // 'test prompt' is not a file path
     readFile: vi.fn().mockResolvedValue('mock file content'),
+    readJson: vi.fn().mockResolvedValue({ version: 1, sessions: [] }),
+    writeJson: vi.fn().mockResolvedValue(undefined),
+    ensureDir: vi.fn().mockResolvedValue(undefined),
   };
   return { ...mock, default: mock };
 });
@@ -188,6 +191,9 @@ describe('Main Command', () => {
 
     vi.mocked(fs.pathExists).mockResolvedValue(false as any);
     vi.mocked(fs.readFile).mockResolvedValue('mock file content' as any);
+    vi.mocked(fs.readJson).mockResolvedValue({ version: 1, sessions: [] } as any);
+    vi.mocked(fs.writeJson).mockResolvedValue(undefined as any);
+    vi.mocked(fs.ensureDir).mockResolvedValue(undefined as any);
   });
 
   afterEach(() => {
@@ -865,6 +871,186 @@ describe('Main Command', () => {
         );
 
         expect(processExitSpy).toHaveBeenCalledWith(0);
+      });
+
+      it('should persist execution history under .juno_task/session_history.json with prompt/cost/message metadata', async () => {
+        const { createExecutionEngine } = await import('../../core/engine.js');
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'history-run-1',
+              instruction: 'track this prompt',
+              subagent: 'claude',
+              workingDirectory: '/test/dir',
+              maxIterations: 1,
+              model: ':sonnet',
+            },
+            status: 'completed',
+            startTime: new Date('2026-03-09T10:00:00.000Z'),
+            endTime: new Date('2026-03-09T10:00:12.000Z'),
+            duration: 12000,
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: JSON.stringify({
+                    type: 'result',
+                    session_id: 'session-history-1',
+                    total_cost_usd: 0.0042,
+                    num_turns: 3,
+                  }),
+                  metadata: {},
+                },
+                success: true,
+                duration: 12000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 12000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'track this prompt',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 1,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const writeCall = vi.mocked(fs.writeJson).mock.calls.at(-1);
+        expect(writeCall).toBeDefined();
+        expect(writeCall?.[0]).toBe('/test/dir/.juno_task/session_history.json');
+        expect(writeCall?.[1]).toEqual(
+          expect.objectContaining({
+            version: 1,
+            sessions: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'history-run-1',
+                initialMessage: 'track this prompt',
+                subagent: 'claude',
+                model: ':sonnet',
+                totalCostUsd: 0.0042,
+                turnCount: 3,
+                messageCount: 6,
+                sessionIds: ['session-history-1'],
+              }),
+            ]),
+          }),
+        );
+      });
+
+      it('should append to existing session_history.json without truncating older runs', async () => {
+        const { createExecutionEngine } = await import('../../core/engine.js');
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'test-request',
+              instruction: 'new run prompt',
+              subagent: 'claude',
+              workingDirectory: '/test/dir',
+              maxIterations: 1,
+              model: ':sonnet',
+            },
+            status: 'completed',
+            startTime: new Date('2026-03-09T10:15:00.000Z'),
+            endTime: new Date('2026-03-09T10:15:06.000Z'),
+            duration: 6000,
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: JSON.stringify({
+                    type: 'result',
+                    session_id: 'new-session',
+                    total_cost_usd: 0.002,
+                    num_turns: 1,
+                  }),
+                  metadata: {},
+                },
+                success: true,
+                duration: 6000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 6000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('session_history.json'),
+        );
+        vi.mocked(fs.readJson).mockResolvedValueOnce({
+          version: 1,
+          sessions: [
+            {
+              id: 'existing-run',
+              status: 'completed',
+              initialMessage: 'already there',
+              initialMessageAt: '2026-03-09T09:00:00.000Z',
+              lastMessageAt: '2026-03-09T09:00:05.000Z',
+              completedAt: '2026-03-09T09:00:05.000Z',
+              subagent: 'claude',
+              model: ':sonnet',
+              settings: { maxIterations: 1 },
+              totalCostUsd: 0.001,
+              turnCount: 1,
+              messageCount: 2,
+              iterations: 1,
+              durationMs: 5000,
+              sessionIds: ['existing-session'],
+            },
+          ],
+        } as any);
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'new run prompt',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 1,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const writeCall = vi.mocked(fs.writeJson).mock.calls.at(-1);
+        expect(writeCall).toBeDefined();
+        const payload = writeCall?.[1] as { sessions: Array<{ id: string }> };
+        expect(payload.sessions).toHaveLength(2);
+        expect(payload.sessions[0]?.id).toBe('test-request');
+        expect(payload.sessions[1]?.id).toBe('existing-run');
       });
 
       it('should handle execution failure and exit with code 1', async () => {

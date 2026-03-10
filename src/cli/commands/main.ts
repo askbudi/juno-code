@@ -122,6 +122,339 @@ function normalizeVerboseLevel(verbose: unknown, quiet: boolean | undefined): nu
   return 1;
 }
 
+interface SessionHistoryEntry {
+  id: string;
+  status: string;
+  initialMessage: string;
+  initialMessageAt: string;
+  lastMessageAt: string;
+  completedAt: string;
+  subagent: string;
+  model: string;
+  settings: Record<string, unknown>;
+  totalCostUsd: number;
+  turnCount: number;
+  messageCount: number;
+  iterations: number;
+  durationMs: number;
+  sessionIds: string[];
+}
+
+interface SessionHistoryDocument {
+  version: number;
+  sessions: SessionHistoryEntry[];
+}
+
+const SESSION_HISTORY_VERSION = 1;
+const SESSION_HISTORY_FILE_NAME = 'session_history.json';
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function toNumber(value: unknown): number | null {
+  if (isFiniteNumber(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function parseIsoDate(value: unknown): Date | null {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value;
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (Number.isFinite(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function toIsoString(value: Date): string {
+  return value.toISOString();
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function extractCostFromPayload(payload: Record<string, unknown>): number | null {
+  for (const key of ['total_cost_usd', 'totalCostUsd', 'totalCostUSD'] as const) {
+    const directCost = toNumber(payload[key]);
+    if (directCost !== null) {
+      return directCost;
+    }
+  }
+
+  const usage = payload.usage;
+  if (usage && typeof usage === 'object') {
+    const usageCost = (usage as Record<string, unknown>).cost;
+    if (usageCost && typeof usageCost === 'object') {
+      const fallback = toNumber((usageCost as Record<string, unknown>).total);
+      if (fallback !== null) {
+        return fallback;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractSessionId(payload: Record<string, unknown>): string | null {
+  const direct = payload.session_id;
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim();
+  }
+
+  const camel = payload.sessionId;
+  if (typeof camel === 'string' && camel.trim()) {
+    return camel.trim();
+  }
+
+  const subAgentResponse = payload.sub_agent_response;
+  if (subAgentResponse && typeof subAgentResponse === 'object') {
+    const nested = (subAgentResponse as Record<string, unknown>).session_id;
+    if (typeof nested === 'string' && nested.trim()) {
+      return nested.trim();
+    }
+  }
+
+  return null;
+}
+
+function extractMessagesArray(payload: Record<string, unknown>): unknown[] | null {
+  if (Array.isArray(payload.messages)) {
+    return payload.messages;
+  }
+
+  const subAgentResponse = payload.sub_agent_response;
+  if (subAgentResponse && typeof subAgentResponse === 'object') {
+    const nestedMessages = (subAgentResponse as Record<string, unknown>).messages;
+    if (Array.isArray(nestedMessages)) {
+      return nestedMessages;
+    }
+  }
+
+  return null;
+}
+
+function buildHistorySettings(request: ExecutionRequest): Record<string, unknown> {
+  const settings: Record<string, unknown> = {
+    maxIterations: request.maxIterations,
+  };
+
+  if (request.resume) settings.resume = request.resume;
+  if (request.continueConversation) settings.continueConversation = true;
+  if (request.thinking) settings.thinking = request.thinking;
+  if (request.live) settings.live = true;
+  if (request.agents) settings.agents = request.agents;
+  if (request.tools) settings.tools = request.tools;
+  if (request.allowedTools) settings.allowedTools = request.allowedTools;
+  if (request.appendAllowedTools) settings.appendAllowedTools = request.appendAllowedTools;
+  if (request.disallowedTools) settings.disallowedTools = request.disallowedTools;
+
+  return settings;
+}
+
+function extractSessionIds(result: ExecutionResult): string[] {
+  const sessionIds: string[] = [];
+  const seen = new Set<string>();
+
+  const addSessionId = (candidate: unknown): void => {
+    if (typeof candidate !== 'string') return;
+    const value = candidate.trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    sessionIds.push(value);
+  };
+
+  const iterations = Array.isArray(result.iterations) ? result.iterations : [];
+  for (const iteration of iterations) {
+    const payload = parseJsonObject(iteration.toolResult?.content);
+    if (!payload) continue;
+
+    addSessionId(extractSessionId(payload));
+  }
+
+  const progressEvents = Array.isArray(result.progressEvents) ? result.progressEvents : [];
+  for (const event of progressEvents) {
+    addSessionId(event?.metadata?.sessionId);
+  }
+
+  return sessionIds;
+}
+
+function extractTurnAndMessageCounts(result: ExecutionResult): {
+  turnCount: number;
+  messageCount: number;
+} {
+  const iterations = Array.isArray(result.iterations) ? result.iterations : [];
+
+  const turnCountsBySession = new Map<string, number>();
+  const messageCountsBySession = new Map<string, number>();
+
+  for (const [index, iteration] of iterations.entries()) {
+    const payload = parseJsonObject(iteration.toolResult?.content);
+    if (!payload) continue;
+
+    const sessionKey = extractSessionId(payload) || `iteration-${index + 1}`;
+
+    const numTurns = toNumber(payload.num_turns ?? payload.numTurns);
+    if (numTurns !== null && numTurns >= 0) {
+      const previous = turnCountsBySession.get(sessionKey) ?? 0;
+      turnCountsBySession.set(sessionKey, Math.max(previous, numTurns));
+    }
+
+    const messages = extractMessagesArray(payload);
+    if (messages) {
+      const previous = messageCountsBySession.get(sessionKey) ?? 0;
+      messageCountsBySession.set(sessionKey, Math.max(previous, messages.length));
+    }
+  }
+
+  let turnCount = [...turnCountsBySession.values()].reduce((sum, value) => sum + value, 0);
+  let messageCount = [...messageCountsBySession.values()].reduce((sum, value) => sum + value, 0);
+
+  if (turnCount === 0 && iterations.length > 0) {
+    turnCount = iterations.length;
+  }
+
+  if (messageCount === 0) {
+    messageCount = turnCount > 0 ? turnCount * 2 : 0;
+  }
+
+  return { turnCount, messageCount };
+}
+
+function extractTotalCost(result: ExecutionResult): number {
+  const iterations = Array.isArray(result.iterations) ? result.iterations : [];
+  let totalCost = 0;
+
+  for (const iteration of iterations) {
+    const payload = parseJsonObject(iteration.toolResult?.content);
+    if (!payload) continue;
+    const cost = extractCostFromPayload(payload);
+    if (cost !== null) {
+      totalCost += cost;
+    }
+  }
+
+  return totalCost;
+}
+
+function extractLastMessageTime(result: ExecutionResult, fallback: Date): Date {
+  let latest = fallback;
+  const progressEvents = Array.isArray(result.progressEvents) ? result.progressEvents : [];
+
+  for (const event of progressEvents) {
+    const eventDate = parseIsoDate(event?.timestamp);
+    if (eventDate && eventDate.getTime() > latest.getTime()) {
+      latest = eventDate;
+    }
+  }
+
+  const iterations = Array.isArray(result.iterations) ? result.iterations : [];
+  for (const iteration of iterations) {
+    const payload = parseJsonObject(iteration.toolResult?.content);
+    if (!payload) continue;
+
+    const payloadDate = parseIsoDate(payload.datetime);
+    if (payloadDate && payloadDate.getTime() > latest.getTime()) {
+      latest = payloadDate;
+    }
+  }
+
+  return latest;
+}
+
+function buildSessionHistoryEntry(result: ExecutionResult): SessionHistoryEntry {
+  const now = new Date();
+  const startTime = parseIsoDate((result as { startTime?: unknown }).startTime) || now;
+  const endTime = parseIsoDate((result as { endTime?: unknown }).endTime) || startTime;
+  const durationMs =
+    toNumber((result as { duration?: unknown }).duration) ??
+    Math.max(0, endTime.getTime() - startTime.getTime());
+
+  const { turnCount, messageCount } = extractTurnAndMessageCounts(result);
+  const sessionIds = extractSessionIds(result);
+
+  return {
+    id: result.request.requestId,
+    status: result.status,
+    initialMessage: result.request.instruction,
+    initialMessageAt: toIsoString(startTime),
+    lastMessageAt: toIsoString(extractLastMessageTime(result, endTime)),
+    completedAt: toIsoString(endTime),
+    subagent: result.request.subagent,
+    model: result.request.model || 'auto',
+    settings: buildHistorySettings(result.request),
+    totalCostUsd: extractTotalCost(result),
+    turnCount,
+    messageCount,
+    iterations: Array.isArray(result.iterations) ? result.iterations.length : 0,
+    durationMs,
+    sessionIds,
+  };
+}
+
+async function persistSessionHistory(result: ExecutionResult, verboseLevel: number): Promise<void> {
+  try {
+    if (
+      !result?.request ||
+      typeof result.request.workingDirectory !== 'string' ||
+      !result.request.workingDirectory.trim()
+    ) {
+      return;
+    }
+
+    const historyPath = path.join(
+      result.request.workingDirectory,
+      '.juno_task',
+      SESSION_HISTORY_FILE_NAME,
+    );
+
+    await fs.ensureDir(path.dirname(historyPath));
+
+    let document: SessionHistoryDocument = {
+      version: SESSION_HISTORY_VERSION,
+      sessions: [],
+    };
+
+    if (await fs.pathExists(historyPath)) {
+      const existing = await fs.readJson(historyPath);
+      if (existing && typeof existing === 'object' && Array.isArray(existing.sessions)) {
+        document = {
+          version:
+            toNumber((existing as Record<string, unknown>).version) ?? SESSION_HISTORY_VERSION,
+          sessions: existing.sessions as SessionHistoryEntry[],
+        };
+      }
+    }
+
+    document.sessions.unshift(buildSessionHistoryEntry(result));
+    await fs.writeJson(historyPath, document, { spaces: 2 });
+  } catch (error) {
+    if (verboseLevel >= 2) {
+      console.error(chalk.yellow(`Warning: Failed to persist session history: ${error}`));
+    }
+  }
+}
+
 /**
  * Prompt input processor for handling various input types
  */
@@ -1024,6 +1357,8 @@ export async function mainCommandHandler(
       options.enableFeedback || false,
     );
     const result = await coordinator.execute(executionRequest);
+
+    await persistSessionHistory(result, effectiveVerbose);
 
     // Set exit code based on result
     const exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
