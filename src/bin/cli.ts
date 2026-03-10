@@ -607,6 +607,8 @@ ${chalk.blue('Model Shorthands:')}
   :o3                  openai/o3
   :codex               openai-codex/gpt-5.3-codex
   :api-codex           openai/gpt-5.3-codex
+  :codex-spark         openai-codex/gpt-5.3-codex-spark
+  :api-codex-spark     openai/gpt-5.3-codex-spark
   ${chalk.gray('# Google')}
   :gemini-pro          google/gemini-2.5-pro
   :gemini-flash        google/gemini-2.5-flash
