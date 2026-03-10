@@ -269,6 +269,12 @@ Each `juno-code` run also appends execution history to:
 
 Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
 
+CLI run summaries also surface these fields live in the terminal:
+- `Statistics -> Total Cost`
+- `Statistics -> Completed At`
+- `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
+- `Session ID(s)` entries with per-session cost when available
+
 For `juno-code continue`, the latest session context is also persisted into the project env file (`.env.juno` by default) via:
 - `JUNO_CODE_LAST_SESSION_ID`
 - `JUNO_CODE_LAST_EXECUTION_SETTINGS` (JSON snapshot of runtime settings)
@@ -304,9 +310,9 @@ juno-code skills status
 
 | Agent | Directory | Skills |
 |-------|-----------|--------|
-| Claude | `.claude/skills/` | `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-| Codex | `.agents/skills/` | `ralph-loop` |
-| Pi | `.pi/skills/` | (planned) |
+| Claude | `.claude/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
+| Codex | `.agents/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
+| Pi | `.pi/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
 
 ### Service Management
 
