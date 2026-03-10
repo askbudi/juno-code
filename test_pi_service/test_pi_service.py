@@ -1664,6 +1664,77 @@ class TestRunPiRawToolOutputBuffering:
         assert self.svc.last_result_event["is_error"] is True
         assert "Upstream API failed" in self.svc.last_result_event["result"]
 
+    def test_usage_limit_text_message_is_treated_as_provider_error(self, monkeypatch):
+        """Assistant text with provider usage-limit signature must be marked as error."""
+        usage_limit_message = "Error: You have hit your ChatGPT usage limit (plus plan). Try again in ~8795 min."
+        stdout_lines = [
+            json.dumps({"type": "session", "id": "sess-usage-limit"}) + "\n",
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": usage_limit_message}],
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": usage_limit_message}],
+                        }
+                    ],
+                }
+            )
+            + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "chatgpt usage limit" in self.svc.last_result_event["result"].lower()
+        assert self.svc.last_result_event["session_id"] == "sess-usage-limit"
+
+    def test_agent_end_without_text_does_not_override_existing_error(self, monkeypatch):
+        """Non-success agent_end payload must not overwrite an already captured error."""
+        stdout_lines = [
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "server_error",
+                        "code": "server_error",
+                        "message": "Provider request failed",
+                    },
+                }
+            )
+            + "\n",
+            json.dumps({"type": "agent_end", "messages": [{"role": "assistant", "content": []}]}) + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "Provider request failed" in self.svc.last_result_event["result"]
+
     def test_agent_end_and_result_use_run_accumulated_cost_not_last_or_history(self, monkeypatch, capsys):
         """Per-run accumulation should win over last-message or full-history agent_end payloads."""
         usage_1 = {

@@ -2336,6 +2336,39 @@ Model shorthands:
 
         return None
 
+    @staticmethod
+    def _extract_provider_error_from_result_text(result_text: str) -> Optional[str]:
+        """Detect provider-level failures that leaked into assistant result text."""
+        if not isinstance(result_text, str):
+            return None
+
+        text = result_text.strip()
+        if not text:
+            return None
+
+        normalized = " ".join(text.split())
+        lowered = normalized.lower()
+
+        provider_signatures = (
+            "chatgpt usage limit",
+            "usage limit",
+            "rate limit",
+            "insufficient_quota",
+            "too many requests",
+            "codex error",
+            "server_error",
+        )
+
+        if lowered.startswith("error:"):
+            payload = normalized.split(":", 1)[1].strip() if ":" in normalized else ""
+            if any(signature in lowered for signature in provider_signatures) or "try again in" in lowered:
+                return payload or normalized
+
+        if any(signature in lowered for signature in provider_signatures):
+            return normalized
+
+        return None
+
     def _build_success_result_event(self, text: str, event: dict) -> dict:
         """Build standardized success envelope for shell-backend capture."""
         usage = self._extract_usage_from_event(event)
@@ -2927,8 +2960,12 @@ export default function (pi: ExtensionAPI) {
                                     if text:
                                         break
                         if text:
-                            self.last_result_event = self._build_success_result_event(text, parsed_event)
-                        else:
+                            provider_error = self._extract_provider_error_from_result_text(text)
+                            if provider_error:
+                                self.last_result_event = self._build_error_result_event(provider_error, parsed_event)
+                            else:
+                                self.last_result_event = self._build_success_result_event(text, parsed_event)
+                        elif not self._is_error_result_event(self.last_result_event):
                             self.last_result_event = parsed_event
                     elif event_type == "message":
                         # OpenAI-compatible format: capture last assistant message
@@ -2936,14 +2973,22 @@ export default function (pi: ExtensionAPI) {
                         if isinstance(msg, dict) and msg.get("role") == "assistant":
                             text = self._extract_text_from_message(msg)
                             if text:
-                                self.last_result_event = self._build_success_result_event(text, parsed_event)
+                                provider_error = self._extract_provider_error_from_result_text(text)
+                                if provider_error:
+                                    self.last_result_event = self._build_error_result_event(provider_error, parsed_event)
+                                else:
+                                    self.last_result_event = self._build_success_result_event(text, parsed_event)
                     elif event_type == "turn_end":
                         # turn_end may contain the final assistant message
                         msg = parsed_event.get("message", {})
                         if isinstance(msg, dict):
                             text = self._extract_text_from_message(msg)
                             if text:
-                                self.last_result_event = self._build_success_result_event(text, parsed_event)
+                                provider_error = self._extract_provider_error_from_result_text(text)
+                                if provider_error:
+                                    self.last_result_event = self._build_error_result_event(provider_error, parsed_event)
+                                else:
+                                    self.last_result_event = self._build_success_result_event(text, parsed_event)
 
                     # Filter hidden stream types (live mode handles its own filtering)
                     if event_type in hide_types and self.prettifier_mode != self.PRETTIFIER_LIVE:
