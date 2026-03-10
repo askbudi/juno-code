@@ -431,6 +431,14 @@ class TestLiveModeAutoExitExtension:
         assert "ctx.sessionManager.getSessionId()" in source
         assert "session_id" in source
 
+    def test_live_extension_source_persists_session_snapshot_before_agent_end(self):
+        """Live extension should persist session_id on session events for failure resume paths."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert 'pi.on("session"' in source
+        assert "subtype: \"session\"" in source
+        assert "session_id" in source
+
     def test_live_extension_source_does_not_shutdown_on_aborted_agent_end(self):
         """Esc-aborted agent_end should keep Pi session open instead of auto-shutdown."""
         source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
@@ -530,6 +538,40 @@ class TestRunPiLiveTTYPassthrough:
         assert self.svc.last_result_event["subtype"] == "error"
         assert self.svc.last_result_event["is_error"] is True
         assert "TTY upstream failed" in self.svc.last_result_event["result"]
+
+    def test_live_tty_error_keeps_session_id_from_existing_capture_snapshot(self, monkeypatch, tmp_path):
+        """TTY live failures should preserve session_id if extension snapshot exists before error."""
+        capture_path = tmp_path / "pi-live-capture.json"
+        capture_path.write_text(
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "session",
+                    "is_error": False,
+                    "session_id": "sess-live-snapshot",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fake_process = self._FakeTTYProcess(
+            'Error: Codex error: {"type":"error","error":{"type":"server_error","message":"TTY upstream failed"}}\n'
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake_process)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setenv("JUNO_SUBAGENT_CAPTURE_PATH", str(capture_path))
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["session_id"] == "sess-live-snapshot"
+
+        captured = json.loads(capture_path.read_text(encoding="utf-8"))
+        assert captured["subtype"] == "error"
+        assert captured["session_id"] == "sess-live-snapshot"
 
     def test_live_mode_without_tty_keeps_pipe_streaming_path(self, monkeypatch):
         popen_calls = {}

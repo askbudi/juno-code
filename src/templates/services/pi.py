@@ -2445,9 +2445,42 @@ Model shorthands:
         """Write final result event to capture file for shell backend."""
         if not capture_path or not self.last_result_event:
             return
+
+        payload = dict(self.last_result_event)
+
+        if not payload.get("session_id"):
+            existing_capture: Optional[dict] = None
+            try:
+                capture_file = Path(capture_path)
+                if capture_file.exists():
+                    raw_existing = capture_file.read_text(encoding="utf-8").strip()
+                    if raw_existing:
+                        parsed_existing = json.loads(raw_existing)
+                        if isinstance(parsed_existing, dict):
+                            existing_capture = parsed_existing
+            except Exception:
+                existing_capture = None
+
+            existing_session_id: Optional[str] = None
+            if isinstance(existing_capture, dict):
+                candidate = existing_capture.get("session_id")
+                if isinstance(candidate, str) and candidate.strip():
+                    existing_session_id = candidate.strip()
+                elif isinstance(existing_capture.get("sub_agent_response"), dict):
+                    nested = existing_capture["sub_agent_response"].get("session_id")
+                    if isinstance(nested, str) and nested.strip():
+                        existing_session_id = nested.strip()
+
+            if existing_session_id:
+                payload["session_id"] = existing_session_id
+                if not self.session_id:
+                    self.session_id = existing_session_id
+
+        self.last_result_event = payload
+
         try:
             Path(capture_path).write_text(
-                json.dumps(self.last_result_event, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception as e:
@@ -2605,8 +2638,43 @@ function extractLatestAssistantStopReason(messages: any[]): string | undefined {
   return undefined;
 }
 
+function writeCapturePayload(payload: any): void {
+  if (!capturePath) {
+    return;
+  }
+
+  fs.writeFileSync(capturePath, JSON.stringify(payload), \"utf-8\");
+}
+
+function persistSessionSnapshot(sessionId: unknown): void {
+  if (typeof sessionId !== \"string\" || !sessionId) {
+    return;
+  }
+
+  try {
+    writeCapturePayload({
+      type: \"result\",
+      subtype: \"session\",
+      is_error: false,
+      session_id: sessionId,
+    });
+  } catch {
+    // Non-fatal: runtime capture should continue even if snapshot write fails.
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let completed = false;
+
+  pi.on(\"session\", (event, ctx) => {
+    const eventSessionId = typeof event?.id === \"string\" ? event.id : undefined;
+    const managerSessionId =
+      typeof ctx?.sessionManager?.getSessionId === \"function\"
+        ? ctx.sessionManager.getSessionId()
+        : undefined;
+
+    persistSessionSnapshot(managerSessionId || eventSessionId);
+  });
 
   pi.on(\"agent_end\", async (event, ctx) => {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
@@ -2641,9 +2709,7 @@ export default function (pi: ExtensionAPI) {
         payload.session_id = sessionId;
       }
 
-      if (capturePath) {
-        fs.writeFileSync(capturePath, JSON.stringify(payload), \"utf-8\");
-      }
+      writeCapturePayload(payload);
     } catch {
       // Keep shutdown behavior even when capture writing fails.
     } finally {
@@ -2683,6 +2749,10 @@ export default function (pi: ExtensionAPI) {
         self._reset_run_cost_tracking()
         cancel_delayed_toolcalls = lambda: None
         stderr_error_messages: List[str] = []
+
+        resume_session = getattr(args, "resume", None)
+        if isinstance(resume_session, str) and resume_session.strip():
+            self.session_id = resume_session.strip()
 
         if verbose:
             # Truncate prompt in display to avoid confusing multi-line output
