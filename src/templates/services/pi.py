@@ -2265,6 +2265,29 @@ Model shorthands:
         return False
 
     @staticmethod
+    def _is_success_result_event(event: Optional[dict]) -> bool:
+        """Return True when event is an explicit successful result envelope."""
+        if not isinstance(event, dict):
+            return False
+
+        if PiService._is_error_result_event(event):
+            return False
+
+        subtype = event.get("subtype")
+        if isinstance(subtype, str) and subtype.lower() == "success":
+            return True
+
+        event_type = event.get("type")
+        if isinstance(event_type, str) and event_type.lower() == "result" and event.get("is_error") is False:
+            result_value = event.get("result")
+            if isinstance(result_value, str):
+                return bool(result_value.strip())
+            if result_value not in (None, "", [], {}):
+                return True
+
+        return False
+
+    @staticmethod
     def _extract_error_message_from_event(event: dict) -> Optional[str]:
         """Extract a human-readable message from Pi/Codex error event shapes."""
         if not isinstance(event, dict):
@@ -2722,6 +2745,8 @@ export default function (pi: ExtensionAPI) {
                                 extracted_error = self._extract_error_message_from_text(stderr_line)
                                 if extracted_error:
                                     stderr_error_messages.append(extracted_error)
+                                    if not self._is_success_result_event(self.last_result_event):
+                                        self.last_result_event = self._build_error_result_event(extracted_error)
                     except (ValueError, OSError):
                         pass
 
@@ -2731,7 +2756,7 @@ export default function (pi: ExtensionAPI) {
                 process.wait()
                 stderr_thread.join(timeout=3)
 
-                if not self.last_result_event and stderr_error_messages:
+                if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
                     self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
 
                 self._write_capture_file(capture_path)
@@ -2812,6 +2837,8 @@ export default function (pi: ExtensionAPI) {
                             extracted_error = self._extract_error_message_from_text(stderr_line)
                             if extracted_error:
                                 stderr_error_messages.append(extracted_error)
+                                if not self._is_success_result_event(self.last_result_event):
+                                    self.last_result_event = self._build_error_result_event(extracted_error)
                 except (ValueError, OSError):
                     pass
 
@@ -2934,6 +2961,13 @@ export default function (pi: ExtensionAPI) {
                     # Capture session ID from the session event (sent at stream start)
                     if event_type == "session":
                         self.session_id = parsed_event.get("id")
+                        if (
+                            isinstance(self.last_result_event, dict)
+                            and not self.last_result_event.get("session_id")
+                            and isinstance(self.session_id, str)
+                            and self.session_id.strip()
+                        ):
+                            self.last_result_event["session_id"] = self.session_id
 
                     # Capture terminal error events even when upstream exits with code 0.
                     error_message = self._extract_error_message_from_event(parsed_event)
@@ -3172,9 +3206,9 @@ export default function (pi: ExtensionAPI) {
             # Wait for stderr thread to finish before deriving fallback errors.
             stderr_thread.join(timeout=3)
 
-            # If no structured result was captured from stdout events but stderr
-            # surfaced a terminal error, persist it for shell-backend consumers.
-            if not self.last_result_event and stderr_error_messages:
+            # If stderr surfaced a terminal error and we do not already have an
+            # explicit success envelope, persist the failure for shell-backend consumers.
+            if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
                 self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
 
             # Write capture file for shell backend

@@ -1670,6 +1670,29 @@ class TestRunPiRawToolOutputBuffering:
         assert self.svc.last_result_event["is_error"] is True
         assert "Upstream API failed" in self.svc.last_result_event["result"]
 
+    def test_multiline_stderr_codex_error_overrides_empty_agent_end_and_keeps_session_id(self, monkeypatch):
+        """Split stderr error lines must still win over non-error empty agent_end payloads."""
+        stdout_lines = [
+            json.dumps({"type": "session", "id": "sess-context"}) + "\n",
+            json.dumps({"type": "agent_end", "messages": [{"role": "assistant", "content": []}]}) + "\n",
+        ]
+        fake = self._FakeProcess(stdout_lines)
+        fake.stderr = io.StringIO(
+            "Error: Codex error:\n"
+            " {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window\"}}\n"
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "context window" in self.svc.last_result_event["result"].lower()
+        assert self.svc.last_result_event["session_id"] == "sess-context"
+
     def test_usage_limit_text_message_is_treated_as_provider_error(self, monkeypatch):
         """Assistant text with provider usage-limit signature must be marked as error."""
         usage_limit_message = "Error: You have hit your ChatGPT usage limit (plus plan). Try again in ~8795 min."
