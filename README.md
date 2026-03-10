@@ -275,9 +275,11 @@ CLI run summaries also surface these fields live in the terminal:
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
 - `Session ID(s)` entries with per-session cost when available
 
-For `juno-code continue`, the latest session context is also persisted into the project env file (`.env.juno` by default) via:
-- `JUNO_CODE_LAST_SESSION_ID`
-- `JUNO_CODE_LAST_EXECUTION_SETTINGS` (JSON snapshot of runtime settings)
+For `juno-code continue`, the latest session context is persisted into the project env file (`.env.juno` by default) using **shell-scoped keys** so panes/tabs do not overwrite each other:
+- `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
+- `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>` (JSON runtime-settings snapshot)
+
+Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`.
 
 ### Feedback System
 

@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 
@@ -199,8 +200,16 @@ describe('Main Command', () => {
   });
 
   afterEach(() => {
-    delete process.env.JUNO_CODE_LAST_SESSION_ID;
-    delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+    for (const key of Object.keys(process.env)) {
+      if (
+        key.startsWith('JUNO_CODE_LAST_SESSION_ID') ||
+        key.startsWith('JUNO_CODE_LAST_EXECUTION_SETTINGS') ||
+        key === 'JUNO_CODE_CONTINUE_SCOPE' ||
+        key === 'TMUX_PANE'
+      ) {
+        delete process.env[key];
+      }
+    }
     vi.clearAllMocks();
     consoleSpy.mockRestore();
     processExitSpy.mockRestore();
@@ -1126,14 +1135,28 @@ describe('Main Command', () => {
 
         const envWriteCall = vi.mocked(fs.writeFile).mock.calls.at(-1);
         expect(envWriteCall?.[0]).toBe('/test/dir/.env.juno');
-        expect(String(envWriteCall?.[1])).toContain('JUNO_CODE_LAST_SESSION_ID="session-continue-123"');
-        expect(String(envWriteCall?.[1])).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS="');
-        expect(process.env.JUNO_CODE_LAST_SESSION_ID).toBe('session-continue-123');
+
+        const envContent = String(envWriteCall?.[1]);
+        expect(envContent).toMatch(/JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}="session-continue-123"/);
+        expect(envContent).toMatch(/JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_[A-F0-9]{16}="/);
+
+        const persistedSessionKeys = Object.keys(process.env).filter((key) =>
+          key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'),
+        );
+        expect(persistedSessionKeys).toHaveLength(1);
+        expect(process.env[persistedSessionKeys[0] || '']).toBe('session-continue-123');
       });
 
-      it('should hydrate resume and runtime options from env snapshot when continueFromLatest is set', async () => {
-        process.env.JUNO_CODE_LAST_SESSION_ID = 'resume-me-001';
-        process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = JSON.stringify({
+      it('should hydrate resume and runtime options from scoped env snapshot when continueFromLatest is set', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-a';
+        const scopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:pane-a')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'resume-me-001';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           model: ':api-codex',
@@ -1173,8 +1196,43 @@ describe('Main Command', () => {
       });
 
       it('should fail fast when continueFromLatest is requested without snapshot env vars', async () => {
-        delete process.env.JUNO_CODE_LAST_SESSION_ID;
-        delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-pane';
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'next step prompt',
+            cwd: '/test',
+            continueFromLatest: true,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(createExecutionRequest).not.toHaveBeenCalled();
+      });
+
+      it('should not leak continue snapshots across different shell scopes', async () => {
+        const paneAHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:pane-a')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${paneAHash}`] = 'pane-a-session';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneAHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'claude',
+          model: ':sonnet',
+          maxIterations: 2,
+        });
+
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-b';
 
         await mainCommandHandler(
           [],

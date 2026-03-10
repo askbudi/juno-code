@@ -9,6 +9,7 @@
  * - Complete validation and error handling
  */
 
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import chalk from 'chalk';
@@ -148,10 +149,32 @@ interface SessionHistoryDocument {
 const SESSION_HISTORY_VERSION = 1;
 const SESSION_HISTORY_FILE_NAME = 'session_history.json';
 
-const CONTINUE_SESSION_ENV_KEY = 'JUNO_CODE_LAST_SESSION_ID';
-const CONTINUE_SETTINGS_ENV_KEY = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
+const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
+const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
+const CONTINUE_SCOPE_OVERRIDE_ENV_KEY = 'JUNO_CODE_CONTINUE_SCOPE';
 const CONTINUE_SETTINGS_VERSION = 1;
 const DEFAULT_ENV_FILE_NAME = '.env.juno';
+
+interface ContinueScopeContext {
+  scopeDescriptor: string;
+  scopeHash: string;
+  scopeSource: string;
+  sessionEnvKey: string;
+  settingsEnvKey: string;
+}
+
+const CONTINUE_SCOPE_ENV_MARKERS: ReadonlyArray<string> = [
+  'TMUX_PANE',
+  'WEZTERM_PANE',
+  'KITTY_WINDOW_ID',
+  'KITTY_PID',
+  'TERM_SESSION_ID',
+  'WT_SESSION',
+  'ZELLIJ_PANE_ID',
+  'STY',
+  'WINDOWID',
+  'SSH_TTY',
+];
 
 interface ContinueSettingsSnapshot {
   version: number;
@@ -294,20 +317,64 @@ function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | 
   return snapshot;
 }
 
+function resolveContinueScopeContext(): ContinueScopeContext {
+  const overrideScope = process.env[CONTINUE_SCOPE_OVERRIDE_ENV_KEY]?.trim();
+  let scopeDescriptor = '';
+  let scopeSource = '';
+
+  if (overrideScope) {
+    scopeDescriptor = `${CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:${overrideScope}`;
+    scopeSource = CONTINUE_SCOPE_OVERRIDE_ENV_KEY;
+  } else {
+    for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
+      const rawValue = process.env[envKey];
+      if (typeof rawValue !== 'string') {
+        continue;
+      }
+
+      const markerValue = rawValue.trim();
+      if (!markerValue) {
+        continue;
+      }
+
+      scopeDescriptor = `${envKey}:${markerValue}`;
+      scopeSource = envKey;
+      break;
+    }
+  }
+
+  if (!scopeDescriptor) {
+    scopeDescriptor = `PPID:${process.ppid}`;
+    scopeSource = 'process.ppid';
+  }
+
+  const digest = createHash('sha256').update(scopeDescriptor).digest('hex').slice(0, 16).toUpperCase();
+  const scopeHash = `SCOPE_${digest}`;
+
+  return {
+    scopeDescriptor,
+    scopeHash,
+    scopeSource,
+    sessionEnvKey: `${CONTINUE_SESSION_ENV_KEY_BASE}_${scopeHash}`,
+    settingsEnvKey: `${CONTINUE_SETTINGS_ENV_KEY_BASE}_${scopeHash}`,
+  };
+}
+
 function applyContinueContextFromEnvironment(options: MainCommandOptions): void {
-  const sessionId = process.env[CONTINUE_SESSION_ENV_KEY]?.trim();
+  const continueScope = resolveContinueScopeContext();
+  const sessionId = process.env[continueScope.sessionEnvKey]?.trim();
   if (!sessionId) {
-    throw new ValidationError('No previous session found to continue', [
-      'Run a regular juno-code command first to create a resumable session snapshot',
-      'Then retry: juno-code continue "your next prompt"',
+    throw new ValidationError('No previous session found to continue in this shell context', [
+      `Run a regular juno-code command in this same pane/tab first (scope source: ${continueScope.scopeSource})`,
+      'Or resume another session directly: juno-code --resume <session-id> "your next prompt"',
     ]);
   }
 
-  const rawSettings = process.env[CONTINUE_SETTINGS_ENV_KEY];
+  const rawSettings = process.env[continueScope.settingsEnvKey];
   const settings = rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
   if (!settings) {
-    throw new ValidationError('Previous execution settings are missing or invalid', [
-      'Run a regular juno-code command again to refresh the continue snapshot',
+    throw new ValidationError('Previous execution settings are missing or invalid for this shell context', [
+      'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
       'Then retry: juno-code continue "your next prompt"',
     ]);
   }
@@ -347,9 +414,10 @@ async function persistContinueContext(
 
     const settings = buildContinueSettingsSnapshot(result.request);
     const serializedSettings = JSON.stringify(settings);
+    const continueScope = resolveContinueScopeContext();
 
-    process.env[CONTINUE_SESSION_ENV_KEY] = latestSessionId;
-    process.env[CONTINUE_SETTINGS_ENV_KEY] = serializedSettings;
+    process.env[continueScope.sessionEnvKey] = latestSessionId;
+    process.env[continueScope.settingsEnvKey] = serializedSettings;
 
     const envFilePath = resolveContinueEnvFilePath(config.workingDirectory, config.envFilePath);
     await fs.ensureDir(path.dirname(envFilePath));
@@ -359,10 +427,18 @@ async function persistContinueContext(
       currentContent = await fs.readFile(envFilePath, 'utf-8');
     }
 
-    currentContent = upsertEnvVariable(currentContent, CONTINUE_SESSION_ENV_KEY, latestSessionId);
-    currentContent = upsertEnvVariable(currentContent, CONTINUE_SETTINGS_ENV_KEY, serializedSettings);
+    currentContent = upsertEnvVariable(currentContent, continueScope.sessionEnvKey, latestSessionId);
+    currentContent = upsertEnvVariable(currentContent, continueScope.settingsEnvKey, serializedSettings);
 
     await fs.writeFile(envFilePath, currentContent, 'utf-8');
+
+    if (verboseLevel >= 2) {
+      console.error(
+        chalk.gray(
+          `   Continue scope snapshot persisted (${continueScope.scopeSource} -> ${continueScope.scopeHash})`,
+        ),
+      );
+    }
   } catch (error) {
     if (verboseLevel >= 2) {
       console.error(chalk.yellow(`Warning: Failed to persist continue context: ${error}`));
