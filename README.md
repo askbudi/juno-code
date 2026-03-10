@@ -281,6 +281,11 @@ For `juno-code continue`, the latest session context is persisted into the proje
 
 Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`.
 
+Short help text for scripts that need pane-scoped continue state:
+- Session key pattern: `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
+- Settings key pattern: `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>`
+- Deterministic override: set `JUNO_CODE_CONTINUE_SCOPE=<your-pane-id>` before running `juno-code` so external scripts can target a stable scope name across runs.
+
 ### Feedback System
 
 ```bash
