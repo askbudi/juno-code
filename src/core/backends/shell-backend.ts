@@ -824,12 +824,11 @@ export class ShellBackend implements Backend {
       }
 
       const isPiLiveMode = isPython && subagentType === 'pi' && request.arguments?.live === true;
-      const shouldAttachLiveTerminal =
-        isPiLiveMode && process.stdin.isTTY === true && process.stdout.isTTY === true;
+      const shouldAttachLiveTerminal = isPiLiveMode && process.stdout.isTTY === true;
 
       if (this.config!.debug && isPiLiveMode) {
         engineLogger.debug(
-          `Pi live mode stdio: ${shouldAttachLiveTerminal ? 'inherit (interactive TTY)' : 'pipe (headless/non-TTY)'}`,
+          `Pi live mode stdio: ${shouldAttachLiveTerminal ? 'inherit (interactive TTY or stdout-tty fallback)' : 'pipe (headless/non-TTY)'}`,
         );
       }
 
@@ -841,8 +840,8 @@ export class ShellBackend implements Backend {
       });
 
       // Close stdin immediately for headless mode to avoid waiting for input.
-      // In live Pi mode on an attached terminal, keep inherited stdin open so
-      // users can interact with the TUI directly.
+      // In live Pi mode with terminal passthrough (including stdout-tty fallback),
+      // keep inherited stdin open so pi.py can reattach /dev/tty when needed.
       if (!shouldAttachLiveTerminal && child.stdin) {
         child.stdin.end();
       }

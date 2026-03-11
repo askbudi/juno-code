@@ -521,6 +521,53 @@ class TestRunPiLiveTTYPassthrough:
         assert kwargs["text"] is True
         assert kwargs["universal_newlines"] is True
 
+    def test_live_mode_with_redirected_stdin_uses_dev_tty_fallback(self, monkeypatch):
+        popen_calls = {}
+        fake_process = self._FakeTTYProcess()
+        fallback_tty = io.StringIO("")
+
+        def _fake_popen(*popen_args, **popen_kwargs):
+            popen_calls["args"] = popen_args
+            popen_calls["kwargs"] = popen_kwargs
+            return fake_process
+
+        monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr(self.svc, "_open_live_tty_stdin", lambda: fallback_tty)
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 0
+        kwargs = popen_calls["kwargs"]
+        assert kwargs["stdin"] is fallback_tty
+        assert "stdout" not in kwargs
+        assert kwargs["stderr"] == subprocess.PIPE
+
+    def test_live_mode_with_redirected_stdin_falls_back_to_pipe_when_no_tty_device(self, monkeypatch):
+        popen_calls = {}
+        fake_process = self._FakePipeProcess()
+
+        def _fake_popen(*popen_args, **popen_kwargs):
+            popen_calls["args"] = popen_args
+            popen_calls["kwargs"] = popen_kwargs
+            return fake_process
+
+        monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr(self.svc, "_open_live_tty_stdin", lambda: None)
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 0
+        kwargs = popen_calls["kwargs"]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.PIPE
+
     def test_live_tty_stderr_codex_error_sets_error_result_and_nonzero_exit(self, monkeypatch):
         """TTY passthrough live mode must still capture stderr provider errors."""
         fake_process = self._FakeTTYProcess(

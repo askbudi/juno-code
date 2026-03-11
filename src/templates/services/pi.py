@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, TextIO, Tuple
 
 
 class PiService:
@@ -2731,6 +2731,13 @@ export default function (pi: ExtensionAPI) {
             print(f"Warning: Failed to create live auto-exit extension: {exc}", file=sys.stderr)
             return None
 
+    def _open_live_tty_stdin(self) -> Optional[TextIO]:
+        """Open /dev/tty for live-mode stdin fallback when stdin is redirected."""
+        try:
+            return open("/dev/tty", "r", encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+
     def run_pi(self, cmd: List[str], args: argparse.Namespace,
                stdin_prompt: Optional[str] = None) -> int:
         """Execute the Pi CLI and stream/format its JSON output.
@@ -2785,12 +2792,23 @@ export default function (pi: ExtensionAPI) {
                 print("-" * 80, file=sys.stderr)
 
         process: Optional[subprocess.Popen] = None
-        is_live_tty_passthrough = (
-            bool(getattr(args, "live", False))
-            and hasattr(sys.stdin, "isatty")
-            and hasattr(sys.stdout, "isatty")
+        live_mode_requested = bool(getattr(args, "live", False))
+        stdin_has_tty = (
+            hasattr(sys.stdin, "isatty")
             and sys.stdin.isatty()
+        )
+        stdout_has_tty = (
+            hasattr(sys.stdout, "isatty")
             and sys.stdout.isatty()
+        )
+        live_tty_stdin: Optional[TextIO] = None
+        if live_mode_requested and stdout_has_tty and not stdin_has_tty:
+            live_tty_stdin = self._open_live_tty_stdin()
+
+        is_live_tty_passthrough = (
+            live_mode_requested
+            and stdout_has_tty
+            and (stdin_has_tty or live_tty_stdin is not None)
         )
 
         try:
@@ -2798,44 +2816,54 @@ export default function (pi: ExtensionAPI) {
                 # Interactive live mode: attach Pi directly to the current terminal.
                 # Keep stdout inherited for full-screen TUI rendering/input, but
                 # capture stderr so terminal provider errors can still propagate.
-                process = subprocess.Popen(
-                    cmd,
-                    cwd=self.project_path,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    universal_newlines=True,
-                )
+                popen_kwargs = {
+                    "cwd": self.project_path,
+                    "stderr": subprocess.PIPE,
+                    "text": True,
+                    "universal_newlines": True,
+                }
+                if live_tty_stdin is not None:
+                    popen_kwargs["stdin"] = live_tty_stdin
 
-                def _live_tty_stderr_reader():
-                    """Read stderr during live TTY mode and capture terminal failures."""
-                    try:
-                        if process.stderr:
-                            for stderr_line in process.stderr:
-                                print(stderr_line, end="", file=sys.stderr, flush=True)
-                                extracted_error = self._extract_error_message_from_text(stderr_line)
-                                if extracted_error:
-                                    stderr_error_messages.append(extracted_error)
-                                    if not self._is_success_result_event(self.last_result_event):
-                                        self.last_result_event = self._build_error_result_event(extracted_error)
-                    except (ValueError, OSError):
-                        pass
+                try:
+                    process = subprocess.Popen(cmd, **popen_kwargs)
 
-                stderr_thread = threading.Thread(target=_live_tty_stderr_reader, daemon=True)
-                stderr_thread.start()
+                    def _live_tty_stderr_reader():
+                        """Read stderr during live TTY mode and capture terminal failures."""
+                        try:
+                            if process.stderr:
+                                for stderr_line in process.stderr:
+                                    print(stderr_line, end="", file=sys.stderr, flush=True)
+                                    extracted_error = self._extract_error_message_from_text(stderr_line)
+                                    if extracted_error:
+                                        stderr_error_messages.append(extracted_error)
+                                        if not self._is_success_result_event(self.last_result_event):
+                                            self.last_result_event = self._build_error_result_event(extracted_error)
+                        except (ValueError, OSError):
+                            pass
 
-                process.wait()
-                stderr_thread.join(timeout=3)
+                    stderr_thread = threading.Thread(target=_live_tty_stderr_reader, daemon=True)
+                    stderr_thread.start()
 
-                if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
-                    self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
+                    process.wait()
+                    stderr_thread.join(timeout=3)
 
-                self._write_capture_file(capture_path)
+                    if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
+                        self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
 
-                final_return_code = process.returncode or 0
-                if final_return_code == 0 and self._is_error_result_event(self.last_result_event):
-                    final_return_code = 1
+                    self._write_capture_file(capture_path)
 
-                return final_return_code
+                    final_return_code = process.returncode or 0
+                    if final_return_code == 0 and self._is_error_result_event(self.last_result_event):
+                        final_return_code = 1
+
+                    return final_return_code
+                finally:
+                    if live_tty_stdin is not None:
+                        try:
+                            live_tty_stdin.close()
+                        except OSError:
+                            pass
 
             process = subprocess.Popen(
                 cmd,
