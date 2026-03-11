@@ -653,6 +653,80 @@ describe('Binary Execution Tests', () => {
       expect(typeof result.exitCode).toBe('number');
     });
 
+    it('should set per-subagent default model via alias subcommand', async () => {
+      const config = {
+        defaultSubagent: 'claude',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':sonnet',
+        defaultModels: { claude: ':sonnet' },
+        logLevel: 'info',
+        verbose: 1,
+        quiet: false,
+        mcpTimeout: 43200000,
+        mcpRetries: 3,
+        onHourlyLimit: 'raise',
+        interactive: true,
+        headlessMode: false,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+        },
+      });
+
+      const result = await executeCLI(['pi', 'set-default-model', ':api-codex']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('Default model for pi set to :api-codex');
+
+      const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'config.json'));
+      expect(updated.defaultModels.pi).toBe(':api-codex');
+      expect(updated.defaultModel).toBe(':sonnet');
+    });
+
+    it('should reject incompatible shorthand in set-default-model command', async () => {
+      const config = {
+        defaultSubagent: 'codex',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':codex',
+        logLevel: 'info',
+        verbose: 1,
+        quiet: false,
+        mcpTimeout: 43200000,
+        mcpRetries: 3,
+        onHourlyLimit: 'raise',
+        interactive: true,
+        headlessMode: false,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+        },
+      });
+
+      const result = await executeCLI(['codex', 'set-default-model', ':sonnet'], {
+        expectError: true,
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('not compatible with subagent codex');
+    });
+
     it('should preserve -p prompt value on subagent aliases', async () => {
       // Regression guard: alias commands used to drop options.prompt and trigger Empty stdin input
       const result = await executeCLI(['pi', '-p', 'alias prompt', '-i', 'invalid'], {

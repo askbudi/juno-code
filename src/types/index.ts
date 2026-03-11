@@ -37,6 +37,8 @@ export interface JunoTaskConfig {
   defaultSubagent: SubagentType;
   defaultMaxIterations: number;
   defaultModel?: string;
+  /** Optional per-subagent default model overrides */
+  defaultModels?: Partial<Record<SubagentType, string>>;
   defaultBackend: BackendType;
 
   // Project metadata

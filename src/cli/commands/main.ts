@@ -16,6 +16,11 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
+import {
+  getConfiguredDefaultModelForSubagent,
+  getDefaultModelForSubagent,
+  isModelCompatibleWithSubagent,
+} from '../../core/subagent-models.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
@@ -26,70 +31,6 @@ import type { SubagentType } from '../../types/index.js';
 import type { ExecutionRequest, ExecutionResult } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
 import type { ProgressEvent } from '../../types/execution.js';
-
-/**
- * Get the default model for a given subagent type.
- * Returns shorthand model names with ':' prefix for proper resolution by service scripts.
- *
- * This ensures that when no -m flag is provided, each subagent uses its appropriate
- * default model rather than falling back to the config's defaultModel (which may be
- * set for a different subagent).
- */
-function getDefaultModelForSubagent(subagent: SubagentType): string {
-  const modelDefaults: Record<SubagentType, string> = {
-    claude: ':sonnet',
-    codex: ':codex', // Expands to gpt-5.3-codex in codex.py
-    gemini: ':pro', // Expands to gemini-2.5-pro in gemini.py
-    cursor: 'auto',
-    pi: ':pi', // Expands to anthropic/claude-sonnet-4-6 in pi.py
-  };
-  return modelDefaults[subagent] || modelDefaults.claude;
-}
-
-/**
- * Check if a model string is compatible with a given subagent.
- * This prevents using Claude model shorthands with Codex, and vice versa.
- *
- * Model shorthands starting with ':' are mapped to specific subagents:
- * - Claude: :sonnet, :haiku, :opus, :claude-*
- * - Codex: :codex, :codex-mini, :gpt-5, :mini
- * - Gemini: :pro, :flash, :gemini-*
- * - Pi: all shorthands accepted (multi-provider agent)
- *
- * Full model names (not shorthands) are always considered compatible
- * as users may have custom configurations.
- */
-function isModelCompatibleWithSubagent(model: string, subagent: SubagentType): boolean {
-  // Non-shorthand models are always allowed (user explicitly configured them)
-  if (!model.startsWith(':')) {
-    return true;
-  }
-
-  // Define which shorthands belong to which subagent
-  const claudeShorthands = [':sonnet', ':haiku', ':opus'];
-  const codexShorthands = [':codex', ':codex-mini', ':gpt-5', ':mini'];
-  const geminiShorthands = [':pro', ':flash'];
-
-  // Check if shorthand starts with a subagent-specific prefix
-  const isClaudeModel = claudeShorthands.includes(model) || model.startsWith(':claude');
-  const isCodexModel = codexShorthands.includes(model) || model.startsWith(':gpt');
-  const isGeminiModel = geminiShorthands.includes(model) || model.startsWith(':gemini');
-
-  switch (subagent) {
-    case 'claude':
-      return isClaudeModel || (!isCodexModel && !isGeminiModel);
-    case 'codex':
-      return isCodexModel || (!isClaudeModel && !isGeminiModel);
-    case 'gemini':
-      return isGeminiModel || (!isClaudeModel && !isCodexModel);
-    case 'cursor':
-      return true; // Cursor accepts any model
-    case 'pi':
-      return true; // Pi is multi-provider — accepts any model shorthand
-    default:
-      return true;
-  }
-}
 
 /**
  * Normalize verbose option to numeric level.
@@ -1582,23 +1523,12 @@ export async function mainCommandHandler(
       ]);
     }
 
-    // Determine the model to use:
-    // 1. If -m flag is provided, use that
-    // 2. If config has a defaultModel AND the selected subagent matches config's defaultSubagent
-    //    AND the model is compatible with the subagent, use config's model
-    // 3. Otherwise, use the appropriate default model for the selected subagent
-    //
-    // The compatibility check prevents using Claude model shorthands (e.g., :sonnet) with Codex,
-    // which can happen with legacy config.json files created before the per-subagent model fix.
-    const configModelIsValid =
-      config.defaultModel &&
-      config.defaultSubagent === options.subagent &&
-      isModelCompatibleWithSubagent(config.defaultModel, options.subagent);
-
-    const resolvedModel =
-      options.model ||
-      (configModelIsValid ? config.defaultModel : undefined) ||
-      getDefaultModelForSubagent(options.subagent);
+    // Determine model priority:
+    // 1) explicit CLI --model
+    // 2) configured model for this subagent (supports per-subagent map + legacy defaultModel)
+    // 3) built-in subagent default
+    const configuredModel = getConfiguredDefaultModelForSubagent(config, options.subagent);
+    const resolvedModel = options.model || configuredModel || getDefaultModelForSubagent(options.subagent);
 
     // Create execution request
     // Pass both --tools and --allowed-tools as separate parameters

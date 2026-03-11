@@ -13,7 +13,9 @@ import { Command } from 'commander';
 import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 import { getDefaultHooks } from '../../templates/default-hooks.js';
+import { getDefaultModelForSubagent } from '../../core/subagent-models.js';
 import type { InitCommandOptions } from '../types.js';
+import type { SubagentType } from '../../types/index.js';
 import { ValidationError } from '../types.js';
 
 /** Simple key-value variables for template interpolation */
@@ -582,7 +584,9 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
       // Core settings
       defaultSubagent: this.context.subagent,
       defaultMaxIterations: 1,
-      defaultModel: this.getDefaultModelForSubagent(this.context.subagent || 'claude'),
+      defaultModel: getDefaultModelForSubagent(
+        (this.context.subagent || 'claude') as SubagentType,
+      ),
 
       // Project metadata
       mainTask: this.context.task || 'Project initialization',
@@ -620,17 +624,6 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         `   ✓ Created .juno_task/config.json with ${this.context.subagent} as default subagent`,
       ),
     );
-  }
-
-  private getDefaultModelForSubagent(subagent: string): string {
-    const modelDefaults = {
-      claude: ':sonnet',
-      codex: ':codex', // Expands to gpt-5.3-codex in codex.py
-      gemini: ':pro', // Expands to gemini-2.5-pro in gemini.py
-      cursor: 'auto',
-      pi: 'auto',
-    };
-    return modelDefaults[subagent as keyof typeof modelDefaults] || modelDefaults.claude;
   }
 
   /**

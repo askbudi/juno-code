@@ -100,6 +100,21 @@ describe('Configuration Module', () => {
       expect(() => validateConfig(invalidConfig)).toThrow(/defaultSubagent/);
     });
 
+    it('should accept per-subagent defaultModels overrides', () => {
+      const config = validateConfig({
+        ...DEFAULT_CONFIG,
+        defaultModels: {
+          claude: ':opus',
+          pi: ':api-codex',
+        },
+      });
+
+      expect(config.defaultModels).toEqual({
+        claude: ':opus',
+        pi: ':api-codex',
+      });
+    });
+
     it('should reject invalid log level', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,

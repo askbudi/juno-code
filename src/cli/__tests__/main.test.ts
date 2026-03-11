@@ -1380,6 +1380,84 @@ describe('Main Command', () => {
         );
       });
 
+      it('should use per-subagent default model from config.defaultModels', async () => {
+        const { loadConfig } = await import('../../core/config.js');
+        vi.mocked(loadConfig).mockResolvedValueOnce({
+          workingDirectory: '/test/dir',
+          defaultMaxIterations: 5,
+          defaultSubagent: 'claude',
+          defaultModel: ':sonnet',
+          defaultModels: {
+            codex: ':gpt-5',
+          },
+          mcpTimeout: 30000,
+          mcpRetries: 3,
+          verbose: 1,
+          quiet: false,
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'codex',
+            prompt: 'test prompt',
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            subagent: 'codex',
+            model: ':gpt-5',
+          }),
+        );
+      });
+
+      it('should preserve legacy defaultModel precedence for config.defaultSubagent', async () => {
+        const { loadConfig } = await import('../../core/config.js');
+        vi.mocked(loadConfig).mockResolvedValueOnce({
+          workingDirectory: '/test/dir',
+          defaultMaxIterations: 5,
+          defaultSubagent: 'codex',
+          defaultModel: ':mini',
+          defaultModels: {
+            codex: ':codex',
+          },
+          mcpTimeout: 30000,
+          mcpRetries: 3,
+          verbose: 1,
+          quiet: false,
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'codex',
+            prompt: 'test prompt',
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            subagent: 'codex',
+            model: ':mini',
+          }),
+        );
+      });
+
       it('should setup progress callbacks', async () => {
         const options: MainCommandOptions = {
           subagent: 'claude',
@@ -1575,6 +1653,10 @@ describe('Model Compatibility', () => {
 
     it('should return auto for cursor', () => {
       expect(getDefaultModelForSubagent('cursor')).toBe('auto');
+    });
+
+    it('should return :pi for pi', () => {
+      expect(getDefaultModelForSubagent('pi')).toBe(':pi');
     });
 
     it('should return :sonnet as default for unknown subagent', () => {

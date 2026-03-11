@@ -15,6 +15,7 @@ import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
 import type { JunoTaskConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
+import { SUBAGENT_DEFAULT_MODELS } from './subagent-models.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -118,6 +119,11 @@ export const JunoTaskConfigSchema = z
       .describe('Default maximum number of iterations for task execution'),
 
     defaultModel: z.string().optional().describe('Default model to use for the subagent'),
+
+    defaultModels: z
+      .record(SubagentTypeSchema, z.string())
+      .optional()
+      .describe('Optional per-subagent default model overrides'),
 
     // Project metadata
     mainTask: z.string().optional().describe('Main task objective for the project'),
@@ -223,6 +229,7 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   defaultSubagent: 'claude',
   defaultBackend: 'shell',
   defaultMaxIterations: 1,
+  defaultModels: { ...SUBAGENT_DEFAULT_MODELS },
 
   // Logging settings
   logLevel: 'info',
@@ -890,15 +897,25 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
 
       // Migration: Add defaultModel if missing (for configs created before this feature)
       if (!existingConfig.defaultModel) {
-        // Determine default model based on defaultSubagent
         const subagent = existingConfig.defaultSubagent || 'claude';
-        const modelDefaults: Record<string, string> = {
-          claude: ':sonnet',
-          codex: ':codex',
-          gemini: ':pro',
-          cursor: 'auto',
-        };
-        existingConfig.defaultModel = modelDefaults[subagent] || ':sonnet';
+        existingConfig.defaultModel =
+          SUBAGENT_DEFAULT_MODELS[subagent as keyof typeof SUBAGENT_DEFAULT_MODELS] ||
+          SUBAGENT_DEFAULT_MODELS.claude;
+        needsUpdate = true;
+      }
+
+      // Migration: add per-subagent default model map when absent
+      if (
+        !existingConfig.defaultModels ||
+        typeof existingConfig.defaultModels !== 'object' ||
+        Array.isArray(existingConfig.defaultModels)
+      ) {
+        const baseDefaults = { ...SUBAGENT_DEFAULT_MODELS } as Record<string, string>;
+        const subagent = existingConfig.defaultSubagent || 'claude';
+        if (typeof existingConfig.defaultModel === 'string') {
+          baseDefaults[subagent] = existingConfig.defaultModel;
+        }
+        existingConfig.defaultModels = baseDefaults;
         needsUpdate = true;
       }
 

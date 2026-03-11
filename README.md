@@ -720,6 +720,30 @@ The kanban.sh script wraps juno-kanban. Here are the actual commands:
 4. Global config files
 5. Hardcoded defaults
 
+### Per-subagent default models
+
+Set model defaults per subagent without changing your global default:
+
+```bash
+juno-code pi set-default-model :api-codex
+juno-code claude set-default-model :opus
+juno-code codex set-default-model :gpt-5
+```
+
+This writes to `.juno_task/config.json`:
+
+```json
+{
+  "defaultModels": {
+    "pi": ":api-codex",
+    "claude": ":opus",
+    "codex": ":gpt-5"
+  }
+}
+```
+
+`juno-code` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
+
 ### Project Env Bootstrap (`.env.juno`)
 
 `juno-code` now bootstraps a project env file automatically:

@@ -14,6 +14,7 @@ inspect.defaultOptions.breakLength = Infinity;
 import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
+import type { SubagentType } from '../types/index.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -889,6 +890,77 @@ function setupAliases(program: Command): void {
         }
       });
 
+    cmd
+      .command('set-default-model <model>')
+      .description(`Set default model for the ${subagent} subagent in .juno_task/config.json`)
+      .option('-w, --cwd <path>', 'Working directory')
+      .action(async (model: string, commandOptions) => {
+        try {
+          const workingDirectory =
+            typeof commandOptions.cwd === 'string' && commandOptions.cwd.trim().length > 0
+              ? commandOptions.cwd.trim()
+              : process.cwd();
+
+          const [{ loadConfig }, subagentModels, fsExtra, nodePath] = await Promise.all([
+            import('../core/config.js'),
+            import('../core/subagent-models.js'),
+            import('fs-extra'),
+            import('node:path'),
+          ]);
+
+          const typedSubagent = subagent as SubagentType;
+          const normalizedModel = String(model).trim();
+          if (!normalizedModel) {
+            throw new Error('Model cannot be empty. Example: juno-code pi set-default-model :api-codex');
+          }
+
+          if (!subagentModels.isModelCompatibleWithSubagent(normalizedModel, typedSubagent)) {
+            throw new Error(
+              `Model ${normalizedModel} is not compatible with subagent ${subagent}. ` +
+                `Use ${subagent} model shorthands or a full provider model id.`,
+            );
+          }
+
+          // Ensure project config exists and is valid before we mutate it.
+          await loadConfig({
+            baseDir: workingDirectory,
+            cliConfig: {
+              verbose: 0,
+              quiet: true,
+              logLevel: 'info',
+              workingDirectory,
+            },
+          });
+
+          const configPath = nodePath.join(workingDirectory, '.juno_task', 'config.json');
+          const configObject = (await fsExtra.default.readJson(configPath)) as Record<string, unknown>;
+
+          const existingMap =
+            configObject.defaultModels &&
+            typeof configObject.defaultModels === 'object' &&
+            !Array.isArray(configObject.defaultModels)
+              ? { ...(configObject.defaultModels as Record<string, unknown>) }
+              : {};
+
+          existingMap[subagent] = normalizedModel;
+          configObject.defaultModels = existingMap;
+
+          if (configObject.defaultSubagent === subagent) {
+            configObject.defaultModel = normalizedModel;
+          }
+
+          await fsExtra.default.writeJson(configPath, configObject, { spaces: 2 });
+
+          console.log(
+            chalk.green(
+              `✓ Default model for ${subagent} set to ${normalizedModel} in ${nodePath.relative(process.cwd(), configPath) || configPath}`,
+            ),
+          );
+        } catch (error) {
+          handleCLIError(error, normalizeVerbose(commandOptions.verbose));
+        }
+      });
+
     // Pass through unknown options to the backend service
     cmd.allowUnknownOption(true);
   }
@@ -1189,6 +1261,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Import Codex auth into Pi auth.json')}
   juno-code auth import-codex
+
+  ${chalk.gray('# Set subagent-specific default models')}
+  juno-code pi set-default-model :api-codex
+  juno-code claude set-default-model :opus
 
   ${chalk.gray('# Setup Git repository')}
   juno-code setup-git https://github.com/askbudi/juno-code

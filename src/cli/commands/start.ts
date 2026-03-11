@@ -12,8 +12,10 @@ import { Command } from 'commander';
 
 import { mainCommandHandler } from './main.js';
 import { loadConfig } from '../../core/config.js';
+import { getConfiguredDefaultModelForSubagent } from '../../core/subagent-models.js';
 import type { StartCommandOptions, MainCommandOptions } from '../types.js';
 import { RuntimeError } from '../types.js';
+import type { SubagentType } from '../../types/index.js';
 
 /**
  * Load init.md content from .juno_task directory
@@ -90,7 +92,10 @@ export async function startCommandHandler(
     const subagent = options.subagent || config.defaultSubagent || 'claude';
     const backend = options.backend || config.defaultBackend || 'shell';
     const maxIterations = options.maxIterations ?? config.defaultMaxIterations ?? 50;
-    const model = options.model || config.defaultModel;
+    const model =
+      options.model ||
+      getConfiguredDefaultModelForSubagent(config, subagent as SubagentType) ||
+      config.defaultModel;
 
     // Handle dry-run mode - validate configuration and exit without executing
     if (options.dryRun) {
