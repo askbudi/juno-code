@@ -780,6 +780,45 @@ describe('Binary Execution Tests', () => {
       expect(output).not.toContain('Empty stdin input');
     });
 
+    it('should expose continue scope hash/status as JSON for script integrations', async () => {
+      const env = buildContinueSnapshotEnv('binary-continue-scope-json');
+      const result = await executeCLI(['continue-scope', '--json'], { env });
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(payload.status).toBe('finished');
+      expect(payload.hash).toMatch(/^[A-F0-9]{6}$/);
+      expect(payload.fullHash).toMatch(/^SCOPE_[A-F0-9]{16}$/);
+      expect(payload.sessionId).toBe('session-continue-stdin');
+    });
+
+    it('should resolve continue scope status by short hash', async () => {
+      const env = buildContinueSnapshotEnv('binary-continue-scope-short-hash');
+      const currentScopeResult = await executeCLI(['continue-scope', '--json'], { env });
+      const currentPayload = JSON.parse(currentScopeResult.stdout) as Record<string, unknown>;
+      const shortHash = String(currentPayload.hash);
+
+      const lookupResult = await executeCLI(['continue-scope', shortHash, '--json'], { env });
+      expect(lookupResult.exitCode).toBe(0);
+
+      const lookupPayload = JSON.parse(lookupResult.stdout) as Record<string, unknown>;
+      expect(lookupPayload.status).toBe('finished');
+      expect(lookupPayload.hash).toBe(shortHash);
+    });
+
+    it('should report not_found for continue scope without snapshot state', async () => {
+      const result = await executeCLI(['continue-scope', '--json'], {
+        env: {
+          JUNO_CODE_CONTINUE_SCOPE: 'binary-continue-scope-missing',
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(payload.status).toBe('not_found');
+      expect(payload.hash).toMatch(/^[A-F0-9]{6}$/);
+    });
+
     it('should handle completion commands', async () => {
       const result = await executeCLI(['completion', 'bash'], { expectError: true });
 

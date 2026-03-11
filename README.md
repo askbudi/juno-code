@@ -286,6 +286,14 @@ Short help text for scripts that need pane-scoped continue state:
 - Settings key pattern: `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>`
 - Deterministic override: set `JUNO_CODE_CONTINUE_SCOPE=<your-pane-id>` before running `juno-code` so external scripts can target a stable scope name across runs.
 
+Script endpoint for hash/status lookups:
+```bash
+juno-code continue-scope --json          # current scope hash + status
+juno-code continue-scope A1B2C3 --json   # lookup by short hash prefix (5-6 chars)
+```
+
+`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`.
+
 ### Feedback System
 
 ```bash

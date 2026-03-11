@@ -9,13 +9,17 @@
  * - Complete validation and error handling
  */
 
-import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
+import {
+  clearContinueScopeRunning,
+  markContinueScopeRunning,
+  resolveContinueScopeContext,
+} from '../../core/continue-scope.js';
 import {
   getConfiguredDefaultModelForSubagent,
   getDefaultModelForSubagent,
@@ -90,32 +94,8 @@ interface SessionHistoryDocument {
 const SESSION_HISTORY_VERSION = 1;
 const SESSION_HISTORY_FILE_NAME = 'session_history.json';
 
-const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
-const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
-const CONTINUE_SCOPE_OVERRIDE_ENV_KEY = 'JUNO_CODE_CONTINUE_SCOPE';
 const CONTINUE_SETTINGS_VERSION = 1;
 const DEFAULT_ENV_FILE_NAME = '.env.juno';
-
-interface ContinueScopeContext {
-  scopeDescriptor: string;
-  scopeHash: string;
-  scopeSource: string;
-  sessionEnvKey: string;
-  settingsEnvKey: string;
-}
-
-const CONTINUE_SCOPE_ENV_MARKERS: ReadonlyArray<string> = [
-  'TMUX_PANE',
-  'WEZTERM_PANE',
-  'KITTY_WINDOW_ID',
-  'KITTY_PID',
-  'TERM_SESSION_ID',
-  'WT_SESSION',
-  'ZELLIJ_PANE_ID',
-  'STY',
-  'WINDOWID',
-  'SSH_TTY',
-];
 
 interface ContinueSettingsSnapshot {
   version: number;
@@ -256,49 +236,6 @@ function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | 
   if (disallowedTools) snapshot.disallowedTools = disallowedTools;
 
   return snapshot;
-}
-
-function resolveContinueScopeContext(): ContinueScopeContext {
-  const overrideScope = process.env[CONTINUE_SCOPE_OVERRIDE_ENV_KEY]?.trim();
-  let scopeDescriptor = '';
-  let scopeSource = '';
-
-  if (overrideScope) {
-    scopeDescriptor = `${CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:${overrideScope}`;
-    scopeSource = CONTINUE_SCOPE_OVERRIDE_ENV_KEY;
-  } else {
-    for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
-      const rawValue = process.env[envKey];
-      if (typeof rawValue !== 'string') {
-        continue;
-      }
-
-      const markerValue = rawValue.trim();
-      if (!markerValue) {
-        continue;
-      }
-
-      scopeDescriptor = `${envKey}:${markerValue}`;
-      scopeSource = envKey;
-      break;
-    }
-  }
-
-  if (!scopeDescriptor) {
-    scopeDescriptor = `PPID:${process.ppid}`;
-    scopeSource = 'process.ppid';
-  }
-
-  const digest = createHash('sha256').update(scopeDescriptor).digest('hex').slice(0, 16).toUpperCase();
-  const scopeHash = `SCOPE_${digest}`;
-
-  return {
-    scopeDescriptor,
-    scopeHash,
-    scopeSource,
-    sessionEnvKey: `${CONTINUE_SESSION_ENV_KEY_BASE}_${scopeHash}`,
-    settingsEnvKey: `${CONTINUE_SETTINGS_ENV_KEY_BASE}_${scopeHash}`,
-  };
 }
 
 function applyContinueContextFromEnvironment(options: MainCommandOptions): void {
@@ -1557,14 +1494,38 @@ export async function mainCommandHandler(
       effectiveVerbose,
       options.enableFeedback || false,
     );
-    const result = await coordinator.execute(executionRequest);
 
-    await persistSessionHistory(result, effectiveVerbose);
-    await persistContinueContext(result, config, effectiveVerbose);
+    const continueScope = resolveContinueScopeContext();
+    let continueScopeMarkedRunning = false;
+    let exitCode: number | null = null;
 
-    // Set exit code based on result
-    const exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
-    process.exit(exitCode);
+    try {
+      await markContinueScopeRunning(config.workingDirectory, continueScope);
+      continueScopeMarkedRunning = true;
+
+      const result = await coordinator.execute(executionRequest);
+
+      await persistSessionHistory(result, effectiveVerbose);
+      await persistContinueContext(result, config, effectiveVerbose);
+
+      // Set exit code based on result
+      exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
+    } finally {
+      if (continueScopeMarkedRunning) {
+        try {
+          await clearContinueScopeRunning(config.workingDirectory, continueScope);
+        } catch (error) {
+          if (effectiveVerbose >= 2) {
+            console.error(chalk.yellow(`Warning: Failed to clear continue scope runtime marker: ${error}`));
+          }
+        }
+      }
+    }
+
+    if (exitCode !== null) {
+      process.exit(exitCode);
+      return;
+    }
   } catch (error) {
     if (error instanceof ValidationError) {
       console.error(chalk.red.bold('\n❌ Validation Error'));

@@ -399,6 +399,82 @@ function setupContinueCommand(program: Command): void {
 }
 
 /**
+ * Setup continue-scope helper command.
+ * Exposes the current continue hash + status for script integrations.
+ */
+function setupContinueScopeCommand(program: Command): void {
+  const continueScopeCommand = program
+    .command('continue-scope')
+    .description('Show continue scope hash and status (running, finished, not_found, error)')
+    .argument('[hash]', 'Optional hash (5-6 char prefix or full SCOPE_<HASH>)')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (hash: string | undefined, options) => {
+      try {
+        const workingDirectory =
+          typeof options.cwd === 'string' && options.cwd.trim().length > 0
+            ? options.cwd.trim()
+            : process.cwd();
+
+        const [{ loadConfig }, continueScope] = await Promise.all([
+          import('../core/config.js'),
+          import('../core/continue-scope.js'),
+        ]);
+
+        const config = await loadConfig({
+          baseDir: workingDirectory,
+          cliConfig: {
+            verbose: 0,
+            quiet: true,
+            logLevel: 'info',
+            workingDirectory,
+          },
+        });
+
+        const currentScope = continueScope.resolveContinueScopeContext();
+        const status = await continueScope.resolveContinueScopeStatus({
+          workingDirectory: config.workingDirectory,
+          ...(hash !== undefined ? { requestedHash: hash } : {}),
+          currentScope,
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify(status, null, 2));
+          return;
+        }
+
+        const statusColor =
+          status.status === 'running'
+            ? chalk.yellow
+            : status.status === 'finished'
+              ? chalk.green
+              : status.status === 'not_found'
+                ? chalk.gray
+                : chalk.red;
+
+        console.log(chalk.blue.bold('Continue Scope'));
+        console.log(`  hash: ${chalk.cyan(status.hash)}`);
+        console.log(`  full_hash: ${chalk.gray(status.fullHash)}`);
+        console.log(`  status: ${statusColor(status.status)}`);
+        console.log(`  source: ${chalk.gray(status.scopeSource)}`);
+        console.log(`  session_env_key: ${chalk.gray(status.sessionEnvKey)}`);
+        console.log(`  settings_env_key: ${chalk.gray(status.settingsEnvKey)}`);
+        console.log(`  session_id: ${status.sessionId ? chalk.cyan(status.sessionId) : chalk.gray('-')}`);
+        if (status.pid !== null) {
+          console.log(`  pid: ${chalk.gray(String(status.pid))}`);
+        }
+        if (status.reason) {
+          console.log(`  reason: ${chalk.yellow(status.reason)}`);
+        }
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  continueScopeCommand.allowUnknownOption(false);
+}
+
+/**
  * Setup main execution command (default command)
  */
 function setupMainCommand(program: Command): void {
@@ -1200,6 +1276,9 @@ async function main(): Promise<void> {
   // Continue from latest session snapshot
   setupContinueCommand(program);
 
+  // Continue scope hash/status endpoint for scripts
+  setupContinueScopeCommand(program);
+
   // Setup main command (must be last)
   setupMainCommand(program);
 
@@ -1248,6 +1327,10 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Continue the last session without retyping settings')}
   juno-code continue 'Implement the next step'
   juno-code continue -p 'Continue from here' 
+
+  ${chalk.gray('# Query continue scope hash/status for scripts')}
+  juno-code continue-scope --json
+  juno-code continue-scope A1B2C3 --json
 
   ${chalk.gray('# Manage sessions')}
   juno-code session list
