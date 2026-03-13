@@ -853,6 +853,20 @@ describe('Binary Execution Tests', () => {
       expect(output).not.toContain('Empty stdin input');
     });
 
+    it('should treat the common contiue typo as continue instead of prompt text', async () => {
+      const result = await executeCLI(['contiue', '-p', 'next step', '-i', 'invalid'], {
+        expectError: true,
+        env: {
+          JUNO_CODE_CONTINUE_SCOPE: 'binary-continue-typo',
+        },
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('No previous session found to continue in this shell context');
+      expect(output).not.toContain('Max iterations must be a valid number');
+    });
+
     it('should expose continue scope hash/status as JSON for script integrations', async () => {
       const env = buildContinueSnapshotEnv('binary-continue-scope-json');
       const result = await executeCLI(['continue-scope', '--json'], { env });

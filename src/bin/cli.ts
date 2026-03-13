@@ -383,6 +383,7 @@ async function runUntilCompletionScriptIfRequested(
 function setupContinueCommand(program: Command): void {
   const continueCommand = program
     .command('continue')
+    .alias('contiue')
     .description('Continue the most recent juno-code session with saved settings')
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
     .option(
