@@ -194,10 +194,14 @@ cd "$PROJECT_ROOT"
 # not from wherever the calling agent happens to be. Respects existing override.
 export JUNO_TASK_ROOT="${JUNO_TASK_ROOT:-$PROJECT_ROOT}"
 
-# Prefer local juno_kanban source when available (monorepo development).
+# Prefer local kanban source when available.
+# - Monorepo root:   $PROJECT_ROOT/juno_kanban/src
+# - juno_kanban root: $PROJECT_ROOT/src
 # This keeps wrapper behavior aligned with working-tree changes without requiring
 # immediate reinstall from PyPI between local iterations.
-if [[ -d "$PROJECT_ROOT/juno_kanban/src" ]]; then
+if [[ -d "$PROJECT_ROOT/src/kanban" ]]; then
+    export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+elif [[ -d "$PROJECT_ROOT/juno_kanban/src/kanban" ]]; then
     export PYTHONPATH="$PROJECT_ROOT/juno_kanban/src${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
