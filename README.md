@@ -30,6 +30,23 @@ juno-code init --task "Your task description" --subagent claude
 juno-code init --task "Your task description" --subagent pi
 ```
 
+### Shell Completion (Tab Autocomplete)
+
+```bash
+# Install completion for your current shell
+juno-code completion install
+
+# Or explicitly target a shell
+juno-code completion install bash
+juno-code completion install zsh
+juno-code completion install fish
+
+# Check status
+juno-code completion status
+```
+
+After installation/reload, `juno-code c<TAB><TAB>` suggests available subcommands.
+
 ---
 
 ## The Ralph Method: Where It All Started
