@@ -15,7 +15,10 @@ import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
 import type { JunoTaskConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
-import { SUBAGENT_DEFAULT_MODELS } from './subagent-models.js';
+import {
+  SUBAGENT_DEFAULT_MODELS,
+  isModelCompatibleWithSubagent,
+} from './subagent-models.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -916,6 +919,28 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
           baseDefaults[subagent] = existingConfig.defaultModel;
         }
         existingConfig.defaultModels = baseDefaults;
+        needsUpdate = true;
+      }
+
+      // Keep legacy defaultModel aligned with per-subagent model map for the selected default subagent.
+      // defaultModels is now the source of truth; this sync prevents stale legacy values from masking
+      // the intended per-subagent default on subsequent runs.
+      const selectedSubagentRaw =
+        typeof existingConfig.defaultSubagent === 'string' ? existingConfig.defaultSubagent : 'claude';
+      const selectedSubagent =
+        selectedSubagentRaw in SUBAGENT_DEFAULT_MODELS
+          ? (selectedSubagentRaw as keyof typeof SUBAGENT_DEFAULT_MODELS)
+          : 'claude';
+      const selectedMapModel =
+        existingConfig.defaultModels && typeof existingConfig.defaultModels === 'object'
+          ? (existingConfig.defaultModels as Record<string, unknown>)[selectedSubagent]
+          : undefined;
+      if (
+        typeof selectedMapModel === 'string' &&
+        isModelCompatibleWithSubagent(selectedMapModel, selectedSubagent) &&
+        existingConfig.defaultModel !== selectedMapModel
+      ) {
+        existingConfig.defaultModel = selectedMapModel;
         needsUpdate = true;
       }
 

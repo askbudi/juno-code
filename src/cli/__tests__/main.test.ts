@@ -1419,7 +1419,7 @@ describe('Main Command', () => {
         );
       });
 
-      it('should preserve legacy defaultModel precedence for config.defaultSubagent', async () => {
+      it('should prefer per-subagent default model over legacy defaultModel for config.defaultSubagent', async () => {
         const { loadConfig } = await import('../../core/config.js');
         vi.mocked(loadConfig).mockResolvedValueOnce({
           workingDirectory: '/test/dir',
@@ -1453,7 +1453,46 @@ describe('Main Command', () => {
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
             subagent: 'codex',
-            model: ':mini',
+            model: ':codex',
+          }),
+        );
+      });
+
+      it('should keep configured pi default model from defaultModels across runs', async () => {
+        const { loadConfig } = await import('../../core/config.js');
+        vi.mocked(loadConfig).mockResolvedValueOnce({
+          workingDirectory: '/test/dir',
+          defaultMaxIterations: 5,
+          defaultSubagent: 'pi',
+          defaultModel: ':pi',
+          defaultModels: {
+            pi: ':api-codex',
+          },
+          mcpTimeout: 30000,
+          mcpRetries: 3,
+          verbose: 1,
+          quiet: false,
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'pi',
+            prompt: 'test prompt',
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            subagent: 'pi',
+            model: ':api-codex',
           }),
         );
       });

@@ -675,6 +675,31 @@ logLevel: info
       expect(updatedConfig.envFileCopied).toBe(true);
       expect(config.logLevel).toBe('debug');
     });
+
+    it('should sync legacy defaultModel to defaultModels for the active defaultSubagent', async () => {
+      const junoTaskDir = path.join(tempDir, '.juno_task');
+      await fs.ensureDir(junoTaskDir);
+
+      await fs.writeJson(path.join(junoTaskDir, 'config.json'), {
+        ...DEFAULT_CONFIG,
+        defaultSubagent: 'pi',
+        defaultModel: ':pi',
+        defaultModels: {
+          ...DEFAULT_CONFIG.defaultModels,
+          pi: ':api-codex',
+        },
+        hooks: DEFAULT_CONFIG.hooks,
+      });
+
+      const config = await loadConfig({
+        baseDir: tempDir,
+      });
+
+      const updatedConfig = await fs.readJson(path.join(junoTaskDir, 'config.json'));
+      expect(config.defaultModel).toBe(':api-codex');
+      expect(updatedConfig.defaultModel).toBe(':api-codex');
+      expect(updatedConfig.defaultModels.pi).toBe(':api-codex');
+    });
   });
 
   describe('ConfigLoader class', () => {

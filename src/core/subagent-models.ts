@@ -54,14 +54,19 @@ export function isModelCompatibleWithSubagent(model: string, subagent: SubagentT
  * Resolve configured model for a specific subagent.
  *
  * Priority:
- * 1) Legacy `defaultModel` when it belongs to `defaultSubagent`
- * 2) `defaultModels[subagent]`
+ * 1) `defaultModels[subagent]` (single source of truth)
+ * 2) Legacy `defaultModel` when it belongs to `defaultSubagent`
  * 3) undefined (caller should fallback to built-in defaults)
  */
 export function getConfiguredDefaultModelForSubagent(
   config: Pick<JunoTaskConfig, 'defaultSubagent' | 'defaultModel' | 'defaultModels'>,
   subagent: SubagentType,
 ): string | undefined {
+  const modelFromMap = config.defaultModels?.[subagent];
+  if (typeof modelFromMap === 'string' && isModelCompatibleWithSubagent(modelFromMap, subagent)) {
+    return modelFromMap;
+  }
+
   const legacyDefaultModel =
     config.defaultSubagent === subagent &&
     typeof config.defaultModel === 'string' &&
@@ -71,11 +76,6 @@ export function getConfiguredDefaultModelForSubagent(
 
   if (legacyDefaultModel) {
     return legacyDefaultModel;
-  }
-
-  const modelFromMap = config.defaultModels?.[subagent];
-  if (typeof modelFromMap === 'string' && isModelCompatibleWithSubagent(modelFromMap, subagent)) {
-    return modelFromMap;
   }
 
   return undefined;

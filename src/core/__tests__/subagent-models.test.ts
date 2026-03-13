@@ -21,7 +21,7 @@ describe('subagent-models', () => {
     expect(getDefaultModelForSubagent('claude')).toBe(':sonnet');
   });
 
-  it('keeps legacy defaultModel precedence for defaultSubagent', () => {
+  it('prefers per-subagent map over legacy defaultModel for defaultSubagent', () => {
     const resolved = getConfiguredDefaultModelForSubagent(
       {
         defaultSubagent: 'claude',
@@ -30,6 +30,18 @@ describe('subagent-models', () => {
           claude: ':sonnet',
           codex: ':codex',
         },
+      },
+      'claude',
+    );
+
+    expect(resolved).toBe(':sonnet');
+  });
+
+  it('falls back to legacy defaultModel when per-subagent map is missing', () => {
+    const resolved = getConfiguredDefaultModelForSubagent(
+      {
+        defaultSubagent: 'claude',
+        defaultModel: ':opus',
       },
       'claude',
     );
