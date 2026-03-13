@@ -62,6 +62,35 @@ function normalizeVerbose(value: unknown): number {
   return 1; // Default for unrecognized values
 }
 
+function extractOptionValueFromArgv(
+  argv: readonly string[],
+  longOption: string,
+  shortOption?: string,
+): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (!token) continue;
+
+    if (token === longOption || (shortOption && token === shortOption)) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('-')) {
+        return next;
+      }
+      continue;
+    }
+
+    if (token.startsWith(`${longOption}=`)) {
+      return token.slice(longOption.length + 1);
+    }
+
+    if (shortOption && token.startsWith(`${shortOption}=`)) {
+      return token.slice(shortOption.length + 1);
+    }
+  }
+
+  return undefined;
+}
+
 /** Determine if an error is a transient connection/pipe error. */
 function isConnectionLikeError(err: unknown): boolean {
   const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -970,11 +999,34 @@ function setupAliases(program: Command): void {
       .command('set-default-model <model>')
       .description(`Set default model for the ${subagent} subagent in .juno_task/config.json`)
       .option('-w, --cwd <path>', 'Working directory')
-      .action(async (model: string, commandOptions) => {
+      .action(async (model: string, commandOptions: Record<string, unknown>, command: Command) => {
+        const mergedOptions = (() => {
+          const commandWithGlobals = command as Command & {
+            optsWithGlobals?: () => Record<string, unknown>;
+          };
+
+          if (typeof commandWithGlobals.optsWithGlobals === 'function') {
+            return {
+              ...commandWithGlobals.optsWithGlobals(),
+              ...commandOptions,
+            };
+          }
+
+          const parentOptions = command.parent?.opts ? command.parent.opts() : {};
+          return {
+            ...parentOptions,
+            ...commandOptions,
+          };
+        })();
+
         try {
+          const optionCwd =
+            typeof mergedOptions.cwd === 'string' && mergedOptions.cwd.trim().length > 0
+              ? mergedOptions.cwd.trim()
+              : extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
           const workingDirectory =
-            typeof commandOptions.cwd === 'string' && commandOptions.cwd.trim().length > 0
-              ? commandOptions.cwd.trim()
+            typeof optionCwd === 'string' && optionCwd.trim().length > 0
+              ? optionCwd.trim()
               : process.cwd();
 
           const [{ loadConfig }, subagentModels, fsExtra, nodePath] = await Promise.all([
@@ -1033,7 +1085,7 @@ function setupAliases(program: Command): void {
             ),
           );
         } catch (error) {
-          handleCLIError(error, normalizeVerbose(commandOptions.verbose));
+          handleCLIError(error, normalizeVerbose(mergedOptions.verbose));
         }
       });
 

@@ -691,6 +691,79 @@ describe('Binary Execution Tests', () => {
       expect(updated.defaultModel).toBe(':sonnet');
     });
 
+    it('should honor --cwd when setting per-subagent default model', async () => {
+      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-set-model-target-'));
+
+      try {
+        const baseConfig = {
+          defaultSubagent: 'claude',
+          defaultBackend: 'shell',
+          defaultMaxIterations: 1,
+          defaultModel: ':sonnet',
+          defaultModels: {
+            claude: ':sonnet',
+            codex: ':codex',
+            gemini: ':pro',
+            cursor: 'auto',
+            pi: ':pi',
+          },
+          logLevel: 'info',
+          verbose: 1,
+          quiet: false,
+          mcpTimeout: 43200000,
+          mcpRetries: 3,
+          onHourlyLimit: 'raise',
+          interactive: true,
+          headlessMode: false,
+          envFilePath: '.env.juno',
+          envFileCopied: true,
+          hooks: {},
+        };
+
+        await createMockProject({
+          '.juno_task': {
+            'config.json': JSON.stringify(
+              {
+                ...baseConfig,
+                workingDirectory: tempDir,
+                sessionDirectory: path.join(tempDir, '.juno_task'),
+              },
+              null,
+              2,
+            ),
+          },
+        });
+
+        await fs.ensureDir(path.join(targetDir, '.juno_task'));
+        await fs.writeJson(
+          path.join(targetDir, '.juno_task', 'config.json'),
+          {
+            ...baseConfig,
+            workingDirectory: targetDir,
+            sessionDirectory: path.join(targetDir, '.juno_task'),
+          },
+          { spaces: 2 },
+        );
+
+        const result = await executeCLI(
+          ['pi', 'set-default-model', ':api-codex', '--cwd', targetDir],
+          {
+            cwd: tempDir,
+          },
+        );
+
+        expect(result.exitCode).toBe(0);
+
+        const sourceConfig = await fs.readJson(path.join(tempDir, '.juno_task', 'config.json'));
+        const targetConfig = await fs.readJson(path.join(targetDir, '.juno_task', 'config.json'));
+
+        expect(sourceConfig.defaultModels.pi).toBe(':pi');
+        expect(targetConfig.defaultModels.pi).toBe(':api-codex');
+      } finally {
+        await fs.remove(targetDir);
+      }
+    });
+
     it('should reject incompatible shorthand in set-default-model command', async () => {
       const config = {
         defaultSubagent: 'codex',
