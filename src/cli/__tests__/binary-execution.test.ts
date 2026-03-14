@@ -825,6 +825,38 @@ describe('Binary Execution Tests', () => {
       expect(output).not.toContain('Empty stdin input');
     });
 
+    it('should resolve --until-completion script from --cwd target and not forward --cwd to inner runs', async () => {
+      await createMockProject({
+        project: {
+          '.juno_task': {
+            scripts: {
+              'run_until_completion.sh': `#!/usr/bin/env bash
+set -euo pipefail
+
+echo "RUN_UNTIL_PWD=$(pwd)"
+echo "RUN_UNTIL_ARGS:$*"
+`,
+            },
+          },
+        },
+      });
+
+      const projectDir = path.join(tempDir, 'project');
+      await fs.chmod(path.join(projectDir, '.juno_task', 'scripts', 'run_until_completion.sh'), 0o755);
+      const resolvedProjectDir = await fs.realpath(projectDir);
+
+      const result = await executeCLI(
+        ['pi', '--until-completion', '--cwd', 'project', '-p', 'alias prompt'],
+        { expectError: false },
+      );
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).toBe(0);
+      expect(output).toContain(`RUN_UNTIL_PWD=${resolvedProjectDir}`);
+      expect(output).toContain('RUN_UNTIL_ARGS:pi -p alias prompt');
+      expect(output).not.toContain('--cwd');
+    });
+
     it('should read continue prompt from stdin without -p (heredoc/pipe flow)', async () => {
       const result = await executeCLI(['continue', '-i', 'invalid'], {
         expectError: true,

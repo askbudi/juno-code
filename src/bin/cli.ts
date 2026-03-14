@@ -288,6 +288,20 @@ function getForwardedUntilCompletionArgs(): string[] {
       continue;
     }
 
+    // --cwd is consumed by the outer juno-code invocation to locate/run the
+    // correct run_until_completion script. Do not forward it to inner loop
+    // invocations, otherwise relative paths can be applied twice.
+    if (arg === '--cwd' || arg === '-w') {
+      if (i + 1 < args.length && args[i + 1] && !args[i + 1]!.startsWith('-')) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--cwd=') || arg.startsWith('-w=')) {
+      continue;
+    }
+
     forwardedArgs.push(arg);
   }
 
@@ -305,7 +319,16 @@ async function runUntilCompletionScriptIfRequested(
   const path = await import('node:path');
   const fs = await import('fs-extra');
 
-  const scriptPath = path.join(process.cwd(), '.juno_task', 'scripts', 'run_until_completion.sh');
+  const optionCwd =
+    typeof options.cwd === 'string' && options.cwd.trim().length > 0
+      ? options.cwd.trim()
+      : extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
+  const invocationCwd =
+    typeof optionCwd === 'string' && optionCwd.trim().length > 0
+      ? path.resolve(process.cwd(), optionCwd)
+      : process.cwd();
+
+  const scriptPath = path.join(invocationCwd, '.juno_task', 'scripts', 'run_until_completion.sh');
 
   // Check if script exists
   if (!(await fs.pathExists(scriptPath))) {
@@ -332,7 +355,7 @@ async function runUntilCompletionScriptIfRequested(
   // Execute run_until_completion.sh
   const child = spawn(scriptPath, scriptArgs, {
     stdio: 'inherit',
-    cwd: process.cwd(),
+    cwd: invocationCwd,
   });
 
   // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
