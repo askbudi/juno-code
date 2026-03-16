@@ -454,13 +454,16 @@ class TestLiveModeAutoExitExtension:
         assert abort_guard_index < timer_index
 
     def test_live_extension_source_defers_shutdown_while_auto_retry_is_active(self):
-        """Live extension uses a long delay for error agent_end to allow Pi to auto-retry.
+        """Live extension cancels error timer on agent_start and uses long error delay as fallback.
 
-        Pi's auto_retry_start/end events go through session.subscribe(), NOT the
-        extension runner API, so pi.on('auto_retry_start') never fires. Instead,
-        when agent_end fires with stopReason='error', we use a generous delay
-        (30s default, PI_LIVE_ERROR_AGENT_END_DELAY_MS override) to allow the
-        retry to complete and emit a non-error agent_end that cancels the timer.
+        Pi fires agent_start at the beginning of each agent.continue() call (each retry attempt),
+        so agent_start is the PRIMARY mechanism for surviving multiple retries. When agent_start
+        fires after an error agent_end, it calls clearPendingShutdown() to cancel the 30s error
+        timer, allowing the retry to complete. The 30s timer is only a fallback for when all
+        retries are exhausted and no new agent_start arrives.
+
+        Pi's auto_retry_start/end events go through session.subscribe(), NOT the extension
+        runner API, so pi.on('auto_retry_start') never fires and cannot be used here.
         """
         source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
 
@@ -470,7 +473,11 @@ class TestLiveModeAutoExitExtension:
         assert 'pi.on("auto_retry_start"' not in source
         assert 'pi.on("auto_retry_end"' not in source
 
-        # Must have the error-delay constant and env override
+        # PRIMARY: agent_start handler must cancel pending shutdown (for retry survival)
+        assert 'pi.on("agent_start"' in source
+        assert "clearPendingShutdown();" in source
+
+        # FALLBACK: error delay for when all retries are exhausted
         assert "defaultErrorAgentEndDelayMs = 30000" in source
         assert "PI_LIVE_ERROR_AGENT_END_DELAY_MS" in source
         assert "errorAgentEndDelayMs" in source
@@ -478,8 +485,34 @@ class TestLiveModeAutoExitExtension:
         # Must use error delay when stopReason === "error"
         assert 'stopReason === "error" ? errorAgentEndDelayMs : shutdownDelayMs' in source
 
-        # Must have clearPendingShutdown to cancel error timer on success
+    def test_live_extension_source_agent_start_cancels_pending_shutdown(self):
+        """agent_start handler must call clearPendingShutdown() to cancel retry error timers.
+
+        Pi fires agent_start before each retry attempt (via agent.continue() →
+        runAgentLoopContinue). This cancels any pending 30s error timer set by the
+        previous error agent_end, preventing premature exit during multi-retry scenarios
+        (e.g. retrying 2/3 would time out 30s after retry 1's error without this fix).
+        """
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        # agent_start handler must be present and call clearPendingShutdown
+        assert 'pi.on("agent_start"' in source
+        # The handler should call clearPendingShutdown and nothing else (not set completed=true)
         assert "clearPendingShutdown();" in source
+        # Must NOT set completed=true in agent_start (that would prevent shutdown)
+        agent_start_idx = source.index('pi.on("agent_start"')
+        # Find the next pi.on after agent_start to scope the check
+        next_pi_on_idx = source.find('pi.on("', agent_start_idx + 1)
+        agent_start_block = source[agent_start_idx:next_pi_on_idx]
+        assert "completed = true" not in agent_start_block
+
+    def test_live_extension_source_session_start_captures_session_id_early(self):
+        """session_start handler captures session_id early as fallback for error paths."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert 'pi.on("session_start"' in source
+        assert "latestSessionId = managerSessionId;" in source
+        assert "persistSessionSnapshot(latestSessionId);" in source
 
     def test_live_extension_source_error_agent_end_uses_long_delay(self):
         """When agent_end has stopReason=error, extension uses errorAgentEndDelayMs not shutdownDelayMs."""

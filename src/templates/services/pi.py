@@ -2939,6 +2939,31 @@ export default function (pi: ExtensionAPI) {
     persistSessionSnapshot(sessionId);
   });
 
+  // Capture session_id as early as possible from session_start so it is available
+  // as a fallback even when the agent_end handler fires during error/shutdown paths.
+  pi.on(\"session_start\", (event, ctx) => {
+    const managerSessionId =
+      typeof ctx?.sessionManager?.getSessionId === \"function\"
+        ? ctx.sessionManager.getSessionId()
+        : undefined;
+    if (typeof managerSessionId === \"string\" && managerSessionId) {
+      latestSessionId = managerSessionId;
+    }
+    if (latestSessionId) {
+      persistSessionSnapshot(latestSessionId);
+    }
+  });
+
+  // When Pi auto-retries a failed request, it calls agent.continue() internally which
+  // emits a new agent_start event before the retry runs. By cancelling any pending
+  // error-based shutdown timer here we ensure the retry has time to complete and emit
+  // its own agent_end (success or error) before we finalize. This is the primary
+  // mechanism for surviving multiple retries — the 30s error delay is only the last-
+  // resort fallback when all retries are exhausted and no new agent_start arrives.
+  pi.on(\"agent_start\", () => {
+    clearPendingShutdown();
+  });
+
   pi.on(\"agent_end\", async (event, ctx) => {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
     const stopReason = extractLatestAssistantStopReason(messages);
@@ -2954,11 +2979,11 @@ export default function (pi: ExtensionAPI) {
     clearPendingShutdown();
 
     // When stopReason is \"error\", Pi may internally auto-retry the request.
-    // Use a long delay so the retry has time to complete and emit a new agent_end.
-    // A successful retry will fire a non-error agent_end, which calls
-    // clearPendingShutdown() above and then schedules the normal short delay.
-    // If no non-error agent_end arrives within errorAgentEndDelayMs, we assume
-    // all retries are exhausted and finalize with the error.
+    // Pi fires agent_start before each retry attempt (via agent.continue() →
+    // runAgentLoopContinue), so the agent_start handler above will cancel this
+    // timer before it fires during an active retry. The long delay is therefore
+    // only the fallback for when all retries are exhausted and no new agent_start
+    // arrives within errorAgentEndDelayMs.
     const delay = stopReason === \"error\" ? errorAgentEndDelayMs : shutdownDelayMs;
 
     pendingShutdownTimer = setTimeout(() => {
