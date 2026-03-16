@@ -2288,6 +2288,60 @@ Model shorthands:
         return False
 
     @staticmethod
+    def _is_assistant_text_success_result_event(event: Optional[dict]) -> bool:
+        """Return True when success came from assistant text-only stream events."""
+        if not PiService._is_success_result_event(event):
+            return False
+
+        if not isinstance(event, dict):
+            return False
+
+        response_type = event.get("sub_agent_response_type")
+        if isinstance(response_type, str):
+            return response_type.lower() in {"message", "turn_end", "agent_end"}
+
+        sub_agent_response = event.get("sub_agent_response")
+        if not isinstance(sub_agent_response, dict):
+            return False
+
+        response_type = sub_agent_response.get("type")
+        if not isinstance(response_type, str):
+            return False
+
+        return response_type.lower() in {"message", "turn_end", "agent_end"}
+
+    @staticmethod
+    def _should_promote_stderr_error(last_result_event: Optional[dict]) -> bool:
+        """Return True when stderr errors should override the current result event."""
+        if not PiService._is_success_result_event(last_result_event):
+            return True
+
+        # Assistant-text-derived success payloads are not authoritative when
+        # provider stderr already surfaced a terminal Codex/Pi error.
+        return PiService._is_assistant_text_success_result_event(last_result_event)
+
+    @staticmethod
+    def _extract_error_message_from_stderr_output(stderr_output: str) -> Optional[str]:
+        """Extract terminal provider errors from full stderr output blocks."""
+        if not isinstance(stderr_output, str):
+            return None
+
+        text = stderr_output.strip()
+        if not text:
+            return None
+
+        extracted = PiService._extract_error_message_from_text(text)
+        if extracted:
+            return extracted
+
+        normalized = " ".join(text.split())
+        lowered = normalized.lower()
+        if "codex error" in lowered or "server_error" in lowered:
+            return normalized
+
+        return None
+
+    @staticmethod
     def _extract_error_message_from_event(event: dict) -> Optional[str]:
         """Extract a human-readable message from Pi/Codex error event shapes."""
         if not isinstance(event, dict):
@@ -2415,6 +2469,10 @@ Model shorthands:
             "session_id": self.session_id,
             "sub_agent_response": self._sanitize_sub_agent_response(event),
         }
+
+        event_type = event.get("type") if isinstance(event, dict) else None
+        if isinstance(event_type, str) and event_type.strip():
+            result_event["sub_agent_response_type"] = event_type
 
         if isinstance(usage, dict):
             result_event["usage"] = usage
@@ -2756,6 +2814,7 @@ export default function (pi: ExtensionAPI) {
         self._reset_run_cost_tracking()
         cancel_delayed_toolcalls = lambda: None
         stderr_error_messages: List[str] = []
+        stderr_output_lines: List[str] = []
 
         resume_session = getattr(args, "resume", None)
         if isinstance(resume_session, str) and resume_session.strip():
@@ -2833,11 +2892,12 @@ export default function (pi: ExtensionAPI) {
                         try:
                             if process.stderr:
                                 for stderr_line in process.stderr:
+                                    stderr_output_lines.append(stderr_line)
                                     print(stderr_line, end="", file=sys.stderr, flush=True)
                                     extracted_error = self._extract_error_message_from_text(stderr_line)
                                     if extracted_error:
                                         stderr_error_messages.append(extracted_error)
-                                        if not self._is_success_result_event(self.last_result_event):
+                                        if self._should_promote_stderr_error(self.last_result_event):
                                             self.last_result_event = self._build_error_result_event(extracted_error)
                         except (ValueError, OSError):
                             pass
@@ -2848,8 +2908,16 @@ export default function (pi: ExtensionAPI) {
                     process.wait()
                     stderr_thread.join(timeout=3)
 
-                    if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
-                        self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
+                    final_stderr_error_message = self._extract_error_message_from_stderr_output(
+                        "".join(stderr_output_lines)
+                    )
+                    if not final_stderr_error_message and stderr_error_messages:
+                        final_stderr_error_message = stderr_error_messages[-1]
+                    if (
+                        final_stderr_error_message
+                        and self._should_promote_stderr_error(self.last_result_event)
+                    ):
+                        self.last_result_event = self._build_error_result_event(final_stderr_error_message)
 
                     self._write_capture_file(capture_path)
 
@@ -2931,11 +2999,12 @@ export default function (pi: ExtensionAPI) {
                 try:
                     if process.stderr:
                         for stderr_line in process.stderr:
+                            stderr_output_lines.append(stderr_line)
                             print(stderr_line, end="", file=sys.stderr, flush=True)
                             extracted_error = self._extract_error_message_from_text(stderr_line)
                             if extracted_error:
                                 stderr_error_messages.append(extracted_error)
-                                if not self._is_success_result_event(self.last_result_event):
+                                if self._should_promote_stderr_error(self.last_result_event):
                                     self.last_result_event = self._build_error_result_event(extracted_error)
                 except (ValueError, OSError):
                     pass
@@ -3304,10 +3373,18 @@ export default function (pi: ExtensionAPI) {
             # Wait for stderr thread to finish before deriving fallback errors.
             stderr_thread.join(timeout=3)
 
-            # If stderr surfaced a terminal error and we do not already have an
-            # explicit success envelope, persist the failure for shell-backend consumers.
-            if stderr_error_messages and not self._is_success_result_event(self.last_result_event):
-                self.last_result_event = self._build_error_result_event(stderr_error_messages[-1])
+            # If stderr surfaced a terminal error, persist the failure unless a
+            # non-assistant-text success envelope is already authoritative.
+            final_stderr_error_message = self._extract_error_message_from_stderr_output(
+                "".join(stderr_output_lines)
+            )
+            if not final_stderr_error_message and stderr_error_messages:
+                final_stderr_error_message = stderr_error_messages[-1]
+            if (
+                final_stderr_error_message
+                and self._should_promote_stderr_error(self.last_result_event)
+            ):
+                self.last_result_event = self._build_error_result_event(final_stderr_error_message)
 
             # Write capture file for shell backend
             self._write_capture_file(capture_path)

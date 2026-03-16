@@ -1782,6 +1782,42 @@ class TestRunPiRawToolOutputBuffering:
         assert "context window" in self.svc.last_result_event["result"].lower()
         assert self.svc.last_result_event["session_id"] == "sess-context"
 
+    def test_wrapped_stderr_codex_server_error_overrides_agent_end_success_and_keeps_session_id(self, monkeypatch):
+        """Wrapped multiline Codex stderr errors should stay terminal even with assistant text payloads."""
+        stdout_lines = [
+            json.dumps({"type": "session", "id": "sess-codex-wrap"}) + "\n",
+            json.dumps(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Please retry this request later."}],
+                        }
+                    ],
+                }
+            )
+            + "\n",
+        ]
+        fake = self._FakeProcess(stdout_lines)
+        fake.stderr = io.StringIO(
+            "Error: Codex error: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"code\":\"server_error\",\"message\":\"An error\n"
+            " occurred while processing your request. You can retry your request, or contact us through our help center at\n"
+            " help.openai.com if the error persists. Please include the request ID 805c4fb3-4846-4395-88b6-fd5ec798cf23 in\n"
+            " your message.\",\"param\":null},\"sequence_number\":4}\n"
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "request id 805c4fb3-4846-4395-88b6-fd5ec798cf23" in self.svc.last_result_event["result"].lower()
+        assert self.svc.last_result_event["session_id"] == "sess-codex-wrap"
+
     def test_usage_limit_text_message_is_treated_as_provider_error(self, monkeypatch):
         """Assistant text with provider usage-limit signature must be marked as error."""
         usage_limit_message = "Error: You have hit your ChatGPT usage limit (plus plan). Try again in ~8795 min."
