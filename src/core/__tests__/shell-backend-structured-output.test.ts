@@ -991,6 +991,67 @@ sys.exit(1)
     expect(parsed.result).toContain('upstream provider failed');
   });
 
+  it('preserves session_id when Pi capture only contains session snapshot before failure', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-session-snapshot-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, os, sys
+
+capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+if capture_path:
+    payload = {
+      "type": "result",
+      "subtype": "session",
+      "is_error": False,
+      "session_id": "sess-live-snapshot-only"
+    }
+    with open(capture_path, "w") as f:
+        f.write(json.dumps(payload))
+
+print("provider crashed before agent_end", file=sys.stderr)
+sys.exit(1)
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'live failure with snapshot-only session id',
+        project_path: tempRoot,
+        live: true,
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+
+    expect(result.status).toBe('failed');
+    const parsed = JSON.parse(result.content);
+    expect(parsed.type).toBe('result');
+    expect(parsed.subtype).toBe('error');
+    expect(parsed.is_error).toBe(true);
+    expect(parsed.result).toContain('provider crashed before agent_end');
+    expect(parsed.session_id).toBe('sess-live-snapshot-only');
+  });
+
   it('keeps non-live Pi argv unchanged (no --live flag)', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-nonlive-'));
     tempRoots.push(tempRoot);

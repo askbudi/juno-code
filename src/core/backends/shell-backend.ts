@@ -1151,6 +1151,31 @@ export class ShellBackend implements Backend {
     if (subagentType === 'pi') {
       const piEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
       if (piEvent) {
+        const piSessionId =
+          typeof piEvent.session_id === 'string' && piEvent.session_id
+            ? piEvent.session_id
+            : typeof piEvent.id === 'string' && piEvent.type === 'session'
+              ? piEvent.id
+              : typeof piEvent.sub_agent_response?.session_id === 'string' &&
+                  piEvent.sub_agent_response.session_id
+                ? piEvent.sub_agent_response.session_id
+                : undefined;
+
+        // Sanitize piEvent: strip bulky messages array and redundant type from sub_agent_response
+        // to reduce token usage in the structured output
+        const sanitizedPiEvent = { ...piEvent };
+        delete sanitizedPiEvent.messages;
+        // Also sanitize nested sub_agent_response if present (from pi.py capture)
+        if (
+          sanitizedPiEvent.sub_agent_response &&
+          typeof sanitizedPiEvent.sub_agent_response === 'object'
+        ) {
+          const inner = { ...sanitizedPiEvent.sub_agent_response };
+          delete inner.messages;
+          delete inner.type;
+          sanitizedPiEvent.sub_agent_response = inner;
+        }
+
         // Extract result text: prefer .result, fall back to .messages array (agent_end events)
         let resultText: string | undefined = piEvent.result;
         if (!resultText && Array.isArray(piEvent.messages)) {
@@ -1177,20 +1202,6 @@ export class ShellBackend implements Backend {
         }
         if (resultText) {
           const isError = piEvent.is_error ?? !result.success;
-          // Sanitize piEvent: strip bulky messages array and redundant type from sub_agent_response
-          // to reduce token usage in the structured output
-          const sanitizedPiEvent = { ...piEvent };
-          delete sanitizedPiEvent.messages;
-          // Also sanitize nested sub_agent_response if present (from pi.py capture)
-          if (
-            sanitizedPiEvent.sub_agent_response &&
-            typeof sanitizedPiEvent.sub_agent_response === 'object'
-          ) {
-            const inner = { ...sanitizedPiEvent.sub_agent_response };
-            delete inner.messages;
-            delete inner.type;
-            sanitizedPiEvent.sub_agent_response = inner;
-          }
           const usage = piEvent.usage;
           const totalCostUsd =
             typeof piEvent.total_cost_usd === 'number'
@@ -1206,11 +1217,39 @@ export class ShellBackend implements Backend {
             result: resultText,
             error: piEvent.error,
             stderr: result.error,
-            session_id: piEvent.session_id,
+            session_id: piSessionId,
             exit_code: result.exitCode,
             duration_ms: piEvent.duration_ms ?? result.duration,
             total_cost_usd: totalCostUsd,
             usage,
+            sub_agent_response: sanitizedPiEvent,
+          };
+          const metadata: ToolExecutionMetadata = {
+            ...(piEvent ? { subAgentResponse: piEvent } : undefined),
+            structuredOutput: true,
+            contentType: 'application/json',
+            rawOutput: result.output,
+          };
+          return {
+            content: JSON.stringify(structuredPayload),
+            metadata,
+          };
+        }
+
+        // Snapshot-only Pi captures (e.g. live session event written before agent_end)
+        // still carry resumable session IDs even when no final result text is available.
+        if (!result.success) {
+          const errorMessage = result.error?.trim() || result.output?.trim() || 'Unknown error';
+          const structuredPayload = {
+            type: 'result',
+            subtype: 'error',
+            is_error: true,
+            result: errorMessage,
+            error: errorMessage,
+            stderr: result.error,
+            session_id: piSessionId,
+            exit_code: result.exitCode,
+            duration_ms: result.duration,
             sub_agent_response: sanitizedPiEvent,
           };
           const metadata: ToolExecutionMetadata = {
