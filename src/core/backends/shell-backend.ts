@@ -1162,11 +1162,23 @@ export class ShellBackend implements Backend {
     if (subagentType === 'pi') {
       const piEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
       if (piEvent) {
+        const piNestedEvent =
+          typeof piEvent.sub_agent_response === 'object' && piEvent.sub_agent_response
+            ? piEvent.sub_agent_response
+            : undefined;
         const piSessionId =
           typeof piEvent.session_id === 'string' && piEvent.session_id
             ? piEvent.session_id
+            : typeof piEvent.sessionId === 'string' && piEvent.sessionId
+              ? piEvent.sessionId
             : typeof piEvent.id === 'string' && piEvent.type === 'session'
               ? piEvent.id
+              : typeof piNestedEvent?.session_id === 'string' && piNestedEvent.session_id
+                ? piNestedEvent.session_id
+                : typeof piNestedEvent?.sessionId === 'string' && piNestedEvent.sessionId
+                  ? piNestedEvent.sessionId
+                  : typeof piNestedEvent?.id === 'string' && piNestedEvent.type === 'session'
+                    ? piNestedEvent.id
               : typeof piEvent.sub_agent_response?.session_id === 'string' &&
                   piEvent.sub_agent_response.session_id
                 ? piEvent.sub_agent_response.session_id
@@ -1188,8 +1200,9 @@ export class ShellBackend implements Backend {
         }
 
         // Extract result text: prefer .result, fall back to .messages array (agent_end events)
-        let resultText: string | undefined = piEvent.result;
-        if (!resultText && Array.isArray(piEvent.messages)) {
+        const hasDirectResultText = typeof piEvent.result === 'string';
+        let resultText: string | undefined = hasDirectResultText ? piEvent.result : undefined;
+        if (resultText === undefined && Array.isArray(piEvent.messages)) {
           // agent_end event: extract last assistant message text
           for (let i = piEvent.messages.length - 1; i >= 0; i--) {
             const msg = piEvent.messages[i];
@@ -1211,7 +1224,11 @@ export class ShellBackend implements Backend {
             }
           }
         }
-        if (resultText) {
+        if (resultText === undefined && typeof piEvent.error === 'string') {
+          resultText = piEvent.error;
+        }
+
+        if (resultText !== undefined) {
           const isError = piEvent.is_error ?? !result.success;
           const usage = piEvent.usage;
           const totalCostUsd =
@@ -1226,7 +1243,7 @@ export class ShellBackend implements Backend {
             subtype: piEvent.subtype || (isError ? 'error' : 'success'),
             is_error: isError,
             result: resultText,
-            error: piEvent.error,
+            error: isError ? piEvent.error ?? result.error ?? resultText : piEvent.error,
             stderr: result.error,
             session_id: piSessionId,
             exit_code: result.exitCode,

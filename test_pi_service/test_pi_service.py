@@ -471,6 +471,14 @@ class TestLiveModeAutoExitExtension:
         assert "latestSessionId = sessionId;" in source
         assert "||\n        latestSessionId" in source
 
+    def test_live_extension_source_marks_stop_reason_error_as_failure_payload(self):
+        """Live extension should emit error payload when final assistant stopReason is error."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert 'const isError = stopReason === "error";' in source
+        assert 'subtype: isError ? "error" : "success"' in source
+        assert "payload.error = resolvedResult;" in source
+
 
 class TestRunPiLiveTTYPassthrough:
     """run_pi should attach live sessions to terminal when TTY is available."""
@@ -1804,6 +1812,68 @@ class TestRunPiRawToolOutputBuffering:
         assert self.svc.last_result_event["subtype"] == "error"
         assert self.svc.last_result_event["is_error"] is True
         assert "Provider request failed" in self.svc.last_result_event["result"]
+
+    def test_auto_retry_end_final_error_sets_error_result_and_keeps_session_id(self, monkeypatch):
+        """Final auto_retry_end failure should be terminal even without stderr/provider text."""
+        stdout_lines = [
+            json.dumps({"type": "session", "id": "sess-retry-final-error"}) + "\n",
+            json.dumps(
+                {
+                    "type": "auto_retry_end",
+                    "success": False,
+                    "attempt": 3,
+                    "finalError": "529 overloaded_error: Overloaded",
+                }
+            )
+            + "\n",
+            json.dumps({"type": "agent_end", "messages": [{"role": "assistant", "content": []}]}) + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "overloaded_error" in self.svc.last_result_event["result"].lower()
+        assert self.svc.last_result_event["session_id"] == "sess-retry-final-error"
+
+    def test_agent_end_stop_reason_error_is_treated_as_terminal_failure(self, monkeypatch):
+        """assistant stopReason=error should emit an error result even without stderr signatures."""
+        stdout_lines = [
+            json.dumps({"type": "session", "id": "sess-stop-reason-error"}) + "\n",
+            json.dumps(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "stopReason": "error",
+                            "errorMessage": "Provider failed with upstream timeout",
+                            "content": [],
+                        }
+                    ],
+                }
+            )
+            + "\n",
+        ]
+
+        fake = self._FakeProcess(stdout_lines)
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+
+        args = _make_args(pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "--mode", "json"], args)
+
+        assert rc == 1
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "error"
+        assert self.svc.last_result_event["is_error"] is True
+        assert "upstream timeout" in self.svc.last_result_event["result"].lower()
+        assert self.svc.last_result_event["session_id"] == "sess-stop-reason-error"
 
     def test_stderr_codex_error_sets_error_result_and_forces_nonzero_exit(self, monkeypatch):
         """stderr `Error: Codex error: {...}` should be treated as terminal failure."""

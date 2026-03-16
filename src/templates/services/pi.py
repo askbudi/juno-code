@@ -2246,6 +2246,46 @@ Model shorthands:
         return None
 
     @staticmethod
+    def _extract_session_id_from_event(event: Optional[dict]) -> Optional[str]:
+        """Extract session id from common Pi/Codex payload shapes."""
+        if not isinstance(event, dict):
+            return None
+
+        candidates: List[object] = [
+            event.get("session_id"),
+            event.get("sessionId"),
+        ]
+
+        if event.get("type") == "session":
+            candidates.append(event.get("id"))
+
+        message = event.get("message")
+        if isinstance(message, dict):
+            candidates.extend(
+                [
+                    message.get("session_id"),
+                    message.get("sessionId"),
+                ]
+            )
+
+        nested = event.get("sub_agent_response")
+        if isinstance(nested, dict):
+            candidates.extend(
+                [
+                    nested.get("session_id"),
+                    nested.get("sessionId"),
+                ]
+            )
+            if nested.get("type") == "session":
+                candidates.append(nested.get("id"))
+
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        return None
+
+    @staticmethod
     def _is_error_result_event(event: Optional[dict]) -> bool:
         """Return True when event represents a terminal error payload."""
         if not isinstance(event, dict):
@@ -2362,6 +2402,13 @@ Model shorthands:
         """Extract a human-readable message from Pi/Codex error event shapes."""
         if not isinstance(event, dict):
             return None
+
+        event_type = event.get("type")
+        if event_type == "auto_retry_end" and event.get("success") is False:
+            final_error = event.get("finalError")
+            if isinstance(final_error, str) and final_error.strip():
+                return final_error.strip()
+            return "Auto-retry failed after maximum attempts"
 
         if not PiService._is_error_result_event(event):
             return None
@@ -2826,6 +2873,7 @@ export default function (pi: ExtensionAPI) {
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const usage = extractAssistantUsage(messages);
       const totalCost = typeof usage?.cost?.total === \"number\" ? usage.cost.total : undefined;
+      const stopReason = extractLatestAssistantStopReason(messages);
       const managerSessionId =
         typeof ctx?.sessionManager?.getSessionId === \"function\"
           ? ctx.sessionManager.getSessionId()
@@ -2833,15 +2881,24 @@ export default function (pi: ExtensionAPI) {
       const sessionId =
         (typeof managerSessionId === \"string\" && managerSessionId ? managerSessionId : undefined) ||
         latestSessionId;
+      const resultText = extractTextFromMessages(messages);
+      const isError = stopReason === \"error\";
+      const resolvedResult = isError
+        ? resultText || \"Request error\"
+        : resultText;
       const payload: any = {
         type: \"result\",
-        subtype: \"success\",
-        is_error: false,
-        result: extractTextFromMessages(messages),
+        subtype: isError ? \"error\" : \"success\",
+        is_error: isError,
+        result: resolvedResult,
         usage,
         total_cost_usd: totalCost,
         sub_agent_response: event,
       };
+
+      if (isError) {
+        payload.error = resolvedResult;
+      }
 
       if (typeof sessionId === \"string\" && sessionId) {
         payload.session_id = sessionId;
@@ -3262,9 +3319,10 @@ export default function (pi: ExtensionAPI) {
                 def _emit_parsed_event(parsed_event: dict, raw_json_line: Optional[str] = None) -> None:
                     event_type = parsed_event.get("type", "")
 
-                    # Capture session ID from the session event (sent at stream start)
-                    if event_type == "session":
-                        self.session_id = parsed_event.get("id")
+                    # Capture session ID as early as possible from any event shape.
+                    event_session_id = self._extract_session_id_from_event(parsed_event)
+                    if event_session_id:
+                        self.session_id = event_session_id
                         if (
                             isinstance(self.last_result_event, dict)
                             and not self.last_result_event.get("session_id")
@@ -3294,14 +3352,32 @@ export default function (pi: ExtensionAPI) {
                         # agent_end has a 'messages' array; extract final assistant text
                         messages = parsed_event.get("messages", [])
                         text = ""
+                        assistant_stop_reason = ""
+                        assistant_error_message = ""
                         if isinstance(messages, list):
-                            # Walk messages in reverse to find last assistant message with text
+                            # Use the latest assistant message as source of truth.
                             for m in reversed(messages):
                                 if isinstance(m, dict) and m.get("role") == "assistant":
+                                    stop_reason = m.get("stopReason")
+                                    if isinstance(stop_reason, str):
+                                        assistant_stop_reason = stop_reason.strip()
+                                    error_message = m.get("errorMessage")
+                                    if isinstance(error_message, str):
+                                        assistant_error_message = error_message.strip()
                                     text = self._extract_text_from_message(m)
-                                    if text:
-                                        break
-                        if text:
+                                    break
+
+                        if assistant_stop_reason in {"error", "aborted"}:
+                            terminal_error = (
+                                assistant_error_message
+                                or text
+                                or f"Request {assistant_stop_reason}"
+                            )
+                            self.last_result_event = self._build_error_result_event(
+                                terminal_error,
+                                parsed_event,
+                            )
+                        elif text:
                             provider_error = self._extract_provider_error_from_result_text(text)
                             if provider_error:
                                 self.last_result_event = self._build_error_result_event(provider_error, parsed_event)
