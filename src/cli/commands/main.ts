@@ -164,6 +164,33 @@ function toStringArray(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+const LEADING_PROMPT_SHORTCUT_REGEX = /^%(?:\{([^\s{}]+)\}|([^\s%][^\s]*))(.*)$/s;
+
+export function rewriteLeadingPromptShortcut(prompt: string, subagent: SubagentType): string {
+  const match = prompt.match(LEADING_PROMPT_SHORTCUT_REGEX);
+  if (!match) {
+    return prompt;
+  }
+
+  const shortcut = match[1] ?? match[2];
+  if (!shortcut) {
+    return prompt;
+  }
+
+  const remaining = match[3] ?? '';
+
+  switch (subagent) {
+    case 'claude':
+      return `/${shortcut}${remaining}`;
+    case 'pi':
+      return `/skill:${shortcut}${remaining}`;
+    case 'codex':
+      return `$${shortcut}${remaining}`;
+    default:
+      return prompt;
+  }
+}
+
 function resolveContinueEnvFilePath(workingDirectory: string, configuredPath?: string): string {
   const candidate = configuredPath && configuredPath.trim() ? configuredPath.trim() : DEFAULT_ENV_FILE_NAME;
   return path.isAbsolute(candidate) ? candidate : path.join(workingDirectory, candidate);
@@ -1435,7 +1462,8 @@ export async function mainCommandHandler(
 
     // Process prompt
     const promptProcessor = new PromptProcessor(options);
-    const instruction = await promptProcessor.processPrompt();
+    const rawInstruction = await promptProcessor.processPrompt();
+    const instruction = rewriteLeadingPromptShortcut(rawInstruction, options.subagent);
 
     // Backend is always 'shell' (only backend type)
     const selectedBackend = 'shell' as const;

@@ -363,6 +363,121 @@ describe('Main Command', () => {
         );
       });
 
+      it('should rewrite a leading %shortcut for claude prompts', async () => {
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: '%ralph-loop investigate this regression',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '/ralph-loop investigate this regression',
+          }),
+        );
+      });
+
+      it('should rewrite a leading %shortcut for pi prompts', async () => {
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          prompt: '%ralph-loop investigate this regression',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '/skill:ralph-loop investigate this regression',
+          }),
+        );
+      });
+
+      it('should rewrite a leading %shortcut for codex prompts', async () => {
+        const options: MainCommandOptions = {
+          subagent: 'codex',
+          prompt: '%ralph-loop investigate this regression',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '$ralph-loop investigate this regression',
+          }),
+        );
+      });
+
+      it('should only rewrite %shortcut when it is at the very start of the prompt', async () => {
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          prompt: 'please run %ralph-loop now',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'please run %ralph-loop now',
+          }),
+        );
+      });
+
+      it('should support braced %{} shortcut form at the start of the prompt', async () => {
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          prompt: '%{ralph-loop} investigate this regression',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '/skill:ralph-loop investigate this regression',
+          }),
+        );
+      });
+
       it('should handle file prompt', async () => {
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
         vi.mocked(fs.readFile).mockResolvedValueOnce('file prompt content');
