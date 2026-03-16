@@ -2321,12 +2321,23 @@ Model shorthands:
         return PiService._is_assistant_text_success_result_event(last_result_event)
 
     @staticmethod
+    def _normalize_error_text(raw_text: str) -> str:
+        """Normalize stderr/plaintext by stripping ANSI and carriage controls."""
+        if not isinstance(raw_text, str):
+            return ""
+
+        text = PiService._ANSI_ESCAPE_RE.sub("", raw_text)
+        text = text.replace("\x08", "")
+        text = text.replace("\r", "\n")
+        return text
+
+    @staticmethod
     def _extract_error_message_from_stderr_output(stderr_output: str) -> Optional[str]:
         """Extract terminal provider errors from full stderr output blocks."""
         if not isinstance(stderr_output, str):
             return None
 
-        text = stderr_output.strip()
+        text = PiService._normalize_error_text(stderr_output).strip()
         if not text:
             return None
 
@@ -2334,9 +2345,14 @@ Model shorthands:
         if extracted:
             return extracted
 
+        for line in text.splitlines():
+            extracted_line = PiService._extract_error_message_from_text(line)
+            if extracted_line:
+                return extracted_line
+
         normalized = " ".join(text.split())
         lowered = normalized.lower()
-        if "codex error" in lowered or "server_error" in lowered:
+        if "error: codex error" in lowered or "codex error" in lowered or "server_error" in lowered:
             return normalized
 
         return None
@@ -2382,7 +2398,7 @@ Model shorthands:
         if not isinstance(raw_text, str):
             return None
 
-        text = raw_text.strip()
+        text = PiService._normalize_error_text(raw_text).strip()
         if not text:
             return None
 
@@ -2408,6 +2424,17 @@ Model shorthands:
                 pass
 
         lowered = text.lower()
+
+        # Sometimes progress spinners and carriage updates prefix the same line.
+        # Detect embedded `Error: Codex error:` signatures even when not line-start.
+        embedded_error_index = lowered.find("error:")
+        if embedded_error_index >= 0:
+            embedded_text = text[embedded_error_index:].strip()
+            embedded_lowered = embedded_text.lower()
+            if "codex error" in embedded_lowered or "server_error" in embedded_lowered:
+                message = embedded_text.split(":", 1)[1].strip() if embedded_lowered.startswith("error:") else embedded_text
+                return message or embedded_text
+
         if lowered.startswith("error:"):
             message = text.split(":", 1)[1].strip()
             return message or text
