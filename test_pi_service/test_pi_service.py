@@ -445,13 +445,31 @@ class TestLiveModeAutoExitExtension:
 
         assert 'if (stopReason === "aborted")' in source
         assert "return;" in source
+        assert "pendingShutdownTimer = setTimeout" in source
+        assert "shutdownDelayMs" in source
 
         abort_guard_index = source.index('if (stopReason === "aborted")')
-        completed_index = source.index("completed = true;")
-        payload_index = source.index("const payload")
-        shutdown_index = source.index("ctx.shutdown();")
+        timer_index = source.index("pendingShutdownTimer = setTimeout")
 
-        assert abort_guard_index < completed_index < payload_index < shutdown_index
+        assert abort_guard_index < timer_index
+
+    def test_live_extension_source_defers_shutdown_while_auto_retry_is_active(self):
+        """Live extension should avoid final shutdown while auto-retry lifecycle is in progress."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert 'pi.on("auto_retry_start"' in source
+        assert 'pi.on("auto_retry_end"' in source
+        assert "retryInProgress = true;" in source
+        assert "retryInProgress = false;" in source
+        assert "clearPendingShutdown();" in source
+
+    def test_live_extension_source_tracks_latest_session_id_for_agent_end_payload(self):
+        """Agent-end capture should fall back to latest session event id when manager id is unavailable."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        assert "let latestSessionId" in source
+        assert "latestSessionId = sessionId;" in source
+        assert "||\n        latestSessionId" in source
 
 
 class TestRunPiLiveTTYPassthrough:
@@ -589,25 +607,29 @@ class TestRunPiLiveTTYPassthrough:
     def test_live_tty_error_keeps_session_id_from_existing_capture_snapshot(self, monkeypatch, tmp_path):
         """TTY live failures should preserve session_id if extension snapshot exists before error."""
         capture_path = tmp_path / "pi-live-capture.json"
-        capture_path.write_text(
-            json.dumps(
-                {
-                    "type": "result",
-                    "subtype": "session",
-                    "is_error": False,
-                    "session_id": "sess-live-snapshot",
-                }
-            ),
-            encoding="utf-8",
-        )
-
         fake_process = self._FakeTTYProcess(
             'Error: Codex error: {"type":"error","error":{"type":"server_error","message":"TTY upstream failed"}}\n'
         )
+        def _wait_with_snapshot(timeout=None):
+            capture_path.write_text(
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "session",
+                        "is_error": False,
+                        "session_id": "sess-live-snapshot",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return fake_process.returncode
+        fake_process.wait = _wait_with_snapshot
+
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake_process)
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         monkeypatch.setenv("JUNO_SUBAGENT_CAPTURE_PATH", str(capture_path))
+        monkeypatch.setenv("JUNO_TOOL_ID", "test-live-tty")
 
         args = _make_args(live=True, pretty="true", verbose=False)
         rc = self.svc.run_pi(["pi", "interactive prompt"], args)
@@ -619,6 +641,47 @@ class TestRunPiLiveTTYPassthrough:
         captured = json.loads(capture_path.read_text(encoding="utf-8"))
         assert captured["subtype"] == "error"
         assert captured["session_id"] == "sess-live-snapshot"
+
+    def test_live_tty_retry_stderr_keeps_success_capture_and_zero_exit(self, monkeypatch, tmp_path):
+        """Transient retry stderr should not override an already captured successful live result."""
+        capture_path = tmp_path / "pi-live-capture-success.json"
+        fake_process = self._FakeTTYProcess(
+            "\r⠋ Retrying (1/3) in 2s... (escape to cancel)\r"
+            'Error: Codex error: {"type":"error","error":{"type":"server_error","message":"temporary upstream failure"}}\n'
+        )
+        def _wait_with_success_capture(timeout=None):
+            capture_path.write_text(
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "result": "final successful output",
+                        "session_id": "sess-live-success",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return fake_process.returncode
+        fake_process.wait = _wait_with_success_capture
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake_process)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setenv("JUNO_SUBAGENT_CAPTURE_PATH", str(capture_path))
+        monkeypatch.setenv("JUNO_TOOL_ID", "test-live-tty-retry")
+
+        args = _make_args(live=True, pretty="true", verbose=False)
+        rc = self.svc.run_pi(["pi", "interactive prompt"], args)
+
+        assert rc == 0
+        assert self.svc.last_result_event is not None
+        assert self.svc.last_result_event["subtype"] == "success"
+        assert self.svc.last_result_event["session_id"] == "sess-live-success"
+
+        captured = json.loads(capture_path.read_text(encoding="utf-8"))
+        assert captured["subtype"] == "success"
+        assert captured["session_id"] == "sess-live-success"
 
     def test_live_mode_without_tty_keeps_pipe_streaming_path(self, monkeypatch):
         popen_calls = {}

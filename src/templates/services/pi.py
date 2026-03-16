@@ -2465,6 +2465,8 @@ Model shorthands:
             "too many requests",
             "codex error",
             "server_error",
+            "please retry this request later",
+            "occurred while processing your request",
         )
 
         if lowered.startswith("error:"):
@@ -2571,6 +2573,58 @@ Model shorthands:
         except Exception as e:
             print(f"Warning: Could not write capture file: {e}", file=sys.stderr)
 
+    @staticmethod
+    def _read_capture_result_event(capture_path: Optional[str]) -> Optional[dict]:
+        """Read current capture file payload if present."""
+        if not capture_path:
+            return None
+
+        try:
+            capture_file = Path(capture_path)
+            if not capture_file.exists():
+                return None
+            raw_payload = capture_file.read_text(encoding="utf-8").strip()
+            if not raw_payload:
+                return None
+            parsed = json.loads(raw_payload)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+
+        return None
+
+    def _apply_capture_result_event(self, capture_path: Optional[str]) -> Tuple[Optional[dict], bool]:
+        """Hydrate final state from capture payload and report stderr-promotion suppression."""
+        capture_event = self._read_capture_result_event(capture_path)
+        if not isinstance(capture_event, dict):
+            return None, False
+
+        capture_session_id = capture_event.get("session_id")
+        if isinstance(capture_session_id, str) and capture_session_id.strip() and not self.session_id:
+            self.session_id = capture_session_id.strip()
+
+        if self.last_result_event is None:
+            self.last_result_event = capture_event
+        elif (
+            isinstance(self.last_result_event, dict)
+            and not self.last_result_event.get("session_id")
+            and isinstance(capture_session_id, str)
+            and capture_session_id.strip()
+        ):
+            self.last_result_event["session_id"] = capture_session_id.strip()
+
+        capture_provider_error: Optional[str] = None
+        if self._is_success_result_event(capture_event):
+            capture_result = capture_event.get("result")
+            if isinstance(capture_result, str):
+                capture_provider_error = self._extract_provider_error_from_result_text(capture_result)
+                if capture_provider_error:
+                    self.last_result_event = self._build_error_result_event(capture_provider_error, capture_event)
+
+        suppress_stderr_promotion = self._is_success_result_event(capture_event) and not capture_provider_error
+        return capture_event, suppress_stderr_promotion
+
     def _build_live_auto_exit_extension_source(self, capture_path: Optional[str]) -> str:
         """Build a temporary Pi extension source used by --live mode.
 
@@ -2583,6 +2637,12 @@ Model shorthands:
 import * as fs from \"node:fs\";
 
 const capturePath = __CAPTURE_PATH__;
+const defaultShutdownDelayMs = 3000;
+const parsedShutdownDelayMs = Number(process.env.PI_LIVE_AGENT_END_DELAY_MS ?? defaultShutdownDelayMs);
+const shutdownDelayMs =
+  Number.isFinite(parsedShutdownDelayMs) && parsedShutdownDelayMs >= 0
+    ? parsedShutdownDelayMs
+    : defaultShutdownDelayMs;
 
 function extractTextFromMessages(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -2750,36 +2810,29 @@ function persistSessionSnapshot(sessionId: unknown): void {
 
 export default function (pi: ExtensionAPI) {
   let completed = false;
+  let retryInProgress = false;
+  let latestSessionId: string | undefined;
+  let pendingShutdownTimer: ReturnType<typeof setTimeout> | undefined;
 
-  pi.on(\"session\", (event, ctx) => {
-    const eventSessionId = typeof event?.id === \"string\" ? event.id : undefined;
-    const managerSessionId =
-      typeof ctx?.sessionManager?.getSessionId === \"function\"
-        ? ctx.sessionManager.getSessionId()
-        : undefined;
-
-    persistSessionSnapshot(managerSessionId || eventSessionId);
-  });
-
-  pi.on(\"agent_end\", async (event, ctx) => {
-    const messages = Array.isArray(event?.messages) ? event.messages : [];
-    const stopReason = extractLatestAssistantStopReason(messages);
-
-    // Esc-aborted runs should keep Pi open for user interaction.
-    if (stopReason === \"aborted\") {
-      return;
+  function clearPendingShutdown(): void {
+    if (pendingShutdownTimer) {
+      clearTimeout(pendingShutdownTimer);
+      pendingShutdownTimer = undefined;
     }
+  }
 
-    if (completed) return;
-    completed = true;
-
+  async function finalizeAndShutdown(event: any, ctx: any): Promise<void> {
     try {
+      const messages = Array.isArray(event?.messages) ? event.messages : [];
       const usage = extractAssistantUsage(messages);
       const totalCost = typeof usage?.cost?.total === \"number\" ? usage.cost.total : undefined;
-      const sessionId =
+      const managerSessionId =
         typeof ctx?.sessionManager?.getSessionId === \"function\"
           ? ctx.sessionManager.getSessionId()
           : undefined;
+      const sessionId =
+        (typeof managerSessionId === \"string\" && managerSessionId ? managerSessionId : undefined) ||
+        latestSessionId;
       const payload: any = {
         type: \"result\",
         subtype: \"success\",
@@ -2798,8 +2851,56 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // Keep shutdown behavior even when capture writing fails.
     } finally {
-      ctx.shutdown();
+      await ctx.shutdown();
     }
+  }
+
+  pi.on(\"session\", (event, ctx) => {
+    const eventSessionId = typeof event?.id === \"string\" ? event.id : undefined;
+    const managerSessionId =
+      typeof ctx?.sessionManager?.getSessionId === \"function\"
+        ? ctx.sessionManager.getSessionId()
+        : undefined;
+    const sessionId = managerSessionId || eventSessionId;
+
+    if (typeof sessionId === \"string\" && sessionId) {
+      latestSessionId = sessionId;
+    }
+
+    persistSessionSnapshot(sessionId);
+  });
+
+  // Auto-retry can emit intermediate agent_end events before the real final turn.
+  // Delay/cancel shutdown while retry lifecycle is active so we don't terminate early.
+  pi.on(\"auto_retry_start\", () => {
+    retryInProgress = true;
+    clearPendingShutdown();
+  });
+
+  pi.on(\"auto_retry_end\", () => {
+    retryInProgress = false;
+  });
+
+  pi.on(\"agent_end\", async (event, ctx) => {
+    const messages = Array.isArray(event?.messages) ? event.messages : [];
+    const stopReason = extractLatestAssistantStopReason(messages);
+
+    // Esc-aborted runs should keep Pi open for user interaction.
+    if (stopReason === \"aborted\") {
+      return;
+    }
+
+    if (completed) return;
+
+    clearPendingShutdown();
+    pendingShutdownTimer = setTimeout(() => {
+      pendingShutdownTimer = undefined;
+      if (completed || retryInProgress) {
+        return;
+      }
+      completed = true;
+      void finalizeAndShutdown(event, ctx);
+    }, shutdownDelayMs);
   });
 }
 """
@@ -2836,6 +2937,16 @@ export default function (pi: ExtensionAPI) {
         verbose = args.verbose
         pretty = args.pretty.lower() != "false"
         capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+        if not os.environ.get("JUNO_TOOL_ID"):
+            # Ignore inherited capture paths outside juno-code shell-backend execution.
+            capture_path = None
+        if capture_path:
+            # Each invocation should start with a clean capture file. This avoids
+            # stale inherited env values from previous runs poisoning status.
+            try:
+                Path(capture_path).unlink(missing_ok=True)
+            except Exception:
+                pass
         hide_types = self._build_hide_types()
         self._buffered_tool_stdout_lines.clear()
         self._reset_run_cost_tracking()
@@ -2924,8 +3035,6 @@ export default function (pi: ExtensionAPI) {
                                     extracted_error = self._extract_error_message_from_text(stderr_line)
                                     if extracted_error:
                                         stderr_error_messages.append(extracted_error)
-                                        if self._should_promote_stderr_error(self.last_result_event):
-                                            self.last_result_event = self._build_error_result_event(extracted_error)
                         except (ValueError, OSError):
                             pass
 
@@ -2935,6 +3044,8 @@ export default function (pi: ExtensionAPI) {
                     process.wait()
                     stderr_thread.join(timeout=3)
 
+                    _, suppress_stderr_promotion = self._apply_capture_result_event(capture_path)
+
                     final_stderr_error_message = self._extract_error_message_from_stderr_output(
                         "".join(stderr_output_lines)
                     )
@@ -2942,6 +3053,7 @@ export default function (pi: ExtensionAPI) {
                         final_stderr_error_message = stderr_error_messages[-1]
                     if (
                         final_stderr_error_message
+                        and not suppress_stderr_promotion
                         and self._should_promote_stderr_error(self.last_result_event)
                     ):
                         self.last_result_event = self._build_error_result_event(final_stderr_error_message)
@@ -3031,8 +3143,6 @@ export default function (pi: ExtensionAPI) {
                             extracted_error = self._extract_error_message_from_text(stderr_line)
                             if extracted_error:
                                 stderr_error_messages.append(extracted_error)
-                                if self._should_promote_stderr_error(self.last_result_event):
-                                    self.last_result_event = self._build_error_result_event(extracted_error)
                 except (ValueError, OSError):
                     pass
 
@@ -3400,6 +3510,8 @@ export default function (pi: ExtensionAPI) {
             # Wait for stderr thread to finish before deriving fallback errors.
             stderr_thread.join(timeout=3)
 
+            _, suppress_stderr_promotion = self._apply_capture_result_event(capture_path)
+
             # If stderr surfaced a terminal error, persist the failure unless a
             # non-assistant-text success envelope is already authoritative.
             final_stderr_error_message = self._extract_error_message_from_stderr_output(
@@ -3409,6 +3521,7 @@ export default function (pi: ExtensionAPI) {
                 final_stderr_error_message = stderr_error_messages[-1]
             if (
                 final_stderr_error_message
+                and not suppress_stderr_promotion
                 and self._should_promote_stderr_error(self.last_result_event)
             ):
                 self.last_result_event = self._build_error_result_event(final_stderr_error_message)
@@ -3500,6 +3613,8 @@ export default function (pi: ExtensionAPI) {
         live_extension_file: Optional[Path] = None
         if args.live:
             capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
+            if not os.environ.get("JUNO_TOOL_ID"):
+                capture_path = None
             live_extension_file = self._create_live_auto_exit_extension_file(capture_path)
             if not live_extension_file:
                 print("Error: Could not create live auto-exit extension.", file=sys.stderr)

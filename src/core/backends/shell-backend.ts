@@ -428,6 +428,11 @@ export class ShellBackend implements Backend {
       const result = await this.executeScript(scriptPath, request, toolId, subagentType);
 
       const duration = Date.now() - startTime;
+      const structuredResult = this.buildStructuredOutput(subagentType, result);
+      const structuredPayload = this.parseStructuredResultPayload(structuredResult.content);
+      const structuredIndicatesError =
+        structuredPayload?.is_error === true || structuredPayload?.subtype === 'error';
+      const executionSucceeded = result.success && !structuredIndicatesError;
 
       // Emit completion event
       await this.emitProgressEvent({
@@ -436,21 +441,21 @@ export class ShellBackend implements Backend {
         backend: 'shell',
         count: ++this.eventCounter,
         type: ProgressEventType.TOOL_RESULT,
-        content: `${request.toolName} completed successfully (${duration}ms)`,
+        content: executionSucceeded
+          ? `${request.toolName} completed successfully (${duration}ms)`
+          : `${request.toolName} completed with error (${duration}ms)`,
         toolId,
         metadata: {
           toolName: request.toolName,
           duration,
-          success: result.success,
+          success: executionSucceeded,
           phase: 'completion',
         },
       });
 
-      const structuredResult = this.buildStructuredOutput(subagentType, result);
-
       const toolResult: Record<string, unknown> = {
         content: structuredResult.content,
-        status: result.success ? ToolExecutionStatus.COMPLETED : ToolExecutionStatus.FAILED,
+        status: executionSucceeded ? ToolExecutionStatus.COMPLETED : ToolExecutionStatus.FAILED,
         startTime: new Date(startTime),
         endTime: new Date(),
         duration,
@@ -459,6 +464,12 @@ export class ShellBackend implements Backend {
       };
       if (result.error) {
         toolResult.error = new Error(result.error);
+      } else if (!executionSucceeded) {
+        const structuredErrorMessage =
+          (typeof structuredPayload?.error === 'string' && structuredPayload.error) ||
+          (typeof structuredPayload?.result === 'string' && structuredPayload.result) ||
+          `${request.toolName} reported a structured error`;
+        toolResult.error = new Error(structuredErrorMessage);
       }
       if (structuredResult.metadata) {
         toolResult.metadata = structuredResult.metadata;
@@ -1236,6 +1247,35 @@ export class ShellBackend implements Backend {
           };
         }
 
+        const isSessionSnapshotOnly = piEvent.type === 'session' || piEvent.subtype === 'session';
+        if (isSessionSnapshotOnly) {
+          const errorMessage =
+            result.error?.trim() ||
+            'Pi exited before emitting a terminal result event (session snapshot only).';
+          const structuredPayload = {
+            type: 'result',
+            subtype: 'error',
+            is_error: true,
+            result: errorMessage,
+            error: errorMessage,
+            stderr: result.error,
+            session_id: piSessionId,
+            exit_code: result.exitCode,
+            duration_ms: result.duration,
+            sub_agent_response: sanitizedPiEvent,
+          };
+          const metadata: ToolExecutionMetadata = {
+            ...(piEvent ? { subAgentResponse: piEvent } : undefined),
+            structuredOutput: true,
+            contentType: 'application/json',
+            rawOutput: result.output,
+          };
+          return {
+            content: JSON.stringify(structuredPayload),
+            metadata,
+          };
+        }
+
         // Snapshot-only Pi captures (e.g. live session event written before agent_end)
         // still carry resumable session IDs even when no final result text is available.
         if (!result.success) {
@@ -1338,6 +1378,28 @@ export class ShellBackend implements Backend {
     }
 
     return null;
+  }
+
+  /**
+   * Parse JSON structured output payload emitted by shell service wrappers.
+   */
+  private parseStructuredResultPayload(
+    content: string,
+  ): { is_error?: boolean; subtype?: string; error?: string; result?: string } | null {
+    try {
+      const parsed = JSON.parse(content) as {
+        is_error?: boolean;
+        subtype?: string;
+        error?: string;
+        result?: string;
+      };
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 
   /**
