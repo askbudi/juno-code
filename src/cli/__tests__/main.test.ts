@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
+import * as childProcess from 'node:child_process';
 import * as fs from 'fs-extra';
 
 import { mainCommandHandler } from '../commands/main.js';
@@ -92,6 +93,14 @@ vi.mock('../../core/session.js', () => ({
     save: vi.fn(),
   }),
 }));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFile: vi.fn(),
+  };
+});
 
 vi.mock('fs-extra', () => {
   const mock = {
@@ -207,6 +216,15 @@ describe('Main Command', () => {
       isFile: () => false,
       isSocket: () => false,
     });
+
+    vi.mocked(childProcess.execFile as any).mockImplementation(
+      (_file: string, _args?: any, _options?: any, callback?: any) => {
+        const cb =
+          typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+        cb?.(null, '[]', '');
+        return {} as any;
+      },
+    );
   });
 
   afterEach(() => {
@@ -474,6 +492,100 @@ describe('Main Command', () => {
         expect(createExecutionRequest).toHaveBeenCalledWith(
           expect.objectContaining({
             instruction: '/skill:ralph-loop investigate this regression',
+          }),
+        );
+      });
+
+      it('should expand ##task-id prompt references with kanban task payloads', async () => {
+        vi.mocked(fs.pathExists)
+          .mockResolvedValueOnce(false as any)
+          .mockResolvedValueOnce(true as any);
+
+        vi.mocked(childProcess.execFile as any).mockImplementationOnce(
+          (_file: string, _args?: any, _options?: any, callback?: any) => {
+            const cb =
+              typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+            cb?.(
+              null,
+              JSON.stringify([
+                {
+                  id: 'c7Lj80',
+                  status: 'backlog',
+                  body: 'Example task body',
+                },
+              ]),
+              '',
+            );
+            return {} as any;
+          },
+        );
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'Please analyze ## c7Lj80 before coding',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        expect(childProcess.execFile).toHaveBeenCalledWith(
+          path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'),
+          ['get', 'c7Lj80'],
+          expect.objectContaining({ cwd: '/test/dir' }),
+          expect.any(Function),
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: expect.stringContaining('[kanban_task:c7Lj80]'),
+          }),
+        );
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: expect.stringContaining('"body": "Example task body"'),
+          }),
+        );
+      });
+
+      it('should keep ##task-id text unchanged when kanban lookup fails', async () => {
+        vi.mocked(fs.pathExists)
+          .mockResolvedValueOnce(false as any)
+          .mockResolvedValueOnce(true as any);
+
+        vi.mocked(childProcess.execFile as any).mockImplementation(
+          (_file: string, _args?: any, _options?: any, callback?: any) => {
+            const cb =
+              typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+            cb?.(new Error('kanban unavailable'), '', 'boom');
+            return {} as any;
+          },
+        );
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'Please analyze ## c7Lj80 before coding',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'Please analyze ## c7Lj80 before coding',
           }),
         );
       });

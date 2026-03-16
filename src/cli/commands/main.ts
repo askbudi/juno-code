@@ -10,6 +10,8 @@
  */
 
 import * as path from 'node:path';
+import * as childProcess from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 import { Command } from 'commander';
@@ -165,6 +167,135 @@ function toStringArray(value: unknown): string[] | undefined {
 }
 
 const LEADING_PROMPT_SHORTCUT_REGEX = /^%(?:\{([^\s{}]+)\}|([^\s%][^\s]*))(.*)$/s;
+const KANBAN_TASK_REFERENCE_REGEX = /(?<!#)##\s*\{?([A-Za-z0-9]{6})\}?(?![A-Za-z0-9])/g;
+const KANBAN_TASK_SCRIPT_RELATIVE_PATH = path.join('.juno_task', 'scripts', 'kanban.sh');
+
+type KanbanTaskRecord = Record<string, unknown> & { id?: string };
+
+function extractReferencedKanbanTaskIds(prompt: string): string[] {
+  const taskIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const match of prompt.matchAll(KANBAN_TASK_REFERENCE_REGEX)) {
+    const taskId = match[1];
+    if (!taskId || seen.has(taskId)) {
+      continue;
+    }
+    seen.add(taskId);
+    taskIds.push(taskId);
+  }
+
+  return taskIds;
+}
+
+function normalizeKanbanTaskArray(payload: unknown): KanbanTaskRecord[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((entry): entry is KanbanTaskRecord => Boolean(entry) && typeof entry === 'object');
+  }
+
+  if (payload && typeof payload === 'object') {
+    return [payload as KanbanTaskRecord];
+  }
+
+  return [];
+}
+
+async function runKanbanGetCommand(
+  command: string,
+  args: string[],
+  workingDirectory: string,
+): Promise<KanbanTaskRecord[] | null> {
+  try {
+    const execFile = promisify(childProcess.execFile);
+    const result = await execFile(command, args, {
+      cwd: workingDirectory,
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || workingDirectory,
+      },
+      maxBuffer: 1024 * 1024,
+    });
+
+    const stdout =
+      typeof result === 'string' || Buffer.isBuffer(result)
+        ? String(result)
+        : String((result as { stdout?: unknown }).stdout ?? '');
+
+    const parsed = JSON.parse(stdout) as unknown;
+    return normalizeKanbanTaskArray(parsed);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchReferencedKanbanTasks(
+  taskIds: string[],
+  workingDirectory: string,
+): Promise<Map<string, KanbanTaskRecord>> {
+  const tasksById = new Map<string, KanbanTaskRecord>();
+  if (taskIds.length === 0) {
+    return tasksById;
+  }
+
+  const kanbanScriptPath = path.join(workingDirectory, KANBAN_TASK_SCRIPT_RELATIVE_PATH);
+  const hasKanbanScript = await fs.pathExists(kanbanScriptPath);
+
+  const commandAttempts: Array<{ command: string; args: string[] }> = [];
+  if (hasKanbanScript) {
+    commandAttempts.push({
+      command: kanbanScriptPath,
+      args: ['get', ...taskIds],
+    });
+  }
+
+  commandAttempts.push({
+    command: 'juno-kanban',
+    args: ['get', ...taskIds],
+  });
+
+  for (const attempt of commandAttempts) {
+    const fetchedTasks = await runKanbanGetCommand(attempt.command, attempt.args, workingDirectory);
+    if (!fetchedTasks || fetchedTasks.length === 0) {
+      continue;
+    }
+
+    for (const task of fetchedTasks) {
+      const taskId = typeof task.id === 'string' ? task.id : undefined;
+      if (!taskId) continue;
+      tasksById.set(taskId, task);
+    }
+
+    if (tasksById.size > 0) {
+      return tasksById;
+    }
+  }
+
+  return tasksById;
+}
+
+export async function expandKanbanTaskReferencesInPrompt(
+  prompt: string,
+  workingDirectory: string,
+): Promise<string> {
+  const referencedTaskIds = extractReferencedKanbanTaskIds(prompt);
+  if (referencedTaskIds.length === 0) {
+    return prompt;
+  }
+
+  const tasksById = await fetchReferencedKanbanTasks(referencedTaskIds, workingDirectory);
+  if (tasksById.size === 0) {
+    return prompt;
+  }
+
+  return prompt.replace(KANBAN_TASK_REFERENCE_REGEX, (fullMatch, taskId: string) => {
+    const task = tasksById.get(taskId);
+    if (!task) {
+      return fullMatch;
+    }
+
+    return `\n[kanban_task:${taskId}]\n${JSON.stringify(task, null, 2)}\n[/kanban_task]`;
+  });
+}
 
 export function rewriteLeadingPromptShortcut(prompt: string, subagent: SubagentType): string {
   const match = prompt.match(LEADING_PROMPT_SHORTCUT_REGEX);
@@ -1463,7 +1594,11 @@ export async function mainCommandHandler(
     // Process prompt
     const promptProcessor = new PromptProcessor(options);
     const rawInstruction = await promptProcessor.processPrompt();
-    const instruction = rewriteLeadingPromptShortcut(rawInstruction, options.subagent);
+    const rewrittenInstruction = rewriteLeadingPromptShortcut(rawInstruction, options.subagent);
+    const instruction = await expandKanbanTaskReferencesInPrompt(
+      rewrittenInstruction,
+      config.workingDirectory,
+    );
 
     // Backend is always 'shell' (only backend type)
     const selectedBackend = 'shell' as const;
