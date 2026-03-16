@@ -454,14 +454,44 @@ class TestLiveModeAutoExitExtension:
         assert abort_guard_index < timer_index
 
     def test_live_extension_source_defers_shutdown_while_auto_retry_is_active(self):
-        """Live extension should avoid final shutdown while auto-retry lifecycle is in progress."""
+        """Live extension uses a long delay for error agent_end to allow Pi to auto-retry.
+
+        Pi's auto_retry_start/end events go through session.subscribe(), NOT the
+        extension runner API, so pi.on('auto_retry_start') never fires. Instead,
+        when agent_end fires with stopReason='error', we use a generous delay
+        (30s default, PI_LIVE_ERROR_AGENT_END_DELAY_MS override) to allow the
+        retry to complete and emit a non-error agent_end that cancels the timer.
+        """
         source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
 
-        assert 'pi.on("auto_retry_start"' in source
-        assert 'pi.on("auto_retry_end"' in source
-        assert "retryInProgress = true;" in source
-        assert "retryInProgress = false;" in source
+        # Must NOT have the defunct retryInProgress mechanism
+        assert "retryInProgress = true;" not in source
+        assert "retryInProgress = false;" not in source
+        assert 'pi.on("auto_retry_start"' not in source
+        assert 'pi.on("auto_retry_end"' not in source
+
+        # Must have the error-delay constant and env override
+        assert "defaultErrorAgentEndDelayMs = 30000" in source
+        assert "PI_LIVE_ERROR_AGENT_END_DELAY_MS" in source
+        assert "errorAgentEndDelayMs" in source
+
+        # Must use error delay when stopReason === "error"
+        assert 'stopReason === "error" ? errorAgentEndDelayMs : shutdownDelayMs' in source
+
+        # Must have clearPendingShutdown to cancel error timer on success
         assert "clearPendingShutdown();" in source
+
+    def test_live_extension_source_error_agent_end_uses_long_delay(self):
+        """When agent_end has stopReason=error, extension uses errorAgentEndDelayMs not shutdownDelayMs."""
+        source = self.svc._build_live_auto_exit_extension_source("/tmp/pi-live-capture.json")
+
+        # The delay selection logic must be present
+        assert 'const delay = stopReason === "error" ? errorAgentEndDelayMs : shutdownDelayMs;' in source
+
+        # The timer must use 'delay' (not 'shutdownDelayMs' directly)
+        assert "setTimeout(" in source
+        # Ensure the timer closure uses 'delay'
+        assert "}, delay);" in source
 
     def test_live_extension_source_tracks_latest_session_id_for_agent_end_payload(self):
         """Agent-end capture should fall back to latest session event id when manager id is unavailable."""

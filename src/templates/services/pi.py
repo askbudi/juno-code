@@ -2857,9 +2857,21 @@ function persistSessionSnapshot(sessionId: unknown): void {
 
 export default function (pi: ExtensionAPI) {
   let completed = false;
-  let retryInProgress = false;
   let latestSessionId: string | undefined;
   let pendingShutdownTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // When agent_end fires with stopReason=error, Pi may be about to auto-retry
+  // internally. The Pi extension API does NOT expose auto_retry_start/end events
+  // (those go through session.subscribe(), not the extension runner). We therefore
+  // use a generous delay before treating an error agent_end as final, which gives
+  // Pi time to complete its retry and emit a subsequent non-error agent_end. If a
+  // successful agent_end arrives it cancels this timer via clearPendingShutdown().
+  const defaultErrorAgentEndDelayMs = 30000;
+  const parsedErrorDelayMs = Number(process.env.PI_LIVE_ERROR_AGENT_END_DELAY_MS ?? defaultErrorAgentEndDelayMs);
+  const errorAgentEndDelayMs =
+    Number.isFinite(parsedErrorDelayMs) && parsedErrorDelayMs >= 0
+      ? parsedErrorDelayMs
+      : defaultErrorAgentEndDelayMs;
 
   function clearPendingShutdown(): void {
     if (pendingShutdownTimer) {
@@ -2927,17 +2939,6 @@ export default function (pi: ExtensionAPI) {
     persistSessionSnapshot(sessionId);
   });
 
-  // Auto-retry can emit intermediate agent_end events before the real final turn.
-  // Delay/cancel shutdown while retry lifecycle is active so we don't terminate early.
-  pi.on(\"auto_retry_start\", () => {
-    retryInProgress = true;
-    clearPendingShutdown();
-  });
-
-  pi.on(\"auto_retry_end\", () => {
-    retryInProgress = false;
-  });
-
   pi.on(\"agent_end\", async (event, ctx) => {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
     const stopReason = extractLatestAssistantStopReason(messages);
@@ -2949,15 +2950,25 @@ export default function (pi: ExtensionAPI) {
 
     if (completed) return;
 
+    // Cancel any previously scheduled shutdown (e.g. from a prior error agent_end).
     clearPendingShutdown();
+
+    // When stopReason is \"error\", Pi may internally auto-retry the request.
+    // Use a long delay so the retry has time to complete and emit a new agent_end.
+    // A successful retry will fire a non-error agent_end, which calls
+    // clearPendingShutdown() above and then schedules the normal short delay.
+    // If no non-error agent_end arrives within errorAgentEndDelayMs, we assume
+    // all retries are exhausted and finalize with the error.
+    const delay = stopReason === \"error\" ? errorAgentEndDelayMs : shutdownDelayMs;
+
     pendingShutdownTimer = setTimeout(() => {
       pendingShutdownTimer = undefined;
-      if (completed || retryInProgress) {
+      if (completed) {
         return;
       }
       completed = true;
       void finalizeAndShutdown(event, ctx);
-    }, shutdownDelayMs);
+    }, delay);
   });
 }
 """
