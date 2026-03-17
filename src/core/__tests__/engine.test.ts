@@ -206,6 +206,17 @@ describe('ExecutionEngine', () => {
       expect(() => engine['validateRequest'](request)).toThrow('Instruction is required');
     });
 
+    it('should allow empty instruction for pi live interactive continue sessions', () => {
+      const request = makeRequest({
+        instruction: '',
+        subagent: 'pi',
+        live: true,
+        liveInteractiveSession: true,
+        resume: 'resume-live-001',
+      });
+      expect(() => engine['validateRequest'](request)).not.toThrow();
+    });
+
     it('should reject request with missing subagent', () => {
       const request = makeRequest({ subagent: '' as any });
       expect(() => engine['validateRequest'](request)).toThrow('Subagent is required');

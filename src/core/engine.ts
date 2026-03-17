@@ -97,6 +97,9 @@ export interface ExecutionRequest {
 
   /** Run Pi subagent in interactive live mode (forwarded to shell backend --live flag) */
   readonly live?: boolean;
+
+  /** Start Pi live mode without an initial prompt (interactive continue flow) */
+  readonly liveInteractiveSession?: boolean;
 }
 
 /**
@@ -759,7 +762,14 @@ export class ExecutionEngine extends EventEmitter {
       throw new Error('Request ID is required');
     }
 
-    if (!request.instruction?.trim()) {
+    const allowEmptyInstructionForPiLiveInteractiveSession =
+      request.subagent === 'pi' &&
+      request.live === true &&
+      request.liveInteractiveSession === true &&
+      typeof request.resume === 'string' &&
+      request.resume.trim().length > 0;
+
+    if (!request.instruction?.trim() && !allowEmptyInstructionForPiLiveInteractiveSession) {
       throw new Error('Instruction is required');
     }
 
@@ -1075,6 +1085,9 @@ export class ExecutionEngine extends EventEmitter {
         }),
         ...(context.request.thinking !== undefined && { thinking: context.request.thinking }),
         ...(context.request.live !== undefined && { live: context.request.live }),
+        ...(context.request.liveInteractiveSession !== undefined && {
+          liveInteractiveSession: context.request.liveInteractiveSession,
+        }),
         iteration: iterationNumber,
       },
       timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
@@ -1847,6 +1860,7 @@ export function createExecutionRequest(options: {
   continueConversation?: boolean;
   thinking?: string;
   live?: boolean;
+  liveInteractiveSession?: boolean;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1899,6 +1913,10 @@ export function createExecutionRequest(options: {
 
   if (options.live !== undefined) {
     (result as any).live = options.live;
+  }
+
+  if (options.liveInteractiveSession !== undefined) {
+    (result as any).liveInteractiveSession = options.liveInteractiveSession;
   }
 
   return result;

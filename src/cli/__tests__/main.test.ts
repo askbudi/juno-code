@@ -1483,6 +1483,48 @@ describe('Main Command', () => {
         );
       });
 
+      it('should allow continueFromLatest Pi live sessions without an initial prompt', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-live';
+        const scopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:pane-live')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'resume-live-001';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          model: ':api-codex',
+          maxIterations: 2,
+          live: true,
+        });
+
+        await mainCommandHandler(
+          [],
+          {
+            cwd: '/test',
+            continueFromLatest: true,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 1,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '',
+            subagent: 'pi',
+            live: true,
+            resume: 'resume-live-001',
+            liveInteractiveSession: true,
+          }),
+        );
+      });
+
       it('should fail fast when continueFromLatest is requested without snapshot env vars', async () => {
         process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-pane';
 

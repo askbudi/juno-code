@@ -47,9 +47,11 @@ def _make_args(**overrides):
         no_extensions=False,
         no_skills=False,
         no_session=False,
+        resume=None,
         auto_instruction="",
         additional_args="",
         live=False,
+        live_manual=False,
         pretty="true",
         verbose=False,
     )
@@ -215,6 +217,18 @@ class TestBuildPiCommand:
         assert "-p" not in cmd
         assert stdin_prompt is None
         assert cmd[-1] == "live prompt"
+
+    def test_live_manual_mode_omits_positional_prompt(self):
+        """Manual live continue should not send an initial prompt to Pi."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = ""
+        args = _make_args(live=True, live_manual=True, resume="resume-live-001")
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+
+        assert "--mode" not in cmd
+        assert "-p" not in cmd
+        assert stdin_prompt is None
+        assert "" not in cmd
 
     def test_non_live_mode_keeps_headless_json_contract(self):
         """Non-live mode should keep existing --mode json + -p behavior unchanged."""
@@ -398,6 +412,57 @@ class TestBuildPiCommand:
         assert stdin_prompt is not None
         assert "line1\nline2\nline3" in stdin_prompt
         assert "-p" not in cmd
+
+
+class TestRunPromptValidation:
+    """Prompt validation rules for standard vs live-manual continue flows."""
+
+    @pytest.fixture(autouse=True)
+    def service(self):
+        self.svc = _load_pi_service()
+
+    def test_run_rejects_missing_prompt_outside_live_manual_mode(self, monkeypatch):
+        args = _make_args(prompt=None, prompt_file=None, live=False)
+        monkeypatch.setattr(self.svc, "parse_arguments", lambda: args)
+
+        result = self.svc.run()
+
+        assert result == 1
+
+    def test_run_allows_promptless_live_manual_resume_without_auto_exit_extension(self, monkeypatch, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        args = _make_args(
+            prompt=None,
+            prompt_file=None,
+            cd=str(project_dir),
+            live=True,
+            live_manual=True,
+            resume="resume-live-001",
+            no_extensions=True,
+        )
+        monkeypatch.setattr(self.svc, "parse_arguments", lambda: args)
+        monkeypatch.setattr(self.svc, "check_pi_installed", lambda: True)
+
+        extension_called = {"value": False}
+
+        def _create_extension(_capture_path):
+            extension_called["value"] = True
+            return None
+
+        monkeypatch.setattr(self.svc, "_create_live_auto_exit_extension_file", _create_extension)
+        monkeypatch.setattr(
+            self.svc,
+            "build_pi_command",
+            lambda _args, live_extension_path=None: (["pi", "--live", "--session", "resume-live-001"], None),
+        )
+        monkeypatch.setattr(self.svc, "run_pi", lambda cmd, _args, stdin_prompt=None: 0)
+
+        result = self.svc.run()
+
+        assert result == 0
+        assert extension_called["value"] is False
 
 
 class TestLiveModeAutoExitExtension:

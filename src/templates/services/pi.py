@@ -408,6 +408,13 @@ Model shorthands:
         )
 
         parser.add_argument(
+            "--live-manual",
+            action="store_true",
+            default=False,
+            help="Internal: live session start without an initial prompt (used by continue flows).",
+        )
+
+        parser.add_argument(
             "--pretty",
             type=str,
             default=os.environ.get("PI_PRETTY", "true"),
@@ -500,21 +507,32 @@ Model shorthands:
 
         # Build prompt with optional auto-instruction
         full_prompt = self.prompt
+        live_manual = bool(getattr(args, "live_manual", False))
+
         if args.auto_instruction:
-            full_prompt = f"{args.auto_instruction}\n\n{full_prompt}"
+            if full_prompt:
+                full_prompt = f"{args.auto_instruction}\n\n{full_prompt}"
+            elif not (is_live_mode and live_manual):
+                full_prompt = args.auto_instruction
 
         stdin_prompt: Optional[str] = None
 
         if is_live_mode:
             # Live mode uses positional prompt input (no -p and no stdin piping).
-            cmd.append(full_prompt)
+            # For manual continue sessions we intentionally omit the prompt so Pi
+            # opens directly into interactive TUI input.
+            if full_prompt:
+                cmd.append(full_prompt)
 
             # Additional raw arguments should still be honored; place before the
             # positional prompt so flags remain flags.
             if args.additional_args:
                 extra = args.additional_args.strip().split()
                 if extra:
-                    cmd = cmd[:-1] + extra + [cmd[-1]]
+                    if full_prompt:
+                        cmd = cmd[:-1] + extra + [cmd[-1]]
+                    else:
+                        cmd.extend(extra)
             return cmd, None
 
         # For multiline or large prompts, pipe via stdin to avoid command-line
@@ -3681,7 +3699,23 @@ export default function (pi: ExtensionAPI) {
 
         # Prompt handling
         prompt_value = args.prompt or os.environ.get("JUNO_INSTRUCTION")
-        if not prompt_value and not args.prompt_file:
+        resume_session = args.resume if isinstance(args.resume, str) and args.resume.strip() else None
+        live_manual_session = bool(args.live and args.live_manual)
+
+        if (
+            args.live
+            and resume_session
+            and not prompt_value
+            and not args.prompt_file
+        ):
+            # Defensive fallback for direct wrapper usage: allow promptless live resume
+            # even if --live-manual was not passed explicitly.
+            live_manual_session = True
+
+        if live_manual_session:
+            args.live_manual = True
+
+        if not prompt_value and not args.prompt_file and not live_manual_session:
             print("Error: Either -p/--prompt or -pp/--prompt-file is required.", file=sys.stderr)
             print("\nRun 'pi.py --help' for usage information.", file=sys.stderr)
             return 1
@@ -3715,15 +3749,17 @@ export default function (pi: ExtensionAPI) {
 
         if args.prompt_file:
             self.prompt = self.read_prompt_file(args.prompt_file)
-        else:
+        elif prompt_value:
             self.prompt = prompt_value
+        else:
+            self.prompt = ""
 
-        if args.live and args.no_extensions:
+        if args.live and args.no_extensions and not live_manual_session:
             print("Error: --live requires extensions enabled (remove --no-extensions).", file=sys.stderr)
             return 1
 
         live_extension_file: Optional[Path] = None
-        if args.live:
+        if args.live and not live_manual_session:
             capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
             if not os.environ.get("JUNO_TOOL_ID"):
                 capture_path = None

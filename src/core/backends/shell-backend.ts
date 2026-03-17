@@ -811,6 +811,11 @@ export class ShellBackend implements Backend {
         args.push('--live');
       }
 
+      // For Pi subagent, allow opening live TUI without initial prompt for continue flows.
+      if (isPython && subagentType === 'pi' && request.arguments?.liveInteractiveSession === true) {
+        args.push('--live-manual');
+      }
+
       // For Python scripts, pass verbose flag if verbose mode is enabled
       if (isPython && this.config!.debug) {
         args.push('--verbose');

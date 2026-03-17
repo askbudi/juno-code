@@ -773,6 +773,12 @@ class PromptProcessor {
         return await this.readPipedStdin();
       }
 
+      // Continue+Pi+live with no explicit prompt should open Pi TUI directly,
+      // preserving the existing session and letting the operator type in-app.
+      if (this.shouldOpenLiveContinueSessionWithoutPrompt()) {
+        return '';
+      }
+
       if (this.options.interactive) {
         return await this.collectInteractivePrompt();
       } else {
@@ -817,6 +823,18 @@ class PromptProcessor {
     } catch {
       return false;
     }
+  }
+
+  private shouldOpenLiveContinueSessionWithoutPrompt(): boolean {
+    return (
+      this.options.continueFromLatest === true &&
+      this.options.subagent === 'pi' &&
+      this.options.live === true &&
+      !this.options.promptFile &&
+      this.options.prompt !== true &&
+      !this.options.interactive &&
+      !this.options.interactivePrompt
+    );
   }
 
   private async isFilePath(prompt: string): Promise<boolean> {
@@ -1630,6 +1648,14 @@ export async function mainCommandHandler(
     const configuredModel = getConfiguredDefaultModelForSubagent(config, options.subagent);
     const resolvedModel = options.model || configuredModel || getDefaultModelForSubagent(options.subagent);
 
+    const liveInteractiveSession =
+      options.continueFromLatest === true &&
+      options.subagent === 'pi' &&
+      options.live === true &&
+      instruction.length === 0 &&
+      typeof options.resume === 'string' &&
+      options.resume.trim().length > 0;
+
     // Create execution request
     // Pass both --tools and --allowed-tools as separate parameters
     // Use nullish coalescing (??) instead of || to properly handle 0 or NaN values
@@ -1649,6 +1675,7 @@ export async function mainCommandHandler(
       ...(options.continue !== undefined ? { continueConversation: options.continue } : {}),
       ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
       ...(options.live !== undefined ? { live: options.live } : {}),
+      ...(liveInteractiveSession ? { liveInteractiveSession: true } : {}),
     });
 
     // Execute
