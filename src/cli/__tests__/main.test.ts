@@ -554,6 +554,143 @@ describe('Main Command', () => {
         );
       });
 
+      it('should expand multiple ##task-id references from a single kanban lookup', async () => {
+        vi.mocked(fs.pathExists)
+          .mockResolvedValueOnce(false as any)
+          .mockResolvedValueOnce(true as any);
+
+        vi.mocked(childProcess.execFile as any).mockImplementationOnce(
+          (_file: string, _args?: any, _options?: any, callback?: any) => {
+            const cb =
+              typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+            cb?.(
+              null,
+              JSON.stringify([
+                {
+                  id: 'c7Lj80',
+                  status: 'done',
+                  body: 'First task',
+                },
+                {
+                  id: '29MVVA',
+                  status: 'backlog',
+                  body: 'Second task',
+                },
+              ]),
+              '',
+            );
+            return {} as any;
+          },
+        );
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'Please analyze ## c7Lj80 and ## 29MVVA before coding',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        expect(childProcess.execFile).toHaveBeenCalledWith(
+          path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'),
+          ['get', 'c7Lj80', '29MVVA'],
+          expect.objectContaining({ cwd: '/test/dir' }),
+          expect.any(Function),
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: expect.stringContaining('[kanban_task:c7Lj80]'),
+          }),
+        );
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: expect.stringContaining('[kanban_task:29MVVA]'),
+          }),
+        );
+      });
+
+      it('should expand resolvable ##task-id references even when batch kanban lookup fails', async () => {
+        vi.mocked(fs.pathExists)
+          .mockResolvedValueOnce(false as any)
+          .mockResolvedValueOnce(true as any);
+
+        vi.mocked(childProcess.execFile as any).mockImplementation(
+          (_file: string, _args?: any, _options?: any, callback?: any) => {
+            const cb =
+              typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+            const args = Array.isArray(_args) ? _args : [];
+            const ids = args.slice(1);
+
+            if (ids.length > 1) {
+              cb?.(new Error('batch lookup failed'), '', 'missing task');
+              return {} as any;
+            }
+
+            if (ids[0] === 'c7Lj80') {
+              cb?.(
+                null,
+                JSON.stringify([
+                  {
+                    id: 'c7Lj80',
+                    status: 'done',
+                    body: 'Task resolved via single lookup',
+                  },
+                ]),
+                '',
+              );
+              return {} as any;
+            }
+
+            cb?.(new Error('task not found'), '', 'missing task');
+            return {} as any;
+          },
+        );
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'Please analyze ## c7Lj80 and ## BAD111 before coding',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        expect(childProcess.execFile).toHaveBeenCalledWith(
+          path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'),
+          ['get', 'c7Lj80', 'BAD111'],
+          expect.objectContaining({ cwd: '/test/dir' }),
+          expect.any(Function),
+        );
+
+        expect(childProcess.execFile).toHaveBeenCalledWith(
+          path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'),
+          ['get', 'c7Lj80'],
+          expect.objectContaining({ cwd: '/test/dir' }),
+          expect.any(Function),
+        );
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        const call = vi.mocked(createExecutionRequest).mock.calls.at(-1)?.[0] as {
+          instruction?: string;
+        };
+
+        expect(call.instruction).toContain('[kanban_task:c7Lj80]');
+        expect(call.instruction).toContain('## BAD111');
+      });
+
       it('should keep ##task-id text unchanged when kanban lookup fails', async () => {
         vi.mocked(fs.pathExists)
           .mockResolvedValueOnce(false as any)

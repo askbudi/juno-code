@@ -228,6 +228,42 @@ async function runKanbanGetCommand(
   }
 }
 
+async function fetchKanbanTasksForCommand(
+  command: string,
+  taskIds: string[],
+  workingDirectory: string,
+): Promise<Map<string, KanbanTaskRecord>> {
+  const tasksById = new Map<string, KanbanTaskRecord>();
+  if (taskIds.length === 0) {
+    return tasksById;
+  }
+
+  const requestedTaskIds = new Set(taskIds);
+
+  const addFetchedTasks = (fetchedTasks: KanbanTaskRecord[] | null): void => {
+    if (!fetchedTasks) {
+      return;
+    }
+
+    for (const task of fetchedTasks) {
+      const taskId = typeof task.id === 'string' ? task.id : undefined;
+      if (!taskId || !requestedTaskIds.has(taskId)) {
+        continue;
+      }
+      tasksById.set(taskId, task);
+    }
+  };
+
+  addFetchedTasks(await runKanbanGetCommand(command, ['get', ...taskIds], workingDirectory));
+
+  const unresolvedTaskIds = taskIds.filter((taskId) => !tasksById.has(taskId));
+  for (const taskId of unresolvedTaskIds) {
+    addFetchedTasks(await runKanbanGetCommand(command, ['get', taskId], workingDirectory));
+  }
+
+  return tasksById;
+}
+
 async function fetchReferencedKanbanTasks(
   taskIds: string[],
   workingDirectory: string,
@@ -240,34 +276,28 @@ async function fetchReferencedKanbanTasks(
   const kanbanScriptPath = path.join(workingDirectory, KANBAN_TASK_SCRIPT_RELATIVE_PATH);
   const hasKanbanScript = await fs.pathExists(kanbanScriptPath);
 
-  const commandAttempts: Array<{ command: string; args: string[] }> = [];
+  const commandAttempts: string[] = [];
   if (hasKanbanScript) {
-    commandAttempts.push({
-      command: kanbanScriptPath,
-      args: ['get', ...taskIds],
-    });
+    commandAttempts.push(kanbanScriptPath);
   }
+  commandAttempts.push('juno-kanban');
 
-  commandAttempts.push({
-    command: 'juno-kanban',
-    args: ['get', ...taskIds],
-  });
+  let unresolvedTaskIds = [...taskIds];
+  for (const command of commandAttempts) {
+    if (unresolvedTaskIds.length === 0) {
+      break;
+    }
 
-  for (const attempt of commandAttempts) {
-    const fetchedTasks = await runKanbanGetCommand(attempt.command, attempt.args, workingDirectory);
-    if (!fetchedTasks || fetchedTasks.length === 0) {
+    const fetchedTasks = await fetchKanbanTasksForCommand(command, unresolvedTaskIds, workingDirectory);
+    if (fetchedTasks.size === 0) {
       continue;
     }
 
-    for (const task of fetchedTasks) {
-      const taskId = typeof task.id === 'string' ? task.id : undefined;
-      if (!taskId) continue;
+    for (const [taskId, task] of fetchedTasks.entries()) {
       tasksById.set(taskId, task);
     }
 
-    if (tasksById.size > 0) {
-      return tasksById;
-    }
+    unresolvedTaskIds = unresolvedTaskIds.filter((taskId) => !tasksById.has(taskId));
   }
 
   return tasksById;
