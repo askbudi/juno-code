@@ -772,7 +772,7 @@ ${chalk.blue('Examples:')}
 
   ${chalk.gray('# Prompt-time substitutions (refreshed each iteration)')}
   juno-code claude -p "Status: !'git status --short'"
-  juno-code claude -i 3 -p "Recent commits:\n!```git log -n 5 --oneline```"
+  juno-code claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
 `,
   },
 
@@ -1403,7 +1403,7 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Prompt-time command substitution (per iteration)')}
   juno-code claude -p "Status: !'git status --short'"
-  juno-code claude -i 3 -p "Recent commits:\n!```git log -n 5 --oneline```"
+  juno-code claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
 
   ${chalk.gray('# Interactive project setup')}
   juno-code init --interactive
