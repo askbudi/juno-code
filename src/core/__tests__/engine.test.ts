@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   isAvailable: vi.fn().mockResolvedValue(true),
   configure: vi.fn(),
   onProgress: vi.fn().mockReturnValue(() => {}),
+  resolvePromptCommandSubstitutions: vi.fn(),
 }));
 
 vi.mock('../backends/shell-backend.js', () => ({
@@ -49,6 +50,10 @@ vi.mock('../../cli/utils/advanced-logger.js', () => ({
 
 vi.mock('../../utils/hooks.js', () => ({
   executeHook: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../prompt-command-substitution.js', () => ({
+  resolvePromptCommandSubstitutions: mocks.resolvePromptCommandSubstitutions,
 }));
 
 // ---------------------------------------------------------------------------
@@ -139,6 +144,7 @@ describe('ExecutionEngine', () => {
     mocks.isAvailable.mockResolvedValue(true);
     mocks.configure.mockReturnValue(undefined);
     mocks.onProgress.mockReturnValue(() => {});
+    mocks.resolvePromptCommandSubstitutions.mockImplementation(async (instruction: string) => instruction);
 
     // Re-set ShellBackend constructor (mockReset clears its mockImplementation)
     const { ShellBackend } = await import('../backends/shell-backend.js');
@@ -277,6 +283,37 @@ describe('ExecutionEngine', () => {
       expect(result.status).toBe(ExecutionStatus.COMPLETED);
       expect(result.iterations).toHaveLength(2);
       expect(mocks.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('should resolve prompt command substitutions on every iteration', async () => {
+      mocks.resolvePromptCommandSubstitutions.mockImplementation(async (instruction: string) => `${instruction} [resolved]`);
+
+      const request = makeRequest({
+        instruction: "Run !'date' every iteration",
+        maxIterations: 2,
+      });
+
+      const result = await engine.execute(request);
+
+      expect(result.status).toBe(ExecutionStatus.COMPLETED);
+      expect(mocks.resolvePromptCommandSubstitutions).toHaveBeenCalledTimes(2);
+      expect(mocks.resolvePromptCommandSubstitutions).toHaveBeenNthCalledWith(
+        1,
+        request.instruction,
+        expect.objectContaining({ workingDirectory: request.workingDirectory }),
+      );
+      expect(mocks.resolvePromptCommandSubstitutions).toHaveBeenNthCalledWith(
+        2,
+        request.instruction,
+        expect.objectContaining({ workingDirectory: request.workingDirectory }),
+      );
+      expect(mocks.execute).toHaveBeenCalledTimes(2);
+      expect(mocks.execute).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          arguments: expect.objectContaining({ instruction: `${request.instruction} [resolved]` }),
+        }),
+      );
     });
 
     it('should respect maxIterations limit', async () => {

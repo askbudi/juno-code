@@ -411,7 +411,7 @@ function setupContinueCommand(program: Command): void {
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
     .option(
       '-p, --prompt [text]',
-      'Prompt input (inline text, file path, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+      "Prompt input (inline text, file path, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions, prefer single quotes for shell metacharacters)",
     )
     .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
     .option('-w, --cwd <path>', 'Working directory')
@@ -536,7 +536,7 @@ function setupMainCommand(program: Command): void {
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
     .option(
       '-p, --prompt [text]',
-      'Prompt input (inline text, file path, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+      "Prompt input (inline text, file path, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions, prefer single quotes for shell metacharacters)",
     )
     .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
     .option('-w, --cwd <path>', 'Working directory')
@@ -769,6 +769,10 @@ ${chalk.blue('Examples:')}
 
   ${chalk.gray('# Shell safety')}
   ${chalk.gray('Use single quotes (or -f/stdin) when prompts contain backticks or $()')}
+
+  ${chalk.gray('# Prompt-time substitutions (refreshed each iteration)')}
+  juno-code claude -p "Status: !'git status --short'"
+  juno-code claude -i 3 -p "Recent commits:\n!```git log -n 5 --oneline```"
 `,
   },
 
@@ -971,7 +975,7 @@ function setupAliases(program: Command): void {
       .argument('[prompt...]', 'Prompt text or file path')
       .option(
         '-p, --prompt [text]',
-        'Prompt input (inline text, or use with heredoc/stdin; prefer single quotes for shell metacharacters)',
+        "Prompt input (inline text, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions, prefer single quotes for shell metacharacters)",
       )
       .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
       .option('-w, --cwd <path>', 'Working directory')
@@ -1396,6 +1400,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Shell safety')}
   ${chalk.gray('Use single quotes or -f/stdin when prompts include backticks or $()')}
+
+  ${chalk.gray('# Prompt-time command substitution (per iteration)')}
+  juno-code claude -p "Status: !'git status --short'"
+  juno-code claude -i 3 -p "Recent commits:\n!```git log -n 5 --oneline```"
 
   ${chalk.gray('# Interactive project setup')}
   juno-code init --interactive

@@ -217,6 +217,22 @@ literal text with `backticks`
 EOF
 ```
 
+### Prompt-time command substitution (per iteration)
+
+`juno-code` also supports explicit prompt-time shell substitutions that run inside the working directory on **every engine iteration**:
+
+- `!'command'`
+- `!\`\`\`command\`\`\``
+
+Examples:
+
+```bash
+juno-code claude -i 3 -p "Summarize git status: !'git status --short'"
+juno-code claude -i 2 -p "Recent commits:\n!```git log -n 5 --oneline```"
+```
+
+This avoids relying on your shell’s one-time backtick expansion and keeps command output fresh across retries/iterations.
+
 ## CLI Reference
 
 ### Core Commands

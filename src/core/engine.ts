@@ -26,6 +26,7 @@ import { executeHook, type HookExecutionResult } from '../utils/hooks.js';
 import { engineLogger } from '../cli/utils/advanced-logger.js';
 import type { Backend } from './backend-manager.js';
 import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js';
+import { resolvePromptCommandSubstitutions } from './prompt-command-substitution.js';
 
 // =============================================================================
 // Type Definitions
@@ -1062,48 +1063,61 @@ export class ExecutionEngine extends EventEmitter {
 
     this.emit('iteration:start', { context, iterationNumber });
 
-    const toolRequest: ToolCallRequest = {
-      toolName: this.getToolNameForSubagent(context.request.subagent),
-      arguments: {
-        instruction: context.request.instruction,
-        project_path: context.request.workingDirectory,
-        ...(context.request.model !== undefined && { model: context.request.model }),
-        ...(context.request.agents !== undefined && { agents: context.request.agents }),
-        ...(context.request.tools !== undefined && { tools: context.request.tools }),
-        ...(context.request.allowedTools !== undefined && {
-          allowedTools: context.request.allowedTools,
-        }),
-        ...(context.request.appendAllowedTools !== undefined && {
-          appendAllowedTools: context.request.appendAllowedTools,
-        }),
-        ...(context.request.disallowedTools !== undefined && {
-          disallowedTools: context.request.disallowedTools,
-        }),
-        ...(context.request.resume !== undefined && { resume: context.request.resume }),
-        ...(context.request.continueConversation !== undefined && {
-          continueConversation: context.request.continueConversation,
-        }),
-        ...(context.request.thinking !== undefined && { thinking: context.request.thinking }),
-        ...(context.request.live !== undefined && { live: context.request.live }),
-        ...(context.request.liveInteractiveSession !== undefined && {
-          liveInteractiveSession: context.request.liveInteractiveSession,
-        }),
-        iteration: iterationNumber,
-      },
-      timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
-      priority: context.request.priority || 'normal',
-      metadata: {
-        sessionId: context.sessionContext.sessionId,
-        iterationNumber,
-      },
-      progressCallback: async (event: ProgressEvent) => {
-        context.progressEvents.push(event);
-        context.statistics.totalProgressEvents++;
-        await this.processProgressEvent(context, event);
-      },
-    };
+    let toolRequest: ToolCallRequest | null = null;
 
     try {
+      const resolvedInstruction = await resolvePromptCommandSubstitutions(
+        context.request.instruction,
+        {
+          workingDirectory: context.request.workingDirectory,
+          environment: {
+            ...process.env,
+            JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
+          },
+        },
+      );
+
+      toolRequest = {
+        toolName: this.getToolNameForSubagent(context.request.subagent),
+        arguments: {
+          instruction: resolvedInstruction,
+          project_path: context.request.workingDirectory,
+          ...(context.request.model !== undefined && { model: context.request.model }),
+          ...(context.request.agents !== undefined && { agents: context.request.agents }),
+          ...(context.request.tools !== undefined && { tools: context.request.tools }),
+          ...(context.request.allowedTools !== undefined && {
+            allowedTools: context.request.allowedTools,
+          }),
+          ...(context.request.appendAllowedTools !== undefined && {
+            appendAllowedTools: context.request.appendAllowedTools,
+          }),
+          ...(context.request.disallowedTools !== undefined && {
+            disallowedTools: context.request.disallowedTools,
+          }),
+          ...(context.request.resume !== undefined && { resume: context.request.resume }),
+          ...(context.request.continueConversation !== undefined && {
+            continueConversation: context.request.continueConversation,
+          }),
+          ...(context.request.thinking !== undefined && { thinking: context.request.thinking }),
+          ...(context.request.live !== undefined && { live: context.request.live }),
+          ...(context.request.liveInteractiveSession !== undefined && {
+            liveInteractiveSession: context.request.liveInteractiveSession,
+          }),
+          iteration: iterationNumber,
+        },
+        timeout: context.request.timeoutMs || this.engineConfig.config.mcpTimeout,
+        priority: context.request.priority || 'normal',
+        metadata: {
+          sessionId: context.sessionContext.sessionId,
+          iterationNumber,
+        },
+        progressCallback: async (event: ProgressEvent) => {
+          context.progressEvents.push(event);
+          context.statistics.totalProgressEvents++;
+          await this.processProgressEvent(context, event);
+        },
+      };
+
       if (!this.currentBackend) {
         throw new Error('No backend initialized. Call initializeBackend() first.');
       }
@@ -1183,7 +1197,12 @@ export class ExecutionEngine extends EventEmitter {
           duration,
           error: mcpError,
           progressEvents: [],
-          request: toolRequest,
+          request:
+            toolRequest ??
+            ({
+              toolName: this.getToolNameForSubagent(context.request.subagent),
+              arguments: {},
+            } as ToolCallRequest),
         },
         progressEvents: [],
         error: mcpError,
