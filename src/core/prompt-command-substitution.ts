@@ -15,6 +15,7 @@ export interface PromptCommandSubstitutionOptions {
   readonly workingDirectory: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly maxBufferBytes?: number;
+  readonly commandTimeoutMs?: number;
   readonly executor?: PromptCommandExecutor;
 }
 
@@ -24,6 +25,8 @@ const SINGLE_QUOTED_MARKER = "!'";
 const TRIPLE_BACKTICK_MARKER = '!```';
 const TRIPLE_BACKTICK_CLOSER = '```';
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+const COMMAND_TIMEOUT_ENV_KEY = 'JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS';
 
 export function findPromptCommandSubstitutions(prompt: string): PromptCommandSubstitutionMatch[] {
   const matches: PromptCommandSubstitutionMatch[] = [];
@@ -179,6 +182,7 @@ function createDefaultPromptCommandExecutor(
 ): PromptCommandExecutor {
   const execFile = promisify(childProcess.execFile);
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+  const commandTimeoutMs = resolvePromptCommandTimeoutMs(options.commandTimeoutMs);
   const shell = process.env.SHELL || '/bin/bash';
 
   return async (command: string): Promise<string> => {
@@ -192,6 +196,7 @@ function createDefaultPromptCommandExecutor(
         cwd: options.workingDirectory,
         env: options.environment ?? process.env,
         maxBuffer: maxBufferBytes,
+        timeout: commandTimeoutMs,
       });
 
       const stdout =
@@ -207,10 +212,43 @@ function createDefaultPromptCommandExecutor(
           ? String((error as { stderr?: unknown }).stderr ?? '').trim()
           : '';
 
+      const timeoutDetected =
+        error &&
+        typeof error === 'object' &&
+        (('code' in error
+          ? String((error as { code?: unknown }).code ?? '').toUpperCase() === 'ETIMEDOUT'
+          : false) ||
+          ('killed' in error && Boolean((error as { killed?: unknown }).killed) &&
+            String((error as { signal?: unknown }).signal ?? '').toUpperCase() === 'SIGTERM') ||
+          ('message' in error &&
+            /timed?\s*out/i.test(String((error as { message?: unknown }).message ?? ''))));
+
+      if (timeoutDetected) {
+        throw new Error(
+          `Prompt command substitution timed out after ${commandTimeoutMs}ms for \`${failedCommand}\``,
+        );
+      }
+
       const suffix = details ? `: ${details}` : '';
       throw new Error(`Prompt command substitution failed for \`${failedCommand}\`${suffix}`);
     }
   };
+}
+
+function resolvePromptCommandTimeoutMs(explicitTimeoutMs: number | undefined): number {
+  if (typeof explicitTimeoutMs === 'number' && Number.isFinite(explicitTimeoutMs) && explicitTimeoutMs > 0) {
+    return explicitTimeoutMs;
+  }
+
+  const envValue = process.env[COMMAND_TIMEOUT_ENV_KEY];
+  if (envValue !== undefined) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return DEFAULT_COMMAND_TIMEOUT_MS;
 }
 
 function normalizeCommandOutput(output: string): string {

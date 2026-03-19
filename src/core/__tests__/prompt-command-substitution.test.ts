@@ -1,9 +1,22 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  execFile: vi.fn(),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: mocks.execFile,
+}));
 
 import {
   findPromptCommandSubstitutions,
   resolvePromptCommandSubstitutions,
 } from '../prompt-command-substitution.js';
+
+afterEach(() => {
+  mocks.execFile.mockReset();
+  delete process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS;
+});
 
 describe('prompt-command-substitution', () => {
   describe('findPromptCommandSubstitutions', () => {
@@ -79,6 +92,71 @@ describe('prompt-command-substitution', () => {
           },
         }),
       ).rejects.toThrow('failure on boom');
+    });
+
+    it('should pass commandTimeoutMs to the default prompt substitution executor', async () => {
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as (
+          | ((error: Error | null, stdout?: string, stderr?: string) => void)
+          | undefined
+        );
+        callback?.(null, 'ready\n', '');
+        return {};
+      });
+
+      const result = await resolvePromptCommandSubstitutions("Run !'echo ready'", {
+        workingDirectory: '/tmp',
+        commandTimeoutMs: 4321,
+      });
+
+      expect(result).toBe('Run ready');
+      expect(mocks.execFile).toHaveBeenCalledTimes(1);
+      const call = mocks.execFile.mock.calls[0];
+      expect(call?.[2]).toMatchObject({ timeout: 4321 });
+    });
+
+    it('should honor JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS when commandTimeoutMs is not provided', async () => {
+      process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS = '6543';
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as (
+          | ((error: Error | null, stdout?: string, stderr?: string) => void)
+          | undefined
+        );
+        callback?.(null, 'env-timeout\n', '');
+        return {};
+      });
+
+      const result = await resolvePromptCommandSubstitutions("Run !'echo env-timeout'", {
+        workingDirectory: '/tmp',
+      });
+
+      expect(result).toBe('Run env-timeout');
+      const call = mocks.execFile.mock.calls[0];
+      expect(call?.[2]).toMatchObject({ timeout: 6543 });
+    });
+
+    it('should raise a clear timeout error when prompt substitution command execution times out', async () => {
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as (
+          | ((error: Error | null, stdout?: string, stderr?: string) => void)
+          | undefined
+        );
+        const timeoutError = Object.assign(new Error('Command failed: timed out'), {
+          code: 'ETIMEDOUT',
+          killed: true,
+          signal: 'SIGTERM',
+          stderr: '',
+        });
+        callback?.(timeoutError, '', '');
+        return {};
+      });
+
+      await expect(
+        resolvePromptCommandSubstitutions("Run !'sleep 10'", {
+          workingDirectory: '/tmp',
+          commandTimeoutMs: 321,
+        }),
+      ).rejects.toThrow('Prompt command substitution timed out after 321ms for `sleep 10`');
     });
   });
 });
