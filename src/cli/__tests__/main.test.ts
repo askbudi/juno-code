@@ -2472,6 +2472,64 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Live Mode: enabled'))).toBe(true);
   });
 
+  it('should show task template + resolved task preview when prompt substitutions are present', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    const eventHandlers = new Map<string, (payload: any) => void>();
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockImplementation(async () => {
+        const onInstructionResolved = eventHandlers.get('iteration:instruction-resolved');
+        onInstructionResolved?.({
+          iterationNumber: 1,
+          instruction: 'Run ready now',
+          templateInstruction: "Run !'echo ready' now",
+        });
+
+        return {
+          status: 'completed',
+          iterations: [
+            {
+              iterationNumber: 1,
+              toolResult: { content: 'Test result', metadata: {} },
+              success: true,
+              duration: 1000,
+            },
+          ],
+          statistics: {
+            totalIterations: 1,
+            successfulIterations: 1,
+            failedIterations: 0,
+            averageIterationDuration: 1000,
+            totalToolCalls: 5,
+            rateLimitEncounters: 0,
+          },
+        };
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn((event: string, callback: (payload: any) => void) => {
+        eventHandlers.set(event, callback);
+      }),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: "Run !'echo ready' now",
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Task Template:'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Prompt-time substitutions are resolved'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Resolved Task (iteration 1):'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Run ready now'))).toBe(true);
+  });
+
   it('should NOT show model and iterations at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',

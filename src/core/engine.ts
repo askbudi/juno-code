@@ -1066,16 +1066,21 @@ export class ExecutionEngine extends EventEmitter {
     let toolRequest: ToolCallRequest | null = null;
 
     try {
-      const resolvedInstruction = await resolvePromptCommandSubstitutions(
-        context.request.instruction,
-        {
-          workingDirectory: context.request.workingDirectory,
-          environment: {
-            ...process.env,
-            JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
-          },
+      const instructionTemplate = context.request.instruction;
+      const resolvedInstruction = await resolvePromptCommandSubstitutions(instructionTemplate, {
+        workingDirectory: context.request.workingDirectory,
+        environment: {
+          ...process.env,
+          JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
         },
-      );
+      });
+
+      this.emit('iteration:instruction-resolved', {
+        context,
+        iterationNumber,
+        instruction: resolvedInstruction,
+        templateInstruction: instructionTemplate,
+      });
 
       toolRequest = {
         toolName: this.getToolNameForSubagent(context.request.subagent),

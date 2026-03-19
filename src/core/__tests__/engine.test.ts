@@ -316,6 +316,34 @@ describe('ExecutionEngine', () => {
       );
     });
 
+    it('should emit resolved instruction before executing the backend tool call', async () => {
+      const request = makeRequest({ instruction: "Run !'echo ready'" });
+      const resolvedInstruction = 'Run ready';
+      const onInstructionResolved = vi.fn();
+
+      mocks.resolvePromptCommandSubstitutions.mockResolvedValue(resolvedInstruction);
+      engine.on('iteration:instruction-resolved', onInstructionResolved);
+
+      mocks.execute.mockImplementation(async (toolRequest: ToolCallRequest) => {
+        expect(onInstructionResolved).toHaveBeenCalledTimes(1);
+
+        const payload = onInstructionResolved.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(payload).toMatchObject({
+          iterationNumber: 1,
+          instruction: resolvedInstruction,
+          templateInstruction: request.instruction,
+        });
+
+        expect(toolRequest.arguments).toMatchObject({ instruction: resolvedInstruction });
+        return createMockToolResult();
+      });
+
+      const result = await engine.execute(request);
+
+      expect(result.status).toBe(ExecutionStatus.COMPLETED);
+      expect(onInstructionResolved).toHaveBeenCalledTimes(1);
+    });
+
     it('should respect maxIterations limit', async () => {
       const request = makeRequest({ maxIterations: 2 });
 

@@ -1006,6 +1006,7 @@ class MainProgressDisplay {
   private hasStreamedJsonOutput: boolean = false; // Track if we streamed JSON output via progress events
   private sessionIds: Map<number, string> = new Map(); // iteration# → sub-agent session_id
   private latestSessionId: string | null = null; // most recent session_id seen
+  private lastResolvedInstructionByIteration: Map<number, string> = new Map();
 
   constructor(verboseLevel: number = 1) {
     this.verboseLevel = verboseLevel;
@@ -1045,12 +1046,22 @@ class MainProgressDisplay {
       console.error(chalk.gray(`   Working Directory: ${request.workingDirectory}`));
     }
 
-    console.error(chalk.blue('\n📋 Task:'));
-    const preview =
-      request.instruction.length > 200
-        ? request.instruction.substring(0, 200) + '...'
-        : request.instruction;
-    console.error(chalk.white(`   ${preview}`));
+    const hasPromptSubstitutionSyntax = this.hasPromptCommandSubstitutionSyntax(request.instruction);
+
+    if (hasPromptSubstitutionSyntax) {
+      console.error(chalk.blue('\n📋 Task Template:'));
+    } else {
+      console.error(chalk.blue('\n📋 Task:'));
+    }
+
+    console.error(chalk.white(`   ${this.buildInstructionPreview(request.instruction)}`));
+
+    if (hasPromptSubstitutionSyntax) {
+      console.error(
+        chalk.gray('   Prompt-time substitutions are resolved immediately before each subagent call.'),
+      );
+    }
+
     console.error('');
   }
 
@@ -1089,6 +1100,46 @@ class MainProgressDisplay {
   private truncateSummaryValue(value: string, maxLength: number = 140): string {
     if (value.length <= maxLength) return value;
     return `${value.substring(0, maxLength - 3)}...`;
+  }
+
+  private buildInstructionPreview(instruction: string, maxLength: number = 200): string {
+    if (instruction.length <= maxLength) {
+      return instruction;
+    }
+    return `${instruction.substring(0, maxLength)}...`;
+  }
+
+  private hasPromptCommandSubstitutionSyntax(instruction: string): boolean {
+    return instruction.includes("!'") || instruction.includes('!```');
+  }
+
+  onInstructionResolved(
+    iteration: number,
+    resolvedInstruction: string,
+    templateInstruction?: string,
+  ): void {
+    const previousInstruction = this.lastResolvedInstructionByIteration.get(iteration);
+    if (previousInstruction === resolvedInstruction) {
+      return;
+    }
+
+    this.lastResolvedInstructionByIteration.set(iteration, resolvedInstruction);
+
+    if (this.verboseLevel === 0) {
+      return;
+    }
+
+    if (templateInstruction !== undefined && resolvedInstruction === templateInstruction) {
+      return;
+    }
+
+    const heading =
+      iteration === 1
+        ? '\n🧩 Resolved Task (iteration 1):'
+        : `\n🧩 Resolved Task (iteration ${iteration}):`;
+
+    console.error(chalk.blue(heading));
+    console.error(chalk.white(`   ${this.buildInstructionPreview(resolvedInstruction)}`));
   }
 
   onProgress(event: ProgressEvent): void {
@@ -1505,6 +1556,14 @@ class MainExecutionCoordinator {
     // Set up event handlers
     engine.on('iteration:start', ({ iterationNumber }) => {
       this.progressDisplay.onIterationStart(iterationNumber);
+    });
+
+    engine.on('iteration:instruction-resolved', ({ iterationNumber, instruction, templateInstruction }) => {
+      this.progressDisplay.onInstructionResolved(
+        iterationNumber,
+        typeof instruction === 'string' ? instruction : '',
+        typeof templateInstruction === 'string' ? templateInstruction : undefined,
+      );
     });
 
     engine.on('iteration:complete', ({ iterationResult }) => {
