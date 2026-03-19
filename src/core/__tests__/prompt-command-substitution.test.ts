@@ -115,6 +115,27 @@ describe('prompt-command-substitution', () => {
       expect(call?.[2]).toMatchObject({ timeout: 4321 });
     });
 
+    it('should execute prompt substitution commands with stdin closed to avoid shell-read hangs', async () => {
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as (
+          | ((error: Error | null, stdout?: string, stderr?: string) => void)
+          | undefined
+        );
+        callback?.(null, 'ok\n', '');
+        return {};
+      });
+
+      const result = await resolvePromptCommandSubstitutions("Run !'kanban-juno list'", {
+        workingDirectory: '/tmp',
+      });
+
+      expect(result).toBe('Run ok');
+      const call = mocks.execFile.mock.calls[0];
+      const argv = call?.[1] as string[] | undefined;
+      expect(argv?.[0]).toBe('-lc');
+      expect(argv?.[1]).toBe('(kanban-juno list) </dev/null');
+    });
+
     it('should honor JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS when commandTimeoutMs is not provided', async () => {
       process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS = '6543';
       mocks.execFile.mockImplementation((...args: unknown[]) => {

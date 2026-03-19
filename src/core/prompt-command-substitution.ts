@@ -191,8 +191,10 @@ function createDefaultPromptCommandExecutor(
       return '';
     }
 
+    const commandForExecution = wrapCommandForNonInteractiveExecution(normalizedCommand);
+
     try {
-      const result = await execFile(shell, ['-lc', normalizedCommand], {
+      const result = await execFile(shell, ['-lc', commandForExecution], {
         cwd: options.workingDirectory,
         env: options.environment ?? process.env,
         maxBuffer: maxBufferBytes,
@@ -249,6 +251,10 @@ function resolvePromptCommandTimeoutMs(explicitTimeoutMs: number | undefined): n
   }
 
   return DEFAULT_COMMAND_TIMEOUT_MS;
+}
+
+function wrapCommandForNonInteractiveExecution(command: string): string {
+  return `(${command}) </dev/null`;
 }
 
 function normalizeCommandOutput(output: string): string {
