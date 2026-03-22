@@ -342,6 +342,24 @@ is_in_virtualenv() {
     return 1  # Not inside venv
 }
 
+# Function to activate project-local .venv_juno when available.
+# Why: install/check commands often run from non-activated shells, while packages
+# are installed into .venv_juno. Activating it early keeps package detection and
+# periodic update checks aligned with the real install target.
+activate_project_venv_if_available() {
+    if is_in_virtualenv; then
+        return 0
+    fi
+
+    local venv_path=".venv_juno"
+    if [ -f "$venv_path/bin/activate" ]; then
+        log_info "Detected project virtual environment at $venv_path; activating for dependency checks"
+        # shellcheck disable=SC1091
+        source "$venv_path/bin/activate"
+        log_success "Activated $venv_path"
+    fi
+}
+
 # Function to find the best Python version (3.10-3.13, preferably 3.13)
 find_best_python() {
     # Try to find Python in order of preference: 3.13, 3.12, 3.11, 3.10
@@ -659,6 +677,9 @@ main() {
     echo ""
     log_info "=== Python Requirements Installation ==="
     echo ""
+
+    # Align all checks with project-local installation target when available.
+    activate_project_venv_if_available
 
     # Handle --check-updates: just check and report, don't install
     if [ "$check_updates_only" = true ]; then
