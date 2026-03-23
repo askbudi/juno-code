@@ -223,7 +223,9 @@ def _orchestrator_log(name):
 
 
 def _tmp_dir(name):
-    return Path(f"/tmp/pc-{name}")
+    # Keep runtime artifacts under the project log base instead of /tmp so
+    # long-running sessions are resilient to OS tmp cleanup jobs.
+    return _log_base / f".tmp_{name}"
 
 
 def _write_log_pipe_helper(name):
@@ -1189,6 +1191,38 @@ def resolve_prompt_file(args, pwd):
     return str(prompt_path)
 
 
+def load_prompt_template(prompt_file_path):
+    """Load prompt template once at startup to avoid mid-run source-file drift."""
+    if not prompt_file_path:
+        return None
+    try:
+        return Path(prompt_file_path).read_text(encoding="utf-8")
+    except Exception as exc:
+        print(f"ERROR: Could not read prompt file at startup: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def render_prompt(task_id, prompt_template, file_format=""):
+    """Render prompt template placeholders for a task."""
+    if not prompt_template:
+        return ""
+    rendered = prompt_template.replace("{{task_id}}", task_id)
+    rendered = rendered.replace("{{item}}", _item_map.get(task_id, task_id))
+    rendered = rendered.replace("{{file_format}}", file_format)
+    return "\n\n---\n\n" + rendered
+
+
+def prepare_prompt_files(task_ids, prompt_template, prompt_dir, file_format=""):
+    """Materialize all per-task prompt files at startup for long-running resilience."""
+    prompt_paths = {}
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    for task_id in task_ids:
+        prompt_path = prompt_dir / f"prompt_{task_id}.txt"
+        prompt_path.write_text(render_prompt(task_id, prompt_template, file_format), encoding="utf-8")
+        prompt_paths[task_id] = str(prompt_path)
+    return prompt_paths
+
+
 def print_summary(task_ids, results, task_times, wall_elapsed, total_tasks):
     """Print final results and stats summary."""
     log_combined("")
@@ -1232,7 +1266,7 @@ def print_summary(task_ids, results, task_times, wall_elapsed, total_tasks):
 # Headless mode
 # ---------------------------------------------------------------------------
 
-def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
+def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
              service="claude", model=":sonnet", file_format="", strict=False,
              subagent_args=None):
     """Run a single juno-code subprocess (called from its own thread)."""
@@ -1246,23 +1280,9 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
 
         task_log_path = LOG_DIR / f"task_{task_id}.log"
 
-        prompt = ""
-
-        if prompt_file_path:
-            try:
-                extra = Path(prompt_file_path).read_text(encoding="utf-8")
-                extra = extra.replace("{{task_id}}", task_id)
-                extra = extra.replace("{{item}}", _item_map.get(task_id, task_id))
-                extra = extra.replace("{{file_format}}", file_format)
-                prompt += "\n\n---\n\n" + extra
-                log_combined(f"Loaded prompt file ({len(extra)} chars)", task_id)
-            except Exception as e:
-                log_combined(f"WARNING: Could not read prompt file: {e}", task_id)
-
-        tmp_prompt_dir = Path("/tmp/pc-headless")
-        tmp_prompt_dir.mkdir(parents=True, exist_ok=True)
-        tmp_prompt_path = tmp_prompt_dir / f"prompt_{task_id}.txt"
-        tmp_prompt_path.write_text(prompt, encoding="utf-8")
+        if prompt_path and not Path(prompt_path).exists():
+            log_combined("Prompt file missing at runtime; task cannot start", task_id)
+            return task_id, 1
 
         env = _build_process_env()
 
@@ -1277,7 +1297,8 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
         ]
         if subagent_args:
             cmd.extend(subagent_args)
-        cmd.extend(["-f", str(tmp_prompt_path)])
+        if prompt_path:
+            cmd.extend(["-f", str(prompt_path)])
 
         proc = subprocess.Popen(
             cmd,
@@ -1297,11 +1318,6 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
 
         proc.wait()
         reader.join()
-
-        try:
-            tmp_prompt_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
         elapsed = time.monotonic() - start
 
@@ -1340,8 +1356,8 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
         semaphore.release()
 
 
-def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model,
-                      subagent_args=None):
+def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
+                      output_dir, service, model, subagent_args=None):
     """Run tasks in headless mode using ThreadPoolExecutor."""
     global _total_tasks
     _total_tasks = len(args.kanban)
@@ -1361,7 +1377,7 @@ def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model,
     if subagent_args:
         log_combined(f"Subagent args: {' '.join(subagent_args)}")
     if prompt_file_path:
-        log_combined(f"Prompt file: {prompt_file_path} (re-read per task)")
+        log_combined(f"Prompt file: {prompt_file_path} (materialized at startup)")
     if output_dir:
         log_combined(f"Output dir: {output_dir}")
     legend = "  ".join(f"{_color_for(tid)} {tid}" for tid in args.kanban)
@@ -1376,9 +1392,15 @@ def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model,
     file_format = getattr(args, "file_format", "") or ""
     strict = getattr(args, "strict", False)
 
+    prompt_paths = {}
+    if prompt_file_path:
+        prompt_dir = LOG_DIR / ".headless_prompts"
+        prompt_paths = prepare_prompt_files(args.kanban, prompt_template, prompt_dir, file_format)
+        log_combined(f"Prebuilt {len(prompt_paths)} prompt files in {prompt_dir}")
+
     with ThreadPoolExecutor(max_workers=len(args.kanban)) as pool:
         futures = {
-            pool.submit(run_task, task_id, semaphore, pwd, prompt_file_path, output_dir,
+            pool.submit(run_task, task_id, semaphore, pwd, prompt_paths.get(task_id), output_dir,
                         service, model, file_format, strict, subagent_args): task_id
             for task_id in args.kanban
         }
@@ -1556,29 +1578,14 @@ def create_tmux_session(session_name, mode, num_workers, pwd):
 # Tmux mode — command building & dispatch
 # ---------------------------------------------------------------------------
 
-def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
+def write_runner_script(task_id, pwd, prompt_path, session_name_short,
                         output_dir=None, service="claude", model=":sonnet",
                         file_format="", subagent_args=None):
-    """Write prompt file + bash runner script for a task."""
-    prompt = ""
-
-    if prompt_file_path:
-        try:
-            extra = Path(prompt_file_path).read_text(encoding="utf-8")
-            extra = extra.replace("{{task_id}}", task_id)
-            extra = extra.replace("{{item}}", _item_map.get(task_id, task_id))
-            extra = extra.replace("{{file_format}}", file_format)
-            prompt += "\n\n---\n\n" + extra
-        except Exception:
-            pass
-
+    """Write bash runner script for a task."""
     sentinel_id = uuid.uuid4().hex[:12]
 
     tmp = _tmp_dir(session_name_short)
     tmp.mkdir(parents=True, exist_ok=True)
-
-    prompt_path = tmp / f"prompt_{task_id}.txt"
-    prompt_path.write_text(prompt)
 
     env_exports = _generate_env_exports()
 
@@ -1586,19 +1593,19 @@ def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
     env_path.write_text(env_exports + "\n")
 
     subagent_args_shell = " ".join(shlex.quote(arg) for arg in (subagent_args or []))
+    prompt_arg = f" -f {shlex.quote(str(prompt_path))}" if prompt_path else ""
 
     runner_path = tmp / f"run_{task_id}.sh"
     runner_path.write_text(textwrap.dedent("""\
         #!/bin/bash
         source %(env_path)s
         cd %(pwd)s
-        juno-code -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks%(subagent_args)s \\
-            -f %(prompt_path)s
+        juno-code -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks%(subagent_args)s%(prompt_arg)s
         echo "___DONE_%(sentinel_id)s_${?}___"
     """) % {
         "env_path": shlex.quote(str(env_path)),
         "pwd": shlex.quote(pwd),
-        "prompt_path": shlex.quote(str(prompt_path)),
+        "prompt_arg": prompt_arg,
         "sentinel_id": sentinel_id,
         "service": shlex.quote(service),
         "model": shlex.quote(model),
@@ -1608,12 +1615,19 @@ def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
     return str(runner_path), sentinel_id
 
 
-def dispatch_task(worker, task_id, task_state, pwd, prompt_file_path,
+def dispatch_task(worker, task_id, task_state, pwd, prompt_paths,
                   session_name_short, output_dir=None, service="claude",
-                  model=":sonnet", file_format="", subagent_args=None):
+                  model=":sonnet", file_format="", subagent_args=None,
+                  prompt_template=None):
     """Send a task command to a worker's tmux pane/window."""
+    prompt_path = prompt_paths.get(task_id)
+    if prompt_path and not Path(prompt_path).exists():
+        prompt_path_obj = Path(prompt_path)
+        prompt_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path_obj.write_text(render_prompt(task_id, prompt_template, file_format), encoding="utf-8")
+
     runner_path, sentinel_id = write_runner_script(
-        task_id, pwd, prompt_file_path, session_name_short, output_dir,
+        task_id, pwd, prompt_path, session_name_short, output_dir,
         service, model, file_format, subagent_args)
 
     # FIX-003: Stop old pipe-pane explicitly before starting new one
@@ -1823,8 +1837,8 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
 # Tmux mode — orchestration loop
 # ---------------------------------------------------------------------------
 
-def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
-                       wall_start, session_name_short, session_name,
+def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
+                       prompt_template, wall_start, session_name_short, session_name,
                        output_dir=None, service="claude", model=":sonnet",
                        file_format="", strict=False, subagent_args=None):
     """Main orchestration loop — polls workers, dispatches tasks, updates dashboard."""
@@ -1935,8 +1949,9 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
                 next_task_id = task_queue.popleft()
                 dispatch_task(
                     worker, next_task_id, task_states[next_task_id],
-                    pwd, prompt_file_path, session_name_short, output_dir,
+                    pwd, prompt_paths, session_name_short, output_dir,
                     service, model, file_format, subagent_args,
+                    prompt_template,
                 )
 
         # Update dashboard
@@ -2069,8 +2084,8 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
 # Tmux mode — entry point
 # ---------------------------------------------------------------------------
 
-def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model,
-                  subagent_args=None):
+def run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir,
+                  service, model, subagent_args=None):
     """Set up tmux session and run orchestrator."""
     num_workers = args.parallel
     mode = args.tmux
@@ -2122,7 +2137,7 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model,
         if subagent_args:
             f.write(f"[{timestamp}] Subagent args: {' '.join(subagent_args)}\n")
         if prompt_file_path:
-            f.write(f"[{timestamp}] Prompt file: {prompt_file_path} (re-read per task)\n")
+            f.write(f"[{timestamp}] Prompt file: {prompt_file_path} (materialized at startup)\n")
         if output_dir:
             f.write(f"[{timestamp}] Output dir: {output_dir}\n")
         f.write(f"[{timestamp}] {'=' * 60}\n")
@@ -2137,6 +2152,12 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model,
     for tid in args.kanban:
         task_states[tid] = TaskState(task_id=tid)
     task_queue = deque(args.kanban)
+
+    file_format = getattr(args, "file_format", "") or ""
+    prompt_paths = {}
+    if prompt_file_path:
+        prompt_dir = _tmp_dir(session_name_short) / "prompts"
+        prompt_paths = prepare_prompt_files(args.kanban, prompt_template, prompt_dir, file_format)
 
     wall_start = time.monotonic()
 
@@ -2189,21 +2210,20 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model,
                 if not task_queue:
                     break
                 next_task_id = task_queue.popleft()
-                file_format = getattr(args, "file_format", "") or ""
                 dispatch_task(
                     worker, next_task_id, task_states[next_task_id],
-                    pwd, prompt_file_path, session_name_short, output_dir,
+                    pwd, prompt_paths, session_name_short, output_dir,
                     service, model, file_format, subagent_args,
+                    prompt_template,
                 )
 
             update_dashboard_file(task_states, workers, False, wall_start,
                                   session_name_short, session_name)
 
-            file_format = getattr(args, "file_format", "") or ""
             strict = getattr(args, "strict", False)
             exit_code = orchestration_loop(
                 task_states, workers, task_queue,
-                pwd, prompt_file_path, wall_start,
+                pwd, prompt_paths, prompt_template, wall_start,
                 session_name_short, session_name, output_dir,
                 service, model, file_format, strict, subagent_args,
             )
@@ -2268,6 +2288,7 @@ def main():
 
     service, model = _resolve_service_model(args)
     prompt_file_path = resolve_prompt_file(args, pwd)
+    prompt_template = load_prompt_template(prompt_file_path)
     output_dir = _resolve_output_dir(args)
     subagent_args = getattr(args, "subagent_args_list", [])
 
@@ -2275,9 +2296,9 @@ def main():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.tmux:
-        run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model, subagent_args)
+        run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir, service, model, subagent_args)
     else:
-        run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model, subagent_args)
+        run_headless_mode(args, pwd, prompt_file_path, prompt_template, output_dir, service, model, subagent_args)
 
 
 if __name__ == "__main__":
