@@ -387,16 +387,18 @@ def _resolve_subagent_args(raw_args):
 
 
 def _normalize_subagent_args_argv(argv):
-    """Allow `--subagent-args --flag` without requiring `=` syntax.
+    """Normalize common `subagent-args` invocation shapes before argparse.
 
-    argparse normally treats dash-prefixed tokens as option starts, so a direct
-    value like `--live` after `--subagent-args` raises "expected one argument".
-    We rewrite that pair into `--subagent-args=--live` before parsing.
+    Supports:
+    - `--subagent-args --live` (dash-prefixed value)
+    - `subagent-args --live` (missing leading `--` typo)
     """
     normalized = []
     i = 0
     while i < len(argv):
         token = argv[i]
+        if token == "subagent-args":
+            token = "--subagent-args"
         if token == "--subagent-args" and i + 1 < len(argv):
             next_token = argv[i + 1]
             normalized.append(f"--subagent-args={next_token}")
