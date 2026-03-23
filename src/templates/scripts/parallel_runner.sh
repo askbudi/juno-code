@@ -1777,7 +1777,11 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
         lines.append(f"  [{bar}] {pct}% ({completed}/{total})  Wall: {elapsed}{eta_str}")
     lines.append("-" * 58)
 
-    dashboard_path.write_text("\n".join(lines) + "\n")
+    # Write atomically so tmux dashboard readers never see a partially-written frame.
+    dashboard_content = "\n".join(lines) + "\n"
+    dashboard_tmp_path = dashboard_path.parent / f"{dashboard_path.name}.tmp"
+    dashboard_tmp_path.write_text(dashboard_content, encoding="utf-8")
+    os.replace(dashboard_tmp_path, dashboard_path)
     update_tmux_status_bar(task_states, paused, wall_start, session_name)
 
 
@@ -2104,8 +2108,8 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model):
     dashboard_file_str = shlex.quote(str(_dashboard_file(session_name_short)))
     dashboard_cmd = (
         f"trap 'kill $(cat {pid_path_str}) 2>/dev/null; exit' INT; "
-        f"while true; do printf '\\033[H'; cat {dashboard_file_str} 2>/dev/null "
-        f"|| echo 'Waiting for dashboard...'; printf '\\033[J'; sleep 2; done"
+        f"while true; do printf '\\033[2J\\033[H'; cat {dashboard_file_str} 2>/dev/null "
+        f"|| echo 'Waiting for dashboard...'; sleep 2; done"
     )
     tmux_run(["send-keys", "-t", coordinator_target, dashboard_cmd, "Enter"])
 
