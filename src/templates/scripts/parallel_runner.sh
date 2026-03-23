@@ -329,6 +329,27 @@ def _resolve_subagent_args(raw_args):
     return resolved
 
 
+def _normalize_subagent_args_argv(argv):
+    """Allow `--subagent-args --flag` without requiring `=` syntax.
+
+    argparse normally treats dash-prefixed tokens as option starts, so a direct
+    value like `--live` after `--subagent-args` raises "expected one argument".
+    We rewrite that pair into `--subagent-args=--live` before parsing.
+    """
+    normalized = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--subagent-args" and i + 1 < len(argv):
+            next_token = argv[i + 1]
+            normalized.append(f"--subagent-args={next_token}")
+            i += 2
+            continue
+        normalized.append(token)
+        i += 1
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # File parsing — multi-format pipeline
 # ---------------------------------------------------------------------------
@@ -1062,7 +1083,8 @@ def parse_args():
         "--stop-all", action="store_true", default=False,
         help="Stop ALL running sessions.",
     )
-    args = parser.parse_args()
+    normalized_argv = _normalize_subagent_args_argv(sys.argv[1:])
+    args = parser.parse_args(normalized_argv)
 
     # Handle stop commands first
     if args.stop_all:
