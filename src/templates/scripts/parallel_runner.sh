@@ -13,10 +13,12 @@ Usage:
   ./parallel_runner.sh --kanban TASK1 TASK2 TASK3 --parallel 2
   ./parallel_runner.sh --kanban "TASK1 TASK2 TASK3"
   ./parallel_runner.sh --kanban T1 T2 --prompt-file instructions.md
+  ./parallel_runner.sh --kanban T1 T2 --prompt "Handle ## {{task_id}} with {{item}}"
+  echo "Handle ## {{task_id}}" | ./parallel_runner.sh --kanban T1 --prompt -
 
-  # Generic items mode (any list, requires --prompt-file with {{item}})
+  # Generic items mode (any list, requires --prompt-file/--prompt with {{item}})
   ./parallel_runner.sh --items "url1,url2,url3" --prompt-file crawl.md
-  ./parallel_runner.sh --items shop1 shop2 shop3 --prompt-file analyze.md
+  ./parallel_runner.sh --items shop1 shop2 shop3 --prompt "Analyze {{item}}"
 
   # File mode (structured data)
   ./parallel_runner.sh --items-file data.jsonl --prompt-file analyze.md
@@ -61,6 +63,8 @@ Arguments:
   --prompt-file  Path to a file whose content is appended to the prompt.
                  Loaded once at startup; per-task prompt files are materialized under logs/tmp.
                  Placeholders: {{task_id}}, {{item}}, {{file_format}}.
+  --prompt       Inline prompt template content (same placeholders as --prompt-file).
+                 Use --prompt - to read template content from stdin/heredoc.
   --subagent-args Extra raw args appended to each juno-code invocation.
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
@@ -1129,7 +1133,11 @@ def parse_args():
     )
     parser.add_argument(
         "--prompt-file", type=str, default=None,
-        help="Prompt template file. Re-read per task. Placeholders: {{task_id}}, {{item}}, {{file_format}}.",
+        help="Prompt template file. Loaded once at startup. Placeholders: {{task_id}}, {{item}}, {{file_format}}.",
+    )
+    parser.add_argument(
+        "--prompt", type=str, default=None,
+        help="Inline prompt template content. Use '-' to read from stdin. Placeholders: {{task_id}}, {{item}}, {{file_format}}.",
     )
     parser.add_argument(
         "--subagent-args", action="append", default=None,
@@ -1163,6 +1171,9 @@ def parse_args():
         return args
     if args.stop:
         return args
+
+    if args.prompt_file and args.prompt:
+        parser.error("Use either --prompt-file or --prompt, not both")
 
     # Resolve --kanban-filter -> --kanban
     if args.kanban_filter:
@@ -1278,28 +1289,35 @@ def format_duration(seconds):
     return f"{hours}h {mins}m {secs:.0f}s"
 
 
-def resolve_prompt_file(args, pwd):
-    """Resolve the prompt file path, exit if not found."""
-    if not args.prompt_file:
-        return None
-    prompt_path = Path(args.prompt_file)
-    if not prompt_path.is_absolute():
-        prompt_path = Path(pwd) / prompt_path
-    if not prompt_path.exists():
-        print(f"ERROR: Prompt file not found: {prompt_path}", file=sys.stderr)
-        sys.exit(2)
-    return str(prompt_path)
+def resolve_prompt_source(args, pwd):
+    """Resolve prompt source metadata and return (source_label, template_text)."""
+    if args.prompt_file:
+        prompt_path = Path(args.prompt_file)
+        if not prompt_path.is_absolute():
+            prompt_path = Path(pwd) / prompt_path
+        if not prompt_path.exists():
+            print(f"ERROR: Prompt file not found: {prompt_path}", file=sys.stderr)
+            sys.exit(2)
+        try:
+            template = prompt_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            print(f"ERROR: Could not read prompt file at startup: {exc}", file=sys.stderr)
+            sys.exit(2)
+        return str(prompt_path), template
 
+    if args.prompt is not None:
+        if args.prompt == "-":
+            if sys.stdin.isatty():
+                print("ERROR: --prompt - requires redirected stdin (pipe/heredoc)", file=sys.stderr)
+                sys.exit(2)
+            template = sys.stdin.read()
+            if not template.strip():
+                print("ERROR: --prompt - received empty stdin content", file=sys.stderr)
+                sys.exit(2)
+            return "stdin", template
+        return "inline", args.prompt
 
-def load_prompt_template(prompt_file_path):
-    """Load prompt template once at startup to avoid mid-run source-file drift."""
-    if not prompt_file_path:
-        return None
-    try:
-        return Path(prompt_file_path).read_text(encoding="utf-8")
-    except Exception as exc:
-        print(f"ERROR: Could not read prompt file at startup: {exc}", file=sys.stderr)
-        sys.exit(2)
+    return None, None
 
 
 def render_prompt(task_id, prompt_template, file_format=""):
@@ -1456,7 +1474,7 @@ def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
         semaphore.release()
 
 
-def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
+def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
                       output_dir, service, model, subagent_args=None):
     """Run tasks in headless mode using ThreadPoolExecutor."""
     global _total_tasks
@@ -1476,8 +1494,9 @@ def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
     log_combined(f"Service: {service} | Model: {model}")
     if subagent_args:
         log_combined(f"Subagent args: {' '.join(subagent_args)}")
-    if prompt_file_path:
-        log_combined(f"Prompt file: {prompt_file_path} (materialized at startup)")
+    if prompt_source_label:
+        source_type = "Prompt file" if prompt_source_label not in ("inline", "stdin") else "Prompt source"
+        log_combined(f"{source_type}: {prompt_source_label} (materialized at startup)")
     if output_dir:
         log_combined(f"Output dir: {output_dir}")
     legend = "  ".join(f"{_color_for(tid)} {tid}" for tid in args.kanban)
@@ -1493,7 +1512,7 @@ def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
     strict = getattr(args, "strict", False)
 
     prompt_paths = {}
-    if prompt_file_path:
+    if prompt_template is not None:
         prompt_dir = _tmp_dir(_run_id) / "prompts"
         prompt_paths = prepare_prompt_files(args.kanban, prompt_template, prompt_dir, file_format)
         log_combined(f"Prebuilt {len(prompt_paths)} prompt files in {prompt_dir}")
@@ -2185,7 +2204,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
 # Tmux mode — entry point
 # ---------------------------------------------------------------------------
 
-def run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir,
+def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                   service, model, subagent_args=None):
     """Set up tmux session and run orchestrator."""
     num_workers = args.parallel
@@ -2237,8 +2256,9 @@ def run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir,
         f.write(f"[{timestamp}] Service: {service} | Model: {model}\n")
         if subagent_args:
             f.write(f"[{timestamp}] Subagent args: {' '.join(subagent_args)}\n")
-        if prompt_file_path:
-            f.write(f"[{timestamp}] Prompt file: {prompt_file_path} (materialized at startup)\n")
+        if prompt_source_label:
+            source_type = "Prompt file" if prompt_source_label not in ("inline", "stdin") else "Prompt source"
+            f.write(f"[{timestamp}] {source_type}: {prompt_source_label} (materialized at startup)\n")
         if output_dir:
             f.write(f"[{timestamp}] Output dir: {output_dir}\n")
         f.write(f"[{timestamp}] {'=' * 60}\n")
@@ -2256,7 +2276,7 @@ def run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir,
 
     file_format = getattr(args, "file_format", "") or ""
     prompt_paths = {}
-    if prompt_file_path:
+    if prompt_template is not None:
         prompt_dir = _tmp_dir(session_name_short) / "prompts"
         prompt_paths = prepare_prompt_files(args.kanban, prompt_template, prompt_dir, file_format)
 
@@ -2388,8 +2408,7 @@ def main():
         _task_color_map[tid] = _TASK_COLORS[i % len(_TASK_COLORS)]
 
     service, model = _resolve_service_model(args)
-    prompt_file_path = resolve_prompt_file(args, pwd)
-    prompt_template = load_prompt_template(prompt_file_path)
+    prompt_source_label, prompt_template = resolve_prompt_source(args, pwd)
     output_dir = _resolve_output_dir(args)
     subagent_args = getattr(args, "subagent_args_list", [])
 
@@ -2400,9 +2419,9 @@ def main():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.tmux:
-        run_tmux_mode(args, pwd, prompt_file_path, prompt_template, output_dir, service, model, subagent_args)
+        run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
     else:
-        run_headless_mode(args, pwd, prompt_file_path, prompt_template, output_dir, service, model, subagent_args)
+        run_headless_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
 
 
 if __name__ == "__main__":
