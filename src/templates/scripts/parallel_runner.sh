@@ -28,6 +28,7 @@ Usage:
   ./parallel_runner.sh --tmux --kanban T1 T2 --name my-batch
   ./parallel_runner.sh -s codex --kanban T1 T2
   ./parallel_runner.sh -s pi -m gpt-5 --kanban T1 T2
+  ./parallel_runner.sh -s pi --subagent-args "--live" --kanban T1 T2
   ./parallel_runner.sh --stop                    # stop only running session
   ./parallel_runner.sh --stop --name my-batch    # stop specific session
   ./parallel_runner.sh --stop-all                # stop all sessions
@@ -59,6 +60,8 @@ Arguments:
   --env          Environment overrides. KEY=VALUE pairs or path to .env file.
   --prompt-file  Path to a file whose content is appended to the prompt.
                  Re-read per task. Placeholders: {{task_id}}, {{item}}, {{file_format}}.
+  --subagent-args Extra raw args appended to each juno-code invocation.
+                 Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
   --output-dir   Structured output directory. Default: /tmp/juno-code-sessions/{date}/{run_id}.
@@ -308,6 +311,20 @@ def _generate_env_exports():
             continue
         lines.append(f"export {key}={shlex.quote(value)}")
     return "\n".join(lines)
+
+
+def _resolve_subagent_args(raw_args):
+    """Resolve repeatable --subagent-args strings into argv tokens."""
+    resolved = []
+    if not raw_args:
+        return resolved
+    for raw in raw_args:
+        try:
+            resolved.extend(shlex.split(raw))
+        except ValueError as exc:
+            print(f"ERROR: Invalid --subagent-args value '{raw}': {exc}", file=sys.stderr)
+            sys.exit(2)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1037,10 @@ def parse_args():
         help="Prompt template file. Re-read per task. Placeholders: {{task_id}}, {{item}}, {{file_format}}.",
     )
     parser.add_argument(
+        "--subagent-args", action="append", default=None,
+        help="Extra raw args appended to each juno-code invocation. Repeatable; values are shell-split.",
+    )
+    parser.add_argument(
         "--tmux", nargs="?", const="windows", default=None, choices=["windows", "panes"],
         help="Run in tmux mode. 'windows' (default) or 'panes'.",
     )
@@ -1088,6 +1109,8 @@ def parse_args():
 
     global _env_overrides
     _env_overrides = _resolve_env_overrides(args.env)
+
+    args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
 
     # Flatten --kanban
     if args.kanban:
@@ -1210,7 +1233,8 @@ def print_summary(task_ids, results, task_times, wall_elapsed, total_tasks):
 # ---------------------------------------------------------------------------
 
 def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
-             service="claude", model=":sonnet", file_format="", strict=False):
+             service="claude", model=":sonnet", file_format="", strict=False,
+             subagent_args=None):
     """Run a single juno-code subprocess (called from its own thread)."""
     global _completed_count
 
@@ -1242,17 +1266,21 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
 
         env = _build_process_env()
 
+        cmd = [
+            "juno-code",
+            "-b", "shell",
+            "-s", service,
+            "-m", model,
+            "-i", "1",
+            "-v",
+            "--no-hooks",
+        ]
+        if subagent_args:
+            cmd.extend(subagent_args)
+        cmd.extend(["-f", str(tmp_prompt_path)])
+
         proc = subprocess.Popen(
-            [
-                "juno-code",
-                "-b", "shell",
-                "-s", service,
-                "-m", model,
-                "-i", "1",
-                "-v",
-                "--no-hooks",
-                "-f", str(tmp_prompt_path),
-            ],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=pwd,
@@ -1312,7 +1340,8 @@ def run_task(task_id, semaphore, pwd, prompt_file_path=None, output_dir=None,
         semaphore.release()
 
 
-def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model):
+def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model,
+                      subagent_args=None):
     """Run tasks in headless mode using ThreadPoolExecutor."""
     global _total_tasks
     _total_tasks = len(args.kanban)
@@ -1329,6 +1358,8 @@ def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model):
                      + (f"\n  ... and {len(args.kanban) - 3} more" if len(args.kanban) > 3 else ""))
     log_combined(f"Parallelism: {args.parallel}")
     log_combined(f"Service: {service} | Model: {model}")
+    if subagent_args:
+        log_combined(f"Subagent args: {' '.join(subagent_args)}")
     if prompt_file_path:
         log_combined(f"Prompt file: {prompt_file_path} (re-read per task)")
     if output_dir:
@@ -1348,7 +1379,7 @@ def run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model):
     with ThreadPoolExecutor(max_workers=len(args.kanban)) as pool:
         futures = {
             pool.submit(run_task, task_id, semaphore, pwd, prompt_file_path, output_dir,
-                        service, model, file_format, strict): task_id
+                        service, model, file_format, strict, subagent_args): task_id
             for task_id in args.kanban
         }
 
@@ -1527,7 +1558,7 @@ def create_tmux_session(session_name, mode, num_workers, pwd):
 
 def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
                         output_dir=None, service="claude", model=":sonnet",
-                        file_format=""):
+                        file_format="", subagent_args=None):
     """Write prompt file + bash runner script for a task."""
     prompt = ""
 
@@ -1554,12 +1585,14 @@ def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
     env_path = tmp / f"env_{task_id}.sh"
     env_path.write_text(env_exports + "\n")
 
+    subagent_args_shell = " ".join(shlex.quote(arg) for arg in (subagent_args or []))
+
     runner_path = tmp / f"run_{task_id}.sh"
     runner_path.write_text(textwrap.dedent("""\
         #!/bin/bash
         source %(env_path)s
         cd %(pwd)s
-        juno-code -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks \\
+        juno-code -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks%(subagent_args)s \\
             -f %(prompt_path)s
         echo "___DONE_%(sentinel_id)s_${?}___"
     """) % {
@@ -1569,6 +1602,7 @@ def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
         "sentinel_id": sentinel_id,
         "service": shlex.quote(service),
         "model": shlex.quote(model),
+        "subagent_args": f" {subagent_args_shell}" if subagent_args_shell else "",
     })
 
     return str(runner_path), sentinel_id
@@ -1576,11 +1610,11 @@ def write_runner_script(task_id, pwd, prompt_file_path, session_name_short,
 
 def dispatch_task(worker, task_id, task_state, pwd, prompt_file_path,
                   session_name_short, output_dir=None, service="claude",
-                  model=":sonnet", file_format=""):
+                  model=":sonnet", file_format="", subagent_args=None):
     """Send a task command to a worker's tmux pane/window."""
     runner_path, sentinel_id = write_runner_script(
         task_id, pwd, prompt_file_path, session_name_short, output_dir,
-        service, model, file_format)
+        service, model, file_format, subagent_args)
 
     # FIX-003: Stop old pipe-pane explicitly before starting new one
     tmux_run(["pipe-pane", "-t", worker.tmux_target], check=False)
@@ -1792,7 +1826,7 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
 def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
                        wall_start, session_name_short, session_name,
                        output_dir=None, service="claude", model=":sonnet",
-                       file_format="", strict=False):
+                       file_format="", strict=False, subagent_args=None):
     """Main orchestration loop — polls workers, dispatches tasks, updates dashboard."""
     all_task_ids = list(task_states.keys())
     pause_path = _pause_file(session_name_short)
@@ -1902,7 +1936,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
                 dispatch_task(
                     worker, next_task_id, task_states[next_task_id],
                     pwd, prompt_file_path, session_name_short, output_dir,
-                    service, model, file_format,
+                    service, model, file_format, subagent_args,
                 )
 
         # Update dashboard
@@ -2035,7 +2069,8 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_file_path,
 # Tmux mode — entry point
 # ---------------------------------------------------------------------------
 
-def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model):
+def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model,
+                  subagent_args=None):
     """Set up tmux session and run orchestrator."""
     num_workers = args.parallel
     mode = args.tmux
@@ -2084,6 +2119,8 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model):
                 f.write(f"[{timestamp}]   ... and {len(args.kanban) - 3} more\n")
         f.write(f"[{timestamp}] Parallelism: {num_workers}\n")
         f.write(f"[{timestamp}] Service: {service} | Model: {model}\n")
+        if subagent_args:
+            f.write(f"[{timestamp}] Subagent args: {' '.join(subagent_args)}\n")
         if prompt_file_path:
             f.write(f"[{timestamp}] Prompt file: {prompt_file_path} (re-read per task)\n")
         if output_dir:
@@ -2156,7 +2193,7 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model):
                 dispatch_task(
                     worker, next_task_id, task_states[next_task_id],
                     pwd, prompt_file_path, session_name_short, output_dir,
-                    service, model, file_format,
+                    service, model, file_format, subagent_args,
                 )
 
             update_dashboard_file(task_states, workers, False, wall_start,
@@ -2168,7 +2205,7 @@ def run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model):
                 task_states, workers, task_queue,
                 pwd, prompt_file_path, wall_start,
                 session_name_short, session_name, output_dir,
-                service, model, file_format, strict,
+                service, model, file_format, strict, subagent_args,
             )
         except Exception:
             import traceback
@@ -2232,14 +2269,15 @@ def main():
     service, model = _resolve_service_model(args)
     prompt_file_path = resolve_prompt_file(args, pwd)
     output_dir = _resolve_output_dir(args)
+    subagent_args = getattr(args, "subagent_args_list", [])
 
     _log_base.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.tmux:
-        run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model)
+        run_tmux_mode(args, pwd, prompt_file_path, output_dir, service, model, subagent_args)
     else:
-        run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model)
+        run_headless_mode(args, pwd, prompt_file_path, output_dir, service, model, subagent_args)
 
 
 if __name__ == "__main__":
