@@ -215,24 +215,40 @@ def _session_name_to_tmux(name):
     return f"pc-{name}"
 
 
+def _tmp_root():
+    return _log_base / _TMP_DIR_NAME
+
+
+def _session_state_root():
+    """Shared state/lock files (dashboard, pause, pid) under logs/tmp."""
+    root = _tmp_root() / ".session_state"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _dashboard_file(name):
-    return _log_base / f".dashboard_{name}"
+    return _session_state_root() / f"dashboard_{name}"
 
 
 def _pause_file(name):
-    return _log_base / f".pause_{name}"
+    return _session_state_root() / f"pause_{name}"
 
 
 def _pid_file(name):
-    return _log_base / f".orchestrator_pid_{name}"
+    return _session_state_root() / f"orchestrator_pid_{name}"
+
+
+def _legacy_session_state_files(name):
+    """Legacy state/lock files under logs/ root from older runner versions."""
+    return [
+        _log_base / f".dashboard_{name}",
+        _log_base / f".pause_{name}",
+        _log_base / f".orchestrator_pid_{name}",
+    ]
 
 
 def _orchestrator_log(name):
     return LOG_DIR / f"orchestrator_{name}.log"
-
-
-def _tmp_root():
-    return _log_base / _TMP_DIR_NAME
 
 
 def _tmp_dir(name):
@@ -290,7 +306,7 @@ def cleanup_stale_tmp_artifacts(max_age_seconds=_TMP_STALE_MAX_AGE_SECONDS):
 
 
 def _write_log_pipe_helper(name):
-    """Write the Python log-pipe helper to /tmp (once per session)."""
+    """Write the Python log-pipe helper under logs/tmp (once per session)."""
     tmp = _tmp_dir(name)
     tmp.mkdir(parents=True, exist_ok=True)
     helper_path = tmp / "log_pipe.py"
@@ -901,6 +917,14 @@ def _print_output_summary(agg_result):
 # Auto-naming
 # ---------------------------------------------------------------------------
 
+def _iter_pid_files():
+    """Yield current + legacy PID marker files for running-session discovery."""
+    state_root = _session_state_root()
+    if state_root.exists():
+        yield from state_root.glob("orchestrator_pid_*")
+    yield from _log_base.glob(".orchestrator_pid_*")
+
+
 def _next_batch_name():
     """Find the next available batch-N name."""
     existing = set()
@@ -920,8 +944,13 @@ def _next_batch_name():
     except Exception:
         pass
     try:
-        for f in _log_base.glob(".orchestrator_pid_batch-*"):
-            suffix = f.name[len(".orchestrator_pid_batch-"):]
+        for f in _iter_pid_files():
+            if f.name.startswith("orchestrator_pid_batch-"):
+                suffix = f.name[len("orchestrator_pid_batch-"):]
+            elif f.name.startswith(".orchestrator_pid_batch-"):
+                suffix = f.name[len(".orchestrator_pid_batch-"):]
+            else:
+                continue
             try:
                 existing.add(int(suffix))
             except ValueError:
@@ -941,13 +970,22 @@ def _next_batch_name():
 def _list_running_sessions():
     """Return list of (name, pid) tuples for running sessions."""
     sessions = []
+    seen_names = set()
     try:
-        for f in _log_base.glob(".orchestrator_pid_*"):
-            name = f.name[len(".orchestrator_pid_"):]
+        for f in _iter_pid_files():
+            if f.name.startswith("orchestrator_pid_"):
+                name = f.name[len("orchestrator_pid_"):]
+            elif f.name.startswith(".orchestrator_pid_"):
+                name = f.name[len(".orchestrator_pid_"):]
+            else:
+                continue
+            if name in seen_names:
+                continue
             try:
                 pid = int(f.read_text().strip())
                 os.kill(pid, 0)
                 sessions.append((name, pid))
+                seen_names.add(name)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
     except Exception:
@@ -978,7 +1016,7 @@ def _stop_session(name):
         print(f"  Killed tmux session '{tmux_session}'")
         stopped = True
 
-    for f in [pid_path, _dashboard_file(name), _pause_file(name)]:
+    for f in [pid_path, _dashboard_file(name), _pause_file(name), *_legacy_session_state_files(name)]:
         try:
             f.unlink(missing_ok=True)
         except OSError:
@@ -2234,7 +2272,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         except (ValueError, ProcessLookupError, PermissionError):
             pass
 
-    for f in [_dashboard_file(session_name_short), _pause_file(session_name_short), pid_path]:
+    for f in [_dashboard_file(session_name_short), _pause_file(session_name_short), pid_path, *_legacy_session_state_files(session_name_short)]:
         if f.exists():
             f.unlink()
 
