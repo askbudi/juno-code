@@ -549,6 +549,30 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 ./.juno_task/scripts/parallel_runner.sh --stop-all
 ```
 
+#### Dedicated Example: SEO landing-page batch in tmux panes
+
+Use this pattern when you want to generate many related content tasks in parallel while keeping live visibility per worker pane:
+
+```bash
+./.juno_task/scripts/parallel_runner.sh \
+  -s pi \
+  -m zai/glm-5 \
+  --kanban-filter "--tag SEO_LANDING_PAGES --limit 200 --status backlog,in_progress,todo" \
+  --parallel 5 \
+  --tmux panes \
+  --prompt-file ./tmp_prompt/content_gen.md
+```
+
+What each flag does:
+
+- `-s pi -m zai/glm-5`: run workers with Pi on a specific model.
+- `--kanban-filter "..."`: dynamically pull task IDs from kanban (here: only `SEO_LANDING_PAGES`, up to 200, only open statuses).
+- `--parallel 5`: execute up to 5 tasks concurrently.
+- `--tmux panes`: split workers into panes for side-by-side monitoring.
+- `--prompt-file ./tmp_prompt/content_gen.md`: keep a reusable, versioned instruction template instead of long inline prompts.
+
+Tip: keep the filter string quoted so it is passed as one argument to `parallel_runner.sh` and then correctly forwarded to `kanban.sh`.
+
 #### Output & Extraction
 
 - **Per-task JSON**: `{output_dir}/{task_id}.json` with exit code, wall time, extracted response
