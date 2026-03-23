@@ -407,6 +407,14 @@ def _normalize_subagent_args_argv(argv):
     return normalized
 
 
+def _contains_live_subagent_flag(subagent_args):
+    """Detect Pi live-mode flags in resolved --subagent-args tokens."""
+    for token in subagent_args or []:
+        if token == "--live" or token.startswith("--live="):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # File parsing — multi-format pipeline
 # ---------------------------------------------------------------------------
@@ -1197,6 +1205,12 @@ def parse_args():
     _env_overrides = _resolve_env_overrides(args.env)
 
     args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
+
+    if args.tmux and _contains_live_subagent_flag(args.subagent_args_list):
+        parser.error(
+            "--subagent-args includes '--live', which opens interactive Pi TUI and can block tmux batch workers. "
+            "Use headless mode (omit --tmux), remove --live, or run 'juno-code pi --live' manually."
+        )
 
     # Flatten --kanban
     if args.kanban:
