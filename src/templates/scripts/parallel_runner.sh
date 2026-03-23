@@ -59,7 +59,8 @@ Arguments:
   -m, --model    Model override. Env: JUNO_MODEL.
   --env          Environment overrides. KEY=VALUE pairs or path to .env file.
   --prompt-file  Path to a file whose content is appended to the prompt.
-                 Re-read per task. Placeholders: {{task_id}}, {{item}}, {{file_format}}.
+                 Loaded once at startup; per-task prompt files are materialized under logs/tmp.
+                 Placeholders: {{task_id}}, {{item}}, {{file_format}}.
   --subagent-args Extra raw args appended to each juno-code invocation.
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
@@ -104,6 +105,10 @@ COMBINED_LOG = LOG_DIR / "parallel_runner.log"  # overwritten in main()
 
 # 5-char alphanumeric run ID, generated once at startup in main()
 _run_id = ""
+
+# Temporary runtime artifacts are stored under logs/tmp and purged periodically.
+_TMP_DIR_NAME = "tmp"
+_TMP_STALE_MAX_AGE_SECONDS = 48 * 60 * 60
 
 # Thread-safe lock for writing to the shared combined log
 _log_lock = threading.Lock()
@@ -222,10 +227,62 @@ def _orchestrator_log(name):
     return LOG_DIR / f"orchestrator_{name}.log"
 
 
+def _tmp_root():
+    return _log_base / _TMP_DIR_NAME
+
+
 def _tmp_dir(name):
-    # Keep runtime artifacts under the project log base instead of /tmp so
-    # long-running sessions are resilient to OS tmp cleanup jobs.
-    return _log_base / f".tmp_{name}"
+    # Keep runtime artifacts under logs/tmp so long-running sessions are
+    # resilient to OS cleanup jobs and temp lifecycle is centralized.
+    return _tmp_root() / name
+
+
+def _legacy_tmp_paths():
+    """Legacy temporary paths from older runner versions (.tmp_*)."""
+    return list(_log_base.glob(".tmp_*"))
+
+
+def _cleanup_tmp_path(path):
+    """Remove a tmp file/dir path safely."""
+    try:
+        if path.is_dir():
+            shutil.rmtree(str(path), ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def cleanup_stale_tmp_artifacts(max_age_seconds=_TMP_STALE_MAX_AGE_SECONDS):
+    """Remove stale tmp artifacts older than max_age_seconds.
+
+    Returns number of removed paths.
+    """
+    now = time.time()
+    removed = 0
+
+    candidates = []
+    tmp_root = _tmp_root()
+    if tmp_root.exists():
+        for path in tmp_root.iterdir():
+            if path.name.startswith('.'):
+                continue
+            candidates.append(path)
+
+    candidates.extend(_legacy_tmp_paths())
+
+    for path in candidates:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_seconds:
+            continue
+        if _cleanup_tmp_path(path):
+            removed += 1
+
+    return removed
 
 
 def _write_log_pipe_helper(name):
@@ -917,6 +974,11 @@ def _stop_session(name):
     if tmp.exists():
         shutil.rmtree(str(tmp), ignore_errors=True)
 
+    # Backward-compat cleanup for legacy path style.
+    legacy_tmp = _log_base / f".tmp_{name}"
+    if legacy_tmp.exists():
+        shutil.rmtree(str(legacy_tmp), ignore_errors=True)
+
     return stopped
 
 
@@ -1416,7 +1478,7 @@ def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
 
     prompt_paths = {}
     if prompt_file_path:
-        prompt_dir = LOG_DIR / ".headless_prompts"
+        prompt_dir = _tmp_dir(_run_id) / "prompts"
         prompt_paths = prepare_prompt_files(args.kanban, prompt_template, prompt_dir, file_format)
         log_combined(f"Prebuilt {len(prompt_paths)} prompt files in {prompt_dir}")
 
@@ -1459,6 +1521,7 @@ def run_headless_mode(args, pwd, prompt_file_path, prompt_template,
         )
         _print_output_summary(agg_result)
 
+    shutil.rmtree(str(_tmp_dir(_run_id)), ignore_errors=True)
     sys.exit(1 if failed > 0 else 0)
 
 
@@ -2315,6 +2378,9 @@ def main():
     subagent_args = getattr(args, "subagent_args_list", [])
 
     _log_base.mkdir(parents=True, exist_ok=True)
+    removed_tmp = cleanup_stale_tmp_artifacts()
+    if removed_tmp > 0:
+        print(f"[parallel_runner] Removed {removed_tmp} stale tmp artifact(s) older than 48h")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.tmux:
