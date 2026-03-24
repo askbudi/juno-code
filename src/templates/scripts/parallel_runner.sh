@@ -2325,8 +2325,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
     dashboard_file_str = shlex.quote(str(_dashboard_file(session_name_short)))
     dashboard_cmd = (
         f"trap 'kill $(cat {pid_path_str}) 2>/dev/null; exit' INT; "
-        f"while true; do printf '\\033[2J\\033[H'; cat {dashboard_file_str} 2>/dev/null "
-        f"|| echo 'Waiting for dashboard...'; sleep 2; done"
+        f"while true; do printf '\\033[H'; cat {dashboard_file_str} 2>/dev/null "
+        f"|| echo 'Waiting for dashboard...'; printf '\\033[J'; sleep 2; done"
     )
     tmux_run(["send-keys", "-t", coordinator_target, dashboard_cmd, "Enter"])
 
