@@ -1257,10 +1257,17 @@ def parse_args():
 
     args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
 
-    if args.tmux and _contains_live_subagent_flag(args.subagent_args_list):
+    live_in_tmux = args.tmux and _contains_live_subagent_flag(args.subagent_args_list)
+    if live_in_tmux and args.parallel > 1:
         parser.error(
-            "--subagent-args includes '--live', which opens interactive Pi TUI and can block tmux batch workers. "
-            "Use headless mode (omit --tmux), remove --live, or run 'juno-code pi --live' manually."
+            "--tmux with --subagent-args '--live' is interactive and only supports --parallel 1. "
+            "Set --parallel 1, remove --live, or run headless mode."
+        )
+    if live_in_tmux:
+        print(
+            "WARNING: --tmux with --subagent-args '--live' enables interactive Pi TUI in the worker pane; "
+            "batch progress resumes after you exit that live session.",
+            file=sys.stderr,
         )
 
     # Flatten --kanban
