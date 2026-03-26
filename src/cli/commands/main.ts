@@ -167,6 +167,8 @@ function toStringArray(value: unknown): string[] | undefined {
 }
 
 const LEADING_PROMPT_SHORTCUT_REGEX = /^%(?:\{([^\s{}]+)\}|([^\s%][^\s]*))(.*)$/s;
+const LEADING_PROMPT_DELIMITER_MARKERS = new Set(['---', '***', '___']);
+const LEADING_DIRECTIVE_LINE_REGEX = /^(?:%(?:\{[^\s{}]+\}|[^\s%][^\s]*)|\/skill:[^\s]+|\/[^\s]+|\$[^\s]+)/;
 const KANBAN_TASK_REFERENCE_REGEX = /(?<!#)##\s*\{?([A-Za-z0-9]{6})\}?(?![A-Za-z0-9])/g;
 const KANBAN_TASK_SCRIPT_RELATIVE_PATH = path.join('.juno_task', 'scripts', 'kanban.sh');
 
@@ -325,6 +327,43 @@ export async function expandKanbanTaskReferencesInPrompt(
 
     return `\n[kanban_task:${taskId}]\n${JSON.stringify(task, null, 2)}\n[/kanban_task]`;
   });
+}
+
+export function normalizeLeadingPromptDirectiveArtifacts(prompt: string): string {
+  const lines = prompt.split(/\r?\n/);
+  if (lines.length === 0) {
+    return prompt;
+  }
+
+  let index = 0;
+  while (index < lines.length && lines[index].trim() === '') {
+    index += 1;
+  }
+
+  if (index >= lines.length) {
+    return prompt;
+  }
+
+  const firstMeaningfulLine = lines[index].trim();
+  if (!LEADING_PROMPT_DELIMITER_MARKERS.has(firstMeaningfulLine)) {
+    return prompt;
+  }
+
+  let directiveIndex = index + 1;
+  while (directiveIndex < lines.length && lines[directiveIndex].trim() === '') {
+    directiveIndex += 1;
+  }
+
+  if (directiveIndex >= lines.length) {
+    return prompt;
+  }
+
+  const directiveCandidate = lines[directiveIndex].trimStart();
+  if (!LEADING_DIRECTIVE_LINE_REGEX.test(directiveCandidate)) {
+    return prompt;
+  }
+
+  return lines.slice(directiveIndex).join('\n');
 }
 
 export function rewriteLeadingPromptShortcut(prompt: string, subagent: SubagentType): string {
@@ -1701,7 +1740,8 @@ export async function mainCommandHandler(
     // Process prompt
     const promptProcessor = new PromptProcessor(options);
     const rawInstruction = await promptProcessor.processPrompt();
-    const rewrittenInstruction = rewriteLeadingPromptShortcut(rawInstruction, options.subagent);
+    const normalizedInstruction = normalizeLeadingPromptDirectiveArtifacts(rawInstruction);
+    const rewrittenInstruction = rewriteLeadingPromptShortcut(normalizedInstruction, options.subagent);
     const instruction = await expandKanbanTaskReferencesInPrompt(
       rewrittenInstruction,
       config.workingDirectory,

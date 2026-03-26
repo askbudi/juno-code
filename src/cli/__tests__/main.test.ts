@@ -496,6 +496,60 @@ describe('Main Command', () => {
         );
       });
 
+      it('should strip a leading markdown delimiter and rewrite %shortcut for pi prompt files', async () => {
+        vi.mocked(fs.readFile).mockResolvedValueOnce('---\n\n%ralph-loop investigate this regression');
+
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          promptFile: '/path/to/prompt_item-012.txt',
+          live: true,
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '/skill:ralph-loop investigate this regression',
+            live: true,
+          }),
+        );
+      });
+
+      it('should strip a leading markdown delimiter before existing /skill directives', async () => {
+        vi.mocked(fs.readFile).mockResolvedValueOnce('---\n\n/skill:ralph-loop investigate this regression');
+
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          promptFile: '/path/to/prompt_item-013.txt',
+          live: true,
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: '/skill:ralph-loop investigate this regression',
+            live: true,
+          }),
+        );
+      });
+
       it('should expand ##task-id prompt references with kanban task payloads', async () => {
         vi.mocked(fs.pathExists)
           .mockResolvedValueOnce(false as any)
