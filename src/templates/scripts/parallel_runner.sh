@@ -688,24 +688,51 @@ def _parse_result_from_lines(lines):
 
 
 def _parse_result_from_text(text):
-    """Parse the juno-code result event from a text blob."""
+    """Parse the latest juno-code result event from arbitrary text output.
+
+    Supports both compact one-line JSON and pretty-printed/multi-line JSON blocks
+    (including lines prefixed by status labels).
+    """
     if not text:
         return None
-    return _parse_result_from_lines(text.splitlines())
+
+    # Fast path for compact line-based JSON logs.
+    parsed = _parse_result_from_lines(text.splitlines())
+    if parsed is not None:
+        return parsed
+
+    ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+    clean = ansi_re.sub('', text)
+    decoder = json.JSONDecoder()
+    idx = 0
+    best = None
+
+    while True:
+        brace = clean.find('{', idx)
+        if brace == -1:
+            break
+
+        try:
+            obj, end = decoder.raw_decode(clean, brace)
+        except json.JSONDecodeError:
+            idx = brace + 1
+            continue
+
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            best = obj
+        idx = max(end, brace + 1)
+
+    return best
 
 
 def _parse_result_from_log(task_log_path):
-    """Parse the juno-code result event from a task log file.
-
-    juno-code prints a JSON line with {"type":"result",...} to stdout.
-    We walk backwards to find it near the end.
-    """
+    """Parse the juno-code result event from a task log file."""
     try:
-        lines = Path(task_log_path).read_text(encoding="utf-8").splitlines()
+        text = Path(task_log_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
-    return _parse_result_from_lines(lines)
+    return _parse_result_from_text(text)
 
 
 def _extract_response(backend_result, file_format):
