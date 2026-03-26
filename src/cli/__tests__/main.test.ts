@@ -3001,6 +3001,114 @@ describe('Verbose/Quiet Output Modes', () => {
     );
   });
 
+  it('should print structured result payload text instead of raw JSON at default verbosity', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'failed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: JSON.stringify({
+                type: 'result',
+                subtype: 'error',
+                is_error: true,
+                result: 'provider failure summary',
+                sub_agent_response: {
+                  messages: [
+                    { role: 'assistant', content: 'very long raw conversation chunk' },
+                  ],
+                },
+              }),
+              metadata: { structuredOutput: true },
+            },
+            success: false,
+            duration: 1200,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 0,
+          failedIterations: 1,
+          averageIterationDuration: 1200,
+          totalToolCalls: 2,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const stdoutCalls = consoleLogSpy.mock.calls.map(c => String(c[0]));
+    expect(stdoutCalls.some((c) => c.includes('provider failure summary'))).toBe(true);
+    expect(stdoutCalls.some((c) => c.includes('sub_agent_response'))).toBe(false);
+  });
+
+  it('should keep raw structured JSON output at verbose level 2', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    const payload = {
+      type: 'result',
+      subtype: 'error',
+      is_error: true,
+      result: 'provider failure summary',
+      sub_agent_response: { messages: [{ role: 'assistant', content: 'raw chunk' }] },
+    };
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'failed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: JSON.stringify(payload),
+              metadata: { structuredOutput: true },
+            },
+            success: false,
+            duration: 1200,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 0,
+          failedIterations: 1,
+          averageIterationDuration: 1200,
+          totalToolCalls: 2,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      verbose: 2,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(payload));
+  });
+
   it('should NOT show statistics at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',

@@ -1299,7 +1299,10 @@ class MainProgressDisplay {
     if (this.verboseLevel === 0) {
       const lastIteration = result.iterations[result.iterations.length - 1];
       if (lastIteration?.toolResult.content && !this.hasStreamedJsonOutput) {
-        console.log(lastIteration.toolResult.content);
+        const displayContent = this.getDisplayResultContent(lastIteration.toolResult.content);
+        if (displayContent.trim().length > 0) {
+          console.log(displayContent);
+        }
       }
       return;
     }
@@ -1316,16 +1319,20 @@ class MainProgressDisplay {
     // skip printing the accumulated toolResult.content to avoid duplication
     const lastIteration = result.iterations[result.iterations.length - 1];
     const structuredOutput = (lastIteration?.toolResult.metadata as any)?.structuredOutput === true;
+    const rawResultContent = lastIteration?.toolResult.content || '';
+    const displayResultContent = rawResultContent
+      ? this.getDisplayResultContent(rawResultContent)
+      : '';
     const shouldPrintResult = Boolean(
       lastIteration &&
-        lastIteration.toolResult.content &&
+        displayResultContent &&
         (!this.hasStreamedJsonOutput || structuredOutput),
     );
 
     if (shouldPrintResult) {
       console.error(chalk.blue('\n📄 Result:'));
       // Final result goes to STDOUT for variable capture
-      console.log(lastIteration!.toolResult.content);
+      console.log(displayResultContent);
     }
 
     const iterationCosts = this.extractIterationCosts(result);
@@ -1401,6 +1408,30 @@ class MainProgressDisplay {
     } else {
       console.error(chalk.gray('\n🔑 Session ID: could not be extracted'));
     }
+  }
+
+  private getDisplayResultContent(content: string): string {
+    if (this.verboseLevel >= 2) {
+      return content;
+    }
+
+    try {
+      const payload = JSON.parse(content) as Record<string, unknown>;
+      if (payload?.type === 'result' && Object.prototype.hasOwnProperty.call(payload, 'result')) {
+        const resultValue = payload.result;
+        if (typeof resultValue === 'string') {
+          return resultValue;
+        }
+        if (resultValue === null || resultValue === undefined) {
+          return '';
+        }
+        return JSON.stringify(resultValue, null, 2);
+      }
+    } catch {
+      // Non-JSON content should be shown as-is.
+    }
+
+    return content;
   }
 
   /**

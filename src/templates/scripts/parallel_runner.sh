@@ -671,17 +671,8 @@ def _task_output_path(output_dir, task_id):
     return output_dir / f"{task_id}.json"
 
 
-def _parse_result_from_log(task_log_path):
-    """Parse the juno-code result event from a task log file.
-
-    juno-code prints a JSON line with {"type":"result",...} to stdout.
-    We walk backwards to find it near the end.
-    """
-    try:
-        lines = Path(task_log_path).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return None
-
+def _parse_result_from_lines(lines):
+    """Parse the most recent juno-code result event from text lines."""
     for line in reversed(lines):
         idx = line.find('{"type":')
         if idx == -1:
@@ -694,6 +685,27 @@ def _parse_result_from_log(task_log_path):
         except json.JSONDecodeError:
             continue
     return None
+
+
+def _parse_result_from_text(text):
+    """Parse the juno-code result event from a text blob."""
+    if not text:
+        return None
+    return _parse_result_from_lines(text.splitlines())
+
+
+def _parse_result_from_log(task_log_path):
+    """Parse the juno-code result event from a task log file.
+
+    juno-code prints a JSON line with {"type":"result",...} to stdout.
+    We walk backwards to find it near the end.
+    """
+    try:
+        lines = Path(task_log_path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    return _parse_result_from_lines(lines)
 
 
 def _extract_response(backend_result, file_format):
@@ -2154,8 +2166,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
                     if scrollback:
                         ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
                         clean = ansi_re.sub('', scrollback)
-                        task_log_path.write_text(clean, encoding="utf-8")
-                        backend_result = _parse_result_from_log(task_log_path)
+                        backend_result = _parse_result_from_text(clean)
                 except Exception:
                     pass
 
