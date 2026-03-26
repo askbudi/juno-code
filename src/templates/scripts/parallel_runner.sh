@@ -723,6 +723,65 @@ def _extract_response(backend_result, file_format):
     return raw_result, error_msg
 
 
+def _to_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_total_cost_usd(payload):
+    """Extract total USD cost from structured backend payload variants."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("total_cost_usd", "totalCostUsd", "totalCostUSD"):
+        direct = _to_number(payload.get(key))
+        if direct is not None:
+            return direct
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        usage_cost = usage.get("cost")
+        if isinstance(usage_cost, dict):
+            nested = _to_number(usage_cost.get("total"))
+            if nested is not None:
+                return nested
+
+    return None
+
+
+def _extract_session_id(payload):
+    """Extract session id from structured backend payload variants."""
+    if not isinstance(payload, dict):
+        return None
+
+    direct = payload.get("session_id")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    camel = payload.get("sessionId")
+    if isinstance(camel, str) and camel.strip():
+        return camel.strip()
+
+    nested = payload.get("sub_agent_response")
+    if isinstance(nested, dict):
+        sub_id = nested.get("session_id")
+        if isinstance(sub_id, str) and sub_id.strip():
+            return sub_id.strip()
+
+    return None
+
+
 def _write_task_output(output_dir, task_id, exit_code, wall_time, start_time,
                        end_time, worker_id=-1,
                        extracted_response=None, extraction_error=None,
@@ -735,13 +794,13 @@ def _write_task_output(output_dir, task_id, exit_code, wall_time, start_time,
             backend_result, file_format,
         )
 
-    session_id = None
-    if isinstance(backend_result, dict):
-        session_id = backend_result.get("session_id")
+    session_id = _extract_session_id(backend_result)
+    total_cost_usd = _extract_total_cost_usd(backend_result)
 
     task_output = {
         "task_id": task_id,
         "session_id": session_id,
+        "total_cost_usd": total_cost_usd,
         "exit_code": exit_code,
         "wall_time_seconds": round(wall_time, 2),
         "start_time": start_time,
@@ -822,11 +881,27 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
     merged_parts = []
     failed_ids = []
     failed_sessions = {}
+    session_rows = []
+    total_cost_usd = 0.0
     for tid in sorted(task_outputs.keys()):
         t = task_outputs[tid]
         er = t.get("extracted_response")
         br = t.get("backend_result") or {}
         backend_ok = isinstance(br, dict) and br.get("exit_code", -1) == 0
+        sid = t.get("session_id")
+        task_cost = _to_number(t.get("total_cost_usd"))
+        if task_cost is None:
+            task_cost = _extract_total_cost_usd(br)
+        if task_cost is not None:
+            total_cost_usd += task_cost
+
+        session_rows.append({
+            "task_id": tid,
+            "session_id": sid,
+            "total_cost_usd": task_cost,
+            "exit_code": t.get("exit_code"),
+        })
+
         if er and (t.get("exit_code") == 0 or backend_ok):
             if file_format == "csv" and merged_parts:
                 lines = er.split("\n")
@@ -836,7 +911,6 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
                 merged_parts.append(er)
         else:
             failed_ids.append(tid)
-            sid = t.get("session_id")
             if sid:
                 failed_sessions[tid] = sid
 
@@ -854,6 +928,11 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
             "parallelism": parallelism,
             "mode": mode,
             "session_name": session_name,
+            "total_cost_usd": round(total_cost_usd, 10),
+        },
+        "session_summary": {
+            "total_cost_usd": round(total_cost_usd, 10),
+            "tasks": session_rows,
         },
         "merged_extracted": merged_extracted,
         "tasks": task_outputs,
@@ -877,6 +956,7 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
         "failed_ids": failed_ids,
         "failed_sessions": failed_sessions,
         "error_count": len(failed_ids),
+        "total_cost_usd": round(total_cost_usd, 10),
     }
 
 
@@ -890,6 +970,9 @@ def _format_output_summary(agg_result):
     lines.append(f"  Aggregation:  {agg_result['agg_path']}")
     if agg_result["merged_path"]:
         lines.append(f"  Merged file:  {agg_result['merged_path']}")
+    total_cost_usd = agg_result.get("total_cost_usd")
+    if total_cost_usd is not None:
+        lines.append(f"  Total cost:   ${total_cost_usd:.6f} USD")
     if agg_result["error_count"] > 0:
         lines.append(f"  Errors:       {agg_result['error_count']} chunks failed extraction")
         lines.append(f"  Failed IDs:   {', '.join(agg_result['failed_ids'])}")
@@ -1627,6 +1710,8 @@ class TaskState:
     sentinel_id: str = ""
     start_time_iso: str = ""
     end_time_iso: str = ""
+    session_id: str = ""
+    total_cost_usd: float = 0.0
 
 
 @dataclass
@@ -1969,7 +2054,9 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
     lines.append("")
     lines.append("-" * 58)
     elapsed = format_duration(now - wall_start)
+    total_cost_usd = sum(t.total_cost_usd for t in task_states.values() if t.total_cost_usd > 0)
     lines.append(f"  Pending: {pending}  |  Running: {running}  |  Done: {done}  |  Failed: {failed}  |  Total: {total}")
+    lines.append(f"  Total Cost (USD): ${total_cost_usd:.6f}")
     if total > 0:
         completed = done + failed
         remaining = pending + running
@@ -2056,9 +2143,9 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
 
             # FIX-002: Parse result from log, with capture-pane fallback
             task_log_path = LOG_DIR / f"task_{task_id}.log"
-            backend_result = _parse_result_from_log(task_log_path) if output_dir else None
+            backend_result = _parse_result_from_log(task_log_path)
 
-            if output_dir and backend_result is None:
+            if backend_result is None:
                 try:
                     scrollback = tmux_run([
                         "capture-pane", "-t", worker.tmux_target,
@@ -2071,6 +2158,9 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
                         backend_result = _parse_result_from_log(task_log_path)
                 except Exception:
                     pass
+
+            ts.session_id = _extract_session_id(backend_result) or ""
+            ts.total_cost_usd = _extract_total_cost_usd(backend_result) or 0.0
 
             if strict and file_format and output_dir:
                 exit_code = _extract_strict_output(
@@ -2192,11 +2282,26 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
             f"  Fastest task:   {format_duration(fastest)}",
             f"  Slowest task:   {format_duration(slowest)}",
         ])
+    total_cost_usd = sum(ts.total_cost_usd for ts in task_states.values() if ts.total_cost_usd > 0)
     summary_lines.extend([
+        f"  Total cost:     ${total_cost_usd:.6f} USD",
         f"  Run ID:         {_run_id}",
         f"  Per-task logs:  {LOG_DIR}/task_<TASK_ID>.log",
-        "=" * 60,
     ])
+
+    session_rows = []
+    for tid in all_task_ids:
+        ts = task_states[tid]
+        if not ts.session_id and ts.total_cost_usd <= 0:
+            continue
+        session_rows.append((tid, ts.session_id or "-", ts.total_cost_usd))
+
+    if session_rows:
+        summary_lines.append("  Session summary:")
+        for tid, sid, cost in session_rows:
+            summary_lines.append(f"    {tid}: session_id={sid}, cost=${cost:.6f}")
+
+    summary_lines.append("=" * 60)
 
     with open(COMBINED_LOG, "a") as f:
         for line in summary_lines:
