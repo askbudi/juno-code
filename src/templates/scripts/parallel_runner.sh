@@ -688,51 +688,24 @@ def _parse_result_from_lines(lines):
 
 
 def _parse_result_from_text(text):
-    """Parse the latest juno-code result event from arbitrary text output.
-
-    Supports both compact one-line JSON and pretty-printed/multi-line JSON blocks
-    (including lines prefixed by status labels).
-    """
+    """Parse the juno-code result event from a text blob."""
     if not text:
         return None
-
-    # Fast path for compact line-based JSON logs.
-    parsed = _parse_result_from_lines(text.splitlines())
-    if parsed is not None:
-        return parsed
-
-    ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
-    clean = ansi_re.sub('', text)
-    decoder = json.JSONDecoder()
-    idx = 0
-    best = None
-
-    while True:
-        brace = clean.find('{', idx)
-        if brace == -1:
-            break
-
-        try:
-            obj, end = decoder.raw_decode(clean, brace)
-        except json.JSONDecodeError:
-            idx = brace + 1
-            continue
-
-        if isinstance(obj, dict) and obj.get("type") == "result":
-            best = obj
-        idx = max(end, brace + 1)
-
-    return best
+    return _parse_result_from_lines(text.splitlines())
 
 
 def _parse_result_from_log(task_log_path):
-    """Parse the juno-code result event from a task log file."""
+    """Parse the juno-code result event from a task log file.
+
+    juno-code prints a JSON line with {"type":"result",...} to stdout.
+    We walk backwards to find it near the end.
+    """
     try:
-        text = Path(task_log_path).read_text(encoding="utf-8")
+        lines = Path(task_log_path).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return None
 
-    return _parse_result_from_text(text)
+    return _parse_result_from_lines(lines)
 
 
 def _extract_response(backend_result, file_format):
@@ -2475,8 +2448,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
     dashboard_file_str = shlex.quote(str(_dashboard_file(session_name_short)))
     dashboard_cmd = (
         f"trap 'kill $(cat {pid_path_str}) 2>/dev/null; exit' INT; "
-        f"while true; do printf '\\033[H'; cat {dashboard_file_str} 2>/dev/null "
-        f"|| echo 'Waiting for dashboard...'; printf '\\033[J'; sleep 2; done"
+        f"while true; do printf '\\033[H\\033[J'; cat {dashboard_file_str} 2>/dev/null "
+        f"|| echo 'Waiting for dashboard...'; sleep 2; done"
     )
     tmux_run(["send-keys", "-t", coordinator_target, dashboard_cmd, "Enter"])
 
