@@ -687,25 +687,145 @@ def _parse_result_from_lines(lines):
     return None
 
 
+def _parse_result_from_cli_summary_text(clean_text):
+    """Build a synthetic result payload from juno-code CLI summary text.
+
+    This is a fallback when no structured {"type":"result"} object is present in logs.
+    """
+    if not clean_text:
+        return None
+
+    lines = clean_text.splitlines()
+
+    total_cost_usd = None
+    total_cost_match = re.search(r"Total Cost:\s*\$([0-9]+(?:\.[0-9]+)?)", clean_text)
+    if total_cost_match:
+        total_cost_usd = _to_number(total_cost_match.group(1))
+
+    session_id = None
+    # Handles both:
+    #   "Iteration 1: <session>    cost: $..."
+    #   "<session>    cost: $..."
+    session_cost_patterns = [
+        r"Iteration\s+\d+:\s*([^\s]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)",
+        r"^\s*([^\s]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)\s*$",
+    ]
+
+    per_session_cost = None
+    for line in lines:
+        for pattern in session_cost_patterns:
+            m = re.search(pattern, line)
+            if not m:
+                continue
+            session_id = m.group(1).strip()
+            per_session_cost = _to_number(m.group(2))
+
+    # Fallback for "Session ID:" section without inline cost.
+    if not session_id:
+        for idx, line in enumerate(lines):
+            if "Session ID" not in line:
+                continue
+            for nxt in lines[idx + 1: idx + 4]:
+                token = nxt.strip()
+                if not token or token.startswith("🔑") or token.startswith("-"):
+                    continue
+                session_id = token.split()[0]
+                break
+            if session_id:
+                break
+
+    result_text = None
+    for idx, line in enumerate(lines):
+        if "📄 Result:" in line or line.strip() == "Result:":
+            collected = []
+            for nxt in lines[idx + 1:]:
+                if (
+                    "📊 Statistics:" in nxt
+                    or nxt.strip() == "Statistics:"
+                    or "🔑 Session ID" in nxt
+                ):
+                    break
+                if nxt.strip():
+                    collected.append(nxt)
+            if collected:
+                result_text = "\n".join(collected).strip()
+            break
+
+    if total_cost_usd is None and per_session_cost is not None:
+        total_cost_usd = per_session_cost
+
+    if session_id is None and total_cost_usd is None and not result_text:
+        return None
+
+    is_error = ("Execution failed" in clean_text) or ("❌" in clean_text)
+
+    payload = {
+        "type": "result",
+        "subtype": "error" if is_error else "success",
+        "is_error": is_error,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    if total_cost_usd is not None:
+        payload["total_cost_usd"] = total_cost_usd
+    if result_text:
+        payload["result"] = result_text
+
+    return payload
+
+
 def _parse_result_from_text(text):
-    """Parse the juno-code result event from a text blob."""
+    """Parse latest juno-code result event from text output.
+
+    Supports:
+    - single-line JSON event logs
+    - pretty/multi-line JSON blocks
+    - fallback CLI summary lines (session id / cost / result text)
+    """
     if not text:
         return None
-    return _parse_result_from_lines(text.splitlines())
+
+    # Fast path for compact line-based JSON logs.
+    parsed = _parse_result_from_lines(text.splitlines())
+    if parsed is not None:
+        return parsed
+
+    ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+    clean = ansi_re.sub('', text)
+
+    decoder = json.JSONDecoder()
+    idx = 0
+    best = None
+
+    while True:
+        brace = clean.find('{', idx)
+        if brace == -1:
+            break
+
+        try:
+            obj, end = decoder.raw_decode(clean, brace)
+        except json.JSONDecodeError:
+            idx = brace + 1
+            continue
+
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            best = obj
+        idx = max(end, brace + 1)
+
+    if best is not None:
+        return best
+
+    return _parse_result_from_cli_summary_text(clean)
 
 
 def _parse_result_from_log(task_log_path):
-    """Parse the juno-code result event from a task log file.
-
-    juno-code prints a JSON line with {"type":"result",...} to stdout.
-    We walk backwards to find it near the end.
-    """
+    """Parse the juno-code result event from a task log file."""
     try:
-        lines = Path(task_log_path).read_text(encoding="utf-8").splitlines()
+        text = Path(task_log_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
-    return _parse_result_from_lines(lines)
+    return _parse_result_from_text(text)
 
 
 def _extract_response(backend_result, file_format):
@@ -2444,6 +2564,10 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
     wall_start = time.monotonic()
 
     # Start coordinator dashboard
+    # NOTE (PfU2s8): Clear BEFORE printing each frame.
+    # If clear happens after `cat`, tmux can leave stale prompt/command tails
+    # (e.g. parts of this dashboard_cmd string) stitched into dashboard rows.
+    # Keep: printf '\033[H\033[J'; cat ...
     pid_path_str = shlex.quote(str(pid_path))
     dashboard_file_str = shlex.quote(str(_dashboard_file(session_name_short)))
     dashboard_cmd = (
