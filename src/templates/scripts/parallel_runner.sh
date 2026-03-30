@@ -687,6 +687,24 @@ def _parse_result_from_lines(lines):
     return None
 
 
+def _strip_parallel_log_prefix(line):
+    if not line:
+        return line
+
+    # Task logs may prefix each line with relay metadata:
+    #   [HH:MM:SS] [TASKID] ...
+    # Strip these tokens before parsing juno-code summary fields.
+    line = re.sub(r"^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\s+", "", line)
+    line = re.sub(r"^\[[A-Za-z0-9_-]{3,}\]\s+", "", line)
+    return line
+
+
+def _looks_like_clock_token(token):
+    if not token:
+        return False
+    return re.fullmatch(r"\[?[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\]?", token) is not None
+
+
 def _parse_result_from_cli_summary_text(clean_text):
     """Build a synthetic result payload from juno-code CLI summary text.
 
@@ -695,10 +713,12 @@ def _parse_result_from_cli_summary_text(clean_text):
     if not clean_text:
         return None
 
-    lines = clean_text.splitlines()
+    raw_lines = clean_text.splitlines()
+    lines = [_strip_parallel_log_prefix(line) for line in raw_lines]
+    normalized_text = "\n".join(lines)
 
     total_cost_usd = None
-    total_cost_match = re.search(r"Total Cost:\s*\$([0-9]+(?:\.[0-9]+)?)", clean_text)
+    total_cost_match = re.search(r"Total Cost:\s*\$([0-9]+(?:\.[0-9]+)?)", normalized_text)
     if total_cost_match:
         total_cost_usd = _to_number(total_cost_match.group(1))
 
@@ -707,8 +727,8 @@ def _parse_result_from_cli_summary_text(clean_text):
     #   "Iteration 1: <session>    cost: $..."
     #   "<session>    cost: $..."
     session_cost_patterns = [
-        r"Iteration\s+\d+:\s*([^\s]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)",
-        r"^\s*([^\s]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)\s*$",
+        r"Iteration\s+\d+:\s*([A-Za-z0-9._:-]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)",
+        r"^\s*([A-Za-z0-9._:-]+)\s+cost:\s*\$([0-9]+(?:\.[0-9]+)?)\s*$",
     ]
 
     per_session_cost = None
@@ -717,7 +737,10 @@ def _parse_result_from_cli_summary_text(clean_text):
             m = re.search(pattern, line)
             if not m:
                 continue
-            session_id = m.group(1).strip()
+            candidate = m.group(1).strip()
+            if _looks_like_clock_token(candidate):
+                continue
+            session_id = candidate
             per_session_cost = _to_number(m.group(2))
 
     # Fallback for "Session ID:" section without inline cost.
@@ -729,7 +752,10 @@ def _parse_result_from_cli_summary_text(clean_text):
                 token = nxt.strip()
                 if not token or token.startswith("🔑") or token.startswith("-"):
                     continue
-                session_id = token.split()[0]
+                candidate = token.split()[0]
+                if _looks_like_clock_token(candidate):
+                    continue
+                session_id = candidate
                 break
             if session_id:
                 break
@@ -757,7 +783,7 @@ def _parse_result_from_cli_summary_text(clean_text):
     if session_id is None and total_cost_usd is None and not result_text:
         return None
 
-    is_error = ("Execution failed" in clean_text) or ("❌" in clean_text)
+    is_error = ("Execution failed" in normalized_text) or ("❌" in normalized_text)
 
     payload = {
         "type": "result",
