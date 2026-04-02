@@ -1,5 +1,5 @@
 ---
-description: Study kanban.sh and Execute the implementation plan by processing and executing all tasks defined in  ./juno_task/tasks.md, update ./juno_task/tasks.md with the tasks on kanban
+description: Study kanban.sh and Execute the implementation plan by processing and executing all tasks defined in  ./.juno_task/tasks.md, update ./.juno_task/tasks.md with the tasks on kanban
 ---
 
 ## User Input
