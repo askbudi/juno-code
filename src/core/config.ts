@@ -13,7 +13,7 @@ import * as nodeFs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
-import type { JunoTaskConfig } from '../types/index';
+import type { JunoTaskConfig, PromptMacroConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 import {
   SUBAGENT_DEFAULT_MODELS,
@@ -102,6 +102,24 @@ const HookSchema = z.object({
  * Maps hook types to their respective configurations
  */
 const HooksSchema = z.record(HookTypeSchema, HookSchema).optional();
+
+const PromptMacroOrderSchema = z.enum([
+  'before_command_substitution',
+  'after_command_substitution',
+]);
+
+const PromptMacroDictionarySchema = z.record(z.string(), z.string());
+
+const PromptMacrosSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    order: PromptMacroOrderSchema.optional(),
+    maxDepth: z.number().int().min(1).max(100).optional(),
+    global: PromptMacroDictionarySchema.optional(),
+    local: PromptMacroDictionarySchema.optional(),
+  })
+  .strict()
+  .optional();
 
 /**
  * Zod schema for validating JunoTaskConfig
@@ -220,6 +238,11 @@ export const JunoTaskConfigSchema = z
 
     // Skip hooks execution
     skipHooks: z.boolean().optional().describe('Skip execution of all lifecycle hooks when true'),
+
+    // Prompt macro dictionary expansion
+    promptMacros: PromptMacrosSchema.describe(
+      'Prompt macro dictionary expansion config (@@key). Use global/local dictionaries, local overrides global, and maxDepth controls recursive expansion safety.',
+    ),
   })
   .strict();
 
@@ -227,6 +250,14 @@ export const JunoTaskConfigSchema = z
  * Default configuration values
  * These are used as fallbacks when no other configuration is provided
  */
+const DEFAULT_PROMPT_MACROS: PromptMacroConfig = {
+  enabled: true,
+  order: 'before_command_substitution',
+  maxDepth: 10,
+  global: {},
+  local: {},
+};
+
 export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Core settings
   defaultSubagent: 'claude',
@@ -260,6 +291,9 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
 
   // Hooks configuration - populated with default hooks template
   hooks: getDefaultHooks(),
+
+  // Prompt macros
+  promptMacros: { ...DEFAULT_PROMPT_MACROS },
 };
 
 /**
@@ -294,6 +328,48 @@ type ConfigFileFormat = 'json' | 'yaml' | 'toml' | 'js';
  * Precedence order: cli > env > projectFile > file > defaults
  */
 type ConfigSource = 'defaults' | 'file' | 'projectFile' | 'env' | 'cli';
+
+function normalizePromptMacrosConfig(
+  value: JunoTaskConfig['promptMacros'] | undefined,
+): PromptMacroConfig {
+  return {
+    enabled: value?.enabled ?? DEFAULT_PROMPT_MACROS.enabled,
+    order: value?.order ?? DEFAULT_PROMPT_MACROS.order,
+    maxDepth: value?.maxDepth ?? DEFAULT_PROMPT_MACROS.maxDepth,
+    global: { ...(value?.global ?? {}) },
+    local: { ...(value?.local ?? {}) },
+  };
+}
+
+function mergePromptMacrosConfig(
+  base: JunoTaskConfig['promptMacros'] | undefined,
+  override: JunoTaskConfig['promptMacros'] | undefined,
+): PromptMacroConfig {
+  const baseNormalized = normalizePromptMacrosConfig(base);
+  const overrideNormalized = normalizePromptMacrosConfig(override);
+
+  return {
+    enabled: override?.enabled ?? baseNormalized.enabled,
+    order: override?.order ?? baseNormalized.order,
+    maxDepth: override?.maxDepth ?? baseNormalized.maxDepth,
+    global: {
+      ...baseNormalized.global,
+      ...overrideNormalized.global,
+    },
+    local: {
+      ...baseNormalized.local,
+      ...overrideNormalized.local,
+    },
+  };
+}
+
+export function getPromptMacroDictionary(config: Pick<JunoTaskConfig, 'promptMacros'>): Record<string, string> {
+  const normalized = normalizePromptMacrosConfig(config.promptMacros);
+  return {
+    ...normalized.global,
+    ...normalized.local,
+  };
+}
 
 /**
  * Utility function to resolve paths (relative to absolute)
@@ -632,7 +708,12 @@ export class ConfigLoader {
     for (const source of sourcePrecedence) {
       const sourceConfig = this.configSources.get(source);
       if (sourceConfig) {
+        const nextPromptMacros = mergePromptMacrosConfig(
+          mergedConfig.promptMacros,
+          sourceConfig.promptMacros,
+        );
         Object.assign(mergedConfig, sourceConfig);
+        mergedConfig.promptMacros = nextPromptMacros;
       }
     }
 
@@ -694,9 +775,25 @@ export function validateConfig(config: unknown): JunoTaskConfig {
   } catch (error) {
     if (error instanceof z.ZodError) {
       const errorMessages = error.errors
-        .map((err) => `${err.path.join('.')}: ${err.message}`)
+        .map((err) => `${err.path.join('.') || '<root>'}: ${err.message}`)
         .join('; ');
-      throw new Error(`Configuration validation failed: ${errorMessages}`);
+
+      const hasPromptMacroSnakeCaseHint = error.errors.some((err) => {
+        const typedErr = err as z.ZodIssue & { keys?: string[] };
+        if (typedErr.path.join('.') === 'prompt_macros') return true;
+        if (typedErr.code === 'unrecognized_keys' && Array.isArray(typedErr.keys)) {
+          return typedErr.keys.some((key) =>
+            ['prompt_macros', 'max_depth', 'before_command_substitution'].includes(key),
+          );
+        }
+        return false;
+      });
+
+      const hint = hasPromptMacroSnakeCaseHint
+        ? ' Hint: use config.promptMacros with keys { enabled, order, maxDepth, global, local }.'
+        : '';
+
+      throw new Error(`Configuration validation failed: ${errorMessages}${hint}`);
     }
     throw error;
   }

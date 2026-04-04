@@ -28,6 +28,18 @@ export interface Hook {
 // Hooks configuration mapping
 export type Hooks = Record<HookType, Hook>;
 
+export type PromptMacroOrder =
+  | 'before_command_substitution'
+  | 'after_command_substitution';
+
+export interface PromptMacroConfig {
+  enabled: boolean;
+  order: PromptMacroOrder;
+  maxDepth: number;
+  global: Record<string, string>;
+  local: Record<string, string>;
+}
+
 // Progress event types
 export type ProgressEventType = 'tool_start' | 'tool_result' | 'thinking' | 'error' | 'info';
 
@@ -79,6 +91,9 @@ export interface JunoTaskConfig {
 
   // Hooks configuration
   hooks?: Hooks;
+
+  // Prompt macro dictionary expansion configuration
+  promptMacros?: PromptMacroConfig;
 
   // Skip hooks execution
   skipHooks?: boolean;

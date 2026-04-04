@@ -1460,6 +1460,11 @@ ${chalk.blue.bold('Env File Bootstrap:')}
   Configure custom env file in ${chalk.cyan('.juno_task/config.json')}:
     ${chalk.gray('"envFilePath": ".env.local", "envFileCopied": true')}
 
+${chalk.blue.bold('Prompt Macros (@@key):')}
+  Define reusable prompt macros in ${chalk.cyan('.juno_task/config.json')} under ${chalk.cyan('promptMacros')}.
+  Example: ${chalk.gray('"promptMacros": {"global": {"git": "commit changes"}, "local": {"ship": "run tests then @@git"}, "maxDepth": 10}')}
+  Local keys override global keys. Default order is before command substitution.
+
 ${chalk.blue.bold('Configuration:')}
   Configuration can be specified via:
   1. Command line arguments (highest priority)

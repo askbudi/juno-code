@@ -809,6 +809,31 @@ This writes to `.juno_task/config.json`:
 
 `juno-code` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
 
+### Prompt Macros config (`@@key`)
+
+Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros`:
+
+```json
+{
+  "promptMacros": {
+    "enabled": true,
+    "order": "before_command_substitution",
+    "maxDepth": 10,
+    "global": {
+      "git": "commit your changes"
+    },
+    "local": {
+      "ship": "run tests then @@git"
+    }
+  }
+}
+```
+
+Notes:
+- `local` overrides `global` on key collisions.
+- `maxDepth` defaults to `10` and must be a positive integer.
+- `order` supports `before_command_substitution` (default) or `after_command_substitution`.
+
 ### Project Env Bootstrap (`.env.juno`)
 
 `juno-code` now bootstraps a project env file automatically:

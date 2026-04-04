@@ -13,6 +13,7 @@ import {
   DEFAULT_CONFIG,
   ENV_VAR_MAPPING,
   JunoTaskConfigSchema,
+  getPromptMacroDictionary,
 } from '../config.js';
 import type { JunoTaskConfig } from '../../types/index.js';
 
@@ -59,6 +60,13 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.sessionDirectory).toBe(path.join(process.cwd(), '.juno_task'));
       expect(DEFAULT_CONFIG.envFilePath).toBe('.env.juno');
       expect(DEFAULT_CONFIG.envFileCopied).toBe(false);
+      expect(DEFAULT_CONFIG.promptMacros).toEqual({
+        enabled: true,
+        order: 'before_command_substitution',
+        maxDepth: 10,
+        global: {},
+        local: {},
+      });
     });
 
     it('should pass schema validation', () => {
@@ -196,6 +204,58 @@ describe('Configuration Module', () => {
       };
 
       expect(() => validateConfig(configWithOptionals)).not.toThrow();
+    });
+
+    it('should validate prompt macro config and dictionary precedence (local > global)', () => {
+      const parsed = validateConfig({
+        ...DEFAULT_CONFIG,
+        promptMacros: {
+          enabled: true,
+          order: 'before_command_substitution',
+          maxDepth: 12,
+          global: {
+            git: 'global git',
+            shared: 'from global',
+          },
+          local: {
+            shared: 'from local',
+            ship: 'run tests then @@git',
+          },
+        },
+      });
+
+      expect(parsed.promptMacros?.maxDepth).toBe(12);
+      expect(getPromptMacroDictionary(parsed)).toEqual({
+        git: 'global git',
+        shared: 'from local',
+        ship: 'run tests then @@git',
+      });
+    });
+
+    it('should reject malformed promptMacros config with actionable errors', () => {
+      expect(() =>
+        validateConfig({
+          ...DEFAULT_CONFIG,
+          promptMacros: {
+            maxDepth: 0,
+            global: ['bad-shape'] as unknown as Record<string, string>,
+          },
+        }),
+      ).toThrow(/promptMacros/);
+    });
+
+    it('should show actionable hint for snake_case prompt macro config keys', () => {
+      expect(() =>
+        validateConfig({
+          ...DEFAULT_CONFIG,
+          prompt_macros: {
+            max_depth: 10,
+            global: {
+              git: 'commit changes',
+            },
+          },
+        }),
+      ).toThrow(/Hint: use config\.promptMacros/);
     });
   });
 
@@ -489,6 +549,40 @@ logLevel: info
       expect(config.defaultSubagent).toBe('cursor');
       expect(config.logLevel).toBe(DEFAULT_CONFIG.logLevel);
       expect(config.mcpTimeout).toBe(DEFAULT_CONFIG.mcpTimeout);
+    });
+
+    it('should merge prompt macro layers with default maxDepth/order and local precedence', async () => {
+      const fileConfig = {
+        promptMacros: {
+          global: {
+            git: 'global git',
+            shared: 'global shared',
+          },
+        },
+      };
+      const configPath = path.join(tempDir, 'juno-code.config.json');
+      await fs.writeJson(configPath, fileConfig);
+
+      const loader = new ConfigLoader(tempDir);
+      await loader.fromFile(configPath);
+      loader.fromCli({
+        promptMacros: {
+          local: {
+            shared: 'local shared',
+            ship: 'run tests then @@git',
+          },
+        },
+      });
+
+      const config = loader.merge();
+
+      expect(config.promptMacros?.maxDepth).toBe(10);
+      expect(config.promptMacros?.order).toBe('before_command_substitution');
+      expect(getPromptMacroDictionary(config)).toEqual({
+        git: 'global git',
+        shared: 'local shared',
+        ship: 'run tests then @@git',
+      });
     });
   });
 
