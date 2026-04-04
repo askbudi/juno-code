@@ -27,6 +27,8 @@ import { engineLogger } from '../cli/utils/advanced-logger.js';
 import type { Backend } from './backend-manager.js';
 import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js';
 import { resolvePromptCommandSubstitutions } from './prompt-command-substitution.js';
+import { resolvePromptMacros } from './prompt-macro-resolver.js';
+import { getPromptMacroDictionary } from './config.js';
 
 // =============================================================================
 // Type Definitions
@@ -1067,19 +1069,51 @@ export class ExecutionEngine extends EventEmitter {
 
     try {
       const instructionTemplate = context.request.instruction;
-      const resolvedInstruction = await resolvePromptCommandSubstitutions(instructionTemplate, {
-        workingDirectory: context.request.workingDirectory,
-        environment: {
-          ...process.env,
-          JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
-        },
-      });
+      const promptMacros = this.engineConfig.config.promptMacros;
+      const macroOrder = promptMacros?.order ?? 'before_command_substitution';
+      const macroEnabled = promptMacros?.enabled ?? true;
+      const macroMaxDepth = promptMacros?.maxDepth ?? 10;
+      const macroDictionary = getPromptMacroDictionary(this.engineConfig.config);
+
+      const macroWarnings: Array<{ message: string }> = [];
+
+      const applyPromptMacros = (input: string): string => {
+        if (!macroEnabled) {
+          return input;
+        }
+
+        const result = resolvePromptMacros(input, {
+          dictionary: macroDictionary,
+          maxDepth: macroMaxDepth,
+        });
+
+        for (const warning of result.warnings) {
+          macroWarnings.push({ message: warning.message });
+        }
+
+        return result.resolvedPrompt;
+      };
+
+      const applyCommandSubstitutions = async (input: string): Promise<string> =>
+        resolvePromptCommandSubstitutions(input, {
+          workingDirectory: context.request.workingDirectory,
+          environment: {
+            ...process.env,
+            JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
+          },
+        });
+
+      const resolvedInstruction =
+        macroOrder === 'after_command_substitution'
+          ? applyPromptMacros(await applyCommandSubstitutions(instructionTemplate))
+          : await applyCommandSubstitutions(applyPromptMacros(instructionTemplate));
 
       this.emit('iteration:instruction-resolved', {
         context,
         iterationNumber,
         instruction: resolvedInstruction,
         templateInstruction: instructionTemplate,
+        warnings: macroWarnings,
       });
 
       toolRequest = {

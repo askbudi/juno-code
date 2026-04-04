@@ -1086,8 +1086,9 @@ class MainProgressDisplay {
     }
 
     const hasPromptSubstitutionSyntax = this.hasPromptCommandSubstitutionSyntax(request.instruction);
+    const hasPromptMacroSyntax = this.hasPromptMacroSyntax(request.instruction);
 
-    if (hasPromptSubstitutionSyntax) {
+    if (hasPromptSubstitutionSyntax || hasPromptMacroSyntax) {
       console.error(chalk.blue('\n📋 Task Template:'));
     } else {
       console.error(chalk.blue('\n📋 Task:'));
@@ -1099,6 +1100,9 @@ class MainProgressDisplay {
       console.error(
         chalk.gray('   Prompt-time substitutions are resolved immediately before each subagent call.'),
       );
+    }
+    if (hasPromptMacroSyntax) {
+      console.error(chalk.gray('   Prompt macros (@@key) are expanded before backend dispatch.'));
     }
 
     console.error('');
@@ -1152,13 +1156,19 @@ class MainProgressDisplay {
     return instruction.includes("!'") || instruction.includes('!```');
   }
 
+  private hasPromptMacroSyntax(instruction: string): boolean {
+    return /(^|\s)@@[A-Za-z0-9_.:-]+(?=$|\s)/.test(instruction) || /\\@@[A-Za-z0-9_.:-]+/.test(instruction);
+  }
+
   onInstructionResolved(
     iteration: number,
     resolvedInstruction: string,
     templateInstruction?: string,
+    warnings?: Array<{ message?: string }>,
   ): void {
+    const hasWarnings = Boolean(warnings && warnings.some((warning) => Boolean(warning?.message)));
     const previousInstruction = this.lastResolvedInstructionByIteration.get(iteration);
-    if (previousInstruction === resolvedInstruction) {
+    if (previousInstruction === resolvedInstruction && !hasWarnings) {
       return;
     }
 
@@ -1168,17 +1178,31 @@ class MainProgressDisplay {
       return;
     }
 
-    if (templateInstruction !== undefined && resolvedInstruction === templateInstruction) {
-      return;
+    const shouldPrintResolvedInstruction = !(
+      templateInstruction !== undefined && resolvedInstruction === templateInstruction
+    );
+
+    if (shouldPrintResolvedInstruction) {
+      const heading =
+        iteration === 1
+          ? '\n🧩 Resolved Task (iteration 1):'
+          : `\n🧩 Resolved Task (iteration ${iteration}):`;
+
+      console.error(chalk.blue(heading));
+      console.error(chalk.white(`   ${this.buildInstructionPreview(resolvedInstruction)}`));
     }
 
-    const heading =
-      iteration === 1
-        ? '\n🧩 Resolved Task (iteration 1):'
-        : `\n🧩 Resolved Task (iteration ${iteration}):`;
-
-    console.error(chalk.blue(heading));
-    console.error(chalk.white(`   ${this.buildInstructionPreview(resolvedInstruction)}`));
+    if (hasWarnings) {
+      const warningHeader =
+        iteration === 1
+          ? '\n⚠ Prompt macro warnings (iteration 1):'
+          : `\n⚠ Prompt macro warnings (iteration ${iteration}):`;
+      console.error(chalk.yellow(warningHeader));
+      for (const warning of warnings ?? []) {
+        if (!warning?.message) continue;
+        console.error(chalk.yellow(`   - ${warning.message}`));
+      }
+    }
   }
 
   onProgress(event: ProgressEvent): void {
@@ -1628,11 +1652,12 @@ class MainExecutionCoordinator {
       this.progressDisplay.onIterationStart(iterationNumber);
     });
 
-    engine.on('iteration:instruction-resolved', ({ iterationNumber, instruction, templateInstruction }) => {
+    engine.on('iteration:instruction-resolved', ({ iterationNumber, instruction, templateInstruction, warnings }) => {
       this.progressDisplay.onInstructionResolved(
         iterationNumber,
         typeof instruction === 'string' ? instruction : '',
         typeof templateInstruction === 'string' ? templateInstruction : undefined,
+        Array.isArray(warnings) ? warnings : undefined,
       );
     });
 

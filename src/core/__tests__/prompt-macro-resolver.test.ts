@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest';
+import { resolvePromptMacros } from '../prompt-macro-resolver.js';
+
+describe('prompt-macro-resolver', () => {
+  it('expands exact case-sensitive keys with local/global dictionary values', () => {
+    const result = resolvePromptMacros('Do @@ship now', {
+      dictionary: {
+        git: 'commit changes',
+        ship: 'run tests then @@git',
+      },
+      maxDepth: 10,
+    });
+
+    expect(result.resolvedPrompt).toBe('Do run tests then commit changes now');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('keeps unresolved tokens unchanged and warns', () => {
+    const result = resolvePromptMacros('Use @@missing token', {
+      dictionary: {},
+      maxDepth: 10,
+    });
+
+    expect(result.resolvedPrompt).toBe('Use @@missing token');
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: 'unresolved', key: 'missing', token: '@@missing' }),
+    ]);
+  });
+
+  it('does not partially match tokens or invalid boundaries', () => {
+    const result = resolvePromptMacros('@@gitignore x@@git @@git, @@git', {
+      dictionary: { git: 'commit', gitignore: 'ignore file' },
+      maxDepth: 10,
+    });
+
+    expect(result.resolvedPrompt).toBe('ignore file x@@git @@git, commit');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('supports escaped tokens via \\@@key literal form', () => {
+    const result = resolvePromptMacros('Print \\@@ship and @@ship', {
+      dictionary: { ship: 'deploy' },
+      maxDepth: 10,
+    });
+
+    expect(result.resolvedPrompt).toBe('Print @@ship and deploy');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('detects circular references and leaves cycle token unchanged', () => {
+    const result = resolvePromptMacros('Run @@a', {
+      dictionary: { a: '@@b', b: '@@a' },
+      maxDepth: 10,
+    });
+
+    expect(result.resolvedPrompt).toBe('Run @@a');
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: 'cycle', key: 'a', token: '@@a' }),
+    ]);
+  });
+
+  it('stops recursive expansion at maxDepth and warns', () => {
+    const result = resolvePromptMacros('Start @@one', {
+      dictionary: {
+        one: '@@two',
+        two: '@@three',
+        three: 'done',
+      },
+      maxDepth: 2,
+    });
+
+    expect(result.resolvedPrompt).toBe('Start @@three');
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: 'max-depth', key: 'three', token: '@@three' }),
+    ]);
+  });
+});

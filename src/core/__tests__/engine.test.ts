@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   configure: vi.fn(),
   onProgress: vi.fn().mockReturnValue(() => {}),
   resolvePromptCommandSubstitutions: vi.fn(),
+  resolvePromptMacros: vi.fn(),
 }));
 
 vi.mock('../backends/shell-backend.js', () => ({
@@ -54,6 +55,10 @@ vi.mock('../../utils/hooks.js', () => ({
 
 vi.mock('../prompt-command-substitution.js', () => ({
   resolvePromptCommandSubstitutions: mocks.resolvePromptCommandSubstitutions,
+}));
+
+vi.mock('../prompt-macro-resolver.js', () => ({
+  resolvePromptMacros: mocks.resolvePromptMacros,
 }));
 
 // ---------------------------------------------------------------------------
@@ -145,6 +150,10 @@ describe('ExecutionEngine', () => {
     mocks.configure.mockReturnValue(undefined);
     mocks.onProgress.mockReturnValue(() => {});
     mocks.resolvePromptCommandSubstitutions.mockImplementation(async (instruction: string) => instruction);
+    mocks.resolvePromptMacros.mockImplementation((instruction: string) => ({
+      resolvedPrompt: instruction,
+      warnings: [],
+    }));
 
     // Re-set ShellBackend constructor (mockReset clears its mockImplementation)
     const { ShellBackend } = await import('../backends/shell-backend.js');
@@ -342,6 +351,78 @@ describe('ExecutionEngine', () => {
 
       expect(result.status).toBe(ExecutionStatus.COMPLETED);
       expect(onInstructionResolved).toHaveBeenCalledTimes(1);
+    });
+
+    it('should apply prompt macros before command substitution by default', async () => {
+      const request = makeRequest({ instruction: 'Run @@ship then done' });
+      mocks.resolvePromptMacros.mockReturnValue({
+        resolvedPrompt: "Run !'echo ready' then done",
+        warnings: [],
+      });
+      mocks.resolvePromptCommandSubstitutions.mockResolvedValue('Run ready then done');
+
+      const result = await engine.execute(request);
+
+      expect(result.status).toBe(ExecutionStatus.COMPLETED);
+      expect(mocks.resolvePromptMacros).toHaveBeenCalledWith(
+        request.instruction,
+        expect.objectContaining({ maxDepth: 10 }),
+      );
+      expect(mocks.resolvePromptCommandSubstitutions).toHaveBeenCalledWith(
+        "Run !'echo ready' then done",
+        expect.objectContaining({ workingDirectory: request.workingDirectory }),
+      );
+    });
+
+    it('should support after_command_substitution ordering override for prompt macros', async () => {
+      engineConfig.config.promptMacros = {
+        enabled: true,
+        order: 'after_command_substitution',
+        maxDepth: 10,
+        global: {},
+        local: {},
+      };
+      engine = new ExecutionEngine(engineConfig);
+      vi.spyOn(engine as any, 'sleep').mockResolvedValue(undefined);
+
+      const request = makeRequest({ instruction: "Run !'echo @@ship'" });
+      mocks.resolvePromptCommandSubstitutions.mockResolvedValue('Run @@ship');
+      mocks.resolvePromptMacros.mockReturnValue({ resolvedPrompt: 'Run deploy', warnings: [] });
+
+      const result = await engine.execute(request);
+
+      expect(result.status).toBe(ExecutionStatus.COMPLETED);
+      expect(mocks.resolvePromptCommandSubstitutions).toHaveBeenCalledWith(
+        request.instruction,
+        expect.any(Object),
+      );
+      expect(mocks.resolvePromptMacros).toHaveBeenCalledWith('Run @@ship', expect.any(Object));
+    });
+
+    it('should include prompt macro warnings in instruction-resolved event payload', async () => {
+      const request = makeRequest({ instruction: 'Run @@unknown now' });
+      const onInstructionResolved = vi.fn();
+      engine.on('iteration:instruction-resolved', onInstructionResolved);
+
+      mocks.resolvePromptMacros.mockReturnValue({
+        resolvedPrompt: 'Run @@unknown now',
+        warnings: [
+          {
+            code: 'unresolved',
+            key: 'unknown',
+            token: '@@unknown',
+            message: 'Unresolved prompt macro @@unknown; leaving token unchanged.',
+          },
+        ],
+      });
+
+      const result = await engine.execute(request);
+
+      expect(result.status).toBe(ExecutionStatus.COMPLETED);
+      const payload = onInstructionResolved.mock.calls[0]?.[0] as Record<string, any>;
+      expect(payload.warnings).toEqual([
+        { message: 'Unresolved prompt macro @@unknown; leaving token unchanged.' },
+      ]);
     });
 
     it('should respect maxIterations limit', async () => {
