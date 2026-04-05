@@ -705,6 +705,12 @@ export class ShellBackend implements Backend {
         JUNO_TOOL_ID: toolId,
       };
 
+      // Force unbuffered Python stdout/stderr so progress events stream in real time
+      // even when scripts run under piped stdio in headless mode.
+      if (isPython) {
+        env.PYTHONUNBUFFERED = '1';
+      }
+
       if (isGemini) {
         env.GEMINI_OUTPUT_FORMAT = env.GEMINI_OUTPUT_FORMAT || 'stream-json';
       }

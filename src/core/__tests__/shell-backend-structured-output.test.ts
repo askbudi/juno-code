@@ -75,7 +75,8 @@ import sys
 
 payload = {
   "argv": sys.argv[1:],
-  "output_format_env": os.environ.get("GEMINI_OUTPUT_FORMAT")
+  "output_format_env": os.environ.get("GEMINI_OUTPUT_FORMAT"),
+  "python_unbuffered_env": os.environ.get("PYTHONUNBUFFERED")
 }
 
 print(json.dumps({"type": "result", "content": json.dumps(payload)}))
@@ -217,6 +218,7 @@ describe('ShellBackend structured output', () => {
       expect(payload.argv).toContain('--output-format');
       expect(payload.argv).toContain('stream-json');
       expect(payload.output_format_env).toBe('stream-json');
+      expect(payload.python_unbuffered_env).toBe('1');
     } finally {
       if (originalOutputFormat !== undefined) {
         process.env.GEMINI_OUTPUT_FORMAT = originalOutputFormat;
