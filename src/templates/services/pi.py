@@ -535,15 +535,13 @@ Model shorthands:
                         cmd.extend(extra)
             return cmd, None
 
-        # For multiline or large prompts, pipe via stdin to avoid command-line
-        # argument issues. Pi CLI reads stdin when isTTY is false and
-        # automatically prepends it to messages in print mode.
-        # For simple single-line prompts, pass as positional arg + -p flag.
-        if "\n" in full_prompt or len(full_prompt) > 4096:
-            # Pipe via stdin — Pi auto-enables print mode when stdin has data
+        # Prefer explicit -p for normal-sized prompts (including multiline).
+        # Pi stdin-mode can hang for directive-heavy payloads (e.g. /skill with
+        # expanded kanban task blocks), so we reserve stdin piping only for very
+        # large prompts that may exceed argv comfort limits.
+        if len(full_prompt) > 4096:
             stdin_prompt = full_prompt
         else:
-            # Print mode for non-interactive execution + positional arg
             cmd.append("-p")
             cmd.append(full_prompt)
 

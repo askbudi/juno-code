@@ -402,15 +402,31 @@ class TestBuildPiCommand:
             p_idx = cmd.index("-p")
             assert cmd[p_idx + 1] == "my prompt text"
 
-    def test_multiline_prompt_uses_stdin(self):
-        """Multiline prompts are passed via stdin instead of -p flag."""
+    def test_multiline_prompt_uses_dash_p_for_headless_stability(self):
+        """Multiline prompts should use -p unless they are oversized.
+
+        Why: stdin-mode can stall on directive-heavy prompts (e.g. /skill with
+        expanded kanban payloads). Keeping normal multiline prompts on -p
+        preserves deterministic non-live execution.
+        """
         self.svc.model_name = "test-model"
         self.svc.prompt = "line1\nline2\nline3"
         args = _make_args()
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
-        assert stdin_prompt is not None
-        assert "line1\nline2\nline3" in stdin_prompt
+        assert stdin_prompt is None
+        assert "-p" in cmd
+        p_idx = cmd.index("-p")
+        assert cmd[p_idx + 1] == "line1\nline2\nline3"
+
+    def test_oversized_prompt_uses_stdin(self):
+        """Very large prompts still use stdin to avoid argv limits."""
+        self.svc.model_name = "test-model"
+        self.svc.prompt = "x" * 5000
+        args = _make_args()
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+
+        assert stdin_prompt == ("x" * 5000)
         assert "-p" not in cmd
 
 
