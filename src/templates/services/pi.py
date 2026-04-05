@@ -535,15 +535,13 @@ Model shorthands:
                         cmd.extend(extra)
             return cmd, None
 
-        # Prefer explicit -p for normal-sized prompts (including multiline).
-        # Pi stdin-mode can hang for directive-heavy payloads (e.g. /skill with
-        # expanded kanban task blocks), so we reserve stdin piping only for very
-        # large prompts that may exceed argv comfort limits.
-        if len(full_prompt) > 4096:
-            stdin_prompt = full_prompt
-        else:
-            cmd.append("-p")
-            cmd.append(full_prompt)
+        # Always pass prompts via -p in non-live mode.
+        # Root cause: stdin transport can hang for directive-heavy payloads
+        # (including kanban-expanded /skill prompts), which manifests as the
+        # run appearing stuck after stdin ingestion logs. We intentionally avoid
+        # stdin prompt transport for reliability and deterministic streaming.
+        cmd.append("-p")
+        cmd.append(full_prompt)
 
         # Additional raw arguments
         if args.additional_args:

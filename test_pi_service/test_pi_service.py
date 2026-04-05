@@ -419,15 +419,21 @@ class TestBuildPiCommand:
         p_idx = cmd.index("-p")
         assert cmd[p_idx + 1] == "line1\nline2\nline3"
 
-    def test_oversized_prompt_uses_stdin(self):
-        """Very large prompts still use stdin to avoid argv limits."""
+    def test_oversized_prompt_uses_dash_p(self):
+        """Oversized prompts should still use -p (stdin transport is disabled).
+
+        Why: stdin transport has shown non-deterministic hangs for large,
+        directive-heavy payloads in non-live mode.
+        """
         self.svc.model_name = "test-model"
         self.svc.prompt = "x" * 5000
         args = _make_args()
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
-        assert stdin_prompt == ("x" * 5000)
-        assert "-p" not in cmd
+        assert stdin_prompt is None
+        assert "-p" in cmd
+        p_idx = cmd.index("-p")
+        assert cmd[p_idx + 1] == ("x" * 5000)
 
 
 class TestRunPromptValidation:
