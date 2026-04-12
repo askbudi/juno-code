@@ -1,5 +1,6 @@
 {
   "skills": [
     ".claude/skills"
-  ]
+  ],
+  "quietStartup": true
 }

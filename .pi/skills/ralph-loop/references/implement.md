@@ -1,20 +1,17 @@
 ---
-description: Study kanban.sh and Execute the implementation plan by processing and executing all tasks defined in  ./juno_task/tasks.md, update ./juno_task/tasks.md with the tasks on kanban
+description: Study kanban.sh and Execute the implementation plan by processing and executing all tasks defined in  ./.juno_task/tasks.md, update ./.juno_task/tasks.md with the tasks on kanban
 ---
 
 ## User Input
 
 ```text
 A.
-**ALWAYS check remaing tasks and user feedbacks. Integrate it into the plan,
+**ALWAYS check remaining tasks and latest user feedback context from kanban task responses/current user input. Integrate it into the plan;**
 this is the primary mechanism for user input and for you to track your progress.
 `./juno_task/scripts/kanban.sh list --limit 5`
 return the most recent 5 Tasks and their status and potential agent response to them.
 
-**Important** ./juno_task/scripts/kanban.sh has already installed in your enviroment and you can execute it in your bash.
-
-A-1.
-read @.juno_task/USER_FEEDBACK.md user feedback on your current execution will be writeen here. And will guide you. If user wants to talk to you while you are working , he will write into this file. first think you do is to read it file.
+**Important** `./juno_task/scripts/kanban.sh` has already been installed in your environment and you can execute it in your bash.
 
 B.
 Based on Items in **./juno_task/scripts/kanban.sh** reflect on @.juno_task/plan.md and keep it up-to-date.
