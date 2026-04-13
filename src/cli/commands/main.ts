@@ -171,6 +171,7 @@ const LEADING_PROMPT_DELIMITER_MARKERS = new Set(['---', '***', '___']);
 const LEADING_DIRECTIVE_LINE_REGEX = /^(?:%(?:\{[^\s{}]+\}|[^\s%][^\s]*)|\/skill:[^\s]+|\/[^\s]+|\$[^\s]+)/;
 const KANBAN_TASK_REFERENCE_REGEX = /(?<!#)##\s*\{?([A-Za-z0-9]{6})\}?(?![A-Za-z0-9])/g;
 const KANBAN_TASK_SCRIPT_RELATIVE_PATH = path.join('.juno_task', 'scripts', 'kanban.sh');
+const KANBAN_GET_COMMAND_TIMEOUT_MS = 2000;
 
 type KanbanTaskRecord = Record<string, unknown> & { id?: string };
 
@@ -216,6 +217,7 @@ async function runKanbanGetCommand(
         JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || workingDirectory,
       },
       maxBuffer: 1024 * 1024,
+      timeout: KANBAN_GET_COMMAND_TIMEOUT_MS,
     });
 
     const stdout =
@@ -278,11 +280,7 @@ async function fetchReferencedKanbanTasks(
   const kanbanScriptPath = path.join(workingDirectory, KANBAN_TASK_SCRIPT_RELATIVE_PATH);
   const hasKanbanScript = await fs.pathExists(kanbanScriptPath);
 
-  const commandAttempts: string[] = [];
-  if (hasKanbanScript) {
-    commandAttempts.push(kanbanScriptPath);
-  }
-  commandAttempts.push('juno-kanban');
+  const commandAttempts: string[] = hasKanbanScript ? [kanbanScriptPath] : ['juno-kanban'];
 
   let unresolvedTaskIds = [...taskIds];
   for (const command of commandAttempts) {

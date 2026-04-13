@@ -781,6 +781,39 @@ describe('Main Command', () => {
         );
       });
 
+      it('should not fallback to juno-kanban when local kanban script exists', async () => {
+        vi.mocked(fs.pathExists)
+          .mockResolvedValueOnce(false as any)
+          .mockResolvedValueOnce(true as any);
+
+        vi.mocked(childProcess.execFile as any).mockImplementation(
+          (_file: string, _args?: any, _options?: any, callback?: any) => {
+            const cb =
+              typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
+            cb?.(new Error('task not found'), '', 'Task not found');
+            return {} as any;
+          },
+        );
+
+        const options: MainCommandOptions = {
+          subagent: 'claude',
+          prompt: 'Please analyze ## abc123 before coding',
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const calls = vi.mocked(childProcess.execFile).mock.calls;
+        expect(calls.length).toBeGreaterThan(0);
+        expect(calls.every((call) => call[0] === path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'))).toBe(true);
+      });
+
       it('should handle file prompt', async () => {
         vi.mocked(fs.pathExists).mockResolvedValueOnce(true);
         vi.mocked(fs.readFile).mockResolvedValueOnce('file prompt content');
