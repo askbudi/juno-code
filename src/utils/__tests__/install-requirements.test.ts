@@ -34,6 +34,23 @@ exit 0`;
     await writeExecutable(
       path.join(binDir, 'python3'),
       `#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+  echo "Python 3.12.8"
+  exit 0
+fi
+
+if [[ "$1" == "-m" && "$2" == "venv" ]]; then
+  target_dir="$3"
+  mkdir -p "$target_dir/bin"
+  cat > "$target_dir/bin/activate" <<'ACTIVATE_EOF'
+#!/usr/bin/env bash
+VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
+export VIRTUAL_ENV
+ACTIVATE_EOF
+  chmod +x "$target_dir/bin/activate"
+  exit 0
+fi
+
 if [[ "$1" == "-m" && "$2" == "pip" && "$3" == "show" ]]; then
   ${showHandler}
 fi
@@ -195,5 +212,36 @@ export PATH
 
     const uvLog = await fs.readFile(uvLogPath, 'utf-8');
     expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
+  });
+
+  it('creates .venv_juno (not .env.juno) when uv install needs a project venv', async () => {
+    await writePythonStub(true);
+
+    const env = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HOME: homeDir,
+      UV_LOG_FILE: uvLogPath,
+      CURL_LOG_FILE: curlLogPath,
+      VERSION_CHECK_INTERVAL_HOURS: '24',
+      VIRTUAL_ENV: '',
+      CONDA_DEFAULT_ENV: '',
+    };
+
+    const result = spawnSync('bash', [scriptPath], {
+      cwd: tempDir,
+      env,
+      encoding: 'utf-8',
+    });
+
+    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+
+    expect(result.status).toBe(0);
+    expect(combinedOutput).toContain('Created virtual environment at .venv_juno');
+    expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
+    expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+
+    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
+    expect(uvLog).toContain('pip install juno-kanban --quiet');
   });
 });
