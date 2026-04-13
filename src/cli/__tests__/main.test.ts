@@ -2673,7 +2673,7 @@ describe('Verbose/Quiet Output Modes', () => {
 
     const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
     expect(allCalls.some((c: string) => c.includes('Task Template:'))).toBe(true);
-    expect(allCalls.some((c: string) => c.includes('Prompt macros (@@key) are expanded'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Prompt macros (@@key) are translated'))).toBe(true);
     expect(allCalls.some((c: string) => c.includes('Unresolved prompt macro @@missing'))).toBe(true);
   });
 

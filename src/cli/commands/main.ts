@@ -1100,7 +1100,7 @@ class MainProgressDisplay {
       );
     }
     if (hasPromptMacroSyntax) {
-      console.error(chalk.gray('   Prompt macros (@@key) are expanded before backend dispatch.'));
+      console.error(chalk.gray('   Prompt macros (@@key) are translated before the agent sees your prompt.'));
     }
 
     console.error('');
