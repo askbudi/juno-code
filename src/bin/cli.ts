@@ -1457,6 +1457,7 @@ ${chalk.blue.bold('Environment Variables:')}
 
 ${chalk.blue.bold('Env File Bootstrap:')}
   Auto-creates ${chalk.cyan('.env.juno')} in project root and loads it on startup.
+  (Python virtual environment path is ${chalk.cyan('.venv_juno')}; this is separate from env files.)
   Configure custom env file in ${chalk.cyan('.juno_task/config.json')}:
     ${chalk.gray('"envFilePath": ".env.local", "envFileCopied": true')}
 

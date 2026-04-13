@@ -226,7 +226,7 @@ export PATH
     expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
   });
 
-  it('creates .venv_juno (not .env.juno) when uv install needs a project venv', async () => {
+  it('creates .venv_juno (not .env.juno/.env_juno) when uv install needs a project venv', async () => {
     await writePythonStub(true);
 
     const env = {
@@ -253,6 +253,7 @@ export PATH
     expect(combinedOutput).toContain('Created virtual environment at .venv_juno');
     expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
     expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(tempDir, '.env_juno'))).toBe(false);
 
     const uvLog = await fs.readFile(uvLogPath, 'utf-8');
     expect(uvLog).toContain('pip install juno-kanban --quiet');
