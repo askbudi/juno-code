@@ -707,6 +707,7 @@ logLevel: info
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),
               expect.stringContaining('AGENTS.md'),
+              expect.stringContaining('--reject-duplicates'),
             ]),
           },
         },
@@ -1228,6 +1229,7 @@ mcpServerPath: "/usr/local/bin/mcp-server"
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),
               expect.stringContaining('AGENTS.md'),
+              expect.stringContaining('--reject-duplicates'),
             ]),
           },
         },

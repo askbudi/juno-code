@@ -787,6 +787,7 @@ describe('hooks', () => {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),
             expect.stringContaining('AGENTS.md'),
+            expect.stringContaining('--reject-duplicates'),
           ]),
         },
       });
@@ -815,6 +816,7 @@ describe('hooks', () => {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),
             expect.stringContaining('AGENTS.md'),
+            expect.stringContaining('--reject-duplicates'),
           ]),
         },
       });
