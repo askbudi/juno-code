@@ -56,6 +56,11 @@ NC='\033[0m' # No Color
 # slack_sdk is required by Slack integration scripts (slack_fetch.py, slack_respond.py)
 REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
 
+# pipx is suitable only for app-style packages that expose console entry points.
+# Installing pure libraries (e.g. requests/python-dotenv/slack_sdk) via pipx fails
+# with "No apps associated" and breaks requirements bootstrapping.
+PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
+
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)
 VERSION_CHECK_CACHE_DIR="${HOME}/.juno_code"
@@ -464,6 +469,25 @@ upgrade_pip_in_venv() {
     fi
 }
 
+all_required_packages_pipx_compatible() {
+    local compatible
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        compatible=false
+        for pipx_pkg in "${PIPX_COMPATIBLE_PACKAGES[@]}"; do
+            if [ "$package" = "$pipx_pkg" ]; then
+                compatible=true
+                break
+            fi
+        done
+
+        if [ "$compatible" = false ]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
 # Function to install packages using pipx
 install_with_pipx() {
     log_info "Installing packages using 'pipx' (recommended for Python applications)..."
@@ -736,14 +760,21 @@ main() {
         log_warning "Detected externally managed Python environment (Ubuntu/Debian PEP 668)"
     fi
 
-    # Prioritize pipx for externally managed systems
+    # Prefer uv/pip because requirements include both app + library packages.
+    # pipx is only valid when *all* required packages are app-style CLI tools.
     if [ "$is_ext_managed" = true ] && command -v pipx &> /dev/null; then
-        log_success "'pipx' found - using pipx (recommended for externally managed Python)"
-        installer="pipx"
-    elif command -v uv &> /dev/null; then
+        if all_required_packages_pipx_compatible; then
+            log_success "'pipx' found - using pipx (all required packages are pipx-compatible)"
+            installer="pipx"
+        else
+            log_warning "'pipx' detected but skipped: requirements include library packages not supported by pipx"
+        fi
+    fi
+
+    if [ -z "$installer" ] && command -v uv &> /dev/null; then
         log_success "'uv' found - using ultrafast Python package manager"
         installer="uv"
-    elif command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
+    elif [ -z "$installer" ] && ( command -v pip3 &> /dev/null || command -v pip &> /dev/null ); then
         log_success "'pip' found - using standard Python package installer"
         installer="pip"
     else

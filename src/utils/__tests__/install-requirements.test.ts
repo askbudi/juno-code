@@ -11,6 +11,7 @@ describe('install_requirements.sh periodic update flow', () => {
   let scriptPath: string;
   let uvLogPath: string;
   let curlLogPath: string;
+  let pipxLogPath: string;
 
   const writeExecutable = async (filePath: string, content: string): Promise<void> => {
     await fs.writeFile(filePath, content, { mode: 0o755 });
@@ -73,7 +74,7 @@ if [[ "$1" == "-c" ]]; then
   fi
 
   if [[ "$2" == *"sysconfig.get_path('stdlib')"* ]]; then
-    echo "/tmp/fake-stdlib"
+    echo "${'${STDLIB_DIR:-/tmp/fake-stdlib}'}"
     exit 0
   fi
 fi
@@ -95,6 +96,7 @@ exit 0
     scriptPath = path.join(tempDir, 'install_requirements.sh');
     uvLogPath = path.join(tempDir, 'uv.log');
     curlLogPath = path.join(tempDir, 'curl.log');
+    pipxLogPath = path.join(tempDir, 'pipx.log');
 
     await fs.ensureDir(binDir);
     await fs.ensureDir(homeDir);
@@ -132,6 +134,14 @@ echo "$*" >> "${'${UV_LOG_FILE:?UV_LOG_FILE must be set}'}"
 exit 0
 `,
     );
+
+    await writeExecutable(
+      path.join(binDir, 'pipx'),
+      `#!/usr/bin/env bash
+echo "$*" >> "${'${PIPX_LOG_FILE:?PIPX_LOG_FILE must be set}'}"
+exit 0
+`,
+    );
   });
 
   afterEach(async () => {
@@ -145,6 +155,7 @@ exit 0
       HOME: homeDir,
       UV_LOG_FILE: uvLogPath,
       CURL_LOG_FILE: curlLogPath,
+      PIPX_LOG_FILE: pipxLogPath,
       VERSION_CHECK_INTERVAL_HOURS: '24',
       VIRTUAL_ENV: '',
       CONDA_DEFAULT_ENV: '',
@@ -190,6 +201,7 @@ export PATH
       HOME: homeDir,
       UV_LOG_FILE: uvLogPath,
       CURL_LOG_FILE: curlLogPath,
+      PIPX_LOG_FILE: pipxLogPath,
       VERSION_CHECK_INTERVAL_HOURS: '24',
       VIRTUAL_ENV: '',
       CONDA_DEFAULT_ENV: '',
@@ -223,6 +235,7 @@ export PATH
       HOME: homeDir,
       UV_LOG_FILE: uvLogPath,
       CURL_LOG_FILE: curlLogPath,
+      PIPX_LOG_FILE: pipxLogPath,
       VERSION_CHECK_INTERVAL_HOURS: '24',
       VIRTUAL_ENV: '',
       CONDA_DEFAULT_ENV: '',
@@ -243,5 +256,47 @@ export PATH
 
     const uvLog = await fs.readFile(uvLogPath, 'utf-8');
     expect(uvLog).toContain('pip install juno-kanban --quiet');
+  });
+
+  it('skips pipx when requirements include library packages in externally managed Python', async () => {
+    await writePythonStub(true);
+
+    const stdlibDir = path.join(tempDir, 'externally-managed-stdlib');
+    await fs.ensureDir(stdlibDir);
+    await fs.writeFile(path.join(stdlibDir, 'EXTERNALLY-MANAGED'), 'managed by distro');
+
+    const env = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HOME: homeDir,
+      UV_LOG_FILE: uvLogPath,
+      CURL_LOG_FILE: curlLogPath,
+      PIPX_LOG_FILE: pipxLogPath,
+      STDLIB_DIR: stdlibDir,
+      VERSION_CHECK_INTERVAL_HOURS: '24',
+      VIRTUAL_ENV: '',
+      CONDA_DEFAULT_ENV: '',
+    };
+
+    const result = spawnSync('bash', [scriptPath], {
+      cwd: tempDir,
+      env,
+      encoding: 'utf-8',
+    });
+
+    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+
+    expect(result.status).toBe(0);
+    expect(combinedOutput).toContain('pipx');
+    expect(combinedOutput).toContain('skipped');
+
+    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
+    expect(uvLog).toContain('pip install juno-kanban --quiet');
+
+    const pipxLogExists = await fs.pathExists(pipxLogPath);
+    if (pipxLogExists) {
+      const pipxLog = await fs.readFile(pipxLogPath, 'utf-8');
+      expect(pipxLog.trim()).toBe('');
+    }
   });
 });
