@@ -149,6 +149,18 @@ exit 0
   });
 
   it('continues update checks and upgrades when a package is outdated', async () => {
+    const venvBinDir = path.join(tempDir, '.venv_juno', 'bin');
+    await fs.ensureDir(venvBinDir);
+    await writeExecutable(
+      path.join(venvBinDir, 'activate'),
+      `#!/usr/bin/env bash
+VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
+export VIRTUAL_ENV
+PATH="${binDir}:${'${PATH}'}"
+export PATH
+`,
+    );
+
     const env = {
       ...process.env,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
@@ -224,6 +236,38 @@ export PATH
 
     const uvLog = await fs.readFile(uvLogPath, 'utf-8');
     expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
+  });
+
+  it('creates .venv_juno even when requirements are globally satisfied outside project venv', async () => {
+    await writePythonStub(false);
+
+    const env = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HOME: homeDir,
+      UV_LOG_FILE: uvLogPath,
+      CURL_LOG_FILE: curlLogPath,
+      PIPX_LOG_FILE: pipxLogPath,
+      VERSION_CHECK_INTERVAL_HOURS: '24',
+      VIRTUAL_ENV: '',
+      CONDA_DEFAULT_ENV: '',
+    };
+
+    const result = spawnSync('bash', [scriptPath], {
+      cwd: tempDir,
+      env,
+      encoding: 'utf-8',
+    });
+
+    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+
+    expect(result.status).toBe(0);
+    expect(combinedOutput).toContain('Project virtual environment missing: .venv_juno');
+    expect(combinedOutput).toContain('Created virtual environment at .venv_juno');
+    expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
+
+    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
+    expect(uvLog).toContain('pip install juno-kanban --quiet');
   });
 
   it('creates .venv_juno (not .env.juno/.env_juno) when uv install needs a project venv', async () => {

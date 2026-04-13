@@ -310,6 +310,16 @@ check_all_for_updates() {
 # Function to check if all requirements are satisfied
 check_all_requirements_satisfied() {
     local all_satisfied=true
+    local venv_path=".venv_juno"
+
+    # Contract: project bootstrap should produce and use .venv_juno.
+    # If packages are only available globally and .venv_juno is missing,
+    # treat requirements as not satisfied so installer creates the project venv.
+    if ! is_in_venv_juno && [ ! -d "$venv_path" ]; then
+        log_warning "Project virtual environment missing: $venv_path"
+        log_info "Will create $venv_path and install requirements there"
+        return 1
+    fi
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
         if ! check_package_installed "$package"; then
@@ -347,12 +357,27 @@ is_in_virtualenv() {
     return 1  # Not inside venv
 }
 
+# Function to check if we're specifically inside .venv_juno
+is_in_venv_juno() {
+    if [ -n "${VIRTUAL_ENV:-}" ]; then
+        if [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
+            return 0
+        fi
+
+        if [ "$(basename "${VIRTUAL_ENV:-}")" = ".venv_juno" ]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # Function to activate project-local .venv_juno when available.
 # Why: install/check commands often run from non-activated shells, while packages
 # are installed into .venv_juno. Activating it early keeps package detection and
 # periodic update checks aligned with the real install target.
 activate_project_venv_if_available() {
-    if is_in_virtualenv; then
+    if is_in_venv_juno; then
         return 0
     fi
 
@@ -618,10 +643,13 @@ install_with_pip() {
         fi
     fi
 
-    # Handle externally managed Python or missing venv
-    if ! is_in_virtualenv && is_externally_managed_python; then
-        log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
-        log_info "Creating virtual environment for installation..."
+    # Always install into project-local .venv_juno unless we are already inside it.
+    # This keeps bootstrap behavior deterministic across global/conda/system python setups.
+    if ! is_in_venv_juno; then
+        if is_externally_managed_python; then
+            log_warning "Detected externally managed Python (PEP 668) - Ubuntu/Debian system"
+        fi
+        log_info "Creating/using project virtual environment for installation..."
 
         # Find best Python version (3.10-3.13, preferably 3.13)
         if ! python_cmd=$(find_best_python); then
@@ -635,7 +663,6 @@ install_with_pip() {
         version=$($python_cmd --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         log_info "Using Python $version for virtual environment"
 
-        # Create a project-local venv if it doesn't exist
         local venv_path=".venv_juno"
         if [ ! -d "$venv_path" ]; then
             if ! $python_cmd -m venv "$venv_path" 2>/dev/null; then
