@@ -1314,6 +1314,52 @@ class MainProgressDisplay {
     }
   }
 
+  private extractErrorMessage(candidate: unknown): string | null {
+    if (!candidate) return null;
+
+    if (candidate instanceof Error) {
+      const message = candidate.message.trim();
+      return message.length > 0 ? message : null;
+    }
+
+    if (typeof candidate === 'string') {
+      const message = candidate.trim();
+      return message.length > 0 ? message : null;
+    }
+
+    if (typeof candidate === 'object') {
+      const maybeError = candidate as { message?: unknown; error?: unknown };
+
+      if (typeof maybeError.message === 'string' && maybeError.message.trim().length > 0) {
+        return maybeError.message.trim();
+      }
+
+      if (typeof maybeError.error === 'string' && maybeError.error.trim().length > 0) {
+        return maybeError.error.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private getFailureReason(result: ExecutionResult): string | null {
+    const lastIteration = result.iterations[result.iterations.length - 1];
+    const candidates: unknown[] = [
+      result.error,
+      lastIteration?.error,
+      lastIteration?.toolResult?.error,
+    ];
+
+    for (const candidate of candidates) {
+      const message = this.extractErrorMessage(candidate);
+      if (message) {
+        return message;
+      }
+    }
+
+    return null;
+  }
+
   complete(result: ExecutionResult): void {
     const elapsed = this.getElapsedTime();
 
@@ -1334,6 +1380,10 @@ class MainProgressDisplay {
       console.error(chalk.green.bold(`\n✅ Execution completed successfully! (${elapsed})`));
     } else {
       console.error(chalk.red.bold(`\n❌ Execution failed (${elapsed})`));
+      const failureReason = this.getFailureReason(result);
+      if (failureReason) {
+        console.error(chalk.red(`   Failure reason: ${failureReason}`));
+      }
     }
 
     // Show final result heading on STDERR, actual result content on STDOUT

@@ -3202,6 +3202,60 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(payload));
   });
 
+  it('should print failure reason when execution fails before result content is available', async () => {
+    const { createExecutionEngine } = await import('../../core/engine.js');
+
+    vi.mocked(createExecutionEngine).mockReturnValueOnce({
+      execute: vi.fn().mockResolvedValue({
+        status: 'failed',
+        iterations: [
+          {
+            iterationNumber: 1,
+            toolResult: {
+              content: '',
+              error: {
+                message:
+                  'Prompt command substitution failed for `kanban-juno --status backlog --limit 10 -f table`',
+              },
+            },
+            success: false,
+            duration: 1200,
+          },
+        ],
+        statistics: {
+          totalIterations: 1,
+          successfulIterations: 0,
+          failedIterations: 1,
+          averageIterationDuration: 1200,
+          totalToolCalls: 1,
+          rateLimitEncounters: 0,
+        },
+      }),
+      onProgress: vi.fn(),
+      on: vi.fn(),
+      shutdown: vi.fn(),
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const stderrCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(
+      stderrCalls.some((line) =>
+        line.includes(
+          'Failure reason: Prompt command substitution failed for `kanban-juno --status backlog --limit 10 -f table`',
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('should NOT show statistics at verbose level 0 (quiet)', async () => {
     const options: MainCommandOptions = {
       subagent: 'claude',
