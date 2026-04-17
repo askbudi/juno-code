@@ -79,12 +79,10 @@ import csv
 import io
 import json
 import os
-import random
 import re
 import shlex
 import shutil
 import signal
-import string
 import subprocess
 import sys
 import textwrap
@@ -107,7 +105,7 @@ _log_base = SCRIPT_DIR / "logs"
 LOG_DIR = _log_base  # overwritten in main() with run-ID path
 COMBINED_LOG = LOG_DIR / "parallel_runner.log"  # overwritten in main()
 
-# 5-char alphanumeric run ID, generated once at startup in main()
+# Run timestamp token (HHMMSS-microseconds), generated once at startup in main()
 _run_id = ""
 
 # Temporary runtime artifacts are stored under logs/tmp and purged periodically.
@@ -220,22 +218,35 @@ def _tmp_root():
 
 
 def _session_state_root():
-    """Shared state/lock files (dashboard, pause, pid) under logs/tmp."""
-    root = _tmp_root() / ".session_state"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    """Legacy shared state root kept for backwards-compatible cleanup/discovery."""
+    return _tmp_root() / ".session_state"
 
 
-def _dashboard_file(name):
-    return _session_state_root() / f"dashboard_{name}"
+def _dashboard_file(name, run_dir=None):
+    """Dashboard path for a specific run directory."""
+    base_dir = run_dir or LOG_DIR
+    return base_dir / ".dashboard"
 
 
-def _pause_file(name):
-    return _session_state_root() / f"pause_{name}"
+def _pause_file(name, run_dir=None):
+    """Pause file path for a specific run directory."""
+    base_dir = run_dir or LOG_DIR
+    return base_dir / ".pause"
 
 
-def _pid_file(name):
-    return _session_state_root() / f"orchestrator_pid_{name}"
+def _pid_file(name, run_dir=None):
+    """PID marker for a specific run directory/session name."""
+    base_dir = run_dir or LOG_DIR
+    return base_dir / f"orchestrator_pid_{name}"
+
+
+def _pid_files_for_name(name):
+    """Return new-layout + legacy PID files for a given session name."""
+    files = list(_log_base.glob(f"*/*/orchestrator_pid_{name}"))
+    legacy_root = _session_state_root()
+    files.extend(legacy_root.glob(f"orchestrator_pid_{name}"))
+    files.append(_log_base / f".orchestrator_pid_{name}")
+    return [f for f in files if f.exists()]
 
 
 def _legacy_session_state_files(name):
@@ -1160,6 +1171,7 @@ def _print_output_summary(agg_result):
 
 def _iter_pid_files():
     """Yield current + legacy PID marker files for running-session discovery."""
+    yield from _log_base.glob("*/*/orchestrator_pid_*")
     state_root = _session_state_root()
     if state_root.exists():
         yield from state_root.glob("orchestrator_pid_*")
@@ -1237,10 +1249,10 @@ def _list_running_sessions():
 def _stop_session(name):
     """Stop a single session by name."""
     stopped = False
-    pid_path = _pid_file(name)
     tmux_session = _session_name_to_tmux(name)
 
-    if pid_path.exists():
+    pid_paths = _pid_files_for_name(name)
+    for pid_path in pid_paths:
         try:
             pid = int(pid_path.read_text().strip())
             os.kill(pid, signal.SIGTERM)
@@ -1257,7 +1269,20 @@ def _stop_session(name):
         print(f"  Killed tmux session '{tmux_session}'")
         stopped = True
 
-    for f in [pid_path, _dashboard_file(name), _pause_file(name), *_legacy_session_state_files(name)]:
+    for pid_path in pid_paths:
+        try:
+            pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        run_dir = pid_path.parent
+        if run_dir not in (_session_state_root(), _log_base):
+            for state_path in [_dashboard_file(name, run_dir=run_dir), _pause_file(name, run_dir=run_dir)]:
+                try:
+                    state_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    for f in _legacy_session_state_files(name):
         try:
             f.unlink(missing_ok=True)
         except OSError:
@@ -2138,7 +2163,7 @@ def update_tmux_status_bar(task_states, paused, wall_start, session_name):
 
 
 def update_dashboard_file(task_states, workers, paused, wall_start, session_name_short, session_name):
-    """Write dashboard content to .dashboard_{name} file."""
+    """Write dashboard content to the run-local dashboard file."""
     now = time.monotonic()
     lines = []
     dashboard_path = _dashboard_file(session_name_short)
@@ -2176,7 +2201,7 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
                 status = f"\033[32mOK\033[0m"
             else:
                 status = f"\033[31mFAIL(exit {t.exit_code})\033[0m"
-            log_path = f"logs/task_{t.task_id}.log"
+            log_path = f"{LOG_DIR}/task_{t.task_id}.log"
             lines.append(f"    {dot} {t.task_id}: {status} [{elapsed_t}] -> {log_path}")
     else:
         lines.append("    (none yet)")
@@ -2187,7 +2212,7 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
         lines.append(f"  Pause:    touch {pause_path}")
     else:
         lines.append(f"  Resume:   rm {pause_path}")
-    lines.append("  Logs:     .juno_task/scripts/logs/task_<TASK_ID>.log")
+    lines.append(f"  Logs:     {LOG_DIR}/task_<TASK_ID>.log")
     lines.append("  Detach:   Ctrl-b d  (orchestrator keeps running)")
     lines.append(f"  Reattach: tmux attach -t {session_name}")
     lines.append(f"  Stop:     Ctrl-c  (or --stop --name {session_name_short})")
@@ -2531,17 +2556,18 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     # Kill stale orchestrator daemon for THIS session name only
-    pid_path = _pid_file(session_name_short)
-    if pid_path.exists():
+    stale_pid_files = _pid_files_for_name(session_name_short)
+    for stale_pid_path in stale_pid_files:
         try:
-            old_pid = int(pid_path.read_text().strip())
+            old_pid = int(stale_pid_path.read_text().strip())
             os.kill(old_pid, signal.SIGTERM)
             print(f"Killed stale orchestrator for '{session_name_short}' (PID {old_pid})")
             time.sleep(0.3)
         except (ValueError, ProcessLookupError, PermissionError):
             pass
 
-    for f in [_dashboard_file(session_name_short), _pause_file(session_name_short), pid_path, *_legacy_session_state_files(session_name_short)]:
+    pid_path = _pid_file(session_name_short, run_dir=LOG_DIR)
+    for f in [_dashboard_file(session_name_short, run_dir=LOG_DIR), _pause_file(session_name_short, run_dir=LOG_DIR), pid_path, *_legacy_session_state_files(session_name_short), *stale_pid_files]:
         if f.exists():
             f.unlink()
 
@@ -2709,8 +2735,9 @@ def main():
     pwd = os.getcwd()
 
     # Generate run ID and compute per-run LOG_DIR
-    _run_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    started_at = datetime.now()
+    _run_id = started_at.strftime("%H%M%S-%f")
+    date_str = started_at.strftime("%Y-%m-%d")
     LOG_DIR = _log_base / date_str / _run_id
     COMBINED_LOG = LOG_DIR / "parallel_runner.log"
 
@@ -2728,6 +2755,7 @@ def main():
     if removed_tmp > 0:
         print(f"[parallel_runner] Removed {removed_tmp} stale tmp artifact(s) older than 48h")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[parallel_runner] Run artifacts: {LOG_DIR}")
 
     if args.tmux:
         run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
