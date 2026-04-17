@@ -385,6 +385,8 @@ def _build_process_env(extra_capture_env=None):
     """Build the environment dict for a child process."""
     env = os.environ.copy()
     env.update(_env_overrides)
+    # Reduce buffering for python-backed subcommands so task/combined logs stream promptly.
+    env.setdefault("PYTHONUNBUFFERED", "1")
     if extra_capture_env:
         env.update(extra_capture_env)
     return env
@@ -394,6 +396,7 @@ def _generate_env_exports():
     """Generate shell export lines for the full process environment."""
     merged = os.environ.copy()
     merged.update(_env_overrides)
+    merged.setdefault("PYTHONUNBUFFERED", "1")
     lines = []
     for key, value in sorted(merged.items()):
         if key in ("TERM_SESSION_ID", "TMUX", "TMUX_PANE", "STY", "WINDOW",
