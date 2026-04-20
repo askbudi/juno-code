@@ -783,6 +783,11 @@ describe('hooks', () => {
       const config = await fs.readJson(configPath);
       // Auto-migration now includes default hooks template with file size monitoring
       expect(config.hooks).toMatchObject({
+        START_RUN: {
+          commands: expect.arrayContaining([
+            expect.stringContaining('./.juno_task/scripts/install_requirements.sh'),
+          ]),
+        },
         START_ITERATION: {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),
@@ -812,6 +817,11 @@ describe('hooks', () => {
       const config = await fs.readJson(configPath);
       // Auto-migration now includes default hooks template with file size monitoring
       expect(config.hooks).toMatchObject({
+        START_RUN: {
+          commands: expect.arrayContaining([
+            expect.stringContaining('./.juno_task/scripts/install_requirements.sh'),
+          ]),
+        },
         START_ITERATION: {
           commands: expect.arrayContaining([
             expect.stringContaining('CLAUDE.md'),

@@ -703,6 +703,11 @@ logLevel: info
       expect(config).toMatchObject({
         ...DEFAULT_CONFIG,
         hooks: {
+          START_RUN: {
+            commands: expect.arrayContaining([
+              expect.stringContaining('./.juno_task/scripts/install_requirements.sh'),
+            ]),
+          },
           START_ITERATION: {
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),
@@ -1225,6 +1230,11 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       expect(configs[0]).toMatchObject({
         ...DEFAULT_CONFIG,
         hooks: {
+          START_RUN: {
+            commands: expect.arrayContaining([
+              expect.stringContaining('./.juno_task/scripts/install_requirements.sh'),
+            ]),
+          },
           START_ITERATION: {
             commands: expect.arrayContaining([
               expect.stringContaining('CLAUDE.md'),

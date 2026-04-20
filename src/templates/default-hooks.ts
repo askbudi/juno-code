@@ -36,7 +36,12 @@ export const DEFAULT_HOOKS: Hooks = {
   // Executes once at the beginning of a run (before all iterations)
   // Use for: setup, environment checks, notifications, pre-run cleanup
   START_RUN: {
-    commands: [],
+    commands: [
+      // Keep Python dependencies (especially juno-kanban) fresh with built-in daily cache checks.
+      // install_requirements.sh only performs network update checks when cache is stale (default 24h),
+      // so running this each START_RUN keeps environments healthy without adding run-time slowdown.
+      './.juno_task/scripts/install_requirements.sh',
+    ],
   },
 
   // Executes at the start of each iteration
