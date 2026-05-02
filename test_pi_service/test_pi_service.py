@@ -85,6 +85,9 @@ class TestModelShorthandExpansion:
     def test_shorthand_haiku(self):
         assert self.svc.expand_model_shorthand(":haiku") == "anthropic/claude-haiku-4-5-20251001"
 
+    def test_shorthand_gpt(self):
+        assert self.svc.expand_model_shorthand(":gpt") == "openai-codex/gpt-5.5"
+
     def test_shorthand_gpt5(self):
         assert self.svc.expand_model_shorthand(":gpt-5") == "openai/gpt-5"
 

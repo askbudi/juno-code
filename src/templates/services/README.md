@@ -239,7 +239,7 @@ npm install -g @mariozechner/pi-coding-agent
 #### Features
 
 - Multi-provider support (Anthropic, OpenAI, Google, Groq, xAI, etc.)
-- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
+- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:gpt`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
 - Support for inline prompts or prompt files
 - Headless JSON mode (default) for structured automation output
 - Live interactive mode via `--live` (Pi TUI + auto-exit on non-aborted `agent_end`)
@@ -251,6 +251,9 @@ npm install -g @mariozechner/pi-coding-agent
 ```bash
 # Basic headless JSON-mode usage with Anthropic model
 ~/.juno_code/services/pi.py -p "Write a hello world function" -m :sonnet
+
+# Use with Codex provider default shortcut
+~/.juno_code/services/pi.py -p "Refactor code" -m :gpt
 
 # Use with OpenAI model
 ~/.juno_code/services/pi.py -p "Refactor code" -m :gpt-5

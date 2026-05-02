@@ -34,6 +34,7 @@ class PiService:
         ":opus": "anthropic/claude-opus-4-6",
         ":haiku": "anthropic/claude-haiku-4-5-20251001",
         # OpenAI
+        ":gpt": "openai-codex/gpt-5.5",
         ":gpt-5": "openai/gpt-5",
         ":gpt-4o": "openai/gpt-4o",
         ":o3": "openai/o3",
@@ -282,6 +283,7 @@ Model shorthands:
   :sonnet          -> anthropic/claude-sonnet-4-6
   :opus            -> anthropic/claude-opus-4-6
   :haiku           -> anthropic/claude-haiku-4-5-20251001
+  :gpt             -> openai-codex/gpt-5.5
   :gpt-5           -> openai/gpt-5
   :gpt-4o          -> openai/gpt-4o
   :o3              -> openai/o3
@@ -313,7 +315,7 @@ Model shorthands:
             type=str,
             default=os.environ.get("PI_MODEL", self.DEFAULT_MODEL),
             help=(
-                "Model name. Supports shorthands (:pi, :sonnet, :opus, :gpt-5, :gemini-pro, etc.) "
+                "Model name. Supports shorthands (:pi, :sonnet, :opus, :gpt, :gpt-5, :gemini-pro, etc.) "
                 f"or provider/model format. Default: {self.DEFAULT_MODEL} (env: PI_MODEL)"
             ),
         )

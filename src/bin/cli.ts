@@ -787,6 +787,7 @@ ${chalk.blue('Model Shorthands:')}
   :opus                anthropic/claude-opus-4-6
   :haiku               anthropic/claude-haiku-4-5-20251001
   ${chalk.gray('# OpenAI')}
+  :gpt                 openai-codex/gpt-5.5
   :gpt-5               openai/gpt-5
   :gpt-4o              openai/gpt-4o
   :o3                  openai/o3
