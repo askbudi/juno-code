@@ -49,16 +49,16 @@ export const DEFAULT_HOOKS: Hooks = {
   START_ITERATION: {
     commands: [
       // Monitor CLAUDE.md file size
-      'file="CLAUDE.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --status todo --reject-duplicates; fi',
+      'file="CLAUDE.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --reject-duplicates; fi',
 
       // Monitor AGENTS.md file size
-      'file="AGENTS.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --status todo --reject-duplicates; fi',
+      'file="AGENTS.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --reject-duplicates; fi',
 
       // Monitor .juno_task/plan.md file size
-      'file=".juno_task/plan.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --status todo --reject-duplicates; fi',
+      'file=".juno_task/plan.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent."  --reject-duplicates; fi',
 
       // Monitor .juno_task/tasks.md file size
-      'file=".juno_task/tasks.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --status todo --reject-duplicates; fi',
+      'file=".juno_task/tasks.md"; lines=$(wc -l < "$file" 2>/dev/null || echo 0); chars=$(wc -m < "$file" 2>/dev/null || echo 0); if [ "$lines" -gt 450 ] || [ "$chars" -gt 40000 ]; then juno-kanban create "[Critical] file $file is too large, keep it lean and useful for every run of the agent." --reject-duplicates; fi',
       './.juno_task/scripts/cleanup_feedback.sh',
     ],
   },
