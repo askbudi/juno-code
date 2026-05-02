@@ -1006,35 +1006,39 @@ export class ShellBackend implements Backend {
         reject(new Error(`Failed to execute script: ${error.message}`));
       });
 
-      // Apply timeout if configured
+      // Apply timeout if configured. Pi live sessions are intentionally long-lived
+      // interactive flows, so they should not be force-killed by backend timeout.
       const timeout = this.config!.timeout || 43200000; // 12 hours default for long-running operations
-      const timer = setTimeout(() => {
-        if (isProcessKilled) return;
+      const disableTimeoutForPiLive = isPiLiveMode;
+      const timer = disableTimeoutForPiLive
+        ? null
+        : setTimeout(() => {
+            if (isProcessKilled) return;
 
-        isProcessKilled = true;
-        if (this.config!.debug) {
-          engineLogger.warn(`Script execution timed out after ${timeout}ms, killing process`);
-        }
+            isProcessKilled = true;
+            if (this.config!.debug) {
+              engineLogger.warn(`Script execution timed out after ${timeout}ms, killing process`);
+            }
 
-        child.kill('SIGTERM');
+            child.kill('SIGTERM');
 
-        // Force kill after 5 seconds if SIGTERM doesn't work
-        setTimeout(() => {
-          if (!child.killed) {
-            child.kill('SIGKILL');
-          }
-        }, 5000);
+            // Force kill after 5 seconds if SIGTERM doesn't work
+            setTimeout(() => {
+              if (!child.killed) {
+                child.kill('SIGKILL');
+              }
+            }, 5000);
 
-        reject(new Error(`Script execution timed out after ${timeout}ms`));
-      }, timeout);
+            reject(new Error(`Script execution timed out after ${timeout}ms`));
+          }, timeout);
 
       // Clear timeout when process completes
       child.on('close', () => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
       });
 
       child.on('error', () => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
       });
     });
   }

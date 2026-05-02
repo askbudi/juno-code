@@ -86,6 +86,27 @@ print(json.dumps({"type": "result", "content": json.dumps(payload)}))
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createStubPiLiveService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'pi.py');
+  const scriptContent = `#!/usr/bin/env python3
+import json
+import time
+
+print(json.dumps({"type": "assistant", "content": "live-start"}))
+time.sleep(0.12)
+print(json.dumps({"type": "result", "result": "live-done", "session_id": "pi-live-session"}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
 afterEach(async () => {
   await Promise.all(tempRoots.map((dir) => fs.remove(dir)));
   tempRoots.length = 0;
@@ -226,6 +247,40 @@ describe('ShellBackend structured output', () => {
         delete process.env.GEMINI_OUTPUT_FORMAT;
       }
     }
+  });
+
+  it('does not enforce backend timeout for pi live sessions', async () => {
+    const { servicesDir, workingDir } = await createStubPiLiveService();
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: workingDir,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      timeout: 50,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'open live',
+        project_path: workingDir,
+        live: true,
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+    const parsed = JSON.parse(result.content);
+    expect(parsed.is_error).toBe(false);
+    expect(parsed.result).toBe('live-done');
+    expect(parsed.session_id).toBe('pi-live-session');
   });
 
   it('builds structured error output for generic subagent (pi) failures', async () => {
