@@ -105,6 +105,56 @@ export interface HookExecutionOptions {
  */
 const hookLogger = logger.child(LogContext.SYSTEM);
 
+const MAX_HOOK_LOG_OUTPUT_CHARS = 8000;
+
+function truncateForHookLog(value: string): string {
+  if (value.length <= MAX_HOOK_LOG_OUTPUT_CHARS) {
+    return value;
+  }
+
+  return `${value.slice(0, MAX_HOOK_LOG_OUTPUT_CHARS)}\n... [truncated ${value.length - MAX_HOOK_LOG_OUTPUT_CHARS} chars]`;
+}
+
+function appendHookOutputSection(lines: string[], label: string, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+
+  lines.push(`${label}:`);
+  lines.push(truncateForHookLog(value.trimEnd()));
+}
+
+function formatFailedHookCommandMessage(params: {
+  command: string;
+  exitCode?: number | null;
+  duration: number;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  timeout?: number;
+}): string {
+  const lines = [`Command failed: ${params.command}`];
+
+  if (params.exitCode !== undefined && params.exitCode !== null) {
+    lines.push(`Exit code: ${params.exitCode}`);
+  }
+
+  lines.push(`Duration: ${params.duration}ms`);
+
+  if (params.timeout !== undefined) {
+    lines.push(`Timeout: ${params.timeout}ms`);
+  }
+
+  if (params.error) {
+    lines.push(`Error: ${params.error}`);
+  }
+
+  appendHookOutputSection(lines, 'stderr', params.stderr);
+  appendHookOutputSection(lines, 'stdout', params.stdout);
+
+  return lines.join('\n');
+}
+
 /**
  * Execute a specific hook type with the provided context
  *
@@ -288,18 +338,22 @@ export async function executeHook(
         }
       } else {
         commandsFailed++;
-        contextLogger.error(`Command failed`, {
-          command,
-          exitCode: result.exitCode,
-          duration,
-          stderr: result.stderr,
-          stdout: result.stdout,
-        });
-
-        // Log stderr if present
-        if (result.stderr) {
-          contextLogger.error(`Command stderr:`, { stderr: result.stderr });
-        }
+        contextLogger.error(
+          formatFailedHookCommandMessage({
+            command,
+            exitCode: result.exitCode,
+            duration,
+            stderr: result.stderr,
+            stdout: result.stdout,
+          }),
+          {
+            command,
+            exitCode: result.exitCode,
+            duration,
+            stderr: result.stderr,
+            stdout: result.stdout,
+          },
+        );
 
         // If we shouldn't continue on error, break the loop
         if (!continueOnError) {
@@ -334,20 +388,26 @@ export async function executeHook(
 
       commandResults.push(commandResult);
 
-      if (isTimeout) {
-        contextLogger.error(`Command timed out after ${commandTimeout}ms`, {
-          command,
-          timeout: commandTimeout,
-          duration,
-          error: errorMessage,
-        });
-      } else {
-        contextLogger.error(`Command execution failed`, {
+      contextLogger.error(
+        formatFailedHookCommandMessage({
           command,
           duration,
           error: errorMessage,
-        });
-      }
+          timeout: isTimeout ? commandTimeout : undefined,
+        }),
+        isTimeout
+          ? {
+              command,
+              timeout: commandTimeout,
+              duration,
+              error: errorMessage,
+            }
+          : {
+              command,
+              duration,
+              error: errorMessage,
+            },
+      );
 
       // If we shouldn't continue on error, break the loop
       if (!continueOnError) {

@@ -19,16 +19,18 @@ import {
   type CommandExecutionResult,
 } from '../hooks.js';
 
+const mockContextLogger = vi.hoisted(() => ({
+  info: vi.fn(),
+  debug: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 // Mock dependencies
 vi.mock('execa');
 vi.mock('../../cli/utils/advanced-logger.js', () => ({
   logger: {
-    child: vi.fn(() => ({
-      info: vi.fn(),
-      debug: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    })),
+    child: vi.fn(() => mockContextLogger),
   },
   LogContext: {
     SYSTEM: 'SYSTEM',
@@ -187,6 +189,40 @@ describe('hooks', () => {
       expect(result.commandResults[1].exitCode).toBe(0);
     });
 
+    it('should log failed hook command, exit code, stderr, and stdout in the visible message', async () => {
+      const hooksWithFailure: HooksConfig = {
+        END_RUN: {
+          commands: ['npm run failing-hook'],
+        },
+      };
+
+      mockedExeca.mockResolvedValueOnce({
+        exitCode: 42,
+        stdout: 'stdout diagnostics',
+        stderr: 'stderr diagnostics',
+        all: 'stdout diagnostics\nstderr diagnostics',
+      } as any);
+
+      await executeHook('END_RUN', hooksWithFailure, mockContext);
+
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Command failed: npm run failing-hook'),
+        expect.any(Object),
+      );
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Exit code: 42'),
+        expect.any(Object),
+      );
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('stderr diagnostics'),
+        expect.any(Object),
+      );
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('stdout diagnostics'),
+        expect.any(Object),
+      );
+    });
+
     it('should handle command timeout', async () => {
       const hooksWithTimeout: HooksConfig = {
         START_RUN: {
@@ -208,6 +244,18 @@ describe('hooks', () => {
       expect(result.commandResults[0].success).toBe(false);
       expect(result.commandResults[0].exitCode).toBe(-1);
       expect(result.commandResults[0].error).toBeDefined();
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Command failed: sleep 10'),
+        expect.any(Object),
+      );
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Timeout: 100ms'),
+        expect.any(Object),
+      );
+      expect(mockContextLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Error: Command timed out'),
+        expect.any(Object),
+      );
     });
 
     it('should return silently when hook is not defined', async () => {
