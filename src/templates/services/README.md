@@ -276,7 +276,7 @@ npm install -g @mariozechner/pi-coding-agent
 - `-p, --prompt <text>`: Prompt text (required, mutually exclusive with --prompt-file)
 - `-pp, --prompt-file <path>`: Path to prompt file (required if no --prompt)
 - `--cd <path>`: Project path (default: current directory)
-- `-m, --model <name>`: Model name (supports shorthand aliases)
+- `-m, --model <name>`: Model name (supports shorthand aliases, including `:codex` → `openai-codex/gpt-5.3-codex` and `:api-codex` → `openai/gpt-5.3-codex`)
 - `--live`: Run Pi in interactive mode (no `--mode json`, prompt passed positionally)
 - `--no-extensions`: Disable Pi extensions (incompatible with `--live`)
 - `--verbose`: Enable verbose output

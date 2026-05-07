@@ -334,29 +334,39 @@ export function normalizeLeadingPromptDirectiveArtifacts(prompt: string): string
   }
 
   let index = 0;
-  while (index < lines.length && lines[index].trim() === '') {
+  while (index < lines.length) {
+    const candidateLine = lines[index];
+    if (candidateLine === undefined || candidateLine.trim() !== '') {
+      break;
+    }
     index += 1;
   }
 
-  if (index >= lines.length) {
+  const firstMeaningfulRawLine = lines[index];
+  if (firstMeaningfulRawLine === undefined) {
     return prompt;
   }
 
-  const firstMeaningfulLine = lines[index].trim();
+  const firstMeaningfulLine = firstMeaningfulRawLine.trim();
   if (!LEADING_PROMPT_DELIMITER_MARKERS.has(firstMeaningfulLine)) {
     return prompt;
   }
 
   let directiveIndex = index + 1;
-  while (directiveIndex < lines.length && lines[directiveIndex].trim() === '') {
+  while (directiveIndex < lines.length) {
+    const candidateLine = lines[directiveIndex];
+    if (candidateLine === undefined || candidateLine.trim() !== '') {
+      break;
+    }
     directiveIndex += 1;
   }
 
-  if (directiveIndex >= lines.length) {
+  const directiveRawLine = lines[directiveIndex];
+  if (directiveRawLine === undefined) {
     return prompt;
   }
 
-  const directiveCandidate = lines[directiveIndex].trimStart();
+  const directiveCandidate = directiveRawLine.trimStart();
   if (!LEADING_DIRECTIVE_LINE_REGEX.test(directiveCandidate)) {
     return prompt;
   }

@@ -388,13 +388,15 @@ export async function executeHook(
 
       commandResults.push(commandResult);
 
+      const failedHookMessage = formatFailedHookCommandMessage({
+        command,
+        duration,
+        error: errorMessage,
+        ...(isTimeout && commandTimeout !== undefined ? { timeout: commandTimeout } : {}),
+      });
+
       contextLogger.error(
-        formatFailedHookCommandMessage({
-          command,
-          duration,
-          error: errorMessage,
-          timeout: isTimeout ? commandTimeout : undefined,
-        }),
+        failedHookMessage,
         isTimeout
           ? {
               command,

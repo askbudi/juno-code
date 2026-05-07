@@ -1452,7 +1452,26 @@ class TestDefaultModelConstant:
 
     def test_shorthand_count(self):
         svc = _load_pi_service()
-        assert len(svc.MODEL_SHORTHANDS) == 16
+        assert len(svc.MODEL_SHORTHANDS) == 17
+        assert set(svc.MODEL_SHORTHANDS) == {
+            ":pi",
+            ":default",
+            ":sonnet",
+            ":opus",
+            ":haiku",
+            ":gpt",
+            ":gpt-5",
+            ":gpt-4o",
+            ":o3",
+            ":codex",
+            ":api-codex",
+            ":codex-spark",
+            ":api-codex-spark",
+            ":gemini-pro",
+            ":gemini-flash",
+            ":groq",
+            ":grok",
+        }
 
     def test_prettifier_constants(self):
         svc = _load_pi_service()
