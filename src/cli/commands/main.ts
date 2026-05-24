@@ -214,7 +214,7 @@ async function runKanbanGetCommand(
       cwd: workingDirectory,
       env: {
         ...process.env,
-        JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || workingDirectory,
+        JUNO_TASK_ROOT: workingDirectory,
       },
       maxBuffer: 1024 * 1024,
       timeout: KANBAN_GET_COMMAND_TIMEOUT_MS,

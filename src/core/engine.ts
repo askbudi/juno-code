@@ -720,7 +720,7 @@ export class ExecutionEngine extends EventEmitter {
       outputRawJson: this.engineConfig.config.verbose >= 1,
       environment: {
         ...process.env,
-        JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || request.workingDirectory,
+        JUNO_TASK_ROOT: request.workingDirectory,
       },
       sessionId: request.requestId,
     });
@@ -885,10 +885,9 @@ export class ExecutionEngine extends EventEmitter {
     context.sessionContext = { ...context.sessionContext, state: 'active' as any };
 
     // Pin JUNO_TASK_ROOT to workingDirectory so juno-kanban always resolves
-    // .juno_task from the project root, not from wherever the agent cds to
-    if (!process.env.JUNO_TASK_ROOT) {
-      process.env.JUNO_TASK_ROOT = context.request.workingDirectory;
-    }
+    // .juno_task from the project root, not from a stale parent shell value or
+    // wherever the agent cds to during execution.
+    process.env.JUNO_TASK_ROOT = context.request.workingDirectory;
 
     // Initialize backend for this execution request
     await this.initializeBackend(context.request);
@@ -1099,7 +1098,7 @@ export class ExecutionEngine extends EventEmitter {
           workingDirectory: context.request.workingDirectory,
           environment: {
             ...process.env,
-            JUNO_TASK_ROOT: process.env.JUNO_TASK_ROOT || context.request.workingDirectory,
+            JUNO_TASK_ROOT: context.request.workingDirectory,
           },
         });
 

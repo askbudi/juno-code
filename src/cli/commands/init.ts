@@ -572,7 +572,10 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     const envPath = path.join(targetDirectory, '.env.juno');
 
     if (!(await fs.pathExists(envPath))) {
-      await fs.writeFile(envPath, '');
+      await fs.writeFile(
+        envPath,
+        '# Pin juno-kanban task storage to this project when commands run from here.\nJUNO_TASK_ROOT=.\n',
+      );
       console.log(chalk.green('   ✓ Created .env.juno'));
     } else {
       console.log(chalk.gray('   ℹ️  .env.juno already exists'));
@@ -737,13 +740,17 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 
       // Execute the install_requirements.sh script
       try {
-        // CRITICAL: Run the script from project root (process.cwd()), not from .juno_task
-        // This ensures .venv_juno is created in the project root directory, not inside .juno_task/
-        // User feedback: "when running juno-code init, it says install requirments.sh done correctly,
-        // but i cant find .venv_juno folder it should get created in the cwd the command is getting called"
-        // Run the script and capture output
+        // CRITICAL: Run the script from the initialized project root, not from .juno_task
+        // and not necessarily from the caller's original cwd when --directory is used.
+        // Also pin JUNO_TASK_ROOT for juno-kanban so fresh projects cannot inherit a
+        // stale task root from the parent shell and write tasks/config elsewhere.
+        const projectRoot = this.context.targetDirectory;
         const output = execSync(installScript, {
-          cwd: process.cwd(), // FIXED: Run from project root, not .juno_task
+          cwd: projectRoot,
+          env: {
+            ...process.env,
+            JUNO_TASK_ROOT: projectRoot,
+          },
           encoding: 'utf8',
           stdio: 'pipe', // Capture output instead of inheriting
         });

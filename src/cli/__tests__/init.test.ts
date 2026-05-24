@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
+import { execSync } from 'child_process';
 
 import { initCommandHandler, configureInitCommand } from '../commands/init.js';
 
@@ -39,6 +40,10 @@ vi.mock('fs-extra', () => {
   };
   return { default: mock, ...mock };
 });
+
+vi.mock('child_process', () => ({
+  execSync: vi.fn().mockReturnValue(''),
+}));
 
 vi.mock('../../templates/default-hooks.js', () => ({
   getDefaultHooks: vi.fn().mockReturnValue({
@@ -100,6 +105,10 @@ describe('Init Command', () => {
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit called');
     });
+
+    vi.mocked(fs.pathExists).mockResolvedValue(false);
+    vi.mocked(fs.readdir).mockResolvedValue([] as any);
+    vi.mocked(execSync).mockReturnValue('');
 
     // Mock process.cwd()
     vi.spyOn(process, 'cwd').mockReturnValue('/current/dir');
@@ -196,6 +205,34 @@ describe('Init Command', () => {
 
         expect(fs.ensureDir).toHaveBeenCalled();
         expect(processExitSpy).toHaveBeenCalledWith(0);
+      });
+
+      it('should run install requirements inside the target directory with JUNO_TASK_ROOT pinned', async () => {
+        vi.mocked(fs.readdir).mockResolvedValue(['install_requirements.sh'] as any);
+        vi.mocked(fs.pathExists).mockImplementation(async (target: any) =>
+          String(target).endsWith('/my-project/.juno_task/scripts/install_requirements.sh'),
+        );
+        vi.mocked(execSync).mockReturnValue('requirements ok');
+
+        const options: InitCommandOptions = {
+          directory: './my-project',
+          task: 'Build a test project',
+          subagent: 'claude',
+          force: false,
+          interactive: false,
+          template: 'default',
+          variables: {},
+        };
+
+        await runInit([], options, mockCommand);
+
+        expect(execSync).toHaveBeenCalledWith(
+          '/current/dir/my-project/.juno_task/scripts/install_requirements.sh',
+          expect.objectContaining({
+            cwd: '/current/dir/my-project',
+            env: expect.objectContaining({ JUNO_TASK_ROOT: '/current/dir/my-project' }),
+          }),
+        );
       });
 
       it('should use default task when not provided', async () => {
