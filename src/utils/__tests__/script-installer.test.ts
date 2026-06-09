@@ -113,6 +113,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'parallel_runner.sh'),
         '#!/usr/bin/env python3\nprint("parallel")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'parallel_runner_wait.sh'),
+        '#!/usr/bin/env python3\nprint("parallel wait")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -189,6 +193,7 @@ describe('ScriptInstaller', () => {
         { name: 'log_scanner.sh', installed: false },
         // Parallel execution
         { name: 'parallel_runner.sh', installed: false },
+        { name: 'parallel_runner_wait.sh', installed: false },
       ]);
     });
 
@@ -246,6 +251,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'parallel_runner.sh'),
         '#!/usr/bin/env python3\nprint("parallel")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'parallel_runner_wait.sh'),
+        '#!/usr/bin/env python3\nprint("parallel wait")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -269,6 +278,7 @@ describe('ScriptInstaller', () => {
         { name: 'log_scanner.sh', installed: true },
         // Parallel execution
         { name: 'parallel_runner.sh', installed: true },
+        { name: 'parallel_runner_wait.sh', installed: true },
       ]);
     });
   });

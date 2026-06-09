@@ -104,9 +104,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 _log_base = SCRIPT_DIR / "logs"
 LOG_DIR = _log_base  # overwritten in main() with run-ID path
 COMBINED_LOG = LOG_DIR / "parallel_runner.log"  # overwritten in main()
+STATUS_FILE = LOG_DIR / "parallel_runner_status.json"  # overwritten in main()
 
 # Run timestamp token (HHMMSS-microseconds), generated once at startup in main()
 _run_id = ""
+_run_started_at = ""
 
 # Temporary runtime artifacts are stored under logs/tmp and purged periodically.
 _TMP_DIR_NAME = "tmp"
@@ -260,6 +262,34 @@ def _legacy_session_state_files(name):
 
 def _orchestrator_log(name):
     return LOG_DIR / f"orchestrator_{name}.log"
+
+
+def _write_run_status(state, mode, exit_code=None, pid=None, error=None, session_name=None):
+    """Atomically write machine-readable run status for wait helpers.
+
+    The status JSON is the single source of truth for run completion. Helpers
+    should read this file instead of parsing human-readable log summaries.
+    """
+    payload = {
+        "state": state,
+        "run_id": _run_id,
+        "log_path": str(COMBINED_LOG),
+        "status_path": str(STATUS_FILE),
+        "started_at": _run_started_at or None,
+        "finished_at": datetime.now().isoformat() if state == "completed" else None,
+        "exit_code": exit_code,
+        "mode": mode,
+        "pid": pid if pid is not None else os.getpid(),
+    }
+    if error:
+        payload["error"] = str(error)
+    if session_name:
+        payload["session_name"] = session_name
+
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = STATUS_FILE.with_name(f"{STATUS_FILE.name}.tmp.{os.getpid()}")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, STATUS_FILE)
 
 
 def _tmp_dir(name):
@@ -1871,7 +1901,9 @@ def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
         _print_output_summary(agg_result)
 
     shutil.rmtree(str(_tmp_dir(_run_id)), ignore_errors=True)
-    sys.exit(1 if failed > 0 else 0)
+    exit_code = 1 if failed > 0 else 0
+    _write_run_status("completed", "headless", exit_code=exit_code)
+    sys.exit(exit_code)
 
 
 # ---------------------------------------------------------------------------
@@ -2667,6 +2699,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         signal.signal(signal.SIGINT, _shutdown_handler)
 
         try:
+            _write_run_status("running", f"tmux/{mode}", pid=os.getpid(), session_name=session_name_short)
             for worker in workers:
                 if not task_queue:
                     break
@@ -2688,10 +2721,13 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                 session_name_short, session_name, output_dir,
                 service, model, file_format, strict, subagent_args,
             )
-        except Exception:
+        except Exception as exc:
             import traceback
             traceback.print_exc()
             exit_code = 1
+            _write_run_status("completed", f"tmux/{mode}", exit_code=exit_code, error=exc, session_name=session_name_short)
+        else:
+            _write_run_status("completed", f"tmux/{mode}", exit_code=exit_code, session_name=session_name_short)
 
         if pid_path.exists():
             try:
@@ -2724,7 +2760,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
 # ---------------------------------------------------------------------------
 
 def main():
-    global LOG_DIR, COMBINED_LOG, _run_id
+    global LOG_DIR, COMBINED_LOG, STATUS_FILE, _run_id, _run_started_at
 
     args = parse_args()
 
@@ -2740,9 +2776,11 @@ def main():
     # Generate run ID and compute per-run LOG_DIR
     started_at = datetime.now()
     _run_id = started_at.strftime("%H%M%S-%f")
+    _run_started_at = started_at.isoformat()
     date_str = started_at.strftime("%Y-%m-%d")
     LOG_DIR = _log_base / date_str / _run_id
     COMBINED_LOG = LOG_DIR / "parallel_runner.log"
+    STATUS_FILE = LOG_DIR / "parallel_runner_status.json"
 
     # Assign colors
     for i, tid in enumerate(args.kanban):
@@ -2759,6 +2797,8 @@ def main():
         print(f"[parallel_runner] Removed {removed_tmp} stale tmp artifact(s) older than 48h")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[parallel_runner] Run artifacts: {LOG_DIR}")
+    initial_mode = f"tmux/{args.tmux}" if args.tmux else "headless"
+    _write_run_status("running", initial_mode)
 
     if args.tmux:
         run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)

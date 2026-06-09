@@ -41,6 +41,7 @@ export class ScriptInstaller {
     'log_scanner.sh', // Scans log files for errors/exceptions and creates kanban bug reports
     // Parallel execution
     'parallel_runner.sh', // Run juno-code tasks in parallel with tmux visualization
+    'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
   ];
 
   /**
