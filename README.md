@@ -258,6 +258,13 @@ juno-code pi 'your task'
 # Pi live interactive run (auto-exits on non-aborted completion)
 juno-code pi --live -p '/skill:ralph-loop' -i 1
 
+# Installed shortcuts
+# yy is the short binary alias for juno-code.
+# ypl is shorthand for yy pi --live and forwards all remaining args.
+yy pi --live 'hello'
+ypl 'hello'
+ypl '/skill:ralph-loop' -i 1
+
 # AI-powered test generation
 juno-code test --generate --framework vitest
 juno-code test --run

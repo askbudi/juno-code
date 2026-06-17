@@ -190,6 +190,8 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('TypeScript CLI for AI Subagent Orchestration');
       expect(result.stdout).toContain('juno-code init');
       expect(result.stdout).toContain('juno-code start');
+      expect(result.stdout).toContain('ypl');
+      expect(result.stdout).toContain('yy pi --live');
     });
 
     it('should display help with --help flag', async () => {
@@ -208,6 +210,14 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Shell safety');
       expect(result.stdout).toContain('backticks');
       expect(result.stdout).toContain("single quotes or -f/stdin");
+    });
+
+    it('should document ypl shortcut in Pi help', async () => {
+      const result = await executeCLI(['pi', '--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('ypl');
+      expect(result.stdout).toContain('shortcut for: yy pi --live');
     });
 
     it('should display version with --version flag', async () => {

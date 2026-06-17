@@ -652,6 +652,7 @@ function setupMainCommand(program: Command): void {
           console.log(
             chalk.gray("  juno-code -s claude -p 'prompt'   # Same (explicit -p flag)"),
           );
+          console.log(chalk.gray("  ypl 'prompt'                     # Shortcut for: yy pi --live 'prompt'"));
           console.log(
             chalk.gray('  shell safety: use single quotes or -f/stdin for prompts with backticks/$()'),
           );
@@ -850,6 +851,7 @@ ${chalk.blue('Examples:')}
 
   ${chalk.gray('# Interactive live TUI mode')}
   juno-code pi --live -p '/skill:ralph-loop' -i 1
+  ypl '/skill:ralph-loop' -i 1     ${chalk.gray('# shortcut for: yy pi --live ...')}
 
   ${chalk.gray('# File-based prompt')}
   juno-code pi -f instructions.md
@@ -1392,6 +1394,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Quick execution with Claude')}
   juno-code claude 'Analyze this codebase and suggest improvements'
+
+  ${chalk.gray('# Short aliases')}
+  yy pi --live 'hello'
+  ypl 'hello'     ${chalk.gray('# same as: yy pi --live hello')}
 
   ${chalk.gray('# Pipe prompt via stdin (heredoc, pipe, redirect)')}
   echo 'Analyze this codebase' | juno-code -s claude
