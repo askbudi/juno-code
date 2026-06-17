@@ -232,9 +232,10 @@ describe('Configuration Module', () => {
       });
     });
 
-    it('should load prompt macro dictionary entries from text values and config-relative files', async () => {
-      await fs.ensureDir(path.join(tempDir, '.juno_task', 'prompts'));
-      await fs.writeFile(path.join(tempDir, '.juno_task', 'prompts', 'ship.md'), 'ship docs with @@git');
+    it('should load prompt macro dictionary entries from text values and project-relative files', async () => {
+      await fs.ensureDir(path.join(tempDir, 'prompts'));
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeFile(path.join(tempDir, 'prompts', 'ship.md'), 'ship docs with @@git');
 
       await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
         promptMacros: {

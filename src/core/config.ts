@@ -606,10 +606,13 @@ function getConfigFileFormat(filePath: string): ConfigFileFormat {
  * @param filePath - Path to the configuration file
  * @returns Parsed configuration object
  */
-async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskConfig>> {
+async function loadConfigFromFile(
+  filePath: string,
+  promptMacroPathBaseDir: string = process.cwd(),
+): Promise<Partial<JunoTaskConfig>> {
   const format = getConfigFileFormat(filePath);
   const resolvedPath = resolvePath(filePath);
-  const baseDir = path.dirname(resolvedPath);
+  const macroPathBaseDir = resolvePath(promptMacroPathBaseDir);
 
   // Check if file exists
   try {
@@ -621,12 +624,12 @@ async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskCon
   switch (format) {
     case 'json':
       if (path.basename(filePath) === 'package.json') {
-        return resolvePromptMacroFileEntries(await loadPackageJsonConfig(resolvedPath), baseDir);
+        return resolvePromptMacroFileEntries(await loadPackageJsonConfig(resolvedPath), macroPathBaseDir);
       }
-      return resolvePromptMacroFileEntries(await loadJsonConfig(resolvedPath), baseDir);
+      return resolvePromptMacroFileEntries(await loadJsonConfig(resolvedPath), macroPathBaseDir);
 
     case 'yaml':
-      return resolvePromptMacroFileEntries(await loadYamlConfig(resolvedPath), baseDir);
+      return resolvePromptMacroFileEntries(await loadYamlConfig(resolvedPath), macroPathBaseDir);
 
     case 'toml':
       // TOML support would require additional dependency
@@ -720,7 +723,7 @@ export class ConfigLoader {
    */
   async fromFile(filePath: string): Promise<this> {
     try {
-      const fileConfig = await loadConfigFromFile(filePath);
+      const fileConfig = await loadConfigFromFile(filePath, this.baseDir);
       this.configSources.set('file', fileConfig);
     } catch (error) {
       throw new Error(`Failed to load configuration file: ${error}`);
@@ -738,7 +741,7 @@ export class ConfigLoader {
     try {
       const projectConfigFile = await findProjectConfigFile(this.baseDir);
       if (projectConfigFile) {
-        const fileConfig = await loadConfigFromFile(projectConfigFile);
+        const fileConfig = await loadConfigFromFile(projectConfigFile, this.baseDir);
         this.configSources.set('projectFile', fileConfig);
       }
     } catch (error) {
@@ -758,14 +761,14 @@ export class ConfigLoader {
     // First, try to load project-specific config
     const projectConfigFile = await findProjectConfigFile(this.baseDir);
     if (projectConfigFile) {
-      const fileConfig = await loadConfigFromFile(projectConfigFile);
+      const fileConfig = await loadConfigFromFile(projectConfigFile, this.baseDir);
       this.configSources.set('projectFile', fileConfig);
     }
 
     // Then, try to load global config file
     const globalConfigFile = await findGlobalConfigFile(this.baseDir);
     if (globalConfigFile) {
-      const fileConfig = await loadConfigFromFile(globalConfigFile);
+      const fileConfig = await loadConfigFromFile(globalConfigFile, this.baseDir);
       this.configSources.set('file', fileConfig);
     }
 
