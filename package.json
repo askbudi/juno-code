@@ -32,6 +32,7 @@
   "bin": {
     "juno-code": "./dist/bin/juno-code.sh",
     "yy": "./dist/bin/juno-code.sh",
+    "ypl": "./dist/bin/ypl.sh",
     "feedback-juno-code": "./dist/bin/feedback-collector.mjs"
   },
   "files": [
@@ -46,7 +47,7 @@
     "build:copy-services": "node -e \"const fs = require('fs-extra'); const path = require('path'); const src = 'src/templates/services'; const dest = 'dist/templates/services'; fs.copySync(src, dest, { recursive: true }); const required = ['codex.py','claude.py','gemini.py','pi.py']; const missing = required.filter(file => !fs.existsSync(path.join(dest, file))); if (missing.length) { throw new Error('Missing required service scripts in dist: ' + missing.join(', ')); } required.forEach(file => fs.chmodSync(path.join(dest, file), 0o755));\"",
     "build:copy-skills": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/skills'; const dest = 'dist/templates/skills'; fs.copySync(src, dest, { recursive: true, dereference: true });\"",
     "build:copy-extensions": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/extensions'; const dest = 'dist/templates/extensions'; if (fs.existsSync(src)) { fs.copySync(src, dest, { recursive: true }); }\"",
-    "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755);\"",
+    "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.copySync('src/bin/ypl.sh', 'dist/bin/ypl.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755); fs.chmodSync('dist/bin/ypl.sh', 0o755);\"",
     "build:watch": "tsup --watch",
     "test": "vitest run -c ./vitest.fast.config.ts",
     "test:full": "vitest run",
