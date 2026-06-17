@@ -232,6 +232,63 @@ describe('Configuration Module', () => {
       });
     });
 
+    it('should load prompt macro dictionary entries from text values and config-relative files', async () => {
+      await fs.ensureDir(path.join(tempDir, '.juno_task', 'prompts'));
+      await fs.writeFile(path.join(tempDir, '.juno_task', 'prompts', 'ship.md'), 'ship docs with @@git');
+
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        promptMacros: {
+          global: {
+            git: 'commit changes',
+            docs: { path: 'prompts/ship.md' },
+          },
+          local: {
+            inline: { text: "run !'echo tests'" },
+          },
+        },
+      });
+
+      const config = await new ConfigLoader(tempDir).loadAll();
+
+      expect(getPromptMacroDictionary(config)).toEqual({
+        git: 'commit changes',
+        docs: 'ship docs with @@git',
+        inline: "run !'echo tests'",
+      });
+    });
+
+    it('should load prompt macro dictionary entries from absolute file paths', async () => {
+      const promptPath = path.join(tempDir, 'absolute-prompt.txt');
+      await fs.writeFile(promptPath, 'absolute prompt text');
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        promptMacros: {
+          local: {
+            absolute: { path: promptPath },
+          },
+        },
+      });
+
+      const config = await new ConfigLoader(tempDir).loadAll();
+
+      expect(getPromptMacroDictionary(config).absolute).toBe('absolute prompt text');
+    });
+
+    it('should reject prompt macro object entries that define both path and text', async () => {
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        promptMacros: {
+          local: {
+            invalid: { path: 'prompt.md', text: 'inline prompt' },
+          },
+        },
+      });
+
+      await expect(new ConfigLoader(tempDir).loadAll()).rejects.toThrow(
+        /promptMacros\.local\.invalid must define exactly one non-empty field: path or text/,
+      );
+    });
+
     it('should reject malformed promptMacros config with actionable errors', () => {
       expect(() =>
         validateConfig({

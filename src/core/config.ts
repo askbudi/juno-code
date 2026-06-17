@@ -110,6 +110,9 @@ const PromptMacroOrderSchema = z.enum([
 
 const PromptMacroDictionarySchema = z.record(z.string(), z.string());
 
+type RawPromptMacroValue = string | { path?: unknown; text?: unknown };
+type RawPromptMacroDictionary = Record<string, RawPromptMacroValue>;
+
 const PromptMacrosSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -450,6 +453,93 @@ async function loadJsonConfig(filePath: string): Promise<Partial<JunoTaskConfig>
   }
 }
 
+function isPromptMacroObject(value: unknown): value is { path?: unknown; text?: unknown } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+async function resolvePromptMacroValue(
+  keyPath: string,
+  value: unknown,
+  baseDir: string,
+): Promise<string> {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (!isPromptMacroObject(value)) {
+    throw new Error(`${keyPath} must be a string or an object with exactly one of { path, text }`);
+  }
+
+  const pathValue = value.path;
+  const textValue = value.text;
+  const hasPath = nonEmptyString(pathValue);
+  const hasText = nonEmptyString(textValue);
+
+  if (hasPath === hasText) {
+    throw new Error(`${keyPath} must define exactly one non-empty field: path or text`);
+  }
+
+  if (hasText) {
+    return textValue;
+  }
+
+  const macroPath = pathValue as string;
+  const resolvedPath = path.isAbsolute(macroPath) ? macroPath : path.resolve(baseDir, macroPath);
+  try {
+    return await fsPromises.readFile(resolvedPath, 'utf-8');
+  } catch (error) {
+    throw new Error(`${keyPath} failed to read path ${resolvedPath}: ${error}`);
+  }
+}
+
+async function resolvePromptMacroDictionary(
+  dictionary: unknown,
+  baseDir: string,
+  keyPath: string,
+): Promise<Record<string, string> | undefined> {
+  if (dictionary === undefined) {
+    return undefined;
+  }
+  if (!isPromptMacroObject(dictionary)) {
+    throw new Error(`${keyPath} must be an object`);
+  }
+
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(dictionary as RawPromptMacroDictionary)) {
+    resolved[key] = await resolvePromptMacroValue(`${keyPath}.${key}`, value, baseDir);
+  }
+  return resolved;
+}
+
+async function resolvePromptMacroFileEntries(
+  config: Partial<JunoTaskConfig>,
+  baseDir: string,
+): Promise<Partial<JunoTaskConfig>> {
+  const rawPromptMacros = config.promptMacros as unknown as
+    | (Omit<PromptMacroConfig, 'global' | 'local'> & {
+      global?: unknown;
+      local?: unknown;
+    })
+    | undefined;
+
+  if (!rawPromptMacros) {
+    return config;
+  }
+
+  return {
+    ...config,
+    promptMacros: {
+      ...rawPromptMacros,
+      global: await resolvePromptMacroDictionary(rawPromptMacros.global, baseDir, 'promptMacros.global'),
+      local: await resolvePromptMacroDictionary(rawPromptMacros.local, baseDir, 'promptMacros.local'),
+    } as PromptMacroConfig,
+  };
+}
+
 /**
  * Load configuration from a YAML file
  *
@@ -519,6 +609,7 @@ function getConfigFileFormat(filePath: string): ConfigFileFormat {
 async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskConfig>> {
   const format = getConfigFileFormat(filePath);
   const resolvedPath = resolvePath(filePath);
+  const baseDir = path.dirname(resolvedPath);
 
   // Check if file exists
   try {
@@ -530,12 +621,12 @@ async function loadConfigFromFile(filePath: string): Promise<Partial<JunoTaskCon
   switch (format) {
     case 'json':
       if (path.basename(filePath) === 'package.json') {
-        return loadPackageJsonConfig(resolvedPath);
+        return resolvePromptMacroFileEntries(await loadPackageJsonConfig(resolvedPath), baseDir);
       }
-      return loadJsonConfig(resolvedPath);
+      return resolvePromptMacroFileEntries(await loadJsonConfig(resolvedPath), baseDir);
 
     case 'yaml':
-      return loadYamlConfig(resolvedPath);
+      return resolvePromptMacroFileEntries(await loadYamlConfig(resolvedPath), baseDir);
 
     case 'toml':
       // TOML support would require additional dependency

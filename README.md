@@ -827,10 +827,12 @@ Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros
     "order": "before_command_substitution",
     "maxDepth": 10,
     "global": {
-      "git": "commit your changes"
+      "git": "commit your changes",
+      "spec": { "path": "prompts/spec.md" }
     },
     "local": {
-      "ship": "run tests then @@git"
+      "ship": "run tests then @@git",
+      "inline": { "text": "run !'npm test' before @@git" }
     }
   }
 }
@@ -840,6 +842,9 @@ Notes:
 - `local` overrides `global` on key collisions.
 - `maxDepth` defaults to `10` and must be a positive integer.
 - `order` supports `before_command_substitution` (default) or `after_command_substitution`.
+- Dictionary values can be strings or objects with exactly one non-empty `path` or `text` field.
+- `path` loads UTF-8 text/markdown from an absolute path or a path relative to the config file directory.
+- Loaded/inline macro text still flows through normal `@@key` macro expansion and `!'cmd'` prompt command substitution according to `order`.
 
 ### Project Env Bootstrap (`.env.juno`)
 

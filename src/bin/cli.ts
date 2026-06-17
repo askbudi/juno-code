@@ -1470,7 +1470,8 @@ ${chalk.blue.bold('Env File Bootstrap:')}
 
 ${chalk.blue.bold('Prompt Macros (@@key):')}
   Define reusable prompt macros in ${chalk.cyan('.juno_task/config.json')} under ${chalk.cyan('promptMacros')}.
-  Example: ${chalk.gray('"promptMacros": {"global": {"git": "commit changes"}, "local": {"ship": "run tests then @@git"}, "maxDepth": 10}')}
+  Example: ${chalk.gray('"promptMacros": {"global": {"git": "commit changes", "spec": {"path": "prompts/spec.md"}}, "local": {"ship": "run tests then @@git"}, "maxDepth": 10}')}
+  Values can be strings or {path}/{text}; relative paths resolve from the config file directory.
   Local keys override global keys. Default order is before command substitution.
 
 ${chalk.blue.bold('Configuration:')}
