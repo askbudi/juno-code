@@ -190,9 +190,10 @@ fi
 # Change to project root
 cd "$PROJECT_ROOT"
 
-# Export JUNO_TASK_ROOT so juno-kanban resolves .juno_task paths from project root,
-# not from wherever the calling agent happens to be. Respects existing override.
-export JUNO_TASK_ROOT="${JUNO_TASK_ROOT:-$PROJECT_ROOT}"
+# Export JUNO_TASK_ROOT so juno-kanban resolves .juno_task paths from this
+# wrapper's project root, regardless of a stale parent-shell value or where
+# the calling agent happens to be.
+export JUNO_TASK_ROOT="$PROJECT_ROOT"
 
 # Prefer local kanban source when available.
 # - Monorepo root:   $PROJECT_ROOT/juno_kanban/src
