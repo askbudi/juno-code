@@ -797,8 +797,13 @@ export class ShellBackend implements Backend {
         args.push('--thinking', String(request.arguments.thinking));
       }
 
-      // For Python scripts, add resume flag if provided (--resume SESSION_ID)
-      if (isPython && request.arguments?.resume) {
+      // For Pi clone requests, use Pi's native durable fork plumbing instead
+      // of resuming the source session directly. This keeps Pi as the single
+      // source of truth for branch metadata and session-file creation.
+      if (isPython && subagentType === 'pi' && request.arguments?.cloneFromSession) {
+        args.push('--fork', String(request.arguments.cloneFromSession));
+      } else if (isPython && request.arguments?.resume) {
+        // For Python scripts, add resume flag if provided (--resume SESSION_ID)
         args.push('--resume', String(request.arguments.resume));
       }
 

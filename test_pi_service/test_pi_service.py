@@ -48,6 +48,7 @@ def _make_args(**overrides):
         no_skills=False,
         no_session=False,
         resume=None,
+        fork=None,
         auto_instruction="",
         additional_args="",
         live=False,
@@ -263,6 +264,36 @@ class TestBuildPiCommand:
         cmd, _stdin = self.svc.build_pi_command(args)
 
         assert "--no-session" not in cmd
+
+    def test_fork_uses_pi_native_fork_without_resume(self):
+        """Clone mode delegates to Pi native --fork and does not resume the source session."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "clone prompt"
+        args = _make_args(fork="source-session-001")
+        cmd, _stdin = self.svc.build_pi_command(args)
+
+        fork_idx = cmd.index("--fork")
+        assert cmd[fork_idx + 1] == "source-session-001"
+        assert "--session" not in cmd
+        assert "--no-session" not in cmd
+
+    def test_fork_rejects_no_session(self):
+        """Forking creates a durable Pi session, so it cannot fall back to ephemeral mode."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "clone prompt"
+        args = _make_args(fork="source-session-001", no_session=True)
+
+        with pytest.raises(ValueError, match="mutually exclusive with --no-session"):
+            self.svc.build_pi_command(args)
+
+    def test_fork_rejects_resume(self):
+        """Fork and direct resume are mutually exclusive session intents."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "clone prompt"
+        args = _make_args(fork="source-session-001", resume="source-session-001")
+
+        with pytest.raises(ValueError, match="mutually exclusive with --resume"):
+            self.svc.build_pi_command(args)
 
     def test_starts_with_pi(self):
         """Command always starts with 'pi'."""

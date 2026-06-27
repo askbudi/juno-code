@@ -1915,6 +1915,8 @@ export async function mainCommandHandler(
       ...(options.appendAllowedTools !== undefined ? { appendAllowedTools: options.appendAllowedTools } : {}),
       ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
       ...(options.resume !== undefined ? { resume: options.resume } : {}),
+      ...(options.cloneSession !== undefined ? { cloneSession: options.cloneSession } : {}),
+      ...(options.cloneFromSession !== undefined ? { cloneFromSession: options.cloneFromSession } : {}),
       ...(options.continue !== undefined ? { continueConversation: options.continue } : {}),
       ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
       ...(options.live !== undefined ? { live: options.live } : {}),

@@ -389,6 +389,13 @@ Model shorthands:
         )
 
         parser.add_argument(
+            "--fork",
+            type=str,
+            default=None,
+            help="Fork/clone from a previous Pi session ID or path. Passed to Pi CLI as --fork <source>.",
+        )
+
+        parser.add_argument(
             "--auto-instruction",
             type=str,
             default=os.environ.get("PI_AUTO_INSTRUCTION", ""),
@@ -497,8 +504,19 @@ Model shorthands:
         if args.no_skills:
             cmd.append("--no-skills")
 
-        # Session control
-        if getattr(args, "resume", None):
+        # Session control. Clone mode must use Pi's native --fork as the
+        # durable source of truth; never combine it with ephemeral no-session
+        # mode or a direct resume of the source session.
+        fork_source = getattr(args, "fork", None)
+        if isinstance(fork_source, str):
+            fork_source = fork_source.strip()
+        if fork_source:
+            if args.no_session:
+                raise ValueError("Pi --fork clone mode is mutually exclusive with --no-session")
+            if getattr(args, "resume", None):
+                raise ValueError("Pi --fork clone mode is mutually exclusive with --resume")
+            cmd.extend(["--fork", fork_source])
+        elif getattr(args, "resume", None):
             cmd.extend(["--session", args.resume])
         elif args.no_session:
             cmd.append("--no-session")

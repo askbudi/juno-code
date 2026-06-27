@@ -92,6 +92,12 @@ export interface ExecutionRequest {
   /** Resume a conversation by session ID (forwarded to shell backend) */
   readonly resume?: string;
 
+  /** Clone/fork the requested Pi session instead of resuming it directly. */
+  readonly cloneSession?: boolean;
+
+  /** Source Pi session ID/path to fork from when cloneSession is enabled. */
+  readonly cloneFromSession?: string;
+
   /** Continue the most recent conversation (forwarded to shell backend) */
   readonly continueConversation?: boolean;
 
@@ -784,6 +790,16 @@ export class ExecutionEngine extends EventEmitter {
       throw new Error('Working directory is required');
     }
 
+    if (request.cloneSession === true) {
+      const cloneSource = request.cloneFromSession ?? request.resume;
+      if (request.subagent !== 'pi') {
+        throw new Error('Session cloning is only supported for the Pi subagent');
+      }
+      if (typeof cloneSource !== 'string' || cloneSource.trim().length === 0) {
+        throw new Error('Pi session cloning requires a source session via cloneFromSession or resume');
+      }
+    }
+
     if (
       Number.isNaN(request.maxIterations) ||
       request.maxIterations < -1 ||
@@ -1115,6 +1131,11 @@ export class ExecutionEngine extends EventEmitter {
         warnings: macroWarnings,
       });
 
+      const cloneFromSession =
+        context.request.cloneSession === true
+          ? (context.request.cloneFromSession ?? context.request.resume)
+          : undefined;
+
       toolRequest = {
         toolName: this.getToolNameForSubagent(context.request.subagent),
         arguments: {
@@ -1132,7 +1153,12 @@ export class ExecutionEngine extends EventEmitter {
           ...(context.request.disallowedTools !== undefined && {
             disallowedTools: context.request.disallowedTools,
           }),
-          ...(context.request.resume !== undefined && { resume: context.request.resume }),
+          ...(context.request.resume !== undefined &&
+            context.request.cloneSession !== true && { resume: context.request.resume }),
+          ...(context.request.cloneSession !== undefined && {
+            cloneSession: context.request.cloneSession,
+          }),
+          ...(cloneFromSession !== undefined && { cloneFromSession }),
           ...(context.request.continueConversation !== undefined && {
             continueConversation: context.request.continueConversation,
           }),
@@ -1914,6 +1940,8 @@ export function createExecutionRequest(options: {
   requestId?: string;
   mcpServerName?: string;
   resume?: string;
+  cloneSession?: boolean;
+  cloneFromSession?: string;
   continueConversation?: boolean;
   thinking?: string;
   live?: boolean;
@@ -1958,6 +1986,14 @@ export function createExecutionRequest(options: {
 
   if (options.resume !== undefined) {
     (result as any).resume = options.resume;
+  }
+
+  if (options.cloneSession !== undefined) {
+    (result as any).cloneSession = options.cloneSession;
+  }
+
+  if (options.cloneFromSession !== undefined) {
+    (result as any).cloneFromSession = options.cloneFromSession;
   }
 
   if (options.continueConversation !== undefined) {

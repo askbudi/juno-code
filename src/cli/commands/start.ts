@@ -162,6 +162,8 @@ export async function startCommandHandler(
       ...(options.appendAllowedTools !== undefined ? { appendAllowedTools: options.appendAllowedTools } : {}),
       ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
       ...(options.resume !== undefined ? { resume: options.resume } : {}),
+      ...(options.cloneSession !== undefined ? { cloneSession: options.cloneSession } : {}),
+      ...(options.cloneFromSession !== undefined ? { cloneFromSession: options.cloneFromSession } : {}),
       ...(options.continue !== undefined ? { continue: options.continue } : {}),
       ...(options.directory !== undefined ? { cwd: options.directory } : {}),
       ...(options.verbose !== undefined ? { verbose: options.verbose } : {}),

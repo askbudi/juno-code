@@ -1338,6 +1338,66 @@ print(json.dumps({"type": "agent_end", "result": "live manual ready"}))
     expect(parsed.args).not.toContain('-p');
   });
 
+  it('passes --fork to Pi service for clone requests and preserves returned clone session_id', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-clone-'));
+    tempRoots.push(tempRoot);
+
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+
+    const scriptPath = path.join(servicesDir, 'pi.py');
+    const scriptContent = `#!/usr/bin/env python3
+import json, sys
+
+print(json.dumps({"type": "argv", "args": sys.argv[1:]}))
+print(json.dumps({"type": "agent_end", "result": "cloned", "session_id": "clone-session-002"}))
+`;
+    await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: tempRoot,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      outputRawJson: true,
+    });
+    await backend.initialize();
+
+    const request: ToolCallRequest = {
+      toolName: 'pi_subagent',
+      arguments: {
+        instruction: 'explore branch',
+        project_path: tempRoot,
+        resume: 'source-session-001',
+        cloneSession: true,
+        cloneFromSession: 'source-session-001',
+      },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: {
+        sessionId: 'test-session',
+        iterationNumber: 1,
+      },
+    };
+
+    const result = await backend.execute(request);
+
+    const rawOutput = (result.metadata as any)?.rawOutput ?? result.content;
+    const lines = rawOutput.trim().split('\n');
+    const argvLine = lines.find((l: string) => l.includes('"argv"'));
+    expect(argvLine).toBeTruthy();
+    const argvPayload = JSON.parse(argvLine!);
+
+    const forkIdx = argvPayload.args.indexOf('--fork');
+    expect(forkIdx).toBeGreaterThanOrEqual(0);
+    expect(argvPayload.args[forkIdx + 1]).toBe('source-session-001');
+    expect(argvPayload.args).not.toContain('--resume');
+
+    const structured = JSON.parse(result.content as string);
+    expect(structured.result).toBe('cloned');
+    expect(structured.session_id).toBe('clone-session-002');
+  });
+
   it('passes --continue flag to Claude subagent when continueConversation is set', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-claude-cont-'));
     tempRoots.push(tempRoot);
