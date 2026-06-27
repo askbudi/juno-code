@@ -190,6 +190,7 @@ function setupGlobalOptions(program: Command): void {
       'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)',
     )
     .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
+    .option('--clone [prompt]', 'Clone/fork the source Pi session and run an optional prompt (requires --resume or a continue scope)')
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
     .option(
       '--til-completion',
@@ -418,12 +419,16 @@ function setupContinueCommand(program: Command): void {
     .option('-i, --max-iterations <number>', 'Override max iterations for this continue run', parseInt)
     .option('-m, --model <name>', 'Override model for this continue run')
     .option('-s, --subagent <name>', 'Override subagent for this continue run')
+    .option('--clone [prompt]', 'Clone/fork the current continue-scope Pi session before running an optional prompt')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
     .option('--thinking <level>', 'Override thinking level for this continue run')
     .action(async (promptArgs: string[], options, command) => {
       if (promptArgs.length > 0 && options.prompt === undefined) {
         options.prompt = promptArgs.join(' ');
+      }
+      if (typeof options.clone === 'string' && options.prompt === undefined) {
+        options.prompt = options.clone;
       }
 
       try {
@@ -449,6 +454,60 @@ function setupContinueCommand(program: Command): void {
     });
 
   continueCommand.allowUnknownOption(true);
+}
+
+/**
+ * Setup clone command.
+ * Alias-style UX for `juno-code continue --clone`, using the current shell continue scope.
+ */
+function setupCloneCommand(program: Command): void {
+  const cloneCommand = program
+    .command('clone')
+    .description('Clone/fork the current shell continue-scope Pi session and run a prompt')
+    .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p or --clone)')
+    .option(
+      '-p, --prompt [text]',
+      "Prompt input (inline text, file path, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions, prefer single quotes for shell metacharacters)",
+    )
+    .option('-f, --prompt-file <path>', 'Read prompt from a file (shell-safe for backticks/$())')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('-m, --model <name>', 'Override model for the cloned run')
+    .option('-s, --subagent <name>', 'Override subagent for the cloned run')
+    .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
+    .option('--thinking <level>', 'Override thinking level for the cloned run')
+    .action(async (promptArgs: string[], options, command) => {
+      if (promptArgs.length > 0 && options.prompt === undefined) {
+        options.prompt = promptArgs.join(' ');
+      }
+
+      try {
+        const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+        _getActiveSessionId = getActiveSessionId;
+
+        const globalOptions = program.opts();
+        const definedGlobalOptions = Object.fromEntries(
+          Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
+        );
+        const allOptions = {
+          ...definedGlobalOptions,
+          ...options,
+          continueFromLatest: true,
+          clone: true,
+        };
+
+        allOptions.verbose = normalizeVerbose(allOptions.verbose);
+
+        if (allOptions.silent) {
+          allOptions.quiet = true;
+        }
+
+        await mainCommandHandler([], allOptions as any, command);
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  cloneCommand.allowUnknownOption(true);
 }
 
 /**
@@ -548,6 +607,9 @@ function setupMainCommand(program: Command): void {
       // Merge positional prompt args into options.prompt (if -p not already set)
       if (promptArgs.length > 0 && options.prompt === undefined) {
         options.prompt = promptArgs.join(' ');
+      }
+      if (typeof program.opts().clone === 'string' && options.prompt === undefined) {
+        options.prompt = program.opts().clone;
       }
       try {
         // Get global options from program
@@ -1358,6 +1420,9 @@ async function main(): Promise<void> {
 
   // Continue from latest session snapshot
   setupContinueCommand(program);
+
+  // Clone the current continue-scope session
+  setupCloneCommand(program);
 
   // Continue scope hash/status endpoint for scripts
   setupContinueScopeCommand(program);

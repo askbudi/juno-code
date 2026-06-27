@@ -87,6 +87,8 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   interactivePrompt?: boolean;
   /** Resume a conversation by session ID (shell backend only) */
   resume?: string;
+  /** Prompt text supplied by the CLI --clone UX; enables cloneSession after validation */
+  clone?: string | true;
   /** Clone/fork the resume session through Pi native --fork (Pi only) */
   cloneSession?: boolean;
   /** Explicit Pi session ID/path to fork from when cloning */
@@ -145,6 +147,8 @@ export interface StartCommandOptions extends GlobalCLIOptions {
   appendAllowedTools?: string[];
   /** Resume a conversation by session ID (shell backend only) */
   resume?: string;
+  /** Prompt text supplied by the CLI --clone UX; enables cloneSession after validation */
+  clone?: string | true;
   /** Clone/fork the resume session through Pi native --fork (Pi only) */
   cloneSession?: boolean;
   /** Explicit Pi session ID/path to fork from when cloning */

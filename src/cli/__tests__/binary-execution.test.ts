@@ -654,6 +654,30 @@ describe('Binary Execution Tests', () => {
   });
 
   describe('Command Aliases and Shortcuts', () => {
+    it('should expose clone UX in root help', async () => {
+      const result = await executeCLI(['--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('--clone');
+      expect(result.stdout).toContain('clone');
+    });
+
+    it('should expose clone subcommand options', async () => {
+      const result = await executeCLI(['clone', '--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('Clone/fork');
+      expect(result.stdout).toContain('--prompt-file');
+      expect(result.stdout).toContain('--thinking');
+    });
+
+    it('should expose continue --clone option', async () => {
+      const result = await executeCLI(['continue', '--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('--clone');
+    });
+
     it('should handle subagent direct commands (if implemented)', async () => {
       // Test if subagent shortcuts like 'juno-code claude "prompt"' work
       const result = await executeCLI(['claude', '--help'], { expectError: true });

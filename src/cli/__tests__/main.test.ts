@@ -82,6 +82,9 @@ vi.mock('../../core/engine.js', () => ({
     workingDirectory: opts.workingDirectory,
     maxIterations: opts.maxIterations,
     model: opts.model,
+    resume: opts.resume,
+    cloneSession: opts.cloneSession,
+    cloneFromSession: opts.cloneFromSession,
     live: opts.live,
   })),
 }));
@@ -1749,6 +1752,138 @@ describe('Main Command', () => {
         );
       });
 
+      it('should clone explicit resume sessions and use the clone prompt', async () => {
+        await mainCommandHandler(
+          [],
+          {
+            resume: 'source-session-001',
+            clone: 'clone this work',
+            cwd: '/test',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            instruction: 'clone this work',
+            subagent: 'pi',
+            resume: 'source-session-001',
+            cloneSession: true,
+            cloneFromSession: 'source-session-001',
+          }),
+        );
+      });
+
+      it('should clone from the current continue scope and persist the returned clone session', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'clone-pane';
+        const scopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:clone-pane')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'source-session-scope';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          model: ':api-codex',
+          maxIterations: 2,
+        });
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'clone-run',
+              instruction: 'clone from scope',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 2,
+              model: ':api-codex',
+              resume: 'source-session-scope',
+              cloneSession: true,
+              cloneFromSession: 'source-session-scope',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: JSON.stringify({ type: 'agent_end', session_id: 'clone-session-002' }),
+                  metadata: {},
+                },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('.env.juno'),
+        );
+        vi.mocked(fs.readFile).mockResolvedValueOnce('FOO=bar\n');
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'clone from scope',
+            cwd: '/test',
+            continueFromLatest: true,
+            clone: true,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resume: 'source-session-scope',
+            cloneSession: true,
+            cloneFromSession: 'source-session-scope',
+          }),
+        );
+        const envContent = String(vi.mocked(fs.writeFile).mock.calls.at(-1)?.[1]);
+        expect(envContent).toContain('clone-session-002');
+        expect(envContent).not.toContain('source-session-scope');
+      });
+
+      it('should fail fast when clone is requested without resume or continue scope', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-clone-pane';
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'clone without source',
+            clone: true,
+            cwd: '/test',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(createExecutionRequest).not.toHaveBeenCalled();
+      });
+
       it('should fail fast when continueFromLatest is requested without snapshot env vars', async () => {
         process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-pane';
 
@@ -2496,6 +2631,8 @@ describe('Verbose/Quiet Output Modes', () => {
       appendAllowedTools: opts.appendAllowedTools,
       disallowedTools: opts.disallowedTools,
       resume: opts.resume,
+      cloneSession: opts.cloneSession,
+      cloneFromSession: opts.cloneFromSession,
       continueConversation: opts.continueConversation,
       thinking: opts.thinking,
       live: opts.live,

@@ -473,13 +473,16 @@ function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | 
   return snapshot;
 }
 
-function applyContinueContextFromEnvironment(options: MainCommandOptions): void {
+function applyContinueContextFromEnvironment(options: MainCommandOptions, action = 'continue'): void {
   const continueScope = resolveContinueScopeContext();
   const sessionId = process.env[continueScope.sessionEnvKey]?.trim();
   if (!sessionId) {
-    throw new ValidationError('No previous session found to continue in this shell context', [
+    const commandHint = action === 'clone' ? 'clone' : 'continue';
+    throw new ValidationError(`No previous session found to ${commandHint} in this shell context`, [
       `Run a regular juno-code command in this same pane/tab first (scope source: ${continueScope.scopeSource})`,
-      'Or resume another session directly: juno-code --resume <session-id> "your next prompt"',
+      action === 'clone'
+        ? 'Or clone an explicit Pi session: juno-code --resume <session-id> --clone "your prompt"'
+        : 'Or resume another session directly: juno-code --resume <session-id> "your next prompt"',
     ]);
   }
 
@@ -510,6 +513,50 @@ function applyContinueContextFromEnvironment(options: MainCommandOptions): void 
   }
   if (options.disallowedTools === undefined && settings.disallowedTools !== undefined) {
     options.disallowedTools = [...settings.disallowedTools];
+  }
+}
+
+function isTruthyEnvironmentFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function normalizeCloneOptions(options: MainCommandOptions): void {
+  if (options.clone === undefined) {
+    return;
+  }
+
+  if (typeof options.clone === 'string' && options.prompt === undefined && options.promptFile === undefined) {
+    options.prompt = options.clone;
+  }
+
+  const cloneSource = typeof options.resume === 'string' ? options.resume.trim() : '';
+  if (!cloneSource) {
+    applyContinueContextFromEnvironment(options, 'clone');
+  }
+
+  const normalizedSource = typeof options.resume === 'string' ? options.resume.trim() : '';
+  if (!normalizedSource) {
+    throw new ValidationError('Pi session cloning requires a source session', [
+      'Use: juno-code --resume <session-id> --clone "your prompt"',
+      'Or run from a shell with a saved continue scope: juno-code clone "your prompt"',
+    ]);
+  }
+
+  if (isTruthyEnvironmentFlag(process.env.PI_NO_SESSION)) {
+    throw new ValidationError('Pi session cloning cannot run with session persistence disabled', [
+      'Unset PI_NO_SESSION before cloning',
+      'Clone mode uses Pi session persistence to fork and return a new session id',
+    ]);
+  }
+
+  options.resume = normalizedSource;
+  options.cloneSession = true;
+  options.cloneFromSession = normalizedSource;
+  options.continue = undefined;
+
+  if (!options.subagent) {
+    options.subagent = 'pi';
   }
 }
 
@@ -1798,6 +1845,8 @@ export async function mainCommandHandler(
       applyContinueContextFromEnvironment(options);
     }
 
+    normalizeCloneOptions(options);
+
     // Set logger level based on effective verbose:
     //   0 (quiet): WARN — suppress INFO/DEBUG, only show warnings and errors
     //   1 (normal): INFO — show important INFO (e.g. quota limits), suppress DEBUG (hook execution details)
@@ -1848,6 +1897,13 @@ export async function mainCommandHandler(
       throw new ValidationError('--live is only supported with the pi subagent', [
         'Use: juno-code pi --live -p "your prompt"',
         'Remove --live for non-pi subagents',
+      ]);
+    }
+
+    if (options.cloneSession && options.subagent !== 'pi') {
+      throw new ValidationError('Pi session cloning is only supported with the pi subagent', [
+        'Use: juno-code --resume <session-id> --clone "your prompt"',
+        'Or pass --subagent pi when cloning from a continue scope',
       ]);
     }
 
