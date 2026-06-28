@@ -669,6 +669,87 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Clone/fork');
       expect(result.stdout).toContain('--prompt-file');
       expect(result.stdout).toContain('--thinking');
+      expect(result.stdout).toContain('--name');
+      expect(result.stdout).toContain('--from');
+    });
+
+    it('should list named branches as JSON and switch the active branch for the current scope', async () => {
+      const scope = 'binary-named-branches';
+      const scopeHash = `SCOPE_${createHash('sha256')
+        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+        .digest('hex')
+        .slice(0, 16)
+        .toUpperCase()}`;
+      const config = {
+        defaultSubagent: 'pi',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':pi',
+        defaultModels: { pi: ':pi' },
+        logLevel: 'info',
+        verbose: 0,
+        quiet: true,
+        mcpTimeout: 43200000,
+        mcpRetries: 3,
+        onHourlyLimit: 'raise',
+        interactive: true,
+        headlessMode: false,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+          'session_branches.json': JSON.stringify(
+            {
+              version: 1,
+              scopes: {
+                [scopeHash]: {
+                  active: 'main',
+                  branches: {
+                    main: {
+                      session_id: 'SESSION_MAIN',
+                      parent: null,
+                      updated_at: '2026-06-27T00:00:00.000Z',
+                    },
+                    C: {
+                      session_id: 'SESSION_C',
+                      parent: 'main',
+                      source_session_id: 'SESSION_MAIN',
+                      updated_at: '2026-06-27T00:01:00.000Z',
+                    },
+                  },
+                },
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      });
+
+      const branchesResult = await executeCLI(['branches', '--json'], {
+        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+      });
+      expect(branchesResult.exitCode).toBe(0);
+      const payload = JSON.parse(branchesResult.stdout);
+      expect(payload.branches).toEqual([
+        expect.objectContaining({ name: 'main', active: true, sessionId: 'SESSION_MAIN' }),
+        expect.objectContaining({ name: 'C', active: false, sessionId: 'SESSION_C', parent: 'main' }),
+      ]);
+
+      const switchResult = await executeCLI(['switch', 'C'], {
+        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+      });
+      expect(switchResult.exitCode).toBe(0);
+      expect(switchResult.stdout).toContain('Switched to branch C');
+
+      const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
+      expect(updated.scopes[scopeHash].active).toBe('C');
     });
 
     it('should expose continue --clone option', async () => {

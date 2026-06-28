@@ -109,6 +109,15 @@ function isConnectionLikeError(err: unknown): boolean {
  * Global error handler for CLI operations
  */
 function handleCLIError(error: unknown, verbose: number = 0): void {
+  if (error instanceof Error && error.name.startsWith('SessionBranches')) {
+    console.error(chalk.red.bold('\n❌ Branch Registry Error'));
+    console.error(chalk.red(`   ${error.message}`));
+    console.error(chalk.yellow('\n💡 Suggestions:'));
+    console.error(chalk.yellow("   • Run ypl 'init' or juno-code pi 'init' first to create the main branch"));
+    console.error(chalk.yellow('   • Inspect branches with: juno-code branches'));
+    process.exit(1);
+  }
+
   if (isCLIError(error)) {
     // Handle known CLI errors
     console.error(chalk.red.bold(`\n❌ ${error.constructor.name}`));
@@ -486,6 +495,8 @@ function setupCloneCommand(program: Command): void {
     .option('-w, --cwd <path>', 'Working directory')
     .option('-m, --model <name>', 'Override model for the cloned run')
     .option('-s, --subagent <name>', 'Override subagent for the cloned run')
+    .option('--name <branch>', 'Save the cloned session under a named branch (does not switch active branch)')
+    .option('--from <branch>', 'Named source branch to clone from (default: main)')
     .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
     .option('--thinking <level>', 'Override thinking level for the cloned run')
     .action(async (promptArgs: string[], options, command) => {
@@ -506,6 +517,8 @@ function setupCloneCommand(program: Command): void {
           ...options,
           continueFromLatest: true,
           clone: true,
+          cloneBranchName: options.name,
+          cloneBranchFrom: options.from,
         };
 
         allOptions.verbose = normalizeVerbose(allOptions.verbose);
@@ -540,6 +553,93 @@ ${chalk.blue.bold('Behavior:')}
  * Setup continue-scope helper command.
  * Exposes the current continue hash + status for script integrations.
  */
+function setupNamedBranchCommands(program: Command): void {
+  const resolveWorkingDirectory = async (options: Record<string, unknown>) => {
+    const workingDirectory =
+      typeof options.cwd === 'string' && options.cwd.trim().length > 0
+        ? options.cwd.trim()
+        : process.cwd();
+    const { loadConfig } = await import('../core/config.js');
+    return await loadConfig({
+      baseDir: workingDirectory,
+      cliConfig: {
+        verbose: 0,
+        quiet: true,
+        logLevel: 'info',
+        workingDirectory,
+      },
+    });
+  };
+
+  program
+    .command('branches')
+    .description('List named Pi session branches for the current continue scope')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options) => {
+      try {
+        const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
+          import('../core/continue-scope.js'),
+          import('../core/session-branches.js'),
+        ]);
+        const config = await resolveWorkingDirectory(options);
+        const scope = resolveContinueScopeContext();
+        const branches = await branchesModule.listSessionBranches({
+          workingDirectory: config.workingDirectory,
+          scope,
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify({ scope: scope.scopeHash, branches }, null, 2));
+          return;
+        }
+
+        if (branches.length === 0) {
+          console.log('No named session branches found for this shell scope.');
+          console.log("Run ypl 'init' or juno-code pi 'init' first.");
+          return;
+        }
+
+        console.log('ACTIVE  BRANCH  SESSION_ID  PARENT  UPDATED_AT');
+        for (const branch of branches) {
+          console.log([
+            branch.active ? '*' : ' ',
+            branch.name,
+            branch.sessionId,
+            branch.parent ?? '-',
+            branch.updatedAt ?? '-',
+          ].join('  '));
+        }
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  program
+    .command('switch')
+    .description('Switch the active named Pi session branch for this continue scope')
+    .argument('<branch>', 'Branch name to activate')
+    .option('-w, --cwd <path>', 'Working directory')
+    .action(async (branchName: string, options) => {
+      try {
+        const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
+          import('../core/continue-scope.js'),
+          import('../core/session-branches.js'),
+        ]);
+        const config = await resolveWorkingDirectory(options);
+        const scope = resolveContinueScopeContext();
+        const active = await branchesModule.setActiveSessionBranch({
+          workingDirectory: config.workingDirectory,
+          scope,
+          branchName,
+        });
+        console.log(`Switched to branch ${active.name} (${active.sessionId})`);
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+}
+
 function setupContinueScopeCommand(program: Command): void {
   const continueScopeCommand = program
     .command('continue-scope')
@@ -1449,6 +1549,9 @@ async function main(): Promise<void> {
 
   // Clone the current continue-scope session
   setupCloneCommand(program);
+
+  // Named Pi session branches for the current continue scope
+  setupNamedBranchCommands(program);
 
   // Continue scope hash/status endpoint for scripts
   setupContinueScopeCommand(program);

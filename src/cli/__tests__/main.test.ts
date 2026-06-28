@@ -25,6 +25,13 @@ import { ConfigurationError } from '../types.js';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import {
+  getActiveSessionBranch,
+  listSessionBranches,
+  resetMainSessionBranch,
+  updateActiveSessionBranch,
+  upsertClonedSessionBranch,
+} from '../../core/session-branches.js';
 
 import type {
   ExecutionRequest,
@@ -94,6 +101,29 @@ vi.mock('../../core/session.js', () => ({
     create: vi.fn(),
     load: vi.fn(),
     save: vi.fn(),
+  }),
+}));
+
+vi.mock('../../core/session-branches.js', () => ({
+  MAIN_SESSION_BRANCH: 'main',
+  SessionBranchesError: class SessionBranchesError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'SessionBranchesError';
+    }
+  },
+  getActiveSessionBranch: vi.fn().mockResolvedValue(null),
+  listSessionBranches: vi.fn().mockResolvedValue([]),
+  resetMainSessionBranch: vi.fn().mockResolvedValue(undefined),
+  updateActiveSessionBranch: vi.fn().mockResolvedValue(undefined),
+  upsertClonedSessionBranch: vi.fn().mockResolvedValue(undefined),
+  validateSessionBranchName: vi.fn((branchName: string, options?: { allowMain?: boolean }) => {
+    const normalized = branchName.trim();
+    if (!normalized) return { valid: false, normalized, reason: 'Branch name cannot be empty.' };
+    if (options?.allowMain === false && normalized === 'main') {
+      return { valid: false, normalized, reason: "'main' is reserved for the root session branch." };
+    }
+    return { valid: true, normalized };
   }),
 }));
 
@@ -205,8 +235,17 @@ describe('Main Command', () => {
       workingDirectory: opts.workingDirectory,
       maxIterations: opts.maxIterations,
       model: opts.model,
+      resume: opts.resume,
+      cloneSession: opts.cloneSession,
+      cloneFromSession: opts.cloneFromSession,
       live: opts.live,
     }));
+
+    vi.mocked(getActiveSessionBranch).mockResolvedValue(null as any);
+    vi.mocked(listSessionBranches).mockResolvedValue([] as any);
+    vi.mocked(resetMainSessionBranch).mockResolvedValue(undefined as any);
+    vi.mocked(updateActiveSessionBranch).mockResolvedValue(undefined as any);
+    vi.mocked(upsertClonedSessionBranch).mockResolvedValue(undefined as any);
 
     vi.mocked(fs.pathExists).mockResolvedValue(false as any);
     vi.mocked(fs.readFile).mockResolvedValue('mock file content' as any);
@@ -1862,6 +1901,191 @@ describe('Main Command', () => {
         const envContent = String(vi.mocked(fs.writeFile).mock.calls.at(-1)?.[1]);
         expect(envContent).toContain('clone-session-002');
         expect(envContent).not.toContain('source-session-scope');
+      });
+
+      it('should clone --name C from main and store the returned session without switching active branch', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          {
+            name: 'main',
+            active: true,
+            sessionId: 'SESSION_MAIN',
+            parent: null,
+            sourceSessionId: null,
+            updatedAt: '2026-06-27T00:00:00.000Z',
+          },
+        ] as any);
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'clone-branch-run',
+              instruction: 'prompt C',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: 'test-model',
+              resume: 'SESSION_MAIN',
+              cloneSession: true,
+              cloneFromSession: 'SESSION_MAIN',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: JSON.stringify({ type: 'agent_end', session_id: 'SESSION_C' }),
+                  metadata: {},
+                },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'prompt C',
+            cwd: '/test',
+            clone: true,
+            cloneBranchName: 'C',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            resume: 'SESSION_MAIN',
+            cloneSession: true,
+            cloneFromSession: 'SESSION_MAIN',
+          }),
+        );
+        expect(upsertClonedSessionBranch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            branchName: 'C',
+            parent: 'main',
+            sourceSessionId: 'SESSION_MAIN',
+            sessionId: 'SESSION_C',
+          }),
+        );
+        expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+      });
+
+      it('should default named clone source to main even when active branch is D', async () => {
+        vi.mocked(getActiveSessionBranch).mockResolvedValue({
+          name: 'D',
+          sessionId: 'SESSION_D',
+          parent: 'main',
+          sourceSessionId: 'SESSION_MAIN',
+          updatedAt: '2026-06-27T00:01:00.000Z',
+        } as any);
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: false, sessionId: 'SESSION_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'D', active: true, sessionId: 'SESSION_D', parent: 'main', sourceSessionId: 'SESSION_MAIN', updatedAt: 't' },
+        ] as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'prompt C',
+            cwd: '/test',
+            continueFromLatest: true,
+            clone: true,
+            cloneBranchName: 'C',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ resume: 'SESSION_MAIN', cloneFromSession: 'SESSION_MAIN' }),
+        );
+      });
+
+      it('should clone --from C --name M from named source branch', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: true, sessionId: 'SESSION_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'C', active: false, sessionId: 'SESSION_C', parent: 'main', sourceSessionId: 'SESSION_MAIN', updatedAt: 't' },
+        ] as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'prompt M',
+            cwd: '/test',
+            clone: true,
+            cloneBranchName: 'M',
+            cloneBranchFrom: 'C',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ resume: 'SESSION_C', cloneFromSession: 'SESSION_C' }),
+        );
+      });
+
+      it('should reject clone --name main and unknown --from branches', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: true, sessionId: 'SESSION_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+        ] as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'bad target',
+            cwd: '/test',
+            clone: true,
+            cloneBranchName: 'main',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(createExecutionRequest).not.toHaveBeenCalled();
+
+        vi.mocked(createExecutionRequest).mockClear();
+        processExitSpy.mockClear();
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'bad source',
+            cwd: '/test',
+            clone: true,
+            cloneBranchName: 'M',
+            cloneBranchFrom: 'missing',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(createExecutionRequest).not.toHaveBeenCalled();
       });
 
       it('should fail fast when clone is requested without resume or continue scope', async () => {

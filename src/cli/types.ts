@@ -93,6 +93,10 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   cloneSession?: boolean;
   /** Explicit Pi session ID/path to fork from when cloning */
   cloneFromSession?: string;
+  /** Named branch target for `juno-code clone --name <branch>` */
+  cloneBranchName?: string;
+  /** Named branch source for `juno-code clone --from <branch>` */
+  cloneBranchFrom?: string;
   /** Continue the most recent conversation (shell backend only) */
   continue?: boolean;
   /** Load last persisted session+settings snapshot and auto-populate resume/options */

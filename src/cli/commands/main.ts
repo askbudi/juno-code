@@ -23,6 +23,16 @@ import {
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
 import {
+  MAIN_SESSION_BRANCH,
+  SessionBranchesError,
+  getActiveSessionBranch,
+  listSessionBranches,
+  resetMainSessionBranch,
+  updateActiveSessionBranch,
+  upsertClonedSessionBranch,
+  validateSessionBranchName,
+} from '../../core/session-branches.js';
+import {
   getConfiguredDefaultModelForSubagent,
   getDefaultModelForSubagent,
   isModelCompatibleWithSubagent,
@@ -473,9 +483,21 @@ function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | 
   return snapshot;
 }
 
-function applyContinueContextFromEnvironment(options: MainCommandOptions, action = 'continue'): void {
+async function applyContinueContextFromEnvironment(
+  options: MainCommandOptions,
+  action = 'continue',
+  workingDirectory?: string,
+): Promise<void> {
   const continueScope = resolveContinueScopeContext();
-  const sessionId = process.env[continueScope.sessionEnvKey]?.trim();
+  let sessionId = process.env[continueScope.sessionEnvKey]?.trim();
+
+  if (workingDirectory) {
+    const activeBranch = await getActiveSessionBranch({ workingDirectory, scope: continueScope });
+    if (activeBranch) {
+      sessionId = activeBranch.sessionId;
+    }
+  }
+
   if (!sessionId) {
     const commandHint = action === 'clone' ? 'clone' : 'continue';
     throw new ValidationError(`No previous session found to ${commandHint} in this shell context`, [
@@ -521,7 +543,68 @@ function isTruthyEnvironmentFlag(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
-function normalizeCloneOptions(options: MainCommandOptions): void {
+async function resolveNamedCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
+  const targetName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
+  const sourceName = typeof options.cloneBranchFrom === 'string' && options.cloneBranchFrom.trim()
+    ? options.cloneBranchFrom.trim()
+    : MAIN_SESSION_BRANCH;
+
+  if (!targetName && !options.cloneBranchFrom) {
+    return;
+  }
+
+  if (!targetName) {
+    throw new ValidationError('Named branch clone requires --name <branch>', [
+      'Use: juno-code clone --name C "your prompt"',
+      'Use: juno-code clone --from C --name M "your prompt"',
+    ]);
+  }
+
+  const targetValidation = validateSessionBranchName(targetName, { allowMain: false });
+  if (!targetValidation.valid) {
+    throw new ValidationError(`Invalid clone branch name '${targetName}': ${targetValidation.reason}`, [
+      "Choose a non-empty branch name other than 'main'",
+      'Example: juno-code clone --name C "your prompt"',
+    ]);
+  }
+
+  const sourceValidation = validateSessionBranchName(sourceName);
+  if (!sourceValidation.valid) {
+    throw new ValidationError(`Invalid source branch name '${sourceName}': ${sourceValidation.reason}`, [
+      'Use an existing branch from: juno-code branches',
+    ]);
+  }
+
+  const continueScope = resolveContinueScopeContext();
+  const branches = await listSessionBranches({ workingDirectory, scope: continueScope });
+  if (branches.length === 0) {
+    throw new ValidationError('No named session branches found for this shell scope', [
+      "Run ypl 'init' or juno-code pi 'init' first to create the main session branch",
+      'Then retry: juno-code clone --name C "your prompt"',
+    ]);
+  }
+
+  const sourceBranch = branches.find((branch) => branch.name === sourceName);
+  if (!sourceBranch) {
+    throw new ValidationError(`Unknown source branch '${sourceName}' for this shell scope`, [
+      'List branches with: juno-code branches',
+      'Use: juno-code clone --from <branch> --name <new-branch> "your prompt"',
+    ]);
+  }
+
+  if (!sourceBranch.sessionId.trim()) {
+    throw new ValidationError(`Source branch '${sourceName}' does not have a session id`, [
+      "Run ypl 'init' or juno-code pi 'init' to refresh the main branch session",
+    ]);
+  }
+
+  options.cloneBranchName = targetValidation.normalized;
+  options.cloneBranchFrom = sourceValidation.normalized;
+  options.resume = sourceBranch.sessionId;
+  options.clone = options.clone ?? true;
+}
+
+async function normalizeCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
   if (options.clone === undefined) {
     return;
   }
@@ -532,7 +615,7 @@ function normalizeCloneOptions(options: MainCommandOptions): void {
 
   const cloneSource = typeof options.resume === 'string' ? options.resume.trim() : '';
   if (!cloneSource) {
-    applyContinueContextFromEnvironment(options, 'clone');
+    await applyContinueContextFromEnvironment(options, 'clone', workingDirectory);
   }
 
   const normalizedSource = typeof options.resume === 'string' ? options.resume.trim() : '';
@@ -558,6 +641,56 @@ function normalizeCloneOptions(options: MainCommandOptions): void {
   if (!options.subagent) {
     options.subagent = 'pi';
   }
+}
+
+async function syncSessionBranchesFromResult(
+  result: ExecutionResult,
+  config: { workingDirectory: string },
+  options: MainCommandOptions,
+): Promise<void> {
+  const sessionIds = extractSessionIds(result);
+  const latestSessionId = sessionIds[sessionIds.length - 1];
+  if (!latestSessionId || result.status !== ExecutionStatus.COMPLETED) {
+    return;
+  }
+
+  const continueScope = resolveContinueScopeContext();
+  const branches = await listSessionBranches({ workingDirectory: config.workingDirectory, scope: continueScope });
+
+  if (options.cloneBranchName) {
+    const sourceBranchName = options.cloneBranchFrom || MAIN_SESSION_BRANCH;
+    const sourceBranch = branches.find((branch) => branch.name === sourceBranchName);
+    if (!sourceBranch) {
+      throw new SessionBranchesError(
+        `Cannot save cloned branch '${options.cloneBranchName}': source branch '${sourceBranchName}' is missing.`,
+      );
+    }
+
+    await upsertClonedSessionBranch({
+      workingDirectory: config.workingDirectory,
+      scope: continueScope,
+      branchName: options.cloneBranchName,
+      sessionId: latestSessionId,
+      parent: sourceBranchName,
+      sourceSessionId: sourceBranch.sessionId,
+    });
+    return;
+  }
+
+  if (branches.length === 0) {
+    await resetMainSessionBranch({
+      workingDirectory: config.workingDirectory,
+      scope: continueScope,
+      sessionId: latestSessionId,
+    });
+    return;
+  }
+
+  await updateActiveSessionBranch({
+    workingDirectory: config.workingDirectory,
+    scope: continueScope,
+    sessionId: latestSessionId,
+  });
 }
 
 async function persistContinueContext(
@@ -1840,12 +1973,15 @@ export async function mainCommandHandler(
       },
     });
 
+    await resolveNamedCloneOptions(options, config.workingDirectory);
+
     // Continue command flow: hydrate resume/session settings from persisted env snapshot.
-    if (options.continueFromLatest) {
-      applyContinueContextFromEnvironment(options);
+    // Named branch clone resolves its source from the branch registry instead of the active continue snapshot.
+    if (options.continueFromLatest && !options.cloneBranchName) {
+      await applyContinueContextFromEnvironment(options, 'continue', config.workingDirectory);
     }
 
-    normalizeCloneOptions(options);
+    await normalizeCloneOptions(options, config.workingDirectory);
 
     // Set logger level based on effective verbose:
     //   0 (quiet): WARN — suppress INFO/DEBUG, only show warnings and errors
@@ -1997,6 +2133,7 @@ export async function mainCommandHandler(
       const result = await coordinator.execute(executionRequest);
 
       await persistSessionHistory(result, effectiveVerbose);
+      await syncSessionBranchesFromResult(result, config, options);
       await persistContinueContext(result, config, effectiveVerbose);
 
       // Set exit code based on result
@@ -2056,6 +2193,14 @@ export async function mainCommandHandler(
       }
 
       process.exit(5);
+      return;
+    } else if (error instanceof SessionBranchesError) {
+      console.error(chalk.red.bold('\n❌ Branch Registry Error'));
+      console.error(chalk.red(`   ${error.message}`));
+      console.error(chalk.yellow('\n💡 Suggestions:'));
+      console.error(chalk.yellow("   • Run ypl 'init' or juno-code pi 'init' to create/refresh the main branch"));
+      console.error(chalk.yellow('   • Inspect branches with: juno-code branches'));
+      process.exit(1);
       return;
     } else {
       // Unexpected error
