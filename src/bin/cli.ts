@@ -639,8 +639,24 @@ ${chalk.blue.bold('Behavior:')}
     .command('switch')
     .description('Switch the active named Pi session branch for this shell branch registry')
     .argument('<branch>', 'Branch name to activate')
+    .argument('[prompt_text...]', 'Optional prompt to run immediately after switching')
+    .option(
+      '-p, --prompt [text]',
+      "Prompt input to run after switching (inline text, file path, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions)",
+    )
+    .option('-f, --prompt-file <path>', 'Read prompt from a file after switching')
     .option('-w, --cwd <path>', 'Working directory')
-    .action(async (branchName: string, options) => {
+    .option('-i, --max-iterations <number>', 'Override max iterations for the switched-branch run', parseInt)
+    .option('-m, --model <name>', 'Override model for the switched-branch run')
+    .option('-s, --subagent <name>', 'Override subagent for the switched-branch run')
+    .option('-I, --interactive', 'Interactive mode for typing a prompt after switching')
+    .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
+    .option('--thinking <level>', 'Override thinking level for the switched-branch run')
+    .action(async (branchName: string, promptArgs: string[], options, command) => {
+      if (promptArgs.length > 0 && options.prompt === undefined) {
+        options.prompt = promptArgs.join(' ');
+      }
+
       try {
         const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
           import('../core/continue-scope.js'),
@@ -654,6 +670,25 @@ ${chalk.blue.bold('Behavior:')}
           branchName,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
+
+        if (options.prompt !== undefined || options.promptFile || options.interactive) {
+          const { mainCommandHandler, getActiveSessionId } = await import('../cli/commands/main.js');
+          _getActiveSessionId = getActiveSessionId;
+
+          const globalOptions = program.opts();
+          const definedGlobalOptions = Object.fromEntries(
+            Object.entries(globalOptions).filter(([_, v]) => v !== undefined),
+          );
+          const allOptions = { ...definedGlobalOptions, ...options, continueFromLatest: true };
+
+          allOptions.verbose = normalizeVerbose(allOptions.verbose);
+
+          if (allOptions.silent) {
+            allOptions.quiet = true;
+          }
+
+          await mainCommandHandler([], allOptions as any, command);
+        }
       } catch (error) {
         handleCLIError(error, normalizeVerbose(options.verbose));
       }
@@ -665,13 +700,17 @@ ${chalk.blue.bold('Behavior:')}
 ${chalk.blue.bold('Examples:')}
   juno-code switch C
   yy switch C
+  yy switch C 'Continue C immediately'
 
 ${chalk.blue.bold('Behavior:')}
-  Makes the branch active only for this shell/pane. Future juno-code continue
-  or yy cc runs in this shell continue that branch until you switch again or a
-  reset creates a new main branch registry.
+  Makes the branch active only for this shell/pane. If a prompt is provided,
+  juno-code switches first and then runs that prompt as a continue on the newly
+  active branch. Future juno-code continue or yy cc runs in this shell continue
+  that branch until you switch again or a reset creates a new main registry.
 `,
   );
+
+  switchCommand.allowUnknownOption(true);
 }
 
 function setupContinueScopeCommand(program: Command): void {
@@ -1081,6 +1120,7 @@ ${chalk.blue('Examples:')}
   yy clone --from C --name M 'Explore M'
   yy branches                      ${chalk.gray('# list branches; * marks active')}
   yy switch C                      ${chalk.gray('# future yy cc / juno-code continue follows C')}
+  yy switch C 'Continue C now'     ${chalk.gray('# switch first, then run prompt on C')}
   yy cc 'Continue C'               ${chalk.gray('# updates only the active branch')}
 
   ${chalk.gray('# Branch rules')}

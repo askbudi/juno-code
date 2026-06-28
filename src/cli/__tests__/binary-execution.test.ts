@@ -759,6 +759,83 @@ describe('Binary Execution Tests', () => {
       expect(updated.scopes[scopeHash].active).toBe('C');
     });
 
+    it('should run an inline prompt as continue after switching to a named branch', async () => {
+      const scope = 'binary-switch-prompt-continues-branch';
+      const scopeHash = `SCOPE_${createHash('sha256')
+        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+        .digest('hex')
+        .slice(0, 16)
+        .toUpperCase()}`;
+      const config = {
+        defaultSubagent: 'pi',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':pi',
+        defaultModels: { pi: ':pi' },
+        logLevel: 'info',
+        verbose: 0,
+        quiet: true,
+        mcpTimeout: 43200000,
+        mcpRetries: 3,
+        onHourlyLimit: 'raise',
+        interactive: true,
+        headlessMode: false,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+          'session_branches.json': JSON.stringify(
+            {
+              version: 1,
+              scopes: {
+                [scopeHash]: {
+                  active: 'main',
+                  branches: {
+                    main: {
+                      session_id: 'SESSION_MAIN',
+                      parent: null,
+                      updated_at: '2026-06-27T00:00:00.000Z',
+                    },
+                    C: {
+                      session_id: 'SESSION_C',
+                      parent: 'main',
+                      source_session_id: 'SESSION_MAIN',
+                      updated_at: '2026-06-27T00:01:00.000Z',
+                    },
+                  },
+                },
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      });
+
+      const result = await executeCLI(['switch', 'C', 'continue C now', '-i', 'invalid'], {
+        expectError: true,
+        env: {
+          ...buildContinueSnapshotEnv(scope),
+          JUNO_CODE_CONTINUE_SCOPE: scope,
+        },
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain('Switched to branch C (SESSION_C)');
+      expect(output).toContain('Max iterations must be a valid number');
+      expect(output).not.toContain('Prompt is required for execution');
+
+      const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
+      expect(updated.scopes[scopeHash].active).toBe('C');
+    });
+
     it('should expose continue --clone option', async () => {
       const result = await executeCLI(['continue', '--help']);
 
