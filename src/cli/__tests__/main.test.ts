@@ -1749,6 +1749,340 @@ describe('Main Command', () => {
         );
       });
 
+      it('should continue the active named branch and update only that branch after success', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-active-c';
+        const scopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:pane-active-c')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_MAIN_ENV';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          model: ':api-codex',
+        });
+        vi.mocked(getActiveSessionBranch).mockResolvedValue({
+          name: 'C',
+          sessionId: 'SESSION_C',
+          parent: 'main',
+          sourceSessionId: 'SESSION_MAIN',
+          updatedAt: 't',
+        } as any);
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: false, sessionId: 'SESSION_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'C', active: true, sessionId: 'SESSION_C', parent: 'main', sourceSessionId: 'SESSION_MAIN', updatedAt: 't' },
+          { name: 'D', active: false, sessionId: 'SESSION_D', parent: 'main', sourceSessionId: 'SESSION_MAIN', updatedAt: 't' },
+        ] as any);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'continue-active-c',
+              instruction: 'continue C',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: ':api-codex',
+              resume: 'SESSION_C',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: { content: JSON.stringify({ type: 'agent_end', session_id: 'SESSION_C2' }), metadata: {} },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'continue C',
+            cwd: '/test',
+            continueFromLatest: true,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(createExecutionRequest).toHaveBeenCalledWith(expect.objectContaining({ resume: 'SESSION_C' }));
+        expect(updateActiveSessionBranch).toHaveBeenCalledWith(
+          expect.objectContaining({ workingDirectory: '/test/dir', sessionId: 'SESSION_C2' }),
+        );
+        expect(resetMainSessionBranch).not.toHaveBeenCalled();
+      });
+
+      it('should reset named branches to main after a successful new Pi root run', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: false, sessionId: 'OLD_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'C', active: true, sessionId: 'OLD_C', parent: 'main', sourceSessionId: 'OLD_MAIN', updatedAt: 't' },
+          { name: 'D', active: false, sessionId: 'OLD_D', parent: 'main', sourceSessionId: 'OLD_MAIN', updatedAt: 't' },
+        ] as any);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'new-root-run',
+              instruction: 'new research topic',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: 'test-model',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: { content: JSON.stringify({ type: 'agent_end', session_id: 'NEW_MAIN_SESSION' }), metadata: {} },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'new research topic',
+            cwd: '/test',
+            subagent: 'pi',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(resetMainSessionBranch).toHaveBeenCalledWith(
+          expect.objectContaining({ workingDirectory: '/test/dir', sessionId: 'NEW_MAIN_SESSION' }),
+        );
+        expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+      });
+
+      it('should reset named branches to main after explicit resume without clone', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: false, sessionId: 'OLD_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'C', active: true, sessionId: 'OLD_C', parent: 'main', sourceSessionId: 'OLD_MAIN', updatedAt: 't' },
+        ] as any);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'explicit-resume-run',
+              instruction: 'resume elsewhere',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: 'test-model',
+              resume: 'EXPLICIT_SESSION',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: { content: JSON.stringify({ type: 'agent_end', session_id: 'RESUMED_MAIN' }), metadata: {} },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'resume elsewhere',
+            cwd: '/test',
+            subagent: 'pi',
+            resume: 'EXPLICIT_SESSION',
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(resetMainSessionBranch).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'RESUMED_MAIN' }),
+        );
+        expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+      });
+
+      it('should not mutate named branches for explicit resume clone or failed results', async () => {
+        vi.mocked(listSessionBranches).mockResolvedValue([
+          { name: 'main', active: false, sessionId: 'OLD_MAIN', parent: null, sourceSessionId: null, updatedAt: 't' },
+          { name: 'C', active: true, sessionId: 'OLD_C', parent: 'main', sourceSessionId: 'OLD_MAIN', updatedAt: 't' },
+        ] as any);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'explicit-clone-run',
+              instruction: 'clone elsewhere',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: 'test-model',
+              resume: 'EXPLICIT_SESSION',
+              cloneSession: true,
+              cloneFromSession: 'EXPLICIT_SESSION',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: { content: JSON.stringify({ type: 'agent_end', session_id: 'CLONE_SESSION' }), metadata: {} },
+                success: true,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 1,
+              failedIterations: 0,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'clone elsewhere',
+            cwd: '/test',
+            subagent: 'pi',
+            resume: 'EXPLICIT_SESSION',
+            clone: true,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(resetMainSessionBranch).not.toHaveBeenCalled();
+        expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+
+        vi.mocked(resetMainSessionBranch).mockClear();
+        vi.mocked(updateActiveSessionBranch).mockClear();
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'failed-branch-pane';
+        const failedScopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:failed-branch-pane')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${failedScopeHash}`] = 'OLD_C';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${failedScopeHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+        });
+        vi.mocked(getActiveSessionBranch).mockResolvedValue({
+          name: 'C',
+          sessionId: 'OLD_C',
+          parent: 'main',
+          sourceSessionId: 'OLD_MAIN',
+          updatedAt: 't',
+        } as any);
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'failed-continue-run',
+              instruction: 'continue C',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 5,
+              model: 'test-model',
+              resume: 'OLD_C',
+            },
+            status: 'failed',
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: { content: JSON.stringify({ type: 'agent_end', session_id: 'SHOULD_NOT_ADVANCE' }), metadata: {} },
+                success: false,
+                duration: 1000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 0,
+              failedIterations: 1,
+              averageIterationDuration: 1000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            prompt: 'continue C',
+            cwd: '/test',
+            continueFromLatest: true,
+            verbose: 0,
+            quiet: false,
+            logLevel: 'info',
+          } as MainCommandOptions,
+          mockCommand,
+        );
+
+        expect(resetMainSessionBranch).not.toHaveBeenCalled();
+        expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+      });
+
       it('should allow continueFromLatest Pi live sessions without an initial prompt', async () => {
         process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-live';
         const scopeHash = `SCOPE_${createHash('sha256')

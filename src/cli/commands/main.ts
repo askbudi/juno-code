@@ -677,7 +677,31 @@ async function syncSessionBranchesFromResult(
     return;
   }
 
-  if (branches.length === 0) {
+  const isPiRun = result.request.subagent === 'pi';
+  const isCloneRun = options.cloneSession === true || result.request.cloneSession === true;
+  const isNamedCloneRun = typeof options.cloneBranchName === 'string' && options.cloneBranchName.trim().length > 0;
+  const isContinueRun = options.continueFromLatest === true && !isCloneRun && !isNamedCloneRun;
+  const isExplicitResumeRun =
+    !isContinueRun &&
+    !isCloneRun &&
+    typeof options.resume === 'string' &&
+    options.resume.trim().length > 0;
+  const isNewRootRun =
+    isPiRun &&
+    !isContinueRun &&
+    !isExplicitResumeRun &&
+    !isCloneRun &&
+    !isNamedCloneRun;
+
+  if (!isPiRun) {
+    return;
+  }
+
+  if (isCloneRun) {
+    return;
+  }
+
+  if (branches.length === 0 || isNewRootRun || isExplicitResumeRun) {
     await resetMainSessionBranch({
       workingDirectory: config.workingDirectory,
       scope: continueScope,
@@ -686,11 +710,13 @@ async function syncSessionBranchesFromResult(
     return;
   }
 
-  await updateActiveSessionBranch({
-    workingDirectory: config.workingDirectory,
-    scope: continueScope,
-    sessionId: latestSessionId,
-  });
+  if (isContinueRun) {
+    await updateActiveSessionBranch({
+      workingDirectory: config.workingDirectory,
+      scope: continueScope,
+      sessionId: latestSessionId,
+    });
+  }
 }
 
 async function persistContinueContext(
