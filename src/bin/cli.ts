@@ -1075,6 +1075,18 @@ ${chalk.blue('Examples:')}
   juno-code pi --live -p '/skill:ralph-loop' -i 1
   ypl '/skill:ralph-loop' -i 1     ${chalk.gray('# shortcut for: yy pi --live ...')}
 
+  ${chalk.gray('# Named Pi session branches (per shell/pane continue scope)')}
+  ypl 'init'                       ${chalk.gray('# creates/resets the main branch from a root Pi run')}
+  yy clone --name C 'Explore C'    ${chalk.gray('# forks main into C, runs prompt, does not switch')}
+  yy clone --from C --name M 'Explore M'
+  yy branches                      ${chalk.gray('# list branches; * marks active')}
+  yy switch C                      ${chalk.gray('# future yy cc / juno-code continue follows C')}
+  yy cc 'Continue C'               ${chalk.gray('# updates only the active branch')}
+
+  ${chalk.gray('# Branch rules')}
+  ${chalk.gray('Default branch is main; --name main is reserved; new root Pi runs and explicit')}
+  ${chalk.gray('--resume without --clone reset the registry back to main. Clone runs preserve it.')}
+
   ${chalk.gray('# File-based prompt')}
   juno-code pi -f instructions.md
 `,

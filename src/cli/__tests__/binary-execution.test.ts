@@ -212,12 +212,19 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain("single quotes or -f/stdin");
     });
 
-    it('should document ypl shortcut in Pi help', async () => {
+    it('should document ypl shortcut and named branch workflow in Pi help', async () => {
       const result = await executeCLI(['pi', '--help']);
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('ypl');
       expect(result.stdout).toContain('shortcut for: yy pi --live');
+      expect(result.stdout).toContain('Named Pi session branches');
+      expect(result.stdout).toContain("ypl 'init'");
+      expect(result.stdout).toContain('yy clone --name C');
+      expect(result.stdout).toContain('yy branches');
+      expect(result.stdout).toContain('yy switch C');
+      expect(result.stdout).toContain('future yy cc / juno-code continue follows C');
+      expect(result.stdout).toContain('--name main is reserved');
     });
 
     it('should display version with --version flag', async () => {
