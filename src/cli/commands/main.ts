@@ -553,7 +553,7 @@ function normalizeCloneOptions(options: MainCommandOptions): void {
   options.resume = normalizedSource;
   options.cloneSession = true;
   options.cloneFromSession = normalizedSource;
-  options.continue = undefined;
+  delete options.continue;
 
   if (!options.subagent) {
     options.subagent = 'pi';
