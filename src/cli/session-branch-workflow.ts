@@ -100,6 +100,40 @@ function isTruthyEnvironmentFlag(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
+function applyContinueSettingsSnapshot(options: MainCommandOptions, settings: ContinueSettingsSnapshot): void {
+  if (!options.subagent) options.subagent = settings.subagent;
+  if (options.model === undefined && settings.model) options.model = settings.model;
+  if (options.maxIterations === undefined && settings.maxIterations !== undefined) {
+    options.maxIterations = settings.maxIterations;
+  }
+  if (options.thinking === undefined && settings.thinking) options.thinking = settings.thinking;
+  if (options.live === undefined && settings.live !== undefined) options.live = settings.live;
+  if (options.agents === undefined && settings.agents !== undefined) options.agents = settings.agents;
+  if (options.tools === undefined && settings.tools !== undefined) options.tools = [...settings.tools];
+  if (options.allowedTools === undefined && settings.allowedTools !== undefined) {
+    options.allowedTools = [...settings.allowedTools];
+  }
+  if (options.appendAllowedTools === undefined && settings.appendAllowedTools !== undefined) {
+    options.appendAllowedTools = [...settings.appendAllowedTools];
+  }
+  if (options.disallowedTools === undefined && settings.disallowedTools !== undefined) {
+    options.disallowedTools = [...settings.disallowedTools];
+  }
+}
+
+function readContinueSettingsSnapshotFromEnvironment(): ContinueSettingsSnapshot | null {
+  const continueScope = resolveContinueScopeContext();
+  const rawSettings = process.env[continueScope.settingsEnvKey];
+  return rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
+}
+
+function applyContinueSettingsFromEnvironmentIfPresent(options: MainCommandOptions): void {
+  const settings = readContinueSettingsSnapshotFromEnvironment();
+  if (settings) {
+    applyContinueSettingsSnapshot(options, settings);
+  }
+}
+
 async function applyContinueContextFromEnvironment(
   options: MainCommandOptions,
   action = 'continue',
@@ -125,8 +159,7 @@ async function applyContinueContextFromEnvironment(
     ]);
   }
 
-  const rawSettings = process.env[continueScope.settingsEnvKey];
-  const settings = rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
+  const settings = readContinueSettingsSnapshotFromEnvironment();
   if (!settings) {
     throw new ValidationError('Previous execution settings are missing or invalid for this shell context', [
       'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
@@ -135,24 +168,7 @@ async function applyContinueContextFromEnvironment(
   }
 
   options.resume = options.resume || sessionId;
-  if (!options.subagent) options.subagent = settings.subagent;
-  if (options.model === undefined && settings.model) options.model = settings.model;
-  if (options.maxIterations === undefined && settings.maxIterations !== undefined) {
-    options.maxIterations = settings.maxIterations;
-  }
-  if (options.thinking === undefined && settings.thinking) options.thinking = settings.thinking;
-  if (options.live === undefined && settings.live !== undefined) options.live = settings.live;
-  if (options.agents === undefined && settings.agents !== undefined) options.agents = settings.agents;
-  if (options.tools === undefined && settings.tools !== undefined) options.tools = [...settings.tools];
-  if (options.allowedTools === undefined && settings.allowedTools !== undefined) {
-    options.allowedTools = [...settings.allowedTools];
-  }
-  if (options.appendAllowedTools === undefined && settings.appendAllowedTools !== undefined) {
-    options.appendAllowedTools = [...settings.appendAllowedTools];
-  }
-  if (options.disallowedTools === undefined && settings.disallowedTools !== undefined) {
-    options.disallowedTools = [...settings.disallowedTools];
-  }
+  applyContinueSettingsSnapshot(options, settings);
 }
 
 async function resolveNamedCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
@@ -261,8 +277,11 @@ export async function prepareSessionBranchExecution(
 ): Promise<void> {
   await resolveNamedCloneOptions(options, config.workingDirectory);
 
-  // Named branch clone resolves its source from the branch registry instead of the active continue snapshot.
-  if (options.continueFromLatest && !options.cloneBranchName) {
+  // Named branch clone resolves its source from the branch registry instead of the active continue snapshot,
+  // but it should still inherit saved runtime settings (model, maxIterations, tools, etc.) when available.
+  if (options.cloneBranchName) {
+    applyContinueSettingsFromEnvironmentIfPresent(options);
+  } else if (options.continueFromLatest) {
     await applyContinueContextFromEnvironment(options, 'continue', config.workingDirectory);
   }
 

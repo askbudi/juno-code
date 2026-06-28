@@ -129,6 +129,63 @@ describe('session branch workflow', () => {
     expect(options.subagent).toBe('pi');
   });
 
+  it('prepares named clone with saved runtime settings while keeping the branch-selected source session', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('clone-settings-preserved');
+    process.env[scope.settingsEnvKey] = JSON.stringify({
+      version: 1,
+      subagent: 'pi',
+      model: ':gpt',
+      maxIterations: 9,
+      thinking: 'high',
+      tools: ['read', 'bash'],
+    });
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+
+    const options = {
+      continueFromLatest: true,
+      clone: true,
+      cloneBranchName: 'C',
+      prompt: 'fork with current settings',
+    } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_MAIN');
+    expect(options.cloneFromSession).toBe('SESSION_MAIN');
+    expect(options.model).toBe(':gpt');
+    expect(options.maxIterations).toBe(9);
+    expect(options.thinking).toBe('high');
+    expect(options.tools).toEqual(['read', 'bash']);
+  });
+
+  it('keeps explicit named clone runtime overrides ahead of saved continue-scope settings', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('clone-settings-overrides');
+    process.env[scope.settingsEnvKey] = JSON.stringify({
+      version: 1,
+      subagent: 'pi',
+      model: ':gpt',
+      maxIterations: 9,
+    });
+    await seedBranches(workingDirectory, scope);
+
+    const options = {
+      continueFromLatest: true,
+      clone: true,
+      cloneBranchName: 'C',
+      prompt: 'fork with explicit settings',
+      model: ':sonnet',
+      maxIterations: 2,
+    } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_MAIN');
+    expect(options.cloneFromSession).toBe('SESSION_MAIN');
+    expect(options.model).toBe(':sonnet');
+    expect(options.maxIterations).toBe(2);
+  });
+
   it('syncs named clone overrides without switching active so recreating C does not steal the current branch', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('clone-override-active');
