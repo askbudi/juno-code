@@ -286,6 +286,7 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 | `-v, --verbose` | Human-readable verbose output |
 | `-r, --resume <id>` | Resume specific session |
 | `--continue` | Continue most recent session |
+| `--clone [prompt]` | Pi-only: fork a clone from `--resume <id>` or the current shell continue scope |
 | `--live` | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
 | `--no-hooks` | Skip lifecycle hooks |
 | `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit) |
@@ -301,6 +302,9 @@ juno-code session info abc123         # Session details
 juno-code --resume abc123 -p 'continue'   # Resume session
 juno-code --continue -p 'keep going'      # Continue most recent (backend-native)
 juno-code continue 'next prompt'          # Reuse last session id + runtime settings snapshot
+juno-code clone 'Explore approach A'      # Fork current shell continue-scope Pi session
+juno-code continue --clone 'Explore approach B'
+juno-code --resume abc123 --clone 'Explore approach C'
 ```
 
 Each `juno-code` run also appends execution history to:
@@ -333,6 +337,23 @@ juno-code continue-scope A1B2C3 --json   # lookup by short hash prefix (5-6 char
 ```
 
 `continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`.
+
+### Pi Session Cloning
+
+Pi session cloning lets one root session branch into independent experiments without the branches overwriting each other. `juno-code` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
+
+```bash
+juno-code clone 'Explore approach A'
+juno-code continue --clone 'Explore approach B'
+juno-code --resume <session-id> --clone 'Explore approach C'
+```
+
+Source behavior:
+- `juno-code --resume <session-id> --clone ...` forks the explicit session id.
+- `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell continue-scope session.
+- After a successful clone, the cloned id is persisted into the current shell continue scope, so future `juno-code continue` in that shell follows the clone rather than the root session.
+
+The backing command-routing and scope-persistence tests are important because they protect the user flow: clones must continue from their own dedicated session ids, not accidentally resume the original/root Pi session.
 
 ### Feedback System
 

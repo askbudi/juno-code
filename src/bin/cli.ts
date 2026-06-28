@@ -190,7 +190,7 @@ function setupGlobalOptions(program: Command): void {
       'Enable interactive feedback mode (F+Enter to enter, Q+Enter to submit)',
     )
     .option('-r, --resume <sessionId>', 'Resume a conversation by session ID (shell backend only)')
-    .option('--clone [prompt]', 'Clone/fork the source Pi session and run an optional prompt (requires --resume or a continue scope)')
+    .option('--clone [prompt]', 'Pi only: fork a clone from --resume <sessionId> or the current shell continue scope; optional prompt runs in the clone')
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
     .option(
       '--til-completion',
@@ -419,7 +419,7 @@ function setupContinueCommand(program: Command): void {
     .option('-i, --max-iterations <number>', 'Override max iterations for this continue run', parseInt)
     .option('-m, --model <name>', 'Override model for this continue run')
     .option('-s, --subagent <name>', 'Override subagent for this continue run')
-    .option('--clone [prompt]', 'Clone/fork the current continue-scope Pi session before running an optional prompt')
+    .option('--clone [prompt]', 'Pi only: fork the current shell continue-scope session, persist the cloned session id, and run an optional prompt')
     .option('-I, --interactive', 'Interactive mode for typing prompts')
     .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
     .option('--thinking <level>', 'Override thinking level for this continue run')
@@ -453,6 +453,19 @@ function setupContinueCommand(program: Command): void {
       }
     });
 
+  continueCommand.addHelpText(
+    'after',
+    `
+${chalk.blue.bold('Examples:')}
+  juno-code continue 'Implement the next step'
+  juno-code continue --clone 'Explore approach B'
+
+${chalk.blue.bold('Pi clone behavior:')}
+  continue --clone forks the current shell continue-scope session with Pi native --fork.
+  The cloned session id is persisted to this shell scope, so future continue runs follow the clone.
+`,
+  );
+
   continueCommand.allowUnknownOption(true);
 }
 
@@ -463,7 +476,7 @@ function setupContinueCommand(program: Command): void {
 function setupCloneCommand(program: Command): void {
   const cloneCommand = program
     .command('clone')
-    .description('Clone/fork the current shell continue-scope Pi session and run a prompt')
+    .description('Pi only: fork the current shell continue-scope session, run a prompt, and continue from the clone')
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p or --clone)')
     .option(
       '-p, --prompt [text]',
@@ -506,6 +519,19 @@ function setupCloneCommand(program: Command): void {
         handleCLIError(error, normalizeVerbose(options.verbose));
       }
     });
+
+  cloneCommand.addHelpText(
+    'after',
+    `
+${chalk.blue.bold('Examples:')}
+  juno-code clone 'Explore approach A'
+
+${chalk.blue.bold('Behavior:')}
+  Alias for juno-code continue --clone. It forks the current shell continue-scope
+  session with Pi native --fork, stores the cloned session id in that scope, and
+  future juno-code continue commands in the same shell continue the clone.
+`,
+  );
 
   cloneCommand.allowUnknownOption(true);
 }
@@ -1483,6 +1509,11 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Continue the last session without retyping settings')}
   juno-code continue 'Implement the next step'
   juno-code continue -p 'Continue from here' 
+
+  ${chalk.gray('# Clone Pi sessions for independent branches')}
+  juno-code clone 'Explore approach A'
+  juno-code continue --clone 'Explore approach B'
+  juno-code --resume <session-id> --clone 'Explore approach C'
 
   ${chalk.gray('# Query continue scope hash/status for scripts')}
   juno-code continue-scope --json
