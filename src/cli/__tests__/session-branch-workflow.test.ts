@@ -1,0 +1,229 @@
+import * as fs from 'fs-extra';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { resolveContinueScopeContext } from '../../core/continue-scope.js';
+import { ExecutionStatus, type ExecutionResult } from '../../core/engine.js';
+import {
+  listSessionBranches,
+  resetMainSessionBranch,
+  setActiveSessionBranch,
+  upsertClonedSessionBranch,
+} from '../../core/session-branches.js';
+import {
+  prepareSessionBranchExecution,
+  syncSessionBranchExecutionResult,
+} from '../session-branch-workflow.js';
+import type { MainCommandOptions } from '../types.js';
+
+const tempDirs: string[] = [];
+const ORIGINAL_SCOPE = process.env.JUNO_CODE_CONTINUE_SCOPE;
+const ORIGINAL_SESSION_ENV = new Map<string, string | undefined>();
+const ORIGINAL_SETTINGS_ENV = new Map<string, string | undefined>();
+
+async function createTempDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-branch-workflow-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function setScope(scope: string) {
+  process.env.JUNO_CODE_CONTINUE_SCOPE = scope;
+  const context = resolveContinueScopeContext();
+  ORIGINAL_SESSION_ENV.set(context.sessionEnvKey, process.env[context.sessionEnvKey]);
+  ORIGINAL_SETTINGS_ENV.set(context.settingsEnvKey, process.env[context.settingsEnvKey]);
+  return context;
+}
+
+function restoreEnvKey(key: string, value: string | undefined) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
+
+function completedPiResult(cloneSession = false): ExecutionResult {
+  return {
+    request: { requestId: 'request-1', instruction: 'prompt', subagent: 'pi', cloneSession } as any,
+    status: ExecutionStatus.COMPLETED,
+    iterations: [],
+    statistics: {} as any,
+  };
+}
+
+async function seedBranches(workingDirectory: string, scope = resolveContinueScopeContext()) {
+  await resetMainSessionBranch({ workingDirectory, scope, sessionId: 'SESSION_MAIN' });
+  await upsertClonedSessionBranch({
+    workingDirectory,
+    scope,
+    branchName: 'C',
+    sessionId: 'SESSION_C',
+    parent: 'main',
+    sourceSessionId: 'SESSION_MAIN',
+  });
+  await upsertClonedSessionBranch({
+    workingDirectory,
+    scope,
+    branchName: 'D',
+    sessionId: 'SESSION_D',
+    parent: 'main',
+    sourceSessionId: 'SESSION_MAIN',
+  });
+}
+
+afterEach(async () => {
+  if (ORIGINAL_SCOPE === undefined) {
+    delete process.env.JUNO_CODE_CONTINUE_SCOPE;
+  } else {
+    process.env.JUNO_CODE_CONTINUE_SCOPE = ORIGINAL_SCOPE;
+  }
+  for (const [key, value] of ORIGINAL_SESSION_ENV.entries()) restoreEnvKey(key, value);
+  for (const [key, value] of ORIGINAL_SETTINGS_ENV.entries()) restoreEnvKey(key, value);
+  ORIGINAL_SESSION_ENV.clear();
+  ORIGINAL_SETTINGS_ENV.clear();
+
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) await fs.remove(dir);
+  }
+});
+
+describe('session branch workflow', () => {
+  it('prepares continue from the active branch in only the current shell scope so another pane cannot hijack routing', async () => {
+    const workingDirectory = await createTempDir();
+    const scopeA = setScope('pane-a');
+    process.env[scopeA.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 7 });
+    await seedBranches(workingDirectory, scopeA);
+    await setActiveSessionBranch({ workingDirectory, scope: scopeA, branchName: 'C' });
+
+    const scopeB = setScope('pane-b');
+    process.env[scopeB.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 3 });
+    await resetMainSessionBranch({ workingDirectory, scope: scopeB, sessionId: 'B_MAIN' });
+
+    const options = { continueFromLatest: true } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('B_MAIN');
+    expect(options.maxIterations).toBe(3);
+  });
+
+  it('prepares clone --name from main instead of active D so experimental forks start from the root branch by default', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('clone-defaults-main');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+
+    const options = {
+      continueFromLatest: true,
+      clone: true,
+      cloneBranchName: 'C',
+      prompt: 'fork from root',
+    } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_MAIN');
+    expect(options.cloneFromSession).toBe('SESSION_MAIN');
+    expect(options.cloneSession).toBe(true);
+    expect(options.subagent).toBe('pi');
+  });
+
+  it('syncs named clone overrides without switching active so recreating C does not steal the current branch', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('clone-override-active');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+
+    await syncSessionBranchExecutionResult(
+      completedPiResult(true),
+      { workingDirectory },
+      { cloneBranchName: 'C', cloneBranchFrom: 'main', cloneSession: true } as MainCommandOptions,
+      'SESSION_C_REPLACEMENT',
+    );
+
+    await expect(listSessionBranches({ workingDirectory, scope })).resolves.toEqual([
+      expect.objectContaining({ name: 'main', active: false, sessionId: 'SESSION_MAIN' }),
+      expect.objectContaining({ name: 'C', active: false, sessionId: 'SESSION_C_REPLACEMENT' }),
+      expect.objectContaining({ name: 'D', active: true, sessionId: 'SESSION_D' }),
+    ]);
+  });
+
+  it('syncs successful continue to only active C so main remains a stable source for future clones', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('continue-updates-active-only');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    await syncSessionBranchExecutionResult(
+      completedPiResult(),
+      { workingDirectory },
+      { continueFromLatest: true, resume: 'SESSION_C' } as MainCommandOptions,
+      'SESSION_C_NEXT',
+    );
+
+    await expect(listSessionBranches({ workingDirectory, scope })).resolves.toEqual([
+      expect.objectContaining({ name: 'main', active: false, sessionId: 'SESSION_MAIN' }),
+      expect.objectContaining({ name: 'C', active: true, sessionId: 'SESSION_C_NEXT' }),
+      expect.objectContaining({ name: 'D', active: false, sessionId: 'SESSION_D' }),
+    ]);
+  });
+
+  it('syncs explicit --resume without clone by resetting stale branches so a new topic cannot inherit C or D', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('explicit-resume-resets');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    await syncSessionBranchExecutionResult(
+      completedPiResult(),
+      { workingDirectory },
+      { resume: 'EXTERNAL_SESSION' } as MainCommandOptions,
+      'EXTERNAL_NEXT',
+    );
+
+    await expect(listSessionBranches({ workingDirectory, scope })).resolves.toEqual([
+      expect.objectContaining({ name: 'main', active: true, sessionId: 'EXTERNAL_NEXT' }),
+    ]);
+  });
+
+  it('does not reset named branches for --resume --clone because clone runs are forks, not new roots', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('explicit-clone-preserves');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    await syncSessionBranchExecutionResult(
+      completedPiResult(true),
+      { workingDirectory },
+      { resume: 'EXTERNAL_SESSION', cloneSession: true } as MainCommandOptions,
+      'CLONE_NEXT',
+    );
+
+    await expect(listSessionBranches({ workingDirectory, scope })).resolves.toEqual([
+      expect.objectContaining({ name: 'main', active: false, sessionId: 'SESSION_MAIN' }),
+      expect.objectContaining({ name: 'C', active: true, sessionId: 'SESSION_C' }),
+      expect.objectContaining({ name: 'D', active: false, sessionId: 'SESSION_D' }),
+    ]);
+  });
+
+  it('skips branch sync when the provider result has no session id so failures cannot advance hidden state', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('missing-session-noop');
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    await syncSessionBranchExecutionResult(
+      completedPiResult(),
+      { workingDirectory },
+      { continueFromLatest: true, resume: 'SESSION_C' } as MainCommandOptions,
+      undefined,
+    );
+
+    await expect(listSessionBranches({ workingDirectory, scope })).resolves.toEqual([
+      expect.objectContaining({ name: 'main', active: false, sessionId: 'SESSION_MAIN' }),
+      expect.objectContaining({ name: 'C', active: true, sessionId: 'SESSION_C' }),
+      expect.objectContaining({ name: 'D', active: false, sessionId: 'SESSION_D' }),
+    ]);
+  });
+});
