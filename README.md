@@ -303,6 +303,10 @@ juno-code --resume abc123 -p 'continue'   # Resume session
 juno-code --continue -p 'keep going'      # Continue most recent (backend-native)
 juno-code continue 'next prompt'          # Reuse last session id + runtime settings snapshot
 juno-code clone 'Explore approach A'      # Fork current shell continue-scope Pi session
+juno-code clone --name C 'Explore C'      # Clone main into named branch C
+juno-code clone --from C --name M 'Explore M'  # Clone branch C into branch M
+juno-code branches                        # List this shell's named branches
+juno-code switch C                        # Make C active for future continue runs
 juno-code continue --clone 'Explore approach B'
 juno-code --resume abc123 --clone 'Explore approach C'
 ```
@@ -338,22 +342,38 @@ juno-code continue-scope A1B2C3 --json   # lookup by short hash prefix (5-6 char
 
 `continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`.
 
-### Pi Session Cloning
+### Pi Session Cloning and Named Branches
 
-Pi session cloning lets one root session branch into independent experiments without the branches overwriting each other. `juno-code` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
+Pi session cloning lets one root session branch into independent experiments without branches overwriting each other. `juno-code` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
 
 ```bash
-juno-code clone 'Explore approach A'
-juno-code continue --clone 'Explore approach B'
-juno-code --resume <session-id> --clone 'Explore approach C'
+ypl 'init'
+yy clone --name C 'research C'
+yy clone --name D 'research D'
+yy cc 'continue main'
+yy switch C
+yy cc 'continue C'
+
+# Equivalent long forms:
+juno-code branches
+juno-code switch C
+juno-code clone --name C 'Explore C'
+juno-code clone --from C --name M 'Explore M'
 ```
 
-Source behavior:
-- `juno-code --resume <session-id> --clone ...` forks the explicit session id.
-- `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell continue-scope session.
-- After a successful clone, the cloned id is persisted into the current shell continue scope, so future `juno-code continue` in that shell follows the clone rather than the root session.
+Named branch behavior:
+- `juno-code branches` shows named branches for the current shell/pane and marks the active branch.
+- `juno-code switch C` makes `C` active for future `juno-code continue` / `yy cc` in that shell.
+- `juno-code clone --name C ...` clones from `main` by default, runs the prompt immediately in `C`, overwrites `C` if it exists, and does **not** switch the active branch.
+- `juno-code clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
+- Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
+- A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.
 
-The backing command-routing and scope-persistence tests are important because they protect the user flow: clones must continue from their own dedicated session ids, not accidentally resume the original/root Pi session.
+Non-named clone behavior:
+- `juno-code --resume <session-id> --clone ...` forks the explicit session id.
+- `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell session and then future `juno-code continue` in that shell follows the clone.
+
+The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, or expect clone to switch branches automatically.
 
 ### Feedback System
 

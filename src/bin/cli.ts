@@ -538,11 +538,18 @@ function setupCloneCommand(program: Command): void {
     `
 ${chalk.blue.bold('Examples:')}
   juno-code clone 'Explore approach A'
+  juno-code clone --name C 'Explore C'
+  juno-code clone --from C --name M 'Explore M'
 
-${chalk.blue.bold('Behavior:')}
-  Alias for juno-code continue --clone. It forks the current shell continue-scope
-  session with Pi native --fork, stores the cloned session id in that scope, and
-  future juno-code continue commands in the same shell continue the clone.
+${chalk.blue.bold('Named branch behavior:')}
+  --name C clones from main by default, runs the prompt immediately in C, and
+  overwrites C if it already exists. Clone does not switch the active branch;
+  use juno-code switch C when future juno-code continue runs should follow C.
+  --from C --name M clones from branch C into M. The target name main is reserved.
+
+${chalk.blue.bold('Scope behavior:')}
+  Each shell/pane has its own active branch registry. For normal use you do not
+  need to name scopes manually; run juno-code branches to inspect this shell.
 `,
   );
 
@@ -571,9 +578,9 @@ function setupNamedBranchCommands(program: Command): void {
     });
   };
 
-  program
+  const branchesCommand = program
     .command('branches')
-    .description('List named Pi session branches for the current continue scope')
+    .description('List named Pi session branches for the current shell branch registry')
     .option('-w, --cwd <path>', 'Working directory')
     .option('--json', 'Output machine-readable JSON')
     .action(async (options) => {
@@ -615,9 +622,22 @@ function setupNamedBranchCommands(program: Command): void {
       }
     });
 
-  program
+  branchesCommand.addHelpText(
+    'after',
+    `
+${chalk.blue.bold('Examples:')}
+  juno-code branches
+  juno-code branches --json
+
+${chalk.blue.bold('Behavior:')}
+  Shows named branches for this shell/pane and marks the active branch with *.
+  Future juno-code continue runs follow the active branch in this shell.
+`,
+  );
+
+  const switchCommand = program
     .command('switch')
-    .description('Switch the active named Pi session branch for this continue scope')
+    .description('Switch the active named Pi session branch for this shell branch registry')
     .argument('<branch>', 'Branch name to activate')
     .option('-w, --cwd <path>', 'Working directory')
     .action(async (branchName: string, options) => {
@@ -638,6 +658,20 @@ function setupNamedBranchCommands(program: Command): void {
         handleCLIError(error, normalizeVerbose(options.verbose));
       }
     });
+
+  switchCommand.addHelpText(
+    'after',
+    `
+${chalk.blue.bold('Examples:')}
+  juno-code switch C
+  yy switch C
+
+${chalk.blue.bold('Behavior:')}
+  Makes the branch active only for this shell/pane. Future juno-code continue
+  or yy cc runs in this shell continue that branch until you switch again or a
+  reset creates a new main branch registry.
+`,
+  );
 }
 
 function setupContinueScopeCommand(program: Command): void {
@@ -1615,6 +1649,10 @@ ${chalk.blue.bold('Examples:')}
 
   ${chalk.gray('# Clone Pi sessions for independent branches')}
   juno-code clone 'Explore approach A'
+  juno-code clone --name C 'Explore C'
+  juno-code clone --from C --name M 'Explore M'
+  juno-code branches
+  juno-code switch C
   juno-code continue --clone 'Explore approach B'
   juno-code --resume <session-id> --clone 'Explore approach C'
 
