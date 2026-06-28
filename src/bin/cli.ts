@@ -476,7 +476,7 @@ ${chalk.blue.bold('Pi clone behavior:')}
 function setupCloneCommand(program: Command): void {
   const cloneCommand = program
     .command('clone')
-    .description('Pi only: fork the current shell continue-scope session, run a prompt, and continue from the clone')
+    .description('Clone/fork a Pi session from the current shell continue-scope session, run a prompt, and continue from the clone')
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p or --clone)')
     .option(
       '-p, --prompt [text]',
