@@ -674,10 +674,78 @@ describe('Binary Execution Tests', () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('Clone/fork');
+      expect(result.stdout).toContain('clone early_reflect');
       expect(result.stdout).toContain('--prompt-file');
       expect(result.stdout).toContain('--thinking');
       expect(result.stdout).toContain('--name');
       expect(result.stdout).toContain('--from');
+    });
+
+    it('should parse clone <branch> <prompt> as named-branch shorthand instead of dropping the branch name into prompt text', async () => {
+      const scope = 'binary-clone-branch-prompt-shorthand';
+      const scopeHash = `SCOPE_${createHash('sha256')
+        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+        .digest('hex')
+        .slice(0, 16)
+        .toUpperCase()}`;
+      const config = {
+        defaultSubagent: 'pi',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':pi',
+        defaultModels: { pi: ':pi' },
+        logLevel: 'info',
+        verbose: 0,
+        quiet: true,
+        mcpTimeout: 43200000,
+        mcpRetries: 3,
+        onHourlyLimit: 'raise',
+        interactive: true,
+        headlessMode: false,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+          'session_branches.json': JSON.stringify(
+            {
+              version: 1,
+              scopes: {
+                [scopeHash]: {
+                  active: 'main',
+                  branches: {
+                    main: {
+                      session_id: 'SESSION_MAIN',
+                      parent: null,
+                      updated_at: '2026-06-27T00:00:00.000Z',
+                    },
+                  },
+                },
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      });
+
+      const result = await executeCLI(['clone', 'early_reflect', '@@reflect', '--from', 'missing'], {
+        expectError: true,
+        env: {
+          ...buildContinueSnapshotEnv(scope),
+          JUNO_CODE_CONTINUE_SCOPE: scope,
+        },
+      });
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(output).toContain("Unknown source branch 'missing'");
+      expect(output).not.toContain('No previous session found to clone');
     });
 
     it('should list named branches as JSON and switch the active branch for the current scope', async () => {

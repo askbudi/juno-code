@@ -348,8 +348,8 @@ Pi session cloning lets one root session branch into independent experiments wit
 
 ```bash
 ypl 'init'
-yy clone --name C 'research C'
-yy clone --name D 'research D'
+yy clone C 'research C'
+yy clone D 'research D'
 yy cc 'continue main'
 yy switch C
 yy cc 'continue C'
@@ -359,6 +359,7 @@ yy switch C 'continue C immediately'
 juno-code branches
 juno-code switch C
 juno-code switch C 'Continue C immediately'
+juno-code clone C 'Explore C'
 juno-code clone --name C 'Explore C'
 juno-code clone --from C --name M 'Explore M'
 ```
@@ -366,7 +367,7 @@ juno-code clone --from C --name M 'Explore M'
 Named branch behavior:
 - `juno-code branches` shows named branches for the current shell/pane and marks the active branch.
 - `juno-code switch C` makes `C` active for future `juno-code continue` / `yy cc` in that shell; `juno-code switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
-- `juno-code clone --name C ...` clones from `main` by default, runs the prompt immediately in `C`, overwrites `C` if it exists, and does **not** switch the active branch.
+- `juno-code clone C 'prompt'` is shorthand for `juno-code clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
 - `juno-code clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
 - Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
 - A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.

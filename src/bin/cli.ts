@@ -486,7 +486,7 @@ function setupCloneCommand(program: Command): void {
   const cloneCommand = program
     .command('clone')
     .description('Clone/fork a Pi session from the current shell continue-scope session, run a prompt, and continue from the clone')
-    .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p or --clone)')
+    .argument('[prompt_text...]', 'Prompt text, or shorthand: <branch> <prompt>')
     .option(
       '-p, --prompt [text]',
       "Prompt input (inline text, file path, or heredoc/stdin; supports !'cmd' and !```cmd``` substitutions, prefer single quotes for shell metacharacters)",
@@ -499,9 +499,27 @@ function setupCloneCommand(program: Command): void {
     .option('--from <branch>', 'Named source branch to clone from (default: main)')
     .option('--live', 'Run Pi subagent in interactive live TUI mode (pi only)')
     .option('--thinking <level>', 'Override thinking level for the cloned run')
-    .action(async (promptArgs: string[], options, command) => {
-      if (promptArgs.length > 0 && options.prompt === undefined) {
-        options.prompt = promptArgs.join(' ');
+    .action(async (promptArgs: string[] | string | undefined, options, command) => {
+      const parsedPromptArgs = Array.isArray(promptArgs)
+        ? promptArgs
+        : typeof promptArgs === 'string' && promptArgs.length > 0
+          ? [promptArgs]
+          : [];
+      const commandArgs = Array.isArray(command.args)
+        ? command.args.filter((arg: unknown): arg is string => typeof arg === 'string')
+        : [];
+      const cloneArgs = parsedPromptArgs.length > 0 ? parsedPromptArgs : commandArgs;
+      const hasExplicitPromptInput = options.prompt !== undefined || options.promptFile;
+      if (cloneArgs.length >= 2 && options.name === undefined) {
+        const [branchName, ...remainingPromptArgs] = cloneArgs;
+        options.name = branchName;
+        if (options.prompt === undefined) {
+          options.prompt = remainingPromptArgs.join(' ');
+        }
+      } else if (cloneArgs.length === 1 && options.name === undefined && hasExplicitPromptInput) {
+        options.name = cloneArgs[0];
+      } else if (cloneArgs.length > 0 && options.prompt === undefined) {
+        options.prompt = cloneArgs.join(' ');
       }
 
       try {
@@ -538,14 +556,16 @@ function setupCloneCommand(program: Command): void {
     `
 ${chalk.blue.bold('Examples:')}
   juno-code clone 'Explore approach A'
+  juno-code clone early_reflect '@@reflect'
   juno-code clone --name C 'Explore C'
   juno-code clone --from C --name M 'Explore M'
 
 ${chalk.blue.bold('Named branch behavior:')}
-  --name C clones from main by default, runs the prompt immediately in C, and
-  overwrites C if it already exists. Clone does not switch the active branch;
-  use juno-code switch C when future juno-code continue runs should follow C.
-  --from C --name M clones from branch C into M. The target name main is reserved.
+  clone C 'prompt' is shorthand for --name C 'prompt'. --name C clones from
+  main by default, runs the prompt immediately in C, and overwrites C if it
+  already exists. Clone does not switch the active branch; use juno-code switch C
+  when future juno-code continue runs should follow C. --from C --name M clones
+  from branch C into M. The target name main is reserved.
 
 ${chalk.blue.bold('Scope behavior:')}
   Each shell/pane has its own active branch registry. For normal use you do not
@@ -1116,6 +1136,7 @@ ${chalk.blue('Examples:')}
 
   ${chalk.gray('# Named Pi session branches (per shell/pane continue scope)')}
   ypl 'init'                       ${chalk.gray('# creates/resets the main branch from a root Pi run')}
+  yy clone C 'Explore C'           ${chalk.gray('# shorthand for --name C; runs prompt, does not switch')}
   yy clone --name C 'Explore C'    ${chalk.gray('# forks main into C, runs prompt, does not switch')}
   yy clone --from C --name M 'Explore M'
   yy branches                      ${chalk.gray('# list branches; * marks active')}
