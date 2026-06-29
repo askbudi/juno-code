@@ -41,6 +41,7 @@ import type { ProgressEvent } from '../../types/execution.js';
 import {
   CONTINUE_SETTINGS_VERSION,
   prepareSessionBranchExecution,
+  resolveSessionBranchNameForSummary,
   syncSessionBranchExecutionResult,
   type ContinueSettingsSnapshot,
 } from '../session-branch-workflow.js';
@@ -1280,8 +1281,9 @@ class MainProgressDisplay {
     return null;
   }
 
-  complete(result: ExecutionResult): void {
+  complete(result: ExecutionResult, branchName: string = 'main'): void {
     const elapsed = this.getElapsedTime();
+    const summaryBranchName = branchName.trim() || 'main';
 
     // Level 0 (quiet): only show final result on STDOUT, nothing else
     if (this.verboseLevel === 0) {
@@ -1344,6 +1346,7 @@ class MainProgressDisplay {
         ),
       );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
+      console.error(chalk.white(`   Branch: ${summaryBranchName}`));
       console.error(chalk.white(`   Completed At: ${this.formatHumanDateTime(completedAt)}`));
 
       if (iterationCosts.size > 0) {
@@ -1600,7 +1603,7 @@ class MainExecutionCoordinator {
     }
   }
 
-  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+  async execute(request: ExecutionRequest, branchName: string = 'main'): Promise<ExecutionResult> {
     // Log backend selection at level 2 (debug)
     if (this.config.verbose >= 2) {
       console.error(chalk.gray(`   Backend: Shell Scripts`));
@@ -1654,7 +1657,7 @@ class MainExecutionCoordinator {
       const result = await engine.execute(request);
 
       // Complete progress display
-      this.progressDisplay.complete(result);
+      this.progressDisplay.complete(result, branchName);
 
       return result;
     } catch (error) {
@@ -1837,6 +1840,8 @@ export async function mainCommandHandler(
       ...(liveInteractiveSession ? { liveInteractiveSession: true } : {}),
     });
 
+    const executionBranchName = await resolveSessionBranchNameForSummary(options, config);
+
     // Execute
     const coordinator = new MainExecutionCoordinator(
       config,
@@ -1852,7 +1857,7 @@ export async function mainCommandHandler(
       await markContinueScopeRunning(config.workingDirectory, continueScope);
       continueScopeMarkedRunning = true;
 
-      const result = await coordinator.execute(executionRequest);
+      const result = await coordinator.execute(executionRequest, executionBranchName);
 
       await persistSessionHistory(result, effectiveVerbose);
       const sessionIds = extractSessionIds(result);

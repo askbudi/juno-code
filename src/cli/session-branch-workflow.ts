@@ -288,6 +288,28 @@ export async function prepareSessionBranchExecution(
   await normalizeCloneOptions(options, config.workingDirectory);
 }
 
+export async function resolveSessionBranchNameForSummary(
+  options: MainCommandOptions,
+  config: { workingDirectory: string },
+): Promise<string> {
+  const cloneBranchName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
+  if (cloneBranchName) {
+    return cloneBranchName;
+  }
+
+  if (options.continueFromLatest === true && options.cloneSession !== true) {
+    const activeBranch = await getActiveSessionBranch({
+      workingDirectory: config.workingDirectory,
+      scope: resolveContinueScopeContext(),
+    });
+    if (activeBranch?.name?.trim()) {
+      return activeBranch.name.trim();
+    }
+  }
+
+  return MAIN_SESSION_BRANCH;
+}
+
 export async function syncSessionBranchExecutionResult(
   result: ExecutionResult,
   config: { workingDirectory: string },

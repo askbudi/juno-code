@@ -3481,6 +3481,43 @@ describe('Verbose/Quiet Output Modes', () => {
     const allCalls = consoleErrorSpy.mock.calls.map(c => c[0]);
     expect(allCalls.some((c: string) => c.includes('Statistics:'))).toBe(true);
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
+    expect(allCalls.some((c: string) => c.includes('Branch: main'))).toBe(true);
+  });
+
+  it('should show active named branch in completion statistics for branch continues', async () => {
+    const scope = 'summary-active-branch';
+    const scopeHash = `SCOPE_${createHash('sha256')
+      .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+      .digest('hex')
+      .slice(0, 16)
+      .toUpperCase()}`;
+    process.env.JUNO_CODE_CONTINUE_SCOPE = scope;
+    process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+      version: 1,
+      subagent: 'pi',
+      maxIterations: 1,
+    });
+    vi.mocked(getActiveSessionBranch).mockResolvedValue({
+      name: 'early_reflect',
+      sessionId: 'SESSION_EARLY',
+      parent: 'main',
+      sourceSessionId: 'SESSION_MAIN',
+      updatedAt: '2026-06-29T00:00:00.000Z',
+    } as any);
+
+    const options: MainCommandOptions = {
+      subagent: 'pi',
+      prompt: 'test prompt',
+      continueFromLatest: true,
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((c: string) => c.includes('Branch: early_reflect'))).toBe(true);
   });
 
   it('should show human-readable completion time in statistics', async () => {
