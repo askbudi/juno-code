@@ -67,6 +67,48 @@ interface ScriptExecutionResult {
   metadata?: Record<string, any>;
 }
 
+const DEFAULT_CAPTURE_LIMIT_BYTES = 1024 * 1024;
+const DEFAULT_STREAM_BUFFER_LIMIT_BYTES = 1024 * 1024;
+
+interface CappedTextCapture {
+  text: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+function getPositiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function appendCappedText(
+  capture: CappedTextCapture,
+  chunk: string,
+  limitBytes: number,
+): CappedTextCapture {
+  if (!chunk) return capture;
+
+  const combined = capture.text + chunk;
+  const combinedBytes = Buffer.byteLength(combined, 'utf8');
+  if (combinedBytes <= limitBytes) {
+    return { text: combined, bytes: combinedBytes, truncated: capture.truncated };
+  }
+
+  let text = combined;
+  while (Buffer.byteLength(text, 'utf8') > limitBytes && text.length > 0) {
+    const excessBytes = Buffer.byteLength(text, 'utf8') - limitBytes;
+    text = text.slice(Math.max(1, Math.min(text.length, excessBytes)));
+  }
+
+  return {
+    text,
+    bytes: Buffer.byteLength(text, 'utf8'),
+    truncated: true,
+  };
+}
+
 /**
  * Quota limit information extracted from Claude or Codex response
  */
@@ -873,14 +915,21 @@ export class ShellBackend implements Backend {
         child.stdin.end();
       }
 
-      let stdout = '';
-      let stderr = '';
+      const captureLimitBytes = getPositiveIntegerEnv(
+        'JUNO_SHELL_CAPTURE_LIMIT_BYTES',
+        DEFAULT_CAPTURE_LIMIT_BYTES,
+      );
+      let stdoutCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
+      let stderrCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let isProcessKilled = false;
 
-      // Handle stdout (JSON streaming or TEXT streaming)
+      // Handle stdout (JSON streaming or TEXT streaming). Keep only a bounded tail
+      // in memory; the structured capture file is the source of truth for final
+      // subagent payloads. This avoids Node-version-sensitive heap growth when
+      // Pi or other providers emit very large logs.
       child.stdout?.on('data', (chunk: Buffer) => {
         const data = chunk.toString();
-        stdout += data;
+        stdoutCapture = appendCappedText(stdoutCapture, data, captureLimitBytes);
 
         if (this.config!.debug) {
           engineLogger.debug(`Script stdout chunk: ${data.length} bytes`);
@@ -904,10 +953,11 @@ export class ShellBackend implements Backend {
         }
       });
 
-      // Handle stderr - stream as progress events for user visibility
+      // Handle stderr - stream as progress events for user visibility, while also
+      // retaining only a bounded tail for the final error payload.
       child.stderr?.on('data', (chunk: Buffer) => {
         const errorData = chunk.toString();
-        stderr += errorData;
+        stderrCapture = appendCappedText(stderrCapture, errorData, captureLimitBytes);
 
         if (this.config!.debug) {
           engineLogger.debug(`Script stderr: ${errorData}`);
@@ -982,17 +1032,25 @@ export class ShellBackend implements Backend {
             engineLogger.debug(
               `Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`,
             );
-            engineLogger.debug(`Stdout length: ${stdout.length}, Stderr length: ${stderr.length}`);
+            engineLogger.debug(
+              `Stdout captured bytes: ${stdoutCapture.bytes}${stdoutCapture.truncated ? ' (truncated)' : ''}, ` +
+                `Stderr captured bytes: ${stderrCapture.bytes}${stderrCapture.truncated ? ' (truncated)' : ''}`,
+            );
           }
 
           const execResult: ScriptExecutionResult = {
             success,
-            output: stdout,
+            output: stdoutCapture.text,
             exitCode: exitCode || 0,
             duration,
+            metadata: {
+              outputTruncated: stdoutCapture.truncated,
+              errorTruncated: stderrCapture.truncated,
+              captureLimitBytes,
+            },
           };
-          if (stderr) {
-            execResult.error = stderr;
+          if (stderrCapture.text) {
+            execResult.error = stderrCapture.text;
           }
           if (subAgentResponse) {
             execResult.subAgentResponse = subAgentResponse;
@@ -1482,6 +1540,20 @@ export class ShellBackend implements Backend {
     }
 
     this.jsonBuffer += data;
+    const streamBufferLimitBytes = getPositiveIntegerEnv(
+      'JUNO_SHELL_STREAM_BUFFER_LIMIT_BYTES',
+      DEFAULT_STREAM_BUFFER_LIMIT_BYTES,
+    );
+    if (Buffer.byteLength(this.jsonBuffer, 'utf8') > streamBufferLimitBytes) {
+      // A provider can emit a very long line without a newline (for example a
+      // large UI/log blob). Keep a bounded tail so streaming does not become an
+      // accidental unbounded string accumulator under Node 24.
+      this.jsonBuffer = appendCappedText(
+        { text: '', bytes: 0, truncated: false },
+        this.jsonBuffer,
+        streamBufferLimitBytes,
+      ).text;
+    }
 
     const streamToolId = toolId || `stream_${Date.now()}`;
 

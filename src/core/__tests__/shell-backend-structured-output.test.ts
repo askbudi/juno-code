@@ -107,6 +107,27 @@ print(json.dumps({"type": "result", "result": "live-done", "session_id": "pi-liv
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createStubPiLargeOutputService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-large-output-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, 'pi.py');
+  const scriptContent = `#!/usr/bin/env python3
+import json
+import sys
+
+sys.stdout.write("x" * (256 * 1024))
+sys.stdout.write("\\n")
+print(json.dumps({"type": "result", "result": "large-output-done", "session_id": "pi-large-session"}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
 afterEach(async () => {
   await Promise.all(tempRoots.map((dir) => fs.remove(dir)));
   tempRoots.length = 0;
@@ -1771,6 +1792,52 @@ if capture_path:
     if (parsed.sub_agent_response.sub_agent_response) {
       expect(parsed.sub_agent_response.sub_agent_response.messages).toBeUndefined();
       expect(parsed.sub_agent_response.sub_agent_response.type).toBeUndefined();
+    }
+  });
+
+  it('bounds retained Pi stdout so large provider logs do not grow the Node heap', async () => {
+    const { servicesDir, workingDir } = await createStubPiLargeOutputService();
+    const previousCaptureLimit = process.env.JUNO_SHELL_CAPTURE_LIMIT_BYTES;
+    const previousStreamLimit = process.env.JUNO_SHELL_STREAM_BUFFER_LIMIT_BYTES;
+    process.env.JUNO_SHELL_CAPTURE_LIMIT_BYTES = '8192';
+    process.env.JUNO_SHELL_STREAM_BUFFER_LIMIT_BYTES = '8192';
+
+    try {
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: workingDir,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true,
+      });
+      await backend.initialize();
+
+      const result = await backend.execute({
+        toolName: 'pi_subagent',
+        arguments: {
+          instruction: 'emit large output',
+          project_path: workingDir,
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1,
+        },
+      });
+
+      expect(result.status).toBe('completed');
+      const parsed = JSON.parse(result.content);
+      expect(parsed.result).toBe('large-output-done');
+      expect(parsed.session_id).toBe('pi-large-session');
+
+      const metadata = result.metadata as any;
+      expect(Buffer.byteLength(metadata.rawOutput, 'utf8')).toBeLessThanOrEqual(8192);
+      expect(metadata.rawOutput).toContain('large-output-done');
+    } finally {
+      if (previousCaptureLimit === undefined) delete process.env.JUNO_SHELL_CAPTURE_LIMIT_BYTES;
+      else process.env.JUNO_SHELL_CAPTURE_LIMIT_BYTES = previousCaptureLimit;
+      if (previousStreamLimit === undefined) delete process.env.JUNO_SHELL_STREAM_BUFFER_LIMIT_BYTES;
+      else process.env.JUNO_SHELL_STREAM_BUFFER_LIMIT_BYTES = previousStreamLimit;
     }
   });
 });
