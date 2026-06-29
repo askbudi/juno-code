@@ -555,17 +555,19 @@ function setupCloneCommand(program: Command): void {
     'after',
     `
 ${chalk.blue.bold('Examples:')}
-  juno-code clone 'Explore approach A'
+  juno-code clone 'Explore approach A'      # auto-names b1, b2, ...
   juno-code clone early_reflect '@@reflect'
   juno-code clone --name C 'Explore C'
   juno-code clone --from C --name M 'Explore M'
 
 ${chalk.blue.bold('Named branch behavior:')}
-  clone C 'prompt' is shorthand for --name C 'prompt'. --name C clones from
-  main by default, runs the prompt immediately in C, and overwrites C if it
-  already exists. Clone does not switch the active branch; use juno-code switch C
-  when future juno-code continue runs should follow C. --from C --name M clones
-  from branch C into M. The target name main is reserved.
+  clone 'prompt' auto-assigns the first available b-number branch (b1, b2, ...)
+  when this shell already has a branch registry. clone C 'prompt' is shorthand
+  for --name C 'prompt'. --name C clones from main
+  by default, runs the prompt immediately in C, and overwrites C if it already
+  exists. Clone does not switch the active branch; use juno-code switch C when
+  future juno-code continue runs should follow C. --from C --name M clones from
+  branch C into M. The target name main is reserved.
 
 ${chalk.blue.bold('Scope behavior:')}
   Each shell/pane has its own active branch registry. For normal use you do not
@@ -1136,6 +1138,7 @@ ${chalk.blue('Examples:')}
 
   ${chalk.gray('# Named Pi session branches (per shell/pane continue scope)')}
   ypl 'init'                       ${chalk.gray('# creates/resets the main branch from a root Pi run')}
+  yy clone 'Explore A'             ${chalk.gray('# auto-names b1, b2, ...; runs prompt, does not switch')}
   yy clone C 'Explore C'           ${chalk.gray('# shorthand for --name C; runs prompt, does not switch')}
   yy clone --name C 'Explore C'    ${chalk.gray('# forks main into C, runs prompt, does not switch')}
   yy clone --from C --name M 'Explore M'

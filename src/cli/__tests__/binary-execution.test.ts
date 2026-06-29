@@ -675,6 +675,7 @@ describe('Binary Execution Tests', () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('Clone/fork');
       expect(result.stdout).toContain('clone early_reflect');
+      expect(result.stdout).toContain('auto-names b1');
       expect(result.stdout).toContain('--prompt-file');
       expect(result.stdout).toContain('--thinking');
       expect(result.stdout).toContain('--name');

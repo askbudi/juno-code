@@ -348,6 +348,7 @@ Pi session cloning lets one root session branch into independent experiments wit
 
 ```bash
 ypl 'init'
+yy clone 'research auto-branch'   # auto-names b1, b2, ...
 yy clone C 'research C'
 yy clone D 'research D'
 yy cc 'continue main'
@@ -359,6 +360,7 @@ yy switch C 'continue C immediately'
 juno-code branches
 juno-code switch C
 juno-code switch C 'Continue C immediately'
+juno-code clone 'Explore auto-branch'
 juno-code clone C 'Explore C'
 juno-code clone --name C 'Explore C'
 juno-code clone --from C --name M 'Explore M'
@@ -367,6 +369,7 @@ juno-code clone --from C --name M 'Explore M'
 Named branch behavior:
 - `juno-code branches` shows named branches for the current shell/pane and marks the active branch.
 - `juno-code switch C` makes `C` active for future `juno-code continue` / `yy cc` in that shell; `juno-code switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
+- `juno-code clone 'prompt'` auto-assigns the first available generated branch name (`b1`, `b2`, ...) when a branch registry exists for the current shell, clones from `main`, runs the prompt immediately, and does **not** switch the active branch.
 - `juno-code clone C 'prompt'` is shorthand for `juno-code clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
 - `juno-code clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
 - Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
@@ -376,7 +379,7 @@ Non-named clone behavior:
 - `juno-code --resume <session-id> --clone ...` forks the explicit session id.
 - `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell session and then future `juno-code continue` in that shell follows the clone.
 
-The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, drop an inline `switch C 'prompt'` request after switching, or expect clone to switch branches automatically.
+The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, drop an inline `switch C 'prompt'` request after switching, lose an unnamed clone because no branch name was recorded, or expect clone to switch branches automatically.
 
 ### Feedback System
 

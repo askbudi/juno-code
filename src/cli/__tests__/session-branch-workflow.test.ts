@@ -129,6 +129,42 @@ describe('session branch workflow', () => {
     expect(options.subagent).toBe('pi');
   });
 
+  it('auto-names unnamed clones with the first available b-number branch from main', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('clone-auto-name');
+    await resetMainSessionBranch({ workingDirectory, scope, sessionId: 'SESSION_MAIN' });
+    await upsertClonedSessionBranch({
+      workingDirectory,
+      scope,
+      branchName: 'b1',
+      sessionId: 'SESSION_B1',
+      parent: 'main',
+      sourceSessionId: 'SESSION_MAIN',
+    });
+    await upsertClonedSessionBranch({
+      workingDirectory,
+      scope,
+      branchName: 'b3',
+      sessionId: 'SESSION_B3',
+      parent: 'main',
+      sourceSessionId: 'SESSION_MAIN',
+    });
+
+    const options = {
+      continueFromLatest: true,
+      clone: true,
+      prompt: 'unnamed fork',
+    } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.cloneBranchName).toBe('b2');
+    expect(options.cloneBranchFrom).toBe('main');
+    expect(options.resume).toBe('SESSION_MAIN');
+    expect(options.cloneFromSession).toBe('SESSION_MAIN');
+    expect(options.cloneSession).toBe(true);
+    expect(options.subagent).toBe('pi');
+  });
+
   it('prepares named clone with saved runtime settings while keeping the branch-selected source session', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('clone-settings-preserved');

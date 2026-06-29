@@ -171,14 +171,45 @@ async function applyContinueContextFromEnvironment(
   applyContinueSettingsSnapshot(options, settings);
 }
 
+function nextGeneratedCloneBranchName(existingBranchNames: string[]): string {
+  const usedGeneratedBranchNumbers = new Set<number>();
+  for (const branchName of existingBranchNames) {
+    const match = /^b([1-9]\d*)$/.exec(branchName.trim());
+    if (match?.[1]) {
+      usedGeneratedBranchNumbers.add(Number(match[1]));
+    }
+  }
+
+  let index = 1;
+  while (usedGeneratedBranchNumbers.has(index)) {
+    index += 1;
+  }
+  return `b${index}`;
+}
+
 async function resolveNamedCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
-  const targetName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
+  let targetName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
   const sourceName = typeof options.cloneBranchFrom === 'string' && options.cloneBranchFrom.trim()
     ? options.cloneBranchFrom.trim()
     : MAIN_SESSION_BRANCH;
+  const shouldAutoNameClone =
+    !targetName &&
+    !options.cloneBranchFrom &&
+    options.continueFromLatest === true &&
+    options.clone !== undefined;
 
-  if (!targetName && !options.cloneBranchFrom) {
+  if (!targetName && !options.cloneBranchFrom && !shouldAutoNameClone) {
     return;
+  }
+
+  const continueScope = resolveContinueScopeContext();
+  const branches = await listSessionBranches({ workingDirectory, scope: continueScope });
+
+  if (shouldAutoNameClone) {
+    if (branches.length === 0) {
+      return;
+    }
+    targetName = nextGeneratedCloneBranchName(branches.map((branch) => branch.name));
   }
 
   if (!targetName) {
@@ -203,8 +234,6 @@ async function resolveNamedCloneOptions(options: MainCommandOptions, workingDire
     ]);
   }
 
-  const continueScope = resolveContinueScopeContext();
-  const branches = await listSessionBranches({ workingDirectory, scope: continueScope });
   if (branches.length === 0) {
     throw new ValidationError('No named session branches found for this shell scope', [
       "Run ypl 'init' or juno-code pi 'init' first to create the main session branch",
