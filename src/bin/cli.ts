@@ -686,10 +686,29 @@ ${chalk.blue.bold('Behavior:')}
         ]);
         const config = await resolveWorkingDirectory(options);
         const scope = resolveContinueScopeContext();
+        let targetBranchName = branchName;
+
+        if (branchName === '+' || branchName === '-') {
+          const branches = await branchesModule.listSessionBranches({
+            workingDirectory: config.workingDirectory,
+            scope,
+          });
+          if (branches.length === 0) {
+            throw new branchesModule.SessionBranchesError(
+              `No named session branches found for continue scope ${scope.scopeHash}.`,
+            );
+          }
+          const activeIndex = branches.findIndex((branch) => branch.active);
+          const currentIndex = activeIndex >= 0 ? activeIndex : 0;
+          const offset = branchName === '+' ? 1 : -1;
+          const nextIndex = (currentIndex + offset + branches.length) % branches.length;
+          targetBranchName = branches[nextIndex]?.name ?? branches[0]?.name ?? 'main';
+        }
+
         const active = await branchesModule.setActiveSessionBranch({
           workingDirectory: config.workingDirectory,
           scope,
-          branchName,
+          branchName: targetBranchName,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
 
@@ -722,13 +741,16 @@ ${chalk.blue.bold('Behavior:')}
 ${chalk.blue.bold('Examples:')}
   juno-code switch C
   yy switch C
+  yy switch +
+  yy switch -
   yy switch C 'Continue C immediately'
 
 ${chalk.blue.bold('Behavior:')}
-  Makes the branch active only for this shell/pane. If a prompt is provided,
-  juno-code switches first and then runs that prompt as a continue on the newly
-  active branch. Future juno-code continue or yy cc runs in this shell continue
-  that branch until you switch again or a reset creates a new main registry.
+  Makes the branch active only for this shell/pane. Use + or - to cycle to the
+  next/previous branch with wraparound. If a prompt is provided, juno-code
+  switches first and then runs that prompt as a continue on the newly active
+  branch. Future juno-code continue or yy cc runs in this shell continue that
+  branch until you switch again or a reset creates a new main registry.
 `,
   );
 
@@ -1144,6 +1166,8 @@ ${chalk.blue('Examples:')}
   yy clone --from C --name M 'Explore M'
   yy branches                      ${chalk.gray('# list branches; * marks active')}
   yy switch C                      ${chalk.gray('# future yy cc / juno-code continue follows C')}
+  yy switch +                      ${chalk.gray('# cycle to next branch with wraparound')}
+  yy switch -                      ${chalk.gray('# cycle to previous branch with wraparound')}
   yy switch C 'Continue C now'     ${chalk.gray('# switch first, then run prompt on C')}
   yy cc 'Continue C'               ${chalk.gray('# updates only the active branch')}
 

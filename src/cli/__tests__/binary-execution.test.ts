@@ -798,6 +798,12 @@ describe('Binary Execution Tests', () => {
                       source_session_id: 'SESSION_MAIN',
                       updated_at: '2026-06-27T00:01:00.000Z',
                     },
+                    D: {
+                      session_id: 'SESSION_D',
+                      parent: 'main',
+                      source_session_id: 'SESSION_MAIN',
+                      updated_at: '2026-06-27T00:02:00.000Z',
+                    },
                   },
                 },
               },
@@ -816,6 +822,7 @@ describe('Binary Execution Tests', () => {
       expect(payload.branches).toEqual([
         expect.objectContaining({ name: 'main', active: true, sessionId: 'SESSION_MAIN' }),
         expect.objectContaining({ name: 'C', active: false, sessionId: 'SESSION_C', parent: 'main' }),
+        expect.objectContaining({ name: 'D', active: false, sessionId: 'SESSION_D', parent: 'main' }),
       ]);
 
       const switchResult = await executeCLI(['switch', 'C'], {
@@ -824,8 +831,26 @@ describe('Binary Execution Tests', () => {
       expect(switchResult.exitCode).toBe(0);
       expect(switchResult.stdout).toContain('Switched to branch C');
 
+      const switchNextResult = await executeCLI(['switch', '+'], {
+        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+      });
+      expect(switchNextResult.exitCode).toBe(0);
+      expect(switchNextResult.stdout).toContain('Switched to branch D');
+
+      const switchWrapNextResult = await executeCLI(['switch', '+'], {
+        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+      });
+      expect(switchWrapNextResult.exitCode).toBe(0);
+      expect(switchWrapNextResult.stdout).toContain('Switched to branch main');
+
+      const switchWrapPreviousResult = await executeCLI(['switch', '-'], {
+        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+      });
+      expect(switchWrapPreviousResult.exitCode).toBe(0);
+      expect(switchWrapPreviousResult.stdout).toContain('Switched to branch D');
+
       const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
-      expect(updated.scopes[scopeHash].active).toBe('C');
+      expect(updated.scopes[scopeHash].active).toBe('D');
     });
 
     it('should run an inline prompt as continue after switching to a named branch', async () => {
