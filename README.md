@@ -151,6 +151,16 @@ Run multiple tasks simultaneously with the parallel runner:
 ./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
 ```
 
+### Workflow Runner
+Run ordered cron/operator workflows from YAML or stdin with durable artifacts:
+```bash
+./.juno_task/scripts/workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
+./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/agent_chain.yaml --dry-run
+cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print-output summary
+```
+
+By default, step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a step when automation should fail fast. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, and session capture.
+
 ### Full Traceability: Every Change Tracked
 - Every task links to a git commit
 - Jump to any point in development history
