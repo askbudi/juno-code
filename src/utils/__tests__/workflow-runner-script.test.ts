@@ -238,6 +238,67 @@ summary: |
     expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toContain('workflow=context-run');
   });
 
+  it('resolves workflow vars against builtins before rendering commands', async () => {
+    const workflowPath = path.join(testDir, 'vars.yml');
+    const outDir = path.join(testDir, 'vars-out');
+    await fs.writeFile(
+      workflowPath,
+      `schema_version: 1
+workflow_id: vars-render
+vars:
+  run_date: "{{ yesterday_utc }}"
+steps:
+  - id: show
+    command: printf 'date={{ run_date }} vars={{ vars.run_date }}'
+`,
+    );
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--dry-run', '--final-output', 'none']);
+
+    expect(result.status).toBe(0);
+    const manifestText = await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8');
+    expect(manifestText).not.toContain('{{ yesterday_utc }}');
+    const manifest = JSON.parse(manifestText);
+    expect(manifest.steps[0].command).toContain('date=');
+    expect(manifest.steps[0].command).not.toContain('{{');
+  });
+
+  it('executes summary.command argv lists with the same semantics as step commands', async () => {
+    const workflowPath = path.join(testDir, 'summary-argv.json');
+    const outDir = path.join(testDir, 'summary-argv-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'summary-argv',
+      steps: [{ id: 'first', command: ['bash', '-lc', 'echo first-ok'] }],
+      summary: { command: ['bash', '-lc', 'printf "summary sees {{ steps.first.stdout }}"'] },
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(await fs.readFile(path.join(outDir, 'summary.stdout.txt'), 'utf8')).toContain('summary sees first-ok');
+    expect(await fs.readFile(path.join(outDir, 'summary.command.sh'), 'utf8')).toContain("bash -lc");
+    expect(await fs.readFile(path.join(outDir, 'summary.command.sh'), 'utf8')).not.toContain("['bash'");
+  });
+
+  it('uses summary.command stdout for summary.md and default selected output', async () => {
+    const workflowPath = path.join(testDir, 'summary-output.json');
+    const outDir = path.join(testDir, 'summary-output-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'summary-output',
+      steps: [{ id: 'first', command: ['bash', '-lc', 'echo step-output'] }],
+      summary: { command: ['bash', '-lc', 'echo AGENT-SUMMARY'] },
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--no-print-step-stdout']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('AGENT-SUMMARY');
+    expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toBe('AGENT-SUMMARY\n');
+    expect(await fs.readFile(path.join(outDir, 'summary.stdout.txt'), 'utf8')).toBe('AGENT-SUMMARY\n');
+  });
+
   it('--no-print-step-stdout suppresses console stdout while preserving artifact stdout', async () => {
     const workflowPath = path.join(testDir, 'quiet.yml');
     const outDir = path.join(testDir, 'quiet-out');

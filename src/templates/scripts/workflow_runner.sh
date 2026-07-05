@@ -404,22 +404,51 @@ def make_summary(workflow: dict[str, Any], context: dict[str, Any], failed_steps
     return "\n".join(lines)
 
 
+def execute_rendered_command(command: Any, project_root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    if isinstance(command, list):
+        return subprocess.run(
+            [str(part) for part in command],
+            shell=False,
+            cwd=str(project_root),
+            text=True,
+            capture_output=True,
+            env=env,
+        )
+    return subprocess.run(str(command), shell=True, cwd=str(project_root), text=True, capture_output=True, env=env)
+
+
+def resolve_workflow_vars(workflow_vars: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Resolve workflow vars against builtins and other vars before command rendering."""
+    resolved = dict(workflow_vars)
+    for _ in range(10):
+        changed = False
+        render_context = {**context, "vars": resolved}
+        for key, value in list(resolved.items()):
+            rendered = render(value, render_context)
+            if rendered != value:
+                resolved[key] = rendered
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
 def maybe_run_summary_command(
     workflow: dict[str, Any], context: dict[str, Any], project_root: Path, out_dir: Path, dry_run: bool
-) -> tuple[str, str, int, str | None]:
+) -> tuple[str, str, int, Any | None]:
     explicit = workflow.get("summary")
     if not isinstance(explicit, dict) or "command" not in explicit:
         write_text(out_dir / "summary.stdout.txt", "")
         write_text(out_dir / "summary.stderr.txt", "")
         return "", "", 0, None
-    command = str(render(explicit["command"], context))
-    write_text(out_dir / "summary.command.sh", command + "\n")
+    command = render(explicit["command"], context)
+    write_text(out_dir / "summary.command.sh", command_preview(command) + "\n")
     if dry_run:
         stdout = ""
         stderr = ""
         exit_code = 0
     else:
-        proc = subprocess.run(command, shell=True, cwd=str(project_root), text=True, capture_output=True)
+        proc = execute_rendered_command(command, project_root, os.environ.copy())
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         exit_code = int(proc.returncode)
@@ -491,6 +520,8 @@ def run_workflow(args: argparse.Namespace) -> int:
         "vars": workflow_vars,
         "steps": {},
     }
+    workflow_vars = resolve_workflow_vars(workflow_vars, context)
+    context["vars"] = workflow_vars
     for key, value in workflow_vars.items():
         if isinstance(key, str) and key not in context:
             context[key] = value
@@ -538,19 +569,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             else:
                 env.pop("JUNO_TOOL_ID", None)
                 env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
-            if isinstance(command, list):
-                proc = subprocess.run(
-                    [str(part) for part in command],
-                    shell=False,
-                    cwd=str(project_root),
-                    text=True,
-                    capture_output=True,
-                    env=env,
-                )
-            else:
-                proc = subprocess.run(
-                    str(command), shell=True, cwd=str(project_root), text=True, capture_output=True, env=env
-                )
+            proc = execute_rendered_command(command, project_root, env)
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
@@ -611,7 +630,11 @@ def run_workflow(args: argparse.Namespace) -> int:
     summary_stdout, summary_stderr, summary_exit, summary_command = maybe_run_summary_command(
         workflow, context, project_root, out_dir, bool(args.dry_run)
     )
-    summary = make_summary(workflow, context, manifest["failed_steps"], bool(args.dry_run))
+    summary = (
+        summary_stdout.rstrip() + "\n"
+        if summary_stdout
+        else make_summary(workflow, context, manifest["failed_steps"], bool(args.dry_run))
+    )
     write_text(out_dir / "summary.md", summary)
     manifest["summary_path"] = str(out_dir / "summary.md")
     manifest["summary"] = {
