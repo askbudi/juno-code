@@ -56,6 +56,56 @@ describe('workflow_runner.sh template script', () => {
     expect(await fs.readFile(templateScript, 'utf8')).toBe(await fs.readFile(runtimeScript, 'utf8'));
   });
 
+  it('documents workflow options, failure policy, and auto capture behavior in --help', () => {
+    const result = runWorkflow(['--help']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--workflow');
+    expect(result.stdout).toContain("'-' to read from stdin");
+    expect(result.stdout).toContain('--dry-run');
+    expect(result.stdout).toContain('--var NAME=VALUE');
+    expect(result.stdout).toContain('--run-root');
+    expect(result.stdout).toContain('--print-output');
+    expect(result.stdout).toContain('summary, none, <step_id>, or');
+    expect(result.stdout).toContain('step:<step_id>');
+    expect(result.stdout).toContain('--print-step-stdout');
+    expect(result.stdout).toContain('--no-print-step-stdout');
+    expect(result.stdout).toContain('--init-example NAME PATH');
+    expect(result.stdout).toContain('fail_workflow: true');
+    expect(result.stdout).toContain('juno-code, yy, and ypl');
+    expect(result.stdout).toContain('capture_session: false');
+  });
+
+  it('writes named example workflows on demand and refuses accidental overwrite', async () => {
+    const target = path.join(testDir, 'agent_chain.yaml');
+
+    const first = runWorkflow(['--init-example', 'agent-chain', target]);
+    expect(first.status).toBe(0);
+    const content = await fs.readFile(target, 'utf8');
+    expect(content).toContain('workflow_id: example_agent_chain');
+    expect(content).toContain('{{ steps.first_agent.session_id }}');
+    expect(content).toContain('- yy');
+    expect(content).toContain('- --resume');
+
+    const second = runWorkflow(['--init-example', 'agent-chain', target]);
+    expect(second.status).toBe(2);
+    expect(second.stderr).toContain('refusing to overwrite');
+
+    const forced = runWorkflow(['--init-example', 'command-pipeline', target, '--force']);
+    expect(forced.status).toBe(0);
+    expect(await fs.readFile(target, 'utf8')).toContain('workflow_id: example_command_pipeline');
+  });
+
+  it('provides all approved boilerplate example names without auto-installing workflows', async () => {
+    for (const name of ['agent-chain', 'command-pipeline', 'daily-ops']) {
+      const target = path.join(testDir, `${name}.yaml`);
+      const result = runWorkflow(['--init-example', name, target]);
+      expect(result.status).toBe(0);
+      expect(await fs.pathExists(target)).toBe(true);
+    }
+    expect(await fs.pathExists(path.join(repoRoot, '.juno_task', 'workflows', 'agent_chain.yaml'))).toBe(false);
+  });
+
   it('dry-run renders a minimal YAML workflow and writes manifest/summary artifacts', async () => {
     const workflowPath = path.join(testDir, 'workflow.yml');
     const outDir = path.join(testDir, 'out');

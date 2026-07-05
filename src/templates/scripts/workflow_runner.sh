@@ -443,8 +443,7 @@ def selected_final_output(print_output: str, context: dict[str, Any], summary: s
 def run_workflow(args: argparse.Namespace) -> int:
     project_root = Path(args.project_root or os.getcwd()).resolve()
     if args.init_example:
-        target = Path(args.init_example).resolve()
-        write_text(target, EXAMPLE_WORKFLOW)
+        target = init_example(args.init_example, bool(args.force))
         print(f"Wrote example workflow to {target}")
         return 0
 
@@ -634,40 +633,126 @@ def run_workflow(args: argparse.Namespace) -> int:
     return final_exit
 
 
-EXAMPLE_WORKFLOW = """schema_version: 1
-workflow_id: example-workflow
+EXAMPLE_WORKFLOWS = {
+    "agent-chain": """schema_version: 1
+workflow_id: example_agent_chain
+vars:
+  run_date: "{{ yesterday_utc }}"
+steps:
+  - id: first_agent
+    command:
+      - yy
+      - pi
+      - |
+        %ralph-loop Do a small readonly investigation for {{ run_date }}.
+        Finish with: AGENT_RESPONSE_ONE_LINE: <one sentence>
+  - id: continue_agent
+    command:
+      - yy
+      - pi
+      - --resume
+      - "{{ steps.first_agent.session_id }}"
+      - |
+        Continue the previous session and summarize next actions.
+summary:
+  command:
+    - yy
+    - pi
+    - |
+      Summarize workflow status. First session: {{ steps.first_agent.session_id }}
+""",
+    "command-pipeline": """schema_version: 1
+workflow_id: example_command_pipeline
 vars:
   subject: juno workflow runner
 steps:
-  - id: hello
+  - id: collect
     command: |
-      printf 'Hello from {{ vars.subject }} on {{ today_utc }}\\n'
+      printf 'Subject: {{ subject }}\\nDate: {{ today_utc }}\\n'
   - id: summarize
     command: |
-      printf 'Prior stdout was: {{ steps.hello.stdout }}\\n'
-  - id: optional_failure
-    command: exit 2
-    fail_workflow: false
+      printf 'Summary input:\\n{{ steps.collect.stdout }}\\n'
 summary: |
-  # Example summary
-  Workflow {{ workflow_id }} run {{ run_id }}
-  First step status: {{ steps.hello.status }}
-  Optional failure status: {{ steps.optional_failure.status }}
-"""
+  # Command pipeline summary
+  Collect status: {{ steps.collect.status }}
+  Summary output: {{ steps.summarize.stdout }}
+""",
+    "daily-ops": """schema_version: 1
+workflow_id: example_daily_ops
+vars:
+  run_date: "{{ yesterday_utc }}"
+steps:
+  - id: preflight
+    command: |
+      printf 'Daily ops preflight for {{ run_date }} in {{ repo_root }}\\n'
+  - id: operator_check
+    command:
+      - yy
+      - pi
+      - |
+        Review the daily workflow context for {{ run_date }}.
+        Preflight output: {{ steps.preflight.stdout }}
+        Return one concise operator note.
+    fail_workflow: false
+  - id: archive_note
+    capture_session: false
+    command: |
+      printf 'operator_session={{ steps.operator_check.session_id }}\\n'
+summary: |
+  # Daily ops summary
+  Run date: {{ run_date }}
+  Preflight: {{ steps.preflight.status }}
+  Operator session: {{ steps.operator_check.session_id }}
+""",
+}
+
+
+def init_example(example_args: list[str], force: bool) -> Path:
+    if len(example_args) != 2:
+        names = ", ".join(sorted(EXAMPLE_WORKFLOWS))
+        raise WorkflowError(f"--init-example requires <name> <path>; available examples: {names}")
+    name, target_text = example_args
+    if name not in EXAMPLE_WORKFLOWS:
+        names = ", ".join(sorted(EXAMPLE_WORKFLOWS))
+        raise WorkflowError(f"unknown example '{name}'. Available examples: {names}")
+    target = Path(target_text).resolve()
+    if target.exists() and not force:
+        raise WorkflowError(f"refusing to overwrite existing workflow: {target} (pass --force to replace)")
+    write_text(target, EXAMPLE_WORKFLOWS[name])
+    return target
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run an ordered YAML workflow from the project root",
-        epilog="Per-step fail_workflow: true makes a failed command fail the workflow process; failures continue and final exit is 0 by default.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Workflow behavior:
+  Commands execute from --run-root/--project-root (default: current directory).
+  Step failures continue and final process exit is 0 by default.
+  Set fail_workflow: true on a step to make that failed command fail the workflow process.
+  juno-code, yy, and ypl commands automatically receive JUNO_TOOL_ID and
+  JUNO_SUBAGENT_CAPTURE_PATH so steps.<id>.session_id can be used by later steps.
+  Disable that per step with capture_session: false (or capture: false).
+
+Example boilerplates (written only when explicitly requested):
+  workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
+  workflow_runner.sh --init-example command-pipeline .juno_task/workflows/command_pipeline.yaml
+  workflow_runner.sh --init-example daily-ops .juno_task/workflows/daily_ops.yaml
+""",
     )
     parser.add_argument("--workflow", "-w", help="Workflow YAML path, or '-' to read from stdin")
-    parser.add_argument("--project-root", default=os.getcwd(), help="Directory where commands execute")
+    parser.add_argument(
+        "--run-root",
+        "--project-root",
+        dest="project_root",
+        default=os.getcwd(),
+        help="Directory where commands execute (default: current directory)",
+    )
     parser.add_argument("--out-dir", help="Artifact directory (default: .juno_task/specs/workflows/<workflow_id>/<run_id>)")
-    parser.add_argument("--var", dest="vars", action="append", default=[], help="Template variable override in key=value form")
+    parser.add_argument("--var", dest="vars", action="append", default=[], metavar="NAME=VALUE", help="Template variable override in NAME=VALUE form")
     parser.add_argument("--dry-run", action="store_true", help="Render commands and write artifacts without executing steps")
-    parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True)
-    parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false")
+    parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step stdout as it completes (default)")
+    parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step stdout to the console; artifacts are still written")
     parser.add_argument(
         "--print-output",
         "--final-output",
@@ -675,7 +760,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="summary",
         help="Final console output: summary, none, <step_id>, or step:<step_id>",
     )
-    parser.add_argument("--init-example", metavar="PATH", help="Write an example workflow YAML and exit")
+    parser.add_argument(
+        "--init-example",
+        nargs=2,
+        metavar=("NAME", "PATH"),
+        help="Write a built-in example workflow YAML (agent-chain, command-pipeline, daily-ops) to PATH and exit",
+    )
+    parser.add_argument("--force", action="store_true", help="Allow --init-example to overwrite an existing file")
     return parser
 
 
