@@ -208,6 +208,10 @@ def get_path(context: dict[str, Any], expr: str) -> Any:
 
 
 def render(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        return [render(item, context) for item in value]
+    if isinstance(value, dict):
+        return {key: render(item, context) for key, item in value.items()}
     if not isinstance(value, str):
         return value
 
@@ -281,11 +285,25 @@ def workflow_to_yaml(data: Any, indent: int = 0) -> str:
     return f"{pad}{data}"
 
 
-def detect_juno_command(command: str) -> bool:
+def command_argv(command: Any) -> list[str]:
+    if isinstance(command, list):
+        return [str(part) for part in command]
+    if not isinstance(command, str):
+        return [str(command)]
     try:
-        parts = shlex.split(command, posix=True)
+        return shlex.split(command, posix=True)
     except ValueError:
-        parts = command.strip().split()
+        return command.strip().split()
+
+
+def command_preview(command: Any) -> str:
+    if isinstance(command, list):
+        return " ".join(shlex.quote(str(part)) for part in command)
+    return str(command)
+
+
+def detect_juno_command(command: Any) -> bool:
+    parts = command_argv(command)
     if not parts:
         return False
     executable = Path(parts[0]).name
@@ -338,12 +356,28 @@ def step_should_fail_process(step: dict[str, Any]) -> bool:
     return False
 
 
-def step_capture_enabled(step: dict[str, Any], command: str) -> bool:
-    if "capture" in step:
-        return bool(step.get("capture"))
+def step_capture_enabled(step: dict[str, Any], command: Any) -> bool:
+    if "capture_session" in step and not bool(step.get("capture_session")):
+        return False
+    if "capture" in step and not bool(step.get("capture")):
+        return False
     if "capture_session" in step:
         return bool(step.get("capture_session"))
+    if "capture" in step:
+        return bool(step.get("capture"))
     return detect_juno_command(command)
+
+
+def read_capture_payload(capture_path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    if not capture_path.exists():
+        return None, None
+    try:
+        payload = json.loads(capture_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"invalid capture JSON at {capture_path}: {exc}"
+    if not isinstance(payload, dict):
+        return None, f"capture JSON at {capture_path} must be an object"
+    return payload, None
 
 
 def make_summary(workflow: dict[str, Any], context: dict[str, Any], failed_steps: list[str], dry_run: bool) -> str:
@@ -479,24 +513,45 @@ def run_workflow(args: argparse.Namespace) -> int:
     final_exit = 0
     for index, step in enumerate(workflow["steps"], start=1):
         step_id = str(step["id"])
-        command = str(render(step["command"], context))
+        command = render(step["command"], context)
+        preview = command_preview(command)
         capture_enabled = step_capture_enabled(step, command)
         step_slug = safe_id(step_id, f"step-{index}")
         stdout_path = out_dir / f"{index:03d}_{step_slug}.stdout.txt"
         stderr_path = out_dir / f"{index:03d}_{step_slug}.stderr.txt"
         capture_path = out_dir / f"{index:03d}_{step_slug}.capture.json"
         legacy_step_dir = out_dir / "steps" / step_id
-        write_text(legacy_step_dir / "command.sh", command + "\n")
+        write_text(legacy_step_dir / "command.sh", preview + "\n")
         print(f"\n==> Step {index}: {step_id}")
-        print(command)
+        print(preview)
         started = time.monotonic()
         stdout = ""
         stderr = ""
         exit_code = 0
+        capture_warning: str | None = None
         if args.dry_run:
             status = "dry_run"
         else:
-            proc = subprocess.run(command, shell=True, cwd=str(project_root), text=True, capture_output=True)
+            env = os.environ.copy()
+            if capture_enabled:
+                env["JUNO_TOOL_ID"] = f"workflow_{step_slug}"
+                env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
+            else:
+                env.pop("JUNO_TOOL_ID", None)
+                env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
+            if isinstance(command, list):
+                proc = subprocess.run(
+                    [str(part) for part in command],
+                    shell=False,
+                    cwd=str(project_root),
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                )
+            else:
+                proc = subprocess.run(
+                    str(command), shell=True, cwd=str(project_root), text=True, capture_output=True, env=env
+                )
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
@@ -513,6 +568,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         result: dict[str, Any] = {
             "id": step_id,
             "command": command,
+            "command_preview": preview,
             "status": status,
             "exit_code": exit_code,
             "duration_seconds": duration,
@@ -523,13 +579,26 @@ def run_workflow(args: argparse.Namespace) -> int:
             "capture_enabled": capture_enabled,
             "capture_json": str(capture_path) if capture_enabled else "",
             "capture_json_path": str(capture_path) if capture_enabled else "",
-            "session_id": None,
+            "capture_result": "",
+            "session_id": "",
         }
-        if capture_enabled:
-            session_id = extract_session_id(stdout, stderr)
-            capture_payload = {"session_id": session_id, "exit_code": exit_code, "status": status}
-            write_text(capture_path, json.dumps(capture_payload, indent=2) + "\n")
-            result["session_id"] = session_id
+        if capture_enabled and not args.dry_run:
+            capture_payload, capture_warning = read_capture_payload(capture_path)
+            if capture_warning:
+                print(f"workflow_runner.sh: warning: {capture_warning}", file=sys.stderr)
+                result["capture_warning"] = capture_warning
+            if capture_payload is not None:
+                result["capture"] = capture_payload
+                session_id = capture_payload.get("session_id")
+                capture_result = capture_payload.get("result")
+                if isinstance(session_id, str):
+                    result["session_id"] = session_id
+                if isinstance(capture_result, str):
+                    result["capture_result"] = capture_result
+            elif not capture_path.exists():
+                session_id = extract_session_id(stdout, stderr)
+                if session_id:
+                    result["session_id"] = session_id
         context["steps"][step_id] = result
         manifest["steps"].append({k: v for k, v in result.items() if k not in {"stdout", "stderr"}})
         print(f"<== Step {step_id} {status} in {duration:.3f}s (exit {exit_code})")

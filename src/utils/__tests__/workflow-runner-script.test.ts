@@ -8,12 +8,35 @@ const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner.sh');
 
-function runWorkflow(args: string[], input?: string) {
+function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
   return spawnSync('python3', [templateScript, ...args], {
     input,
     cwd: repoRoot,
     encoding: 'utf8',
+    env: env ? { ...process.env, ...env } : process.env,
   });
+}
+
+async function installFakeJunoExecutable(dir: string, name = 'yy') {
+  const binDir = path.join(dir, 'bin');
+  await fs.ensureDir(binDir);
+  const executablePath = path.join(binDir, name);
+  await fs.writeFile(
+    executablePath,
+    `#!/usr/bin/env sh
+printf 'tool=%s capture=%s\\n' "\${JUNO_TOOL_ID-unset}" "\${JUNO_SUBAGENT_CAPTURE_PATH-unset}"
+if [ -n "\${JUNO_SUBAGENT_CAPTURE_PATH:-}" ]; then
+  prompt="\${3:-$2}"
+  if [ "$prompt" = "invalid" ]; then
+    printf '{invalid json' > "$JUNO_SUBAGENT_CAPTURE_PATH"
+  else
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"captured %s","session_id":"session-%s"}\n' "$prompt" "$prompt" > "$JUNO_SUBAGENT_CAPTURE_PATH"
+  fi
+fi
+`,
+  );
+  await fs.chmod(executablePath, 0o755);
+  return { binDir, executablePath };
 }
 
 describe('workflow_runner.sh template script', () => {
@@ -192,5 +215,88 @@ steps:
     expect(await fs.readFile(path.join(outDir, 'steps/noisy/stdout.txt'), 'utf8')).toBe(
       'SECRET_STEP_STDOUT\n',
     );
+  });
+
+  it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'argv-capture.json');
+    const outDir = path.join(testDir, 'argv-capture-out');
+    await fs.writeJson(workflowPath, {
+      name: 'argv-capture',
+      steps: [
+        { id: 'first', command: [executablePath, 'pi', 'alpha'] },
+        { id: 'resume', command: "printf 'resume={{ steps.first.session_id }} result={{ steps.first.capture_result }}'" },
+      ],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'resume']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('resume=session-alpha result=captured alpha');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].capture_enabled).toBe(true);
+    expect(manifest.steps[0].session_id).toBe('session-alpha');
+    expect(manifest.steps[0].capture_result).toBe('captured alpha');
+    expect(await fs.pathExists(manifest.steps[0].capture_json)).toBe(true);
+  });
+
+  it('auto-detects shell-string juno commands and injects capture env only for that step', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'string-capture.json');
+    const outDir = path.join(testDir, 'string-capture-out');
+    await fs.writeJson(workflowPath, {
+      name: 'string-capture',
+      steps: [
+        { id: 'first', command: `${executablePath} pi beta` },
+        { id: 'plain', command: 'printf "tool=${JUNO_TOOL_ID-unset} capture=${JUNO_SUBAGENT_CAPTURE_PATH-unset}"' },
+      ],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'plain']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('tool=unset capture=unset');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].capture_enabled).toBe(true);
+    expect(manifest.steps[0].session_id).toBe('session-beta');
+    expect(manifest.steps[1].capture_enabled).toBe(false);
+  });
+
+  it('honors capture_session false for juno commands', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'capture-disabled.json');
+    const outDir = path.join(testDir, 'capture-disabled-out');
+    await fs.writeJson(workflowPath, {
+      name: 'capture-disabled',
+      steps: [{ id: 'first', capture_session: false, command: [executablePath, 'pi', 'gamma'] }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'first']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('tool=unset capture=unset');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].capture_enabled).toBe(false);
+    expect(manifest.steps[0].capture_json).toBe('');
+  });
+
+  it('records invalid capture JSON as a warning without failing the workflow', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'invalid-capture.json');
+    const outDir = path.join(testDir, 'invalid-capture-out');
+    await fs.writeJson(workflowPath, {
+      name: 'invalid-capture',
+      steps: [{ id: 'bad_capture', command: [executablePath, 'pi', 'invalid'] }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--final-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('warning: invalid capture JSON');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.status).toBe('success');
+    expect(manifest.steps[0].capture_enabled).toBe(true);
+    expect(manifest.steps[0].capture_warning).toContain('invalid capture JSON');
+    expect(manifest.steps[0].session_id).toBe('');
   });
 });
