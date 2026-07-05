@@ -24,10 +24,31 @@ from typing import Any
 JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
 TEMPLATE_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+ANSI_RESET = "\033[0m"
+STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
 
 class WorkflowError(Exception):
     pass
+
+
+def color_enabled() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def step_color(index: int) -> str:
+    return f"\033[38;5;{STEP_COLORS[(index - 1) % len(STEP_COLORS)]}m"
+
+
+def colorize(text: str, index: int) -> str:
+    if not color_enabled():
+        return text
+    return f"{step_color(index)}{text}{ANSI_RESET}"
+
+
+def step_separator(label: str, index: int, step_id: str, details: str = "") -> str:
+    suffix = f" {details}" if details else ""
+    return colorize(f"{'=' * 18} {label}: step {index} [{step_id}]{suffix} {'=' * 18}", index)
 
 
 def parse_scalar(value: str) -> Any:
@@ -457,6 +478,25 @@ def maybe_run_summary_command(
     return stdout, stderr, exit_code, command
 
 
+def resolve_from_step(steps: list[dict[str, Any]], selector: str | None) -> int:
+    """Return zero-based start index for --from-step selector."""
+    if selector is None or str(selector).strip() == "":
+        return 0
+    raw = str(selector).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        for idx, step in enumerate(steps):
+            if str(step.get("id")) == raw or str(step.get("name", "")) == raw:
+                return idx
+        raise WorkflowError(f"--from-step target not found: {raw}")
+    if value == -1:
+        return len(steps) - 1
+    if value < 0 or value >= len(steps):
+        raise WorkflowError(f"--from-step index out of range: {value} (steps: 0..{len(steps) - 1}, or -1)")
+    return value
+
+
 def selected_final_output(print_output: str, context: dict[str, Any], summary: str) -> str:
     if print_output == "summary":
         return summary
@@ -541,8 +581,32 @@ def run_workflow(args: argparse.Namespace) -> int:
     }
 
     final_exit = 0
+    start_index = resolve_from_step(workflow["steps"], args.from_step)
+    manifest["from_step"] = args.from_step
+    manifest["from_step_index"] = start_index
     for index, step in enumerate(workflow["steps"], start=1):
         step_id = str(step["id"])
+        if index - 1 < start_index:
+            skipped_result: dict[str, Any] = {
+                "id": step_id,
+                "command": render(step["command"], context),
+                "command_preview": command_preview(render(step["command"], context)),
+                "status": "skipped",
+                "exit_code": None,
+                "duration_seconds": 0,
+                "stdout": "",
+                "stderr": "",
+                "stdout_path": "",
+                "stderr_path": "",
+                "capture_enabled": False,
+                "capture_json": "",
+                "capture_json_path": "",
+                "capture_result": "",
+                "session_id": "",
+            }
+            context["steps"][step_id] = skipped_result
+            manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
+            continue
         command = render(step["command"], context)
         preview = command_preview(command)
         capture_enabled = step_capture_enabled(step, command)
@@ -552,7 +616,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         capture_path = out_dir / f"{index:03d}_{step_slug}.capture.json"
         legacy_step_dir = out_dir / "steps" / step_id
         write_text(legacy_step_dir / "command.sh", preview + "\n")
-        print(f"\n==> Step {index}: {step_id}")
+        print("\n" + step_separator("START", index, step_id))
         print(preview)
         started = time.monotonic()
         stdout = ""
@@ -574,8 +638,11 @@ def run_workflow(args: argparse.Namespace) -> int:
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
             status = "success" if exit_code == 0 else "failed"
-            if args.print_step_stdout and stdout:
-                print(stdout, end="" if stdout.endswith("\n") else "\n")
+            if args.print_step_stdout:
+                print(step_separator("RESPONSE", index, step_id))
+                print(stdout, end="" if stdout.endswith("\n") or not stdout else "\n")
+                if not stdout:
+                    print("(stdout is empty)")
             if stderr:
                 print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         duration = round(time.monotonic() - started, 3)
@@ -619,7 +686,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     result["session_id"] = session_id
         context["steps"][step_id] = result
         manifest["steps"].append({k: v for k, v in result.items() if k not in {"stdout", "stderr"}})
-        print(f"<== Step {step_id} {status} in {duration:.3f}s (exit {exit_code})")
+        print(step_separator("END", index, step_id, f"status={status} duration={duration:.3f}s exit={exit_code}"))
         if status == "failed":
             manifest["failed_steps"].append(step_id)
             manifest["status"] = "failed"
@@ -774,6 +841,7 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--out-dir", help="Artifact directory (default: .juno_task/specs/workflows/<workflow_id>/<run_id>)")
     parser.add_argument("--var", dest="vars", action="append", default=[], metavar="NAME=VALUE", help="Template variable override in NAME=VALUE form")
     parser.add_argument("--dry-run", action="store_true", help="Render commands and write artifacts without executing steps")
+    parser.add_argument("--from-step", help="Start at zero-based step index, step id/name, or -1 for the last step")
     parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step stdout as it completes (default)")
     parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step stdout to the console; artifacts are still written")
     parser.add_argument(

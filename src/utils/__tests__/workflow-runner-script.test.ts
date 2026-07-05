@@ -63,6 +63,7 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stdout).toContain('--workflow');
     expect(result.stdout).toContain("'-' to read from stdin");
     expect(result.stdout).toContain('--dry-run');
+    expect(result.stdout).toContain('--from-step');
     expect(result.stdout).toContain('--var NAME=VALUE');
     expect(result.stdout).toContain('--run-root');
     expect(result.stdout).toContain('--print-output');
@@ -236,6 +237,91 @@ summary: |
     expect(await fs.pathExists(path.join(outDir, '001_first.stdout.txt'))).toBe(true);
     expect(await fs.pathExists(path.join(outDir, 'summary.stdout.txt'))).toBe(true);
     expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toContain('workflow=context-run');
+  });
+
+  it('prints color-ready start, response, and end separators while leaving response text plain', async () => {
+    const workflowPath = path.join(testDir, 'separators.json');
+    const outDir = path.join(testDir, 'separators-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'separators',
+      steps: [{ id: 'alpha', command: ['bash', '-lc', 'echo ACTUAL_RESPONSE'] }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('START: step 1 [alpha]');
+    expect(result.stdout).toContain('RESPONSE: step 1 [alpha]');
+    expect(result.stdout).toContain('ACTUAL_RESPONSE\n');
+    expect(result.stdout).toContain('END: step 1 [alpha] status=success');
+  });
+
+  it('runs from a zero-based step index and records skipped prior steps', async () => {
+    const workflowPath = path.join(testDir, 'from-index.json');
+    const outDir = path.join(testDir, 'from-index-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'from-index',
+      steps: [
+        { id: 'first', command: ['bash', '-lc', 'echo first'] },
+        { id: 'second', command: ['bash', '-lc', 'echo second'] },
+        { id: 'third', command: ['bash', '-lc', 'echo third'] },
+      ],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--from-step', '1', '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('first\n');
+    expect(result.stdout).toContain('second\n');
+    expect(result.stdout).toContain('third\n');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.from_step_index).toBe(1);
+    expect(manifest.steps.map((step: { status: string }) => step.status)).toEqual(['skipped', 'success', 'success']);
+  });
+
+  it('runs from a named step and supports -1 for only the last step', async () => {
+    const workflowPath = path.join(testDir, 'from-name.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'from-name',
+      steps: [
+        { id: 'first', command: ['bash', '-lc', 'echo first'] },
+        { id: 'second', command: ['bash', '-lc', 'echo second'] },
+        { id: 'third', command: ['bash', '-lc', 'echo third'] },
+      ],
+    });
+
+    const byName = runWorkflow([
+      '--workflow',
+      workflowPath,
+      '--out-dir',
+      path.join(testDir, 'from-name-out'),
+      '--from-step',
+      'second',
+      '--print-output',
+      'none',
+    ]);
+    expect(byName.status).toBe(0);
+    expect(byName.stdout).not.toContain('first\n');
+    expect(byName.stdout).toContain('second\n');
+    expect(byName.stdout).toContain('third\n');
+
+    const lastOnly = runWorkflow([
+      '--workflow',
+      workflowPath,
+      '--out-dir',
+      path.join(testDir, 'from-last-out'),
+      '--from-step',
+      '-1',
+      '--print-output',
+      'none',
+    ]);
+    expect(lastOnly.status).toBe(0);
+    expect(lastOnly.stdout).not.toContain('first\n');
+    expect(lastOnly.stdout).not.toContain('second\n');
+    expect(lastOnly.stdout).toContain('third\n');
   });
 
   it('resolves workflow vars against builtins before rendering commands', async () => {
