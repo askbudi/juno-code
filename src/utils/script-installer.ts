@@ -39,9 +39,10 @@ export class ScriptInstaller {
     'hooks/session_counter.sh', // Session message counter hook for warning about long sessions
     // Log scanning utility
     'log_scanner.sh', // Scans log files for errors/exceptions and creates kanban bug reports
-    // Parallel execution
+    // Parallel/workflow execution
     'parallel_runner.sh', // Run juno-code tasks in parallel with tmux visualization
     'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
+    'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
   ];
 
   /**

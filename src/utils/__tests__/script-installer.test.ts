@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { ScriptInstaller } from '../script-installer.js';
 
 describe('ScriptInstaller', () => {
@@ -56,6 +57,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('run_until_completion.sh');
       expect(missing).toContain('kanban.sh');
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
+      expect(missing).toContain('workflow_runner.sh');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -116,6 +118,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'parallel_runner_wait.sh'),
         '#!/usr/bin/env python3\nprint("parallel wait")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_runner.sh'),
+        '#!/usr/bin/env python3\nprint("workflow")',
       );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
@@ -191,9 +197,10 @@ describe('ScriptInstaller', () => {
         { name: 'hooks/session_counter.sh', installed: false },
         // Log scanning utility
         { name: 'log_scanner.sh', installed: false },
-        // Parallel execution
+        // Parallel/workflow execution
         { name: 'parallel_runner.sh', installed: false },
         { name: 'parallel_runner_wait.sh', installed: false },
+        { name: 'workflow_runner.sh', installed: false },
       ]);
     });
 
@@ -255,6 +262,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'parallel_runner_wait.sh'),
         '#!/usr/bin/env python3\nprint("parallel wait")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_runner.sh'),
+        '#!/usr/bin/env python3\nprint("workflow")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -276,9 +287,10 @@ describe('ScriptInstaller', () => {
         { name: 'hooks/session_counter.sh', installed: true },
         // Log scanning utility
         { name: 'log_scanner.sh', installed: true },
-        // Parallel execution
+        // Parallel/workflow execution
         { name: 'parallel_runner.sh', installed: true },
         { name: 'parallel_runner_wait.sh', installed: true },
+        { name: 'workflow_runner.sh', installed: true },
       ]);
     });
   });
