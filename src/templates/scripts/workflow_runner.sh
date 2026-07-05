@@ -598,6 +598,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                 "stderr": "",
                 "stdout_path": "",
                 "stderr_path": "",
+                "response": "",
+                "response_path": "",
                 "capture_enabled": False,
                 "capture_json": "",
                 "capture_json_path": "",
@@ -614,6 +616,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         stdout_path = out_dir / f"{index:03d}_{step_slug}.stdout.txt"
         stderr_path = out_dir / f"{index:03d}_{step_slug}.stderr.txt"
         capture_path = out_dir / f"{index:03d}_{step_slug}.capture.json"
+        response_path = out_dir / f"{index:03d}_{step_slug}.response.txt"
         legacy_step_dir = out_dir / "steps" / step_id
         write_text(legacy_step_dir / "command.sh", preview + "\n")
         print("\n" + step_separator("START", index, step_id))
@@ -638,11 +641,6 @@ def run_workflow(args: argparse.Namespace) -> int:
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
             status = "success" if exit_code == 0 else "failed"
-            if args.print_step_stdout:
-                print(step_separator("RESPONSE", index, step_id))
-                print(stdout, end="" if stdout.endswith("\n") or not stdout else "\n")
-                if not stdout:
-                    print("(stdout is empty)")
             if stderr:
                 print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         duration = round(time.monotonic() - started, 3)
@@ -650,6 +648,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         write_text(stderr_path, stderr)
         write_text(legacy_step_dir / "stdout.txt", stdout)
         write_text(legacy_step_dir / "stderr.txt", stderr)
+        response = stdout
         result: dict[str, Any] = {
             "id": step_id,
             "command": command,
@@ -659,8 +658,10 @@ def run_workflow(args: argparse.Namespace) -> int:
             "duration_seconds": duration,
             "stdout": stdout,
             "stderr": stderr,
+            "response": response,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
+            "response_path": str(response_path),
             "capture_enabled": capture_enabled,
             "capture_json": str(capture_path) if capture_enabled else "",
             "capture_json_path": str(capture_path) if capture_enabled else "",
@@ -680,10 +681,19 @@ def run_workflow(args: argparse.Namespace) -> int:
                     result["session_id"] = session_id
                 if isinstance(capture_result, str):
                     result["capture_result"] = capture_result
+                    result["response"] = capture_result
             elif not capture_path.exists():
                 session_id = extract_session_id(stdout, stderr)
                 if session_id:
                     result["session_id"] = session_id
+        write_text(response_path, str(result.get("response", "")))
+        write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
+        if args.print_step_stdout:
+            response_text = str(result.get("response", ""))
+            print(step_separator("RESPONSE", index, step_id))
+            print(response_text, end="" if response_text.endswith("\n") or not response_text else "\n")
+            if not response_text:
+                print("(response is empty)")
         context["steps"][step_id] = result
         manifest["steps"].append({k: v for k, v in result.items() if k not in {"stdout", "stderr"}})
         print(step_separator("END", index, step_id, f"status={status} duration={duration:.3f}s exit={exit_code}"))
@@ -750,6 +760,7 @@ summary:
     - pi
     - |
       Summarize workflow status. First session: {{ steps.first_agent.session_id }}
+      First response: {{ steps.first_agent.response }}
 """,
     "command-pipeline": """schema_version: 1
 workflow_id: example_command_pipeline
@@ -781,7 +792,7 @@ steps:
       - pi
       - |
         Review the daily workflow context for {{ run_date }}.
-        Preflight output: {{ steps.preflight.stdout }}
+        Preflight output: {{ steps.preflight.response }}
         Return one concise operator note.
     fail_workflow: false
   - id: archive_note

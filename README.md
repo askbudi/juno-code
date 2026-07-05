@@ -159,7 +159,7 @@ Run ordered cron/operator workflows from YAML or stdin with durable artifacts:
 cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print-output summary
 ```
 
-By default, step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a step when automation should fail fast. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, and session capture.
+By default, step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a step when automation should fail fast. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` for the final captured answer; raw `stdout`/`stderr` remain available as audit artifacts. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, and session capture.
 
 ### Full Traceability: Every Change Tracked
 - Every task links to a git commit
@@ -318,7 +318,8 @@ juno-code clone --from C --name M 'Explore M'  # Clone branch C into branch M
 juno-code branches                        # List this shell's named branches
 juno-code switch C                        # Make C active for future continue runs
 juno-code continue --clone 'Explore approach B'
-juno-code --resume abc123 --clone 'Explore approach C'
+juno-code --resume abc123 --clone 'Explore approach C'  # Fork explicit session id
+juno-code pi --resume abc123 'Continue work'             # Resume explicit session id
 ```
 
 Each `juno-code` run also appends execution history to:
@@ -361,6 +362,8 @@ ypl 'init'
 yy clone 'research auto-branch'   # auto-names b1, b2, ...
 yy clone C 'research C'
 yy clone D 'research D'
+yy --resume <session-id> --clone '@@close_loop'  # fork an explicit session id (not named)
+ypl --resume <session-id> '@@close_loop'         # resume an explicit session id live
 yy cc 'continue main'
 yy switch C
 yy switch +                 # next branch, wraps at end
@@ -385,13 +388,16 @@ Named branch behavior:
 - `juno-code clone C 'prompt'` is shorthand for `juno-code clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
 - `juno-code clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
 - Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
+- If a new terminal tab reports `No named session branches found for this shell scope`, that tab has a different continue scope. Run `ypl 'init'` in that tab, run from the original tab, or set a shared `JUNO_CODE_CONTINUE_SCOPE=<name>` before starting runs that should share branch state.
 - A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.
 
-Non-named clone behavior:
-- `juno-code --resume <session-id> --clone ...` forks the explicit session id.
+Explicit session-id resume/clone behavior:
+- `juno-code pi --resume <session-id> 'prompt'` or `ypl --resume <session-id> 'prompt'` resumes that exact Pi session. Because `ypl` expands to `yy pi --live`, do **not** run `ypl clone C ...`; `clone C` would be treated as prompt text.
+- `juno-code --resume <session-id> --clone 'prompt'` forks the explicit session id as a non-named clone.
+- `juno-code clone C --resume <session-id> 'prompt'` is not the named-branch syntax; named clones source from the branch registry (`main` by default, or `--from C`). Use `juno-code --resume <session-id> --clone 'prompt'` for an explicit session id, or initialize/register `main` first and then use `juno-code clone C 'prompt'`.
 - `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell session and then future `juno-code continue` in that shell follows the clone.
 
-The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, drop an inline `switch C 'prompt'` request after switching, lose an unnamed clone because no branch name was recorded, or expect clone to switch branches automatically.
+The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, pass `clone C` through `ypl` as prompt text, drop an inline `switch C 'prompt'` request after switching, lose an unnamed clone because no branch name was recorded, or expect clone to switch branches automatically.
 
 ### Feedback System
 

@@ -414,6 +414,40 @@ steps:
     );
   });
 
+  it('prints canonical captured response for juno commands while preserving raw stdout artifacts', async () => {
+    const binDir = path.join(testDir, 'verbose-bin');
+    await fs.ensureDir(binDir);
+    const executablePath = path.join(binDir, 'yy');
+    await fs.writeFile(
+      executablePath,
+      `#!/usr/bin/env sh
+echo 'VERBOSE INTERNAL LOG LINE'
+printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AGENT_RESPONSE","session_id":"session-final"}\n' > "$JUNO_SUBAGENT_CAPTURE_PATH"
+`,
+    );
+    await fs.chmod(executablePath, 0o755);
+    const workflowPath = path.join(testDir, 'canonical-response.json');
+    const outDir = path.join(testDir, 'canonical-response-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'canonical-response',
+      steps: [{ id: 'agent', command: [executablePath, 'pi', 'prompt'] }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    const responseStart = result.stdout.indexOf('RESPONSE: step 1 [agent]');
+    const responseEnd = result.stdout.indexOf('END: step 1 [agent]');
+    const responseBlock = result.stdout.slice(responseStart, responseEnd);
+    expect(responseBlock).toContain('FINAL_AGENT_RESPONSE');
+    expect(responseBlock).not.toContain('VERBOSE INTERNAL LOG LINE');
+    expect(await fs.readFile(path.join(outDir, '001_agent.stdout.txt'), 'utf8')).toContain('VERBOSE INTERNAL LOG LINE');
+    expect(await fs.readFile(path.join(outDir, '001_agent.response.txt'), 'utf8')).toBe('FINAL_AGENT_RESPONSE');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].response_path).toContain('001_agent.response.txt');
+  });
+
   it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     const workflowPath = path.join(testDir, 'argv-capture.json');
@@ -422,14 +456,14 @@ steps:
       name: 'argv-capture',
       steps: [
         { id: 'first', command: [executablePath, 'pi', 'alpha'] },
-        { id: 'resume', command: "printf 'resume={{ steps.first.session_id }} result={{ steps.first.capture_result }}'" },
+        { id: 'resume', command: "printf 'resume={{ steps.first.session_id }} result={{ steps.first.capture_result }} response={{ steps.first.response }}'" },
       ],
     });
 
     const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'resume']);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('resume=session-alpha result=captured alpha');
+    expect(result.stdout).toContain('resume=session-alpha result=captured alpha response=captured alpha');
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.steps[0].capture_enabled).toBe(true);
     expect(manifest.steps[0].session_id).toBe('session-alpha');
