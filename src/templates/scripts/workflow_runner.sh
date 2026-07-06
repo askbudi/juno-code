@@ -997,33 +997,19 @@ steps:
       from pathlib import Path
       out_dir = Path("{{ out_dir }}")
       issues = [
-          {
-              "id": "checkout-5xx-spike",
-              "service": "checkout-api",
-              "severity": "P1",
-              "signal": "5xx rate above 4% for 15 minutes",
-              "dashboard": "https://observability.example/checkout-api",
-              "runbook": "docs/runbooks/checkout-api.md",
-          },
-          {
-              "id": "worker-lag",
-              "service": "billing-worker",
-              "severity": "P2",
-              "signal": "queue lag above 10000 jobs",
-              "dashboard": "https://observability.example/billing-worker",
-              "runbook": "docs/runbooks/billing-worker.md",
-          },
+          {"id": "checkout-5xx-spike", "service": "checkout-api", "severity": "P1", "signal": "5xx rate above 4% for 15 minutes", "dashboard": "https://observability.example/checkout-api", "runbook": "docs/runbooks/checkout-api.md"},
+          {"id": "worker-lag", "service": "billing-worker", "severity": "P2", "signal": "queue lag above 10000 jobs", "dashboard": "https://observability.example/billing-worker", "runbook": "docs/runbooks/billing-worker.md"},
       ]
       with (out_dir / "issues.jsonl").open("w", encoding="utf-8") as fh:
           for issue in issues:
               fh.write(json.dumps(issue, ensure_ascii=False) + "\\n")
-      prompt_placeholder = f"{chr(123) * 2}item{chr(125) * 2}"
+      item_placeholder = f"{chr(123) * 2}item{chr(125) * 2}"
       (out_dir / "triage_prompt.md").write_text(
           "You are taking over one production issue in a dedicated tmux pane.\\n"
           "Keep this pane available for later `yy continue`; do not collapse history.\\n"
-          f"Issue JSON: {prompt_placeholder}\\n\\n"
-          "Investigate the service, runbook, likely blast radius, immediate mitigations, "
-          "and follow-up owners. Finish with a concise HANDOFF_SUMMARY and preserve any session id/artifact paths you create.\\n",
+          f"Issue JSON: {item_placeholder}\\n\\n"
+          "Investigate the service, runbook, likely blast radius, immediate mitigations, and follow-up owners. "
+          "Finish with a concise HANDOFF_SUMMARY and preserve any session id/artifact paths you create.\\n",
           encoding="utf-8",
       )
       print(out_dir / "issues.jsonl")
@@ -1051,8 +1037,8 @@ steps:
         printf '# Production triage handoff\\n\\n'
         printf 'Issues: `%s`\\n\\n' "{{ out_dir }}/issues.jsonl"
         printf 'Parallel artifacts: `%s`\\n\\n' "{{ out_dir }}/parallel"
-        printf 'Attach to tmux sessions with `tmux ls | grep pc-{{ triage_name }}` then `tmux attach -t <session>`.\\n\\n'
-        printf 'Latest aggregation files preserve each final agent response, commit metadata, cost, and session id so a later master review or `yy continue` does not need to reconstruct history from scrollback.\\n\\n'
+        printf 'Attach with `tmux ls | grep pc-{{ triage_name }}` then `tmux attach -t <session>`.\\n\\n'
+        printf 'Latest aggregation files preserve each final agent response, commit metadata, cost, and session id so later review or `yy continue` does not need to reconstruct history from scrollback.\\n\\n'
         find "{{ out_dir }}/parallel" -name 'aggregation_*.json' -print 2>/dev/null | sort || true
       } | tee "$summary"
 summary: |
@@ -1083,7 +1069,7 @@ steps:
     command: |
       set -eu
       mkdir -p "{{ out_dir }}"
-      printf '%s\\n' '{{ steps.plan_kanban_tasks.response }}' > "{{ out_dir }}/plan_response.txt"
+      cp "{{ steps.plan_kanban_tasks.response_path }}" "{{ out_dir }}/plan_response.txt"
       task_ids=$(python3 - <<'PY'
       import re
       from pathlib import Path
@@ -1147,6 +1133,7 @@ summary: |
   Master review response: {{ steps.master_review.response }}
 """,
 }
+
 
 def iter_template_strings(value: Any, path: str = "") -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
@@ -1350,6 +1337,15 @@ Example boilerplates (written only when explicitly requested):
   workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
   workflow_runner.sh --init-example command-pipeline .juno_task/workflows/command_pipeline.yaml
   workflow_runner.sh --init-example daily-ops .juno_task/workflows/daily_ops.yaml
+  workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/production_triage_handoff.yaml
+  workflow_runner.sh --init-example parallel-kanban-review .juno_task/workflows/parallel_kanban_review.yaml
+
+  production-triage-handoff writes safe sample JSONL, then invokes parallel_runner.sh
+  with --tmux panes --tmux-handoff --max-panes-per-session 4 and a fixed
+  {{ out_dir }}/parallel artifact root. parallel-kanban-review shows plan-created
+  kanban tasks flowing through fixed-output parallel execution into a master review
+  step. Both preserve final responses and session ids in artifacts so review and
+  yy continue handoff do not depend on tmux scrollback.
 """,
     )
     parser.add_argument("--workflow", "-w", help="Workflow YAML path, or '-' to read from stdin")
@@ -1377,7 +1373,7 @@ Example boilerplates (written only when explicitly requested):
         "--init-example",
         nargs=2,
         metavar=("NAME", "PATH"),
-        help="Write a built-in example workflow YAML (agent-chain, command-pipeline, daily-ops) to PATH and exit",
+        help="Write a built-in example workflow YAML (agent-chain, command-pipeline, daily-ops, production-triage-handoff, parallel-kanban-review) to PATH and exit",
     )
     parser.add_argument("--force", action="store_true", help="Allow --init-example to overwrite an existing file")
     return parser

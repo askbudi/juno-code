@@ -155,11 +155,15 @@ Run multiple tasks simultaneously with the parallel runner:
 Run ordered cron/operator workflows from YAML or stdin with durable artifacts:
 ```bash
 ./.juno_task/scripts/workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
+./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/production_triage_handoff.yaml
+./.juno_task/scripts/workflow_runner.sh --init-example parallel-kanban-review .juno_task/workflows/parallel_kanban_review.yaml
 ./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/agent_chain.yaml --dry-run
 cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print-output summary
 ./.juno_task/scripts/workflow_runner.sh lint --workflow .juno_task/workflows/agent_chain.yaml
 ./.juno_task/scripts/workflow_runner.sh doctor .juno_task/specs/workflows/<workflow_id>/<run_id>
 ```
+
+Use `production-triage-handoff` when production discovery should fan out into capped tmux handoff panes (`--tmux panes --tmux-handoff --max-panes-per-session 4`) with a fixed `{{ out_dir }}/parallel` artifact root. Use `parallel-kanban-review` when a planning agent creates kanban tasks, parallel workers write aggregation artifacts, and a master review reads the latest `aggregation_*.json`. These examples matter because aggregation artifacts preserve final agent responses, session IDs, commits, and statuses; later review/`yy continue` handoff should not reconstruct history from tmux scrollback.
 
 By default, step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a step when automation should fail fast. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` as the final answer. The runner does not inject `--quiet`; it keeps successful stderr logs in artifacts instead of echoing them to the operator console, and detected agent commands that exit 0 with an empty response are marked failed. Use `workflow_runner.sh lint` before cron runs to catch noisy `stdout`/`stderr` templates, and `workflow_runner.sh doctor`/`dr` after runs to diagnose manifest/artifact response issues. At the end, detected agent step session ids are printed and the last session is persisted to the same continue-scope env file used by juno-code, so `yy cc` can continue the last workflow agent session. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, response capture, session visibility, and continue handoff.
 
