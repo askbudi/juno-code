@@ -43,6 +43,30 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stdout).toContain('Command file schema v1');
     expect(result.stdout).toContain('[A-Za-z0-9_.-]+');
     expect(result.stdout).toContain('command strings are shell commands');
+    expect(result.stdout).toContain('--tmux-handoff');
+    expect(result.stdout).toContain('dedicates one worker pane/window');
+    expect(result.stdout).toContain('per task and never reuses completed workers');
+  });
+
+  it('rejects tmux handoff without tmux before starting a run', () => {
+    const result = runParallel(['--tmux-handoff', '--items', 'a', '--prompt', 'Analyze {{item}}']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--tmux-handoff requires --tmux');
+  });
+
+  it('rejects tmux handoff when task count exceeds parallelism', () => {
+    const result = runParallel([
+      '--tmux', 'panes',
+      '--tmux-handoff',
+      '--items', 'a', 'b',
+      '--parallel', '1',
+      '--prompt', 'Analyze {{item}}',
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--tmux-handoff requires one dedicated worker per task');
+    expect(result.stderr).toContain('got 2 task(s) with --parallel 1');
   });
 
   it('writes a boilerplate command YAML file, refuses overwrite, and lints it successfully', async () => {

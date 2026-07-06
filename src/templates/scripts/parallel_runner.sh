@@ -6,6 +6,8 @@ Modes:
   Headless (default): ThreadPoolExecutor, output to log files only.
   Tmux windows:       Each worker = tmux window, coordinator = window 0.
   Tmux panes:         Workers as split panes, coordinator = top pane.
+  Tmux handoff:       Add --tmux-handoff so each task gets a dedicated pane/window
+                      that is not reused after completion.
 
 Usage:
   # Kanban mode (task IDs as input)
@@ -32,6 +34,7 @@ Usage:
   # Common options
   ./parallel_runner.sh --tmux --kanban T1 T2 T3 --parallel 2
   ./parallel_runner.sh --tmux panes --kanban T1 T2 --parallel 2
+  ./parallel_runner.sh --tmux panes --tmux-handoff --items a b --parallel 2 --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux --kanban T1 T2 --name my-batch
   ./parallel_runner.sh -s codex --kanban T1 T2
   ./parallel_runner.sh -s pi -m gpt-5 --kanban T1 T2
@@ -100,6 +103,7 @@ Arguments:
   --subagent-args Extra raw args appended to each juno-code invocation.
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
+  --tmux-handoff Tmux-only mode: dedicate one worker pane/window per task and do not reuse it after completion.
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
   --output-dir   Structured output directory. Default: /tmp/juno-code-sessions/{date}/{run_id}.
   --stop         Stop a session. Uses --name if provided, otherwise auto-detects.
@@ -1953,6 +1957,10 @@ def parse_args():
         help="Run in tmux mode. 'windows' (default) or 'panes'.",
     )
     parser.add_argument(
+        "--tmux-handoff", action="store_true", default=False,
+        help="Tmux-only mode that dedicates one worker pane/window per task and never reuses completed workers. Requires len(tasks) <= --parallel.",
+    )
+    parser.add_argument(
         "--name", type=str, default=None,
         help="Session name (default: auto-generated batch-N). Tmux session = pc-{name}.",
     )
@@ -2072,6 +2080,9 @@ def parse_args():
 
     args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
 
+    if args.tmux_handoff and not args.tmux:
+        parser.error("--tmux-handoff requires --tmux because handoff preserves tmux panes/windows for later attachment")
+
     live_in_tmux = args.tmux and _contains_live_subagent_flag(args.subagent_args_list)
     if live_in_tmux and args.parallel > 1:
         parser.error(
@@ -2097,6 +2108,14 @@ def parse_args():
 
     task_ids = _resolve_input(args)
     args.kanban = task_ids
+
+    if args.tmux_handoff and len(task_ids) > args.parallel:
+        parser.error(
+            f"--tmux-handoff requires one dedicated worker per task for this increment: "
+            f"got {len(task_ids)} task(s) with --parallel {args.parallel}. "
+            "Increase --parallel to at least the number of tasks or omit --tmux-handoff."
+        )
+
     return args
 
 
@@ -2563,6 +2582,7 @@ class WorkerState:
     current_task: str = ""
     busy: bool = False
     sentinel_id: str = ""
+    handoff_completed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -3016,7 +3036,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
                        prompt_template, wall_start, session_name_short, session_name,
                        output_dir=None, service="claude", model=":sonnet",
                        file_format="", strict=False, subagent_args=None,
-                       command_mode=False):
+                       command_mode=False, tmux_handoff=False):
     """Main orchestration loop — polls workers, dispatches tasks, updates dashboard."""
     all_task_ids = list(task_states.keys())
     pause_path = _pause_file(session_name_short)
@@ -3061,6 +3081,8 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
             worker.busy = False
             worker.current_task = ""
             worker.sentinel_id = ""
+            if tmux_handoff:
+                worker.handoff_completed = True
 
             elapsed = ts.end_time - ts.start_time
             status_str = "OK" if exit_code == 0 else f"FAILED (exit {exit_code})"
@@ -3121,7 +3143,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
         # Dispatch new tasks to free workers
         if not paused and not _shutdown_event.is_set():
             for worker in workers:
-                if worker.busy:
+                if worker.busy or worker.handoff_completed:
                     continue
                 if not task_queue:
                     break
@@ -3341,6 +3363,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
             if len(args.kanban) > 3:
                 f.write(f"[{timestamp}]   ... and {len(args.kanban) - 3} more\n")
         f.write(f"[{timestamp}] Parallelism: {num_workers}\n")
+        if getattr(args, "tmux_handoff", False):
+            f.write(f"[{timestamp}] Tmux handoff: enabled (dedicated worker per task; completed workers are not reused)\n")
         if not command_mode:
             f.write(f"[{timestamp}] Service: {service} | Model: {model}\n")
         if subagent_args:
@@ -3441,7 +3465,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                 pwd, prompt_paths, prompt_template, wall_start,
                 session_name_short, session_name, output_dir,
                 service, model, file_format, strict, subagent_args,
-                command_mode,
+                command_mode, getattr(args, "tmux_handoff", False),
             )
         except Exception as exc:
             import traceback
@@ -3466,6 +3490,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         print(f"Session: {session_name} (name: {session_name_short})")
         print(f"{'Commands' if command_mode else 'Tasks'}: {', '.join(args.kanban)}")
         print(f"Workers: {num_workers}")
+        if getattr(args, "tmux_handoff", False):
+            print("Tmux handoff: enabled (completed panes/windows are preserved and not reused)")
         print(f"Logs: {LOG_DIR}/")
         print(f"Pause: touch {_pause_file(session_name_short)}")
         print(f"Stop:  --stop --name {session_name_short}")
