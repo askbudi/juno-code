@@ -84,6 +84,37 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stderr).toContain('got 2 task(s) with --parallel 1');
   });
 
+  it('keeps batched handoff parent status running until all child statuses complete', async () => {
+    const statusA = path.join(testDir, 'a.status.json');
+    const statusB = path.join(testDir, 'b.status.json');
+    await fs.writeJson(statusA, { state: 'completed', exit_code: 0, started_at: 's1', finished_at: 'f1' });
+    await fs.writeJson(statusB, { state: 'running', exit_code: null, started_at: 's2' });
+
+    const code = `
+import importlib.machinery, json, pathlib
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+parent = pathlib.Path(${JSON.stringify(testDir)})
+manifest = {'child_sessions': [{'status_path': ${JSON.stringify(statusA)}}, {'status_path': ${JSON.stringify(statusB)}}]}
+complete, exit_code = mod._refresh_handoff_manifest_status(parent, manifest)
+print(json.dumps({'complete': complete, 'exit_code': exit_code, 'manifest': manifest}, sort_keys=True))
+pathlib.Path(${JSON.stringify(statusB)}).write_text(json.dumps({'state': 'completed', 'exit_code': 1, 'started_at': 's2', 'finished_at': 'f2'}))
+complete, exit_code = mod._refresh_handoff_manifest_status(parent, manifest)
+print(json.dumps({'complete': complete, 'exit_code': exit_code, 'manifest': manifest}, sort_keys=True))
+`;
+    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf8' });
+
+    expect(result.status).toBe(0);
+    const [first, second] = result.stdout.trim().split('\n').map(line => JSON.parse(line));
+    expect(first.complete).toBe(false);
+    expect(first.exit_code).toBe(0);
+    expect(first.manifest.completed_child_sessions).toBe(1);
+    expect(second.complete).toBe(true);
+    expect(second.exit_code).toBe(1);
+    expect(second.manifest.completed_child_sessions).toBe(2);
+    expect(second.manifest.failed_child_sessions).toBe(1);
+    expect(await fs.pathExists(path.join(testDir, 'tmux_handoff_manifest.json'))).toBe(true);
+  });
+
   it('writes a boilerplate command YAML file, refuses overwrite, and lints it successfully', async () => {
     const target = path.join(testDir, 'commands.yaml');
 

@@ -3556,9 +3556,65 @@ def _write_parent_handoff_manifest(parent_log_dir, manifest):
     return manifest_path
 
 
+def _read_child_status(status_path):
+    """Read a child session status file, returning a normalized status payload."""
+    path = Path(status_path)
+    if not path.exists():
+        return {"state": "pending", "exit_code": None, "status_path": str(path)}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"state": "unknown", "exit_code": None, "status_path": str(path), "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"state": "unknown", "exit_code": None, "status_path": str(path), "error": "status JSON is not an object"}
+    return payload
+
+
+def _refresh_handoff_manifest_status(parent_log_dir, manifest):
+    """Refresh child status fields in the parent manifest and return aggregate completion."""
+    all_completed = True
+    aggregate_exit = 0
+    for child in manifest.get("child_sessions", []):
+        payload = _read_child_status(child.get("status_path", ""))
+        state = payload.get("state") or "unknown"
+        exit_code = payload.get("exit_code")
+        child["state"] = state
+        child["exit_code"] = exit_code
+        child["started_at"] = payload.get("started_at")
+        child["finished_at"] = payload.get("finished_at")
+        child["last_status_checked_at"] = datetime.now().isoformat()
+        if payload.get("error"):
+            child["status_error"] = payload.get("error")
+        elif "status_error" in child:
+            child.pop("status_error", None)
+        if state != "completed":
+            all_completed = False
+        elif exit_code:
+            aggregate_exit = 1
+    manifest["last_status_checked_at"] = datetime.now().isoformat()
+    manifest["completed_child_sessions"] = sum(
+        1 for child in manifest.get("child_sessions", []) if child.get("state") == "completed"
+    )
+    manifest["failed_child_sessions"] = sum(
+        1 for child in manifest.get("child_sessions", []) if child.get("state") == "completed" and child.get("exit_code")
+    )
+    _write_parent_handoff_manifest(parent_log_dir, manifest)
+    return all_completed, aggregate_exit
+
+
+def _wait_for_handoff_children(parent_log_dir, manifest, poll_seconds=2):
+    """Keep the parent runner alive until all child tmux handoff sessions complete."""
+    print("Waiting for child tmux handoff sessions to complete...")
+    while True:
+        all_completed, aggregate_exit = _refresh_handoff_manifest_status(parent_log_dir, manifest)
+        if all_completed:
+            return aggregate_exit
+        time.sleep(poll_seconds)
+
+
 def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir,
                              service, model, subagent_args=None):
-    """Create multiple capped --tmux-handoff child sessions from one parsed input list."""
+    """Create multiple capped --tmux-handoff child sessions and wait for real completion."""
     global LOG_DIR, COMBINED_LOG, STATUS_FILE
 
     cap = args.max_panes_per_session
@@ -3626,6 +3682,8 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
             "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
             "attach_command": f"tmux attach -t {child_info['session_name']}",
             "stop_command": f"{Path(sys.argv[0]).name} --stop --name {child_short}",
+            "state": "running",
+            "exit_code": None,
         })
         manifest["child_sessions"].append(child_info)
         _write_parent_handoff_manifest(parent_log_dir, manifest)
@@ -3634,14 +3692,24 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
     COMBINED_LOG = parent_log_dir / "parallel_runner.log"
     STATUS_FILE = parent_status_file
     manifest_path = _write_parent_handoff_manifest(parent_log_dir, manifest)
-    _write_run_status("completed", f"tmux/{args.tmux}/handoff-batched", exit_code=0, session_name=parent_name)
 
     print()
-    print("Tmux handoff sessions are ready. Attach to any session:")
+    print("Tmux handoff sessions are running. Attach to any session while the parent waits:")
     for child in manifest["child_sessions"]:
         print(f"  {child['session_name']}: {child['attach_command']}  # {', '.join(child['task_ids'])}")
     print(f"Parent manifest: {manifest_path}")
     print("Each child uses one dedicated non-reused pane/window per task.")
+
+    try:
+        exit_code = _wait_for_handoff_children(parent_log_dir, manifest)
+    except KeyboardInterrupt:
+        exit_code = 130
+        manifest["interrupted_at"] = datetime.now().isoformat()
+        _write_parent_handoff_manifest(parent_log_dir, manifest)
+        print("Interrupted while waiting for child sessions; child tmux sessions may still be running.", file=sys.stderr)
+
+    _write_run_status("completed", f"tmux/{args.tmux}/handoff-batched", exit_code=exit_code, session_name=parent_name)
+    return exit_code
 
 
 # ---------------------------------------------------------------------------
@@ -3691,7 +3759,7 @@ def main():
 
     if args.tmux:
         if args.tmux_handoff and args.max_panes_per_session is not None and len(args.kanban) > args.max_panes_per_session:
-            run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
+            sys.exit(run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args))
         else:
             run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
     else:
