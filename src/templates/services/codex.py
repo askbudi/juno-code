@@ -16,6 +16,19 @@ from pathlib import Path
 from typing import List, Optional
 
 
+DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
+PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"
+
+
+def _positive_int_env(name: str, fallback: int) -> int:
+    value = os.environ.get(name, "")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 class CodexService:
     """Service wrapper for OpenAI Codex CLI"""
 
@@ -39,6 +52,7 @@ class CodexService:
         self.additional_args: List[str] = []
         self.verbose = False
         self._item_counter = 0
+        self._stdin_prompt: Optional[str] = None
 
     def expand_model_shorthand(self, model: str) -> str:
         """
@@ -50,6 +64,12 @@ class CodexService:
         if model.startswith(":"):
             return self.MODEL_SHORTHANDS.get(model, model)
         return model
+
+    def _prompt_arg_max_bytes(self) -> int:
+        return _positive_int_env(PROMPT_ARG_MAX_BYTES_ENV, DEFAULT_PROMPT_ARG_MAX_BYTES)
+
+    def _is_prompt_oversized(self, prompt: str) -> bool:
+        return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
 
     def check_codex_installed(self) -> bool:
         """Check if codex CLI is installed and available"""
@@ -287,8 +307,16 @@ Environment Variables:
         # Build the full prompt (auto_instruction + user prompt)
         full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"
 
-        # Add exec command with prompt
-        cmd.extend(["exec", full_prompt])
+        # Add exec command with prompt. Small prompts stay positional for CLI
+        # compatibility; oversized prompts use Codex's documented stdin marker
+        # to avoid reintroducing OS E2BIG when this wrapper receives a prompt
+        # file from shell-backend.
+        self._stdin_prompt = None
+        if self._is_prompt_oversized(full_prompt):
+            self._stdin_prompt = full_prompt
+            cmd.extend(["exec", "-"])
+        else:
+            cmd.extend(["exec", full_prompt])
 
         # Add --json flag for streaming support
         # This is CRITICAL for codex to output streaming responses
@@ -472,12 +500,20 @@ Environment Variables:
             # Run the command and stream output
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE if self._stdin_prompt else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
                 universal_newlines=True
             )
+
+            if self._stdin_prompt and process.stdin:
+                try:
+                    process.stdin.write(self._stdin_prompt)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
 
             # Watchdog thread: handles two scenarios where the stdout loop blocks:
             # 1. Process exits but its stdout pipe stays open (inherited FDs)

@@ -15,6 +15,19 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 
+DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
+PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"
+
+
+def _positive_int_env(name: str, fallback: int) -> int:
+    value = os.environ.get(name, "")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 class GeminiService:
     """Service wrapper for Gemini CLI headless mode."""
 
@@ -42,12 +55,19 @@ class GeminiService:
         self.yolo: bool = False
         self.debug = False
         self.verbose = False
+        self._stdin_prompt: Optional[str] = None
 
     def expand_model_shorthand(self, model: str) -> str:
         """Expand shorthand model names (colon-prefixed) to full identifiers."""
         if model.startswith(":"):
             return self.MODEL_SHORTHANDS.get(model, model)
         return model
+
+    def _prompt_arg_max_bytes(self) -> int:
+        return _positive_int_env(PROMPT_ARG_MAX_BYTES_ENV, DEFAULT_PROMPT_ARG_MAX_BYTES)
+
+    def _is_prompt_oversized(self, prompt: str) -> bool:
+        return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
 
     def check_gemini_installed(self) -> bool:
         """Check if gemini CLI is installed and available."""
@@ -323,8 +343,15 @@ Examples:
         """Construct the Gemini CLI command for headless execution."""
         cmd = ["gemini"]
 
+        # Gemini headless mode accepts prompt text from stdin. Keep small prompts
+        # on --prompt for CLI compatibility, but pipe oversized prompts to avoid
+        # subprocess argv E2BIG after shell-backend selected prompt-file transport.
+        self._stdin_prompt = None
         if self.prompt:
-            cmd.extend(["--prompt", self.prompt])
+            if self._is_prompt_oversized(self.prompt):
+                self._stdin_prompt = self.prompt
+            else:
+                cmd.extend(["--prompt", self.prompt])
 
         cmd.extend(["--output-format", self.output_format])
         cmd.extend(["--model", self.model_name])
@@ -379,6 +406,7 @@ Examples:
         try:
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE if self._stdin_prompt else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -386,6 +414,13 @@ Examples:
                 universal_newlines=True,
                 cwd=self.project_path,
             )
+
+            if self._stdin_prompt and process.stdin:
+                try:
+                    process.stdin.write(self._stdin_prompt)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
 
             # Watchdog thread: handles two scenarios where the stdout loop blocks:
             # 1. Process exits but its stdout pipe stays open (inherited FDs)
