@@ -69,11 +69,27 @@ interface ScriptExecutionResult {
 
 const DEFAULT_CAPTURE_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_STREAM_BUFFER_LIMIT_BYTES = 1024 * 1024;
+/**
+ * Source of truth for shell-backend prompt argv/env safety. Python subagents
+ * receive prompts in argv/env only while under this byte limit; larger prompts
+ * are written to an internal prompt file and forwarded with --prompt-file.
+ * Override with JUNO_PROMPT_ARG_MAX_BYTES for platform-specific spawn limits.
+ */
+const DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024;
+const PROMPT_ARG_MAX_BYTES_ENV = 'JUNO_PROMPT_ARG_MAX_BYTES';
 
 interface CappedTextCapture {
   text: string;
   bytes: number;
   truncated: boolean;
+}
+
+interface PromptTransportDecision {
+  instruction: string;
+  byteLength: number;
+  mode: 'argv-env' | 'prompt-file' | 'empty' | 'non-python-env';
+  promptFilePath?: string;
+  thresholdBytes: number;
 }
 
 function getPositiveIntegerEnv(name: string, fallback: number): number {
@@ -721,6 +737,42 @@ export class ShellBackend implements Backend {
     }
   }
 
+  private async preparePromptTransport(
+    instructionValue: unknown,
+    isPython: boolean,
+    toolId: string,
+  ): Promise<PromptTransportDecision> {
+    const instruction = String(instructionValue ?? '');
+    const byteLength = Buffer.byteLength(instruction, 'utf8');
+    const thresholdBytes = getPositiveIntegerEnv(
+      PROMPT_ARG_MAX_BYTES_ENV,
+      DEFAULT_PROMPT_ARG_MAX_BYTES,
+    );
+
+    if (!instruction) {
+      return { instruction, byteLength, mode: 'empty', thresholdBytes };
+    }
+
+    if (!isPython) {
+      return { instruction, byteLength, mode: 'non-python-env', thresholdBytes };
+    }
+
+    if (byteLength <= thresholdBytes) {
+      return { instruction, byteLength, mode: 'argv-env', thresholdBytes };
+    }
+
+    const promptDir = path.join(os.tmpdir(), 'juno-code');
+    await fsExtra.ensureDir(promptDir);
+    const safeToolId = toolId.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const promptFilePath = path.join(
+      promptDir,
+      `${Date.now()}-${process.pid}-${safeToolId}-prompt.md`,
+    );
+    await fs.writeFile(promptFilePath, instruction, 'utf8');
+
+    return { instruction, byteLength, mode: 'prompt-file', promptFilePath, thresholdBytes };
+  }
+
   /**
    * Execute a shell script
    */
@@ -734,18 +786,30 @@ export class ShellBackend implements Backend {
       const startTime = Date.now();
       const isPython = scriptPath.endsWith('.py');
       const isGemini = subagentType === 'gemini';
+      const promptTransport = await this.preparePromptTransport(
+        request.arguments?.instruction,
+        isPython,
+        toolId,
+      );
 
       // Prepare environment variables
       const env: Record<string, string | undefined> = {
         ...process.env,
         ...this.config!.environment,
         // Pass request data as environment variables
-        JUNO_INSTRUCTION: String(request.arguments?.instruction ?? ''),
         JUNO_PROJECT_PATH: String(request.arguments?.project_path ?? this.config!.workingDirectory),
         JUNO_MODEL: String(request.arguments?.model ?? ''),
         JUNO_ITERATION: String(request.arguments?.iteration ?? 1),
         JUNO_TOOL_ID: toolId,
       };
+
+      if (promptTransport.mode !== 'prompt-file') {
+        env.JUNO_INSTRUCTION = promptTransport.instruction;
+      } else {
+        // process.env/config may already contain JUNO_INSTRUCTION; oversized prompts must never
+        // be copied into the child environment when prompt-file transport is selected.
+        delete env.JUNO_INSTRUCTION;
+      }
 
       // Force unbuffered Python stdout/stderr so progress events stream in real time
       // even when scripts run under piped stdio in headless mode.
@@ -778,9 +842,11 @@ export class ShellBackend implements Backend {
       const command = isPython ? 'python3' : 'bash';
       const args = [scriptPath];
 
-      // For Python scripts, add the prompt as -p argument
-      if (isPython && request.arguments?.instruction) {
-        args.push('-p', String(request.arguments.instruction));
+      // For Python scripts, add the prompt as -p for small prompts and --prompt-file for oversized prompts.
+      if (isPython && promptTransport.mode === 'argv-env') {
+        args.push('-p', promptTransport.instruction);
+      } else if (isPython && promptTransport.mode === 'prompt-file' && promptTransport.promptFilePath) {
+        args.push('--prompt-file', promptTransport.promptFilePath);
       }
 
       // For Python scripts, add the model as -m argument if provided
@@ -875,6 +941,10 @@ export class ShellBackend implements Backend {
       }
 
       if (this.config!.debug) {
+        engineLogger.debug(
+          `Prompt transport: mode=${promptTransport.mode}, bytes=${promptTransport.byteLength}, threshold=${promptTransport.thresholdBytes}` +
+            (promptTransport.promptFilePath ? `, file=${promptTransport.promptFilePath}` : ''),
+        );
         // Show command with truncated prompt for readability
         const displayArgs = args.map((a, i) => {
           if (i > 0 && args[i - 1] === '-p' && a.length > 200) {
@@ -922,6 +992,19 @@ export class ShellBackend implements Backend {
       let stdoutCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let stderrCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let isProcessKilled = false;
+
+      const cleanupPromptFile = async (): Promise<void> => {
+        if (!promptTransport.promptFilePath) return;
+        try {
+          await fs.rm(promptTransport.promptFilePath, { force: true });
+        } catch (cleanupError) {
+          if (this.config?.debug) {
+            engineLogger.warn(
+              `Failed to clean prompt file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+            );
+          }
+        }
+      };
 
       // Handle stdout (JSON streaming or TEXT streaming). Keep only a bounded tail
       // in memory; the structured capture file is the source of truth for final
@@ -1028,6 +1111,8 @@ export class ShellBackend implements Backend {
             }
           }
 
+          await cleanupPromptFile();
+
           if (this.config!.debug) {
             engineLogger.debug(
               `Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`,
@@ -1061,12 +1146,16 @@ export class ShellBackend implements Backend {
 
       // Handle process errors
       child.on('error', (error) => {
-        if (isProcessKilled) return; // Prevent double resolution
+        void (async () => {
+          if (isProcessKilled) return; // Prevent double resolution
 
-        if (this.config!.debug) {
-          engineLogger.error(`Script execution error: ${error.message}`);
-        }
-        reject(new Error(`Failed to execute script: ${error.message}`));
+          await cleanupPromptFile();
+
+          if (this.config!.debug) {
+            engineLogger.error(`Script execution error: ${error.message}`);
+          }
+          reject(new Error(`Failed to execute script: ${error.message}`));
+        })();
       });
 
       // Apply timeout if configured. Pi live sessions are intentionally long-lived
@@ -1084,6 +1173,7 @@ export class ShellBackend implements Backend {
             }
 
             child.kill('SIGTERM');
+            void cleanupPromptFile();
 
             // Force kill after 5 seconds if SIGTERM doesn't work
             setTimeout(() => {

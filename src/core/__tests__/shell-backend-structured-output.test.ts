@@ -86,6 +86,45 @@ print(json.dumps({"type": "result", "content": json.dumps(payload)}))
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createStubPromptTransportService = async (subagent: 'claude' | 'codex' | 'gemini' | 'pi') => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-prompt-transport-'));
+  tempRoots.push(tempRoot);
+
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+
+  const scriptPath = path.join(servicesDir, `${subagent}.py`);
+  const scriptContent = `#!/usr/bin/env python3
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+prompt_file = None
+for flag in ("--prompt-file", "-pp"):
+  if flag in argv:
+    index = argv.index(flag)
+    if index + 1 < len(argv):
+      prompt_file = argv[index + 1]
+
+prompt_file_content = None
+if prompt_file:
+  with open(prompt_file, "r", encoding="utf-8") as handle:
+    prompt_file_content = handle.read()
+
+payload = {
+  "argv": argv,
+  "env_instruction": os.environ.get("JUNO_INSTRUCTION"),
+  "prompt_file": prompt_file,
+  "prompt_file_content": prompt_file_content,
+}
+print(json.dumps({"type": "result", "result": json.dumps(payload), "content": json.dumps(payload)}))
+`;
+  await fs.writeFile(scriptPath, scriptContent, { mode: 0o755 });
+
+  return { servicesDir, workingDir: tempRoot };
+};
+
 const createStubPiLiveService = async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-pi-live-'));
   tempRoots.push(tempRoot);
@@ -266,6 +305,155 @@ describe('ShellBackend structured output', () => {
         process.env.GEMINI_OUTPUT_FORMAT = originalOutputFormat;
       } else {
         delete process.env.GEMINI_OUTPUT_FORMAT;
+      }
+    }
+  });
+
+  it('keeps small Python subagent prompts in argv and JUNO_INSTRUCTION', async () => {
+    const originalThreshold = process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+    process.env.JUNO_PROMPT_ARG_MAX_BYTES = '1024';
+
+    try {
+      const { servicesDir, workingDir } = await createStubPromptTransportService('claude');
+
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: workingDir,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true,
+      });
+      await backend.initialize();
+
+      const instruction = 'small prompt';
+      const request: ToolCallRequest = {
+        toolName: 'claude_subagent',
+        arguments: {
+          instruction,
+          project_path: workingDir,
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1,
+        },
+      };
+
+      const result = await backend.execute(request);
+      const parsed = JSON.parse(result.content);
+      const payload = JSON.parse(parsed.result);
+
+      expect(payload.argv).toContain('-p');
+      expect(payload.argv).toContain(instruction);
+      expect(payload.argv).not.toContain('--prompt-file');
+      expect(payload.env_instruction).toBe(instruction);
+      expect(payload.prompt_file).toBeNull();
+    } finally {
+      if (originalThreshold !== undefined) {
+        process.env.JUNO_PROMPT_ARG_MAX_BYTES = originalThreshold;
+      } else {
+        delete process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+      }
+    }
+  });
+
+  it('uses an internal prompt file and omits JUNO_INSTRUCTION for oversized Python subagent prompts', async () => {
+    const originalThreshold = process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+    process.env.JUNO_PROMPT_ARG_MAX_BYTES = '8';
+
+    try {
+      const { servicesDir, workingDir } = await createStubPromptTransportService('pi');
+
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: workingDir,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true,
+      });
+      await backend.initialize();
+
+      const instruction = 'this prompt is definitely larger than eight bytes';
+      const request: ToolCallRequest = {
+        toolName: 'pi_subagent',
+        arguments: {
+          instruction,
+          project_path: workingDir,
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1,
+        },
+      };
+
+      const result = await backend.execute(request);
+      const parsed = JSON.parse(result.content);
+      const payload = JSON.parse(parsed.result);
+
+      expect(payload.argv).not.toContain('-p');
+      expect(payload.argv).not.toContain(instruction);
+      expect(payload.argv).toContain('--prompt-file');
+      expect(payload.env_instruction).toBeNull();
+      expect(payload.prompt_file).toContain(path.join(os.tmpdir(), 'juno-code'));
+      expect(payload.prompt_file_content).toBe(instruction);
+      expect(await fs.pathExists(payload.prompt_file)).toBe(false);
+    } finally {
+      if (originalThreshold !== undefined) {
+        process.env.JUNO_PROMPT_ARG_MAX_BYTES = originalThreshold;
+      } else {
+        delete process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+      }
+    }
+  });
+
+  it('applies oversized prompt-file transport to claude, codex, gemini, and pi Python subagents', async () => {
+    const originalThreshold = process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+    process.env.JUNO_PROMPT_ARG_MAX_BYTES = '4';
+
+    try {
+      for (const subagent of ['claude', 'codex', 'gemini', 'pi'] as const) {
+        const { servicesDir, workingDir } = await createStubPromptTransportService(subagent);
+
+        const backend = new ShellBackend();
+        backend.configure({
+          workingDirectory: workingDir,
+          servicesPath: servicesDir,
+          enableJsonStreaming: true,
+        });
+        await backend.initialize();
+
+        const instruction = `${subagent} oversized prompt`;
+        const request: ToolCallRequest = {
+          toolName: `${subagent}_subagent`,
+          arguments: {
+            instruction,
+            project_path: workingDir,
+          },
+          timeout: 15000,
+          priority: 'normal',
+          metadata: {
+            sessionId: 'test-session',
+            iterationNumber: 1,
+          },
+        };
+
+        const result = await backend.execute(request);
+        const firstLine = result.content.trim().split('\n')[0];
+        const parsed = JSON.parse(firstLine);
+        const payload = JSON.parse(parsed.result ?? parsed.content);
+
+        expect(payload.argv).toContain('--prompt-file');
+        expect(payload.argv).not.toContain('-p');
+        expect(payload.argv).not.toContain(instruction);
+        expect(payload.env_instruction).toBeNull();
+        expect(payload.prompt_file_content).toBe(instruction);
+      }
+    } finally {
+      if (originalThreshold !== undefined) {
+        process.env.JUNO_PROMPT_ARG_MAX_BYTES = originalThreshold;
+      } else {
+        delete process.env.JUNO_PROMPT_ARG_MAX_BYTES;
       }
     }
   });
