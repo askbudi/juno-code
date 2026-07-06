@@ -139,6 +139,29 @@ print(json.dumps({'complete': complete, 'exit_code': exit_code, 'manifest': mani
     expect(forced.status).toBe(0);
   });
 
+  it('uses command YAML parallel as a default while explicit CLI --parallel wins', async () => {
+    const target = path.join(testDir, 'parallel-default.yaml');
+    await fs.writeFile(
+      target,
+      `schema_version: 1
+parallel: 1
+commands:
+  - id: one
+    command: [python3, -c, "print('one')"]
+  - id: two
+    command: [python3, -c, "print('two')"]
+`,
+    );
+
+    const yamlDefault = runParallel(['--commands-file', target]);
+    expect(yamlDefault.status).toBe(0);
+    expect(yamlDefault.stdout).toContain('Parallelism: 1');
+
+    const cliOverride = runParallel(['--commands-file', target, '--parallel', '2']);
+    expect(cliOverride.status).toBe(0);
+    expect(cliOverride.stdout).toContain('Parallelism: 2');
+  });
+
   it('validates ids, uniqueness, command shape, env shape, and timeout in lint mode', async () => {
     const invalid = path.join(testDir, 'invalid.yaml');
     await fs.writeFile(

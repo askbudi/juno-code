@@ -1929,7 +1929,7 @@ def parse_args():
 
     # --- Execution options ---
     parser.add_argument(
-        "--parallel", type=int, default=3,
+        "--parallel", type=int, default=None,
         help="Max concurrent subprocesses (default: 3)",
     )
     parser.add_argument(
@@ -1985,7 +1985,6 @@ def parse_args():
         help="Stop ALL running sessions.",
     )
     normalized_argv = _normalize_subagent_args_argv(sys.argv[1:])
-    explicit_parallel = any(arg == "--parallel" or arg.startswith("--parallel=") for arg in normalized_argv)
     args = parser.parse_args(normalized_argv)
 
     if args.init_commands_example:
@@ -2041,8 +2040,11 @@ def parse_args():
             parser.error(str(exc))
         args.command_file_metadata = loaded_commands
         args.command_specs = loaded_commands["commands"]
-        if loaded_commands.get("parallel") and not explicit_parallel:
+        if args.parallel is None and loaded_commands.get("parallel"):
             args.parallel = loaded_commands["parallel"]
+
+    if args.parallel is None:
+        args.parallel = 3
 
     # Resolve --kanban-filter -> --kanban
     if args.kanban_filter:
