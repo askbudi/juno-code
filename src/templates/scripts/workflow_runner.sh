@@ -331,6 +331,31 @@ def detect_juno_command(command: Any) -> bool:
     return executable in JUNO_COMMANDS
 
 
+def juno_command_name(command: Any) -> str | None:
+    parts = command_argv(command)
+    if not parts:
+        return None
+    executable = Path(parts[0]).name
+    return executable if executable in JUNO_COMMANDS else None
+
+
+def has_juno_output_flag(parts: list[str]) -> bool:
+    return any(part in {"--quiet", "--silent", "-q", "--verbose", "-v"} or part.startswith("--verbose=") for part in parts[1:])
+
+
+def apply_workflow_juno_defaults(command: Any) -> Any:
+    """Make non-live juno-code workflow steps emit final answers, not progress logs."""
+    if not isinstance(command, list):
+        return command
+    parts = [str(part) for part in command]
+    executable = Path(parts[0]).name if parts else ""
+    if executable not in {"juno-code", "yy"}:
+        return command
+    if has_juno_output_flag(parts) or "--live" in parts:
+        return command
+    return [parts[0], "--quiet", *parts[1:]]
+
+
 def extract_session_id(stdout: str, stderr: str) -> str | None:
     for text in (stdout, stderr):
         for line in text.splitlines():
@@ -609,7 +634,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             context["steps"][step_id] = skipped_result
             manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
             continue
-        command = render(step["command"], context)
+        command = apply_workflow_juno_defaults(render(step["command"], context))
         preview = command_preview(command)
         capture_enabled = step_capture_enabled(step, command)
         step_slug = safe_id(step_id, f"step-{index}")

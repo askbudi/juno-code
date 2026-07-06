@@ -24,6 +24,7 @@ async function installFakeJunoExecutable(dir: string, name = 'yy') {
   await fs.writeFile(
     executablePath,
     `#!/usr/bin/env sh
+if [ "\${1:-}" = "--quiet" ]; then shift; fi
 printf 'tool=%s capture=%s\\n' "\${JUNO_TOOL_ID-unset}" "\${JUNO_SUBAGENT_CAPTURE_PATH-unset}"
 if [ -n "\${JUNO_SUBAGENT_CAPTURE_PATH:-}" ]; then
   prompt="\${3:-$2}"
@@ -412,6 +413,40 @@ steps:
     expect(await fs.readFile(path.join(outDir, 'steps/noisy/stdout.txt'), 'utf8')).toBe(
       'SECRET_STEP_STDOUT\n',
     );
+  });
+
+  it('injects quiet mode for argv yy/juno-code workflow commands by default', async () => {
+    const binDir = path.join(testDir, 'quiet-bin');
+    await fs.ensureDir(binDir);
+    const executablePath = path.join(binDir, 'yy');
+    await fs.writeFile(
+      executablePath,
+      `#!/usr/bin/env sh
+if [ "\${1:-}" = "--quiet" ]; then
+  shift
+  echo FINAL_ONLY
+else
+  echo VERBOSE_INTERNAL_LOG
+  echo FINAL_ONLY
+fi
+`,
+    );
+    await fs.chmod(executablePath, 0o755);
+    const workflowPath = path.join(testDir, 'quiet-juno.json');
+    const outDir = path.join(testDir, 'quiet-juno-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'quiet-juno',
+      steps: [{ id: 'agent', command: [executablePath, 'pi', 'prompt'], capture_session: false }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('FINAL_ONLY');
+    expect(result.stdout).not.toContain('VERBOSE_INTERNAL_LOG');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].command).toEqual([executablePath, '--quiet', 'pi', 'prompt']);
   });
 
   it('prints canonical captured response for juno commands while preserving raw stdout artifacts', async () => {
