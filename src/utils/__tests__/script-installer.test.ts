@@ -295,6 +295,82 @@ describe('ScriptInstaller', () => {
     });
   });
 
+  describe('parallel_runner command mode template', () => {
+    it('executes YAML command entries through raw headless scheduler', async () => {
+      const commandsFile = path.join(testDir, 'commands.yaml');
+      const outputDir = path.join(testDir, 'out');
+      await fs.writeFile(
+        commandsFile,
+        [
+          'schema_version: 1',
+          'parallel: 2',
+          'env:',
+          '  SHARED_VALUE: top',
+          'commands:',
+          '  - id: argv-command',
+          '    command:',
+          '      - python3',
+          '      - -c',
+          '      - "import os; print(\'argv:\' + os.environ[\'SHARED_VALUE\'])"',
+          '    env:',
+          '      SHARED_VALUE: per',
+          '  - id: shell-command',
+          '    command: "python3 -c \'print(\\"shell:ok\\")\'"',
+          '',
+        ].join('\n'),
+      );
+
+      const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
+      const result = spawnSync(
+        'python3',
+        [scriptPath, '--commands-file', commandsFile, '--parallel', '2', '--output-dir', outputDir],
+        { cwd: testDir, encoding: 'utf8', timeout: 30000 },
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Commands (2): argv-command, shell-command');
+      expect(result.stdout).toContain('Succeeded:      2');
+
+      const runArtifactsMatch = result.stdout.match(/Run artifacts: (.+)/);
+      expect(runArtifactsMatch?.[1]).toBeTruthy();
+      const logDir = runArtifactsMatch![1].trim();
+      expect(await fs.readFile(path.join(logDir, 'task_argv-command.log'), 'utf8')).toContain(
+        'argv:per',
+      );
+      expect(await fs.readFile(path.join(logDir, 'task_shell-command.log'), 'utf8')).toContain(
+        'shell:ok',
+      );
+    });
+
+    it('returns non-zero and names failing raw commands', async () => {
+      const commandsFile = path.join(testDir, 'commands-fail.yaml');
+      await fs.writeFile(
+        commandsFile,
+        [
+          'schema_version: 1',
+          'commands:',
+          '  - id: failing-command',
+          '    command:',
+          '      - python3',
+          '      - -c',
+          '      - "import sys; print(\'failing\'); sys.exit(7)"',
+          '',
+        ].join('\n'),
+      );
+
+      const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
+      const result = spawnSync(
+        'python3',
+        [scriptPath, '--commands-file', commandsFile, '--parallel', '1'],
+        { cwd: testDir, encoding: 'utf8', timeout: 30000 },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('[failing-command]   FAILED (exit 7)');
+      expect(result.stdout).toContain('Failed IDs:   failing-command');
+    });
+  });
+
   describe('updateScriptIfNewer', () => {
     it('should install script if it does not exist', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));

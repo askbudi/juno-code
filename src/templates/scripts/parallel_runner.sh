@@ -550,6 +550,9 @@ _task_color_map = {}
 # For --kanban: item == task_id. For --items/--items-file: item is the real data.
 _item_map = {}
 
+# Map command id -> normalized command spec for --commands-file execution.
+_command_spec_by_id = {}
+
 # Python helper script piped via tmux pipe-pane to format output into log files.
 # argv: task_id, task_log_path, combined_log_path, ansi_color_code
 # Combined log gets colored dot; task log stays plain.
@@ -797,6 +800,32 @@ def _build_process_env(extra_capture_env=None):
     return env
 
 
+def _is_command_mode(args):
+    return bool(getattr(args, "commands_file", None))
+
+
+def _command_spec_for(task_id):
+    spec = _command_spec_by_id.get(task_id)
+    if spec is None:
+        raise KeyError(f"unknown command task id: {task_id}")
+    return spec
+
+
+def _format_command_for_log(command):
+    if isinstance(command, list):
+        return " ".join(shlex.quote(str(part)) for part in command)
+    return command
+
+
+def _command_popen_kwargs(spec, default_cwd):
+    command = spec["command"]
+    cwd = spec.get("cwd") or default_cwd
+    env = _build_process_env(spec.get("env") or {})
+    if isinstance(command, list):
+        return command, False, cwd, env
+    return command, True, cwd, env
+
+
 def _generate_env_exports():
     """Generate shell export lines for the full process environment."""
     merged = os.environ.copy()
@@ -1002,7 +1031,7 @@ def _parse_items_file(path, format_override=None, has_header=True,
 
 def _resolve_input(args):
     """Resolve input mode and return task_ids list. Populates _item_map."""
-    global _item_map
+    global _item_map, _command_spec_by_id
 
     modes = sum([
         bool(args.kanban),
@@ -1031,6 +1060,7 @@ def _resolve_input(args):
             args.command_specs = command_specs
         task_ids = [entry["id"] for entry in command_specs]
         _item_map = {entry["id"]: json.dumps(entry, ensure_ascii=False) for entry in command_specs}
+        _command_spec_by_id = {entry["id"]: entry for entry in command_specs}
         return task_ids
 
     if args.kanban:
@@ -1465,7 +1495,8 @@ def _update_task_json(output_dir, task_id, extracted_response, extraction_error)
 
 
 def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
-                       mode="headless", session_name=None, file_format=""):
+                       mode="headless", session_name=None, file_format="",
+                       require_extraction=True):
     """Build and write the aggregation file."""
     succeeded = sum(1 for t in task_outputs.values() if t["exit_code"] == 0)
     failed = sum(1 for t in task_outputs.values() if t["exit_code"] != 0)
@@ -1501,7 +1532,7 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
                     merged_parts.append("\n".join(lines[1:]))
             else:
                 merged_parts.append(er)
-        else:
+        elif require_extraction or t.get("exit_code") != 0:
             failed_ids.append(tid)
             if sid:
                 failed_sessions[tid] = sid
@@ -1549,6 +1580,7 @@ def _write_aggregation(output_dir, task_outputs, wall_time, parallelism,
         "failed_sessions": failed_sessions,
         "error_count": len(failed_ids),
         "total_cost_usd": round(total_cost_usd, 10),
+        "error_label": "chunks failed extraction" if require_extraction else "tasks failed",
     }
 
 
@@ -1566,7 +1598,7 @@ def _format_output_summary(agg_result):
     if total_cost_usd is not None:
         lines.append(f"  Total cost:   ${total_cost_usd:.6f} USD")
     if agg_result["error_count"] > 0:
-        lines.append(f"  Errors:       {agg_result['error_count']} chunks failed extraction")
+        lines.append(f"  Errors:       {agg_result['error_count']} {agg_result.get('error_label', 'chunks failed extraction')}")
         lines.append(f"  Failed IDs:   {', '.join(agg_result['failed_ids'])}")
         failed_sessions = agg_result.get("failed_sessions", {})
         if failed_sessions:
@@ -1970,6 +2002,23 @@ def parse_args():
         parser.error("Cannot use --commands-file together with --kanban-filter")
 
     if args.commands_file:
+        incompatible = []
+        if args.prompt_file:
+            incompatible.append("--prompt-file")
+        if args.prompt is not None:
+            incompatible.append("--prompt")
+        if args.service:
+            incompatible.append("--service")
+        if args.model:
+            incompatible.append("--model")
+        if args.subagent_args:
+            incompatible.append("--subagent-args")
+        if args.strict:
+            incompatible.append("--strict")
+        if args.file_format:
+            incompatible.append("--file-format")
+        if incompatible:
+            parser.error("--commands-file runs raw commands and cannot be combined with " + ", ".join(incompatible))
         try:
             loaded_commands = _load_commands_file(args.commands_file, os.getcwd())
         except CommandFileError as exc:
@@ -2285,6 +2334,96 @@ def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
         semaphore.release()
 
 
+def run_raw_command_task(task_id, semaphore, pwd, output_dir=None):
+    """Run a single raw command from --commands-file (called from its own thread)."""
+    global _completed_count
+
+    semaphore.acquire()
+    try:
+        spec = _command_spec_for(task_id)
+        command, shell, cwd, env = _command_popen_kwargs(spec, pwd)
+        timeout_seconds = spec.get("timeout_seconds")
+        task_log_path = LOG_DIR / f"task_{task_id}.log"
+
+        log_combined(
+            f"Starting raw command (thread {threading.current_thread().name}, "
+            f"cwd={cwd}, shell={shell}): {_format_command_for_log(spec['command'])}",
+            task_id,
+        )
+        start = time.monotonic()
+        start_iso = datetime.now().isoformat()
+
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            shell=shell,
+            bufsize=0,
+            env=env,
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        )
+
+        reader = threading.Thread(
+            target=stream_to_log,
+            args=(proc.stdout, task_id, task_log_path),
+            daemon=True,
+        )
+        reader.start()
+
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            log_combined(f"TIMEOUT after {timeout_seconds}s; terminating raw command", task_id)
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log_combined("Timeout termination grace expired; killing raw command", task_id)
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                proc.wait()
+
+        reader.join(timeout=5)
+        elapsed = time.monotonic() - start
+
+        with _completed_lock:
+            _completed_count += 1
+            done = _completed_count
+            remaining = _total_tasks - done
+
+        with _task_times_lock:
+            _task_times[task_id] = elapsed
+
+        actual_exit_code = 124 if timed_out else proc.returncode
+
+        if output_dir:
+            _write_task_output(
+                output_dir, task_id, actual_exit_code, elapsed,
+                start_iso, datetime.now().isoformat(), backend_result=None,
+            )
+
+        status = "OK" if actual_exit_code == 0 else f"FAILED (exit {actual_exit_code})"
+        if timed_out:
+            status = f"FAILED (timeout {timeout_seconds}s)"
+        log_combined(
+            f"Finished - {status} ({format_duration(elapsed)}) "
+            f"| Progress: {done}/{_total_tasks} done, {remaining} remaining",
+            task_id,
+        )
+        return task_id, actual_exit_code
+
+    finally:
+        semaphore.release()
+
+
 def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
                       output_dir, service, model, subagent_args=None):
     """Run tasks in headless mode using ThreadPoolExecutor."""
@@ -2296,13 +2435,24 @@ def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
     log_combined(f"Starting parallel task execution")
     log_combined(f"Run ID: {_run_id}")
     log_combined(f"PWD: {pwd}")
-    log_combined(f"Tasks ({_total_tasks}): {', '.join(args.kanban)}")
+    input_label = "Commands" if _is_command_mode(args) else "Tasks"
+    log_combined(f"{input_label} ({_total_tasks}): {', '.join(args.kanban)}")
+    if _is_command_mode(args):
+        for tid in args.kanban[:5]:
+            spec = _command_spec_for(tid)
+            log_combined(
+                f"  {tid} -> cwd={spec.get('cwd') or pwd} shell={isinstance(spec['command'], str)} "
+                f"timeout={spec.get('timeout_seconds') or '-'} command={_format_command_for_log(spec['command'])}"
+            )
+        if len(args.kanban) > 5:
+            log_combined(f"  ... and {len(args.kanban) - 5} more command(s)")
     if any(tid.startswith("item-") for tid in args.kanban):
         preview = [f"  {tid} -> {_item_map[tid][:80]}" for tid in args.kanban[:3]]
         log_combined(f"Items preview:\n" + "\n".join(preview)
                      + (f"\n  ... and {len(args.kanban) - 3} more" if len(args.kanban) > 3 else ""))
     log_combined(f"Parallelism: {args.parallel}")
-    log_combined(f"Service: {service} | Model: {model}")
+    if not _is_command_mode(args):
+        log_combined(f"Service: {service} | Model: {model}")
     if subagent_args:
         log_combined(f"Subagent args: {' '.join(subagent_args)}")
     if prompt_source_label:
@@ -2329,11 +2479,17 @@ def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
         log_combined(f"Prebuilt {len(prompt_paths)} prompt files in {prompt_dir}")
 
     with ThreadPoolExecutor(max_workers=len(args.kanban)) as pool:
-        futures = {
-            pool.submit(run_task, task_id, semaphore, pwd, prompt_paths.get(task_id), output_dir,
-                        service, model, file_format, strict, subagent_args): task_id
-            for task_id in args.kanban
-        }
+        if _is_command_mode(args):
+            futures = {
+                pool.submit(run_raw_command_task, task_id, semaphore, pwd, output_dir): task_id
+                for task_id in args.kanban
+            }
+        else:
+            futures = {
+                pool.submit(run_task, task_id, semaphore, pwd, prompt_paths.get(task_id), output_dir,
+                            service, model, file_format, strict, subagent_args): task_id
+                for task_id in args.kanban
+            }
 
         results = {}
         for future in as_completed(futures):
@@ -2364,6 +2520,7 @@ def run_headless_mode(args, pwd, prompt_source_label, prompt_template,
         agg_result = _write_aggregation(
             output_dir, task_outputs, wall_elapsed, args.parallel,
             mode="headless", file_format=args.file_format,
+            require_extraction=not _is_command_mode(args),
         )
         _print_output_summary(agg_result)
 
@@ -2550,20 +2707,90 @@ def write_runner_script(task_id, pwd, prompt_path, session_name_short,
     return str(runner_path), sentinel_id
 
 
+def write_raw_command_runner_script(task_id, pwd, session_name_short):
+    """Write a Python runner script for a raw command task.
+
+    The runner uses subprocess directly so YAML list commands preserve shell=False
+    semantics while YAML string commands use shell=True, matching workflow_runner.sh.
+    """
+    sentinel_id = uuid.uuid4().hex[:12]
+    spec = _command_spec_for(task_id)
+    command, shell, cwd, env = _command_popen_kwargs(spec, pwd)
+    timeout_seconds = spec.get("timeout_seconds")
+
+    tmp = _tmp_dir(session_name_short)
+    tmp.mkdir(parents=True, exist_ok=True)
+    spec_path = tmp / f"command_{task_id}.json"
+    runner_path = tmp / f"run_{task_id}.py"
+
+    spec_path.write_text(json.dumps({
+        "command": command,
+        "shell": shell,
+        "cwd": cwd,
+        "env": env,
+        "timeout_seconds": timeout_seconds,
+        "sentinel_id": sentinel_id,
+    }, ensure_ascii=False), encoding="utf-8")
+
+    runner_path.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import json, os, signal, subprocess, sys
+        from pathlib import Path
+
+        spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+        proc = subprocess.Popen(
+            spec["command"],
+            stdout=sys.stdout,
+            stderr=subprocess.STDOUT,
+            cwd=spec["cwd"],
+            shell=spec["shell"],
+            env=spec["env"],
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        )
+        timed_out = False
+        try:
+            proc.wait(timeout=spec.get("timeout_seconds"))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            print(f"TIMEOUT after {spec.get('timeout_seconds')}s; terminating raw command", flush=True)
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("Timeout termination grace expired; killing raw command", flush=True)
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                proc.wait()
+        exit_code = 124 if timed_out else proc.returncode
+        print(f"___DONE_{spec['sentinel_id']}_{exit_code}___", flush=True)
+    """), encoding="utf-8")
+    runner_path.chmod(0o755)
+    return str(runner_path), str(spec_path), sentinel_id
+
+
 def dispatch_task(worker, task_id, task_state, pwd, prompt_paths,
                   session_name_short, output_dir=None, service="claude",
                   model=":sonnet", file_format="", subagent_args=None,
-                  prompt_template=None):
+                  prompt_template=None, command_mode=False):
     """Send a task command to a worker's tmux pane/window."""
-    prompt_path = prompt_paths.get(task_id)
-    if prompt_path and not Path(prompt_path).exists():
-        prompt_path_obj = Path(prompt_path)
-        prompt_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path_obj.write_text(render_prompt(task_id, prompt_template, file_format), encoding="utf-8")
+    if command_mode:
+        runner_path, command_spec_path, sentinel_id = write_raw_command_runner_script(
+            task_id, pwd, session_name_short)
+    else:
+        prompt_path = prompt_paths.get(task_id)
+        if prompt_path and not Path(prompt_path).exists():
+            prompt_path_obj = Path(prompt_path)
+            prompt_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path_obj.write_text(render_prompt(task_id, prompt_template, file_format), encoding="utf-8")
 
-    runner_path, sentinel_id = write_runner_script(
-        task_id, pwd, prompt_path, session_name_short, output_dir,
-        service, model, file_format, subagent_args)
+        runner_path, sentinel_id = write_runner_script(
+            task_id, pwd, prompt_path, session_name_short, output_dir,
+            service, model, file_format, subagent_args)
 
     # FIX-003: Stop old pipe-pane explicitly before starting new one
     tmux_run(["pipe-pane", "-t", worker.tmux_target], check=False)
@@ -2585,7 +2812,10 @@ def dispatch_task(worker, task_id, task_state, pwd, prompt_paths,
 
     update_pane_border_color(worker.tmux_target, task_id)
 
-    tmux_run(["send-keys", "-t", worker.tmux_target, f"bash {shlex.quote(runner_path)}", "Enter"])
+    if command_mode:
+        tmux_run(["send-keys", "-t", worker.tmux_target, f"python3 -u {shlex.quote(runner_path)} {shlex.quote(command_spec_path)}", "Enter"])
+    else:
+        tmux_run(["send-keys", "-t", worker.tmux_target, f"bash {shlex.quote(runner_path)}", "Enter"])
 
     worker.busy = True
     worker.current_task = task_id
@@ -2599,7 +2829,15 @@ def dispatch_task(worker, task_id, task_state, pwd, prompt_paths,
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     tag = _colored_tag(task_id)
     with open(COMBINED_LOG, "a") as f:
-        f.write(f"[{timestamp}] {tag} Dispatched to worker-{worker.worker_id}\n")
+        if command_mode:
+            spec = _command_spec_for(task_id)
+            f.write(
+                f"[{timestamp}] {tag} Dispatched raw command to worker-{worker.worker_id} "
+                f"(cwd={spec.get('cwd') or pwd}, shell={isinstance(spec['command'], str)}, "
+                f"timeout={spec.get('timeout_seconds') or '-'})\n"
+            )
+        else:
+            f.write(f"[{timestamp}] {tag} Dispatched to worker-{worker.worker_id}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -2777,7 +3015,8 @@ def update_dashboard_file(task_states, workers, paused, wall_start, session_name
 def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
                        prompt_template, wall_start, session_name_short, session_name,
                        output_dir=None, service="claude", model=":sonnet",
-                       file_format="", strict=False, subagent_args=None):
+                       file_format="", strict=False, subagent_args=None,
+                       command_mode=False):
     """Main orchestration loop — polls workers, dispatches tasks, updates dashboard."""
     all_task_ids = list(task_states.keys())
     pause_path = _pause_file(session_name_short)
@@ -2828,9 +3067,9 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
 
             # FIX-002: Parse result from log, with capture-pane fallback
             task_log_path = LOG_DIR / f"task_{task_id}.log"
-            backend_result = _parse_result_from_log(task_log_path)
+            backend_result = None if command_mode else _parse_result_from_log(task_log_path)
 
-            if backend_result is None:
+            if backend_result is None and not command_mode:
                 try:
                     scrollback = tmux_run([
                         "capture-pane", "-t", worker.tmux_target,
@@ -2864,7 +3103,8 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
             # Clean up temp files
             tmp = _tmp_dir(session_name_short)
             for tmp_f in [tmp / f"prompt_{task_id}.txt", tmp / f"run_{task_id}.sh",
-                         tmp / f"env_{task_id}.sh"]:
+                         tmp / f"run_{task_id}.py", tmp / f"env_{task_id}.sh",
+                         tmp / f"command_{task_id}.json"]:
                 try:
                     tmp_f.unlink(missing_ok=True)
                 except OSError:
@@ -2890,7 +3130,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
                     worker, next_task_id, task_states[next_task_id],
                     pwd, prompt_paths, session_name_short, output_dir,
                     service, model, file_format, subagent_args,
-                    prompt_template,
+                    prompt_template, command_mode,
                 )
 
         # Update dashboard
@@ -3015,6 +3255,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
             output_dir, task_outputs, wall_elapsed, len(workers),
             mode=f"tmux/{session_name}", session_name=session_name_short,
             file_format=file_format,
+            require_extraction=not command_mode,
         )
         summary_text = _format_output_summary(agg_result)
         with open(COMBINED_LOG, "a") as f:
@@ -3043,6 +3284,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
     """Set up tmux session and run orchestrator."""
     num_workers = args.parallel
     mode = args.tmux
+    command_mode = _is_command_mode(args)
 
     session_name_short = args.name if args.name else _next_batch_name()
     session_name = _session_name_to_tmux(session_name_short)
@@ -3081,14 +3323,26 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         f.write(f"[{timestamp}] Run ID: {_run_id}\n")
         f.write(f"[{timestamp}] Session: {session_name} (name: {session_name_short})\n")
         f.write(f"[{timestamp}] PWD: {pwd}\n")
-        f.write(f"[{timestamp}] Tasks ({len(args.kanban)}): {', '.join(args.kanban)}\n")
+        input_label = "Commands" if command_mode else "Tasks"
+        f.write(f"[{timestamp}] {input_label} ({len(args.kanban)}): {', '.join(args.kanban)}\n")
+        if command_mode:
+            for tid in args.kanban[:5]:
+                spec = _command_spec_for(tid)
+                f.write(
+                    f"[{timestamp}]   {tid} -> cwd={spec.get('cwd') or pwd} "
+                    f"shell={isinstance(spec['command'], str)} timeout={spec.get('timeout_seconds') or '-'} "
+                    f"command={_format_command_for_log(spec['command'])}\n"
+                )
+            if len(args.kanban) > 5:
+                f.write(f"[{timestamp}]   ... and {len(args.kanban) - 5} more command(s)\n")
         if any(tid.startswith("item-") for tid in args.kanban):
             for tid in args.kanban[:3]:
                 f.write(f"[{timestamp}]   {tid} -> {_item_map[tid][:80]}\n")
             if len(args.kanban) > 3:
                 f.write(f"[{timestamp}]   ... and {len(args.kanban) - 3} more\n")
         f.write(f"[{timestamp}] Parallelism: {num_workers}\n")
-        f.write(f"[{timestamp}] Service: {service} | Model: {model}\n")
+        if not command_mode:
+            f.write(f"[{timestamp}] Service: {service} | Model: {model}\n")
         if subagent_args:
             f.write(f"[{timestamp}] Subagent args: {' '.join(subagent_args)}\n")
         if prompt_source_label:
@@ -3175,7 +3429,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                     worker, next_task_id, task_states[next_task_id],
                     pwd, prompt_paths, session_name_short, output_dir,
                     service, model, file_format, subagent_args,
-                    prompt_template,
+                    prompt_template, command_mode,
                 )
 
             update_dashboard_file(task_states, workers, False, wall_start,
@@ -3187,6 +3441,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                 pwd, prompt_paths, prompt_template, wall_start,
                 session_name_short, session_name, output_dir,
                 service, model, file_format, strict, subagent_args,
+                command_mode,
             )
         except Exception as exc:
             import traceback
@@ -3209,7 +3464,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         print(f"Orchestrator daemon started (PID {pid})")
         print(f"Run ID: {_run_id}")
         print(f"Session: {session_name} (name: {session_name_short})")
-        print(f"Tasks: {', '.join(args.kanban)}")
+        print(f"{'Commands' if command_mode else 'Tasks'}: {', '.join(args.kanban)}")
         print(f"Workers: {num_workers}")
         print(f"Logs: {LOG_DIR}/")
         print(f"Pause: touch {_pause_file(session_name_short)}")
