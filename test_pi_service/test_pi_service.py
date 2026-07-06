@@ -247,7 +247,7 @@ class TestBuildPiCommand:
         assert "" not in cmd
 
     def test_non_live_mode_keeps_headless_json_contract(self):
-        """Non-live mode should keep existing --mode json + -p behavior unchanged."""
+        """Non-live mode should use Pi print mode and pipe prompt over stdin."""
         self.svc.model_name = "anthropic/claude-sonnet-4-6"
         self.svc.prompt = "non-live prompt"
         args = _make_args(live=False)
@@ -257,7 +257,8 @@ class TestBuildPiCommand:
         mode_idx = cmd.index("--mode")
         assert cmd[mode_idx + 1] == "json"
         assert "-p" in cmd
-        assert stdin_prompt is None
+        assert self.svc.prompt not in cmd
+        assert stdin_prompt == self.svc.prompt
 
     def test_oversized_non_live_prompt_uses_stdin_not_argv(self, monkeypatch):
         """Oversized headless prompts go to Pi stdin, not argv, to avoid spawn E2BIG."""
@@ -268,29 +269,33 @@ class TestBuildPiCommand:
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
         assert "--mode" in cmd
-        assert "-p" not in cmd
+        assert "-p" in cmd
         assert self.svc.prompt not in cmd
         assert stdin_prompt == self.svc.prompt
 
     def test_oversized_live_prompt_uses_managed_file_and_bounded_positional_prefix(self, monkeypatch):
-        """Live mode cannot pipe stdin, so oversized prompts become managed files plus a short pointer."""
-        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "32")
+        """Live mode keeps the prompt beginning in argv and writes the remainder to /tmp/juno-code."""
+        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "256")
         self.svc.model_name = "anthropic/claude-sonnet-4-6"
-        large_prompt = "live prompt " + ("x" * 1000)
+        beginning = "live prompt αβγ "
+        large_prompt = beginning + ("x" * 1000)
         self.svc.prompt = large_prompt
         args = _make_args(live=True)
 
         cmd, stdin_prompt = self.svc.build_pi_command(args)
         positional_prompt = cmd[-1]
-        referenced_path = positional_prompt.rsplit(": ", 1)[1]
+        referenced_path = positional_prompt.split("Read the remaining prompt from this continuation file before acting: ", 1)[1].split("\n", 1)[0]
+        positional_beginning = positional_prompt.split("Beginning of original prompt:\n", 1)[1]
 
         assert stdin_prompt is None
         assert "-p" not in cmd
         assert large_prompt not in cmd
-        assert len(positional_prompt.encode("utf-8")) < len(large_prompt.encode("utf-8"))
-        assert referenced_path.startswith(os.path.join(tempfile.gettempdir(), "juno-code"))
+        assert beginning in positional_prompt
+        assert len(positional_prompt.encode("utf-8")) <= 256
+        assert referenced_path.startswith("/tmp/juno-code/")
+        assert referenced_path.endswith("-prompt.md")
         with open(referenced_path, "r", encoding="utf-8") as handle:
-            assert handle.read() == large_prompt
+            assert positional_beginning + handle.read() == large_prompt
         self.svc._cleanup_managed_prompt_files()
         assert not os.path.exists(referenced_path)
 
@@ -470,51 +475,37 @@ class TestBuildPiCommand:
         assert "value" in cmd
 
     def test_prompt_included(self):
-        """The prompt is passed either with -p flag or via stdin."""
+        """Headless Pi receives -p as a print-mode flag and the prompt via stdin."""
         self.svc.model_name = "test-model"
         self.svc.prompt = "my prompt text"
         args = _make_args()
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
-        if stdin_prompt:
-            assert "my prompt text" in stdin_prompt
-        else:
-            assert "-p" in cmd
-            p_idx = cmd.index("-p")
-            assert cmd[p_idx + 1] == "my prompt text"
+        assert "-p" in cmd
+        assert "my prompt text" not in cmd
+        assert stdin_prompt == "my prompt text"
 
-    def test_multiline_prompt_uses_dash_p_for_headless_stability(self):
-        """Multiline prompts should use -p unless they are oversized.
-
-        Why: stdin-mode can stall on directive-heavy prompts (e.g. /skill with
-        expanded kanban payloads). Keeping normal multiline prompts on -p
-        preserves deterministic non-live execution.
-        """
+    def test_multiline_prompt_uses_stdin_for_headless_print_mode(self):
+        """Multiline prompts are piped to Pi stdin so they never inflate argv."""
         self.svc.model_name = "test-model"
         self.svc.prompt = "line1\nline2\nline3"
         args = _make_args()
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
-        assert stdin_prompt is None
         assert "-p" in cmd
-        p_idx = cmd.index("-p")
-        assert cmd[p_idx + 1] == "line1\nline2\nline3"
+        assert "line1\nline2\nline3" not in cmd
+        assert stdin_prompt == "line1\nline2\nline3"
 
-    def test_oversized_prompt_uses_dash_p(self):
-        """Oversized prompts should still use -p (stdin transport is disabled).
-
-        Why: stdin transport has shown non-deterministic hangs for large,
-        directive-heavy payloads in non-live mode.
-        """
+    def test_oversized_prompt_uses_stdin(self):
+        """Oversized headless prompts are piped to stdin to avoid Python subprocess E2BIG."""
         self.svc.model_name = "test-model"
         self.svc.prompt = "x" * 5000
         args = _make_args()
         cmd, stdin_prompt = self.svc.build_pi_command(args)
 
-        assert stdin_prompt is None
         assert "-p" in cmd
-        p_idx = cmd.index("-p")
-        assert cmd[p_idx + 1] == ("x" * 5000)
+        assert ("x" * 5000) not in cmd
+        assert stdin_prompt == ("x" * 5000)
 
 
 class TestRunPromptValidation:

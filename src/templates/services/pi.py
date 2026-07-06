@@ -141,14 +141,45 @@ class PiService:
     def _is_prompt_oversized(self, prompt: str) -> bool:
         return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
 
-    def _create_managed_prompt_file(self, prompt: str) -> Path:
-        prompt_dir = Path(tempfile.gettempdir()) / "juno-code"
+    def _create_managed_prompt_path(self) -> Path:
+        prompt_dir = Path("/tmp/juno-code")
         prompt_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         path = prompt_dir / f"{timestamp}-prompt.md"
+        suffix = 1
+        while path.exists():
+            path = prompt_dir / f"{timestamp}-{suffix}-prompt.md"
+            suffix += 1
+        return path
+
+    def _create_managed_prompt_file(self, prompt: str) -> Path:
+        path = self._create_managed_prompt_path()
         path.write_text(prompt, encoding="utf-8")
         self._managed_prompt_files.append(path)
         return path
+
+    def _utf8_prefix_within_bytes(self, text: str, max_bytes: int) -> str:
+        if max_bytes <= 0:
+            return ""
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return text
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+    def _split_live_prompt_to_file(self, prompt: str) -> str:
+        prompt_path = self._create_managed_prompt_path()
+        header = (
+            "The original prompt was split because it is too large for live argv transport.\n"
+            "Read the remaining prompt from this continuation file before acting: "
+            f"{prompt_path}\n\n"
+            "Beginning of original prompt:\n"
+        )
+        prefix_budget = self._prompt_arg_max_bytes() - len(header.encode("utf-8"))
+        beginning = self._utf8_prefix_within_bytes(prompt, prefix_budget)
+        remainder = prompt[len(beginning):]
+        prompt_path.write_text(remainder, encoding="utf-8")
+        self._managed_prompt_files.append(prompt_path)
+        return header + beginning
 
     def _cleanup_managed_prompt_files(self) -> None:
         for prompt_path in self._managed_prompt_files:
@@ -576,17 +607,11 @@ Model shorthands:
 
         if is_live_mode:
             # Live mode normally uses positional prompt input (no -p and no stdin piping).
-            # If the prompt is too large for safe argv transport, persist it under
-            # /tmp/juno-code and pass only a bounded positional instruction that tells
-            # Pi where to read the managed prompt. This keeps live startup below OS
-            # argv/env limits while still requiring no user-created temp files.
+            # For oversized prompts, keep the beginning in argv for live context and
+            # write only the continuation to /tmp/juno-code/{timestamp}-prompt.md.
             if full_prompt:
                 if self._is_prompt_oversized(full_prompt):
-                    prompt_path = self._create_managed_prompt_file(full_prompt)
-                    full_prompt = (
-                        "Read the full initial prompt from this juno-code managed file "
-                        f"before acting: {prompt_path}"
-                    )
+                    full_prompt = self._split_live_prompt_to_file(full_prompt)
                 cmd.append(full_prompt)
 
             # Additional raw arguments should still be honored; place before the
@@ -600,11 +625,8 @@ Model shorthands:
                         cmd.extend(extra)
             return cmd, None
 
-        if self._is_prompt_oversized(full_prompt):
-            stdin_prompt = full_prompt
-        else:
-            cmd.append("-p")
-            cmd.append(full_prompt)
+        cmd.append("-p")
+        stdin_prompt = full_prompt
 
         # Additional raw arguments
         if args.additional_args:
