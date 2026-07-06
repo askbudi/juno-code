@@ -7,7 +7,8 @@ Modes:
   Tmux windows:       Each worker = tmux window, coordinator = window 0.
   Tmux panes:         Workers as split panes, coordinator = top pane.
   Tmux handoff:       Add --tmux-handoff so each task gets a dedicated pane/window
-                      that is not reused after completion.
+                      that is not reused after completion. Add --max-panes-per-session N
+                      to split large handoff lists across multiple tmux sessions.
 
 Usage:
   # Kanban mode (task IDs as input)
@@ -35,6 +36,7 @@ Usage:
   ./parallel_runner.sh --tmux --kanban T1 T2 T3 --parallel 2
   ./parallel_runner.sh --tmux panes --kanban T1 T2 --parallel 2
   ./parallel_runner.sh --tmux panes --tmux-handoff --items a b --parallel 2 --prompt "Analyze {{item}}"
+  ./parallel_runner.sh --tmux panes --tmux-handoff --max-panes-per-session 4 --items a b c d e --name triage --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux --kanban T1 T2 --name my-batch
   ./parallel_runner.sh -s codex --kanban T1 T2
   ./parallel_runner.sh -s pi -m gpt-5 --kanban T1 T2
@@ -104,6 +106,7 @@ Arguments:
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
   --tmux-handoff Tmux-only mode: dedicate one worker pane/window per task and do not reuse it after completion.
+  --max-panes-per-session N  With --tmux-handoff, split large task lists into capped tmux sessions.
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
   --output-dir   Structured output directory. Default: /tmp/juno-code-sessions/{date}/{run_id}.
   --stop         Stop a session. Uses --name if provided, otherwise auto-detects.
@@ -111,6 +114,7 @@ Arguments:
 """
 
 import argparse
+import copy
 import csv
 import io
 import json
@@ -1958,7 +1962,11 @@ def parse_args():
     )
     parser.add_argument(
         "--tmux-handoff", action="store_true", default=False,
-        help="Tmux-only mode that dedicates one worker pane/window per task and never reuses completed workers. Requires len(tasks) <= --parallel.",
+        help="Tmux-only mode that dedicates one worker pane/window per task and never reuses completed workers.",
+    )
+    parser.add_argument(
+        "--max-panes-per-session", type=int, default=None,
+        help="With --tmux-handoff, split large task lists into tmux sessions capped at N task panes/windows each.",
     )
     parser.add_argument(
         "--name", type=str, default=None,
@@ -2080,6 +2088,12 @@ def parse_args():
 
     args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
 
+    if args.max_panes_per_session is not None:
+        if args.max_panes_per_session < 1:
+            parser.error("--max-panes-per-session must be a positive integer")
+        if not args.tmux_handoff:
+            parser.error("--max-panes-per-session requires --tmux-handoff")
+
     if args.tmux_handoff and not args.tmux:
         parser.error("--tmux-handoff requires --tmux because handoff preserves tmux panes/windows for later attachment")
 
@@ -2109,12 +2123,15 @@ def parse_args():
     task_ids = _resolve_input(args)
     args.kanban = task_ids
 
-    if args.tmux_handoff and len(task_ids) > args.parallel:
+    if args.tmux_handoff and args.max_panes_per_session is None and len(task_ids) > args.parallel:
         parser.error(
             f"--tmux-handoff requires one dedicated worker per task for this increment: "
             f"got {len(task_ids)} task(s) with --parallel {args.parallel}. "
-            "Increase --parallel to at least the number of tasks or omit --tmux-handoff."
+            "Increase --parallel to at least the number of tasks, add --max-panes-per-session, or omit --tmux-handoff."
         )
+
+    if args.tmux_handoff and args.max_panes_per_session is not None and len(task_ids) <= args.max_panes_per_session:
+        args.parallel = max(args.parallel, len(task_ids))
 
     return args
 
@@ -3302,7 +3319,7 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
 # ---------------------------------------------------------------------------
 
 def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
-                  service, model, subagent_args=None):
+                  service, model, subagent_args=None, attach=True):
     """Set up tmux session and run orchestrator."""
     num_workers = args.parallel
     mode = args.tmux
@@ -3495,12 +3512,136 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
         print(f"Logs: {LOG_DIR}/")
         print(f"Pause: touch {_pause_file(session_name_short)}")
         print(f"Stop:  --stop --name {session_name_short}")
+        if not attach:
+            print(f"Attach: tmux attach -t {session_name}")
+            print()
+            return {
+                "session_name": session_name,
+                "session_name_short": session_name_short,
+                "pid": pid,
+                "run_id": _run_id,
+                "log_dir": str(LOG_DIR),
+                "status_path": str(STATUS_FILE),
+                "combined_log": str(COMBINED_LOG),
+                "dashboard_path": str(_dashboard_file(session_name_short)),
+                "pause_path": str(_pause_file(session_name_short)),
+                "items": list(args.kanban),
+            }
         print(f"Attaching to tmux session...")
         print()
 
         time.sleep(0.5)
 
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+
+def _chunked(items, size):
+    """Split items into fixed-size chunks while preserving input order."""
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _handoff_child_name(base_name, index, total_chunks):
+    """Return the stable short session name for a handoff child session."""
+    if total_chunks <= 1:
+        return base_name
+    return f"{base_name}-{index}"
+
+
+def _write_parent_handoff_manifest(parent_log_dir, manifest):
+    """Write the parent manifest atomically in the parent run artifact directory."""
+    manifest_path = parent_log_dir / "tmux_handoff_manifest.json"
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, manifest_path)
+    return manifest_path
+
+
+def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir,
+                             service, model, subagent_args=None):
+    """Create multiple capped --tmux-handoff child sessions from one parsed input list."""
+    global LOG_DIR, COMBINED_LOG, STATUS_FILE
+
+    cap = args.max_panes_per_session
+    parent_log_dir = LOG_DIR
+    parent_status_file = STATUS_FILE
+    parent_run_id = _run_id
+    parent_name = args.name if args.name else _next_batch_name()
+    chunks = _chunked(list(args.kanban), cap)
+    total_chunks = len(chunks)
+
+    parent_log_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 1,
+        "created_at": datetime.now().isoformat(),
+        "parent_run_id": parent_run_id,
+        "parent_name": parent_name,
+        "parent_log_dir": str(parent_log_dir),
+        "parent_status_path": str(parent_status_file),
+        "mode": f"tmux/{args.tmux}/handoff-batched",
+        "max_panes_per_session": cap,
+        "total_items": len(args.kanban),
+        "output_dir": str(output_dir) if output_dir else None,
+        "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+        "child_sessions": [],
+    }
+
+    print("Creating capped tmux handoff sessions...")
+    print(f"Parent run ID: {parent_run_id}")
+    print(f"Parent artifacts: {parent_log_dir}")
+    print(f"Items: {len(args.kanban)} | cap: {cap} | sessions: {total_chunks}")
+
+    for index, chunk in enumerate(chunks, start=1):
+        child_short = _handoff_child_name(parent_name, index, total_chunks)
+        child_args = copy.copy(args)
+        child_args.name = child_short
+        child_args.kanban = list(chunk)
+        child_args.parallel = len(chunk)
+        child_args.max_panes_per_session = None
+
+        child_log_dir = parent_log_dir / child_short
+        LOG_DIR = child_log_dir
+        COMBINED_LOG = LOG_DIR / "parallel_runner.log"
+        STATUS_FILE = LOG_DIR / "parallel_runner_status.json"
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _write_run_status("running", f"tmux/{args.tmux}", session_name=child_short)
+
+        child_info = run_tmux_mode(
+            child_args, pwd, prompt_source_label, prompt_template, output_dir,
+            service, model, subagent_args, attach=False,
+        )
+        if not child_info:
+            child_info = {
+                "session_name": _session_name_to_tmux(child_short),
+                "session_name_short": child_short,
+                "log_dir": str(LOG_DIR),
+                "status_path": str(STATUS_FILE),
+                "items": list(chunk),
+                "output_dir": str(output_dir) if output_dir else None,
+                "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+            }
+        child_info.update({
+            "index": index,
+            "task_ids": list(chunk),
+            "output_dir": str(output_dir) if output_dir else None,
+            "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+            "attach_command": f"tmux attach -t {child_info['session_name']}",
+            "stop_command": f"{Path(sys.argv[0]).name} --stop --name {child_short}",
+        })
+        manifest["child_sessions"].append(child_info)
+        _write_parent_handoff_manifest(parent_log_dir, manifest)
+
+    LOG_DIR = parent_log_dir
+    COMBINED_LOG = parent_log_dir / "parallel_runner.log"
+    STATUS_FILE = parent_status_file
+    manifest_path = _write_parent_handoff_manifest(parent_log_dir, manifest)
+    _write_run_status("completed", f"tmux/{args.tmux}/handoff-batched", exit_code=0, session_name=parent_name)
+
+    print()
+    print("Tmux handoff sessions are ready. Attach to any session:")
+    for child in manifest["child_sessions"]:
+        print(f"  {child['session_name']}: {child['attach_command']}  # {', '.join(child['task_ids'])}")
+    print(f"Parent manifest: {manifest_path}")
+    print("Each child uses one dedicated non-reused pane/window per task.")
 
 
 # ---------------------------------------------------------------------------
@@ -3549,7 +3690,10 @@ def main():
     _write_run_status("running", initial_mode)
 
     if args.tmux:
-        run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
+        if args.tmux_handoff and args.max_panes_per_session is not None and len(args.kanban) > args.max_panes_per_session:
+            run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
+        else:
+            run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
     else:
         run_headless_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
 

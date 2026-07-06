@@ -44,6 +44,7 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stdout).toContain('[A-Za-z0-9_.-]+');
     expect(result.stdout).toContain('command strings are shell commands');
     expect(result.stdout).toContain('--tmux-handoff');
+    expect(result.stdout).toContain('--max-panes-per-session');
     expect(result.stdout).toContain('dedicates one worker pane/window');
     expect(result.stdout).toContain('per task and never reuses completed workers');
   });
@@ -53,6 +54,20 @@ describe('parallel_runner.sh command file foundation', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('--tmux-handoff requires --tmux');
+  });
+
+  it('rejects max panes per session outside tmux handoff mode', () => {
+    const result = runParallel(['--max-panes-per-session', '4', '--items', 'a', '--prompt', 'Analyze {{item}}']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--max-panes-per-session requires --tmux-handoff');
+  });
+
+  it('rejects non-positive max panes per session values', () => {
+    const result = runParallel(['--tmux', 'panes', '--tmux-handoff', '--max-panes-per-session', '0', '--items', 'a', '--prompt', 'Analyze {{item}}']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--max-panes-per-session must be a positive integer');
   });
 
   it('rejects tmux handoff when task count exceeds parallelism', () => {
