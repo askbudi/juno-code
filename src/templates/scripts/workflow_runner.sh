@@ -980,7 +980,333 @@ summary: |
   Preflight: {{ steps.preflight.status }}
   Operator session: {{ steps.operator_check.session_id }}
 """,
+    "production-triage-handoff": """schema_version: 1
+workflow_id: production_triage_handoff
+vars:
+  triage_name: prod-triage-{{ run_id }}
+steps:
+  - id: discover_issues
+    capture_session: false
+    command: |
+      set -eu
+      mkdir -p "{{ out_dir }}"
+      # Replace this stub with your production detector, but keep the JSONL contract:
+      #   ./scripts/discover-production-issues --jsonl > "{{ out_dir }}/issues.jsonl"
+      python3 - <<'PY'
+      import json
+      from pathlib import Path
+      out_dir = Path("{{ out_dir }}")
+      issues = [
+          {
+              "id": "checkout-5xx-spike",
+              "service": "checkout-api",
+              "severity": "P1",
+              "signal": "5xx rate above 4% for 15 minutes",
+              "dashboard": "https://observability.example/checkout-api",
+              "runbook": "docs/runbooks/checkout-api.md",
+          },
+          {
+              "id": "worker-lag",
+              "service": "billing-worker",
+              "severity": "P2",
+              "signal": "queue lag above 10000 jobs",
+              "dashboard": "https://observability.example/billing-worker",
+              "runbook": "docs/runbooks/billing-worker.md",
+          },
+      ]
+      with (out_dir / "issues.jsonl").open("w", encoding="utf-8") as fh:
+          for issue in issues:
+              fh.write(json.dumps(issue, ensure_ascii=False) + "\\n")
+      prompt_placeholder = f"{chr(123) * 2}item{chr(125) * 2}"
+      (out_dir / "triage_prompt.md").write_text(
+          "You are taking over one production issue in a dedicated tmux pane.\\n"
+          "Keep this pane available for later `yy continue`; do not collapse history.\\n"
+          f"Issue JSON: {prompt_placeholder}\\n\\n"
+          "Investigate the service, runbook, likely blast radius, immediate mitigations, "
+          "and follow-up owners. Finish with a concise HANDOFF_SUMMARY and preserve any session id/artifact paths you create.\\n",
+          encoding="utf-8",
+      )
+      print(out_dir / "issues.jsonl")
+      PY
+  - id: start_tmux_handoff
+    capture_session: false
+    command: |
+      set -eu
+      ./.juno_task/scripts/parallel_runner.sh \\
+        --items-file "{{ out_dir }}/issues.jsonl" \\
+        --format jsonl \\
+        --prompt-file "{{ out_dir }}/triage_prompt.md" \\
+        --tmux panes \\
+        --tmux-handoff \\
+        --max-panes-per-session 4 \\
+        --parallel 4 \\
+        --name "{{ triage_name }}" \\
+        --output-dir "{{ out_dir }}/parallel"
+  - id: handoff_summary
+    capture_session: false
+    command: |
+      set -eu
+      summary="{{ out_dir }}/handoff_summary.md"
+      {
+        printf '# Production triage handoff\\n\\n'
+        printf 'Issues: `%s`\\n\\n' "{{ out_dir }}/issues.jsonl"
+        printf 'Parallel artifacts: `%s`\\n\\n' "{{ out_dir }}/parallel"
+        printf 'Attach to tmux sessions with `tmux ls | grep pc-{{ triage_name }}` then `tmux attach -t <session>`.\\n\\n'
+        printf 'Latest aggregation files preserve each final agent response, commit metadata, cost, and session id so a later master review or `yy continue` does not need to reconstruct history from scrollback.\\n\\n'
+        find "{{ out_dir }}/parallel" -name 'aggregation_*.json' -print 2>/dev/null | sort || true
+      } | tee "$summary"
+summary: |
+  # Production triage handoff
+  Discovery status: {{ steps.discover_issues.status }}
+  Handoff status: {{ steps.start_tmux_handoff.status }}
+  Summary artifact: {{ out_dir }}/handoff_summary.md
+  Parallel artifacts: {{ out_dir }}/parallel
+  Attach: tmux ls | grep pc-{{ triage_name }}
+""",
+    "parallel-kanban-review": """schema_version: 1
+workflow_id: parallel_kanban_review
+vars:
+  review_topic: "Implement the next safe increment"
+steps:
+  - id: plan_kanban_tasks
+    command:
+      - yy
+      - pi
+      - |
+        Plan mode: create the concrete kanban tasks needed for this topic, then print one machine-readable line:
+        TASK_IDS=<comma-separated-kanban-task-ids>
+
+        Topic: {{ review_topic }}
+        Use ./.juno_task/scripts/kanban.sh as the source of truth. Keep task bodies complete enough for parallel agents.
+  - id: resolve_task_ids
+    capture_session: false
+    command: |
+      set -eu
+      mkdir -p "{{ out_dir }}"
+      printf '%s\\n' '{{ steps.plan_kanban_tasks.response }}' > "{{ out_dir }}/plan_response.txt"
+      task_ids=$(python3 - <<'PY'
+      import re
+      from pathlib import Path
+      text = Path("{{ out_dir }}/plan_response.txt").read_text(encoding="utf-8")
+      match = re.search(r"^TASK_IDS=([^\\n]+)", text, re.MULTILINE)
+      print(match.group(1).strip() if match else "")
+      PY
+      )
+      if [ -z "$task_ids" ]; then
+        echo "plan_kanban_tasks must print TASK_IDS=<comma-separated-kanban-task-ids>" >&2
+        exit 2
+      fi
+      printf '%s\\n' "$task_ids" | tee "{{ out_dir }}/kanban_task_ids.txt"
+  - id: run_parallel_kanban
+    capture_session: false
+    command: |
+      set -eu
+      task_ids=$(cat "{{ out_dir }}/kanban_task_ids.txt")
+      python3 - <<'PY'
+      from pathlib import Path
+      out_dir = Path("{{ out_dir }}")
+      task_placeholder = f"{chr(123) * 2}task_id{chr(125) * 2}"
+      (out_dir / "kanban_worker_prompt.md").write_text(
+          f"Implement exactly kanban task ##{task_placeholder}.\\n"
+          "Keep the kanban response current, run focused validation, and ensure final output includes commit hash, changed files, validation commands, and any preserved session id.\\n",
+          encoding="utf-8",
+      )
+      PY
+      ./.juno_task/scripts/parallel_runner.sh \\
+        --kanban "$task_ids" \\
+        --parallel 3 \\
+        --prompt-file "{{ out_dir }}/kanban_worker_prompt.md" \\
+        --output-dir "{{ out_dir }}/parallel"
+  - id: master_review
+    capture_session: true
+    command: |
+      set -eu
+      latest=$(find "{{ out_dir }}/parallel" -name 'aggregation_*.json' -print 2>/dev/null | sort | tail -n 1)
+      if [ -z "$latest" ]; then
+        echo "No aggregation_*.json found under {{ out_dir }}/parallel" >&2
+        exit 2
+      fi
+      yy pi "$(cat <<EOF
+      Review the completed parallel kanban batch for topic: {{ review_topic }}.
+
+      Read the latest aggregation artifact at: $latest
+      It preserves each worker final response, session id, commit hash, status, and cost so this master review does not need to reconstruct history from raw logs.
+
+      Aggregation JSON:
+      $(cat "$latest")
+
+      Produce a concise merge/review plan with: completed tasks, failures needing follow-up, commits to inspect, validation gaps, and recommended next kanban updates.
+      EOF
+      )"
+summary: |
+  # Parallel kanban review
+  Plan session: {{ steps.plan_kanban_tasks.session_id }}
+  Task ids: {{ steps.resolve_task_ids.response }}
+  Parallel artifacts: {{ out_dir }}/parallel
+  Master review session: {{ steps.master_review.session_id }}
+  Master review response: {{ steps.master_review.response }}
+""",
 }
+
+def iter_template_strings(value: Any, path: str = "") -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    if isinstance(value, str):
+        found.append((path or "$", value))
+    elif isinstance(value, list):
+        for idx, item in enumerate(value):
+            found.extend(iter_template_strings(item, f"{path}[{idx}]" if path else f"[{idx}]"))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else str(key)
+            found.extend(iter_template_strings(item, child))
+    return found
+
+
+def workflow_lint_findings(workflow: dict[str, Any]) -> list[dict[str, str]]:
+    validate_workflow(workflow)
+    agent_steps = {
+        str(step["id"])
+        for step in workflow.get("steps", [])
+        if detect_juno_command(step.get("command"))
+    }
+    findings: list[dict[str, str]] = []
+    for location, text in iter_template_strings(workflow):
+        for match in re.finditer(r"steps\.([A-Za-z_][A-Za-z0-9_-]*)\.stderr\b", text):
+            findings.append({
+                "level": "warn",
+                "code": "NOISY_STEP_STDERR_TEMPLATE",
+                "location": location,
+                "message": f"Template references steps.{match.group(1)}.stderr; keep stderr as an artifact and include it only for failure debugging.",
+            })
+        for match in re.finditer(r"steps\.([A-Za-z_][A-Za-z0-9_-]*)\.stdout\b", text):
+            step_id = match.group(1)
+            if step_id in agent_steps:
+                findings.append({
+                    "level": "warn",
+                    "code": "AGENT_STDOUT_TEMPLATE",
+                    "location": location,
+                    "message": f"Template references steps.{step_id}.stdout for an agent step; use steps.{step_id}.response for the final answer.",
+                })
+    return findings
+
+
+def print_findings(title: str, findings: list[dict[str, str]]) -> None:
+    print(title)
+    if not findings:
+        print("OK: no issues found")
+        return
+    for item in findings:
+        print(f"{item['level'].upper()} {item['code']} at {item['location']}: {item['message']}")
+
+
+def run_lint_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="workflow_runner.sh lint",
+        description="Lint workflow YAML for response/log anti-patterns before running it.",
+        epilog="""Checks:
+  - summary/step templates should use steps.<id>.response for agent final answers
+  - steps.<id>.stderr should not be injected into prompts/summaries by default
+  - YAML/schema validation is performed using the same parser as workflow execution
+
+Examples:
+  workflow_runner.sh lint --workflow .juno_task/workflows/daily_product_ops.yaml
+  cat workflow.yaml | workflow_runner.sh lint --workflow -
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--workflow", "-w", required=True, help="Workflow YAML path, or '-' to read from stdin")
+    parser.add_argument("--json", action="store_true", help="Emit findings as JSON")
+    args = parser.parse_args(argv)
+    workflow_text = sys.stdin.read() if args.workflow == "-" else Path(args.workflow).read_text(encoding="utf-8")
+    workflow = parse_yaml_like(workflow_text)
+    findings = workflow_lint_findings(workflow)
+    if args.json:
+        print(json.dumps({"status": "ok" if not findings else "issues", "findings": findings}, indent=2))
+    else:
+        print_findings("Workflow lint", findings)
+    return 0 if not findings else 1
+
+
+def file_size(path_text: str | None) -> int | None:
+    if not path_text:
+        return None
+    try:
+        return Path(path_text).stat().st_size
+    except OSError:
+        return None
+
+
+def command_has_quiet(command: Any) -> bool:
+    parts = command_argv(command)
+    return any(part in {"--quiet", "--silent", "-q"} for part in parts[1:])
+
+
+def doctor_findings(run_dir: Path) -> list[dict[str, str]]:
+    manifest_path = run_dir / "manifest.json"
+    findings: list[dict[str, str]] = []
+    if not manifest_path.exists():
+        return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": "manifest.json not found in run directory."}]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [{"level": "error", "code": "INVALID_MANIFEST", "location": str(manifest_path), "message": f"Cannot parse manifest.json: {exc}"}]
+    steps = manifest.get("steps")
+    if not isinstance(steps, list):
+        return [{"level": "error", "code": "INVALID_MANIFEST_STEPS", "location": str(manifest_path), "message": "manifest.steps must be a list."}]
+    for idx, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id") or f"step-{idx}")
+        location = f"steps[{idx}].{step_id}"
+        command = step.get("command")
+        is_agent = detect_juno_command(command)
+        status = str(step.get("status") or "")
+        response_size = file_size(step.get("response_path"))
+        stdout_size = file_size(step.get("stdout_path"))
+        stderr_size = file_size(step.get("stderr_path"))
+        for field in ("stdout_path", "stderr_path", "response_path"):
+            path_text = step.get(field)
+            if path_text and not Path(path_text).exists():
+                findings.append({"level": "error", "code": "MISSING_ARTIFACT", "location": f"{location}.{field}", "message": f"Artifact path does not exist: {path_text}"})
+        if is_agent and command_has_quiet(command):
+            findings.append({"level": "warn", "code": "AGENT_QUIET_ARG", "location": location, "message": "Detected agent command includes --quiet/--silent/-q; this can suppress final response in workflow contexts."})
+        if is_agent and status == "success" and (response_size == 0 or response_size is None):
+            findings.append({"level": "error", "code": "EMPTY_SUCCESS_AGENT_RESPONSE", "location": location, "message": "Agent step is marked success but response artifact is empty/missing; this should be a failure."})
+        if status == "success" and stderr_size and stderr_size > 0:
+            findings.append({"level": "info", "code": "SUCCESS_STDERR_ARTIFACT", "location": location, "message": f"Successful step has stderr artifact ({stderr_size} bytes); keep it out of summaries unless debugging failures."})
+        if is_agent and stdout_size == 0 and response_size == 0:
+            findings.append({"level": "warn", "code": "EMPTY_AGENT_STDOUT_RESPONSE", "location": location, "message": "Agent stdout and response are empty; inspect command flags, provider output mode, and stderr artifact."})
+    return findings
+
+
+def run_doctor_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="workflow_runner.sh doctor",
+        description="Inspect a workflow run directory and diagnose response/output artifact problems.",
+        epilog="""Checks:
+  - manifest and artifact paths exist
+  - detected agent steps do not have successful empty responses
+  - agent commands are not accidentally quieted
+  - successful stderr is identified as log/audit noise, not summary input
+
+Aliases:
+  workflow_runner.sh dr ...
+
+Examples:
+  workflow_runner.sh doctor .juno_task/specs/workflows/daily_product_ops/20260706_064333_251873Z
+  workflow_runner.sh dr --json /tmp/workflow-run
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("run_dir", help="Workflow run artifact directory containing manifest.json")
+    parser.add_argument("--json", action="store_true", help="Emit findings as JSON")
+    args = parser.parse_args(argv)
+    findings = doctor_findings(Path(args.run_dir).resolve())
+    if args.json:
+        print(json.dumps({"status": "ok" if not any(f["level"] == "error" for f in findings) else "issues", "findings": findings}, indent=2))
+    else:
+        print_findings("Workflow doctor", findings)
+    return 0 if not any(f["level"] == "error" for f in findings) else 1
 
 
 def init_example(example_args: list[str], force: bool) -> Path:
@@ -1014,6 +1340,11 @@ def build_parser() -> argparse.ArgumentParser:
   At the end, juno-code/yy/ypl step session ids are listed and the last one is
   persisted to the project env file so `yy cc` can continue it in the same shell scope.
   Disable capture env per step with capture_session: false (or capture: false).
+
+Helper commands:
+  workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns
+  workflow_runner.sh doctor RUN_DIR                    # inspect manifest/artifacts from a run
+  workflow_runner.sh dr RUN_DIR                        # short alias for doctor
 
 Example boilerplates (written only when explicitly requested):
   workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
@@ -1053,6 +1384,19 @@ Example boilerplates (written only when explicitly requested):
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "lint":
+        try:
+            return run_lint_command(argv[1:])
+        except WorkflowError as exc:
+            print(f"workflow_runner.sh lint: error: {exc}", file=sys.stderr)
+            return 2
+    if argv and argv[0] in {"doctor", "dr"}:
+        try:
+            return run_doctor_command(argv[1:])
+        except WorkflowError as exc:
+            print(f"workflow_runner.sh doctor: error: {exc}", file=sys.stderr)
+            return 2
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

@@ -73,11 +73,85 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stdout).toContain('--print-step-stdout');
     expect(result.stdout).toContain('--no-print-step-stdout');
     expect(result.stdout).toContain('--init-example NAME PATH');
+    expect(result.stdout).toContain('workflow_runner.sh lint --workflow WORKFLOW.yaml');
+    expect(result.stdout).toContain('workflow_runner.sh doctor RUN_DIR');
     expect(result.stdout).toContain('fail_workflow: true');
     expect(result.stdout).toContain('juno-code, yy, and ypl');
     expect(result.stdout).toContain('capture_session: false');
     expect(result.stdout).toContain('does not inject --quiet');
     expect(result.stdout).toContain('empty response');
+  });
+
+  it('provides dedicated help for lint and doctor helper commands', () => {
+    const lintHelp = runWorkflow(['lint', '--help']);
+    expect(lintHelp.status).toBe(0);
+    expect(lintHelp.stdout).toContain('Lint workflow YAML');
+    expect(lintHelp.stdout).toContain('steps.<id>.response');
+
+    const doctorHelp = runWorkflow(['doctor', '--help']);
+    expect(doctorHelp.status).toBe(0);
+    expect(doctorHelp.stdout).toContain('Inspect a workflow run directory');
+    expect(doctorHelp.stdout).toContain('workflow_runner.sh dr');
+  });
+
+  it('lints workflow YAML for noisy agent stdout/stderr template usage', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'lint-me.yaml');
+    await fs.writeFile(
+      workflowPath,
+      `schema_version: 1
+workflow_id: lint_me
+steps:
+  - id: agent
+    command:
+      - ${JSON.stringify(executablePath)}
+      - pi
+      - prompt
+  - id: summarize
+    command: |
+      printf '{{ steps.agent.stdout }} {{ steps.agent.stderr }}'
+summary: |
+  Agent stdout: {{ steps.agent.stdout }}
+  Agent stderr: {{ steps.agent.stderr }}
+`,
+    );
+
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('AGENT_STDOUT_TEMPLATE');
+    expect(result.stdout).toContain('NOISY_STEP_STDERR_TEMPLATE');
+    expect(result.stdout).toContain('use steps.agent.response');
+  });
+
+  it('doctors workflow run artifacts for empty successful agent responses and quiet argv', async () => {
+    const runDir = path.join(testDir, 'run');
+    await fs.ensureDir(runDir);
+    const responsePath = path.join(runDir, '001_agent.response.txt');
+    const stdoutPath = path.join(runDir, '001_agent.stdout.txt');
+    const stderrPath = path.join(runDir, '001_agent.stderr.txt');
+    await fs.writeFile(responsePath, '');
+    await fs.writeFile(stdoutPath, '');
+    await fs.writeFile(stderrPath, 'logs only\n');
+    await fs.writeJson(path.join(runDir, 'manifest.json'), {
+      steps: [
+        {
+          id: 'agent',
+          command: ['yy', '--quiet', 'pi', 'prompt'],
+          status: 'success',
+          response_path: responsePath,
+          stdout_path: stdoutPath,
+          stderr_path: stderrPath,
+        },
+      ],
+    });
+
+    const result = runWorkflow(['dr', runDir]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('EMPTY_SUCCESS_AGENT_RESPONSE');
+    expect(result.stdout).toContain('AGENT_QUIET_ARG');
+    expect(result.stdout).toContain('SUCCESS_STDERR_ARTIFACT');
   });
 
   it('writes named example workflows on demand and refuses accidental overwrite', async () => {
