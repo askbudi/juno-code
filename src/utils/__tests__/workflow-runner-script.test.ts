@@ -76,6 +76,8 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stdout).toContain('fail_workflow: true');
     expect(result.stdout).toContain('juno-code, yy, and ypl');
     expect(result.stdout).toContain('capture_session: false');
+    expect(result.stdout).toContain('does not inject --quiet');
+    expect(result.stdout).toContain('empty response');
   });
 
   it('writes named example workflows on demand and refuses accidental overwrite', async () => {
@@ -415,7 +417,7 @@ steps:
     );
   });
 
-  it('injects quiet mode for argv yy/juno-code workflow commands by default', async () => {
+  it('does not inject quiet mode and keeps successful agent stderr out of console output', async () => {
     const binDir = path.join(testDir, 'quiet-bin');
     await fs.ensureDir(binDir);
     const executablePath = path.join(binDir, 'yy');
@@ -423,12 +425,11 @@ steps:
       executablePath,
       `#!/usr/bin/env sh
 if [ "\${1:-}" = "--quiet" ]; then
-  shift
-  echo FINAL_ONLY
-else
-  echo VERBOSE_INTERNAL_LOG
-  echo FINAL_ONLY
+  echo SHOULD_NOT_BE_QUIET
+  exit 3
 fi
+echo VERBOSE_INTERNAL_LOG >&2
+echo FINAL_ONLY
 `,
     );
     await fs.chmod(executablePath, 0o755);
@@ -445,8 +446,43 @@ fi
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('FINAL_ONLY');
     expect(result.stdout).not.toContain('VERBOSE_INTERNAL_LOG');
+    expect(result.stderr).not.toContain('VERBOSE_INTERNAL_LOG');
+    expect(await fs.readFile(path.join(outDir, '001_agent.stderr.txt'), 'utf8')).toContain('VERBOSE_INTERNAL_LOG');
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
-    expect(manifest.steps[0].command).toEqual([executablePath, '--quiet', 'pi', 'prompt']);
+    expect(manifest.steps[0].command).toEqual([executablePath, 'pi', 'prompt']);
+  });
+
+  it('marks a detected agent command failed when exit is zero but response is empty', async () => {
+    const binDir = path.join(testDir, 'empty-agent-bin');
+    await fs.ensureDir(binDir);
+    const executablePath = path.join(binDir, 'yy');
+    await fs.writeFile(
+      executablePath,
+      `#!/usr/bin/env sh
+echo ONLY_LOGS_NO_RESPONSE >&2
+exit 0
+`,
+    );
+    await fs.chmod(executablePath, 0o755);
+    const workflowPath = path.join(testDir, 'empty-agent.json');
+    const outDir = path.join(testDir, 'empty-agent-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'empty-agent',
+      steps: [{ id: 'agent', command: [executablePath, 'pi', 'prompt'], capture_session: false }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('ONLY_LOGS_NO_RESPONSE');
+    expect(result.stdout).toContain('(response is empty)');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.status).toBe('failed');
+    expect(manifest.failed_steps).toEqual(['agent']);
+    expect(manifest.steps[0].status).toBe('failed');
+    expect(manifest.steps[0].exit_code).toBe(0);
+    expect(manifest.steps[0].failure_reason).toBe('empty response from detected agent command');
   });
 
   it('prints canonical captured response for juno commands while preserving raw stdout artifacts', async () => {

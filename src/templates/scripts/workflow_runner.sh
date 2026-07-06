@@ -339,23 +339,6 @@ def juno_command_name(command: Any) -> str | None:
     return executable if executable in JUNO_COMMANDS else None
 
 
-def has_juno_output_flag(parts: list[str]) -> bool:
-    return any(part in {"--quiet", "--silent", "-q", "--verbose", "-v"} or part.startswith("--verbose=") for part in parts[1:])
-
-
-def apply_workflow_juno_defaults(command: Any) -> Any:
-    """Make non-live juno-code workflow steps emit final answers, not progress logs."""
-    if not isinstance(command, list):
-        return command
-    parts = [str(part) for part in command]
-    executable = Path(parts[0]).name if parts else ""
-    if executable not in {"juno-code", "yy"}:
-        return command
-    if has_juno_output_flag(parts) or "--live" in parts:
-        return command
-    return [parts[0], "--quiet", *parts[1:]]
-
-
 def extract_session_id(stdout: str, stderr: str) -> str | None:
     for text in (stdout, stderr):
         for line in text.splitlines():
@@ -531,7 +514,7 @@ def selected_final_output(print_output: str, context: dict[str, Any], summary: s
     result = context["steps"].get(selected)
     if result is None:
         raise WorkflowError(f"unknown --print-output step: {selected}")
-    return str(result.get("stdout", ""))
+    return str(result.get("response", result.get("stdout", "")))
 
 
 def run_workflow(args: argparse.Namespace) -> int:
@@ -634,8 +617,9 @@ def run_workflow(args: argparse.Namespace) -> int:
             context["steps"][step_id] = skipped_result
             manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
             continue
-        command = apply_workflow_juno_defaults(render(step["command"], context))
+        command = render(step["command"], context)
         preview = command_preview(command)
+        is_juno_command = detect_juno_command(command)
         capture_enabled = step_capture_enabled(step, command)
         step_slug = safe_id(step_id, f"step-{index}")
         stdout_path = out_dir / f"{index:03d}_{step_slug}.stdout.txt"
@@ -666,8 +650,6 @@ def run_workflow(args: argparse.Namespace) -> int:
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
             status = "success" if exit_code == 0 else "failed"
-            if stderr:
-                print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         duration = round(time.monotonic() - started, 3)
         write_text(stdout_path, stdout)
         write_text(stderr_path, stderr)
@@ -711,6 +693,12 @@ def run_workflow(args: argparse.Namespace) -> int:
                 session_id = extract_session_id(stdout, stderr)
                 if session_id:
                     result["session_id"] = session_id
+        if is_juno_command and not args.dry_run and status == "success" and not str(result.get("response", "")).strip():
+            status = "failed"
+            result["status"] = status
+            result["failure_reason"] = "empty response from detected agent command"
+        if stderr and status == "failed":
+            print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         write_text(response_path, str(result.get("response", "")))
         write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
         if args.print_step_stdout:
@@ -858,7 +846,10 @@ def build_parser() -> argparse.ArgumentParser:
   Set fail_workflow: true on a step to make that failed command fail the workflow process.
   juno-code, yy, and ypl commands automatically receive JUNO_TOOL_ID and
   JUNO_SUBAGENT_CAPTURE_PATH so steps.<id>.session_id can be used by later steps.
-  Disable that per step with capture_session: false (or capture: false).
+  The runner does not inject --quiet; agent stdout is the canonical response while
+  stderr is kept as an artifact and printed only when the step fails.
+  Detected agent commands that exit 0 with an empty response are marked failed.
+  Disable capture env per step with capture_session: false (or capture: false).
 
 Example boilerplates (written only when explicitly requested):
   workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
@@ -878,8 +869,8 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--var", dest="vars", action="append", default=[], metavar="NAME=VALUE", help="Template variable override in NAME=VALUE form")
     parser.add_argument("--dry-run", action="store_true", help="Render commands and write artifacts without executing steps")
     parser.add_argument("--from-step", help="Start at zero-based step index, step id/name, or -1 for the last step")
-    parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step stdout as it completes (default)")
-    parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step stdout to the console; artifacts are still written")
+    parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step response/stdout as it completes (default); successful stderr stays in artifacts")
+    parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step response/stdout to the console; artifacts are still written")
     parser.add_argument(
         "--print-output",
         "--final-output",
