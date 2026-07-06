@@ -24,6 +24,11 @@ Usage:
   ./parallel_runner.sh --items-file data.jsonl --prompt-file analyze.md
   ./parallel_runner.sh --items-file data.csv --strict --file-format csv
 
+  # Raw command file mode (schema/lint/generator foundation)
+  ./parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
+  ./parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
+  ./parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
+
   # Common options
   ./parallel_runner.sh --tmux --kanban T1 T2 T3 --parallel 2
   ./parallel_runner.sh --tmux panes --kanban T1 T2 --parallel 2
@@ -41,6 +46,33 @@ Input modes (exactly one required, unless --stop/--stop-all):
                  kanban.sh list {filters} -f json --raw and extracts IDs.
   --items        Generic item list (comma/space separated). Auto-generates item-001 IDs.
   --items-file   Path to file (JSONL, CSV, TSV, XLSX). Format auto-detected by extension.
+  --commands-file Path to YAML/JSON command batch. Schema v1 fans out command IDs only;
+                 raw command execution is handled by the command scheduler increment.
+
+Command file schema v1:
+  schema_version: 1
+  name: workflow-batch
+  parallel: 2        # default only; explicit CLI --parallel wins
+  cwd: .             # resolved relative to invocation cwd
+  env:
+    EXAMPLE: value
+  commands:          # required non-empty list
+    - id: workflow-a # unique [A-Za-z0-9_.-]+
+      command:       # string => shell later; list => direct argv later
+        - ./.juno_task/scripts/workflow_runner.sh
+        - --workflow
+        - .juno_task/workflows/a.yaml
+    - id: smoke
+      command: |
+        cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+      cwd: .
+      env:
+        NODE_ENV: test
+      timeout_seconds: 300
+
+Command file utilities:
+  --lint-commands-file PATH|-  Parse and validate command YAML/JSON without executing.
+  --init-commands-example PATH Write boilerplate command YAML. Use --force to overwrite.
 
 File options (for --items-file):
   --format       Force file format: jsonl, csv, tsv, xlsx (default: auto-detect).
@@ -164,6 +196,349 @@ _SERVICE_DEFAULT_MODEL = {
     "codex": ":codex",
     "pi": "openai-codex/gpt-5.3-codex",
 }
+
+
+_SAFE_COMMAND_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_COMMAND_SCHEMA_VERSIONS = {"1", "1.0", "v1"}
+
+
+class CommandFileError(Exception):
+    '''Raised when a command YAML/JSON file is invalid.'''
+
+
+def _count_indent(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def _parse_scalar(value):
+    value = value.strip()
+    if value == "":
+        return ""
+    if value in ("null", "Null", "NULL", "~"):
+        return None
+    if value in ("true", "True", "TRUE"):
+        return True
+    if value in ("false", "False", "FALSE"):
+        return False
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    try:
+        if re.match(r"^-?\d+$", value):
+            return int(value)
+        if re.match(r"^-?(\d+\.\d*|\d*\.\d+)$", value):
+            return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _read_literal_block(lines, start, parent_indent):
+    i = start
+    block_lines = []
+    block_indent = None
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            block_lines.append("")
+            i += 1
+            continue
+        indent = _count_indent(line)
+        if indent <= parent_indent:
+            break
+        if block_indent is None:
+            block_indent = indent
+        block_lines.append(line[min(block_indent, len(line)):])
+        i += 1
+    return "\n".join(block_lines).rstrip("\n"), i
+
+
+def _parse_indented_mapping(lines, start, parent_indent):
+    result = {}
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        indent = _count_indent(line)
+        if indent <= parent_indent:
+            break
+        if ":" not in stripped:
+            raise CommandFileError(f"expected mapping field near line {i + 1}: {line}")
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "|":
+            result[key], i = _read_literal_block(lines, i + 1, indent)
+            continue
+        if value == "":
+            nested, i = _parse_indented_mapping(lines, i + 1, indent)
+            result[key] = nested
+            continue
+        result[key] = _parse_scalar(value)
+        i += 1
+    return result, i
+
+
+def _parse_scalar_list(lines, start, parent_indent):
+    values = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        indent = _count_indent(line)
+        if indent <= parent_indent:
+            break
+        if not stripped.startswith("-"):
+            break
+        values.append(_parse_scalar(stripped[1:].strip()))
+        i += 1
+    return values, i
+
+
+def _parse_commands_list(lines, start, parent_indent):
+    commands = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        indent = _count_indent(line)
+        if indent <= parent_indent:
+            break
+        if not stripped.startswith("-"):
+            raise CommandFileError(f"expected command list item near line {i + 1}: {line}")
+        item = {}
+        rest = stripped[1:].strip()
+        if rest:
+            if ":" not in rest:
+                raise CommandFileError(f"expected key/value after '-' near line {i + 1}")
+            key, value = rest.split(":", 1)
+            item[key.strip()] = _parse_scalar(value.strip())
+        i += 1
+        while i < len(lines):
+            child = lines[i]
+            child_stripped = child.strip()
+            child_indent = _count_indent(child)
+            if not child_stripped or child_stripped.startswith("#"):
+                i += 1
+                continue
+            if child_indent <= indent:
+                break
+            if ":" not in child_stripped:
+                raise CommandFileError(f"expected command field near line {i + 1}: {child}")
+            key, value = child_stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if value == "|":
+                item[key], i = _read_literal_block(lines, i + 1, child_indent)
+                continue
+            if value == "":
+                if key == "command":
+                    item[key], i = _parse_scalar_list(lines, i + 1, child_indent)
+                elif key == "env":
+                    item[key], i = _parse_indented_mapping(lines, i + 1, child_indent)
+                else:
+                    item[key], i = _parse_indented_mapping(lines, i + 1, child_indent)
+                continue
+            item[key] = _parse_scalar(value)
+            i += 1
+        commands.append(item)
+    return commands, i
+
+
+def _parse_command_yaml_like(text):
+    '''Parse command YAML/JSON without requiring PyYAML.'''
+    try:
+        loaded = json.loads(text)
+        if isinstance(loaded, dict):
+            return loaded
+        raise CommandFileError("command file must be a YAML/JSON mapping")
+    except json.JSONDecodeError:
+        pass
+    try:
+        import yaml  # type: ignore
+        loaded = yaml.safe_load(text)
+        if not isinstance(loaded, dict):
+            raise CommandFileError("command file must be a YAML mapping")
+        return loaded
+    except ImportError:
+        pass
+    except CommandFileError:
+        raise
+    except Exception as exc:
+        raise CommandFileError(f"failed to parse command YAML: {exc}") from exc
+    lines = text.splitlines()
+    root = {}
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        if _count_indent(raw) != 0 or ":" not in stripped:
+            raise CommandFileError(f"unsupported YAML near line {i + 1}: {raw}")
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "|":
+            root[key], i = _read_literal_block(lines, i + 1, _count_indent(raw))
+            continue
+        if value:
+            root[key] = _parse_scalar(value)
+            i += 1
+            continue
+        if key == "commands":
+            root[key], i = _parse_commands_list(lines, i + 1, _count_indent(raw))
+        else:
+            root[key], i = _parse_indented_mapping(lines, i + 1, _count_indent(raw))
+    return root
+
+
+def _read_command_file(path):
+    if path == "-":
+        if sys.stdin.isatty():
+            raise CommandFileError("--commands-file - requires redirected stdin (pipe/heredoc)")
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CommandFileError(f"could not read command file {path}: {exc}") from exc
+    if not text.strip():
+        raise CommandFileError("command file is empty")
+    return text
+
+
+def _validate_command_env(env, label):
+    if env is None:
+        return {}
+    if not isinstance(env, dict):
+        raise CommandFileError(f"{label} env must be a mapping")
+    normalized = {}
+    for key, value in env.items():
+        key_text = str(key)
+        if not key_text:
+            raise CommandFileError(f"{label} env contains an empty key")
+        if isinstance(value, (dict, list)):
+            raise CommandFileError(f"{label} env value for {key_text} must be a scalar")
+        normalized[key_text] = "" if value is None else str(value)
+    return normalized
+
+
+def _resolve_command_cwd(value, base_cwd, label):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise CommandFileError(f"{label} cwd must be a non-empty string")
+    cwd_path = Path(value)
+    if not cwd_path.is_absolute():
+        cwd_path = Path(base_cwd) / cwd_path
+    return str(cwd_path.resolve())
+
+
+def _validate_command_file(data, base_cwd):
+    if not isinstance(data, dict):
+        raise CommandFileError("command file must be a mapping")
+    if "schema_version" in data and str(data["schema_version"]).strip() not in _COMMAND_SCHEMA_VERSIONS:
+        raise CommandFileError(f"unsupported schema_version: {data['schema_version']}")
+    commands = data.get("commands")
+    if not isinstance(commands, list) or not commands:
+        raise CommandFileError("command file must define a non-empty commands list")
+    if "name" in data and data["name"] is not None and not isinstance(data["name"], str):
+        raise CommandFileError("name must be a string when provided")
+    if "parallel" in data:
+        parallel = data["parallel"]
+        if isinstance(parallel, bool) or not isinstance(parallel, int) or parallel < 1:
+            raise CommandFileError("parallel must be a positive integer when provided")
+    root_cwd = _resolve_command_cwd(data.get("cwd"), base_cwd, "top-level")
+    root_env = _validate_command_env(data.get("env"), "top-level")
+    seen = set()
+    normalized = []
+    for idx, command_entry in enumerate(commands, start=1):
+        if not isinstance(command_entry, dict):
+            raise CommandFileError(f"command {idx} must be a mapping")
+        command_id = str(command_entry.get("id") or "").strip()
+        if not command_id:
+            raise CommandFileError(f"command {idx} is missing required id")
+        if not _SAFE_COMMAND_ID_RE.match(command_id):
+            raise CommandFileError(f"command id contains unsupported characters: {command_id}")
+        if command_id in seen:
+            raise CommandFileError(f"duplicate command id: {command_id}")
+        seen.add(command_id)
+        if "command" not in command_entry:
+            raise CommandFileError(f"command {command_id} is missing required command")
+        command = command_entry["command"]
+        if isinstance(command, str):
+            if not command.strip():
+                raise CommandFileError(f"command {command_id} command string must be non-empty")
+        elif isinstance(command, list):
+            if not command:
+                raise CommandFileError(f"command {command_id} argv list must be non-empty")
+            for part in command:
+                if isinstance(part, (dict, list)):
+                    raise CommandFileError(f"command {command_id} argv entries must be scalars")
+                if str(part) == "":
+                    raise CommandFileError(f"command {command_id} argv entries must be non-empty")
+            command = [str(part) for part in command]
+        else:
+            raise CommandFileError(f"command {command_id} command must be a string or argv list")
+        timeout_seconds = command_entry.get("timeout_seconds")
+        if timeout_seconds is not None:
+            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+                raise CommandFileError(f"command {command_id} timeout_seconds must be positive when provided")
+        normalized.append({
+            "id": command_id,
+            "command": command,
+            "cwd": _resolve_command_cwd(command_entry.get("cwd"), base_cwd, f"command {command_id}") or root_cwd,
+            "env": {**root_env, **_validate_command_env(command_entry.get("env"), f"command {command_id}")},
+            "timeout_seconds": timeout_seconds,
+        })
+    return {"schema_version": data.get("schema_version", 1), "name": data.get("name"), "parallel": data.get("parallel"), "cwd": root_cwd, "env": root_env, "commands": normalized}
+
+
+def _load_commands_file(path, base_cwd):
+    return _validate_command_file(_parse_command_yaml_like(_read_command_file(path)), base_cwd)
+
+
+_COMMANDS_EXAMPLE = '''schema_version: 1
+name: workflow-batch
+parallel: 2
+cwd: .
+env:
+  EXAMPLE: value
+commands:
+  - id: workflow-a
+    command:
+      - ./.juno_task/scripts/workflow_runner.sh
+      - --workflow
+      - .juno_task/workflows/a.yaml
+  - id: workflow-b
+    command:
+      - ./.juno_task/scripts/workflow_runner.sh
+      - --workflow
+      - .juno_task/workflows/b.yaml
+  - id: smoke
+    command: |
+      cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+    timeout_seconds: 300
+'''
+
+
+def _init_commands_example(path, force=False):
+    target = Path(path)
+    if target.exists() and not force:
+        raise CommandFileError(f"refusing to overwrite existing command file: {target} (pass --force to replace)")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_COMMANDS_EXAMPLE, encoding="utf-8")
+    return target
 
 # Resolved environment overrides from --env args (populated at parse time)
 _env_overrides = {}
@@ -633,15 +1008,30 @@ def _resolve_input(args):
         bool(args.kanban),
         bool(args.items),
         bool(args.items_file),
+        bool(getattr(args, "commands_file", None)),
     ])
     if modes == 0:
-        print("ERROR: One of --kanban, --items, or --items-file is required "
-              "(unless using --stop or --stop-all)", file=sys.stderr)
+        print("ERROR: One of --kanban, --kanban-filter, --items, --items-file, or --commands-file is required "
+              "(unless using --stop, --stop-all, --lint-commands-file, or --init-commands-example)", file=sys.stderr)
         sys.exit(2)
     if modes > 1:
-        print("ERROR: Only one of --kanban, --items, or --items-file can be used",
+        print("ERROR: Only one of --kanban, --kanban-filter, --items, --items-file, or --commands-file can be used",
               file=sys.stderr)
         sys.exit(2)
+
+    if getattr(args, "commands_file", None):
+        command_specs = getattr(args, "command_specs", None)
+        if command_specs is None:
+            try:
+                loaded = _load_commands_file(args.commands_file, os.getcwd())
+            except CommandFileError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                sys.exit(2)
+            command_specs = loaded["commands"]
+            args.command_specs = command_specs
+        task_ids = [entry["id"] for entry in command_specs]
+        _item_map = {entry["id"]: json.dumps(entry, ensure_ascii=False) for entry in command_specs}
+        return task_ids
 
     if args.kanban:
         task_ids = args.kanban
@@ -1395,7 +1785,35 @@ def run_stop_all():
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run juno-code tasks in parallel with queue management and output extraction")
+        description="Run juno-code tasks in parallel with queue management and output extraction",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""
+        Command file schema v1:
+          schema_version: 1
+          name: workflow-batch
+          parallel: 2  # default only; explicit CLI --parallel wins
+          cwd: .
+          env:
+            EXAMPLE: value
+          commands:
+            - id: workflow-a
+              command:
+                - ./.juno_task/scripts/workflow_runner.sh
+                - --workflow
+                - .juno_task/workflows/a.yaml
+            - id: smoke
+              command: |
+                cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+              timeout_seconds: 300
+
+        Command entries require unique ids matching [A-Za-z0-9_.-]+ and a command.
+        command strings are shell commands for the raw-command scheduler; command lists are direct argv.
+
+        Examples:
+          parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
+          parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
+          parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
+        """))
 
     # --- Input modes ---
     input_group = parser.add_argument_group("input modes (exactly one required unless --stop/--stop-all)")
@@ -1415,6 +1833,24 @@ def parse_args():
     input_group.add_argument(
         "--items-file", type=str, default=None,
         help="Path to file (JSONL, CSV, TSV, XLSX). Format auto-detected by extension.",
+    )
+    input_group.add_argument(
+        "--commands-file", type=str, default=None,
+        help="Path to command YAML/JSON file, or '-' for stdin. Validates schema v1 and fans out commands by id.",
+    )
+
+    command_group = parser.add_argument_group("command file utilities")
+    command_group.add_argument(
+        "--lint-commands-file", type=str, default=None,
+        help="Validate a command YAML/JSON file without executing it. Use '-' for stdin.",
+    )
+    command_group.add_argument(
+        "--init-commands-example", type=str, default=None,
+        help="Write a boilerplate command YAML file that runs multiple workflows/commands in parallel.",
+    )
+    command_group.add_argument(
+        "--force", action="store_true", default=False,
+        help="Allow --init-commands-example to overwrite an existing file.",
     )
 
     # --- File options ---
@@ -1501,7 +1937,25 @@ def parse_args():
         help="Stop ALL running sessions.",
     )
     normalized_argv = _normalize_subagent_args_argv(sys.argv[1:])
+    explicit_parallel = any(arg == "--parallel" or arg.startswith("--parallel=") for arg in normalized_argv)
     args = parser.parse_args(normalized_argv)
+
+    if args.init_commands_example:
+        try:
+            target = _init_commands_example(args.init_commands_example, args.force)
+        except CommandFileError as exc:
+            parser.error(str(exc))
+        print(f"Wrote command example: {target}")
+        sys.exit(0)
+
+    if args.lint_commands_file:
+        try:
+            loaded = _load_commands_file(args.lint_commands_file, os.getcwd())
+        except CommandFileError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(2)
+        print(f"OK: {len(loaded['commands'])} command(s) valid in {args.lint_commands_file}")
+        sys.exit(0)
 
     # Handle stop commands first
     if args.stop_all:
@@ -1511,6 +1965,19 @@ def parse_args():
 
     if args.prompt_file and args.prompt:
         parser.error("Use either --prompt-file or --prompt, not both")
+
+    if args.commands_file and args.kanban_filter:
+        parser.error("Cannot use --commands-file together with --kanban-filter")
+
+    if args.commands_file:
+        try:
+            loaded_commands = _load_commands_file(args.commands_file, os.getcwd())
+        except CommandFileError as exc:
+            parser.error(str(exc))
+        args.command_file_metadata = loaded_commands
+        args.command_specs = loaded_commands["commands"]
+        if loaded_commands.get("parallel") and not explicit_parallel:
+            args.parallel = loaded_commands["parallel"]
 
     # Resolve --kanban-filter -> --kanban
     if args.kanban_filter:
