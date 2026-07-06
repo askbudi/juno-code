@@ -227,6 +227,12 @@ literal text with `backticks`
 EOF
 ```
 
+### Oversized prompt transport
+
+`juno-code` protects shell-backend runs from OS `E2BIG` spawn failures by switching large prompts away from argv/env transport. The threshold is controlled by `JUNO_PROMPT_ARG_MAX_BYTES` (default `65536` bytes / 64 KiB). Prompts at or below the threshold may use normal argv/env paths; larger prompts are sent through managed prompt files or stdin so wrappers do not copy huge payloads into `JUNO_INSTRUCTION` or vendor CLI arguments.
+
+You do not need to create temp files yourself. When file transport is required, juno-code manages prompt files under `/tmp/juno-code/` and cleans internal handoff files where safe. The tests assert argv/env/stdin/file behavior because this backing implementation is what prevents regressions where a safe CLI stdin/heredoc entry point later becomes a huge Python wrapper argv or environment variable.
+
 ### Prompt-time command substitution (per iteration)
 
 `juno-code` also supports explicit prompt-time shell substitutions that run inside the working directory on **every engine iteration**:

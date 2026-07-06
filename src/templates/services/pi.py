@@ -18,6 +18,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, TextIO, Tuple
 
 
+DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
+PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"
+
+
+def _positive_int_env(name: str, fallback: int) -> int:
+    value = os.environ.get(name, "")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 class PiService:
     """Service wrapper for Pi coding agent headless mode."""
 
@@ -120,6 +133,30 @@ class PiService:
         self._codex_tool_result_max_lines = int(os.environ.get("PI_TOOL_RESULT_MAX_LINES", "6"))
         # Keys to hide from intermediate assistant messages in Codex mode
         self._codex_metadata_keys = {"api", "provider", "model", "usage", "stopReason", "timestamp"}
+        self._managed_prompt_files: List[Path] = []
+
+    def _prompt_arg_max_bytes(self) -> int:
+        return _positive_int_env(PROMPT_ARG_MAX_BYTES_ENV, DEFAULT_PROMPT_ARG_MAX_BYTES)
+
+    def _is_prompt_oversized(self, prompt: str) -> bool:
+        return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
+
+    def _create_managed_prompt_file(self, prompt: str) -> Path:
+        prompt_dir = Path(tempfile.gettempdir()) / "juno-code"
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        path = prompt_dir / f"{timestamp}-prompt.md"
+        path.write_text(prompt, encoding="utf-8")
+        self._managed_prompt_files.append(path)
+        return path
+
+    def _cleanup_managed_prompt_files(self) -> None:
+        for prompt_path in self._managed_prompt_files:
+            try:
+                prompt_path.unlink(missing_ok=True)
+            except Exception as exc:
+                print(f"Warning: Failed to remove managed prompt file {prompt_path}: {exc}", file=sys.stderr)
+        self._managed_prompt_files.clear()
 
     def _color_enabled(self) -> bool:
         """Check if ANSI color output is appropriate (TTY + NO_COLOR not set)."""
@@ -538,10 +575,18 @@ Model shorthands:
         stdin_prompt: Optional[str] = None
 
         if is_live_mode:
-            # Live mode uses positional prompt input (no -p and no stdin piping).
-            # For manual continue sessions we intentionally omit the prompt so Pi
-            # opens directly into interactive TUI input.
+            # Live mode normally uses positional prompt input (no -p and no stdin piping).
+            # If the prompt is too large for safe argv transport, persist it under
+            # /tmp/juno-code and pass only a bounded positional instruction that tells
+            # Pi where to read the managed prompt. This keeps live startup below OS
+            # argv/env limits while still requiring no user-created temp files.
             if full_prompt:
+                if self._is_prompt_oversized(full_prompt):
+                    prompt_path = self._create_managed_prompt_file(full_prompt)
+                    full_prompt = (
+                        "Read the full initial prompt from this juno-code managed file "
+                        f"before acting: {prompt_path}"
+                    )
                 cmd.append(full_prompt)
 
             # Additional raw arguments should still be honored; place before the
@@ -555,13 +600,11 @@ Model shorthands:
                         cmd.extend(extra)
             return cmd, None
 
-        # Always pass prompts via -p in non-live mode.
-        # Root cause: stdin transport can hang for directive-heavy payloads
-        # (including kanban-expanded /skill prompts), which manifests as the
-        # run appearing stuck after stdin ingestion logs. We intentionally avoid
-        # stdin prompt transport for reliability and deterministic streaming.
-        cmd.append("-p")
-        cmd.append(full_prompt)
+        if self._is_prompt_oversized(full_prompt):
+            stdin_prompt = full_prompt
+        else:
+            cmd.append("-p")
+            cmd.append(full_prompt)
 
         # Additional raw arguments
         if args.additional_args:
@@ -3796,6 +3839,7 @@ export default function (pi: ExtensionAPI) {
                     live_extension_file.unlink(missing_ok=True)
                 except Exception as e:
                     print(f"Warning: Failed to remove temp live extension: {e}", file=sys.stderr)
+            self._cleanup_managed_prompt_files()
 
 
 def main():

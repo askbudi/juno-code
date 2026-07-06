@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -20,15 +21,26 @@ import pytest
 # Helper: load PiService from the template source tree
 # ---------------------------------------------------------------------------
 
-def _load_pi_service():
+def _services_dir():
     here = os.path.dirname(__file__)
     services_dir = os.path.abspath(os.path.join(here, "..", "src", "templates", "services"))
     if not os.path.isdir(services_dir):
         services_dir = os.path.abspath(os.path.join(here, "..", "..", "src", "templates", "services"))
     if services_dir not in sys.path:
         sys.path.insert(0, services_dir)
+    return services_dir
+
+
+def _load_pi_service():
+    _services_dir()
     from pi import PiService
     return PiService()
+
+
+def _load_claude_service():
+    _services_dir()
+    from claude import ClaudeService
+    return ClaudeService()
 
 
 def _make_args(**overrides):
@@ -246,6 +258,41 @@ class TestBuildPiCommand:
         assert cmd[mode_idx + 1] == "json"
         assert "-p" in cmd
         assert stdin_prompt is None
+
+    def test_oversized_non_live_prompt_uses_stdin_not_argv(self, monkeypatch):
+        """Oversized headless prompts go to Pi stdin, not argv, to avoid spawn E2BIG."""
+        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "32")
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "x" * 80
+        args = _make_args(live=False)
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+
+        assert "--mode" in cmd
+        assert "-p" not in cmd
+        assert self.svc.prompt not in cmd
+        assert stdin_prompt == self.svc.prompt
+
+    def test_oversized_live_prompt_uses_managed_file_and_bounded_positional_prefix(self, monkeypatch):
+        """Live mode cannot pipe stdin, so oversized prompts become managed files plus a short pointer."""
+        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "32")
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        large_prompt = "live prompt " + ("x" * 1000)
+        self.svc.prompt = large_prompt
+        args = _make_args(live=True)
+
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+        positional_prompt = cmd[-1]
+        referenced_path = positional_prompt.rsplit(": ", 1)[1]
+
+        assert stdin_prompt is None
+        assert "-p" not in cmd
+        assert large_prompt not in cmd
+        assert len(positional_prompt.encode("utf-8")) < len(large_prompt.encode("utf-8"))
+        assert referenced_path.startswith(os.path.join(tempfile.gettempdir(), "juno-code"))
+        with open(referenced_path, "r", encoding="utf-8") as handle:
+            assert handle.read() == large_prompt
+        self.svc._cleanup_managed_prompt_files()
+        assert not os.path.exists(referenced_path)
 
     def test_no_session_when_enabled(self):
         """build_pi_command includes --no-session when no_session=True."""
@@ -4092,3 +4139,82 @@ class TestLiveCodexNativeEvents:
         assert self.svc.message_counter == 2
         self.svc._format_event_live({"role": "assistant", "content": [{"type": "text", "text": "a1"}]})
         assert self.svc.message_counter == 3
+
+class TestClaudeWrapperPromptTransport:
+    """Non-Pi wrapper coverage for vendor stdin transport on oversized prompts."""
+
+    def test_oversized_prompt_is_written_to_claude_stdin_not_vendor_argv(self, monkeypatch):
+        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "32")
+        svc = _load_claude_service()
+        svc.model_name = "claude-sonnet-4-6"
+        svc.project_path = tempfile.gettempdir()
+        large_prompt = "claude oversized prompt " + ("x" * 120)
+        svc.prompt = large_prompt
+        svc.auto_instruction = ""
+        args = argparse.Namespace(
+            permission_mode="default",
+            tools=None,
+            allowed_tools=None,
+            append_allowed_tools=None,
+            disallowed_tools=None,
+            continue_conversation=False,
+            resume_session=None,
+            agents=None,
+            json=True,
+            additional_args="",
+        )
+
+        cmd = svc.build_claude_command(args)
+        assert large_prompt not in cmd
+        assert svc._stdin_prompt == f"\n\n{large_prompt}"
+
+        captured = {}
+
+        class _CaptureStdin:
+            def __init__(self):
+                self.value = ""
+                self.closed = False
+
+            def write(self, text):
+                self.value += text
+
+            def close(self):
+                self.closed = True
+
+        class _FakeProcess:
+            def __init__(self):
+                self.stdin = _CaptureStdin()
+                self.stdout = io.StringIO(
+                    json.dumps({"type": "result", "result": "ok", "is_error": False}) + "\n"
+                )
+                self.stderr = io.StringIO("")
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def kill(self):
+                self.returncode = -9
+
+        fake_process = _FakeProcess()
+
+        def _fake_popen(*popen_args, **popen_kwargs):
+            captured["args"] = popen_args
+            captured["kwargs"] = popen_kwargs
+            return fake_process
+
+        monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        rc = svc.run_claude(cmd, verbose=False, pretty=False)
+
+        assert rc == 0
+        assert captured["args"][0] == cmd
+        assert captured["kwargs"]["stdin"] == subprocess.PIPE
+        assert large_prompt not in captured["args"][0]
+        assert fake_process.stdin.value == svc._stdin_prompt
+        assert fake_process.stdin.closed is True

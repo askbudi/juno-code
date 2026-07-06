@@ -16,6 +16,19 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 
+DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
+PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"
+
+
+def _positive_int_env(name: str, fallback: int) -> int:
+    value = os.environ.get(name, "")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 class ClaudeService:
     """Service wrapper for Anthropic Claude CLI"""
 
@@ -53,6 +66,7 @@ class ClaudeService:
         self.additional_args: List[str] = []
         self.message_counter = 0
         self.verbose = False
+        self._stdin_prompt: Optional[str] = None
         # User message truncation: -1 = no truncation, N = truncate to N lines
         self.user_message_truncate = int(os.environ.get("CLAUDE_USER_MESSAGE_PRETTY_TRUNCATE", "4"))
         self.last_result_event: Optional[Dict[str, Any]] = None
@@ -72,6 +86,12 @@ class ClaudeService:
         if model.startswith(':'):
             return self.MODEL_SHORTHANDS.get(model, model)
         return model
+
+    def _prompt_arg_max_bytes(self) -> int:
+        return _positive_int_env(PROMPT_ARG_MAX_BYTES_ENV, DEFAULT_PROMPT_ARG_MAX_BYTES)
+
+    def _is_prompt_oversized(self, prompt: str) -> bool:
+        return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
 
     def check_claude_installed(self) -> bool:
         """Check if claude CLI is installed and available"""
@@ -261,11 +281,18 @@ Environment Variables:
             "--permission-mode", args.permission_mode,
         ]
 
-        # Build the full prompt (auto_instruction + user prompt)
-        # IMPORTANT: Prompt must come BEFORE tool-related flags
-        # because some flags consume all following arguments
+        # Build the full prompt (auto_instruction + user prompt). Small prompts stay
+        # positional for CLI compatibility; oversized prompts use stdin so juno-code
+        # does not reintroduce OS E2BIG failures after shell-backend selected file
+        # transport into this wrapper.
         full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"
-        cmd.append(full_prompt)
+        self._stdin_prompt = None
+        if self._is_prompt_oversized(full_prompt):
+            self._stdin_prompt = full_prompt
+        else:
+            # IMPORTANT: Prompt must come BEFORE tool-related flags because some flags
+            # consume all following arguments.
+            cmd.append(full_prompt)
 
         # Add available tools from built-in set if specified (AFTER the prompt)
         # Note: --tools controls which built-in Claude tools are available (only works with --print mode)
@@ -622,12 +649,20 @@ Environment Variables:
             # Use line buffering (bufsize=1) to ensure each JSON line is output immediately
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE if self._stdin_prompt else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,  # Line buffering for immediate output
                 universal_newlines=True
             )
+
+            if self._stdin_prompt and process.stdin:
+                try:
+                    process.stdin.write(self._stdin_prompt)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
 
             # Watchdog thread: handles two scenarios where the stdout loop blocks:
             # 1. Process exits but its stdout pipe stays open (inherited FDs)
