@@ -519,6 +519,38 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     expect(manifest.steps[0].response_path).toContain('001_agent.response.txt');
   });
 
+  it('prints juno step session ids and persists the last one for yy cc continue', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'session-summary.json');
+    const outDir = path.join(testDir, 'session-summary-out');
+    await fs.writeJson(workflowPath, {
+      name: 'session-summary',
+      steps: [
+        { id: 'first', command: [executablePath, 'pi', 'alpha'] },
+        { id: 'second', command: [executablePath, 'pi', 'omega'] },
+      ],
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
+      undefined,
+      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-test-scope' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Juno session ids:');
+    expect(result.stdout).toContain('step 1 [first]: session-alpha');
+    expect(result.stdout).toContain('step 2 [second]: session-omega');
+    expect(result.stdout).toContain('continue: last session persisted for yy cc');
+    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
+    expect(envFile).toContain('session-omega');
+    expect(envFile).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
+    expect(envFile).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_');
+    expect(envFile).toContain('\\"subagent\\":\\"pi\\"');
+  });
+
   it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     const workflowPath = path.join(testDir, 'argv-capture.json');

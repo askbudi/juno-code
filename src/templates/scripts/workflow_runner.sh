@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,21 @@ from typing import Any
 JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
 TEMPLATE_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+CONTINUE_SESSION_ENV_KEY_BASE = "JUNO_CODE_LAST_SESSION_ID"
+CONTINUE_SETTINGS_ENV_KEY_BASE = "JUNO_CODE_LAST_EXECUTION_SETTINGS"
+CONTINUE_SCOPE_OVERRIDE_ENV_KEY = "JUNO_CODE_CONTINUE_SCOPE"
+CONTINUE_SCOPE_ENV_MARKERS = [
+    "TMUX_PANE",
+    "WEZTERM_PANE",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "TERM_SESSION_ID",
+    "WT_SESSION",
+    "ZELLIJ_PANE_ID",
+    "STY",
+    "WINDOWID",
+    "SSH_TTY",
+]
 ANSI_RESET = "\033[0m"
 STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
@@ -339,6 +355,142 @@ def juno_command_name(command: Any) -> str | None:
     return executable if executable in JUNO_COMMANDS else None
 
 
+def juno_subagent_name(command: Any) -> str | None:
+    parts = command_argv(command)
+    if not parts:
+        return None
+    executable = Path(parts[0]).name
+    if executable == "ypl":
+        return "pi"
+    if executable not in {"juno-code", "yy"}:
+        return None
+    idx = 1
+    while idx < len(parts):
+        part = parts[idx]
+        if part in {"--quiet", "--silent", "-q", "--verbose", "-v", "--live"}:
+            idx += 1
+            if part in {"--verbose", "-v"} and idx < len(parts) and not parts[idx].startswith("-"):
+                idx += 1
+            continue
+        if part.startswith("--verbose="):
+            idx += 1
+            continue
+        if part in {"-s", "--subagent", "-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file"}:
+            idx += 2
+            continue
+        if part.startswith("--subagent="):
+            return part.split("=", 1)[1] or None
+        return part if part in {"pi", "claude", "codex", "gemini", "cursor"} else None
+    return None
+
+
+def extract_model_from_command(command: Any) -> str | None:
+    parts = command_argv(command)
+    for idx, part in enumerate(parts):
+        if part in {"-m", "--model"} and idx + 1 < len(parts):
+            return parts[idx + 1]
+        if part.startswith("--model="):
+            return part.split("=", 1)[1]
+    return None
+
+
+def resolve_continue_scope_context(env: dict[str, str] | None = None) -> dict[str, str]:
+    env = env or os.environ
+    override = str(env.get(CONTINUE_SCOPE_OVERRIDE_ENV_KEY, "")).strip()
+    if override:
+        descriptor = f"{CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:{override}"
+        source = CONTINUE_SCOPE_OVERRIDE_ENV_KEY
+    else:
+        descriptor = ""
+        source = ""
+        for key in CONTINUE_SCOPE_ENV_MARKERS:
+            value = str(env.get(key, "")).strip()
+            if value:
+                descriptor = f"{key}:{value}"
+                source = key
+                break
+        if not descriptor:
+            descriptor = f"PPID:{os.getppid()}"
+            source = "process.ppid"
+    digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()[:16].upper()
+    scope_hash = f"SCOPE_{digest}"
+    return {
+        "scope_descriptor": descriptor,
+        "scope_source": source,
+        "scope_hash": scope_hash,
+        "short_hash": digest[:6],
+        "session_env_key": f"{CONTINUE_SESSION_ENV_KEY_BASE}_{scope_hash}",
+        "settings_env_key": f"{CONTINUE_SETTINGS_ENV_KEY_BASE}_{scope_hash}",
+    }
+
+
+def resolve_env_file_path(project_root: Path) -> Path:
+    config_path = project_root / ".juno_task" / "config.json"
+    env_file = ".env.juno"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        configured = config.get("envFilePath")
+        if isinstance(configured, str) and configured.strip():
+            env_file = configured.strip()
+    except Exception:
+        pass
+    candidate = Path(env_file)
+    return candidate if candidate.is_absolute() else project_root / candidate
+
+
+def shell_quote_env_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def upsert_env_variable(content: str, key: str, value: str) -> str:
+    line = f'{key}="{shell_quote_env_value(value)}"'
+    pattern = re.compile(rf"^(?:export\s+)?{re.escape(key)}=.*$", re.M)
+    if pattern.search(content):
+        return pattern.sub(line, content)
+    if not content:
+        return line + "\n"
+    return content.rstrip() + "\n" + line + "\n"
+
+
+def build_continue_settings(command: Any) -> dict[str, Any] | None:
+    subagent = juno_subagent_name(command)
+    if not subagent:
+        return None
+    settings: dict[str, Any] = {"version": 1, "subagent": subagent}
+    model = extract_model_from_command(command)
+    if model:
+        settings["model"] = model
+    return settings
+
+
+def persist_continue_context(project_root: Path, session_id: str, command: Any) -> dict[str, str] | None:
+    settings = build_continue_settings(command)
+    if not settings:
+        return None
+    context = resolve_continue_scope_context()
+    env_file = resolve_env_file_path(project_root)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    current = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    serialized_settings = json.dumps(settings, separators=(",", ":"))
+    current = upsert_env_variable(current, context["session_env_key"], session_id)
+    current = upsert_env_variable(current, context["settings_env_key"], serialized_settings)
+    env_file.write_text(current, encoding="utf-8")
+    os.environ[context["session_env_key"]] = session_id
+    os.environ[context["settings_env_key"]] = serialized_settings
+    return {**context, "env_file": str(env_file), "settings": serialized_settings}
+
+
+def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[str, str] | None) -> None:
+    if not session_steps:
+        return
+    print("\nJuno session ids:")
+    for item in session_steps:
+        print(f"  step {item['index']} [{item['id']}]: {item['session_id']}")
+    if persisted:
+        print(f"  continue: last session persisted for yy cc ({persisted['session_env_key']})")
+        print(f"  env_file: {persisted['env_file']}")
+
+
 def extract_session_id(stdout: str, stderr: str) -> str | None:
     for text in (stdout, stderr):
         for line in text.splitlines():
@@ -589,6 +741,8 @@ def run_workflow(args: argparse.Namespace) -> int:
     }
 
     final_exit = 0
+    session_steps: list[dict[str, Any]] = []
+    persisted_continue: dict[str, str] | None = None
     start_index = resolve_from_step(workflow["steps"], args.from_step)
     manifest["from_step"] = args.from_step
     manifest["from_step_index"] = start_index
@@ -699,6 +853,13 @@ def run_workflow(args: argparse.Namespace) -> int:
             result["failure_reason"] = "empty response from detected agent command"
         if stderr and status == "failed":
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
+        if is_juno_command and not result.get("session_id"):
+            fallback_session_id = extract_session_id(stdout, stderr)
+            if fallback_session_id:
+                result["session_id"] = fallback_session_id
+        if is_juno_command and result.get("session_id"):
+            session_steps.append({"index": index, "id": step_id, "session_id": result["session_id"], "command": command})
+            persisted_continue = persist_continue_context(project_root, str(result["session_id"]), command) or persisted_continue
         write_text(response_path, str(result.get("response", "")))
         write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
         if args.print_step_stdout:
@@ -720,6 +881,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     summary_stdout, summary_stderr, summary_exit, summary_command = maybe_run_summary_command(
         workflow, context, project_root, out_dir, bool(args.dry_run)
     )
+    print_session_summary(session_steps, persisted_continue)
     summary = (
         summary_stdout.rstrip() + "\n"
         if summary_stdout
@@ -849,6 +1011,8 @@ def build_parser() -> argparse.ArgumentParser:
   The runner does not inject --quiet; agent stdout is the canonical response while
   stderr is kept as an artifact and printed only when the step fails.
   Detected agent commands that exit 0 with an empty response are marked failed.
+  At the end, juno-code/yy/ypl step session ids are listed and the last one is
+  persisted to the project env file so `yy cc` can continue it in the same shell scope.
   Disable capture env per step with capture_session: false (or capture: false).
 
 Example boilerplates (written only when explicitly requested):
