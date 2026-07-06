@@ -151,11 +151,24 @@ Run multiple tasks simultaneously with the parallel runner:
 ./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
 ```
 
+#### Tmux handoff for operator investigations
+Use tmux handoff when each item needs a stable pane for a human to inspect later. In `--tmux-handoff`, completed panes/windows are not reused; each task keeps its scrollback plus per-task JSON result containing the session ID and final response. If there are more tasks than the cap, `--max-panes-per-session N` splits the work into auditable child sessions and writes a manifest.
+
+```bash
+./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/prod_triage.yaml
+./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/prod_triage.yaml
+# later
+tmux attach -t pc-prod-triage-1
+yy continue <session_id>
+```
+
+Inspect `{{ out_dir }}/parallel` (or the printed parallel runner artifact path) for `parallel_runner_status.json`, per-task `*.json`, `aggregation_*.json`, and `tmux_handoff_manifest.json` when capped splitting is used. These artifacts matter because aggregation avoids reconstructing work from scratch, manifests make multi-session handoff auditable, and tests protect the no-reuse contract so handoff panes are not accidentally overwritten before `yy continue <session_id>`.
+
 ### Workflow Runner
 Run ordered cron/operator workflows from YAML or stdin with durable artifacts:
 ```bash
 ./.juno_task/scripts/workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
-./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/production_triage_handoff.yaml
+./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/prod_triage.yaml
 ./.juno_task/scripts/workflow_runner.sh --init-example parallel-kanban-review .juno_task/workflows/parallel_kanban_review.yaml
 ./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/agent_chain.yaml --dry-run
 cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print-output summary
