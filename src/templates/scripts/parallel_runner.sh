@@ -3637,7 +3637,7 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
         "max_panes_per_session": cap,
         "total_items": len(args.kanban),
         "output_dir": str(output_dir) if output_dir else None,
-        "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+        "aggregation_glob": str(output_dir / "*" / "aggregation_*.json") if output_dir else None,
         "child_sessions": [],
     }
 
@@ -3655,6 +3655,9 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
         child_args.max_panes_per_session = None
 
         child_log_dir = parent_log_dir / child_short
+        child_output_dir = output_dir / child_short if output_dir else None
+        if child_output_dir:
+            child_output_dir.mkdir(parents=True, exist_ok=True)
         LOG_DIR = child_log_dir
         COMBINED_LOG = LOG_DIR / "parallel_runner.log"
         STATUS_FILE = LOG_DIR / "parallel_runner_status.json"
@@ -3662,7 +3665,7 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
         _write_run_status("running", f"tmux/{args.tmux}", session_name=child_short)
 
         child_info = run_tmux_mode(
-            child_args, pwd, prompt_source_label, prompt_template, output_dir,
+            child_args, pwd, prompt_source_label, prompt_template, child_output_dir,
             service, model, subagent_args, attach=False,
         )
         if not child_info:
@@ -3672,14 +3675,14 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
                 "log_dir": str(LOG_DIR),
                 "status_path": str(STATUS_FILE),
                 "items": list(chunk),
-                "output_dir": str(output_dir) if output_dir else None,
-                "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+                "output_dir": str(child_output_dir) if child_output_dir else None,
+                "aggregation_glob": str(child_output_dir / "aggregation_*.json") if child_output_dir else None,
             }
         child_info.update({
             "index": index,
             "task_ids": list(chunk),
-            "output_dir": str(output_dir) if output_dir else None,
-            "aggregation_glob": str(output_dir / "aggregation_*.json") if output_dir else None,
+            "output_dir": str(child_output_dir) if child_output_dir else None,
+            "aggregation_glob": str(child_output_dir / "aggregation_*.json") if child_output_dir else None,
             "attach_command": f"tmux attach -t {child_info['session_name']}",
             "stop_command": f"{Path(sys.argv[0]).name} --stop --name {child_short}",
             "state": "running",
