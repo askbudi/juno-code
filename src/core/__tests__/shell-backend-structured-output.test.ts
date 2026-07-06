@@ -458,6 +458,55 @@ describe('ShellBackend structured output', () => {
     }
   });
 
+  it('cleans oversized prompt files when spawn throws before a child process exists', async () => {
+    const originalThreshold = process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+    process.env.JUNO_PROMPT_ARG_MAX_BYTES = '4';
+
+    try {
+      const { servicesDir, workingDir } = await createStubPromptTransportService('claude');
+      const beforeFiles = new Set(
+        (await fs.readdir(path.join(os.tmpdir(), 'juno-code')).catch(() => [] as string[])).filter(
+          (name) => name.includes('claude_subagent') && name.endsWith('-prompt.md'),
+        ),
+      );
+
+      const backend = new ShellBackend();
+      backend.configure({
+        workingDirectory: `${workingDir}\0invalid`,
+        servicesPath: servicesDir,
+        enableJsonStreaming: true,
+      });
+      await backend.initialize();
+
+      const request: ToolCallRequest = {
+        toolName: 'claude_subagent',
+        arguments: {
+          instruction: 'oversized prompt that must be cleaned after a synchronous spawn throw',
+          project_path: workingDir,
+        },
+        timeout: 15000,
+        priority: 'normal',
+        metadata: {
+          sessionId: 'test-session',
+          iterationNumber: 1,
+        },
+      };
+
+      await expect(backend.execute(request)).rejects.toThrow('Failed to execute script');
+
+      const afterFiles = (
+        await fs.readdir(path.join(os.tmpdir(), 'juno-code')).catch(() => [] as string[])
+      ).filter((name) => name.includes('claude_subagent') && name.endsWith('-prompt.md'));
+      expect(afterFiles.filter((name) => !beforeFiles.has(name))).toEqual([]);
+    } finally {
+      if (originalThreshold !== undefined) {
+        process.env.JUNO_PROMPT_ARG_MAX_BYTES = originalThreshold;
+      } else {
+        delete process.env.JUNO_PROMPT_ARG_MAX_BYTES;
+      }
+    }
+  });
+
   it('does not enforce backend timeout for pi live sessions', async () => {
     const { servicesDir, workingDir } = await createStubPiLiveService();
 

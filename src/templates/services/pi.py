@@ -19,6 +19,11 @@ from typing import Dict, List, Optional, Set, TextIO, Tuple
 
 
 DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
+# Live mode still needs a short argv prompt that tells the operator/model where
+# to read the continuation file. If tests or users set the generic threshold
+# below that instruction size, use this conservative effective floor for live
+# argv splitting rather than producing an argv prompt that violates its own cap.
+MIN_LIVE_PROMPT_ARG_MAX_BYTES = 4096
 PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"
 
 
@@ -141,6 +146,12 @@ class PiService:
     def _is_prompt_oversized(self, prompt: str) -> bool:
         return len(prompt.encode("utf-8")) > self._prompt_arg_max_bytes()
 
+    def _live_prompt_arg_max_bytes(self, header: str) -> int:
+        configured_limit = self._prompt_arg_max_bytes()
+        if configured_limit > len(header.encode("utf-8")):
+            return configured_limit
+        return max(configured_limit, MIN_LIVE_PROMPT_ARG_MAX_BYTES)
+
     def _create_managed_prompt_path(self) -> Path:
         prompt_dir = Path("/tmp/juno-code")
         prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +185,7 @@ class PiService:
             f"{prompt_path}\n\n"
             "Beginning of original prompt:\n"
         )
-        prefix_budget = self._prompt_arg_max_bytes() - len(header.encode("utf-8"))
+        prefix_budget = self._live_prompt_arg_max_bytes(header) - len(header.encode("utf-8"))
         beginning = self._utf8_prefix_within_bytes(prompt, prefix_budget)
         remainder = prompt[len(beginning):]
         prompt_path.write_text(remainder, encoding="utf-8")

@@ -299,6 +299,28 @@ class TestBuildPiCommand:
         self.svc._cleanup_managed_prompt_files()
         assert not os.path.exists(referenced_path)
 
+    def test_oversized_live_prompt_uses_safe_effective_floor_for_tiny_env_threshold(self, monkeypatch):
+        """A tiny env threshold should still produce a bounded, useful live prompt."""
+        monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "32")
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        large_prompt = "tiny threshold live prompt " + ("x" * 10000)
+        self.svc.prompt = large_prompt
+        args = _make_args(live=True)
+
+        cmd, stdin_prompt = self.svc.build_pi_command(args)
+        positional_prompt = cmd[-1]
+        referenced_path = positional_prompt.split("Read the remaining prompt from this continuation file before acting: ", 1)[1].split("\n", 1)[0]
+        positional_beginning = positional_prompt.split("Beginning of original prompt:\n", 1)[1]
+
+        assert stdin_prompt is None
+        assert "-p" not in cmd
+        assert large_prompt not in cmd
+        assert len(positional_prompt.encode("utf-8")) <= 4096
+        with open(referenced_path, "r", encoding="utf-8") as handle:
+            assert positional_beginning + handle.read() == large_prompt
+        self.svc._cleanup_managed_prompt_files()
+        assert not os.path.exists(referenced_path)
+
     def test_no_session_when_enabled(self):
         """build_pi_command includes --no-session when no_session=True."""
         self.svc.model_name = "anthropic/claude-sonnet-4-6"

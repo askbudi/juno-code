@@ -971,12 +971,35 @@ export class ShellBackend implements Backend {
         );
       }
 
-      // Spawn the process
-      const child: ChildProcess = spawn(command, args, {
-        env,
-        cwd: this.config!.workingDirectory,
-        stdio: shouldAttachLiveTerminal ? 'inherit' : ['pipe', 'pipe', 'pipe'],
-      });
+      const cleanupPromptFile = async (): Promise<void> => {
+        if (!promptTransport.promptFilePath) return;
+        try {
+          await fs.rm(promptTransport.promptFilePath, { force: true });
+        } catch (cleanupError) {
+          if (this.config?.debug) {
+            engineLogger.warn(
+              `Failed to clean prompt file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+            );
+          }
+        }
+      };
+
+      // Spawn the process. Keep this in a try/catch because spawn can throw
+      // synchronously for invalid options or platform argv/env failures before a
+      // ChildProcess exists to emit an `error` event. Oversized prompt files must
+      // still be cleaned in that path.
+      let child: ChildProcess;
+      try {
+        child = spawn(command, args, {
+          env,
+          cwd: this.config!.workingDirectory,
+          stdio: shouldAttachLiveTerminal ? 'inherit' : ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (error) {
+        await cleanupPromptFile();
+        reject(new Error(`Failed to execute script: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
 
       // Close stdin immediately for headless mode to avoid waiting for input.
       // In live Pi mode with terminal passthrough (including stdout-tty fallback),
@@ -992,19 +1015,6 @@ export class ShellBackend implements Backend {
       let stdoutCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let stderrCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let isProcessKilled = false;
-
-      const cleanupPromptFile = async (): Promise<void> => {
-        if (!promptTransport.promptFilePath) return;
-        try {
-          await fs.rm(promptTransport.promptFilePath, { force: true });
-        } catch (cleanupError) {
-          if (this.config?.debug) {
-            engineLogger.warn(
-              `Failed to clean prompt file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
-            );
-          }
-        }
-      };
 
       // Handle stdout (JSON streaming or TEXT streaming). Keep only a bounded tail
       // in memory; the structured capture file is the source of truth for final
