@@ -568,7 +568,10 @@ def persist_continue_context(project_root: Path, session_id: str, command: Any) 
 def select_continue_step(workflow: dict[str, Any], session_steps: list[dict[str, Any]]) -> dict[str, Any] | None:
     selected = str(workflow.get("continue_from_step") or "").strip()
     if not selected:
-        return session_steps[-1] if session_steps else None
+        for item in reversed(session_steps):
+            if item.get("status") == "success":
+                return item
+        return None
     for item in session_steps:
         if item.get("id") == selected or item.get("name") == selected:
             return item
@@ -1028,6 +1031,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                 "id": step_id,
                 "name": str(step.get("name") or ""),
                 "session_id": result["session_id"],
+                "status": result.get("status", status),
                 "command": command,
             })
         write_text(response_path, str(result.get("response", "")))

@@ -39,6 +39,9 @@ if [ -n "\${JUNO_SUBAGENT_CAPTURE_PATH:-}" ]; then
     printf '{"type":"result","subtype":"success","is_error":false,"result":"captured %s","session_id":"session-%s"}\n' "$prompt" "$prompt" > "$JUNO_SUBAGENT_CAPTURE_PATH"
   fi
 fi
+if [ "\${prompt:-}" = "fail" ]; then
+  exit 7
+fi
 `,
   );
   await fs.chmod(executablePath, 0o755);
@@ -724,6 +727,34 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
     const scope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-summary-session');
     expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scope}="session-summary"`);
+  });
+
+  it('keeps default yy cc handoff on the last successful agent when summary.command fails with a session', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'failed-summary-session.json');
+    const outDir = path.join(testDir, 'failed-summary-session-out');
+    await fs.writeJson(workflowPath, {
+      name: 'failed-summary-session',
+      steps: [{ id: 'normal', command: [executablePath, 'pi', 'normal'] }],
+      summary: { command: [executablePath, 'pi', 'fail'] },
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
+      undefined,
+      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-failed-summary-session' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('summary [summary]: session-fail');
+    expect(result.stdout).toContain('handoff: step 1 [normal] persisted for yy cc');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.summary.session_id).toBe('session-fail');
+    expect(manifest.summary.exit_code).toBe(7);
+    expect(manifest.continue.step_id).toBe('normal');
+    expect(manifest.continue.session_id).toBe('session-normal');
   });
 
   it('adopts top-level yy continue snapshots and persists them to the caller scope for yy cc', async () => {
