@@ -616,7 +616,7 @@ function setupNamedBranchCommands(program: Command): void {
           import('../core/session-branches.js'),
         ]);
         const config = await resolveWorkingDirectory(options);
-        const scope = resolveContinueScopeContext();
+        const scope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
         const branches = await branchesModule.listSessionBranches({
           workingDirectory: config.workingDirectory,
           scope,
@@ -689,7 +689,7 @@ ${chalk.blue.bold('Behavior:')}
           import('../core/session-branches.js'),
         ]);
         const config = await resolveWorkingDirectory(options);
-        const scope = resolveContinueScopeContext();
+        const scope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
         let targetBranchName = branchName;
 
         if (branchName === '+' || branchName === '-') {
@@ -790,7 +790,7 @@ function setupContinueScopeCommand(program: Command): void {
           },
         });
 
-        const currentScope = continueScope.resolveContinueScopeContext();
+        const currentScope = continueScope.resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
         const status = await continueScope.resolveContinueScopeStatus({
           workingDirectory: config.workingDirectory,
           ...(hash !== undefined ? { requestedHash: hash } : {}),

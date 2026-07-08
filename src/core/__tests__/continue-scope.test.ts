@@ -44,6 +44,74 @@ describe('continue-scope', () => {
     expect(context.settingsEnvKey).toBe(`${CONTINUE_SETTINGS_ENV_KEY_BASE}_${context.scopeHash}`);
   });
 
+  it('keeps same terminal marker isolated across different project roots', async () => {
+    const projectA = await createTempDir();
+    const projectB = await createTempDir();
+    const env = { TERM_SESSION_ID: 'shared-terminal-session' };
+
+    const scopeA = resolveContinueScopeContext(env, 4001, projectA);
+    const scopeB = resolveContinueScopeContext(env, 4001, projectB);
+
+    expect(scopeA.scopeHash).not.toBe(scopeB.scopeHash);
+    expect(scopeA.sessionEnvKey).not.toBe(scopeB.sessionEnvKey);
+    expect(scopeA.scopeDescriptor).toContain('PROJECT:');
+    expect(scopeB.scopeDescriptor).toContain('PROJECT:');
+  });
+
+  it('keeps same project root isolated across different shell lineages', async () => {
+    const workingDirectory = await createTempDir();
+    const env = { TERM_SESSION_ID: 'shared-terminal-session' };
+
+    const shellA = resolveContinueScopeContext(env, 5001, workingDirectory);
+    const shellB = resolveContinueScopeContext(env, 5002, workingDirectory);
+
+    expect(shellA.scopeHash).not.toBe(shellB.scopeHash);
+    expect(shellA.scopeDescriptor).toContain('SHELL_LINEAGE:5001');
+    expect(shellB.scopeDescriptor).toContain('SHELL_LINEAGE:5002');
+  });
+
+  it('keeps explicit override deterministic independent of cwd and parent lineage', async () => {
+    const projectA = await createTempDir();
+    const projectB = await createTempDir();
+    const env = {
+      [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'automation-scope',
+      TERM_SESSION_ID: 'ignored-terminal-session',
+    };
+
+    const scopeA = resolveContinueScopeContext(env, 6001, projectA);
+    const scopeB = resolveContinueScopeContext(env, 6002, projectB);
+
+    expect(scopeA.scopeSource).toBe(CONTINUE_SCOPE_OVERRIDE_ENV_KEY);
+    expect(scopeA.scopeHash).toBe(scopeB.scopeHash);
+    expect(scopeA.sessionEnvKey).toBe(scopeB.sessionEnvKey);
+    expect(scopeA.scopeDescriptor).toBe(`${CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:automation-scope`);
+  });
+
+  it('reports current hash and scoped env keys consistently for json-facing status', async () => {
+    const workingDirectory = await createTempDir();
+    const currentScope = resolveContinueScopeContext(
+      { TERM_SESSION_ID: 'json-facing-scope' },
+      7001,
+      workingDirectory,
+    );
+
+    const status = await resolveContinueScopeStatus({
+      workingDirectory,
+      currentScope,
+      env: {
+        [currentScope.sessionEnvKey]: 'session-json',
+        [currentScope.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'pi' }),
+      },
+    });
+
+    expect(status.status).toBe('finished');
+    expect(status.hash).toBe(currentScope.shortHash);
+    expect(status.fullHash).toBe(currentScope.scopeHash);
+    expect(status.sessionEnvKey).toBe(currentScope.sessionEnvKey);
+    expect(status.settingsEnvKey).toBe(currentScope.settingsEnvKey);
+    expect(status.sessionId).toBe('session-json');
+  });
+
   it('reports running when runtime marker pid is alive', async () => {
     const workingDirectory = await createTempDir();
     const context = resolveContinueScopeContext({

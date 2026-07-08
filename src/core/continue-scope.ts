@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import * as childProcess from 'node:child_process';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 
@@ -25,6 +26,8 @@ const CONTINUE_SCOPE_ENV_MARKERS: ReadonlyArray<string> = [
   'WINDOWID',
   'SSH_TTY',
 ];
+
+const CONTINUE_SCOPE_PARENT_LINEAGE_DEPTH = 8;
 
 interface ContinueScopeRuntimeEntry {
   pid: number;
@@ -71,6 +74,75 @@ function buildScopeHashes(scopeDescriptor: string): { scopeHash: string; shortHa
     scopeHash: `SCOPE_${digest}`,
     shortHash: digest.slice(0, CONTINUE_SCOPE_SHORT_HASH_LENGTH),
   };
+}
+
+function canonicalizeWorkingDirectory(workingDirectory: string): string {
+  const candidate = workingDirectory.trim() || process.cwd();
+  const absolutePath = path.resolve(candidate);
+
+  try {
+    return fs.realpathSync(absolutePath);
+  } catch {
+    return absolutePath;
+  }
+}
+
+function resolveParentPid(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 1) {
+    return null;
+  }
+
+  try {
+    const output = childProcess
+      .execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 500,
+      })
+      .trim();
+    const parentPid = Number(output);
+    return Number.isInteger(parentPid) && parentPid > 0 ? parentPid : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildParentShellLineage(fallbackParentPid: number): string {
+  const lineage: number[] = [];
+  let currentPid = fallbackParentPid;
+
+  for (let depth = 0; depth < CONTINUE_SCOPE_PARENT_LINEAGE_DEPTH; depth += 1) {
+    if (!Number.isInteger(currentPid) || currentPid <= 0 || lineage.includes(currentPid)) {
+      break;
+    }
+
+    lineage.push(currentPid);
+    const parentPid = resolveParentPid(currentPid);
+    if (!parentPid) {
+      break;
+    }
+    currentPid = parentPid;
+  }
+
+  return lineage.length > 0 ? lineage.join('>') : String(fallbackParentPid);
+}
+
+function collectTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
+  const markers: string[] = [];
+  for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
+    const rawValue = env[envKey];
+    if (typeof rawValue !== 'string') {
+      continue;
+    }
+
+    const markerValue = rawValue.trim();
+    if (!markerValue) {
+      continue;
+    }
+
+    markers.push(`${envKey}:${markerValue}`);
+  }
+  return markers;
 }
 
 function buildContextFromHash(fullHash: string, scopeSource: string): ContinueScopeContext {
@@ -246,6 +318,7 @@ function resolveTargetScopeHash(
 export function resolveContinueScopeContext(
   env: NodeJS.ProcessEnv = process.env,
   fallbackParentPid: number = process.ppid,
+  workingDirectory: string = process.cwd(),
 ): ContinueScopeContext {
   const overrideScope = env[CONTINUE_SCOPE_OVERRIDE_ENV_KEY]?.trim();
   let scopeDescriptor = '';
@@ -255,26 +328,19 @@ export function resolveContinueScopeContext(
     scopeDescriptor = `${CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:${overrideScope}`;
     scopeSource = CONTINUE_SCOPE_OVERRIDE_ENV_KEY;
   } else {
-    for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
-      const rawValue = env[envKey];
-      if (typeof rawValue !== 'string') {
-        continue;
-      }
+    const projectPath = canonicalizeWorkingDirectory(workingDirectory);
+    const shellLineage = buildParentShellLineage(fallbackParentPid);
+    const terminalMarkers = collectTerminalScopeMarkers(env);
+    const terminalDescriptor = terminalMarkers.length > 0 ? terminalMarkers.join('|') : 'none';
 
-      const markerValue = rawValue.trim();
-      if (!markerValue) {
-        continue;
-      }
-
-      scopeDescriptor = `${envKey}:${markerValue}`;
-      scopeSource = envKey;
-      break;
-    }
-  }
-
-  if (!scopeDescriptor) {
-    scopeDescriptor = `PPID:${fallbackParentPid}`;
-    scopeSource = 'process.ppid';
+    scopeDescriptor = [
+      `PROJECT:${projectPath}`,
+      `SHELL_LINEAGE:${shellLineage}`,
+      `TERMINAL:${terminalDescriptor}`,
+    ].join('\n');
+    scopeSource = terminalMarkers.length > 0
+      ? `project+shell_lineage+${terminalMarkers.map((marker) => marker.split(':', 1)[0]).join('+')}`
+      : 'project+shell_lineage';
   }
 
   const hashes = buildScopeHashes(scopeDescriptor);
@@ -333,7 +399,7 @@ export async function resolveContinueScopeStatus(options: {
   currentScope?: ContinueScopeContext;
 }): Promise<ContinueScopeStatusResult> {
   const env = options.env || process.env;
-  const currentScope = options.currentScope || resolveContinueScopeContext(env);
+  const currentScope = options.currentScope || resolveContinueScopeContext(env, process.ppid, options.workingDirectory);
   const runtimeFilePath = getRuntimeFilePath(options.workingDirectory);
   const runtimeDocument = await readRuntimeDocument(runtimeFilePath);
 

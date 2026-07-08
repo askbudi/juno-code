@@ -121,14 +121,17 @@ function applyContinueSettingsSnapshot(options: MainCommandOptions, settings: Co
   }
 }
 
-function readContinueSettingsSnapshotFromEnvironment(): ContinueSettingsSnapshot | null {
-  const continueScope = resolveContinueScopeContext();
+function readContinueSettingsSnapshotFromEnvironment(workingDirectory: string): ContinueSettingsSnapshot | null {
+  const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
   const rawSettings = process.env[continueScope.settingsEnvKey];
   return rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
 }
 
-function applyContinueSettingsFromEnvironmentIfPresent(options: MainCommandOptions): void {
-  const settings = readContinueSettingsSnapshotFromEnvironment();
+function applyContinueSettingsFromEnvironmentIfPresent(
+  options: MainCommandOptions,
+  workingDirectory: string,
+): void {
+  const settings = readContinueSettingsSnapshotFromEnvironment(workingDirectory);
   if (settings) {
     applyContinueSettingsSnapshot(options, settings);
   }
@@ -137,9 +140,9 @@ function applyContinueSettingsFromEnvironmentIfPresent(options: MainCommandOptio
 async function applyContinueContextFromEnvironment(
   options: MainCommandOptions,
   action = 'continue',
-  workingDirectory?: string,
+  workingDirectory: string = process.cwd(),
 ): Promise<void> {
-  const continueScope = resolveContinueScopeContext();
+  const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
   let sessionId = process.env[continueScope.sessionEnvKey]?.trim();
 
   if (workingDirectory) {
@@ -159,7 +162,7 @@ async function applyContinueContextFromEnvironment(
     ]);
   }
 
-  const settings = readContinueSettingsSnapshotFromEnvironment();
+  const settings = readContinueSettingsSnapshotFromEnvironment(workingDirectory);
   if (!settings) {
     throw new ValidationError('Previous execution settings are missing or invalid for this shell context', [
       'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
@@ -202,7 +205,7 @@ async function resolveNamedCloneOptions(options: MainCommandOptions, workingDire
     return;
   }
 
-  const continueScope = resolveContinueScopeContext();
+  const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
   const branches = await listSessionBranches({ workingDirectory, scope: continueScope });
 
   if (shouldAutoNameClone) {
@@ -309,7 +312,7 @@ export async function prepareSessionBranchExecution(
   // Named branch clone resolves its source from the branch registry instead of the active continue snapshot,
   // but it should still inherit saved runtime settings (model, maxIterations, tools, etc.) when available.
   if (options.cloneBranchName) {
-    applyContinueSettingsFromEnvironmentIfPresent(options);
+    applyContinueSettingsFromEnvironmentIfPresent(options, config.workingDirectory);
   } else if (options.continueFromLatest) {
     await applyContinueContextFromEnvironment(options, 'continue', config.workingDirectory);
   }
@@ -329,7 +332,7 @@ export async function resolveSessionBranchNameForSummary(
   if (options.continueFromLatest === true && options.cloneSession !== true) {
     const activeBranch = await getActiveSessionBranch({
       workingDirectory: config.workingDirectory,
-      scope: resolveContinueScopeContext(),
+      scope: resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory),
     });
     if (activeBranch?.name?.trim()) {
       return activeBranch.name.trim();
@@ -349,7 +352,7 @@ export async function syncSessionBranchExecutionResult(
     return;
   }
 
-  const continueScope = resolveContinueScopeContext();
+  const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
   const branches = await listSessionBranches({ workingDirectory: config.workingDirectory, scope: continueScope });
 
   if (options.cloneBranchName) {

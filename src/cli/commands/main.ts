@@ -438,7 +438,7 @@ async function persistContinueContext(
 
     const settings = buildContinueSettingsSnapshot(result.request);
     const serializedSettings = JSON.stringify(settings);
-    const continueScope = resolveContinueScopeContext();
+    const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
 
     process.env[continueScope.sessionEnvKey] = latestSessionId;
     process.env[continueScope.settingsEnvKey] = serializedSettings;
@@ -1849,7 +1849,7 @@ export async function mainCommandHandler(
       options.enableFeedback || false,
     );
 
-    const continueScope = resolveContinueScopeContext();
+    const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
     let continueScopeMarkedRunning = false;
     let exitCode: number | null = null;
 
