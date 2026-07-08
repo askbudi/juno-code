@@ -706,6 +706,67 @@ def execute_rendered_command(command: Any, project_root: Path, env: dict[str, st
     return subprocess.run(str(command), shell=True, cwd=str(project_root), text=True, capture_output=True, env=env)
 
 
+def build_command_env(
+    project_root: Path,
+    command: Any,
+    capture_enabled: bool,
+    capture_path: Path,
+    tool_id: str,
+    dry_run: bool,
+) -> tuple[dict[str, str], str | None]:
+    env = os.environ.copy()
+    if capture_enabled:
+        env["JUNO_TOOL_ID"] = tool_id
+        env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
+    else:
+        env.pop("JUNO_TOOL_ID", None)
+        env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
+    child_continue_session_before = (
+        read_child_continue_session(project_root) if detect_juno_command(command) and not dry_run else None
+    )
+    return env, child_continue_session_before
+
+
+def apply_agent_session_capture(
+    result: dict[str, Any],
+    project_root: Path,
+    stdout: str,
+    stderr: str,
+    capture_path: Path,
+    child_continue_session_before: str | None,
+    dry_run: bool,
+    *,
+    use_capture_result_as_response: bool,
+) -> None:
+    if result.get("capture_enabled") and not dry_run:
+        capture_payload, capture_warning = read_capture_payload(capture_path)
+        if capture_warning:
+            print(f"workflow_runner.sh: warning: {capture_warning}", file=sys.stderr)
+            result["capture_warning"] = capture_warning
+        if capture_payload is not None:
+            result["capture"] = capture_payload
+            session_id = capture_payload.get("session_id")
+            capture_result = capture_payload.get("result")
+            if isinstance(session_id, str):
+                result["session_id"] = session_id
+            if isinstance(capture_result, str):
+                result["capture_result"] = capture_result
+                if use_capture_result_as_response:
+                    result["response"] = capture_result
+        elif not capture_path.exists():
+            session_id = extract_session_id(stdout, stderr)
+            if session_id:
+                result["session_id"] = session_id
+    if not result.get("session_id"):
+        fallback_session_id = extract_session_id(stdout, stderr)
+        if not fallback_session_id and not dry_run:
+            child_continue_session_after = read_child_continue_session(project_root)
+            if child_continue_session_after and child_continue_session_after != child_continue_session_before:
+                fallback_session_id = child_continue_session_after
+        if fallback_session_id:
+            result["session_id"] = fallback_session_id
+
+
 def resolve_workflow_vars(workflow_vars: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """Resolve workflow vars against builtins and other vars before command rendering."""
     resolved = dict(workflow_vars)
@@ -735,19 +796,14 @@ def maybe_run_summary_command(
     is_juno_command = detect_juno_command(command)
     capture_enabled = bool(explicit.get("capture_session", explicit.get("capture", is_juno_command)))
     capture_path = out_dir / "summary.capture.json"
-    child_continue_session_before = read_child_continue_session(project_root) if is_juno_command and not dry_run else None
+    env, child_continue_session_before = build_command_env(
+        project_root, command, capture_enabled, capture_path, "workflow_summary", dry_run
+    )
     if dry_run:
         stdout = ""
         stderr = ""
         exit_code = 0
     else:
-        env = os.environ.copy()
-        if capture_enabled:
-            env["JUNO_TOOL_ID"] = "workflow_summary"
-            env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
-        else:
-            env.pop("JUNO_TOOL_ID", None)
-            env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
         proc = execute_rendered_command(command, project_root, env)
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -773,31 +829,16 @@ def maybe_run_summary_command(
             "capture_result": "",
             "session_id": "",
         }
-        if capture_enabled and not dry_run:
-            capture_payload, capture_warning = read_capture_payload(capture_path)
-            if capture_warning:
-                print(f"workflow_runner.sh: warning: {capture_warning}", file=sys.stderr)
-                result["capture_warning"] = capture_warning
-            if capture_payload is not None:
-                result["capture"] = capture_payload
-                session_id = capture_payload.get("session_id")
-                capture_result = capture_payload.get("result")
-                if isinstance(session_id, str):
-                    result["session_id"] = session_id
-                if isinstance(capture_result, str):
-                    result["capture_result"] = capture_result
-            elif not capture_path.exists():
-                session_id = extract_session_id(stdout, stderr)
-                if session_id:
-                    result["session_id"] = session_id
-        if not result.get("session_id"):
-            fallback_session_id = extract_session_id(stdout, stderr)
-            if not fallback_session_id and not dry_run:
-                child_continue_session_after = read_child_continue_session(project_root)
-                if child_continue_session_after and child_continue_session_after != child_continue_session_before:
-                    fallback_session_id = child_continue_session_after
-            if fallback_session_id:
-                result["session_id"] = fallback_session_id
+        apply_agent_session_capture(
+            result,
+            project_root,
+            stdout,
+            stderr,
+            capture_path,
+            child_continue_session_before,
+            dry_run,
+            use_capture_result_as_response=False,
+        )
     return stdout, stderr, exit_code, command, result
 
 
@@ -951,18 +992,12 @@ def run_workflow(args: argparse.Namespace) -> int:
         stdout = ""
         stderr = ""
         exit_code = 0
-        capture_warning: str | None = None
-        child_continue_session_before = read_child_continue_session(project_root) if is_juno_command and not args.dry_run else None
+        env, child_continue_session_before = build_command_env(
+            project_root, command, capture_enabled, capture_path, f"workflow_{step_slug}", bool(args.dry_run)
+        )
         if args.dry_run:
             status = "dry_run"
         else:
-            env = os.environ.copy()
-            if capture_enabled:
-                env["JUNO_TOOL_ID"] = f"workflow_{step_slug}"
-                env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
-            else:
-                env.pop("JUNO_TOOL_ID", None)
-                env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
             proc = execute_rendered_command(command, project_root, env)
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
@@ -993,38 +1028,23 @@ def run_workflow(args: argparse.Namespace) -> int:
             "capture_result": "",
             "session_id": "",
         }
-        if capture_enabled and not args.dry_run:
-            capture_payload, capture_warning = read_capture_payload(capture_path)
-            if capture_warning:
-                print(f"workflow_runner.sh: warning: {capture_warning}", file=sys.stderr)
-                result["capture_warning"] = capture_warning
-            if capture_payload is not None:
-                result["capture"] = capture_payload
-                session_id = capture_payload.get("session_id")
-                capture_result = capture_payload.get("result")
-                if isinstance(session_id, str):
-                    result["session_id"] = session_id
-                if isinstance(capture_result, str):
-                    result["capture_result"] = capture_result
-                    result["response"] = capture_result
-            elif not capture_path.exists():
-                session_id = extract_session_id(stdout, stderr)
-                if session_id:
-                    result["session_id"] = session_id
+        if is_juno_command or capture_enabled:
+            apply_agent_session_capture(
+                result,
+                project_root,
+                stdout,
+                stderr,
+                capture_path,
+                child_continue_session_before,
+                bool(args.dry_run),
+                use_capture_result_as_response=True,
+            )
         if is_juno_command and not args.dry_run and status == "success" and not str(result.get("response", "")).strip():
             status = "failed"
             result["status"] = status
             result["failure_reason"] = "empty response from detected agent command"
         if stderr and status == "failed":
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
-        if is_juno_command and not result.get("session_id"):
-            fallback_session_id = extract_session_id(stdout, stderr)
-            if not fallback_session_id and not args.dry_run:
-                child_continue_session_after = read_child_continue_session(project_root)
-                if child_continue_session_after and child_continue_session_after != child_continue_session_before:
-                    fallback_session_id = child_continue_session_after
-            if fallback_session_id:
-                result["session_id"] = fallback_session_id
         if is_juno_command and result.get("session_id"):
             session_steps.append({
                 "index": index,
