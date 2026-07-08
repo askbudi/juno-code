@@ -14,10 +14,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execa, type ExecaReturnValue } from 'execa';
-import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
+import {
+  createSessionContinuityConfig,
+  createSessionContinuityFixture,
+  explicitContinueScopeHash,
+} from './helpers/session-continuity-fixture.js';
 
 // Binary paths for testing
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
@@ -29,15 +33,6 @@ const BINARY_TIMEOUT = 30000; // 30 seconds
 
 // Temp directory for testing
 let tempDir: string;
-
-function explicitContinueScopeHash(scope: string): string {
-  const digest = createHash('sha256')
-    .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
-    .digest('hex')
-    .slice(0, 16)
-    .toUpperCase();
-  return `SCOPE_${digest}`;
-}
 
 function buildContinueSnapshotEnv(scope: string): Record<string, string> {
   const scopeHash = explicitContinueScopeHash(scope);
@@ -705,11 +700,7 @@ describe('Binary Execution Tests', () => {
 
     it('should parse clone <branch> <prompt> as named-branch shorthand instead of dropping the branch name into prompt text', async () => {
       const scope = 'binary-clone-branch-prompt-shorthand';
-      const scopeHash = `SCOPE_${createHash('sha256')
-        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
-        .digest('hex')
-        .slice(0, 16)
-        .toUpperCase()}`;
+      const scopeHash = explicitContinueScopeHash(scope);
       const config = {
         defaultSubagent: 'pi',
         defaultBackend: 'shell',
@@ -772,70 +763,27 @@ describe('Binary Execution Tests', () => {
 
     it('should list named branches as JSON and switch the active branch for the current scope', async () => {
       const scope = 'binary-named-branches';
-      const scopeHash = `SCOPE_${createHash('sha256')
-        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
-        .digest('hex')
-        .slice(0, 16)
-        .toUpperCase()}`;
-      const config = {
-        defaultSubagent: 'pi',
-        defaultBackend: 'shell',
-        defaultMaxIterations: 1,
-        defaultModel: ':pi',
-        defaultModels: { pi: ':pi' },
-        logLevel: 'info',
-        verbose: 0,
-        quiet: true,
-        mcpTimeout: 43200000,
-        mcpRetries: 3,
-        onHourlyLimit: 'raise',
-        interactive: true,
-        headlessMode: false,
-        workingDirectory: tempDir,
-        sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
-        envFileCopied: true,
-        hooks: {},
-      };
-
-      const settingsJson = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 1 });
-      await createMockProject({
-        '.env.juno': `JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_MAIN"\nJUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'\n`,
-        '.juno_task': {
-          'config.json': JSON.stringify(config, null, 2),
-          'session_branches.json': JSON.stringify(
-            {
-              version: 1,
-              scopes: {
-                [scopeHash]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_MAIN',
-                      parent: null,
-                      updated_at: '2026-06-27T00:00:00.000Z',
-                    },
-                    C: {
-                      session_id: 'SESSION_C',
-                      parent: 'main',
-                      source_session_id: 'SESSION_MAIN',
-                      updated_at: '2026-06-27T00:01:00.000Z',
-                    },
-                    D: {
-                      session_id: 'SESSION_D',
-                      parent: 'main',
-                      source_session_id: 'SESSION_MAIN',
-                      updated_at: '2026-06-27T00:02:00.000Z',
-                    },
-                  },
-                },
-              },
-            },
-            null,
-            2,
-          ),
-        },
+      const settings = { version: 1, subagent: 'pi', maxIterations: 1 };
+      const fixture = await createSessionContinuityFixture({
+        projectRoot: tempDir,
+        scope,
+        envSessionId: 'SESSION_MAIN',
+        settings,
+        config: createSessionContinuityConfig(tempDir, {
+          mcpTimeout: 43200000,
+          mcpRetries: 3,
+          interactive: true,
+          headlessMode: false,
+        }),
+        activeBranch: 'main',
+        branches: [
+          { name: 'main', sessionId: 'SESSION_MAIN' },
+          { name: 'C', sessionId: 'SESSION_C', parent: 'main', sourceSessionId: 'SESSION_MAIN' },
+          { name: 'D', sessionId: 'SESSION_D', parent: 'main', sourceSessionId: 'SESSION_MAIN' },
+        ],
       });
+      const scopeHash = fixture.scope.scopeHash;
+      const settingsJson = JSON.stringify(settings);
 
       const branchesResult = await executeCLI(['branches', '--json'], {
         env: { JUNO_CODE_CONTINUE_SCOPE: scope },
@@ -853,8 +801,8 @@ describe('Binary Execution Tests', () => {
       });
       expect(switchResult.exitCode).toBe(0);
       expect(switchResult.stdout).toContain('Switched to branch C');
-      let envFile = await fs.readFile(path.join(tempDir, '.env.juno'), 'utf-8');
-      expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_C"`);
+      await fixture.assertEnvSession('SESSION_C');
+      let envFile = await fixture.readEnvFile();
       expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
 
       const switchNextResult = await executeCLI(['switch', '+'], {
@@ -874,72 +822,29 @@ describe('Binary Execution Tests', () => {
       });
       expect(switchWrapPreviousResult.exitCode).toBe(0);
       expect(switchWrapPreviousResult.stdout).toContain('Switched to branch D');
-      envFile = await fs.readFile(path.join(tempDir, '.env.juno'), 'utf-8');
-      expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_D"`);
+      envFile = await fixture.readEnvFile();
       expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
-
-      const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
-      expect(updated.scopes[scopeHash].active).toBe('D');
+      await fixture.assertScopeInvariant('D', 'SESSION_D');
     });
 
     it('should run an inline prompt as continue after switching to a named branch', async () => {
       const scope = 'binary-switch-prompt-continues-branch';
-      const scopeHash = `SCOPE_${createHash('sha256')
-        .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
-        .digest('hex')
-        .slice(0, 16)
-        .toUpperCase()}`;
-      const config = {
-        defaultSubagent: 'pi',
-        defaultBackend: 'shell',
-        defaultMaxIterations: 1,
-        defaultModel: ':pi',
-        defaultModels: { pi: ':pi' },
-        logLevel: 'info',
-        verbose: 0,
-        quiet: true,
-        mcpTimeout: 43200000,
-        mcpRetries: 3,
-        onHourlyLimit: 'raise',
-        interactive: true,
-        headlessMode: false,
-        workingDirectory: tempDir,
-        sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
-        envFileCopied: true,
-        hooks: {},
-      };
-
-      await createMockProject({
-        '.juno_task': {
-          'config.json': JSON.stringify(config, null, 2),
-          'session_branches.json': JSON.stringify(
-            {
-              version: 1,
-              scopes: {
-                [scopeHash]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_MAIN',
-                      parent: null,
-                      updated_at: '2026-06-27T00:00:00.000Z',
-                    },
-                    C: {
-                      session_id: 'SESSION_C',
-                      parent: 'main',
-                      source_session_id: 'SESSION_MAIN',
-                      updated_at: '2026-06-27T00:01:00.000Z',
-                    },
-                  },
-                },
-              },
-            },
-            null,
-            2,
-          ),
-        },
+      const fixture = await createSessionContinuityFixture({
+        projectRoot: tempDir,
+        scope,
+        config: createSessionContinuityConfig(tempDir, {
+          mcpTimeout: 43200000,
+          mcpRetries: 3,
+          interactive: true,
+          headlessMode: false,
+        }),
+        activeBranch: 'main',
+        branches: [
+          { name: 'main', sessionId: 'SESSION_MAIN' },
+          { name: 'C', sessionId: 'SESSION_C', parent: 'main', sourceSessionId: 'SESSION_MAIN' },
+        ],
       });
+      const scopeHash = fixture.scope.scopeHash;
 
       const result = await executeCLI(['switch', 'C', 'continue C now', '-i', 'invalid'], {
         expectError: true,
@@ -960,8 +865,7 @@ describe('Binary Execution Tests', () => {
       expect(output).toContain('Max iterations must be a valid number');
       expect(output).not.toContain('Prompt is required for execution');
 
-      const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
-      expect(updated.scopes[scopeHash].active).toBe('C');
+      await fixture.assertActiveBranch('C', 'SESSION_C');
     });
 
     it('should expose continue --clone option', async () => {
@@ -974,83 +878,27 @@ describe('Binary Execution Tests', () => {
     it('should keep compiled yy cc scope/branch conflict checks isolated by shell scope', async () => {
       const scopeA = 'binary-session-continuity-pane-a';
       const scopeB = 'binary-session-continuity-pane-b';
-      const scopeHashA = explicitContinueScopeHash(scopeA);
-      const scopeHashB = explicitContinueScopeHash(scopeB);
-
-      const config = {
-        defaultSubagent: 'pi',
-        defaultBackend: 'shell',
-        defaultMaxIterations: 1,
-        defaultModel: ':pi',
-        defaultModels: { pi: ':pi' },
-        logLevel: 'info',
-        verbose: 0,
-        quiet: true,
-        mcpTimeout: 30000,
-        mcpRetries: 0,
-        onHourlyLimit: 'raise',
-        interactive: false,
-        headlessMode: true,
-        workingDirectory: tempDir,
-        sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
-        envFileCopied: true,
-        hooks: {},
-      };
-
-      await createMockProject({
-        '.juno_task': {
-          'config.json': JSON.stringify(config, null, 2),
-          'session_branches.json': JSON.stringify(
-            {
-              version: 1,
-              scopes: {
-                [scopeHashA]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_A',
-                      parent: null,
-                      updated_at: '2026-07-08T00:00:00.000Z',
-                    },
-                  },
-                },
-                [scopeHashB]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_B',
-                      parent: null,
-                      updated_at: '2026-07-08T00:00:00.000Z',
-                    },
-                  },
-                },
-              },
-            },
-            null,
-            2,
-          ),
-        },
+      const fixtureA = await createSessionContinuityFixture({
+        projectRoot: tempDir,
+        scope: scopeA,
+        envSessionId: 'SESSION_A',
+        settings: { version: 1, subagent: 'pi', maxIterations: 1 },
+        config: createSessionContinuityConfig(tempDir),
+        activeBranch: 'main',
+        branches: [{ name: 'main', sessionId: 'SESSION_A' }],
       });
-
-      const envA = {
-        JUNO_CODE_CONTINUE_SCOPE: scopeA,
-        [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_A',
-        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
-          version: 1,
-          subagent: 'pi',
-          maxIterations: 1,
-        }),
-      };
-      const envB = {
-        JUNO_CODE_CONTINUE_SCOPE: scopeB,
-        [`JUNO_CODE_LAST_SESSION_ID_${scopeHashB}`]: 'SESSION_B',
-        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashB}`]: JSON.stringify({
-          version: 1,
-          subagent: 'pi',
-          maxIterations: 1,
-        }),
-      };
+      const fixtureB = await createSessionContinuityFixture({
+        projectRoot: tempDir,
+        scope: scopeB,
+        envSessionId: 'SESSION_B',
+        settings: { version: 1, subagent: 'pi', maxIterations: 1 },
+        activeBranch: 'main',
+        branches: [{ name: 'main', sessionId: 'SESSION_B' }],
+      });
+      const scopeHashA = fixtureA.scope.scopeHash;
+      const scopeHashB = fixtureB.scope.scopeHash;
+      const envA = fixtureA.env;
+      const envB = fixtureB.env;
 
       const scopeStatusA = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: envA })).stdout);
       const scopeStatusB = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: envB })).stdout);
@@ -1078,10 +926,11 @@ describe('Binary Execution Tests', () => {
       expect(continueBOutput).toContain('Max iterations must be a valid number');
       expect(continueBOutput).not.toContain('Continue session mismatch for this shell context');
 
-      const branchState = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
+      const branchState = await fixtureA.readBranchState();
       expect(branchState.scopes[scopeHashA].branches.main.session_id).toBe('SESSION_A');
       expect(branchState.scopes[scopeHashB].branches.main.session_id).toBe('SESSION_B');
 
+      await fixtureA.writeEnvSession('SESSION_ENV_CONFLICT');
       const mismatchResult = await executeCLI(['cc', '-p', 'conflict should not dispatch', '-i', 'invalid'], {
         expectError: true,
         env: {
