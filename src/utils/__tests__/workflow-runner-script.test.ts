@@ -9,13 +9,17 @@ const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner.sh');
 
-function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
-  return spawnSync('python3', [templateScript, ...args], {
+function runWorkflowScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  return spawnSync('python3', [scriptPath, ...args], {
     input,
     cwd: repoRoot,
     encoding: 'utf8',
     env: env ? { ...process.env, ...env } : process.env,
   });
+}
+
+function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  return runWorkflowScript(templateScript, args, input, env);
 }
 
 function continueScopeHash(descriptor: string): string {
@@ -92,6 +96,39 @@ describe('workflow_runner.sh template script', () => {
     const templateContent = await fs.readFile(templateScript, 'utf8');
     expect(templateContent).toBe(await fs.readFile(runtimeScript, 'utf8'));
     expect(templateContent).not.toContain('_dt.UTC');
+  });
+
+  it('warns when a runtime copy differs from the installed workflow template', async () => {
+    const templateDir = path.join(testDir, 'templates');
+    const staleScript = path.join(testDir, 'workflow_runner.sh');
+    await fs.ensureDir(templateDir);
+    await fs.copyFile(templateScript, path.join(templateDir, 'workflow_runner.sh'));
+    await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
+
+    const result = runWorkflowScript(staleScript, ['--help'], undefined, {
+      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('workflow_runner.sh: warning: this runtime script differs from the installed juno-code template.');
+    expect(result.stderr).toContain(`installed template: ${await fs.realpath(path.join(templateDir, 'workflow_runner.sh'))}`);
+    expect(result.stderr).toContain('update with: yy scripts update --force');
+  });
+
+  it('allows workflow stale-runtime warnings to be disabled', async () => {
+    const templateDir = path.join(testDir, 'templates');
+    const staleScript = path.join(testDir, 'workflow_runner_skip.sh');
+    await fs.ensureDir(templateDir);
+    await fs.copyFile(templateScript, path.join(templateDir, 'workflow_runner.sh'));
+    await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
+
+    const result = runWorkflowScript(staleScript, ['--help'], undefined, {
+      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+      JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('runtime script differs');
   });
 
   it('documents workflow options, failure policy, and auto capture behavior in --help', () => {

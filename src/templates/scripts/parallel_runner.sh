@@ -116,6 +116,7 @@ Arguments:
 import argparse
 import copy
 import csv
+import hashlib
 import io
 import json
 import os
@@ -138,6 +139,83 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
+TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _is_package_template_path(path: Path) -> bool:
+    parts = path.parts
+    template_suffixes = (("dist", "templates", "scripts"), ("src", "templates", "scripts"))
+    for suffix in template_suffixes:
+        suffix_len = len(suffix)
+        if len(parts) >= suffix_len + 1 and tuple(parts[-suffix_len - 1 : -1]) == suffix:
+            return True
+    return False
+
+
+def _installed_template_candidates(script_name: str) -> list[Path]:
+    candidates: list[Path] = []
+    env_template_dir = os.environ.get(TEMPLATE_DIR_ENV)
+    if env_template_dir:
+        candidates.append(Path(env_template_dir).expanduser() / script_name)
+
+    for command_name in ("yy", "juno-code", "ypl"):
+        command_path = shutil.which(command_name)
+        if not command_path:
+            continue
+        try:
+            resolved = Path(command_path).resolve()
+        except OSError:
+            resolved = Path(command_path)
+        for parent in (resolved.parent, *resolved.parents):
+            candidates.append(parent / "dist" / "templates" / "scripts" / script_name)
+            candidates.append(parent / "templates" / "scripts" / script_name)
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def warn_if_runtime_script_is_stale(script_name: str) -> None:
+    if os.environ.get(STALE_CHECK_ENV) == "1":
+        return
+    try:
+        runtime_path = Path(__file__).resolve()
+        if not os.environ.get(TEMPLATE_DIR_ENV) and _is_package_template_path(runtime_path):
+            return
+        runtime_hash = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+        for template_path in _installed_template_candidates(script_name):
+            try:
+                installed_path = template_path.resolve()
+            except OSError:
+                installed_path = template_path
+            if installed_path == runtime_path or not template_path.is_file():
+                continue
+            installed_hash = hashlib.sha256(template_path.read_bytes()).hexdigest()
+            if runtime_hash != installed_hash:
+                print(
+                    f"{script_name}: warning: this runtime script differs from the installed juno-code template.\n"
+                    f"  runtime: {_display_path(runtime_path)}\n"
+                    f"  installed template: {installed_path}\n"
+                    "  update with: yy scripts update --force",
+                    file=sys.stderr,
+                )
+            return
+    except Exception:
+        return
 # _log_base is the flat root for discoverable session files (PID, pause, dashboard).
 # LOG_DIR (computed at startup in main()) nests under _log_base/{date}/{run_id}/
 # for per-task logs and the combined log — isolating concurrent/repeated runs.
@@ -3724,6 +3802,7 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
 def main():
     global LOG_DIR, COMBINED_LOG, STATUS_FILE, _run_id, _run_started_at
 
+    warn_if_runtime_script_is_stale("parallel_runner.sh")
     args = parse_args()
 
     if args.stop_all:

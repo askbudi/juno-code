@@ -8,12 +8,17 @@ const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/parallel_runner.sh');
 
-function runParallel(args: string[], input?: string) {
-  return spawnSync('python3', [templateScript, ...args], {
+function runParallelScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  return spawnSync('python3', [scriptPath, ...args], {
     input,
     cwd: repoRoot,
     encoding: 'utf8',
+    env: env ? { ...process.env, ...env } : process.env,
   });
+}
+
+function runParallel(args: string[], input?: string) {
+  return runParallelScript(templateScript, args, input);
 }
 
 describe('parallel_runner.sh command file foundation', () => {
@@ -31,6 +36,39 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(await fs.pathExists(templateScript)).toBe(true);
     expect(await fs.pathExists(runtimeScript)).toBe(true);
     expect(await fs.readFile(templateScript, 'utf8')).toBe(await fs.readFile(runtimeScript, 'utf8'));
+  });
+
+  it('warns when a runtime copy differs from the installed parallel template', async () => {
+    const templateDir = path.join(testDir, 'templates');
+    const staleScript = path.join(testDir, 'parallel_runner.sh');
+    await fs.ensureDir(templateDir);
+    await fs.copyFile(templateScript, path.join(templateDir, 'parallel_runner.sh'));
+    await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
+
+    const result = runParallelScript(staleScript, ['--help'], undefined, {
+      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('parallel_runner.sh: warning: this runtime script differs from the installed juno-code template.');
+    expect(result.stderr).toContain(`installed template: ${await fs.realpath(path.join(templateDir, 'parallel_runner.sh'))}`);
+    expect(result.stderr).toContain('update with: yy scripts update --force');
+  });
+
+  it('allows parallel stale-runtime warnings to be disabled', async () => {
+    const templateDir = path.join(testDir, 'templates');
+    const staleScript = path.join(testDir, 'parallel_runner_skip.sh');
+    await fs.ensureDir(templateDir);
+    await fs.copyFile(templateScript, path.join(templateDir, 'parallel_runner.sh'));
+    await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
+
+    const result = runParallelScript(staleScript, ['--help'], undefined, {
+      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+      JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('runtime script differs');
   });
 
   it('documents commands file mode, linting, generator, schema, and examples in --help', () => {
