@@ -798,7 +798,9 @@ describe('Binary Execution Tests', () => {
         hooks: {},
       };
 
+      const settingsJson = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 1 });
       await createMockProject({
+        '.env.juno': `JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_MAIN"\nJUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'\n`,
         '.juno_task': {
           'config.json': JSON.stringify(config, null, 2),
           'session_branches.json': JSON.stringify(
@@ -851,6 +853,9 @@ describe('Binary Execution Tests', () => {
       });
       expect(switchResult.exitCode).toBe(0);
       expect(switchResult.stdout).toContain('Switched to branch C');
+      let envFile = await fs.readFile(path.join(tempDir, '.env.juno'), 'utf-8');
+      expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_C"`);
+      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
 
       const switchNextResult = await executeCLI(['switch', '+'], {
         env: { JUNO_CODE_CONTINUE_SCOPE: scope },
@@ -869,6 +874,9 @@ describe('Binary Execution Tests', () => {
       });
       expect(switchWrapPreviousResult.exitCode).toBe(0);
       expect(switchWrapPreviousResult.stdout).toContain('Switched to branch D');
+      envFile = await fs.readFile(path.join(tempDir, '.env.juno'), 'utf-8');
+      expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_D"`);
+      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
 
       const updated = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
       expect(updated.scopes[scopeHash].active).toBe('D');

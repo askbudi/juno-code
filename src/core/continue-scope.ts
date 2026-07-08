@@ -28,6 +28,7 @@ const CONTINUE_SCOPE_ENV_MARKERS: ReadonlyArray<string> = [
 ];
 
 const CONTINUE_SCOPE_PARENT_LINEAGE_DEPTH = 8;
+const DEFAULT_CONTINUE_ENV_FILE_NAME = '.env.juno';
 
 interface ContinueScopeRuntimeEntry {
   pid: number;
@@ -159,6 +160,27 @@ function buildContextFromHash(fullHash: string, scopeSource: string): ContinueSc
 
 function getRuntimeFilePath(workingDirectory: string): string {
   return path.join(workingDirectory, '.juno_task', CONTINUE_SCOPE_RUNTIME_FILE_NAME);
+}
+
+function resolveContinueEnvFilePath(workingDirectory: string, configuredPath?: string): string {
+  const candidate = configuredPath && configuredPath.trim() ? configuredPath.trim() : DEFAULT_CONTINUE_ENV_FILE_NAME;
+  return path.isAbsolute(candidate) ? candidate : path.join(workingDirectory, candidate);
+}
+
+function upsertEnvVariable(content: string, key: string, value: string): string {
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const line = `${key}="${escaped}"`;
+  const pattern = new RegExp(`^(?:export\\s+)?${key}=.*$`, 'm');
+
+  if (pattern.test(content)) {
+    return content.replace(pattern, line);
+  }
+
+  if (!content) {
+    return `${line}\n`;
+  }
+
+  return `${content.replace(/\s*$/, '')}\n${line}\n`;
 }
 
 function parseRuntimeDocument(raw: string): ContinueScopeRuntimeDocument {
@@ -353,6 +375,39 @@ export function resolveContinueScopeContext(
     sessionEnvKey: `${CONTINUE_SESSION_ENV_KEY_BASE}_${hashes.scopeHash}`,
     settingsEnvKey: `${CONTINUE_SETTINGS_ENV_KEY_BASE}_${hashes.scopeHash}`,
   };
+}
+
+export async function persistContinueScopeSnapshot(options: {
+  workingDirectory: string;
+  envFilePath?: string | undefined;
+  context: ContinueScopeContext;
+  sessionId: string;
+  serializedSettings?: string | undefined;
+}): Promise<void> {
+  const sessionId = options.sessionId.trim();
+  if (!sessionId) {
+    throw new Error('Continue session id cannot be empty.');
+  }
+
+  process.env[options.context.sessionEnvKey] = sessionId;
+  if (options.serializedSettings !== undefined) {
+    process.env[options.context.settingsEnvKey] = options.serializedSettings;
+  }
+
+  const envFilePath = resolveContinueEnvFilePath(options.workingDirectory, options.envFilePath);
+  await fs.ensureDir(path.dirname(envFilePath));
+
+  let currentContent = '';
+  if (await fs.pathExists(envFilePath)) {
+    currentContent = await fs.readFile(envFilePath, 'utf-8');
+  }
+
+  currentContent = upsertEnvVariable(currentContent, options.context.sessionEnvKey, sessionId);
+  if (options.serializedSettings !== undefined) {
+    currentContent = upsertEnvVariable(currentContent, options.context.settingsEnvKey, options.serializedSettings);
+  }
+
+  await fs.writeFile(envFilePath, currentContent, 'utf-8');
 }
 
 export async function markContinueScopeRunning(

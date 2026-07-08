@@ -684,7 +684,7 @@ ${chalk.blue.bold('Behavior:')}
       }
 
       try {
-        const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
+        const [{ resolveContinueScopeContext, persistContinueScopeSnapshot }, branchesModule] = await Promise.all([
           import('../core/continue-scope.js'),
           import('../core/session-branches.js'),
         ]);
@@ -713,6 +713,12 @@ ${chalk.blue.bold('Behavior:')}
           workingDirectory: config.workingDirectory,
           scope,
           branchName: targetBranchName,
+        });
+        await persistContinueScopeSnapshot({
+          workingDirectory: config.workingDirectory,
+          envFilePath: config.envFilePath,
+          context: scope,
+          sessionId: active.sessionId,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
 

@@ -20,6 +20,7 @@ import { loadConfig } from '../../core/config.js';
 import {
   clearContinueScopeRunning,
   markContinueScopeRunning,
+  persistContinueScopeSnapshot,
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
 import { SessionBranchesError } from '../../core/session-branches.js';
@@ -103,8 +104,6 @@ interface SessionHistoryDocument {
 
 const SESSION_HISTORY_VERSION = 1;
 const SESSION_HISTORY_FILE_NAME = 'session_history.json';
-
-const DEFAULT_ENV_FILE_NAME = '.env.juno';
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -384,27 +383,6 @@ export function rewriteLeadingPromptShortcut(prompt: string, subagent: SubagentT
   }
 }
 
-function resolveContinueEnvFilePath(workingDirectory: string, configuredPath?: string): string {
-  const candidate = configuredPath && configuredPath.trim() ? configuredPath.trim() : DEFAULT_ENV_FILE_NAME;
-  return path.isAbsolute(candidate) ? candidate : path.join(workingDirectory, candidate);
-}
-
-function upsertEnvVariable(content: string, key: string, value: string): string {
-  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const line = `${key}="${escaped}"`;
-  const pattern = new RegExp(`^(?:export\\s+)?${key}=.*$`, 'm');
-
-  if (pattern.test(content)) {
-    return content.replace(pattern, line);
-  }
-
-  if (!content) {
-    return `${line}\n`;
-  }
-
-  return `${content.replace(/\s*$/, '')}\n${line}\n`;
-}
-
 function buildContinueSettingsSnapshot(request: ExecutionRequest): ContinueSettingsSnapshot {
   const snapshot: ContinueSettingsSnapshot = {
     version: CONTINUE_SETTINGS_VERSION,
@@ -440,21 +418,13 @@ async function persistContinueContext(
     const serializedSettings = JSON.stringify(settings);
     const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
 
-    process.env[continueScope.sessionEnvKey] = latestSessionId;
-    process.env[continueScope.settingsEnvKey] = serializedSettings;
-
-    const envFilePath = resolveContinueEnvFilePath(config.workingDirectory, config.envFilePath);
-    await fs.ensureDir(path.dirname(envFilePath));
-
-    let currentContent = '';
-    if (await fs.pathExists(envFilePath)) {
-      currentContent = await fs.readFile(envFilePath, 'utf-8');
-    }
-
-    currentContent = upsertEnvVariable(currentContent, continueScope.sessionEnvKey, latestSessionId);
-    currentContent = upsertEnvVariable(currentContent, continueScope.settingsEnvKey, serializedSettings);
-
-    await fs.writeFile(envFilePath, currentContent, 'utf-8');
+    await persistContinueScopeSnapshot({
+      workingDirectory: config.workingDirectory,
+      envFilePath: config.envFilePath,
+      context: continueScope,
+      sessionId: latestSessionId,
+      serializedSettings,
+    });
 
     if (verboseLevel >= 2) {
       console.error(
