@@ -20,9 +20,9 @@ import { loadConfig } from '../../core/config.js';
 import {
   clearContinueScopeRunning,
   markContinueScopeRunning,
-  persistContinueScopeSnapshot,
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
+import { persistContinueScopeSnapshot } from '../../core/session-continuity-state.js';
 import { SessionBranchesError } from '../../core/session-branches.js';
 import {
   getConfiguredDefaultModelForSubagent,

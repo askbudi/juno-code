@@ -9,6 +9,7 @@ import {
   upsertClonedSessionBranch,
   validateSessionBranchName,
 } from '../core/session-branches.js';
+import { resolveScopedContinueSessionState } from '../core/session-continuity-state.js';
 import type { ExecutionResult } from '../core/engine.js';
 import { ExecutionStatus } from '../core/engine.js';
 import type { SubagentType } from '../types/index.js';
@@ -142,19 +143,14 @@ async function applyContinueContextFromEnvironment(
   action = 'continue',
   workingDirectory: string = process.cwd(),
 ): Promise<void> {
-  const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
-  const envSessionId = process.env[continueScope.sessionEnvKey]?.trim() || '';
-  const activeBranch = workingDirectory
-    ? await getActiveSessionBranch({ workingDirectory, scope: continueScope })
-    : null;
-  const activeBranchSessionId = activeBranch?.sessionId.trim() || '';
+  const scopedState = await resolveScopedContinueSessionState({ workingDirectory });
 
-  if (envSessionId && activeBranchSessionId && envSessionId !== activeBranchSessionId) {
+  if (scopedState.hasEnvActiveBranchMismatch) {
     throw new ValidationError(
       [
         'Continue session mismatch for this shell context',
-        `scope ${continueScope.scopeHash} (${continueScope.scopeSource}) has env session '${envSessionId}'`,
-        `active branch '${activeBranch?.name}' points to session '${activeBranchSessionId}'`,
+        `scope ${scopedState.context.scopeHash} (${scopedState.context.scopeSource}) has env session '${scopedState.envSessionId}'`,
+        `active branch '${scopedState.activeBranch?.name}' points to session '${scopedState.activeBranchSessionId}'`,
       ].join(': '),
       [
         'Inspect the shell-scoped snapshot: juno-code continue-scope --json',
@@ -165,12 +161,12 @@ async function applyContinueContextFromEnvironment(
     );
   }
 
-  const sessionId = activeBranchSessionId || envSessionId;
+  const sessionId = scopedState.resolvedSessionId;
 
   if (!sessionId) {
     const commandHint = action === 'clone' ? 'clone' : 'continue';
     throw new ValidationError(`No previous session found to ${commandHint} in this shell context`, [
-      `Run a regular juno-code command in this same pane/tab first (scope source: ${continueScope.scopeSource})`,
+      `Run a regular juno-code command in this same pane/tab first (scope source: ${scopedState.context.scopeSource})`,
       action === 'clone'
         ? 'Or clone an explicit Pi session: juno-code --resume <session-id> --clone "your prompt"'
         : 'Or resume another session directly: juno-code --resume <session-id> "your next prompt"',

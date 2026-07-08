@@ -15,6 +15,7 @@ export default defineConfig({
       'dist',
       'coverage',
       'src/test-utils/**',
+      'src/**/__tests__/helpers/**',
       '**/*.d.ts',
       'src/cli/__tests__/utils.test.ts', // broken: references nonexistent modules (completion.js, test-runner.js)
     ],

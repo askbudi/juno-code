@@ -684,41 +684,12 @@ ${chalk.blue.bold('Behavior:')}
       }
 
       try {
-        const [{ resolveContinueScopeContext, persistContinueScopeSnapshot }, branchesModule] = await Promise.all([
-          import('../core/continue-scope.js'),
-          import('../core/session-branches.js'),
-        ]);
+        const { persistActiveSessionBranchSelection } = await import('../core/session-continuity-state.js');
         const config = await resolveWorkingDirectory(options);
-        const scope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
-        let targetBranchName = branchName;
-
-        if (branchName === '+' || branchName === '-') {
-          const branches = await branchesModule.listSessionBranches({
-            workingDirectory: config.workingDirectory,
-            scope,
-          });
-          if (branches.length === 0) {
-            throw new branchesModule.SessionBranchesError(
-              `No named session branches found for continue scope ${scope.scopeHash}.`,
-            );
-          }
-          const activeIndex = branches.findIndex((branch) => branch.active);
-          const currentIndex = activeIndex >= 0 ? activeIndex : 0;
-          const offset = branchName === '+' ? 1 : -1;
-          const nextIndex = (currentIndex + offset + branches.length) % branches.length;
-          targetBranchName = branches[nextIndex]?.name ?? branches[0]?.name ?? 'main';
-        }
-
-        const active = await branchesModule.setActiveSessionBranch({
-          workingDirectory: config.workingDirectory,
-          scope,
-          branchName: targetBranchName,
-        });
-        await persistContinueScopeSnapshot({
+        const active = await persistActiveSessionBranchSelection({
           workingDirectory: config.workingDirectory,
           envFilePath: config.envFilePath,
-          context: scope,
-          sessionId: active.sessionId,
+          branchName,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
 
