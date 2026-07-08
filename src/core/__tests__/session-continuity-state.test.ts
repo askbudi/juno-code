@@ -81,4 +81,33 @@ describe('session-continuity-state', () => {
     expect(state.resolvedSessionId).toBe('SESSION_C');
     expect(state.hasEnvActiveBranchMismatch).toBe(false);
   });
+
+  it('preserves scoped execution settings from env when branch switching creates the env file snapshot', async () => {
+    const workingDirectory = await createTempDir();
+    const context = resolveContinueScopeContext({ [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'state-switch-settings' }, 1, workingDirectory);
+    const serializedSettings = '{"version":1,"subagent":"claude","maxIterations":5}';
+
+    await resetMainSessionBranch({ workingDirectory, scope: context, sessionId: 'SESSION_MAIN' });
+    await upsertClonedSessionBranch({
+      workingDirectory,
+      scope: context,
+      branchName: 'C',
+      sessionId: 'SESSION_C',
+      parent: 'main',
+      sourceSessionId: 'SESSION_MAIN',
+    });
+
+    await persistActiveSessionBranchSelection({
+      workingDirectory,
+      context,
+      env: {
+        [context.settingsEnvKey]: serializedSettings,
+      },
+      branchName: 'C',
+    });
+
+    const envFile = await fs.readFile(path.join(workingDirectory, '.env.juno'), 'utf-8');
+    expect(envFile).toContain(`${context.sessionEnvKey}="SESSION_C"`);
+    expect(envFile).toContain(`${context.settingsEnvKey}="{\\"version\\":1,\\"subagent\\":\\"claude\\",\\"maxIterations\\":5}"`);
+  });
 });

@@ -157,11 +157,15 @@ export async function persistActiveSessionBranchSelection(
     branchName: targetBranchName,
   });
 
+  const env = options.env || process.env;
+  const serializedSettings = env[context.settingsEnvKey]?.trim() || undefined;
+
   await persistContinueScopeSnapshot({
     workingDirectory: options.workingDirectory,
     envFilePath: options.envFilePath,
     context,
     sessionId: active.sessionId,
+    serializedSettings,
   });
 
   return active;
