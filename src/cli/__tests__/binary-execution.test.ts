@@ -30,13 +30,17 @@ const BINARY_TIMEOUT = 30000; // 30 seconds
 // Temp directory for testing
 let tempDir: string;
 
-function buildContinueSnapshotEnv(scope: string): Record<string, string> {
+function explicitContinueScopeHash(scope: string): string {
   const digest = createHash('sha256')
     .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
     .digest('hex')
     .slice(0, 16)
     .toUpperCase();
-  const scopeHash = `SCOPE_${digest}`;
+  return `SCOPE_${digest}`;
+}
+
+function buildContinueSnapshotEnv(scope: string): Record<string, string> {
+  const scopeHash = explicitContinueScopeHash(scope);
 
   return {
     JUNO_CODE_CONTINUE_SCOPE: scope,
@@ -932,8 +936,13 @@ describe('Binary Execution Tests', () => {
       const result = await executeCLI(['switch', 'C', 'continue C now', '-i', 'invalid'], {
         expectError: true,
         env: {
-          ...buildContinueSnapshotEnv(scope),
           JUNO_CODE_CONTINUE_SCOPE: scope,
+          [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'SESSION_C',
+          [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
+            version: 1,
+            subagent: 'claude',
+            maxIterations: 5,
+          }),
         },
       });
       const output = result.all || `${result.stdout}\n${result.stderr}`;
@@ -952,6 +961,138 @@ describe('Binary Execution Tests', () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('--clone');
+    });
+
+    it('should keep compiled yy cc scope/branch conflict checks isolated by shell scope', async () => {
+      const scopeA = 'binary-session-continuity-pane-a';
+      const scopeB = 'binary-session-continuity-pane-b';
+      const scopeHashA = explicitContinueScopeHash(scopeA);
+      const scopeHashB = explicitContinueScopeHash(scopeB);
+
+      const config = {
+        defaultSubagent: 'pi',
+        defaultBackend: 'shell',
+        defaultMaxIterations: 1,
+        defaultModel: ':pi',
+        defaultModels: { pi: ':pi' },
+        logLevel: 'info',
+        verbose: 0,
+        quiet: true,
+        mcpTimeout: 30000,
+        mcpRetries: 0,
+        onHourlyLimit: 'raise',
+        interactive: false,
+        headlessMode: true,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
+        envFilePath: '.env.juno',
+        envFileCopied: true,
+        hooks: {},
+      };
+
+      await createMockProject({
+        '.juno_task': {
+          'config.json': JSON.stringify(config, null, 2),
+          'session_branches.json': JSON.stringify(
+            {
+              version: 1,
+              scopes: {
+                [scopeHashA]: {
+                  active: 'main',
+                  branches: {
+                    main: {
+                      session_id: 'SESSION_A',
+                      parent: null,
+                      updated_at: '2026-07-08T00:00:00.000Z',
+                    },
+                  },
+                },
+                [scopeHashB]: {
+                  active: 'main',
+                  branches: {
+                    main: {
+                      session_id: 'SESSION_B',
+                      parent: null,
+                      updated_at: '2026-07-08T00:00:00.000Z',
+                    },
+                  },
+                },
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      });
+
+      const envA = {
+        JUNO_CODE_CONTINUE_SCOPE: scopeA,
+        [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_A',
+        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          maxIterations: 1,
+        }),
+      };
+      const envB = {
+        JUNO_CODE_CONTINUE_SCOPE: scopeB,
+        [`JUNO_CODE_LAST_SESSION_ID_${scopeHashB}`]: 'SESSION_B',
+        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashB}`]: JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          maxIterations: 1,
+        }),
+      };
+
+      const scopeStatusA = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: envA })).stdout);
+      const scopeStatusB = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: envB })).stdout);
+      expect(scopeStatusA.fullHash).toBe(scopeHashA);
+      expect(scopeStatusB.fullHash).toBe(scopeHashB);
+      expect(scopeStatusA.fullHash).not.toBe(scopeStatusB.fullHash);
+      expect(scopeStatusA.sessionId).toBe('SESSION_A');
+      expect(scopeStatusB.sessionId).toBe('SESSION_B');
+
+      const continueA = await executeCLI(['cc', '-p', 'continue pane A', '-i', 'invalid'], {
+        expectError: true,
+        env: envA,
+      });
+      const continueAOutput = continueA.all || `${continueA.stdout}\n${continueA.stderr}`;
+      expect(continueA.exitCode).not.toBe(0);
+      expect(continueAOutput).toContain('Max iterations must be a valid number');
+      expect(continueAOutput).not.toContain('Continue session mismatch for this shell context');
+
+      const continueB = await executeCLI(['cc', '-p', 'continue pane B', '-i', 'invalid'], {
+        expectError: true,
+        env: envB,
+      });
+      const continueBOutput = continueB.all || `${continueB.stdout}\n${continueB.stderr}`;
+      expect(continueB.exitCode).not.toBe(0);
+      expect(continueBOutput).toContain('Max iterations must be a valid number');
+      expect(continueBOutput).not.toContain('Continue session mismatch for this shell context');
+
+      const branchState = await fs.readJson(path.join(tempDir, '.juno_task', 'session_branches.json'));
+      expect(branchState.scopes[scopeHashA].branches.main.session_id).toBe('SESSION_A');
+      expect(branchState.scopes[scopeHashB].branches.main.session_id).toBe('SESSION_B');
+
+      const mismatchResult = await executeCLI(['cc', '-p', 'conflict should not dispatch', '-i', 'invalid'], {
+        expectError: true,
+        env: {
+          JUNO_CODE_CONTINUE_SCOPE: scopeA,
+          [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_ENV_CONFLICT',
+          [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
+            version: 1,
+            subagent: 'pi',
+            maxIterations: 1,
+          }),
+        },
+      });
+      const mismatchOutput = mismatchResult.all || `${mismatchResult.stdout}\n${mismatchResult.stderr}`;
+      expect(mismatchResult.exitCode).not.toBe(0);
+      expect(mismatchOutput).toContain('Continue session mismatch for this shell context');
+      expect(mismatchOutput).toContain('SESSION_ENV_CONFLICT');
+      expect(mismatchOutput).toContain('SESSION_A');
+      expect(mismatchOutput).toContain('juno-code continue-scope --json');
+      expect(mismatchOutput).not.toContain('Max iterations must be a valid number');
     });
 
     it('should handle subagent direct commands (if implemented)', async () => {
