@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
@@ -15,6 +16,10 @@ function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
     encoding: 'utf8',
     env: env ? { ...process.env, ...env } : process.env,
   });
+}
+
+function continueScopeHash(descriptor: string): string {
+  return `SCOPE_${createHash('sha256').update(descriptor).digest('hex').slice(0, 16).toUpperCase()}`;
 }
 
 async function installFakeJunoExecutable(dir: string, name = 'yy') {
@@ -34,6 +39,33 @@ if [ -n "\${JUNO_SUBAGENT_CAPTURE_PATH:-}" ]; then
     printf '{"type":"result","subtype":"success","is_error":false,"result":"captured %s","session_id":"session-%s"}\n' "$prompt" "$prompt" > "$JUNO_SUBAGENT_CAPTURE_PATH"
   fi
 fi
+`,
+  );
+  await fs.chmod(executablePath, 0o755);
+  return { binDir, executablePath };
+}
+
+async function installFakeTopLevelPersistingJuno(dir: string, name = 'yy') {
+  const binDir = path.join(dir, 'bin');
+  await fs.ensureDir(binDir);
+  const executablePath = path.join(binDir, name);
+  await fs.writeFile(
+    executablePath,
+    `#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys
+prompt = sys.argv[-1] if len(sys.argv) > 1 else 'empty'
+descriptor = os.environ.get('JUNO_CODE_CONTINUE_SCOPE')
+if descriptor:
+    descriptor = 'JUNO_CODE_CONTINUE_SCOPE:' + descriptor.strip()
+else:
+    descriptor = 'PPID:' + str(os.getppid())
+scope = 'SCOPE_' + hashlib.sha256(descriptor.encode()).hexdigest()[:16].upper()
+env_file = pathlib.Path.cwd() / '.env.juno'
+settings = json.dumps({'version': 1, 'subagent': 'pi'}, separators=(',', ':'))
+with env_file.open('a', encoding='utf-8') as fh:
+    fh.write(f'JUNO_CODE_LAST_SESSION_ID_{scope}="session-{prompt}"\\n')
+    fh.write(f'JUNO_CODE_LAST_EXECUTION_SETTINGS_{scope}="{settings.replace(chr(34), chr(92)+chr(34))}"\\n')
+print('FINAL ' + prompt)
 `,
   );
   await fs.chmod(executablePath, 0o755);
@@ -649,12 +681,98 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     expect(result.stdout).toContain('Juno session ids:');
     expect(result.stdout).toContain('step 1 [first]: session-alpha');
     expect(result.stdout).toContain('step 2 [second]: session-omega');
-    expect(result.stdout).toContain('continue: last session persisted for yy cc');
+    expect(result.stdout).toContain('continue: step 2 [second] persisted for yy cc');
     const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
     expect(envFile).toContain('session-omega');
     expect(envFile).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
     expect(envFile).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_');
     expect(envFile).toContain('\\"subagent\\":\\"pi\\"');
+  });
+
+  it('adopts top-level yy continue snapshots and persists them to the caller scope for yy cc', async () => {
+    const { executablePath } = await installFakeTopLevelPersistingJuno(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'top-level-session.json');
+    const outDir = path.join(testDir, 'top-level-session-out');
+    await fs.writeJson(workflowPath, {
+      name: 'top-level-session',
+      steps: [{ id: 'agent', command: [executablePath, 'pi', 'child'] }],
+    });
+
+    const result = runWorkflow([
+      '--workflow',
+      workflowPath,
+      '--run-root',
+      testDir,
+      '--out-dir',
+      outDir,
+      '--print-output',
+      'none',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('step 1 [agent]: session-child');
+    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
+    const callerScope = continueScopeHash(`PPID:${process.pid}`);
+    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${callerScope}="session-child"`);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].session_id).toBe('session-child');
+    expect(manifest.continue.step_id).toBe('agent');
+  });
+
+  it('supports continue_from_step to persist a non-last agent session', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'continue-from-step.json');
+    const outDir = path.join(testDir, 'continue-from-step-out');
+    await fs.writeJson(workflowPath, {
+      name: 'continue-from-step',
+      continue_from_step: 'first',
+      steps: [
+        { id: 'first', command: [executablePath, 'pi', 'alpha'] },
+        { id: 'second', command: [executablePath, 'pi', 'omega'] },
+      ],
+    });
+
+    const result = runWorkflow([
+      '--workflow',
+      workflowPath,
+      '--run-root',
+      testDir,
+      '--out-dir',
+      outDir,
+      '--print-output',
+      'none',
+      ], undefined, { JUNO_CODE_CONTINUE_SCOPE: 'workflow-continue-from-step' });
+
+    expect(result.status).toBe(0);
+    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
+    const overrideScope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-continue-from-step');
+    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-alpha"`);
+    expect(envFile).not.toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-omega"`);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.continue.step_id).toBe('first');
+    expect(manifest.continue.session_id).toBe('session-alpha');
+  });
+
+  it('fails strict continue_from_step when the selected step has no session id', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'continue-from-missing-session.json');
+    await fs.writeJson(workflowPath, {
+      name: 'continue-from-missing-session',
+      continue_from_step: 'plain',
+      steps: [
+        { id: 'agent', command: [executablePath, 'pi', 'alpha'] },
+        { id: 'plain', command: 'printf done' },
+      ],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--print-output', 'none']);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("continue_from_step 'plain' did not produce a session_id");
   });
 
   it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {

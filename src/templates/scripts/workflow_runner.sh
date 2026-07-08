@@ -277,7 +277,9 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         raise WorkflowError("workflow must define a non-empty steps list")
     if "summary" in workflow and not isinstance(workflow["summary"], (str, dict, type(None))):
         raise WorkflowError("summary must be a string, mapping, or null")
+    continue_from_step = str(workflow.get("continue_from_step") or "").strip()
     seen: set[str] = set()
+    step_names: set[str] = set()
     for idx, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             raise WorkflowError(f"step {idx} must be a mapping")
@@ -289,8 +291,13 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         if step_id in seen:
             raise WorkflowError(f"duplicate step id: {step_id}")
         seen.add(step_id)
+        step_name = str(step.get("name") or "").strip()
+        if step_name:
+            step_names.add(step_name)
         if "command" not in step:
             raise WorkflowError(f"step {step_id} is missing required command")
+    if continue_from_step and continue_from_step not in seen and continue_from_step not in step_names:
+        raise WorkflowError(f"continue_from_step references unknown step: {continue_from_step}")
 
 
 def workflow_to_yaml(data: Any, indent: int = 0) -> str:
@@ -394,7 +401,7 @@ def extract_model_from_command(command: Any) -> str | None:
     return None
 
 
-def resolve_continue_scope_context(env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_continue_scope_context(env: dict[str, str] | None = None, fallback_parent_pid: int | None = None) -> dict[str, str]:
     env = env or os.environ
     override = str(env.get(CONTINUE_SCOPE_OVERRIDE_ENV_KEY, "")).strip()
     if override:
@@ -410,7 +417,7 @@ def resolve_continue_scope_context(env: dict[str, str] | None = None) -> dict[st
                 source = key
                 break
         if not descriptor:
-            descriptor = f"PPID:{os.getppid()}"
+            descriptor = f"PPID:{fallback_parent_pid if fallback_parent_pid is not None else os.getppid()}"
             source = "process.ppid"
     digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()[:16].upper()
     scope_hash = f"SCOPE_{digest}"
@@ -452,6 +459,23 @@ def upsert_env_variable(content: str, key: str, value: str) -> str:
     return content.rstrip() + "\n" + line + "\n"
 
 
+def unquote_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        value = value[1:-1]
+        return value.replace('\\"', '"').replace('\\\\', '\\')
+    return value
+
+
+def parse_env_variables(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in content.splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if match:
+            values[match.group(1)] = unquote_env_value(match.group(2))
+    return values
+
+
 def build_continue_settings(command: Any) -> dict[str, Any] | None:
     subagent = juno_subagent_name(command)
     if not subagent:
@@ -461,6 +485,62 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
     if model:
         settings["model"] = model
     return settings
+
+
+def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
+    branches_path = project_root / ".juno_task" / "session_branches.json"
+    now = _dt.datetime.now(_dt.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    try:
+        document = json.loads(branches_path.read_text(encoding="utf-8")) if branches_path.exists() else {}
+        if not isinstance(document, dict):
+            document = {}
+    except Exception:
+        document = {}
+    document["version"] = 1
+    scopes = document.setdefault("scopes", {})
+    if not isinstance(scopes, dict):
+        scopes = {}
+        document["scopes"] = scopes
+    scope_entry = scopes.setdefault(context["scope_hash"], {})
+    if not isinstance(scope_entry, dict):
+        scope_entry = {}
+        scopes[context["scope_hash"]] = scope_entry
+    scope_entry["active"] = "main"
+    branches = scope_entry.setdefault("branches", {})
+    if not isinstance(branches, dict):
+        branches = {}
+        scope_entry["branches"] = branches
+    branches["main"] = {"session_id": session_id, "parent": None, "updated_at": now}
+    branches_path.parent.mkdir(parents=True, exist_ok=True)
+    branches_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+def read_continue_snapshot(project_root: Path, context: dict[str, str]) -> dict[str, str] | None:
+    env_file = resolve_env_file_path(project_root)
+    if not env_file.exists():
+        return None
+    values = parse_env_variables(env_file.read_text(encoding="utf-8"))
+    session_id = values.get(context["session_env_key"], "").strip()
+    settings = values.get(context["settings_env_key"], "").strip()
+    if not session_id or not settings:
+        return None
+    try:
+        parsed_settings = json.loads(settings)
+    except Exception:
+        return None
+    if not isinstance(parsed_settings, dict):
+        return None
+    return {"session_id": session_id, "settings": settings, "env_file": str(env_file), **context}
+
+
+def read_child_continue_session(project_root: Path) -> str | None:
+    # Top-level yy/juno-code commands persist their own continue snapshot, but when
+    # launched by this runner without terminal markers their PPID fallback is the
+    # workflow_runner process. Adopt that child snapshot, then persist it to the
+    # caller's shell scope so `workflow_runner.sh ... ; yy cc` works.
+    child_context = resolve_continue_scope_context(fallback_parent_pid=os.getpid())
+    snapshot = read_continue_snapshot(project_root, child_context)
+    return snapshot["session_id"] if snapshot else None
 
 
 def persist_continue_context(project_root: Path, session_id: str, command: Any) -> dict[str, str] | None:
@@ -475,9 +555,20 @@ def persist_continue_context(project_root: Path, session_id: str, command: Any) 
     current = upsert_env_variable(current, context["session_env_key"], session_id)
     current = upsert_env_variable(current, context["settings_env_key"], serialized_settings)
     env_file.write_text(current, encoding="utf-8")
+    update_main_session_branch(project_root, context, session_id)
     os.environ[context["session_env_key"]] = session_id
     os.environ[context["settings_env_key"]] = serialized_settings
     return {**context, "env_file": str(env_file), "settings": serialized_settings}
+
+
+def select_continue_step(workflow: dict[str, Any], session_steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    selected = str(workflow.get("continue_from_step") or "").strip()
+    if not selected:
+        return session_steps[-1] if session_steps else None
+    for item in session_steps:
+        if item.get("id") == selected or item.get("name") == selected:
+            return item
+    raise WorkflowError(f"continue_from_step '{selected}' did not produce a session_id")
 
 
 def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[str, str] | None) -> None:
@@ -487,7 +578,11 @@ def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[s
     for item in session_steps:
         print(f"  step {item['index']} [{item['id']}]: {item['session_id']}")
     if persisted:
-        print(f"  continue: last session persisted for yy cc ({persisted['session_env_key']})")
+        selected_step = persisted.get("step_id")
+        if selected_step:
+            print(f"  continue: step {persisted.get('step_index')} [{selected_step}] persisted for yy cc ({persisted['session_env_key']})")
+        else:
+            print(f"  continue: last session persisted for yy cc ({persisted['session_env_key']})")
         print(f"  env_file: {persisted['env_file']}")
 
 
@@ -789,6 +884,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         stderr = ""
         exit_code = 0
         capture_warning: str | None = None
+        child_continue_session_before = read_child_continue_session(project_root) if is_juno_command and not args.dry_run else None
         if args.dry_run:
             status = "dry_run"
         else:
@@ -855,11 +951,20 @@ def run_workflow(args: argparse.Namespace) -> int:
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         if is_juno_command and not result.get("session_id"):
             fallback_session_id = extract_session_id(stdout, stderr)
+            if not fallback_session_id and not args.dry_run:
+                child_continue_session_after = read_child_continue_session(project_root)
+                if child_continue_session_after and child_continue_session_after != child_continue_session_before:
+                    fallback_session_id = child_continue_session_after
             if fallback_session_id:
                 result["session_id"] = fallback_session_id
         if is_juno_command and result.get("session_id"):
-            session_steps.append({"index": index, "id": step_id, "session_id": result["session_id"], "command": command})
-            persisted_continue = persist_continue_context(project_root, str(result["session_id"]), command) or persisted_continue
+            session_steps.append({
+                "index": index,
+                "id": step_id,
+                "name": str(step.get("name") or ""),
+                "session_id": result["session_id"],
+                "command": command,
+            })
         write_text(response_path, str(result.get("response", "")))
         write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
         if args.print_step_stdout:
@@ -878,6 +983,22 @@ def run_workflow(args: argparse.Namespace) -> int:
                 final_exit = exit_code or 1
                 break
 
+    selected_continue_step = select_continue_step(workflow, session_steps)
+    if selected_continue_step:
+        persisted_continue = persist_continue_context(
+            project_root, str(selected_continue_step["session_id"]), selected_continue_step["command"]
+        )
+        if persisted_continue:
+            persisted_continue["step_index"] = str(selected_continue_step["index"])
+            persisted_continue["step_id"] = str(selected_continue_step["id"])
+        manifest["continue"] = {
+            "step_index": selected_continue_step["index"],
+            "step_id": selected_continue_step["id"],
+            "session_id": selected_continue_step["session_id"],
+            "env_key": persisted_continue.get("session_env_key") if persisted_continue else "",
+        }
+    elif str(workflow.get("continue_from_step") or "").strip():
+        raise WorkflowError(f"continue_from_step '{workflow.get('continue_from_step')}' did not produce a session_id")
     summary_stdout, summary_stderr, summary_exit, summary_command = maybe_run_summary_command(
         workflow, context, project_root, out_dir, bool(args.dry_run)
     )
@@ -1326,6 +1447,8 @@ def build_parser() -> argparse.ArgumentParser:
   Detected agent commands that exit 0 with an empty response are marked failed.
   At the end, juno-code/yy/ypl step session ids are listed and the last one is
   persisted to the project env file so `yy cc` can continue it in the same shell scope.
+  Set top-level continue_from_step: <step-id-or-name> to persist a specific agent step;
+  explicit continue_from_step is strict and fails if that step has no session id.
   Disable capture env per step with capture_session: false (or capture: false).
 
 Helper commands:
