@@ -91,6 +91,73 @@ afterEach(async () => {
 });
 
 describe('session branch workflow', () => {
+  it('fails continueFromLatest when scoped env snapshot differs from the active branch session', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('continue-env-branch-mismatch');
+    process.env[scope.sessionEnvKey] = 'SESSION_ENV';
+    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 5 });
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    const options = { continueFromLatest: true } as MainCommandOptions;
+    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toMatchObject({
+      name: 'ValidationError',
+      message: expect.stringContaining('Continue session mismatch for this shell context'),
+      suggestions: expect.arrayContaining([
+        expect.stringContaining('juno-code continue-scope --json'),
+        expect.stringContaining('juno-code branches'),
+      ]),
+    });
+
+    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/SESSION_ENV/);
+    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/active branch 'C'/);
+    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/SESSION_C/);
+    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(new RegExp(scope.scopeHash));
+    expect(options.resume).toBeUndefined();
+  });
+
+  it('continues safely when scoped env snapshot and active branch session match', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('continue-env-branch-match');
+    process.env[scope.sessionEnvKey] = 'SESSION_C';
+    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 6 });
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+
+    const options = { continueFromLatest: true } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_C');
+    expect(options.maxIterations).toBe(6);
+  });
+
+  it('continues from only the scoped env snapshot when no named branches exist', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('continue-env-only');
+    process.env[scope.sessionEnvKey] = 'SESSION_ENV_ONLY';
+    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 4 });
+
+    const options = { continueFromLatest: true } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_ENV_ONLY');
+    expect(options.maxIterations).toBe(4);
+  });
+
+  it('continues from only the active branch when settings exist but the env session snapshot is absent', async () => {
+    const workingDirectory = await createTempDir();
+    const scope = setScope('continue-branch-only');
+    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 8 });
+    await seedBranches(workingDirectory, scope);
+    await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+
+    const options = { continueFromLatest: true } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('SESSION_D');
+    expect(options.maxIterations).toBe(8);
+  });
+
   it('prepares continue from the active branch in only the current shell scope so another pane cannot hijack routing', async () => {
     const workingDirectory = await createTempDir();
     const scopeA = setScope('pane-a');

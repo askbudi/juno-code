@@ -143,14 +143,29 @@ async function applyContinueContextFromEnvironment(
   workingDirectory: string = process.cwd(),
 ): Promise<void> {
   const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
-  let sessionId = process.env[continueScope.sessionEnvKey]?.trim();
+  const envSessionId = process.env[continueScope.sessionEnvKey]?.trim() || '';
+  const activeBranch = workingDirectory
+    ? await getActiveSessionBranch({ workingDirectory, scope: continueScope })
+    : null;
+  const activeBranchSessionId = activeBranch?.sessionId.trim() || '';
 
-  if (workingDirectory) {
-    const activeBranch = await getActiveSessionBranch({ workingDirectory, scope: continueScope });
-    if (activeBranch) {
-      sessionId = activeBranch.sessionId;
-    }
+  if (envSessionId && activeBranchSessionId && envSessionId !== activeBranchSessionId) {
+    throw new ValidationError(
+      [
+        'Continue session mismatch for this shell context',
+        `scope ${continueScope.scopeHash} (${continueScope.scopeSource}) has env session '${envSessionId}'`,
+        `active branch '${activeBranch?.name}' points to session '${activeBranchSessionId}'`,
+      ].join(': '),
+      [
+        'Inspect the shell-scoped snapshot: juno-code continue-scope --json',
+        'Inspect named session branches: juno-code branches',
+        `Switch to the intended branch or reset branch state before retrying ${action === 'clone' ? 'clone' : 'continue'}`,
+        'To bypass scoped continue resolution, resume explicitly: juno-code --resume <session-id> "your next prompt"',
+      ],
+    );
   }
+
+  const sessionId = activeBranchSessionId || envSessionId;
 
   if (!sessionId) {
     const commandHint = action === 'clone' ? 'clone' : 'continue';

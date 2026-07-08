@@ -1757,7 +1757,7 @@ describe('Main Command', () => {
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_MAIN_ENV';
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_C';
         process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
