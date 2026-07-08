@@ -559,6 +559,7 @@ ${chalk.blue.bold('Examples:')}
   juno-code clone early_reflect '@@reflect'
   juno-code clone --name C 'Explore C'
   juno-code clone --from C --name M 'Explore M'
+  juno-code --resume <session-id> --clone '@@close_loop'   # fork explicit session id
 
 ${chalk.blue.bold('Named branch behavior:')}
   clone 'prompt' auto-assigns the first available b-number branch (b1, b2, ...)
@@ -570,8 +571,11 @@ ${chalk.blue.bold('Named branch behavior:')}
   branch C into M. The target name main is reserved.
 
 ${chalk.blue.bold('Scope behavior:')}
-  Each shell/pane has its own active branch registry. For normal use you do not
-  need to name scopes manually; run juno-code branches to inspect this shell.
+  Each shell/pane has its own active branch registry. If a new tab says
+  "No named session branches found", run ypl 'init' in that tab, use the
+  original tab, or set JUNO_CODE_CONTINUE_SCOPE=<name> before shared runs.
+  Use --resume <id> --clone for explicit session ids; clone C --resume <id>
+  is not named-branch syntax.
 `,
   );
 
@@ -991,6 +995,63 @@ function displayBanner(verbose: number = 0): void {
 /**
  * Setup enhanced completion support
  */
+function setupScriptManagementCommands(program: Command): void {
+  const runUpdate = async (options: { force?: boolean; cwd?: string }) => {
+    const workingDirectory =
+      typeof options.cwd === 'string' && options.cwd.trim().length > 0
+        ? options.cwd.trim()
+        : process.cwd();
+    const { ScriptInstaller } = await import('../utils/script-installer.js');
+
+    if (options.force) {
+      console.log(chalk.blue('🔄 Force updating project scripts and Python dependencies...'));
+      const updated = await ScriptInstaller.forceUpdateAll(workingDirectory, false);
+      if (!updated) {
+        console.log(chalk.yellow('No scripts updated. Is this an initialized juno-code project with .juno_task/?'));
+      }
+      return;
+    }
+
+    console.log(chalk.blue('🔄 Updating missing/outdated project scripts...'));
+    const updated = await ScriptInstaller.autoUpdate(workingDirectory, false);
+    if (!updated) {
+      console.log(chalk.green('✓ Project scripts are already up to date'));
+    }
+  };
+
+  const scriptsCommand = program
+    .command('scripts')
+    .description('Manage installed .juno_task/scripts files')
+    .addHelpText(
+      'after',
+      `
+${chalk.blue.bold('Examples:')}
+  juno-code scripts update --force
+  yy scripts update --force
+
+${chalk.gray('This updates scripts from the currently installed juno-code package/templates.')}
+`,
+    );
+
+  scriptsCommand
+    .command('update')
+    .description('Install or refresh .juno_task/scripts from the current juno-code package')
+    .option('-f, --force', 'Force reinstall all scripts and run install_requirements.sh --force-update')
+    .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
+    .action(async (options) => {
+      await runUpdate(options);
+    });
+
+  program
+    .command('install-scripts')
+    .description('Alias for scripts update; install or refresh .juno_task/scripts')
+    .option('-f, --force', 'Force reinstall all scripts and run install_requirements.sh --force-update')
+    .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
+    .action(async (options) => {
+      await runUpdate(options);
+    });
+}
+
 function setupCompletion(program: Command): void {
   try {
     const completionCommand = new CompletionCommand();
@@ -1153,6 +1214,7 @@ ${chalk.blue('Examples:')}
   juno-code pi --no-tools 'Read-only analysis'
   juno-code pi --no-session 'One-off question'
   juno-code pi --resume <session-id> 'Continue work'
+  ypl --resume <session-id> '@@close_loop'  ${chalk.gray('# live resume; do not prefix with "clone C"')}
 
   ${chalk.gray('# Interactive live TUI mode')}
   juno-code pi --live -p '/skill:ralph-loop' -i 1
@@ -1164,6 +1226,7 @@ ${chalk.blue('Examples:')}
   yy clone C 'Explore C'           ${chalk.gray('# shorthand for --name C; runs prompt, does not switch')}
   yy clone --name C 'Explore C'    ${chalk.gray('# forks main into C, runs prompt, does not switch')}
   yy clone --from C --name M 'Explore M'
+  yy --resume <session-id> --clone '@@close_loop' ${chalk.gray('# fork explicit session id (not named)')}
   yy branches                      ${chalk.gray('# list branches; * marks active')}
   yy switch C                      ${chalk.gray('# future yy cc / juno-code continue follows C')}
   yy switch +                      ${chalk.gray('# cycle to next branch with wraparound')}
@@ -1172,8 +1235,11 @@ ${chalk.blue('Examples:')}
   yy cc 'Continue C'               ${chalk.gray('# updates only the active branch')}
 
   ${chalk.gray('# Branch rules')}
-  ${chalk.gray('Default branch is main; --name main is reserved; new root Pi runs and explicit')}
-  ${chalk.gray('--resume without --clone reset the registry back to main. Clone runs preserve it.')}
+  ${chalk.gray('Default branch is main; --name main is reserved; named clones require this')}
+  ${chalk.gray('shell/pane to have a branch registry. New tabs may need: ypl \'init\'.')}
+  ${chalk.gray('Use yy --resume <id> --clone for explicit ids; yy clone C --resume <id> is')}
+  ${chalk.gray('not named-branch syntax. ypl clone C ... sends "clone C" as prompt text.')}
+  ${chalk.gray('New root Pi runs and explicit --resume without --clone reset registry to main.')}
 
   ${chalk.gray('# File-based prompt')}
   juno-code pi -f instructions.md
@@ -1671,6 +1737,7 @@ async function main(): Promise<void> {
   program.addCommand(createServicesCommand());
   program.addCommand(createSkillsCommand());
   program.addCommand(createAuthCommand());
+  setupScriptManagementCommands(program);
 
   // Setup completion
   setupCompletion(program);
@@ -1751,10 +1818,15 @@ ${chalk.blue.bold('Examples:')}
   juno-code clone 'Explore approach A'
   juno-code clone --name C 'Explore C'
   juno-code clone --from C --name M 'Explore M'
+  juno-code --resume <session-id> --clone '@@close_loop'  ${chalk.gray('# explicit id fork')}
   juno-code branches
   juno-code switch C
   juno-code continue --clone 'Explore approach B'
   juno-code --resume <session-id> --clone 'Explore approach C'
+
+  ${chalk.gray('# Force-refresh installed project scripts from the current package')}
+  juno-code scripts update --force
+  juno-code install-scripts --force
 
   ${chalk.gray('# Query continue scope hash/status for scripts')}
   juno-code continue-scope --json

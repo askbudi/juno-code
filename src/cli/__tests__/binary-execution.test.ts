@@ -203,6 +203,23 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Commands:');
     });
 
+    it('should expose script update commands and accept --force without routing to an agent prompt', async () => {
+      const help = await executeCLI(['--help']);
+      expect(help.exitCode).toBe(0);
+      expect(help.stdout).toContain('install-scripts');
+      expect(help.stdout).toContain('scripts');
+
+      const installScripts = await executeCLI(['install-scripts', '--force']);
+      expect(installScripts.exitCode).toBe(0);
+      expect(`${installScripts.stdout}\n${installScripts.stderr}`).toContain('Force updating project scripts');
+      expect(`${installScripts.stdout}\n${installScripts.stderr}`).not.toContain('Executing with');
+
+      const scriptsUpdate = await executeCLI(['scripts', 'update', '--force']);
+      expect(scriptsUpdate.exitCode).toBe(0);
+      expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).toContain('Force updating project scripts');
+      expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
+    });
+
     it('should include shell safety guidance for prompt input', async () => {
       const result = await executeCLI(['--help']);
 
