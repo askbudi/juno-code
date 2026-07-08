@@ -296,8 +296,12 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             step_names.add(step_name)
         if "command" not in step:
             raise WorkflowError(f"step {step_id} is missing required command")
-    if continue_from_step and continue_from_step not in seen and continue_from_step not in step_names:
+    summary = workflow.get("summary")
+    summary_has_command = isinstance(summary, dict) and "command" in summary
+    if continue_from_step and continue_from_step != "summary" and continue_from_step not in seen and continue_from_step not in step_names:
         raise WorkflowError(f"continue_from_step references unknown step: {continue_from_step}")
+    if continue_from_step == "summary" and not summary_has_command:
+        raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
 
 def workflow_to_yaml(data: Any, indent: int = 0) -> str:
@@ -571,18 +575,24 @@ def select_continue_step(workflow: dict[str, Any], session_steps: list[dict[str,
     raise WorkflowError(f"continue_from_step '{selected}' did not produce a session_id")
 
 
+def session_label(item: dict[str, Any]) -> str:
+    if item.get("kind") == "summary":
+        return "summary [summary]"
+    return f"step {item['index']} [{item['id']}]"
+
+
 def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[str, str] | None) -> None:
     if not session_steps:
         return
-    print("\nJuno session ids:")
+    print("\nSession ID(s):")
     for item in session_steps:
-        print(f"  step {item['index']} [{item['id']}]: {item['session_id']}")
+        print(f"  {session_label(item)}: {item['session_id']}")
     if persisted:
-        selected_step = persisted.get("step_id")
-        if selected_step:
-            print(f"  continue: step {persisted.get('step_index')} [{selected_step}] persisted for yy cc ({persisted['session_env_key']})")
+        selected_label = persisted.get("selected_label")
+        if selected_label:
+            print(f"  handoff: {selected_label} persisted for yy cc ({persisted['session_env_key']})")
         else:
-            print(f"  continue: last session persisted for yy cc ({persisted['session_env_key']})")
+            print(f"  handoff: last session persisted for yy cc ({persisted['session_env_key']})")
         print(f"  env_file: {persisted['env_file']}")
 
 
@@ -711,26 +721,81 @@ def resolve_workflow_vars(workflow_vars: dict[str, Any], context: dict[str, Any]
 
 def maybe_run_summary_command(
     workflow: dict[str, Any], context: dict[str, Any], project_root: Path, out_dir: Path, dry_run: bool
-) -> tuple[str, str, int, Any | None]:
+) -> tuple[str, str, int, Any | None, dict[str, Any] | None]:
     explicit = workflow.get("summary")
     if not isinstance(explicit, dict) or "command" not in explicit:
         write_text(out_dir / "summary.stdout.txt", "")
         write_text(out_dir / "summary.stderr.txt", "")
-        return "", "", 0, None
+        return "", "", 0, None, None
     command = render(explicit["command"], context)
     write_text(out_dir / "summary.command.sh", command_preview(command) + "\n")
+    is_juno_command = detect_juno_command(command)
+    capture_enabled = bool(explicit.get("capture_session", explicit.get("capture", is_juno_command)))
+    capture_path = out_dir / "summary.capture.json"
+    child_continue_session_before = read_child_continue_session(project_root) if is_juno_command and not dry_run else None
     if dry_run:
         stdout = ""
         stderr = ""
         exit_code = 0
     else:
-        proc = execute_rendered_command(command, project_root, os.environ.copy())
+        env = os.environ.copy()
+        if capture_enabled:
+            env["JUNO_TOOL_ID"] = "workflow_summary"
+            env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
+        else:
+            env.pop("JUNO_TOOL_ID", None)
+            env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
+        proc = execute_rendered_command(command, project_root, env)
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         exit_code = int(proc.returncode)
     write_text(out_dir / "summary.stdout.txt", stdout)
     write_text(out_dir / "summary.stderr.txt", stderr)
-    return stdout, stderr, exit_code, command
+    result: dict[str, Any] | None = None
+    if is_juno_command:
+        result = {
+            "id": "summary",
+            "kind": "summary",
+            "index": "summary",
+            "name": "summary",
+            "command": command,
+            "command_preview": command_preview(command),
+            "status": "dry_run" if dry_run else ("success" if exit_code == 0 else "failed"),
+            "exit_code": exit_code,
+            "stdout_path": str(out_dir / "summary.stdout.txt"),
+            "stderr_path": str(out_dir / "summary.stderr.txt"),
+            "capture_enabled": capture_enabled,
+            "capture_json": str(capture_path) if capture_enabled else "",
+            "capture_json_path": str(capture_path) if capture_enabled else "",
+            "capture_result": "",
+            "session_id": "",
+        }
+        if capture_enabled and not dry_run:
+            capture_payload, capture_warning = read_capture_payload(capture_path)
+            if capture_warning:
+                print(f"workflow_runner.sh: warning: {capture_warning}", file=sys.stderr)
+                result["capture_warning"] = capture_warning
+            if capture_payload is not None:
+                result["capture"] = capture_payload
+                session_id = capture_payload.get("session_id")
+                capture_result = capture_payload.get("result")
+                if isinstance(session_id, str):
+                    result["session_id"] = session_id
+                if isinstance(capture_result, str):
+                    result["capture_result"] = capture_result
+            elif not capture_path.exists():
+                session_id = extract_session_id(stdout, stderr)
+                if session_id:
+                    result["session_id"] = session_id
+        if not result.get("session_id"):
+            fallback_session_id = extract_session_id(stdout, stderr)
+            if not fallback_session_id and not dry_run:
+                child_continue_session_after = read_child_continue_session(project_root)
+                if child_continue_session_after and child_continue_session_after != child_continue_session_before:
+                    fallback_session_id = child_continue_session_after
+            if fallback_session_id:
+                result["session_id"] = fallback_session_id
+    return stdout, stderr, exit_code, command, result
 
 
 def resolve_from_step(steps: list[dict[str, Any]], selector: str | None) -> int:
@@ -983,6 +1048,12 @@ def run_workflow(args: argparse.Namespace) -> int:
                 final_exit = exit_code or 1
                 break
 
+    summary_stdout, summary_stderr, summary_exit, summary_command, summary_session = maybe_run_summary_command(
+        workflow, context, project_root, out_dir, bool(args.dry_run)
+    )
+    if summary_session and summary_session.get("session_id"):
+        session_steps.append(summary_session)
+
     selected_continue_step = select_continue_step(workflow, session_steps)
     if selected_continue_step:
         persisted_continue = persist_continue_context(
@@ -991,6 +1062,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         if persisted_continue:
             persisted_continue["step_index"] = str(selected_continue_step["index"])
             persisted_continue["step_id"] = str(selected_continue_step["id"])
+            persisted_continue["selected_label"] = session_label(selected_continue_step)
         manifest["continue"] = {
             "step_index": selected_continue_step["index"],
             "step_id": selected_continue_step["id"],
@@ -999,12 +1071,11 @@ def run_workflow(args: argparse.Namespace) -> int:
         }
     elif str(workflow.get("continue_from_step") or "").strip():
         raise WorkflowError(f"continue_from_step '{workflow.get('continue_from_step')}' did not produce a session_id")
-    summary_stdout, summary_stderr, summary_exit, summary_command = maybe_run_summary_command(
-        workflow, context, project_root, out_dir, bool(args.dry_run)
-    )
-    print_session_summary(session_steps, persisted_continue)
+    summary_capture_result = str(summary_session.get("capture_result", "")) if summary_session else ""
     summary = (
-        summary_stdout.rstrip() + "\n"
+        summary_capture_result.rstrip() + "\n"
+        if summary_capture_result
+        else summary_stdout.rstrip() + "\n"
         if summary_stdout
         else make_summary(workflow, context, manifest["failed_steps"], bool(args.dry_run))
     )
@@ -1016,6 +1087,12 @@ def run_workflow(args: argparse.Namespace) -> int:
         "exit_code": summary_exit,
         "command": summary_command,
     }
+    if summary_session:
+        manifest["summary"]["session_id"] = summary_session.get("session_id", "")
+        manifest["summary"]["capture_enabled"] = summary_session.get("capture_enabled", False)
+        manifest["summary"]["capture_json"] = summary_session.get("capture_json", "")
+        manifest["summary"]["capture_json_path"] = summary_session.get("capture_json_path", "")
+        manifest["summary"]["capture_result"] = summary_session.get("capture_result", "")
     if summary_stdout:
         manifest["summary"]["stdout"] = summary_stdout
     if summary_stderr:
@@ -1026,6 +1103,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     output = selected_final_output(args.print_output, context, summary)
     if output:
         print("\n" + output, end="" if output.endswith("\n") else "\n")
+    print_session_summary(session_steps, persisted_continue)
     return final_exit
 
 
@@ -1445,11 +1523,11 @@ def build_parser() -> argparse.ArgumentParser:
   The runner does not inject --quiet; agent stdout is the canonical response while
   stderr is kept as an artifact and printed only when the step fails.
   Detected agent commands that exit 0 with an empty response are marked failed.
-  At the end, juno-code/yy/ypl step session ids are listed and the last one is
-  persisted to the project env file so `yy cc` can continue it in the same shell scope.
-  Set top-level continue_from_step: <step-id-or-name> to persist a specific agent step;
-  explicit continue_from_step is strict and fails if that step has no session id.
-  Disable capture env per step with capture_session: false (or capture: false).
+  At the end, juno-code/yy/ypl step and summary.command session IDs are listed;
+  the final successful agent command is persisted so `yy cc` continues it in the same shell scope.
+  Set top-level continue_from_step: <step-id-or-name-or-summary> to persist a specific agent command;
+  explicit continue_from_step is strict and fails if that command has no session id.
+  Disable capture env per step/summary command with capture_session: false (or capture: false).
 
 Helper commands:
   workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns

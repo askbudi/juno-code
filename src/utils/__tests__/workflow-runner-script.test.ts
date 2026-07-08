@@ -680,15 +680,50 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     );
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Juno session ids:');
+    expect(result.stdout).toContain('Session ID(s):');
     expect(result.stdout).toContain('step 1 [first]: session-alpha');
     expect(result.stdout).toContain('step 2 [second]: session-omega');
-    expect(result.stdout).toContain('continue: step 2 [second] persisted for yy cc');
+    expect(result.stdout).toContain('handoff: step 2 [second] persisted for yy cc');
     const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
     expect(envFile).toContain('session-omega');
     expect(envFile).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
     expect(envFile).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_');
     expect(envFile).toContain('\\"subagent\\":\\"pi\\"');
+  });
+
+  it('captures summary.command sessions and uses summary as the default yy cc handoff', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'summary-session.json');
+    const outDir = path.join(testDir, 'summary-session-out');
+    await fs.writeJson(workflowPath, {
+      name: 'summary-session',
+      steps: [{ id: 'normal', command: [executablePath, 'pi', 'normal'] }],
+      summary: { command: [executablePath, 'pi', 'summary'] },
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir],
+      undefined,
+      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-summary-session' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('captured summary');
+    expect(result.stdout).toContain('Session ID(s):');
+    expect(result.stdout).toContain('step 1 [normal]: session-normal');
+    expect(result.stdout).toContain('summary [summary]: session-summary');
+    expect(result.stdout).toContain('handoff: summary [summary] persisted for yy cc');
+    expect(result.stdout.indexOf('captured summary')).toBeLessThan(result.stdout.indexOf('Session ID(s):'));
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.summary.session_id).toBe('session-summary');
+    expect(manifest.summary.capture_result).toBe('captured summary');
+    expect(manifest.continue.step_id).toBe('summary');
+    expect(manifest.continue.session_id).toBe('session-summary');
+    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
+    const scope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-summary-session');
+    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scope}="session-summary"`);
   });
 
   it('adopts top-level yy continue snapshots and persists them to the caller scope for yy cc', async () => {
