@@ -489,7 +489,7 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
 
 def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
     branches_path = project_root / ".juno_task" / "session_branches.json"
-    now = _dt.datetime.now(_dt.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     try:
         document = json.loads(branches_path.read_text(encoding="utf-8")) if branches_path.exists() else {}
         if not isinstance(document, dict):

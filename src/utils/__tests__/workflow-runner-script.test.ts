@@ -86,7 +86,9 @@ describe('workflow_runner.sh template script', () => {
   it('exists in template scripts and remains synced with runtime script', async () => {
     expect(await fs.pathExists(templateScript)).toBe(true);
     expect(await fs.pathExists(runtimeScript)).toBe(true);
-    expect(await fs.readFile(templateScript, 'utf8')).toBe(await fs.readFile(runtimeScript, 'utf8'));
+    const templateContent = await fs.readFile(templateScript, 'utf8');
+    expect(templateContent).toBe(await fs.readFile(runtimeScript, 'utf8'));
+    expect(templateContent).not.toContain('_dt.UTC');
   });
 
   it('documents workflow options, failure policy, and auto capture behavior in --help', () => {
@@ -716,9 +718,14 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
     const callerScope = continueScopeHash(`PPID:${process.pid}`);
     expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${callerScope}="session-child"`);
-    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    const manifestPath = path.join(outDir, 'manifest.json');
+    expect(await fs.pathExists(manifestPath)).toBe(true);
+    const manifest = await fs.readJson(manifestPath);
     expect(manifest.steps[0].session_id).toBe('session-child');
     expect(manifest.continue.step_id).toBe('agent');
+    const doctor = runWorkflow(['doctor', outDir]);
+    expect(doctor.status).toBe(0);
+    expect(doctor.stdout).toContain('Workflow doctor');
   });
 
   it('supports continue_from_step to persist a non-last agent session', async () => {
