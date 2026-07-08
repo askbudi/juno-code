@@ -560,17 +560,29 @@ function extractSessionIds(result: ExecutionResult): string[] {
     sessionIds.push(value);
   };
 
+  const addFromPayload = (payload: Record<string, unknown> | null | undefined): void => {
+    if (!payload) return;
+    addSessionId(extractSessionId(payload));
+  };
+
   const iterations = Array.isArray(result.iterations) ? result.iterations : [];
   for (const iteration of iterations) {
-    const payload = parseJsonObject(iteration.toolResult?.content);
-    if (!payload) continue;
+    addFromPayload(parseJsonObject(iteration.toolResult?.content));
 
-    addSessionId(extractSessionId(payload));
+    const metadata = iteration.toolResult?.metadata as Record<string, unknown> | undefined;
+    if (metadata && typeof metadata === 'object') {
+      addSessionId(metadata.sessionId);
+      addSessionId(metadata.session_id);
+      addFromPayload(metadata.subAgentResponse as Record<string, unknown> | undefined);
+    }
   }
 
   const progressEvents = Array.isArray(result.progressEvents) ? result.progressEvents : [];
   for (const event of progressEvents) {
     addSessionId(event?.metadata?.sessionId);
+    addSessionId(event?.metadata?.session_id);
+    addFromPayload(event?.metadata?.subAgentResponse as Record<string, unknown> | undefined);
+    addFromPayload(event?.metadata?.parsedEvent as Record<string, unknown> | undefined);
   }
 
   return sessionIds;
@@ -689,6 +701,53 @@ function buildSessionHistoryEntry(result: ExecutionResult): SessionHistoryEntry 
   };
 }
 
+async function readSessionHistoryDocument(
+  historyPath: string,
+  verboseLevel: number,
+): Promise<SessionHistoryDocument> {
+  const emptyDocument: SessionHistoryDocument = {
+    version: SESSION_HISTORY_VERSION,
+    sessions: [],
+  };
+
+  if (!(await fs.pathExists(historyPath))) {
+    return emptyDocument;
+  }
+
+  const raw = await fs.readFile(historyPath, 'utf-8');
+  try {
+    const existing = JSON.parse(raw) as unknown;
+    if (existing && typeof existing === 'object' && Array.isArray((existing as Record<string, unknown>).sessions)) {
+      return {
+        version: toNumber((existing as Record<string, unknown>).version) ?? SESSION_HISTORY_VERSION,
+        sessions: (existing as Record<string, unknown>).sessions as SessionHistoryEntry[],
+      };
+    }
+  } catch (error) {
+    const backupPath = `${historyPath}.invalid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await fs.writeFile(backupPath, raw, 'utf-8');
+    if (verboseLevel >= 1) {
+      console.error(
+        chalk.yellow(
+          `Warning: Repaired unreadable session history; original saved to ${backupPath}: ${error}`,
+        ),
+      );
+    }
+    return emptyDocument;
+  }
+
+  const backupPath = `${historyPath}.invalid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  await fs.writeFile(backupPath, raw, 'utf-8');
+  if (verboseLevel >= 1) {
+    console.error(
+      chalk.yellow(
+        `Warning: Repaired invalid session history shape; original saved to ${backupPath}`,
+      ),
+    );
+  }
+  return emptyDocument;
+}
+
 async function persistSessionHistory(result: ExecutionResult, verboseLevel: number): Promise<void> {
   try {
     if (
@@ -696,6 +755,9 @@ async function persistSessionHistory(result: ExecutionResult, verboseLevel: numb
       typeof result.request.workingDirectory !== 'string' ||
       !result.request.workingDirectory.trim()
     ) {
+      if (verboseLevel >= 2) {
+        console.error(chalk.yellow('Warning: Skipping session history persistence: missing working directory'));
+      }
       return;
     }
 
@@ -707,26 +769,12 @@ async function persistSessionHistory(result: ExecutionResult, verboseLevel: numb
 
     await fs.ensureDir(path.dirname(historyPath));
 
-    let document: SessionHistoryDocument = {
-      version: SESSION_HISTORY_VERSION,
-      sessions: [],
-    };
-
-    if (await fs.pathExists(historyPath)) {
-      const existing = await fs.readJson(historyPath);
-      if (existing && typeof existing === 'object' && Array.isArray(existing.sessions)) {
-        document = {
-          version:
-            toNumber((existing as Record<string, unknown>).version) ?? SESSION_HISTORY_VERSION,
-          sessions: existing.sessions as SessionHistoryEntry[],
-        };
-      }
-    }
+    const document = await readSessionHistoryDocument(historyPath, verboseLevel);
 
     document.sessions.unshift(buildSessionHistoryEntry(result));
     await fs.writeJson(historyPath, document, { spaces: 2 });
   } catch (error) {
-    if (verboseLevel >= 2) {
+    if (verboseLevel >= 1) {
       console.error(chalk.yellow(`Warning: Failed to persist session history: ${error}`));
     }
   }

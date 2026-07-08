@@ -1440,7 +1440,7 @@ describe('Main Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
-      it('should persist execution history under .juno_task/session_history.json with prompt/cost/message metadata', async () => {
+      it('should persist completed Pi execution history under .juno_task/session_history.json with prompt/cost/message metadata', async () => {
         const { createExecutionEngine } = await import('../../core/engine.js');
 
         vi.mocked(createExecutionEngine).mockReturnValueOnce({
@@ -1448,7 +1448,7 @@ describe('Main Command', () => {
             request: {
               requestId: 'history-run-1',
               instruction: 'track this prompt',
-              subagent: 'claude',
+              subagent: 'pi',
               workingDirectory: '/test/dir',
               maxIterations: 1,
               model: ':sonnet',
@@ -1467,6 +1467,7 @@ describe('Main Command', () => {
                     session_id: 'session-history-1',
                     total_cost_usd: 0.0042,
                     num_turns: 3,
+                    messages: [{ role: 'user' }, { role: 'assistant' }],
                   }),
                   metadata: {},
                 },
@@ -1489,7 +1490,7 @@ describe('Main Command', () => {
         } as any);
 
         const options: MainCommandOptions = {
-          subagent: 'claude',
+          subagent: 'pi',
           prompt: 'track this prompt',
           cwd: '/test',
           maxIterations: 1,
@@ -1512,11 +1513,11 @@ describe('Main Command', () => {
               expect.objectContaining({
                 id: 'history-run-1',
                 initialMessage: 'track this prompt',
-                subagent: 'claude',
+                subagent: 'pi',
                 model: ':sonnet',
                 totalCostUsd: 0.0042,
                 turnCount: 3,
-                messageCount: 6,
+                messageCount: 2,
                 sessionIds: ['session-history-1'],
               }),
             ]),
@@ -1575,28 +1576,33 @@ describe('Main Command', () => {
         vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
           candidate.endsWith('session_history.json'),
         );
-        vi.mocked(fs.readJson).mockResolvedValueOnce({
-          version: 1,
-          sessions: [
-            {
-              id: 'existing-run',
-              status: 'completed',
-              initialMessage: 'already there',
-              initialMessageAt: '2026-03-09T09:00:00.000Z',
-              lastMessageAt: '2026-03-09T09:00:05.000Z',
-              completedAt: '2026-03-09T09:00:05.000Z',
-              subagent: 'claude',
-              model: ':sonnet',
-              settings: { maxIterations: 1 },
-              totalCostUsd: 0.001,
-              turnCount: 1,
-              messageCount: 2,
-              iterations: 1,
-              durationMs: 5000,
-              sessionIds: ['existing-session'],
-            },
-          ],
-        } as any);
+        vi.mocked(fs.readFile).mockImplementation(async (candidate: string) => {
+          if (candidate.endsWith('session_history.json')) {
+            return JSON.stringify({
+              version: 1,
+              sessions: [
+                {
+                  id: 'existing-run',
+                  status: 'completed',
+                  initialMessage: 'already there',
+                  initialMessageAt: '2026-03-09T09:00:00.000Z',
+                  lastMessageAt: '2026-03-09T09:00:05.000Z',
+                  completedAt: '2026-03-09T09:00:05.000Z',
+                  subagent: 'claude',
+                  model: ':sonnet',
+                  settings: { maxIterations: 1 },
+                  totalCostUsd: 0.001,
+                  turnCount: 1,
+                  messageCount: 2,
+                  iterations: 1,
+                  durationMs: 5000,
+                  sessionIds: ['existing-session'],
+                },
+              ],
+            });
+          }
+          return 'mock file content';
+        });
 
         const options: MainCommandOptions = {
           subagent: 'claude',
@@ -1618,6 +1624,151 @@ describe('Main Command', () => {
         expect(payload.sessions).toHaveLength(2);
         expect(payload.sessions[0]?.id).toBe('test-request');
         expect(payload.sessions[1]?.id).toBe('existing-run');
+      });
+
+      it('should persist failed execution history with prompt/status/session id when ExecutionResult exists', async () => {
+        const { createExecutionEngine } = await import('../../core/engine.js');
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'failed-history-run',
+              instruction: 'failed prompt still audited',
+              subagent: 'pi',
+              workingDirectory: '/test/dir',
+              maxIterations: 1,
+              model: ':api-codex',
+            },
+            status: 'failed',
+            startTime: new Date('2026-03-09T11:00:00.000Z'),
+            endTime: new Date('2026-03-09T11:00:03.000Z'),
+            duration: 3000,
+            progressEvents: [],
+            iterations: [
+              {
+                iterationNumber: 1,
+                toolResult: {
+                  content: 'not-json',
+                  metadata: {
+                    structuredOutput: true,
+                    subAgentResponse: { session_id: 'failed-session-1' },
+                  },
+                },
+                success: false,
+                duration: 3000,
+              },
+            ],
+            statistics: {
+              totalIterations: 1,
+              successfulIterations: 0,
+              failedIterations: 1,
+              averageIterationDuration: 3000,
+              totalToolCalls: 1,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'pi',
+            prompt: 'failed prompt still audited',
+            cwd: '/test',
+            maxIterations: 1,
+            model: ':api-codex',
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 1,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const writeCall = vi.mocked(fs.writeJson).mock.calls.at(-1);
+        expect(writeCall?.[0]).toBe('/test/dir/.juno_task/session_history.json');
+        expect(writeCall?.[1]).toEqual(
+          expect.objectContaining({
+            sessions: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'failed-history-run',
+                status: 'failed',
+                initialMessage: 'failed prompt still audited',
+                sessionIds: ['failed-session-1'],
+              }),
+            ]),
+          }),
+        );
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+      });
+
+      it('should repair malformed session_history.json with a visible backup and persist the new run', async () => {
+        const { createExecutionEngine } = await import('../../core/engine.js');
+
+        vi.mocked(createExecutionEngine).mockReturnValueOnce({
+          execute: vi.fn().mockResolvedValue({
+            request: {
+              requestId: 'repair-history-run',
+              instruction: 'repair history prompt',
+              subagent: 'claude',
+              workingDirectory: '/test/dir',
+              maxIterations: 1,
+              model: ':sonnet',
+            },
+            status: 'completed',
+            progressEvents: [],
+            iterations: [],
+            statistics: {
+              totalIterations: 0,
+              successfulIterations: 0,
+              failedIterations: 0,
+              averageIterationDuration: 0,
+              totalToolCalls: 0,
+              rateLimitEncounters: 0,
+            },
+          }),
+          onProgress: vi.fn(),
+          on: vi.fn(),
+          shutdown: vi.fn(),
+        } as any);
+
+        vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('session_history.json'),
+        );
+        vi.mocked(fs.readFile).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('session_history.json') ? '' : 'mock file content',
+        );
+
+        await mainCommandHandler(
+          [],
+          {
+            subagent: 'claude',
+            prompt: 'repair history prompt',
+            cwd: '/test',
+            maxIterations: 1,
+            interactive: false,
+            interactivePrompt: false,
+            verbose: 1,
+            quiet: false,
+            logLevel: 'info',
+          },
+          mockCommand,
+        );
+
+        const backupCall = vi.mocked(fs.writeFile).mock.calls.find(([candidate]) =>
+          String(candidate).startsWith('/test/dir/.juno_task/session_history.json.invalid-'),
+        );
+        expect(backupCall).toBeDefined();
+        expect(backupCall?.[1]).toBe('');
+
+        const writeCall = vi.mocked(fs.writeJson).mock.calls.at(-1);
+        expect(writeCall?.[0]).toBe('/test/dir/.juno_task/session_history.json');
+        expect((writeCall?.[1] as { sessions: Array<{ id: string }> }).sessions[0]?.id).toBe('repair-history-run');
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Warning: Repaired unreadable session history'));
       });
 
       it('should persist latest session + runtime settings into env snapshot for continue command', async () => {
