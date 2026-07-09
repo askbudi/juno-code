@@ -1236,6 +1236,72 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(lookupPayload.hash).toBe(shortHash);
     });
 
+    it('should resolve workflow handoff snapshots in the same shell scope', async () => {
+      const binDir = path.join(tempDir, 'bin');
+      await fs.ensureDir(binDir);
+      const fakeYy = path.join(binDir, 'yy');
+      await fs.writeFile(
+        fakeYy,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'printf \'workflow fake agent response\\n\'',
+          'printf \'{"session_id":"session-workflow-handoff"}\\n\'',
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+      await fs.chmod(fakeYy, 0o755);
+
+      const workflowPath = path.join(tempDir, 'workflow.yaml');
+      await fs.writeFile(
+        workflowPath,
+        [
+          'schema_version: 1',
+          'workflow_id: handoff_scope_test',
+          'steps:',
+          '  - id: agent_step',
+          '    command:',
+          '      - yy',
+          '      - pi',
+          '      - run handoff test',
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+
+      const workflowRunner = path.join(PROJECT_ROOT, '..', '.juno_task', 'scripts', 'workflow_runner.sh');
+      const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+      const result = await execa(
+        'bash',
+        [
+          '-lc',
+          [
+            'set -euo pipefail',
+            `python3 ${quote(workflowRunner)} --workflow ${quote(workflowPath)} --project-root "$PWD" --print-output none --no-print-step-stdout >/tmp/juno-workflow-handoff-test.out`,
+            `node ${quote(BINARY_MJS)} continue-scope --json; status=$?; :; exit $status`,
+          ].join('\n'),
+        ],
+        {
+          cwd: tempDir,
+          env: {
+            ...process.env,
+            NO_COLOR: '1',
+            CI: '1',
+            JUNO_CODE_CONFIG: '',
+            JUNO_TASK_CONFIG: '',
+            PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+          },
+          timeout: BINARY_TIMEOUT,
+          reject: false,
+          all: true,
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(payload.status).toBe('finished');
+      expect(payload.sessionId).toBe('session-workflow-handoff');
+    });
+
     it('should report not_found for continue scope without snapshot state', async () => {
       const result = await executeCLI(['continue-scope', '--json'], {
         env: {
