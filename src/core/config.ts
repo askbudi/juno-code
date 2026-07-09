@@ -206,6 +206,13 @@ export const JunoTaskConfigSchema = z
         'Timeout for individual hook commands in milliseconds (default: 300000 = 5 minutes)',
       ),
 
+    autoDependencyUpdate: z
+      .boolean()
+      .optional()
+      .describe(
+        'Opt-out flag for automatic START_RUN dependency updates. Set false to prevent install_requirements.sh hook migration/injection.',
+      ),
+
     // Quota/hourly limit settings
     onHourlyLimit: OnHourlyLimitSchema.describe(
       'Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately',
@@ -295,6 +302,9 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Hooks configuration - populated with default hooks template
   hooks: getDefaultHooks(),
 
+  // Project dependency bootstrap runs by default and can be disabled with autoDependencyUpdate: false.
+  autoDependencyUpdate: true,
+
   // Prompt macros
   promptMacros: { ...DEFAULT_PROMPT_MACROS },
 };
@@ -320,6 +330,7 @@ const PROJECT_CONFIG_FILE = '.juno_task/config.json';
  * Default project env file created and loaded on startup
  */
 const DEFAULT_PROJECT_ENV_FILE = '.env.juno';
+const AUTO_DEPENDENCY_UPDATE_COMMAND = './.juno_task/scripts/install_requirements.sh';
 
 /**
  * Supported configuration file formats
@@ -1057,6 +1068,43 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
  * @param baseDir - Base directory where .juno_task directory should be located
  * @returns Promise that resolves when migration is complete
  */
+function commandInvokesAutoDependencyUpdater(command: unknown): boolean {
+  return (
+    typeof command === 'string' &&
+    command.includes('.juno_task/scripts') &&
+    command.includes('install_requirements.sh')
+  );
+}
+
+function ensureAutoDependencyUpdateHook(existingConfig: Record<string, any>): boolean {
+  if (existingConfig.autoDependencyUpdate === false) {
+    return false;
+  }
+
+  if (!existingConfig.hooks || typeof existingConfig.hooks !== 'object' || Array.isArray(existingConfig.hooks)) {
+    existingConfig.hooks = {};
+  }
+
+  if (
+    !existingConfig.hooks.START_RUN ||
+    typeof existingConfig.hooks.START_RUN !== 'object' ||
+    Array.isArray(existingConfig.hooks.START_RUN)
+  ) {
+    existingConfig.hooks.START_RUN = { commands: [] };
+  }
+
+  if (!Array.isArray(existingConfig.hooks.START_RUN.commands)) {
+    existingConfig.hooks.START_RUN.commands = [];
+  }
+
+  if (existingConfig.hooks.START_RUN.commands.some(commandInvokesAutoDependencyUpdater)) {
+    return false;
+  }
+
+  existingConfig.hooks.START_RUN.commands.push(AUTO_DEPENDENCY_UPDATE_COMMAND);
+  return true;
+}
+
 async function ensureHooksConfig(baseDir: string): Promise<void> {
   try {
     const configDir = path.join(baseDir, '.juno_task');
@@ -1083,9 +1131,15 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
       const existingConfig = await fs.readJson(configPath);
       let needsUpdate = false;
 
-      // If hooks field doesn't exist, add it with all hook types
+      // If hooks field doesn't exist, add it with all hook types unless dependency updates are disabled.
       if (!existingConfig.hooks) {
         existingConfig.hooks = allHookTypes;
+        needsUpdate = true;
+      }
+
+      // Surgical migration for projects that already had hooks (including empty START_RUN.commands)
+      // before the dependency updater was introduced. Existing commands and unrelated config stay intact.
+      if (ensureAutoDependencyUpdateHook(existingConfig)) {
         needsUpdate = true;
       }
 

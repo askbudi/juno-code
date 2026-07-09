@@ -882,28 +882,92 @@ describe('hooks', () => {
       expect(config.logLevel).toBe('info');
     });
 
-    it('should preserve existing hooks configuration', async () => {
+    it('should preserve existing START_RUN commands and append dependency updater', async () => {
       const { loadConfig } = await import('../../core/config.js');
 
       const configDir = join(testDir, '.juno_task');
       const configPath = join(configDir, 'config.json');
 
-      // Create existing config with hooks field
       await fs.ensureDir(configDir);
-      const existingHooks = {
-        START_RUN: {
-          commands: ['echo "existing"'],
-        },
-      };
       await fs.writeJson(configPath, {
         defaultSubagent: 'claude',
-        hooks: existingHooks,
+        hooks: {
+          START_RUN: {
+            commands: ['echo "existing"'],
+          },
+        },
+        promptMacros: {
+          local: { ship: 'run tests' },
+        },
       });
 
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      expect(config.hooks).toEqual(existingHooks); // Should be unchanged
+      expect(config.hooks.START_RUN.commands).toEqual([
+        'echo "existing"',
+        './.juno_task/scripts/install_requirements.sh',
+      ]);
+      expect(config.promptMacros.local.ship).toBe('run tests');
+    });
+
+    it('should append dependency updater to existing empty START_RUN commands', async () => {
+      const { loadConfig } = await import('../../core/config.js');
+
+      const configDir = join(testDir, '.juno_task');
+      const configPath = join(configDir, 'config.json');
+
+      await fs.ensureDir(configDir);
+      await fs.writeJson(configPath, {
+        defaultSubagent: 'claude',
+        hooks: { START_RUN: { commands: [] } },
+      });
+
+      await loadConfig({ baseDir: testDir });
+
+      const config = await fs.readJson(configPath);
+      expect(config.hooks.START_RUN.commands).toEqual([
+        './.juno_task/scripts/install_requirements.sh',
+      ]);
+    });
+
+    it('should not duplicate existing dependency updater command variants', async () => {
+      const { loadConfig } = await import('../../core/config.js');
+
+      const configDir = join(testDir, '.juno_task');
+      const configPath = join(configDir, 'config.json');
+      const existingCommand = 'bash ./.juno_task/scripts/install_requirements.sh --force-update';
+
+      await fs.ensureDir(configDir);
+      await fs.writeJson(configPath, {
+        defaultSubagent: 'claude',
+        hooks: { START_RUN: { commands: ['echo before', existingCommand] } },
+      });
+
+      await loadConfig({ baseDir: testDir });
+
+      const config = await fs.readJson(configPath);
+      expect(config.hooks.START_RUN.commands).toEqual(['echo before', existingCommand]);
+    });
+
+    it('should not inject dependency updater when autoDependencyUpdate is false', async () => {
+      const { loadConfig } = await import('../../core/config.js');
+
+      const configDir = join(testDir, '.juno_task');
+      const configPath = join(configDir, 'config.json');
+
+      await fs.ensureDir(configDir);
+      await fs.writeJson(configPath, {
+        defaultSubagent: 'claude',
+        autoDependencyUpdate: false,
+        hooks: { START_RUN: { commands: [] } },
+      });
+
+      await loadConfig({ baseDir: testDir });
+
+      const config = await fs.readJson(configPath);
+      expect(config.autoDependencyUpdate).toBe(false);
+      expect(config.hooks.START_RUN.commands).toEqual([]);
     });
 
     it('should migrate defaultMaxIterations from old default (50) to new default (1)', async () => {

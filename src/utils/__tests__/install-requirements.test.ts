@@ -190,6 +190,8 @@ export PATH
 
     const uvLog = await fs.readFile(uvLogPath, 'utf-8');
     expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
+    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_cache'))).toBe(true);
+    expect(await fs.pathExists(path.join(homeDir, '.juno_code', '.version_check_cache'))).toBe(false);
   });
 
   it('activates .venv_juno before requirement checks so periodic updates still run', async () => {

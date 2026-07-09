@@ -62,8 +62,10 @@ REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
 PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
 
 # Version check cache configuration
-# This ensures we don't check PyPI on every run (performance optimization per Task RTafs5)
-VERSION_CHECK_CACHE_DIR="${HOME}/.juno_code"
+# This ensures we don't check PyPI on every run (performance optimization per Task RTafs5).
+# Keep the cache project-local so one repository cannot suppress update checks for another
+# repository whose .venv_juno may still have stale dependencies.
+VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$(pwd)/.juno_task}"
 VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
 VERSION_CHECK_INTERVAL_HOURS="${VERSION_CHECK_INTERVAL_HOURS:-24}"  # Check for updates once per day (override via env var)
 

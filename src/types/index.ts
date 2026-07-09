@@ -71,6 +71,8 @@ export interface JunoTaskConfig {
 
   // Hook settings
   hookCommandTimeout?: number;
+  /** Set false to opt out of automatic START_RUN dependency update hook injection. */
+  autoDependencyUpdate?: boolean;
 
   // Quota/hourly limit settings
   onHourlyLimit: OnHourlyLimit;
