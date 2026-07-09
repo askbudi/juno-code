@@ -6,6 +6,7 @@ Modes:
   Headless (default): ThreadPoolExecutor, output to log files only.
   Tmux windows:       Each worker = tmux window, coordinator = window 0.
   Tmux panes:         Workers as split panes, coordinator = top pane.
+  Tmux tabs:          One dedicated tmux window/tab per task, named by task ID.
   Tmux handoff:       Add --tmux-handoff so each task gets a dedicated pane/window
                       that is not reused after completion. Add --max-panes-per-session N
                       to split large handoff lists across multiple tmux sessions.
@@ -35,6 +36,7 @@ Usage:
   # Common options
   ./parallel_runner.sh --tmux --kanban T1 T2 T3 --parallel 2
   ./parallel_runner.sh --tmux panes --kanban T1 T2 --parallel 2
+  ./parallel_runner.sh --tmux tabs --kanban T1 T2 T3
   ./parallel_runner.sh --tmux panes --tmux-handoff --items a b --parallel 2 --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux panes --tmux-handoff --max-panes-per-session 4 --items a b c d e --name triage --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux --kanban T1 T2 --name my-batch
@@ -104,7 +106,8 @@ Arguments:
                  Use --prompt - to read template content from stdin/heredoc.
   --subagent-args Extra raw args appended to each juno-code invocation.
                  Example: --subagent-args "--live --thinking high"
-  --tmux         Run in tmux mode. 'windows' (default) or 'panes' (side-by-side).
+  --tmux         Run in tmux mode. 'windows' (default), 'panes' (side-by-side),
+                 or 'tabs' (one dedicated window/tab per task named by task ID).
   --tmux-handoff Tmux-only mode: dedicate one worker pane/window per task and do not reuse it after completion.
   --max-panes-per-session N  With --tmux-handoff, split large task lists into capped tmux sessions.
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
@@ -2035,8 +2038,8 @@ def parse_args():
         help="Extra raw args appended to each juno-code invocation. Repeatable; values are shell-split.",
     )
     parser.add_argument(
-        "--tmux", nargs="?", const="windows", default=None, choices=["windows", "panes"],
-        help="Run in tmux mode. 'windows' (default) or 'panes'.",
+        "--tmux", nargs="?", const="windows", default=None, choices=["windows", "panes", "tabs"],
+        help="Run in tmux mode. 'windows' (default), 'panes', or 'tabs' (one dedicated window/tab per task).",
     )
     parser.add_argument(
         "--tmux-handoff", action="store_true", default=False,
@@ -2168,6 +2171,9 @@ def parse_args():
 
     args.subagent_args_list = _resolve_subagent_args(args.subagent_args)
 
+    if args.tmux == "tabs":
+        args.tmux_handoff = True
+
     if args.max_panes_per_session is not None:
         if args.max_panes_per_session < 1:
             parser.error("--max-panes-per-session must be a positive integer")
@@ -2178,7 +2184,7 @@ def parse_args():
         parser.error("--tmux-handoff requires --tmux because handoff preserves tmux panes/windows for later attachment")
 
     live_in_tmux = args.tmux and _contains_live_subagent_flag(args.subagent_args_list)
-    if live_in_tmux and args.parallel > 1:
+    if live_in_tmux and args.parallel > 1 and args.tmux != "tabs":
         parser.error(
             "--tmux with --subagent-args '--live' is interactive and only supports --parallel 1. "
             "Set --parallel 1, remove --live, or run headless mode."
@@ -2202,6 +2208,15 @@ def parse_args():
 
     task_ids = _resolve_input(args)
     args.kanban = task_ids
+
+    if args.tmux == "tabs":
+        args.parallel = len(task_ids)
+
+    if live_in_tmux and args.parallel > 1:
+        parser.error(
+            "--tmux with --subagent-args '--live' is interactive and only supports --parallel 1. "
+            "Set --parallel 1, remove --live, or run headless mode."
+        )
 
     if args.tmux_handoff and args.max_panes_per_session is None and len(task_ids) > args.parallel:
         parser.error(
@@ -2703,6 +2718,22 @@ def _ansi256_to_tmux_color(code):
     return f"colour{code}"
 
 
+def _tmux_safe_window_name(task_id, index, used_names):
+    """Return a tmux-safe, unique window/tab name derived from the task ID."""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", str(task_id)).strip("-")
+    if not safe:
+        safe = f"task-{index + 1}"
+    safe = safe[:60]
+    candidate = safe
+    suffix = 2
+    while candidate in used_names:
+        suffix_text = f"-{suffix}"
+        candidate = f"{safe[:60 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
 def update_pane_border_color(worker_target, task_id):
     """Set the pane/window border color to match the task's assigned color."""
     color_code = _task_color_map.get(task_id, 7)
@@ -2717,8 +2748,8 @@ def update_pane_border_color(worker_target, task_id):
     ], check=False)
 
 
-def create_tmux_session(session_name, mode, num_workers, pwd):
-    """Create tmux session with coordinator + worker windows/panes."""
+def create_tmux_session(session_name, mode, num_workers, pwd, task_ids=None):
+    """Create tmux session with coordinator + worker windows/panes/tabs."""
     subprocess.run(
         ["tmux", "kill-session", "-t", session_name],
         capture_output=True,
@@ -2738,7 +2769,7 @@ def create_tmux_session(session_name, mode, num_workers, pwd):
                    " #{pane_index}: #{pane_title} "], check=False)
         tmux_run(["set-option", "-t", session_name, "pane-border-indicators", "colour"], check=False)
 
-    if mode == "windows":
+    if mode in ("windows", "tabs"):
         tmux_run([
             "new-session", "-d", "-s", session_name,
             "-n", "coordinator", "-x", "200", "-y", "50",
@@ -2746,8 +2777,12 @@ def create_tmux_session(session_name, mode, num_workers, pwd):
         tmux_run(["set-option", "-t", session_name, "remain-on-exit", "off"])
         _setup_status_bar()
 
+        used_window_names = {"coordinator"}
         for i in range(num_workers):
-            name = f"worker-{i}"
+            if mode == "tabs" and task_ids and i < len(task_ids):
+                name = _tmux_safe_window_name(task_ids[i], i, used_window_names)
+            else:
+                name = f"worker-{i}"
             tmux_run(["new-window", "-t", session_name, "-n", name])
             target = f"{session_name}:{name}"
             tmux_run(["send-keys", "-t", target, f"cd {shlex.quote(pwd)}", "Enter"])
@@ -3477,7 +3512,7 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
 
     print(f"Creating tmux session '{session_name}' ({mode} mode, {num_workers} workers)...")
 
-    coordinator_target, workers = create_tmux_session(session_name, mode, num_workers, pwd)
+    coordinator_target, workers = create_tmux_session(session_name, mode, num_workers, pwd, args.kanban if mode == "tabs" else None)
 
     task_states = {}
     for tid in args.kanban:

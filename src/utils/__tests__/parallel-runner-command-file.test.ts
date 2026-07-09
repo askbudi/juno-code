@@ -83,8 +83,43 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stdout).toContain('command strings are shell commands');
     expect(result.stdout).toContain('--tmux-handoff');
     expect(result.stdout).toContain('--max-panes-per-session');
+    expect(result.stdout).toContain('tabs');
+    expect(result.stdout).toContain('one dedicated window/tab per task');
     expect(result.stdout).toContain('dedicates one worker pane/window');
     expect(result.stdout).toContain('per task and never reuses completed workers');
+  });
+
+  it('parses tmux tabs as a dedicated window-per-task mode without starting tmux', () => {
+    const code = `
+import importlib.machinery, json, sys
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+sys.argv = ['parallel_runner.sh', '--tmux', 'tabs', '--items', 'a', 'b', '--prompt', 'Analyze {{item}}']
+args = mod.parse_args()
+print(json.dumps({'tmux': args.tmux, 'parallel': args.parallel, 'tmux_handoff': args.tmux_handoff, 'tasks': args.kanban}))
+`;
+    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      tmux: 'tabs',
+      parallel: 2,
+      tmux_handoff: true,
+      tasks: ['item-001', 'item-002'],
+    });
+  });
+
+  it('sanitizes tmux tab names from task IDs while preserving uniqueness', () => {
+    const code = `
+import importlib.machinery, json
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+used = set(['coordinator'])
+names = [mod._tmux_safe_window_name(tid, i, used) for i, tid in enumerate(['ABC123', 'bad:id', 'bad/id', ''])]
+print(json.dumps(names))
+`;
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf-8' });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual(['ABC123', 'bad-id', 'bad-id-2', 'task-4']);
   });
 
   it('rejects tmux handoff without tmux before starting a run', () => {
