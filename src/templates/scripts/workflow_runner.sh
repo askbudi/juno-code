@@ -677,6 +677,26 @@ def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[s
         print(f"  env_file: {persisted['env_file']}")
 
 
+SESSION_FOOTER_TOKEN_RE = re.compile(
+    r"\b(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|session-[A-Za-z0-9_.:-]+)\b"
+)
+
+
+def extract_footer_session_id(text: str) -> str | None:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not re.search(r"\bsession\s+id\(s\)\s*:\s*$", line.strip(), re.I):
+            continue
+        for candidate_line in lines[index + 1 :]:
+            stripped = candidate_line.strip()
+            if not stripped:
+                break
+            match = SESSION_FOOTER_TOKEN_RE.search(stripped)
+            if match:
+                return match.group(0)
+    return None
+
+
 def extract_session_id(stdout: str, stderr: str) -> str | None:
     for text in (stdout, stderr):
         for line in text.splitlines():
@@ -695,6 +715,9 @@ def extract_session_id(stdout: str, stderr: str) -> str | None:
             match = re.search(r"session[_ -]?id[=:]\s*([A-Za-z0-9_.:-]+)", stripped, re.I)
             if match:
                 return match.group(1)
+        footer_session_id = extract_footer_session_id(text)
+        if footer_session_id:
+            return footer_session_id
     return None
 
 

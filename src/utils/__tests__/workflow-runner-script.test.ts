@@ -699,6 +699,37 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     expect(manifest.steps[0].response_path).toContain('001_agent.response.txt');
   });
 
+  it('captures current yy footer session ids from stderr without parsing cost values', async () => {
+    const binDir = path.join(testDir, 'footer-bin');
+    await fs.ensureDir(binDir);
+    const executablePath = path.join(binDir, 'yy');
+    const footerSessionId = '019f441e-2515-7e76-9500-39e6f3ad525a';
+    await fs.writeFile(
+      executablePath,
+      `#!/usr/bin/env sh
+printf 'footer response\\n'
+printf 'debug cost: $0.999999 before footer\\n' >&2
+printf '🔑 Session ID(s):\\n' >&2
+printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
+`,
+    );
+    await fs.chmod(executablePath, 0o755);
+    const workflowPath = path.join(testDir, 'footer-session.json');
+    const outDir = path.join(testDir, 'footer-session-out');
+    await fs.writeJson(workflowPath, {
+      name: 'footer-session',
+      steps: [{ id: 'footer', command: [executablePath, 'pi', 'prompt'] }],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`step 1 [footer]: ${footerSessionId}`);
+    expect(result.stdout).not.toContain('0.158907');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].session_id).toBe(footerSessionId);
+  });
+
   it('prints juno step session ids and persists the last one for yy cc continue', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
