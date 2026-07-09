@@ -464,7 +464,9 @@ def juno_subagent_name(command: Any) -> str | None:
         if part.startswith("--verbose="):
             idx += 1
             continue
-        if part in {"-s", "--subagent", "-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file"}:
+        if part in {"-s", "--subagent"}:
+            return parts[idx + 1] if idx + 1 < len(parts) and parts[idx + 1] else None
+        if part in {"-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file"}:
             idx += 2
             continue
         if part.startswith("--subagent="):

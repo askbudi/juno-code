@@ -26,6 +26,7 @@ function continueScopeHash(descriptor: string): string {
   return `SCOPE_${createHash('sha256').update(descriptor).digest('hex').slice(0, 16).toUpperCase()}`;
 }
 
+
 async function installFakeJunoExecutable(dir: string, name = 'yy') {
   const binDir = path.join(dir, 'bin');
   await fs.ensureDir(binDir);
@@ -65,7 +66,19 @@ descriptor = os.environ.get('JUNO_CODE_CONTINUE_SCOPE')
 if descriptor:
     descriptor = 'JUNO_CODE_CONTINUE_SCOPE:' + descriptor.strip()
 else:
-    descriptor = 'PPID:' + str(os.getppid())
+    lineage = []
+    current = os.getppid()
+    for _ in range(8):
+        if not current or current <= 0 or current in lineage:
+            break
+        lineage.append(current)
+        try:
+            import subprocess
+            out = subprocess.run(['ps', '-o', 'ppid=', '-p', str(current)], text=True, capture_output=True, timeout=0.5, check=False).stdout.strip()
+            current = int(out) if out else 0
+        except Exception:
+            current = 0
+    descriptor = '\\n'.join(['PROJECT:' + str(pathlib.Path.cwd().resolve()), 'SHELL_LINEAGE:' + ('>'.join(map(str, lineage)) if lineage else str(os.getppid())), 'TERMINAL:none'])
 scope = 'SCOPE_' + hashlib.sha256(descriptor.encode()).hexdigest()[:16].upper()
 env_file = pathlib.Path.cwd() / '.env.juno'
 settings = json.dumps({'version': 1, 'subagent': 'pi'}, separators=(',', ':'))
@@ -850,8 +863,7 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('step 1 [agent]: session-child');
     const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    const callerScope = continueScopeHash(`PPID:${process.pid}`);
-    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${callerScope}="session-child"`);
+    expect(envFile).toMatch(/JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}="session-child"/);
     const manifestPath = path.join(outDir, 'manifest.json');
     expect(await fs.pathExists(manifestPath)).toBe(true);
     const manifest = await fs.readJson(manifestPath);
@@ -896,6 +908,38 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.continue.step_id).toBe('first');
     expect(manifest.continue.session_id).toBe('session-alpha');
+  });
+
+  it('persists continue settings for option-style yy -s/--subagent commands', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'option-style-subagent.json');
+    const outDir = path.join(testDir, 'option-style-subagent-out');
+    await fs.writeJson(workflowPath, {
+      name: 'option-style-subagent',
+      continue_from_step: 'first',
+      steps: [
+        { id: 'first', command: [executablePath, '-s', 'pi', 'alpha'] },
+        { id: 'second', command: [executablePath, '--subagent', 'pi', 'omega'] },
+      ],
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
+      undefined,
+      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-option-style-subagent' },
+    );
+
+    expect(result.status).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.continue.step_id).toBe('first');
+    expect(manifest.continue.session_id).toBe('session-alpha');
+    expect(manifest.continue.env_key).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
+    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
+    const overrideScope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-option-style-subagent');
+    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-alpha"`);
+    expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${overrideScope}="{\\"version\\":1,\\"subagent\\":\\"pi\\"}"`);
   });
 
   it('supports continue_from_step summary override when summary is not the default last successful session', async () => {
