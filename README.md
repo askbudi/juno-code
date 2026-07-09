@@ -165,7 +165,8 @@ yy continue <session_id>
 Inspect `{{ out_dir }}/parallel` (or the printed parallel runner artifact path) for `parallel_runner_status.json`, per-task `*.json`, `aggregation_*.json`, and `tmux_handoff_manifest.json` when capped splitting is used. These artifacts matter because aggregation avoids reconstructing work from scratch, manifests make multi-session handoff auditable, and tests protect the no-reuse contract so handoff panes are not accidentally overwritten before `yy continue <session_id>`.
 
 ### Workflow Runner
-Run ordered cron/operator workflows from YAML or stdin with durable artifacts:
+Use Workflow Runner when the work is not just one prompt, but a repeatable multi-step process: gather context, run one or more agents, validate output, summarize artifacts, and hand off the final session for follow-up. Workflows run from YAML or stdin with durable artifacts, so teams can turn ad-hoc operator playbooks into reviewed, repeatable automation instead of rebuilding context from terminal scrollback.
+
 ```bash
 ./.juno_task/scripts/workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
 ./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/prod_triage.yaml
@@ -176,7 +177,7 @@ cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print
 ./.juno_task/scripts/workflow_runner.sh doctor .juno_task/specs/workflows/<workflow_id>/<run_id>
 ```
 
-Use `production-triage-handoff` when production discovery should fan out into capped tmux handoff panes (`--tmux panes --tmux-handoff --max-panes-per-session 4`) with a fixed `{{ out_dir }}/parallel` artifact root. Use `parallel-kanban-review` when a planning agent creates kanban tasks, parallel workers write aggregation artifacts, and a master review reads the latest `aggregation_*.json`. These examples matter because aggregation artifacts preserve final agent responses, session IDs, commits, and statuses; later review/`yy continue` handoff should not reconstruct history from tmux scrollback.
+Use `production-triage-handoff` when production discovery should fan out into capped tmux handoff panes (`--tmux panes --tmux-handoff --max-panes-per-session 4`) with a fixed `{{ out_dir }}/parallel` artifact root. Use `parallel-kanban-review` when a planning agent creates kanban tasks, parallel workers write aggregation artifacts, and a master review reads the latest `aggregation_*.json`. Use raw command YAML mode in `parallel_runner.sh` when the fan-out items are complete commands or multiple workflow files that should run concurrently. These examples matter because aggregation artifacts preserve final agent responses, session IDs, commits, and statuses; later review/`yy continue` handoff should not reconstruct history from tmux scrollback.
 
 By default, step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a step when automation should fail fast. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` as the final answer. The runner does not inject `--quiet`; it keeps successful stderr logs in artifacts instead of echoing them to the operator console, and detected agent commands that exit 0 with an empty response are marked failed. Use `workflow_runner.sh lint` before cron runs to catch noisy `stdout`/`stderr` templates, and `workflow_runner.sh doctor`/`dr` after runs to diagnose manifest/artifact response issues. At the end, detected agent step session ids are printed and the last session is persisted to the same continue-scope env file and main branch registry used by juno-code, so `yy cc` can continue the last workflow agent session. Set top-level `continue_from_step: <step-id-or-name>` when a workflow should hand off a specific agent step instead; explicit selection is strict and fails if that step does not produce a session id. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, response capture, session visibility, and continue handoff.
 
@@ -557,6 +558,20 @@ Example config:
 
 ## Autonomous Execution
 
+Use these runners as the core automation layer around `juno-code`:
+
+| Need | Use |
+|------|-----|
+| One AI loop over project/kanban context | `juno-code start` or `juno-code -p ...` |
+| Keep looping until kanban is done | `run_until_completion.sh` |
+| Many independent kanban tasks | `parallel_runner.sh --kanban ...` or `--kanban-filter ...` |
+| Many complete shell commands or workflow files | `parallel_runner.sh --commands-file ...` |
+| Ordered multi-step operator/team process | `workflow_runner.sh --workflow ...` |
+| Human inspection after parallel work | `parallel_runner.sh --tmux-handoff ...` |
+| Continue the final workflow agent session | workflow handoff + `yy cc` |
+
+The runner tests exercise real subprocess boundaries because this is where production failures usually hide: command rendering, stdout/stderr handling, artifact capture, session IDs, and continue handoff all need to work outside an in-process unit-test harness.
+
 ### run_until_completion.sh
 
 Continuously runs juno-code until all kanban tasks are completed. Uses a do-while loop: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
@@ -619,6 +634,7 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 | `--kanban-filter 'ready'` | Dependency-aware: only unblocked tasks |
 | `--items "a,b,c"` | Generic item list |
 | `--items-file data.csv` | File input (JSONL, CSV, TSV, XLSX) |
+| `--commands-file workflows.yaml` | Raw command YAML mode: fan out complete commands or workflow files |
 
 #### Execution Modes
 
@@ -638,6 +654,11 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 # Process file with extraction
 ./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file crawl.md --strict
 
+# Generate, lint, then run raw command/workflow batches
+./.juno_task/scripts/parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
+./.juno_task/scripts/parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
+./.juno_task/scripts/parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
+
 # Use different AI backend
 ./.juno_task/scripts/parallel_runner.sh -s codex -m :codex --kanban T1,T2
 
@@ -645,6 +666,18 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 ./.juno_task/scripts/parallel_runner.sh --stop --name my-batch
 ./.juno_task/scripts/parallel_runner.sh --stop-all
 ```
+
+#### Raw command YAML mode
+
+Use raw command YAML mode when each parallel item is already a complete command, such as several `workflow_runner.sh --workflow ...` invocations. This composes with Workflow Runner: `workflow_runner.sh` owns ordered steps and per-run artifacts, while `parallel_runner.sh --commands-file` owns concurrent fan-out, queueing, and aggregate status.
+
+```bash
+./.juno_task/scripts/parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
+./.juno_task/scripts/parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
+./.juno_task/scripts/parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
+```
+
+The command file supports schema `v1`; command entries may be shell command strings or argv lists. Run the lint command before unattended batches so YAML/schema mistakes fail before expensive agents launch. The implementation is backed by command-file parser and runner tests because command-string-vs-argv behavior, schema validation, and aggregation artifacts are the safety net for repeatable team automation.
 
 #### Dedicated Example: SEO landing-page batch in tmux panes
 
