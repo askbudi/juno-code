@@ -898,6 +898,47 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
     expect(manifest.continue.session_id).toBe('session-alpha');
   });
 
+  it('supports continue_from_step summary override when summary is not the default last successful session', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    const workflowPath = path.join(testDir, 'continue-from-summary.json');
+    const outDir = path.join(testDir, 'continue-from-summary-out');
+    await fs.writeJson(workflowPath, {
+      name: 'continue-from-summary',
+      continue_from_step: 'summary',
+      steps: [{ id: 'normal', command: [executablePath, 'pi', 'normal'] }],
+      summary: { command: [executablePath, 'pi', 'fail'] },
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
+      undefined,
+      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-continue-from-summary' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('handoff: summary [summary] persisted for yy cc');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.continue.step_id).toBe('summary');
+    expect(manifest.continue.session_id).toBe('session-fail');
+  });
+
+  it('fails strict continue_from_step summary when summary has no session id', async () => {
+    const workflowPath = path.join(testDir, 'continue-from-summary-missing-session.json');
+    await fs.writeJson(workflowPath, {
+      name: 'continue-from-summary-missing-session',
+      continue_from_step: 'summary',
+      steps: [{ id: 'plain', command: 'printf done' }],
+      summary: { command: 'printf summary' },
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--print-output', 'none']);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("continue_from_step 'summary' did not match an executed Juno invocation with a session_id");
+  });
+
   it('fails strict continue_from_step when the selected step has no session id', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     const workflowPath = path.join(testDir, 'continue-from-missing-session.json');
@@ -913,7 +954,7 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
     const result = runWorkflow(['--workflow', workflowPath, '--print-output', 'none']);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("continue_from_step 'plain' did not produce a session_id");
+    expect(result.stderr).toContain("continue_from_step 'plain' selected step 2 [plain], but it did not produce a session_id");
   });
 
   it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {

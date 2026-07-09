@@ -643,17 +643,25 @@ def persist_continue_context(project_root: Path, session_id: str, command: Any) 
     return {**context, "env_file": str(env_file), "settings": serialized_settings}
 
 
-def select_continue_step(workflow: dict[str, Any], session_steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+def select_continue_step(workflow: dict[str, Any], session_candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the yy cc handoff from executed Juno invocations in workflow order.
+
+    Without an explicit override, the last successful candidate that captured a
+    session_id wins. With continue_from_step, the named step/summary must exist
+    in the candidate stream and must have produced a session_id.
+    """
     selected = str(workflow.get("continue_from_step") or "").strip()
     if not selected:
-        for item in reversed(session_steps):
-            if item.get("status") == "success":
+        for item in reversed(session_candidates):
+            if item.get("status") == "success" and str(item.get("session_id") or "").strip():
                 return item
         return None
-    for item in session_steps:
+    for item in session_candidates:
         if item.get("id") == selected or item.get("name") == selected:
-            return item
-    raise WorkflowError(f"continue_from_step '{selected}' did not produce a session_id")
+            if str(item.get("session_id") or "").strip():
+                return item
+            raise WorkflowError(f"continue_from_step '{selected}' selected {session_label(item)}, but it did not produce a session_id")
+    raise WorkflowError(f"continue_from_step '{selected}' did not match an executed Juno invocation with a session_id")
 
 
 def session_label(item: dict[str, Any]) -> str:
@@ -912,7 +920,7 @@ def maybe_run_summary_command(
     write_text(out_dir / "summary.stdout.txt", stdout)
     write_text(out_dir / "summary.stderr.txt", stderr)
     result: dict[str, Any] | None = None
-    if is_juno_command:
+    if is_juno_command or capture_enabled:
         result = {
             "id": "summary",
             "kind": "summary",
@@ -1046,7 +1054,8 @@ def run_workflow(args: argparse.Namespace) -> int:
     }
 
     final_exit = 0
-    session_steps: list[dict[str, Any]] = []
+    session_candidates: list[dict[str, Any]] = []
+    explicit_continue_from_step = str(workflow.get("continue_from_step") or "").strip()
     persisted_continue: dict[str, str] | None = None
     start_index = resolve_from_step(workflow["steps"], args.from_step)
     manifest["from_step"] = args.from_step
@@ -1146,12 +1155,12 @@ def run_workflow(args: argparse.Namespace) -> int:
             result["failure_reason"] = "empty response from detected agent command"
         if stderr and status == "failed":
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
-        if is_juno_command and result.get("session_id"):
-            session_steps.append({
+        if is_juno_command or result.get("session_id") or explicit_continue_from_step in {step_id, str(step.get("name") or "")}:
+            session_candidates.append({
                 "index": index,
                 "id": step_id,
                 "name": str(step.get("name") or ""),
-                "session_id": result["session_id"],
+                "session_id": str(result.get("session_id") or ""),
                 "status": result.get("status", status),
                 "command": command,
             })
@@ -1176,10 +1185,10 @@ def run_workflow(args: argparse.Namespace) -> int:
     summary_stdout, summary_stderr, summary_exit, summary_command, summary_session = maybe_run_summary_command(
         workflow, context, project_root, out_dir, bool(args.dry_run)
     )
-    if summary_session and summary_session.get("session_id"):
-        session_steps.append(summary_session)
+    if summary_session:
+        session_candidates.append(summary_session)
 
-    selected_continue_step = select_continue_step(workflow, session_steps)
+    selected_continue_step = select_continue_step(workflow, session_candidates)
     if selected_continue_step:
         persisted_continue = persist_continue_context(
             project_root, str(selected_continue_step["session_id"]), selected_continue_step["command"]
@@ -1228,7 +1237,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     output = selected_final_output(args.print_output, context, summary)
     if output:
         print("\n" + output, end="" if output.endswith("\n") else "\n")
-    print_session_summary(session_steps, persisted_continue)
+    print_session_summary([item for item in session_candidates if item.get("session_id")], persisted_continue)
     return final_exit
 
 
