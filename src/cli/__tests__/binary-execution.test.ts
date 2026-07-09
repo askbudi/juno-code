@@ -1302,6 +1302,104 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(payload.sessionId).toBe('session-workflow-handoff');
     });
 
+    it('should keep compiled continue-scope tmux pane yy cc stable while isolating other panes and normal shells', async () => {
+      const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+      const stableMarkerKeys = [
+        'TMUX_PANE',
+        'WEZTERM_PANE',
+        'KITTY_WINDOW_ID',
+        'KITTY_PID',
+        'TERM_SESSION_ID',
+        'WT_SESSION',
+        'ZELLIJ_PANE_ID',
+        'STY',
+        'WINDOWID',
+        'SSH_TTY',
+      ];
+      const withoutStableTerminalMarkers = Object.fromEntries(
+        stableMarkerKeys.map((key) => [key, '']),
+      ) as Record<string, string>;
+      const runContinueScopeInFreshShell = async (env: Record<string, string>) => {
+        const result = await execa(
+          'bash',
+          [
+            '-lc',
+            `node ${quote(BINARY_MJS)} continue-scope --json; status=$?; :; exit $status`,
+          ],
+          {
+            cwd: tempDir,
+            env: {
+              ...process.env,
+              NO_COLOR: '1',
+              CI: '1',
+              JUNO_CODE_CONFIG: '',
+              JUNO_TASK_CONFIG: '',
+              ...withoutStableTerminalMarkers,
+              ...env,
+            },
+            timeout: BINARY_TIMEOUT,
+            reject: false,
+            all: true,
+          },
+        );
+
+        expect(result.exitCode).toBe(0);
+        return JSON.parse(result.stdout) as Record<string, unknown>;
+      };
+
+      const paneAFirst = await runContinueScopeInFreshShell({ TMUX_PANE: '%paneA' });
+      const paneASecond = await runContinueScopeInFreshShell({ TMUX_PANE: '%paneA' });
+      const paneB = await runContinueScopeInFreshShell({ TMUX_PANE: '%paneB' });
+
+      expect(paneAFirst.scopeSource).toBe('project+stable_terminal+TMUX_PANE');
+      expect(paneASecond.scopeSource).toBe('project+stable_terminal+TMUX_PANE');
+      expect(paneAFirst.fullHash).toBe(paneASecond.fullHash);
+      expect(paneAFirst.fullHash).not.toBe(paneB.fullHash);
+
+      const paneAFullHash = String(paneAFirst.fullHash);
+      const paneBFullHash = String(paneB.fullHash);
+      const paneAEnv = {
+        ...withoutStableTerminalMarkers,
+        TMUX_PANE: '%paneA',
+        [`JUNO_CODE_LAST_SESSION_ID_${paneAFullHash}`]: 'SESSION_PANE_A',
+        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneAFullHash}`]: JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          maxIterations: 1,
+        }),
+      };
+      const paneBEnv = {
+        ...withoutStableTerminalMarkers,
+        TMUX_PANE: '%paneB',
+        [`JUNO_CODE_LAST_SESSION_ID_${paneBFullHash}`]: 'SESSION_PANE_B',
+        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneBFullHash}`]: JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          maxIterations: 1,
+        }),
+      };
+
+      const paneAStatus = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: paneAEnv })).stdout);
+      const paneBStatus = JSON.parse((await executeCLI(['continue-scope', '--json'], { env: paneBEnv })).stdout);
+      expect(paneAStatus.sessionId).toBe('SESSION_PANE_A');
+      expect(paneBStatus.sessionId).toBe('SESSION_PANE_B');
+
+      const continueA = await executeCLI(['cc', '-p', 'continue pane A', '-i', 'invalid'], {
+        env: paneAEnv,
+        expectError: true,
+      });
+      const continueAOutput = continueA.all || `${continueA.stdout}\n${continueA.stderr}`;
+      expect(continueA.exitCode).not.toBe(0);
+      expect(continueAOutput).toContain('Max iterations must be a valid number');
+      expect(continueAOutput).not.toContain('Continue session mismatch for this shell context');
+
+      const normalShellFirst = await runContinueScopeInFreshShell({});
+      const normalShellSecond = await runContinueScopeInFreshShell({});
+      expect(normalShellFirst.scopeSource).toBe('project+shell_lineage');
+      expect(normalShellSecond.scopeSource).toBe('project+shell_lineage');
+      expect(normalShellFirst.fullHash).not.toBe(normalShellSecond.fullHash);
+    });
+
     it('should report not_found for continue scope without snapshot state', async () => {
       const result = await executeCLI(['continue-scope', '--json'], {
         env: {
