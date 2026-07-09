@@ -73,6 +73,28 @@ describe('continue-scope', () => {
     expect(firstRun.scopeDescriptor).not.toContain('SHELL_LINEAGE:');
   });
 
+  it('keeps tmux pane scope independent from secondary terminal markers', async () => {
+    const workingDirectory = await createTempDir();
+
+    const firstRun = resolveContinueScopeContext(
+      { TMUX_PANE: '%42', TERM_SESSION_ID: 'terminal-a', SSH_TTY: '/dev/ttys001' },
+      5001,
+      workingDirectory,
+    );
+    const continueRun = resolveContinueScopeContext(
+      { TMUX_PANE: '%42', TERM_SESSION_ID: 'terminal-b', SSH_TTY: '/dev/ttys002' },
+      5002,
+      workingDirectory,
+    );
+
+    expect(firstRun.scopeHash).toBe(continueRun.scopeHash);
+    expect(firstRun.scopeSource).toBe('project+stable_terminal+TMUX_PANE');
+    expect(firstRun.scopeDescriptor).toContain('STABLE_TERMINAL:TMUX_PANE:%42');
+    expect(firstRun.scopeDescriptor).not.toContain('TERM_SESSION_ID');
+    expect(firstRun.scopeDescriptor).not.toContain('SSH_TTY');
+    expect(firstRun.scopeDescriptor).not.toContain('SHELL_LINEAGE:');
+  });
+
   it('keeps same project root isolated across different tmux panes', async () => {
     const workingDirectory = await createTempDir();
 

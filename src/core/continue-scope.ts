@@ -126,8 +126,7 @@ function buildParentShellLineage(fallbackParentPid: number): string {
   return lineage.length > 0 ? lineage.join('>') : String(fallbackParentPid);
 }
 
-function collectStableTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
-  const markers: string[] = [];
+function selectStableTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
   for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
     const rawValue = env[envKey];
     if (typeof rawValue !== 'string') {
@@ -139,9 +138,9 @@ function collectStableTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
       continue;
     }
 
-    markers.push(`${envKey}:${markerValue}`);
+    return [`${envKey}:${markerValue}`];
   }
-  return markers;
+  return [];
 }
 
 function formatScopeMarkerSource(markers: ReadonlyArray<string>): string {
@@ -332,7 +331,7 @@ export function resolveContinueScopeContext(
     scopeSource = CONTINUE_SCOPE_OVERRIDE_ENV_KEY;
   } else {
     const projectPath = canonicalizeWorkingDirectory(workingDirectory);
-    const stableTerminalMarkers = collectStableTerminalScopeMarkers(env);
+    const stableTerminalMarkers = selectStableTerminalScopeMarkers(env);
 
     if (stableTerminalMarkers.length > 0) {
       scopeDescriptor = [
