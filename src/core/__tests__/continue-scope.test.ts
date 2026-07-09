@@ -58,16 +58,44 @@ describe('continue-scope', () => {
     expect(scopeB.scopeDescriptor).toContain('PROJECT:');
   });
 
-  it('keeps same project root isolated across different shell lineages', async () => {
+  it('keeps stable tmux pane scope deterministic when parent lineage changes', async () => {
     const workingDirectory = await createTempDir();
-    const env = { TERM_SESSION_ID: 'shared-terminal-session' };
+    const env = { TMUX_PANE: '%42' };
+
+    const firstRun = resolveContinueScopeContext(env, 5001, workingDirectory);
+    const continueRun = resolveContinueScopeContext(env, 5002, workingDirectory);
+
+    expect(firstRun.scopeHash).toBe(continueRun.scopeHash);
+    expect(firstRun.sessionEnvKey).toBe(continueRun.sessionEnvKey);
+    expect(firstRun.scopeSource).toBe('project+stable_terminal+TMUX_PANE');
+    expect(firstRun.scopeDescriptor).toContain('PROJECT:');
+    expect(firstRun.scopeDescriptor).toContain('STABLE_TERMINAL:TMUX_PANE:%42');
+    expect(firstRun.scopeDescriptor).not.toContain('SHELL_LINEAGE:');
+  });
+
+  it('keeps same project root isolated across different tmux panes', async () => {
+    const workingDirectory = await createTempDir();
+
+    const paneA = resolveContinueScopeContext({ TMUX_PANE: '%42' }, 5001, workingDirectory);
+    const paneB = resolveContinueScopeContext({ TMUX_PANE: '%43' }, 5001, workingDirectory);
+
+    expect(paneA.scopeHash).not.toBe(paneB.scopeHash);
+    expect(paneA.scopeDescriptor).toContain('STABLE_TERMINAL:TMUX_PANE:%42');
+    expect(paneB.scopeDescriptor).toContain('STABLE_TERMINAL:TMUX_PANE:%43');
+  });
+
+  it('keeps normal shells isolated across different shell lineages', async () => {
+    const workingDirectory = await createTempDir();
+    const env = {};
 
     const shellA = resolveContinueScopeContext(env, 5001, workingDirectory);
     const shellB = resolveContinueScopeContext(env, 5002, workingDirectory);
 
     expect(shellA.scopeHash).not.toBe(shellB.scopeHash);
+    expect(shellA.scopeSource).toBe('project+shell_lineage');
     expect(shellA.scopeDescriptor).toContain('SHELL_LINEAGE:5001');
     expect(shellB.scopeDescriptor).toContain('SHELL_LINEAGE:5002');
+    expect(shellA.scopeDescriptor).not.toContain('STABLE_TERMINAL:');
   });
 
   it('keeps explicit override deterministic independent of cwd and parent lineage', async () => {

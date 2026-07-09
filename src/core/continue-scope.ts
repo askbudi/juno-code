@@ -126,7 +126,7 @@ function buildParentShellLineage(fallbackParentPid: number): string {
   return lineage.length > 0 ? lineage.join('>') : String(fallbackParentPid);
 }
 
-function collectTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
+function collectStableTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
   const markers: string[] = [];
   for (const envKey of CONTINUE_SCOPE_ENV_MARKERS) {
     const rawValue = env[envKey];
@@ -142,6 +142,10 @@ function collectTerminalScopeMarkers(env: NodeJS.ProcessEnv): string[] {
     markers.push(`${envKey}:${markerValue}`);
   }
   return markers;
+}
+
+function formatScopeMarkerSource(markers: ReadonlyArray<string>): string {
+  return markers.map((marker) => marker.split(':', 1)[0]).join('+');
 }
 
 function buildContextFromHash(fullHash: string, scopeSource: string): ContinueScopeContext {
@@ -328,18 +332,22 @@ export function resolveContinueScopeContext(
     scopeSource = CONTINUE_SCOPE_OVERRIDE_ENV_KEY;
   } else {
     const projectPath = canonicalizeWorkingDirectory(workingDirectory);
-    const shellLineage = buildParentShellLineage(fallbackParentPid);
-    const terminalMarkers = collectTerminalScopeMarkers(env);
-    const terminalDescriptor = terminalMarkers.length > 0 ? terminalMarkers.join('|') : 'none';
+    const stableTerminalMarkers = collectStableTerminalScopeMarkers(env);
 
-    scopeDescriptor = [
-      `PROJECT:${projectPath}`,
-      `SHELL_LINEAGE:${shellLineage}`,
-      `TERMINAL:${terminalDescriptor}`,
-    ].join('\n');
-    scopeSource = terminalMarkers.length > 0
-      ? `project+shell_lineage+${terminalMarkers.map((marker) => marker.split(':', 1)[0]).join('+')}`
-      : 'project+shell_lineage';
+    if (stableTerminalMarkers.length > 0) {
+      scopeDescriptor = [
+        `PROJECT:${projectPath}`,
+        `STABLE_TERMINAL:${stableTerminalMarkers.join('|')}`,
+      ].join('\n');
+      scopeSource = `project+stable_terminal+${formatScopeMarkerSource(stableTerminalMarkers)}`;
+    } else {
+      const shellLineage = buildParentShellLineage(fallbackParentPid);
+      scopeDescriptor = [
+        `PROJECT:${projectPath}`,
+        `SHELL_LINEAGE:${shellLineage}`,
+      ].join('\n');
+      scopeSource = 'project+shell_lineage';
+    }
   }
 
   const hashes = buildScopeHashes(scopeDescriptor);
