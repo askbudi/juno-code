@@ -252,7 +252,7 @@ npm install -g @mariozechner/pi-coding-agent
 # Basic headless JSON-mode usage with Anthropic model
 ~/.juno_code/services/pi.py -p "Write a hello world function" -m :sonnet
 
-# Use with Codex Luna shortcut (:gpt aliases to :luna)
+# Use with Codex Sol shortcut (:gpt aliases to :sol)
 ~/.juno_code/services/pi.py -p "Refactor code" -m :luna
 
 # Use with older Codex GPT 5.5 shortcut
@@ -279,7 +279,7 @@ npm install -g @mariozechner/pi-coding-agent
 - `-p, --prompt <text>`: Prompt text (required, mutually exclusive with --prompt-file)
 - `-pp, --prompt-file <path>`: Path to prompt file (required if no --prompt)
 - `--cd <path>`: Project path (default: current directory)
-- `-m, --model <name>`: Model name (supports shorthand aliases, including `:luna` → `openai-codex/gpt-5.6-luna`, `:sol` → `openai-codex/gpt-5.6-sol`, `:gpt` → `:luna`, `:gpt5.5` → `openai-codex/gpt-5.5`, `:codex` → `openai-codex/gpt-5.3-codex`, and `:api-codex` → `openai/gpt-5.3-codex`)
+- `-m, --model <name>`: Model name (supports shorthand aliases, including `:luna` → `openai-codex/gpt-5.6-luna`, `:sol` → `openai-codex/gpt-5.6-sol`, `:gpt` → `:sol`, `:gpt5.5` → `openai-codex/gpt-5.5`, `:codex` → `openai-codex/gpt-5.3-codex`, and `:api-codex` → `openai/gpt-5.3-codex`)
 - `--live`: Run Pi in interactive mode (no `--mode json`, prompt passed positionally)
 - `--no-extensions`: Disable Pi extensions (incompatible with `--live`)
 - `--verbose`: Enable verbose output

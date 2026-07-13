@@ -104,9 +104,9 @@ class TestModelShorthandExpansion:
     def test_shorthand_sol(self):
         assert self.svc.expand_model_shorthand(":sol") == "openai-codex/gpt-5.6-sol"
 
-    def test_shorthand_gpt_aliases_luna(self):
-        assert self.svc.MODEL_SHORTHANDS[":gpt"] == ":luna"
-        assert self.svc.expand_model_shorthand(":gpt") == "openai-codex/gpt-5.6-luna"
+    def test_shorthand_gpt_aliases_sol(self):
+        assert self.svc.MODEL_SHORTHANDS[":gpt"] == ":sol"
+        assert self.svc.expand_model_shorthand(":gpt") == "openai-codex/gpt-5.6-sol"
 
     def test_shorthand_gpt55(self):
         assert self.svc.expand_model_shorthand(":gpt5.5") == "openai-codex/gpt-5.5"

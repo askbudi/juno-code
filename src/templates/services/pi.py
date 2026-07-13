@@ -54,7 +54,7 @@ class PiService:
         # OpenAI
         ":luna": "openai-codex/gpt-5.6-luna",
         ":sol": "openai-codex/gpt-5.6-sol",
-        ":gpt": ":luna",
+        ":gpt": ":sol",
         ":gpt5.5": "openai-codex/gpt-5.5",
         ":gpt-5": "openai/gpt-5",
         ":gpt-4o": "openai/gpt-4o",
@@ -315,7 +315,7 @@ class PiService:
         """Expand shorthand model names (colon-prefixed) to full identifiers.
 
         Shorthands may point at another shorthand (for example ``:gpt`` ->
-        ``:luna``), so resolve aliases until a concrete provider/model id is
+        ``:sol``), so resolve aliases until a concrete provider/model id is
         found. Unknown shorthands are intentionally passed through unchanged.
         """
         current = model
@@ -377,7 +377,7 @@ Model shorthands:
   :haiku           -> anthropic/claude-haiku-4-5-20251001
   :luna            -> openai-codex/gpt-5.6-luna
   :sol             -> openai-codex/gpt-5.6-sol
-  :gpt             -> :luna -> openai-codex/gpt-5.6-luna
+  :gpt             -> :sol -> openai-codex/gpt-5.6-sol
   :gpt5.5          -> openai-codex/gpt-5.5
   :gpt-5           -> openai/gpt-5
   :gpt-4o          -> openai/gpt-4o
