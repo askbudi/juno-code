@@ -52,7 +52,10 @@ class PiService:
         ":opus": "anthropic/claude-opus-4-6",
         ":haiku": "anthropic/claude-haiku-4-5-20251001",
         # OpenAI
-        ":gpt": "openai-codex/gpt-5.5",
+        ":luna": "openai-codex/gpt-5.6-luna",
+        ":sol": "openai-codex/gpt-5.6-sol",
+        ":gpt": ":luna",
+        ":gpt5.5": "openai-codex/gpt-5.5",
         ":gpt-5": "openai/gpt-5",
         ":gpt-4o": "openai/gpt-4o",
         ":o3": "openai/o3",
@@ -309,10 +312,20 @@ class PiService:
         return f"{seconds:.2f}s"
 
     def expand_model_shorthand(self, model: str) -> str:
-        """Expand shorthand model names (colon-prefixed) to full identifiers."""
-        if model.startswith(":"):
-            return self.MODEL_SHORTHANDS.get(model, model)
-        return model
+        """Expand shorthand model names (colon-prefixed) to full identifiers.
+
+        Shorthands may point at another shorthand (for example ``:gpt`` ->
+        ``:luna``), so resolve aliases until a concrete provider/model id is
+        found. Unknown shorthands are intentionally passed through unchanged.
+        """
+        current = model
+        seen = set()
+        while current.startswith(":") and current in self.MODEL_SHORTHANDS:
+            if current in seen:
+                return current
+            seen.add(current)
+            current = self.MODEL_SHORTHANDS[current]
+        return current
 
     def _detect_prettifier_mode(self, model: str) -> str:
         """Detect which prettifier to use based on the resolved model name.
@@ -355,14 +368,17 @@ Examples:
   %(prog)s -pp prompt.txt --model openai/gpt-4o
   %(prog)s -p "Refactor module" --thinking high
   %(prog)s -p "Fix bug" --provider anthropic --model claude-sonnet-4-5-20250929
-  %(prog)s -p "Audit code" -m :gpt-5 --tools read,bash,edit
+  %(prog)s -p "Audit code" -m :luna --tools read,bash,edit
 
 Model shorthands:
   :pi, :default    -> anthropic/claude-sonnet-4-6
   :sonnet          -> anthropic/claude-sonnet-4-6
   :opus            -> anthropic/claude-opus-4-6
   :haiku           -> anthropic/claude-haiku-4-5-20251001
-  :gpt             -> openai-codex/gpt-5.5
+  :luna            -> openai-codex/gpt-5.6-luna
+  :sol             -> openai-codex/gpt-5.6-sol
+  :gpt             -> :luna -> openai-codex/gpt-5.6-luna
+  :gpt5.5          -> openai-codex/gpt-5.5
   :gpt-5           -> openai/gpt-5
   :gpt-4o          -> openai/gpt-4o
   :o3              -> openai/o3
@@ -394,7 +410,7 @@ Model shorthands:
             type=str,
             default=os.environ.get("PI_MODEL", self.DEFAULT_MODEL),
             help=(
-                "Model name. Supports shorthands (:pi, :sonnet, :opus, :gpt, :gpt-5, :gemini-pro, etc.) "
+                "Model name. Supports shorthands (:pi, :sonnet, :opus, :luna, :sol, :gpt, :gpt5.5, :gpt-5, :gemini-pro, etc.) "
                 f"or provider/model format. Default: {self.DEFAULT_MODEL} (env: PI_MODEL)"
             ),
         )

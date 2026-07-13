@@ -98,8 +98,18 @@ class TestModelShorthandExpansion:
     def test_shorthand_haiku(self):
         assert self.svc.expand_model_shorthand(":haiku") == "anthropic/claude-haiku-4-5-20251001"
 
-    def test_shorthand_gpt(self):
-        assert self.svc.expand_model_shorthand(":gpt") == "openai-codex/gpt-5.5"
+    def test_shorthand_luna(self):
+        assert self.svc.expand_model_shorthand(":luna") == "openai-codex/gpt-5.6-luna"
+
+    def test_shorthand_sol(self):
+        assert self.svc.expand_model_shorthand(":sol") == "openai-codex/gpt-5.6-sol"
+
+    def test_shorthand_gpt_aliases_luna(self):
+        assert self.svc.MODEL_SHORTHANDS[":gpt"] == ":luna"
+        assert self.svc.expand_model_shorthand(":gpt") == "openai-codex/gpt-5.6-luna"
+
+    def test_shorthand_gpt55(self):
+        assert self.svc.expand_model_shorthand(":gpt5.5") == "openai-codex/gpt-5.5"
 
     def test_shorthand_gpt5(self):
         assert self.svc.expand_model_shorthand(":gpt-5") == "openai/gpt-5"
@@ -1543,14 +1553,17 @@ class TestDefaultModelConstant:
 
     def test_shorthand_count(self):
         svc = _load_pi_service()
-        assert len(svc.MODEL_SHORTHANDS) == 17
+        assert len(svc.MODEL_SHORTHANDS) == 20
         assert set(svc.MODEL_SHORTHANDS) == {
             ":pi",
             ":default",
             ":sonnet",
             ":opus",
             ":haiku",
+            ":luna",
+            ":sol",
             ":gpt",
+            ":gpt5.5",
             ":gpt-5",
             ":gpt-4o",
             ":o3",
