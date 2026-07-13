@@ -2388,7 +2388,27 @@ describe('Main Command', () => {
         expect(envContent).not.toContain('source-session-scope');
       });
 
-      it('should clone --name C from main and store the returned session without switching active branch', async () => {
+      it('should clone --name C from main and store the returned session without switching active branch or poisoning active continue env', async () => {
+        process.env.JUNO_CODE_CONTINUE_SCOPE = 'named-clone-keeps-active-main';
+        const scopeHash = `SCOPE_${createHash('sha256')
+          .update('JUNO_CODE_CONTINUE_SCOPE:named-clone-keeps-active-main')
+          .digest('hex')
+          .slice(0, 16)
+          .toUpperCase()}`;
+        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_MAIN';
+        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+          version: 1,
+          subagent: 'pi',
+          maxIterations: 5,
+        });
+
+        vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
+          candidate.endsWith('.env.juno'),
+        );
+        vi.mocked(fs.readFile).mockResolvedValueOnce(
+          `JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_MAIN"\n` +
+            `JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='{"version":1,"subagent":"pi","maxIterations":5}'\n`,
+        );
         vi.mocked(listSessionBranches).mockResolvedValue([
           {
             name: 'main',
@@ -2470,6 +2490,11 @@ describe('Main Command', () => {
           }),
         );
         expect(updateActiveSessionBranch).not.toHaveBeenCalled();
+        expect(process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]).toBe('SESSION_MAIN');
+        const envWrites = vi.mocked(fs.writeFile).mock.calls
+          .filter(([candidate]) => String(candidate).endsWith('.env.juno'))
+          .map(([, content]) => String(content));
+        expect(envWrites).toEqual([]);
       });
 
       it('should default named clone source to main even when active branch is D', async () => {

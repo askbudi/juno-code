@@ -406,8 +406,18 @@ async function persistContinueContext(
   result: ExecutionResult,
   config: { workingDirectory: string; envFilePath?: string },
   verboseLevel: number,
+  options: MainCommandOptions = {},
 ): Promise<void> {
   try {
+    const isNamedCloneRun = typeof options.cloneBranchName === 'string' && options.cloneBranchName.trim().length > 0;
+    if (isNamedCloneRun) {
+      // Named clones intentionally do not switch the active branch. The cloned session is
+      // persisted by syncSessionBranchExecutionResult under its branch name; writing it
+      // here into the shell-scoped env snapshot would make `.env.juno` disagree with the
+      // still-active branch and cause the next `yy cc` to fail the mismatch guard.
+      return;
+    }
+
     const sessionIds = extractSessionIds(result);
     const latestSessionId = sessionIds[sessionIds.length - 1];
     if (!latestSessionId) {
@@ -1880,7 +1890,7 @@ export async function mainCommandHandler(
       await persistSessionHistory(result, effectiveVerbose);
       const sessionIds = extractSessionIds(result);
       await syncSessionBranchExecutionResult(result, config, options, sessionIds[sessionIds.length - 1]);
-      await persistContinueContext(result, config, effectiveVerbose);
+      await persistContinueContext(result, config, effectiveVerbose, options);
 
       // Set exit code based on result
       exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
