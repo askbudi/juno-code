@@ -239,7 +239,7 @@ npm install -g @mariozechner/pi-coding-agent
 #### Features
 
 - Multi-provider support (Anthropic, OpenAI, Google, Groq, xAI, etc.)
-- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
+- Model shorthand aliases (`:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:api-codex`, `:gemini-pro`, etc.)
 - Support for inline prompts or prompt files
 - Headless JSON mode (default) for structured automation output
 - Live interactive mode via `--live` (Pi TUI + auto-exit on non-aborted `agent_end`)
@@ -253,9 +253,10 @@ npm install -g @mariozechner/pi-coding-agent
 ~/.juno_code/services/pi.py -p "Write a hello world function" -m :sonnet
 
 # Use with Codex Sol shortcut (:gpt aliases to :sol)
-~/.juno_code/services/pi.py -p "Refactor code" -m :luna
+~/.juno_code/services/pi.py -p "Refactor code" -m :gpt
 
-# Use with older Codex GPT 5.5 shortcut
+# Use with Codex Terra or older Codex GPT 5.5 shortcuts
+~/.juno_code/services/pi.py -p "Implement focused fix" -m :mini
 ~/.juno_code/services/pi.py -p "Refactor code" -m :gpt5.5
 
 # Use with OpenAI model
@@ -279,7 +280,7 @@ npm install -g @mariozechner/pi-coding-agent
 - `-p, --prompt <text>`: Prompt text (required, mutually exclusive with --prompt-file)
 - `-pp, --prompt-file <path>`: Path to prompt file (required if no --prompt)
 - `--cd <path>`: Project path (default: current directory)
-- `-m, --model <name>`: Model name (supports shorthand aliases, including `:luna` → `openai-codex/gpt-5.6-luna`, `:sol` → `openai-codex/gpt-5.6-sol`, `:gpt` → `:sol`, `:gpt5.5` → `openai-codex/gpt-5.5`, `:codex` → `openai-codex/gpt-5.3-codex`, and `:api-codex` → `openai/gpt-5.3-codex`)
+- `-m, --model <name>`: Model name (supports shorthand aliases, including `:luna` → `openai-codex/gpt-5.6-luna`, `:sol` → `openai-codex/gpt-5.6-sol`, `:gpt` → `:sol`, `:gpt5.5` → `openai-codex/gpt-5.5`, `:mini` → `openai-codex/gpt-5.6-terra`, `:codex` → `openai-codex/gpt-5.3-codex`, and `:api-codex` → `openai/gpt-5.3-codex`)
 - `--live`: Run Pi in interactive mode (no `--mode json`, prompt passed positionally)
 - `--no-extensions`: Disable Pi extensions (incompatible with `--live`)
 - `--verbose`: Enable verbose output

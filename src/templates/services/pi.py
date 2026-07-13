@@ -56,6 +56,7 @@ class PiService:
         ":sol": "openai-codex/gpt-5.6-sol",
         ":gpt": ":sol",
         ":gpt5.5": "openai-codex/gpt-5.5",
+        ":mini": "openai-codex/gpt-5.6-terra",
         ":gpt-5": "openai/gpt-5",
         ":gpt-4o": "openai/gpt-4o",
         ":o3": "openai/o3",
@@ -379,6 +380,7 @@ Model shorthands:
   :sol             -> openai-codex/gpt-5.6-sol
   :gpt             -> :sol -> openai-codex/gpt-5.6-sol
   :gpt5.5          -> openai-codex/gpt-5.5
+  :mini            -> openai-codex/gpt-5.6-terra
   :gpt-5           -> openai/gpt-5
   :gpt-4o          -> openai/gpt-4o
   :o3              -> openai/o3
@@ -410,7 +412,7 @@ Model shorthands:
             type=str,
             default=os.environ.get("PI_MODEL", self.DEFAULT_MODEL),
             help=(
-                "Model name. Supports shorthands (:pi, :sonnet, :opus, :luna, :sol, :gpt, :gpt5.5, :gpt-5, :gemini-pro, etc.) "
+                "Model name. Supports shorthands (:pi, :sonnet, :opus, :luna, :sol, :gpt, :gpt5.5, :mini, :gpt-5, :gemini-pro, etc.) "
                 f"or provider/model format. Default: {self.DEFAULT_MODEL} (env: PI_MODEL)"
             ),
         )

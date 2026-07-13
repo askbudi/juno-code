@@ -494,7 +494,19 @@ This command translates Codex CLI credentials to Pi's `auth.json` format (`type:
 | claude | `claude-sonnet-4-6` | `:haiku`, `:sonnet`, `:opus` |
 | codex | `gpt-5.3-codex` | `:codex`, `:codex-mini`, `:gpt-5`, `:mini` |
 | gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
-| pi | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
+| pi | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
+
+Pi's Codex-provider shortcuts include:
+
+| Shortcut | Resolved Pi model |
+|----------|-------------------|
+| `:luna` | `openai-codex/gpt-5.6-luna` |
+| `:sol` | `openai-codex/gpt-5.6-sol` |
+| `:gpt` | `:sol` → `openai-codex/gpt-5.6-sol` |
+| `:gpt5.5` | `openai-codex/gpt-5.5` |
+| `:mini` | `openai-codex/gpt-5.6-terra` |
+
+These aliases are subagent-specific: Pi's `:mini` selects Terra, while the Codex service keeps its existing `:mini` mapping.
 
 > **Pi** is a multi-provider coding agent that supports Anthropic, OpenAI, Google, Groq, xAI, and more.
 > It requires separate installation: `npm install -g @mariozechner/pi-coding-agent`
