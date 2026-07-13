@@ -521,9 +521,13 @@ juno-code pi --live -p '/skill:ralph-loop' -i 1
 
 # If :pi default model is unavailable in your Pi provider setup, pick an explicit available model
 juno-code pi --live -m :api-codex -p '/skill:ralph-loop' -i 1
+
+# GPT-5.6 models support Pi's pro thinking level
+juno-code pi -m :gpt --thinking pro -p 'Analyze and implement this task' -i 1
 ```
 
 Notes:
+- Pi accepts `--thinking off|minimal|low|medium|high|xhigh|pro`; use `pro` for GPT-5.6 models when maximum supported reasoning effort is desired. `PI_THINKING=pro` provides the equivalent environment default.
 - `--live` is validated as **Pi-only** (`juno-code pi ...`).
 - `--live` requires extensions enabled (`--no-extensions` is incompatible).
 - Live auto-exit is triggered on non-aborted `agent_end` only. Pressing `Esc` to interrupt the current run keeps Pi open so you can continue interacting.

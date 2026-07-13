@@ -427,9 +427,9 @@ Model shorthands:
         parser.add_argument(
             "--thinking",
             type=str,
-            choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+            choices=["off", "minimal", "low", "medium", "high", "xhigh", "pro"],
             default=os.environ.get("PI_THINKING", None),
-            help="Thinking level (off/minimal/low/medium/high/xhigh). (env: PI_THINKING)",
+            help="Thinking level (off/minimal/low/medium/high/xhigh/pro). (env: PI_THINKING)",
         )
 
         parser.add_argument(
