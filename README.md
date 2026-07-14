@@ -664,8 +664,12 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 # Headless parallel execution
 ./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
 
-# Tmux visualization with 5 workers
+# Tmux visualization with 5 workers (interactive attach)
 ./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 5
+
+# Explicit background launch for nohup, CI, cron, or a non-TTY remote shell
+./.juno_task/scripts/parallel_runner.sh --tmux tabs --no-attach --kanban T1,T2,T3
+# The runner exits after launch and prints concrete attach, tail/follow, wait, and stop commands.
 
 # Process file with extraction
 ./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file crawl.md --strict

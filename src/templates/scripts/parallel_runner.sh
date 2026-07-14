@@ -36,7 +36,7 @@ Usage:
   # Common options
   ./parallel_runner.sh --tmux --kanban T1 T2 T3 --parallel 2
   ./parallel_runner.sh --tmux panes --kanban T1 T2 --parallel 2
-  ./parallel_runner.sh --tmux tabs --kanban T1 T2 T3
+  ./parallel_runner.sh --tmux tabs --no-attach --kanban T1 T2 T3
   ./parallel_runner.sh --tmux panes --tmux-handoff --items a b --parallel 2 --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux panes --tmux-handoff --max-panes-per-session 4 --items a b c d e --name triage --prompt "Analyze {{item}}"
   ./parallel_runner.sh --tmux --kanban T1 T2 --name my-batch
@@ -108,6 +108,8 @@ Arguments:
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default), 'panes' (side-by-side),
                  or 'tabs' (one dedicated window/tab per task named by task ID).
+  --no-attach    Start the tmux session and orchestrator in the background without attaching.
+                 Prints attach, follow, wait, and stop commands for nohup/CI/cron use.
   --tmux-handoff Tmux-only mode: dedicate one worker pane/window per task and do not reuse it after completion.
   --max-panes-per-session N  With --tmux-handoff, split large task lists into capped tmux sessions.
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
@@ -2042,6 +2044,10 @@ def parse_args():
         help="Run in tmux mode. 'windows' (default), 'panes', or 'tabs' (one dedicated window/tab per task).",
     )
     parser.add_argument(
+        "--no-attach", action="store_true", default=False,
+        help="Start tmux workers in the background without attaching; print attach/follow/wait/stop commands.",
+    )
+    parser.add_argument(
         "--tmux-handoff", action="store_true", default=False,
         help="Tmux-only mode that dedicates one worker pane/window per task and never reuses completed workers.",
     )
@@ -2182,6 +2188,15 @@ def parse_args():
 
     if args.tmux_handoff and not args.tmux:
         parser.error("--tmux-handoff requires --tmux because handoff preserves tmux panes/windows for later attachment")
+
+    if args.no_attach and not args.tmux:
+        parser.error("--no-attach requires --tmux")
+    if args.tmux and not args.no_attach and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(
+            "WARNING: tmux attach was requested from a non-TTY context and may fail with "
+            "'open terminal failed: not a terminal'. Use --no-attach for an explicit background launch.",
+            file=sys.stderr,
+        )
 
     live_in_tmux = args.tmux and _contains_live_subagent_flag(args.subagent_args_list)
     if live_in_tmux and args.parallel > 1 and args.tmux != "tabs":
@@ -3433,6 +3448,16 @@ def orchestration_loop(task_states, workers, task_queue, pwd, prompt_paths,
 # Tmux mode — entry point
 # ---------------------------------------------------------------------------
 
+def _print_detached_tmux_commands(session_name, session_name_short):
+    """Print concrete operator commands for an explicitly detached tmux launch."""
+    runner_command = shlex.quote(str(Path(sys.argv[0]).resolve()))
+    wait_script = shlex.quote(str(SCRIPT_DIR / "parallel_runner_wait.sh"))
+    print(f"Stop: {runner_command} --stop --name {shlex.quote(session_name_short)}")
+    print(f"Attach: tmux attach -t {shlex.quote(session_name)}")
+    print(f"Follow: tail -f {shlex.quote(str(COMBINED_LOG))}")
+    print(f"Wait: {wait_script} --run-dir {shlex.quote(str(LOG_DIR))} --verbose")
+
+
 def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                   service, model, subagent_args=None, attach=True):
     """Set up tmux session and run orchestrator."""
@@ -3626,9 +3651,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
             print("Tmux handoff: enabled (completed panes/windows are preserved and not reused)")
         print(f"Logs: {LOG_DIR}/")
         print(f"Pause: touch {_pause_file(session_name_short)}")
-        print(f"Stop:  --stop --name {session_name_short}")
         if not attach:
-            print(f"Attach: tmux attach -t {session_name}")
+            _print_detached_tmux_commands(session_name, session_name_short)
             print()
             return {
                 "session_name": session_name,
@@ -3642,6 +3666,8 @@ def run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir,
                 "pause_path": str(_pause_file(session_name_short)),
                 "items": list(args.kanban),
             }
+        runner_command = shlex.quote(str(Path(sys.argv[0]).resolve()))
+        print(f"Stop: {runner_command} --stop --name {shlex.quote(session_name_short)}")
         print(f"Attaching to tmux session...")
         print()
 
@@ -3880,7 +3906,10 @@ def main():
         if args.tmux_handoff and args.max_panes_per_session is not None and len(args.kanban) > args.max_panes_per_session:
             sys.exit(run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args))
         else:
-            run_tmux_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
+            run_tmux_mode(
+                args, pwd, prompt_source_label, prompt_template, output_dir,
+                service, model, subagent_args, attach=not args.no_attach,
+            )
     else:
         run_headless_mode(args, pwd, prompt_source_label, prompt_template, output_dir, service, model, subagent_args)
 

@@ -81,6 +81,8 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stdout).toContain('Command file schema v1');
     expect(result.stdout).toContain('[A-Za-z0-9_.-]+');
     expect(result.stdout).toContain('command strings are shell commands');
+    expect(result.stdout).toContain('--no-attach');
+    expect(result.stdout).toContain('attach/follow/wait/stop commands');
     expect(result.stdout).toContain('--tmux-handoff');
     expect(result.stdout).toContain('--max-panes-per-session');
     expect(result.stdout).toContain('tabs');
@@ -106,6 +108,92 @@ print(json.dumps({'tmux': args.tmux, 'parallel': args.parallel, 'tmux_handoff': 
       tmux_handoff: true,
       tasks: ['item-001', 'item-002'],
     });
+  });
+
+  it('parses --no-attach only for tmux launches', () => {
+    const code = `
+import importlib.machinery, json, sys
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+sys.argv = ['parallel_runner.sh', '--tmux', 'tabs', '--no-attach', '--items', 'a', '--prompt', 'Analyze {{item}}']
+args = mod.parse_args()
+print(json.dumps({'tmux': args.tmux, 'no_attach': args.no_attach}))
+`;
+    const parsed = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+
+    expect(parsed.status).toBe(0);
+    expect(JSON.parse(parsed.stdout.trim())).toEqual({ tmux: 'tabs', no_attach: true });
+
+    const headless = runParallel(['--no-attach', '--items', 'a', '--prompt', 'Analyze {{item}}']);
+    expect(headless.status).toBe(2);
+    expect(headless.stderr).toContain('--no-attach requires --tmux');
+  });
+
+  it('warns non-TTY tmux callers that omit --no-attach', () => {
+    const code = `
+import importlib.machinery, sys
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+sys.argv = ['parallel_runner.sh', '--tmux', 'tabs', '--items', 'a', '--prompt', 'Analyze {{item}}']
+mod.parse_args()
+`;
+    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('tmux attach was requested from a non-TTY context');
+    expect(result.stderr).toContain('Use --no-attach');
+  });
+
+  it('wires --no-attach to detached tmux launch semantics', () => {
+    const code = `
+import importlib.machinery, json, pathlib, tempfile, types
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+tmp = pathlib.Path(tempfile.mkdtemp())
+args = types.SimpleNamespace(
+    stop_all=False, stop=False, kanban=['item-001'], tmux='tabs', tmux_handoff=True,
+    max_panes_per_session=None, no_attach=True, subagent_args_list=[], name='detached-test',
+)
+mod.parse_args = lambda: args
+mod.warn_if_runtime_script_is_stale = lambda name: None
+mod._resolve_service_model = lambda value: ('pi', None)
+mod.resolve_prompt_source = lambda value, pwd: ('inline', 'Analyze {{item}}')
+mod._resolve_output_dir = lambda value: None
+mod.cleanup_stale_tmp_artifacts = lambda: 0
+mod._write_run_status = lambda *values, **kwargs: None
+mod._log_base = tmp
+captured = {}
+def fake_run(*values, **kwargs):
+    captured['attach'] = kwargs.get('attach')
+mod.run_tmux_mode = fake_run
+mod.main()
+print(json.dumps(captured))
+`;
+    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim().split('\n').at(-1)!)).toEqual({ attach: false });
+  });
+
+  it('prints concrete attach, follow, wait, and stop commands for detached launches', () => {
+    const code = `
+import importlib.machinery, pathlib, sys, tempfile
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+run_dir = pathlib.Path(tempfile.mkdtemp()) / 'run artifacts'
+mod.LOG_DIR = run_dir
+mod.COMBINED_LOG = run_dir / 'parallel_runner.log'
+sys.argv = ['/tmp/parallel runner.sh']
+mod._print_detached_tmux_commands('pc-my batch', 'my batch')
+`;
+    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Attach: tmux attach -t 'pc-my batch'");
+    expect(result.stdout).toContain("Follow: tail -f '");
+    expect(result.stdout).toContain('parallel_runner.log');
+    expect(result.stdout).toContain('Wait:');
+    expect(result.stdout).toContain('parallel_runner_wait.sh');
+    expect(result.stdout).toContain('--run-dir');
+    expect(result.stdout).toContain('--verbose');
+    expect(result.stdout).toContain('parallel runner.sh');
+    expect(result.stdout).toContain("--stop --name 'my batch'");
   });
 
   it('sanitizes tmux tab names from task IDs while preserving uniqueness', () => {
