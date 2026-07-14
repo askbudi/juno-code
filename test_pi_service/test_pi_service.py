@@ -391,28 +391,35 @@ class TestBuildPiCommand:
 
         assert cmd[0] == "pi"
 
-    def test_thinking_pro_flag(self):
-        """GPT-5.6's pro thinking level is forwarded unchanged."""
+    def test_thinking_max_flag(self):
+        """GPT-5.6's max thinking level is forwarded unchanged."""
         self.svc.model_name = "openai-codex/gpt-5.6-sol"
         self.svc.prompt = "test"
-        args = _make_args(thinking="pro")
+        args = _make_args(thinking="max")
         cmd, _stdin = self.svc.build_pi_command(args)
 
         assert "--thinking" in cmd
         idx = cmd.index("--thinking")
-        assert cmd[idx + 1] == "pro"
+        assert cmd[idx + 1] == "max"
 
-    def test_parse_arguments_accepts_pro_thinking(self, monkeypatch):
+    def test_parse_arguments_accepts_max_thinking(self, monkeypatch):
+        monkeypatch.delenv("PI_THINKING", raising=False)
+        monkeypatch.setattr(sys, "argv", ["pi.py", "--thinking", "max"])
+
+        assert self.svc.parse_arguments().thinking == "max"
+
+    def test_pi_thinking_env_accepts_max(self, monkeypatch):
+        monkeypatch.setenv("PI_THINKING", "max")
+        monkeypatch.setattr(sys, "argv", ["pi.py"])
+
+        assert self.svc.parse_arguments().thinking == "max"
+
+    def test_parse_arguments_rejects_pro_thinking(self, monkeypatch):
         monkeypatch.delenv("PI_THINKING", raising=False)
         monkeypatch.setattr(sys, "argv", ["pi.py", "--thinking", "pro"])
 
-        assert self.svc.parse_arguments().thinking == "pro"
-
-    def test_pi_thinking_env_accepts_pro(self, monkeypatch):
-        monkeypatch.setenv("PI_THINKING", "pro")
-        monkeypatch.setattr(sys, "argv", ["pi.py"])
-
-        assert self.svc.parse_arguments().thinking == "pro"
+        with pytest.raises(SystemExit):
+            self.svc.parse_arguments()
 
     def test_no_thinking_when_none(self):
         """--thinking is not included when None."""
