@@ -118,6 +118,8 @@ Arguments:
   --stop-all     Stop ALL running sessions.
 """
 
+from __future__ import annotations
+
 import argparse
 import copy
 import csv
