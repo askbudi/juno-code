@@ -283,6 +283,15 @@ main() {
         exec python3 "$guard_helper" guard-kanban -- "$0" "$@"
     fi
 
+    # Projects with canonical E2E contracts validate create/body/tag writes before
+    # canonical Kanban execution. The helper reinvokes this wrapper once internally.
+    if [[ "${E2E_CONTRACT_VALIDATION_INTERNAL:-}" != "1" ]]; then
+        local contract_helper="${E2E_HOUSEKEEPING_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_housekeeping.py}"
+        if [[ -f "$contract_helper" ]]; then
+            exec python3 "$contract_helper" validate-kanban-write -- "$0" "$@"
+        fi
+    fi
+
     # Ensure Python environment is ready
     if ! ensure_python_environment; then
         log_error "Failed to setup Python environment"

@@ -231,6 +231,9 @@ describe('Binary Execution Tests', () => {
         helper,
         [
           'import json, os, pathlib, sys',
+          'if sys.argv[1] == "validate-kanban-write":',
+          ' print("canonical post-deploy E2E task requires a valid contract", file=sys.stderr)',
+          ' raise SystemExit(2)',
           'assigned = os.environ["ASSIGNED_TASK_ID"]',
           'args = sys.argv[sys.argv.index("--") + 1:]',
           'target = args[args.index("--ID") + 1]',
@@ -250,6 +253,7 @@ describe('Binary Execution Tests', () => {
       const installed = await fs.readFile(wrapper, 'utf8');
       expect(installed).toContain('ASSIGNED_TASK_ID');
       expect(installed).toContain('guard-kanban');
+      expect(installed).toContain('validate-kanban-write');
 
       const rejected = await execa(
         wrapper,
@@ -272,6 +276,18 @@ describe('Binary Execution Tests', () => {
       const journal = await fs.readFile(path.join(guardDir, 'mutation_journal.ndjson'), 'utf8');
       expect(journal).toContain('"assigned_task_id": "one"');
       expect(journal).toContain('"target_task_id": "two"');
+
+      const rejectedContract = await execa(
+        wrapper,
+        ['create', '--body', 'missing contract', '--tags', 'FIXTURE_E2E_post_deploy'],
+        {
+          cwd: tempDir,
+          reject: false,
+          env: {...process.env, E2E_HOUSEKEEPING_HELPER_PATH: helper},
+        },
+      );
+      expect(rejectedContract.exitCode).not.toBe(0);
+      expect(rejectedContract.stderr).toContain('requires a valid contract');
     });
 
     it('should include shell safety guidance for prompt input', async () => {

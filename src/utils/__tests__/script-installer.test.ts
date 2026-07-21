@@ -540,6 +540,8 @@ describe('ScriptInstaller', () => {
       expect(installed).toContain('E2E_SWEEP_KANBAN_INTERNAL');
       expect(installed).toContain('guard-kanban');
       expect(installed).toContain('exec python3 "$guard_helper"');
+      expect(installed).toContain('E2E_CONTRACT_VALIDATION_INTERNAL');
+      expect(installed).toContain('validate-kanban-write');
       expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
       expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
     });
