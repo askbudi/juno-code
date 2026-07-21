@@ -2408,7 +2408,7 @@ def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
             log_combined("Prompt file missing at runtime; task cannot start", task_id)
             return task_id, 1
 
-        env = _build_process_env()
+        env = _build_process_env({"ASSIGNED_TASK_ID": task_id})
 
         cmd = [
             "juno-code",
@@ -2847,6 +2847,7 @@ def write_runner_script(task_id, pwd, prompt_path, session_name_short,
     tmp.mkdir(parents=True, exist_ok=True)
 
     env_exports = _generate_env_exports()
+    env_exports += "\nexport ASSIGNED_TASK_ID=%s" % shlex.quote(task_id)
 
     env_path = tmp / f"env_{task_id}.sh"
     env_path.write_text(env_exports + "\n")

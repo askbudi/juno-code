@@ -533,12 +533,15 @@ describe('ScriptInstaller', () => {
 
       const updated = await ScriptInstaller.autoUpdate(testDir, true);
       const installed = await fs.readFile(path.join(scriptsDir, 'kanban.sh'), 'utf8');
+      const runner = await fs.readFile(path.join(scriptsDir, 'parallel_runner.sh'), 'utf8');
 
       expect(updated).toBe(true);
       expect(installed).toContain('ASSIGNED_TASK_ID');
       expect(installed).toContain('E2E_SWEEP_KANBAN_INTERNAL');
       expect(installed).toContain('guard-kanban');
       expect(installed).toContain('exec python3 "$guard_helper"');
+      expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
+      expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
     });
 
     it('should not update when scripts match package version', async () => {
