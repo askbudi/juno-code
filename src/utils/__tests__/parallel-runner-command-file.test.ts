@@ -71,6 +71,17 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stderr).not.toContain('runtime script differs');
   });
 
+  it('loads and prints help under PATH python3 without evaluating modern generic annotations', () => {
+    const python = spawnSync('python3', ['--version'], { encoding: 'utf8' });
+    expect(python.status).toBe(0);
+
+    const result = runParallel(['--help']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain("'type' object is not subscriptable");
+    expect(result.stdout).toContain('Run juno-code tasks in parallel');
+  });
+
   it('documents commands file mode, linting, generator, schema, and examples in --help', () => {
     const result = runParallel(['--help']);
 
