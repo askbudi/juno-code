@@ -312,6 +312,17 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('yy switch C');
       expect(result.stdout).toContain('future yy cc / juno-code continue follows C');
       expect(result.stdout).toContain('--name main is reserved');
+      expect(result.stdout).toContain(':luna');
+      expect(result.stdout).toContain('openai-codex/gpt-5.6-luna');
+      expect(result.stdout).toContain(':sol');
+      expect(result.stdout).toContain('openai-codex/gpt-5.6-sol');
+      expect(result.stdout).toMatch(/:gpt\s+:sol/);
+      expect(result.stdout).toContain(':gpt5.5');
+      expect(result.stdout).toContain('openai-codex/gpt-5.5');
+      expect(result.stdout).toContain(':mini');
+      expect(result.stdout).toContain('openai-codex/gpt-5.6-terra');
+      expect(result.stdout).not.toMatch(/:gpt\s+openai-codex\/gpt-5\.5/);
+      expect(result.stdout).toContain('high, xhigh, max');
     });
 
     it('should display version with --version flag', async () => {

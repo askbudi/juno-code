@@ -235,7 +235,7 @@ function setupGlobalOptions(program: Command): void {
     )
     .option(
       '--thinking <level>',
-      'Extended thinking level: off, minimal, low, medium, high, xhigh (forwarded to service backend)',
+      'Extended thinking level: off, minimal, low, medium, high, xhigh, max (forwarded to service backend)',
     );
 
   // Global error handling
@@ -1130,8 +1130,12 @@ ${chalk.blue('Model Shorthands:')}
   :sonnet              anthropic/claude-sonnet-4-6   ${chalk.gray('(default)')}
   :opus                anthropic/claude-opus-4-6
   :haiku               anthropic/claude-haiku-4-5-20251001
-  ${chalk.gray('# OpenAI')}
-  :gpt                 openai-codex/gpt-5.5
+  ${chalk.gray('# OpenAI / OpenAI Codex')}
+  :luna                openai-codex/gpt-5.6-luna
+  :sol                 openai-codex/gpt-5.6-sol
+  :gpt                 :sol ${chalk.gray('(OpenAI default alias)')}
+  :gpt5.5              openai-codex/gpt-5.5
+  :mini                openai-codex/gpt-5.6-terra
   :gpt-5               openai/gpt-5
   :gpt-4o              openai/gpt-4o
   :o3                  openai/o3
@@ -1150,7 +1154,7 @@ ${chalk.blue('Model Shorthands:')}
 ${chalk.blue('Service-Specific Options:')}
   These are forwarded to pi.py and the Pi CLI:
   --provider <name>         LLM provider override (anthropic, openai, google, groq, xai)
-  --thinking <level>        Extended thinking: off, minimal, low, medium, high, xhigh
+  --thinking <level>        Extended thinking: off, minimal, low, medium, high, xhigh, max
   --tools <list>            Pi tools (comma-separated): read, bash, edit, write, grep, find, ls
   --no-tools                Disable all built-in Pi tools
   --system-prompt <text>    Replace Pi's default system prompt
