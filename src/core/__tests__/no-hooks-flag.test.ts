@@ -1,8 +1,8 @@
 /**
- * Tests for --no-hooks CLI flag
+ * Tests for --no-hooks/--no-hook CLI flags
  *
- * Verifies that the --no-hooks flag:
- * 1. Is accepted as a valid CLI option
+ * Verifies that both spellings:
+ * 1. Are accepted as valid CLI options
  * 2. Sets skipHooks on the config
  * 3. Is properly validated in the config schema
  * 4. Engine condition logic correctly evaluates skipHooks
@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { JunoTaskConfigSchema, DEFAULT_CONFIG } from '../config.js';
 import type { JunoTaskConfig } from '../../types/index.js';
+import { areLifecycleHooksDisabled } from '../../cli/types.js';
 
 describe('--no-hooks flag', () => {
   describe('Config Schema Validation', () => {
@@ -141,31 +142,37 @@ describe('--no-hooks flag', () => {
   });
 
   describe('CLI option registration', () => {
-    it('should register --no-hooks and set hooks to false when used', async () => {
-      const { Command } = await import('commander');
+    it.each([
+      ['--no-hooks', { hooks: false, hook: true }],
+      ['--no-hook', { hooks: true, hook: false }],
+    ])('registers %s as a lifecycle-hook disable flag', async (flag, expected) => {
+      const { Command, Option } = await import('commander');
       const program = new Command();
       program.option('--no-hooks', 'Skip execution of all lifecycle hooks');
-      program.parse(['node', 'test', '--no-hooks'], { from: 'user' });
-      expect(program.opts().hooks).toBe(false);
+      program.addOption(new Option('--no-hook', 'Alias for --no-hooks').hideHelp());
+      program.parse(['node', 'test', flag], { from: 'user' });
+      expect(program.opts()).toMatchObject(expected);
     });
 
-    it('should default hooks to true when --no-hooks is not passed', async () => {
-      const { Command } = await import('commander');
+    it('should default both hook options to true when neither flag is passed', async () => {
+      const { Command, Option } = await import('commander');
       const program = new Command();
       program.option('--no-hooks', 'Skip execution of all lifecycle hooks');
+      program.addOption(new Option('--no-hook', 'Alias for --no-hooks').hideHelp());
       program.parse(['node', 'test'], { from: 'user' });
       // Commander's --no-X pattern defaults to true when the flag is not used
-      expect(program.opts().hooks).toBe(true);
+      expect(program.opts()).toMatchObject({ hooks: true, hook: true });
     });
   });
 
   describe('mainCommandHandler skipHooks propagation', () => {
-    it('should set config.skipHooks=true when options.hooks is false', () => {
+    it.each([
+      ['--no-hooks', { hooks: false }],
+      ['--no-hook', { hook: false }],
+    ])('sets config.skipHooks=true for %s', (_flag, options) => {
       const config: any = { ...DEFAULT_CONFIG };
-      const options = { hooks: false };
 
-      // Replicate the logic from mainCommandHandler
-      if (options.hooks === false) {
+      if (areLifecycleHooksDisabled(options)) {
         config.skipHooks = true;
       }
 

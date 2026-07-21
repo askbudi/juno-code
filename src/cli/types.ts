@@ -47,8 +47,17 @@ export interface GlobalCLIOptions {
   enableFeedback?: boolean;
   /** Behavior when Claude hourly quota limit is reached: "wait" to sleep until reset, "raise" to exit immediately */
   onHourlyLimit?: 'wait' | 'raise';
-  /** Skip execution of all lifecycle hooks */
+  /** Skip execution of all lifecycle hooks (`false` for --no-hooks) */
   hooks?: boolean;
+  /** Alias state for --no-hook (`false` when passed) */
+  hook?: boolean;
+}
+
+/** Normalize Commander's singular/plural negated option keys. */
+export function areLifecycleHooksDisabled(
+  options: Pick<GlobalCLIOptions, 'hooks' | 'hook'>,
+): boolean {
+  return options.hooks === false || options.hook === false;
 }
 
 /**

@@ -324,7 +324,7 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 | `--continue` | Continue most recent session |
 | `--clone [prompt]` | Pi-only: fork a clone from `--resume <id>` or the current shell continue scope |
 | `--live` | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
-| `--no-hooks` | Skip lifecycle hooks |
+| `--no-hooks`, `--no-hook` | Skip lifecycle hooks (equivalent spellings) |
 | `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit) |
 | `--force-update` | Force reinstall all scripts and services |
 | `--til-completion` | Loop until all kanban tasks are done |

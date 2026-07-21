@@ -231,8 +231,9 @@ function setupGlobalOptions(program: Command): void {
     )
     .option(
       '--no-hooks',
-      'Skip execution of all lifecycle hooks (START_RUN, START_ITERATION, END_ITERATION, END_RUN)',
+      'Skip execution of all lifecycle hooks (alias: --no-hook)',
     )
+    .addOption(new Option('--no-hook', 'Alias for --no-hooks').hideHelp())
     .option(
       '--thinking <level>',
       'Extended thinking level: off, minimal, low, medium, high, xhigh, max (forwarded to service backend)',

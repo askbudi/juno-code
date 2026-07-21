@@ -14,7 +14,7 @@ import { mainCommandHandler } from './main.js';
 import { loadConfig } from '../../core/config.js';
 import { getConfiguredDefaultModelForSubagent } from '../../core/subagent-models.js';
 import type { StartCommandOptions, MainCommandOptions } from '../types.js';
-import { RuntimeError } from '../types.js';
+import { areLifecycleHooksDisabled, RuntimeError } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
 
 /**
@@ -171,8 +171,12 @@ export async function startCommandHandler(
       ...((options as any).config !== undefined ? { config: (options as any).config } : {}),
       ...((options as any).logLevel !== undefined ? { logLevel: (options as any).logLevel } : {}),
       ...(options.enableFeedback !== undefined ? { enableFeedback: options.enableFeedback } : {}),
-      // Pass through --no-hooks flag (Commander sets options.hooks to false when --no-hooks is used)
-      ...((options as any).hooks !== undefined ? { hooks: (options as any).hooks } : {}),
+      // Normalize --no-hooks/--no-hook before delegating to the shared main handler.
+      ...(areLifecycleHooksDisabled(options)
+        ? { hooks: false }
+        : options.hooks !== undefined
+          ? { hooks: options.hooks }
+          : {}),
     };
 
     // Delegate to mainCommandHandler with the prompt from init.md

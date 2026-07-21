@@ -34,7 +34,12 @@ import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type { MainCommandOptions } from '../types.js';
-import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
+import {
+  areLifecycleHooksDisabled,
+  ValidationError,
+  ConfigurationError,
+  RuntimeError,
+} from '../types.js';
 import type { SubagentType } from '../../types/index.js';
 import type { ExecutionRequest, ExecutionResult } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
@@ -1748,11 +1753,12 @@ export async function mainCommandHandler(
       logger.setLevel(LogLevel.INFO);
     }
 
-    // Apply --no-hooks flag: Commander sets options.hooks to false when --no-hooks is passed
-    if (options.hooks === false) {
+    // Commander maps each negated spelling to its singular/plural option key.
+    // Normalize both aliases here so every execution path has one skipHooks truth.
+    if (areLifecycleHooksDisabled(options)) {
       config.skipHooks = true;
       if (effectiveVerbose >= 1) {
-        console.error(chalk.gray('   Hooks: disabled (--no-hooks)'));
+        console.error(chalk.gray('   Hooks: disabled (--no-hooks/--no-hook)'));
       }
     }
 
