@@ -219,6 +219,61 @@ describe('Binary Execution Tests', () => {
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
     });
 
+    it('should retain assignment isolation after real CLI startup refreshes project scripts', async () => {
+      const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
+      const guardDir = path.join(tempDir, 'guard');
+      const records = path.join(tempDir, 'backlog.ndjson');
+      const helper = path.join(tempDir, 'guard_helper.py');
+      await fs.ensureDir(scriptsDir);
+      await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho UNGUARDED\n');
+      await fs.writeFile(records, '{"id":"one","status":"todo"}\n');
+      await fs.writeFile(
+        helper,
+        [
+          'import json, os, pathlib, sys',
+          'assigned = os.environ["ASSIGNED_TASK_ID"]',
+          'args = sys.argv[sys.argv.index("--") + 1:]',
+          'target = args[args.index("--ID") + 1]',
+          'guard = pathlib.Path(os.environ["E2E_SWEEP_KANBAN_GUARD_DIR"])',
+          'guard.mkdir(parents=True, exist_ok=True)',
+          'event = {"assigned_task_id": assigned, "target_task_id": target, "operation_allowed": False, "changed_task_ids": [], "rejection": f"worker {assigned} may not mutate Kanban task {target}"}',
+          '(guard / "mutation_journal.ndjson").write_text(json.dumps(event) + "\\n")',
+          'print(event["rejection"], file=sys.stderr)',
+          'raise SystemExit(2)',
+          '',
+        ].join('\n'),
+      );
+
+      const startup = await executeCLI(['--version']);
+      expect(startup.exitCode).toBe(0);
+      const wrapper = path.join(scriptsDir, 'kanban.sh');
+      const installed = await fs.readFile(wrapper, 'utf8');
+      expect(installed).toContain('ASSIGNED_TASK_ID');
+      expect(installed).toContain('guard-kanban');
+
+      const rejected = await execa(
+        wrapper,
+        ['mark', 'done', '--ID', 'two', '--response', 'x'],
+        {
+          cwd: tempDir,
+          reject: false,
+          env: {
+            ...process.env,
+            ASSIGNED_TASK_ID: 'one',
+            E2E_SWEEP_KANBAN_GUARD_DIR: guardDir,
+            E2E_SWEEP_KANBAN_RECORDS: records,
+            E2E_SWEEP_HELPER_PATH: helper,
+          },
+        },
+      );
+      expect(rejected.exitCode).not.toBe(0);
+      expect(rejected.stderr).toContain('worker one may not mutate Kanban task two');
+      expect(await fs.readFile(records, 'utf8')).toBe('{"id":"one","status":"todo"}\n');
+      const journal = await fs.readFile(path.join(guardDir, 'mutation_journal.ndjson'), 'utf8');
+      expect(journal).toContain('"assigned_task_id": "one"');
+      expect(journal).toContain('"target_task_id": "two"');
+    });
+
     it('should include shell safety guidance for prompt input', async () => {
       const result = await executeCLI(['--help']);
 

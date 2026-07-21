@@ -526,6 +526,21 @@ describe('ScriptInstaller', () => {
       expect(typeof updated).toBe('boolean');
     });
 
+    it('should preserve the assignment guard when replacing a project kanban wrapper', async () => {
+      const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
+      await fs.ensureDir(scriptsDir);
+      await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD"\n');
+
+      const updated = await ScriptInstaller.autoUpdate(testDir, true);
+      const installed = await fs.readFile(path.join(scriptsDir, 'kanban.sh'), 'utf8');
+
+      expect(updated).toBe(true);
+      expect(installed).toContain('ASSIGNED_TASK_ID');
+      expect(installed).toContain('E2E_SWEEP_KANBAN_INTERNAL');
+      expect(installed).toContain('guard-kanban');
+      expect(installed).toContain('exec python3 "$guard_helper"');
+    });
+
     it('should not update when scripts match package version', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);

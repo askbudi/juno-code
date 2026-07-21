@@ -271,6 +271,18 @@ normalize_arguments() {
 main() {
     log_info "=== juno-kanban Wrapper ==="
 
+    # Sweep workers must route every Kanban operation through the coordinator's
+    # assignment guard. The guard reinvokes this wrapper with the internal flag
+    # after validating mutation ownership and establishing its audit boundary.
+    if [[ -n "${ASSIGNED_TASK_ID:-}" && "${E2E_SWEEP_KANBAN_INTERNAL:-}" != "1" ]]; then
+        local guard_helper="${E2E_SWEEP_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_sweep_helper.py}"
+        if [[ ! -f "$guard_helper" ]]; then
+            log_error "E2E sweep assignment guard helper not found: $guard_helper"
+            exit 1
+        fi
+        exec python3 "$guard_helper" guard-kanban -- "$0" "$@"
+    fi
+
     # Ensure Python environment is ready
     if ! ensure_python_environment; then
         log_error "Failed to setup Python environment"
