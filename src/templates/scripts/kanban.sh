@@ -274,7 +274,7 @@ main() {
     # Sweep workers must route every Kanban operation through the coordinator's
     # assignment guard. The guard reinvokes this wrapper with the internal flag
     # after validating mutation ownership and establishing its audit boundary.
-    if [[ -n "${ASSIGNED_TASK_ID:-}" && "${E2E_SWEEP_KANBAN_INTERNAL:-}" != "1" ]]; then
+    if [[ -n "${ASSIGNED_TASK_ID:-}" && -n "${E2E_SWEEP_KANBAN_GUARD_DIR:-}" && -n "${E2E_SWEEP_KANBAN_RECORDS:-}" && "${E2E_SWEEP_KANBAN_INTERNAL:-}" != "1" ]]; then
         local guard_helper="${E2E_SWEEP_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_sweep_helper.py}"
         if [[ ! -f "$guard_helper" ]]; then
             log_error "E2E sweep assignment guard helper not found: $guard_helper"

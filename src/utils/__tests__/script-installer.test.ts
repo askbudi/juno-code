@@ -537,6 +537,8 @@ describe('ScriptInstaller', () => {
 
       expect(updated).toBe(true);
       expect(installed).toContain('ASSIGNED_TASK_ID');
+      expect(installed).toContain('E2E_SWEEP_KANBAN_GUARD_DIR');
+      expect(installed).toContain('E2E_SWEEP_KANBAN_RECORDS');
       expect(installed).toContain('E2E_SWEEP_KANBAN_INTERNAL');
       expect(installed).toContain('guard-kanban');
       expect(installed).toContain('exec python3 "$guard_helper"');
