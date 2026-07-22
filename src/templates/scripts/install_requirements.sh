@@ -74,7 +74,9 @@ VERSION_CHECK_FAILURE_COOLDOWN_SECONDS=3600
 INSTALLED_PACKAGE_METADATA=""
 INSTALLED_PACKAGE_NAMES=()
 INSTALLED_PACKAGE_VERSIONS=()
+CACHED_EXPECTED_VERSIONS=()
 INSTALLED_VERSION_RESULT=""
+CACHED_EXPECTED_VERSION_RESULT=""
 VERSION_CHECK_IS_STALE=true
 
 # Logging functions
@@ -127,13 +129,14 @@ complete = (
     and all(cache.get(f"package.{package}") for package in packages)
 )
 fresh = complete and time.time() - checked_at < interval_seconds
-print(f"__cache__\t{'fresh' if fresh else 'stale'}")
+print(f"__cache__|{'fresh' if fresh else 'stale'}|")
 for package in packages:
     try:
         version = importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
         version = ""
-    print(f"{package}\t{version}")
+    expected = cache.get(f"package.{package}", "") if fresh else ""
+    print(f"{package}|{version}|{expected}")
 PY
     ); then
         INSTALLED_PACKAGE_METADATA=""
@@ -142,13 +145,15 @@ PY
 
     INSTALLED_PACKAGE_NAMES=()
     INSTALLED_PACKAGE_VERSIONS=()
-    local package version
-    while IFS=$'\t' read -r package version; do
+    CACHED_EXPECTED_VERSIONS=()
+    local package version expected_version
+    while IFS='|' read -r package version expected_version; do
         if [ "$package" = "__cache__" ]; then
             [ "$version" = "fresh" ] && VERSION_CHECK_IS_STALE=false || VERSION_CHECK_IS_STALE=true
         else
             INSTALLED_PACKAGE_NAMES+=("$package")
             INSTALLED_PACKAGE_VERSIONS+=("${version:-}")
+            CACHED_EXPECTED_VERSIONS+=("${expected_version:-}")
         fi
     done <<< "$INSTALLED_PACKAGE_METADATA"
 }
@@ -160,6 +165,18 @@ get_installed_version() {
     for (( index=0; index<${#INSTALLED_PACKAGE_NAMES[@]}; index++ )); do
         if [ "${INSTALLED_PACKAGE_NAMES[$index]}" = "$package_name" ]; then
             INSTALLED_VERSION_RESULT="${INSTALLED_PACKAGE_VERSIONS[$index]:-}"
+            return 0
+        fi
+    done
+}
+
+get_cached_expected_version() {
+    local package_name="$1"
+    local index
+    CACHED_EXPECTED_VERSION_RESULT=""
+    for (( index=0; index<${#INSTALLED_PACKAGE_NAMES[@]}; index++ )); do
+        if [ "${INSTALLED_PACKAGE_NAMES[$index]}" = "$package_name" ]; then
+            CACHED_EXPECTED_VERSION_RESULT="${CACHED_EXPECTED_VERSIONS[$index]:-}"
             return 0
         fi
     done
@@ -276,6 +293,93 @@ upgrade_packages() {
     python3 -m pip install --upgrade "${packages_to_upgrade[@]}" --quiet 2>/dev/null
 }
 
+reconcile_fresh_cached_versions() {
+    [ "$VERSION_CHECK_IS_STALE" = false ] || return 0
+
+    local package installed_version expected_version
+    local cached_requirements=()
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        get_installed_version "$package"
+        installed_version="$INSTALLED_VERSION_RESULT"
+        get_cached_expected_version "$package"
+        expected_version="$CACHED_EXPECTED_VERSION_RESULT"
+        if [ -z "$expected_version" ]; then
+            log_warning "Fresh dependency cache is incomplete; refusing cached repair"
+            return 1
+        fi
+        if [ "$installed_version" != "$expected_version" ]; then
+            cached_requirements+=("${package}==${expected_version}")
+        fi
+    done
+    [ ${#cached_requirements[@]} -gt 0 ] || return 0
+
+    if is_failure_cooldown_active; then
+        log_warning "Previous cached dependency repair failed; retry suppressed for one hour"
+        return 1
+    fi
+    if ! acquire_update_lock; then
+        return 1
+    fi
+    trap release_update_lock EXIT
+
+    # Another invocation may have repaired the environment while this process waited.
+    if ! load_installed_package_metadata || [ "$VERSION_CHECK_IS_STALE" = true ]; then
+        atomic_write_failure_state
+        log_warning "Could not reload complete fresh dependency cache for repair"
+        release_update_lock
+        trap - EXIT
+        return 1
+    fi
+    cached_requirements=()
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        get_installed_version "$package"
+        installed_version="$INSTALLED_VERSION_RESULT"
+        get_cached_expected_version "$package"
+        expected_version="$CACHED_EXPECTED_VERSION_RESULT"
+        if [ -z "$expected_version" ]; then
+            atomic_write_failure_state
+            log_warning "Fresh dependency cache became incomplete during repair"
+            release_update_lock
+            trap - EXIT
+            return 1
+        fi
+        if [ "$installed_version" != "$expected_version" ]; then
+            cached_requirements+=("${package}==${expected_version}")
+        fi
+    done
+
+    if [ ${#cached_requirements[@]} -gt 0 ]; then
+        log_info "Repairing dependencies from fresh cached versions: ${cached_requirements[*]}"
+        if ! upgrade_packages "${cached_requirements[@]}" || ! load_installed_package_metadata; then
+            atomic_write_failure_state
+            log_warning "Cached dependency repair failed; retrying after one hour"
+            release_update_lock
+            trap - EXIT
+            return 1
+        fi
+    fi
+
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        get_installed_version "$package"
+        installed_version="$INSTALLED_VERSION_RESULT"
+        get_cached_expected_version "$package"
+        expected_version="$CACHED_EXPECTED_VERSION_RESULT"
+        if [ -z "$expected_version" ] || [ "$installed_version" != "$expected_version" ]; then
+            atomic_write_failure_state
+            log_warning "Cached dependency repair verification failed; retrying after one hour"
+            release_update_lock
+            trap - EXIT
+            return 1
+        fi
+    done
+
+    rm -f "$VERSION_CHECK_FAILURE_FILE"
+    log_success "All packages match fresh cached versions"
+    release_update_lock
+    trap - EXIT
+    return 0
+}
+
 check_all_for_updates() {
     local force_check="${1:-false}"
     local package installed_version latest_version latest_metadata=""
@@ -373,6 +477,11 @@ check_all_requirements_satisfied() {
     fi
 
     load_installed_package_metadata || return 1
+    if [ "$VERSION_CHECK_IS_STALE" = false ]; then
+        # A complete fresh cache is authoritative and can repair drift without PyPI.
+        reconcile_fresh_cached_versions || return 2
+        return 0
+    fi
     for package in "${REQUIRED_PACKAGES[@]}"; do
         get_installed_version "$package"
         version="$INSTALLED_VERSION_RESULT"
@@ -805,7 +914,9 @@ main() {
     # Step 1: Check if all requirements are already satisfied
     log_info "Checking if requirements are already satisfied..."
 
-    if check_all_requirements_satisfied; then
+    local requirements_status=0
+    check_all_requirements_satisfied || requirements_status=$?
+    if [ "$requirements_status" -eq 0 ]; then
         log_success "All requirements already satisfied!"
         echo ""
         log_info "Installed packages:"
@@ -820,6 +931,10 @@ main() {
         # Step 1b: Periodic update check (only when cache is stale, or forced)
         # This ensures dependencies stay up-to-date without degrading performance
         check_all_for_updates "$force_update"
+        exit 0
+    fi
+    if [ "$requirements_status" -eq 2 ]; then
+        log_warning "Requirements do not match fresh cached versions; continuing without false success"
         exit 0
     fi
 

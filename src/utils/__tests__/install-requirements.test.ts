@@ -69,25 +69,35 @@ if [[ "$1" == "-" ]]; then
   if [[ "$checked_at" =~ ^[0-9]+$ && "$cached_packages" == "$expected" && "$package_lines" -eq "$#" && $((now - checked_at)) -lt $((interval_hours * 3600)) ]]; then
     cache_status=fresh
   fi
-  printf '__cache__\\t%s\\n' "$cache_status"
+  printf '__cache__|%s|\\n' "$cache_status"
   if [[ "${requiresVenvForMetadata ? 'true' : 'false'}" == "true" && "${'${VIRTUAL_ENV:-}'}" != *".venv_juno"* ]]; then
-    for package in "$@"; do printf '%s\\t\\n' "$package"; done
+    for package in "$@"; do printf '%s||\\n' "$package"; done
     exit 0
   fi
   for package in "$@"; do
     version=""
+    expected_version=""
     [[ -f "${'${INSTALLED_VERSION_DIR:?}'}/$package" ]] && version=$(cat "${'${INSTALLED_VERSION_DIR}'}/$package")
-    printf '%s\\t%s\\n' "$package" "$version"
+    if [[ "$cache_status" == "fresh" ]]; then
+      expected_version=$(grep -F "package.$package=" "$cache_file" | head -1 | cut -d= -f2-)
+    fi
+    printf '%s|%s|%s\\n' "$package" "$version" "$expected_version"
   done
   exit 0
 fi
 
 if [[ "$1" == "-m" && "$2" == "pip" && "$3" == "install" ]]; then
+  [[ "${'${PIP_FAIL:-0}'}" == "1" ]] && exit 1
   upgrade=false
   for arg in "$@"; do
     [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
-    if [[ "$upgrade" == true && "$arg" != --* && -f "${'${LATEST_VERSION_DIR:?}'}/$arg" ]]; then
-      cp "${'${LATEST_VERSION_DIR}'}/$arg" "${'${INSTALLED_VERSION_DIR:?}'}/$arg"
+    if [[ "$upgrade" == true && "$arg" != --* ]]; then
+      package="${'${arg%%==*}'}"
+      if [[ "$arg" == *"=="* ]]; then
+        printf '%s' "${'${arg#*==}'}" > "${'${INSTALLED_VERSION_DIR:?}'}/$package"
+      elif [[ -f "${'${LATEST_VERSION_DIR:?}'}/$package" ]]; then
+        cp "${'${LATEST_VERSION_DIR}'}/$package" "${'${INSTALLED_VERSION_DIR}'}/$package"
+      fi
     fi
   done
   exit 0
@@ -225,8 +235,13 @@ echo "$*" >> "${'${UV_LOG_FILE:?}'}"
 upgrade=false
 for arg in "$@"; do
   [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
-  if [[ "$upgrade" == true && "$arg" != --* && -f "${'${LATEST_VERSION_DIR:?}'}/$arg" ]]; then
-    cp "${'${LATEST_VERSION_DIR}'}/$arg" "${'${INSTALLED_VERSION_DIR:?}'}/$arg"
+  if [[ "$upgrade" == true && "$arg" != --* ]]; then
+    package="${'${arg%%==*}'}"
+    if [[ "$arg" == *"=="* ]]; then
+      printf '%s' "${'${arg#*==}'}" > "${'${INSTALLED_VERSION_DIR:?}'}/$package"
+    elif [[ -f "${'${LATEST_VERSION_DIR:?}'}/$package" ]]; then
+      cp "${'${LATEST_VERSION_DIR}'}/$package" "${'${INSTALLED_VERSION_DIR}'}/$package"
+    fi
   fi
 done
 exit 0
@@ -257,6 +272,62 @@ exit 0
     const script = await fs.readFile(scriptPath, 'utf-8');
     expect(script).not.toContain('pip show');
     expect(script.match(/load_installed_package_metadata/g)?.length).toBeGreaterThan(1);
+  });
+
+  it('repairs installed-version drift from a fresh complete cache without PyPI', async () => {
+    await createVenv();
+    await writeSuccessCache();
+    await fs.writeFile(path.join(installedDir, 'juno-kanban'), '0.5.0');
+    await fs.writeFile(path.join(latestDir, 'juno-kanban'), '9.9.9');
+
+    const result = runScript();
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('Repairing dependencies from fresh cached versions: juno-kanban==1.0.0');
+    expect(output).toContain('All packages match fresh cached versions');
+    expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf-8')).toBe('1.0.0');
+    expect(await lineCount(metadataLogPath)).toBe(3);
+    expect(await lineCount(curlLogPath)).toBe(0);
+    expect(await fs.readFile(uvLogPath, 'utf-8')).toContain('juno-kanban==1.0.0');
+  });
+
+  it('repairs a missing package from a fresh complete cache without PyPI', async () => {
+    await createVenv();
+    await writeSuccessCache();
+    await fs.remove(path.join(installedDir, 'python-dotenv'));
+
+    const result = runScript();
+
+    expect(result.status).toBe(0);
+    expect(await fs.readFile(path.join(installedDir, 'python-dotenv'), 'utf-8')).toBe('1.0.0');
+    expect(await lineCount(metadataLogPath)).toBe(3);
+    expect(await lineCount(curlLogPath)).toBe(0);
+    expect(await fs.readFile(uvLogPath, 'utf-8')).toContain('python-dotenv==1.0.0');
+  });
+
+  it('records repair failure cooldown without false success or PyPI requests', async () => {
+    await createVenv();
+    await writeSuccessCache();
+    await fs.writeFile(path.join(installedDir, 'juno-kanban'), '0.5.0');
+    const cachePath = path.join(tempDir, '.juno_task', '.version_check_cache');
+    const originalCache = await fs.readFile(cachePath, 'utf-8');
+
+    const first = runScript([], { UV_FAIL: '1', PIP_FAIL: '1' });
+    const firstOutput = `${first.stdout ?? ''}\n${first.stderr ?? ''}`;
+    expect(first.status).toBe(0);
+    expect(firstOutput).toContain('Cached dependency repair failed');
+    expect(firstOutput).not.toContain('All requirements already satisfied');
+    expect(await fs.readFile(cachePath, 'utf-8')).toBe(originalCache);
+    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_failure'))).toBe(true);
+    expect(await lineCount(curlLogPath)).toBe(0);
+    expect(await lineCount(uvLogPath)).toBe(1);
+
+    const second = runScript([], { UV_FAIL: '1', PIP_FAIL: '1' });
+    expect(second.status).toBe(0);
+    expect(`${second.stdout}\n${second.stderr}`).toContain('retry suppressed for one hour');
+    expect(await lineCount(uvLogPath)).toBe(1);
+    expect(await lineCount(curlLogPath)).toBe(0);
   });
 
   it('blocks on a stale check, upgrades, verifies, then atomically publishes success', async () => {
