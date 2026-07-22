@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
-describe('install_requirements.sh periodic update flow', () => {
+const REQUIRED_PACKAGES = ['juno-kanban', 'requests', 'python-dotenv', 'slack_sdk'];
+
+describe('install_requirements.sh cached dependency flow', { timeout: 120_000 }, () => {
   let tempDir: string;
   let binDir: string;
   let homeDir: string;
@@ -12,26 +14,16 @@ describe('install_requirements.sh periodic update flow', () => {
   let uvLogPath: string;
   let curlLogPath: string;
   let pipxLogPath: string;
+  let metadataLogPath: string;
+  let installedDir: string;
+  let latestDir: string;
 
   const writeExecutable = async (filePath: string, content: string): Promise<void> => {
     await fs.writeFile(filePath, content, { mode: 0o755 });
     await fs.chmod(filePath, 0o755);
   };
 
-  const writePythonStub = async (requiresVenvForShow = false): Promise<void> => {
-    const showHandler = requiresVenvForShow
-      ? `if [[ "${'${VIRTUAL_ENV:-}'}" == *".venv_juno"* ]]; then
-  package="$4"
-  echo "Name: ${'${package}'}"
-  echo "Version: 1.0.0"
-  exit 0
-fi
-exit 1`
-      : `package="$4"
-echo "Name: ${'${package}'}"
-echo "Version: 1.0.0"
-exit 0`;
-
+  const writePythonStub = async (requiresVenvForMetadata = false): Promise<void> => {
     await writeExecutable(
       path.join(binDir, 'python3'),
       `#!/usr/bin/env bash
@@ -52,11 +44,52 @@ ACTIVATE_EOF
   exit 0
 fi
 
-if [[ "$1" == "-m" && "$2" == "pip" && "$3" == "show" ]]; then
-  ${showHandler}
+if [[ "$1" == "-" ]]; then
+  echo metadata >> "${'${PYTHON_METADATA_LOG_FILE:?}'}"
+  cache_file="$2"
+  interval_hours="$3"
+  shift 3
+  expected=""
+  for package in "$@"; do
+    [[ -n "$expected" ]] && expected="${'${expected}'},"
+    expected="${'${expected}'}${'${package}'}"
+  done
+  checked_at=""
+  cached_packages=""
+  package_lines=0
+  if [[ -f "$cache_file" ]]; then
+    while IFS='=' read -r key value; do
+      [[ "$key" == "checked_at" ]] && checked_at="$value"
+      [[ "$key" == "packages" ]] && cached_packages="$value"
+      [[ "$key" == package.* && -n "$value" ]] && package_lines=$((package_lines + 1))
+    done < "$cache_file"
+  fi
+  cache_status=stale
+  now=$(date +%s)
+  if [[ "$checked_at" =~ ^[0-9]+$ && "$cached_packages" == "$expected" && "$package_lines" -eq "$#" && $((now - checked_at)) -lt $((interval_hours * 3600)) ]]; then
+    cache_status=fresh
+  fi
+  printf '__cache__\\t%s\\n' "$cache_status"
+  if [[ "${requiresVenvForMetadata ? 'true' : 'false'}" == "true" && "${'${VIRTUAL_ENV:-}'}" != *".venv_juno"* ]]; then
+    for package in "$@"; do printf '%s\\t\\n' "$package"; done
+    exit 0
+  fi
+  for package in "$@"; do
+    version=""
+    [[ -f "${'${INSTALLED_VERSION_DIR:?}'}/$package" ]] && version=$(cat "${'${INSTALLED_VERSION_DIR}'}/$package")
+    printf '%s\\t%s\\n' "$package" "$version"
+  done
+  exit 0
 fi
 
 if [[ "$1" == "-m" && "$2" == "pip" && "$3" == "install" ]]; then
+  upgrade=false
+  for arg in "$@"; do
+    [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
+    if [[ "$upgrade" == true && "$arg" != --* && -f "${'${LATEST_VERSION_DIR:?}'}/$arg" ]]; then
+      cp "${'${LATEST_VERSION_DIR}'}/$arg" "${'${INSTALLED_VERSION_DIR:?}'}/$arg"
+    fi
+  done
   exit 0
 fi
 
@@ -67,78 +100,142 @@ fi
 
 if [[ "$1" == "-c" ]]; then
   if [[ "$2" == *"sys.prefix != sys.base_prefix"* ]]; then
-    if [[ "${'${VIRTUAL_ENV:-}'}" == *".venv_juno"* ]]; then
-      exit 0
-    fi
+    [[ "${'${VIRTUAL_ENV:-}'}" == *".venv_juno"* ]] && exit 0
     exit 1
   fi
-
   if [[ "$2" == *"sysconfig.get_path('stdlib')"* ]]; then
     echo "${'${STDLIB_DIR:-/tmp/fake-stdlib}'}"
     exit 0
   fi
 fi
-
 exit 0
 `,
     );
-
     await writeExecutable(
       path.join(binDir, 'python'),
       '#!/usr/bin/env bash\nexec "$(dirname "$0")/python3" "$@"\n',
     );
   };
 
+  const createVenv = async (): Promise<void> => {
+    const venvBinDir = path.join(tempDir, '.venv_juno', 'bin');
+    await fs.ensureDir(venvBinDir);
+    await writeExecutable(
+      path.join(venvBinDir, 'activate'),
+      `#!/usr/bin/env bash
+VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
+export VIRTUAL_ENV
+PATH="${binDir}:${'${PATH}'}"
+export PATH
+`,
+    );
+  };
+
+  const testEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+    ...process.env,
+    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    HOME: homeDir,
+    UV_LOG_FILE: uvLogPath,
+    CURL_LOG_FILE: curlLogPath,
+    PIPX_LOG_FILE: pipxLogPath,
+    PYTHON_METADATA_LOG_FILE: metadataLogPath,
+    INSTALLED_VERSION_DIR: installedDir,
+    LATEST_VERSION_DIR: latestDir,
+    VERSION_CHECK_INTERVAL_HOURS: '24',
+    VIRTUAL_ENV: '',
+    CONDA_DEFAULT_ENV: '',
+    ...extra,
+  });
+
+  const runScript = (args: string[] = [], extraEnv: NodeJS.ProcessEnv = {}) =>
+    spawnSync('bash', [scriptPath, ...args], {
+      cwd: tempDir,
+      env: testEnv(extraEnv),
+      encoding: 'utf-8',
+    });
+
+  const writeSuccessCache = async (
+    checkedAt = Math.floor(Date.now() / 1000),
+    packages = REQUIRED_PACKAGES,
+  ): Promise<void> => {
+    const cacheDir = path.join(tempDir, '.juno_task');
+    await fs.ensureDir(cacheDir);
+    const lines = [
+      'format=1',
+      `checked_at=${checkedAt}`,
+      `packages=${packages.join(',')}`,
+      ...packages.map((packageName) => `package.${packageName}=1.0.0`),
+      '',
+    ];
+    await fs.writeFile(path.join(cacheDir, '.version_check_cache'), lines.join('\n'));
+  };
+
+  const lineCount = async (filePath: string): Promise<number> => {
+    if (!(await fs.pathExists(filePath))) return 0;
+    return (await fs.readFile(filePath, 'utf-8')).trim().split('\n').filter(Boolean).length;
+  };
+
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'install-req-test-'));
     binDir = path.join(tempDir, 'bin');
     homeDir = path.join(tempDir, 'home');
+    installedDir = path.join(tempDir, 'installed');
+    latestDir = path.join(tempDir, 'latest');
     scriptPath = path.join(tempDir, 'install_requirements.sh');
     uvLogPath = path.join(tempDir, 'uv.log');
     curlLogPath = path.join(tempDir, 'curl.log');
     pipxLogPath = path.join(tempDir, 'pipx.log');
+    metadataLogPath = path.join(tempDir, 'metadata.log');
 
-    await fs.ensureDir(binDir);
-    await fs.ensureDir(homeDir);
+    await Promise.all([
+      fs.ensureDir(binDir),
+      fs.ensureDir(homeDir),
+      fs.ensureDir(installedDir),
+      fs.ensureDir(latestDir),
+    ]);
+    for (const packageName of REQUIRED_PACKAGES) {
+      await fs.writeFile(path.join(installedDir, packageName), '1.0.0');
+      await fs.writeFile(path.join(latestDir, packageName), '1.0.0');
+    }
 
     const sourceScript = path.resolve(process.cwd(), 'src/templates/scripts/install_requirements.sh');
     await fs.copyFile(sourceScript, scriptPath);
     await fs.chmod(scriptPath, 0o755);
-
     await writePythonStub(false);
 
     await writeExecutable(
       path.join(binDir, 'curl'),
       `#!/usr/bin/env bash
-echo "$*" >> "${'${CURL_LOG_FILE:?CURL_LOG_FILE must be set}'}"
-
-url=""
-for arg in "$@"; do
-  url="$arg"
-done
-
-version="1.0.0"
-if [[ "$url" == *"/juno-kanban/json" ]]; then
-  version="2.0.0"
-fi
-
-printf '{"info":{"version":"%s"}}\n' "${'${version}'}"
-exit 0
+echo "$*" >> "${'${CURL_LOG_FILE:?}'}"
+[[ -n "${'${CURL_SLEEP_SECONDS:-}'}" ]] && sleep "${'${CURL_SLEEP_SECONDS}'}"
+url="${'${!#}'}"
+package="${'${url#*/pypi/}'}"
+package="${'${package%/json}'}"
+if [[ "${'${CURL_FAIL_PACKAGE:-}'}" == "$package" ]]; then exit 1; fi
+version=$(cat "${'${LATEST_VERSION_DIR:?}'}/$package")
+printf '{"info":{"version":"%s"}}\\n' "$version"
 `,
     );
 
     await writeExecutable(
       path.join(binDir, 'uv'),
       `#!/usr/bin/env bash
-echo "$*" >> "${'${UV_LOG_FILE:?UV_LOG_FILE must be set}'}"
+echo "$*" >> "${'${UV_LOG_FILE:?}'}"
+[[ "${'${UV_FAIL:-0}'}" == "1" ]] && exit 1
+upgrade=false
+for arg in "$@"; do
+  [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
+  if [[ "$upgrade" == true && "$arg" != --* && -f "${'${LATEST_VERSION_DIR:?}'}/$arg" ]]; then
+    cp "${'${LATEST_VERSION_DIR}'}/$arg" "${'${INSTALLED_VERSION_DIR:?}'}/$arg"
+  fi
+done
 exit 0
 `,
     );
-
     await writeExecutable(
       path.join(binDir, 'pipx'),
       `#!/usr/bin/env bash
-echo "$*" >> "${'${PIPX_LOG_FILE:?PIPX_LOG_FILE must be set}'}"
+echo "$*" >> "${'${PIPX_LOG_FILE:?}'}"
 exit 0
 `,
     );
@@ -148,202 +245,124 @@ exit 0
     await fs.remove(tempDir);
   });
 
-  it('continues update checks and upgrades when a package is outdated', async () => {
-    const venvBinDir = path.join(tempDir, '.venv_juno', 'bin');
-    await fs.ensureDir(venvBinDir);
-    await writeExecutable(
-      path.join(venvBinDir, 'activate'),
-      `#!/usr/bin/env bash
-VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
-export VIRTUAL_ENV
-PATH="${binDir}:${'${PATH}'}"
-export PATH
-`,
-    );
+  it('uses one metadata process and no network on a fresh complete cache', async () => {
+    await createVenv();
+    await writeSuccessCache();
 
-    const env = {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      HOME: homeDir,
-      UV_LOG_FILE: uvLogPath,
-      CURL_LOG_FILE: curlLogPath,
-      PIPX_LOG_FILE: pipxLogPath,
-      VERSION_CHECK_INTERVAL_HOURS: '24',
-      VIRTUAL_ENV: '',
-      CONDA_DEFAULT_ENV: '',
-    };
+    const result = runScript();
 
-    const result = spawnSync('bash', [scriptPath, '--force-update'], {
-      cwd: tempDir,
-      env,
-      encoding: 'utf-8',
-    });
+    expect(result.status).toBe(0);
+    expect(await lineCount(metadataLogPath)).toBe(1);
+    expect(await lineCount(curlLogPath)).toBe(0);
+    const script = await fs.readFile(scriptPath, 'utf-8');
+    expect(script).not.toContain('pip show');
+    expect(script.match(/load_installed_package_metadata/g)?.length).toBeGreaterThan(1);
+  });
 
+  it('blocks on a stale check, upgrades, verifies, then atomically publishes success', async () => {
+    await createVenv();
+    await fs.writeFile(path.join(latestDir, 'juno-kanban'), '2.0.0');
+    await writeSuccessCache(0);
+
+    const startedAt = Date.now();
+    const result = runScript([], { CURL_SLEEP_SECONDS: '0.04' });
+    const elapsedMs = Date.now() - startedAt;
     const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
 
     expect(result.status).toBe(0);
-    expect(combinedOutput).toContain('Performing periodic version check...');
+    expect(elapsedMs).toBeGreaterThanOrEqual(120);
     expect(combinedOutput).toContain('Upgrading packages: juno-kanban');
-
-    const curlLog = await fs.readFile(curlLogPath, 'utf-8');
-    expect(curlLog).toContain('/pypi/juno-kanban/json');
-
-    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
-    expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
-    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_cache'))).toBe(true);
-    expect(await fs.pathExists(path.join(homeDir, '.juno_code', '.version_check_cache'))).toBe(false);
+    expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf-8')).toBe('2.0.0');
+    expect(await lineCount(metadataLogPath)).toBe(2);
+    expect(await lineCount(curlLogPath)).toBe(4);
+    const cache = await fs.readFile(path.join(tempDir, '.juno_task', '.version_check_cache'), 'utf-8');
+    expect(cache).toContain('package.juno-kanban=2.0.0');
+    expect((await fs.readdir(path.join(tempDir, '.juno_task'))).some((name) => name.includes('.tmp.'))).toBe(false);
   });
 
-  it('activates .venv_juno before requirement checks so periodic updates still run', async () => {
+  it('does not publish partial success when one PyPI request fails', async () => {
+    await createVenv();
+    await writeSuccessCache(0);
+    const cachePath = path.join(tempDir, '.juno_task', '.version_check_cache');
+    const originalCache = await fs.readFile(cachePath, 'utf-8');
+
+    const result = runScript([], { CURL_FAIL_PACKAGE: 'python-dotenv' });
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('Could not complete PyPI check');
+    expect(await fs.readFile(cachePath, 'utf-8')).toBe(originalCache);
+    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_failure'))).toBe(true);
+  });
+
+  it('suppresses failed network retries for one hour and retries afterward', async () => {
+    await createVenv();
+    await writeSuccessCache(0);
+
+    expect(runScript([], { CURL_FAIL_PACKAGE: 'juno-kanban' }).status).toBe(0);
+    expect(await lineCount(curlLogPath)).toBe(1);
+    const second = runScript([], { CURL_FAIL_PACKAGE: 'juno-kanban' });
+    expect(second.status).toBe(0);
+    expect(`${second.stdout}\n${second.stderr}`).toContain('retry suppressed for one hour');
+    expect(await lineCount(curlLogPath)).toBe(1);
+
+    await fs.writeFile(path.join(tempDir, '.juno_task', '.version_check_failure'), 'failed_at=0\n');
+    expect(runScript().status).toBe(0);
+    expect(await lineCount(curlLogPath)).toBe(5);
+  });
+
+  it('serializes concurrent stale invocations so only one performs PyPI requests', async () => {
+    await createVenv();
+    await writeSuccessCache(0);
+
+    const runConcurrent = () =>
+      new Promise<number | null>((resolve) => {
+        const child = spawn('bash', [scriptPath], {
+          cwd: tempDir,
+          env: testEnv({ CURL_SLEEP_SECONDS: '0.05' }),
+          stdio: 'ignore',
+        });
+        child.on('close', resolve);
+      });
+
+    const statuses = await Promise.all([runConcurrent(), runConcurrent()]);
+    expect(statuses).toEqual([0, 0]);
+    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_lock'))).toBe(false);
+  });
+
+  it('invalidates a fresh-looking cache when the required package list drifts', async () => {
+    await createVenv();
+    await writeSuccessCache(Math.floor(Date.now() / 1000), REQUIRED_PACKAGES.slice(0, 3));
+
+    expect(runScript().status).toBe(0);
+    expect(await lineCount(curlLogPath)).toBe(4);
+    const cache = await fs.readFile(path.join(tempDir, '.juno_task', '.version_check_cache'), 'utf-8');
+    expect(cache).toContain(`packages=${REQUIRED_PACKAGES.join(',')}`);
+  });
+
+  it('activates .venv_juno before the one-process metadata check', async () => {
+    await writePythonStub(true);
+    await createVenv();
+    await writeSuccessCache();
+
+    const result = runScript();
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    expect(result.status).toBe(0);
+    expect(output).toContain('Detected project virtual environment at .venv_juno');
+    expect(await lineCount(metadataLogPath)).toBe(1);
+  });
+
+  it('creates .venv_juno when dependencies exist only outside the project venv', async () => {
     await writePythonStub(true);
 
-    const venvBinDir = path.join(tempDir, '.venv_juno', 'bin');
-    await fs.ensureDir(venvBinDir);
-    await writeExecutable(
-      path.join(venvBinDir, 'activate'),
-      `#!/usr/bin/env bash
-VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
-export VIRTUAL_ENV
-PATH="${binDir}:${'${PATH}'}"
-export PATH
-`,
-    );
-
-    const env = {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      HOME: homeDir,
-      UV_LOG_FILE: uvLogPath,
-      CURL_LOG_FILE: curlLogPath,
-      PIPX_LOG_FILE: pipxLogPath,
-      VERSION_CHECK_INTERVAL_HOURS: '24',
-      VIRTUAL_ENV: '',
-      CONDA_DEFAULT_ENV: '',
-    };
-
-    const result = spawnSync('bash', [scriptPath, '--force-update'], {
-      cwd: tempDir,
-      env,
-      encoding: 'utf-8',
-    });
-
-    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-
+    const result = runScript();
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     expect(result.status).toBe(0);
-    expect(combinedOutput).toContain(
-      'Detected project virtual environment at .venv_juno; activating for dependency checks',
-    );
-    expect(combinedOutput).toContain('Performing periodic version check...');
-    expect(combinedOutput).toContain('Upgrading packages: juno-kanban');
-
-    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
-    expect(uvLog).toContain('pip install --upgrade juno-kanban --quiet');
-  });
-
-  it('creates .venv_juno even when requirements are globally satisfied outside project venv', async () => {
-    await writePythonStub(false);
-
-    const env = {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      HOME: homeDir,
-      UV_LOG_FILE: uvLogPath,
-      CURL_LOG_FILE: curlLogPath,
-      PIPX_LOG_FILE: pipxLogPath,
-      VERSION_CHECK_INTERVAL_HOURS: '24',
-      VIRTUAL_ENV: '',
-      CONDA_DEFAULT_ENV: '',
-    };
-
-    const result = spawnSync('bash', [scriptPath], {
-      cwd: tempDir,
-      env,
-      encoding: 'utf-8',
-    });
-
-    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-
-    expect(result.status).toBe(0);
-    expect(combinedOutput).toContain('Project virtual environment missing: .venv_juno');
-    expect(combinedOutput).toContain('Created virtual environment at .venv_juno');
-    expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
-
-    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
-    expect(uvLog).toContain('pip install juno-kanban --quiet');
-  });
-
-  it('creates .venv_juno (not .env.juno/.env_juno) when uv install needs a project venv', async () => {
-    await writePythonStub(true);
-
-    const env = {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      HOME: homeDir,
-      UV_LOG_FILE: uvLogPath,
-      CURL_LOG_FILE: curlLogPath,
-      PIPX_LOG_FILE: pipxLogPath,
-      VERSION_CHECK_INTERVAL_HOURS: '24',
-      VIRTUAL_ENV: '',
-      CONDA_DEFAULT_ENV: '',
-    };
-
-    const result = spawnSync('bash', [scriptPath], {
-      cwd: tempDir,
-      env,
-      encoding: 'utf-8',
-    });
-
-    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-
-    expect(result.status).toBe(0);
-    expect(combinedOutput).toContain('Created virtual environment at .venv_juno');
+    expect(output).toContain('Project virtual environment missing: .venv_juno');
+    expect(output).toContain('Created virtual environment at .venv_juno');
     expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
     expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
     expect(await fs.pathExists(path.join(tempDir, '.env_juno'))).toBe(false);
-
-    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
-    expect(uvLog).toContain('pip install juno-kanban --quiet');
-  });
-
-  it('skips pipx when requirements include library packages in externally managed Python', async () => {
-    await writePythonStub(true);
-
-    const stdlibDir = path.join(tempDir, 'externally-managed-stdlib');
-    await fs.ensureDir(stdlibDir);
-    await fs.writeFile(path.join(stdlibDir, 'EXTERNALLY-MANAGED'), 'managed by distro');
-
-    const env = {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      HOME: homeDir,
-      UV_LOG_FILE: uvLogPath,
-      CURL_LOG_FILE: curlLogPath,
-      PIPX_LOG_FILE: pipxLogPath,
-      STDLIB_DIR: stdlibDir,
-      VERSION_CHECK_INTERVAL_HOURS: '24',
-      VIRTUAL_ENV: '',
-      CONDA_DEFAULT_ENV: '',
-    };
-
-    const result = spawnSync('bash', [scriptPath], {
-      cwd: tempDir,
-      env,
-      encoding: 'utf-8',
-    });
-
-    const combinedOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-
-    expect(result.status).toBe(0);
-    expect(combinedOutput).toContain('pipx');
-    expect(combinedOutput).toContain('skipped');
-
-    const uvLog = await fs.readFile(uvLogPath, 'utf-8');
-    expect(uvLog).toContain('pip install juno-kanban --quiet');
-
-    const pipxLogExists = await fs.pathExists(pipxLogPath);
-    if (pipxLogExists) {
-      const pipxLog = await fs.readFile(pipxLogPath, 'utf-8');
-      expect(pipxLog.trim()).toBe('');
-    }
   });
 });

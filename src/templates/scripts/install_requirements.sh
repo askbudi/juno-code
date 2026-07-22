@@ -41,8 +41,8 @@ done
 
 # DEBUG OUTPUT: Show that install_requirements.sh is being executed
 # User feedback: "Add a one line printing from .sh file as well so we could debug it"
-echo "[DEBUG] install_requirements.sh is being executed from: $(pwd)" >&2
-echo "[DEBUG] .venv_juno will be created in: $(pwd)/.venv_juno" >&2
+echo "[DEBUG] install_requirements.sh is being executed from: ${PWD}" >&2
+echo "[DEBUG] .venv_juno will be created in: ${PWD}/.venv_juno" >&2
 
 # Color output for better readability
 RED='\033[0;31m'
@@ -65,9 +65,17 @@ PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5).
 # Keep the cache project-local so one repository cannot suppress update checks for another
 # repository whose .venv_juno may still have stale dependencies.
-VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$(pwd)/.juno_task}"
+VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"
 VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
+VERSION_CHECK_FAILURE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_failure"
+VERSION_CHECK_LOCK_DIR="${VERSION_CHECK_CACHE_DIR}/.version_check_lock"
 VERSION_CHECK_INTERVAL_HOURS="${VERSION_CHECK_INTERVAL_HOURS:-24}"  # Check for updates once per day (override via env var)
+VERSION_CHECK_FAILURE_COOLDOWN_SECONDS=3600
+INSTALLED_PACKAGE_METADATA=""
+INSTALLED_PACKAGE_NAMES=()
+INSTALLED_PACKAGE_VERSIONS=()
+INSTALLED_VERSION_RESULT=""
+VERSION_CHECK_IS_STALE=true
 
 # Logging functions
 log_info() {
@@ -86,30 +94,75 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to check if a Python package is installed
-check_package_installed() {
-    local package_name="$1"
-
-    # Try using python -m pip show (most reliable)
-    if python3 -m pip show "$package_name" &>/dev/null || python -m pip show "$package_name" &>/dev/null; then
-        return 0  # Package is installed
+# Load every required installed version with one Python interpreter startup.
+# REQUIRED_PACKAGES remains the only package-list source of truth: it is passed
+# directly to importlib.metadata rather than repeated in Python code.
+load_installed_package_metadata() {
+    local python_cmd="python3"
+    if ! command -v "$python_cmd" &>/dev/null; then
+        python_cmd="python"
     fi
 
-    return 1  # Package not installed
+    if ! INSTALLED_PACKAGE_METADATA=$(
+        "$python_cmd" - "$VERSION_CHECK_CACHE_FILE" "$VERSION_CHECK_INTERVAL_HOURS" "${REQUIRED_PACKAGES[@]}" <<'PY'
+import importlib.metadata
+from pathlib import Path
+import sys
+import time
+
+cache_path = Path(sys.argv[1])
+interval_seconds = int(sys.argv[2]) * 3600
+packages = sys.argv[3:]
+cache = {}
+try:
+    for line in cache_path.read_text(encoding="utf-8").splitlines():
+        key, value = line.split("=", 1)
+        cache[key] = value
+    checked_at = int(cache.get("checked_at", ""))
+except (OSError, ValueError):
+    checked_at = 0
+complete = (
+    cache.get("format") == "1"
+    and cache.get("packages") == ",".join(packages)
+    and all(cache.get(f"package.{package}") for package in packages)
+)
+fresh = complete and time.time() - checked_at < interval_seconds
+print(f"__cache__\t{'fresh' if fresh else 'stale'}")
+for package in packages:
+    try:
+        version = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        version = ""
+    print(f"{package}\t{version}")
+PY
+    ); then
+        INSTALLED_PACKAGE_METADATA=""
+        return 1
+    fi
+
+    INSTALLED_PACKAGE_NAMES=()
+    INSTALLED_PACKAGE_VERSIONS=()
+    local package version
+    while IFS=$'\t' read -r package version; do
+        if [ "$package" = "__cache__" ]; then
+            [ "$version" = "fresh" ] && VERSION_CHECK_IS_STALE=false || VERSION_CHECK_IS_STALE=true
+        else
+            INSTALLED_PACKAGE_NAMES+=("$package")
+            INSTALLED_PACKAGE_VERSIONS+=("${version:-}")
+        fi
+    done <<< "$INSTALLED_PACKAGE_METADATA"
 }
 
-# Function to get installed version of a package
 get_installed_version() {
     local package_name="$1"
-    local version=""
-
-    # Try python3 first, then python
-    version=$(python3 -m pip show "$package_name" 2>/dev/null | grep -i "^Version:" | awk '{print $2}')
-    if [ -z "$version" ]; then
-        version=$(python -m pip show "$package_name" 2>/dev/null | grep -i "^Version:" | awk '{print $2}')
-    fi
-
-    echo "$version"
+    local index
+    INSTALLED_VERSION_RESULT=""
+    for (( index=0; index<${#INSTALLED_PACKAGE_NAMES[@]}; index++ )); do
+        if [ "${INSTALLED_PACKAGE_NAMES[$index]}" = "$package_name" ]; then
+            INSTALLED_VERSION_RESULT="${INSTALLED_PACKAGE_VERSIONS[$index]:-}"
+            return 0
+        fi
+    done
 }
 
 # Function to get latest version from PyPI
@@ -125,216 +178,207 @@ get_pypi_latest_version() {
     echo "$version"
 }
 
-# Function to check if version check cache is stale
 is_version_check_stale() {
-    # Ensure cache directory exists
-    if [ ! -d "$VERSION_CHECK_CACHE_DIR" ]; then
-        mkdir -p "$VERSION_CHECK_CACHE_DIR"
-        return 0  # No cache, needs check
+    local cache_format="" checked_at="" packages="" now max_age field value expected
+    local package_line_count=0
+    [ -f "$VERSION_CHECK_CACHE_FILE" ] || return 0
+    while IFS='=' read -r field value; do
+        case "$field" in
+            format) cache_format="$value" ;;
+            checked_at) checked_at="$value" ;;
+            packages) packages="$value" ;;
+            package.*) [ -n "$value" ] && package_line_count=$(( package_line_count + 1 )) ;;
+        esac
+    done < "$VERSION_CHECK_CACHE_FILE"
+
+    local IFS=,
+    expected="${REQUIRED_PACKAGES[*]}"
+    if [ "$cache_format" != "1" ] || [[ ! "$checked_at" =~ ^[0-9]+$ ]] || [ "$packages" != "$expected" ] || [ "$package_line_count" -ne "${#REQUIRED_PACKAGES[@]}" ]; then
+        return 0
     fi
-
-    # Check if cache file exists
-    if [ ! -f "$VERSION_CHECK_CACHE_FILE" ]; then
-        return 0  # No cache file, needs check
+    now=$(date +%s)
+    max_age=$(( VERSION_CHECK_INTERVAL_HOURS * 3600 ))
+    if [ $(( now - checked_at )) -ge "$max_age" ]; then
+        return 0
     fi
-
-    # Get cache file modification time and current time
-    local cache_mtime
-    local current_time
-    local age_hours
-
-    # Cross-platform way to get file age
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        cache_mtime=$(stat -f %m "$VERSION_CHECK_CACHE_FILE" 2>/dev/null || echo 0)
-    else
-        # Linux and others
-        cache_mtime=$(stat -c %Y "$VERSION_CHECK_CACHE_FILE" 2>/dev/null || echo 0)
-    fi
-
-    current_time=$(date +%s)
-    age_hours=$(( (current_time - cache_mtime) / 3600 ))
-
-    if [ "$age_hours" -ge "$VERSION_CHECK_INTERVAL_HOURS" ]; then
-        return 0  # Cache is stale, needs check
-    fi
-
-    return 1  # Cache is fresh, no check needed
+    return 1
 }
 
-# Function to update version check cache
-update_version_check_cache() {
-    local package_name="$1"
-    local installed_version="$2"
-    local latest_version="$3"
+is_failure_cooldown_active() {
+    local failed_at="" now field value
+    [ -f "$VERSION_CHECK_FAILURE_FILE" ] || return 1
+    while IFS='=' read -r field value; do
+        [ "$field" = "failed_at" ] && failed_at="$value"
+    done < "$VERSION_CHECK_FAILURE_FILE"
+    now=$(date +%s)
+    [[ "$failed_at" =~ ^[0-9]+$ ]] || return 1
+    [ $(( now - failed_at )) -lt "$VERSION_CHECK_FAILURE_COOLDOWN_SECONDS" ]
+}
 
-    # Ensure cache directory exists
+atomic_write_failure_state() {
     mkdir -p "$VERSION_CHECK_CACHE_DIR"
-
-    # Update cache file with package info
-    local cache_line="${package_name}=${installed_version}:${latest_version}"
-
-    # Remove old entry for this package if exists, then add new entry
-    if [ -f "$VERSION_CHECK_CACHE_FILE" ]; then
-        grep -v "^${package_name}=" "$VERSION_CHECK_CACHE_FILE" > "${VERSION_CHECK_CACHE_FILE}.tmp" 2>/dev/null || true
-        mv "${VERSION_CHECK_CACHE_FILE}.tmp" "$VERSION_CHECK_CACHE_FILE"
-    fi
-
-    echo "$cache_line" >> "$VERSION_CHECK_CACHE_FILE"
-
-    # Touch the file to update modification time
-    touch "$VERSION_CHECK_CACHE_FILE"
+    local temp_file
+    temp_file=$(mktemp "${VERSION_CHECK_FAILURE_FILE}.tmp.XXXXXX")
+    printf 'failed_at=%s\n' "$(date +%s)" > "$temp_file"
+    mv "$temp_file" "$VERSION_CHECK_FAILURE_FILE"
 }
 
-# Function to check and upgrade a single package if needed
-check_and_upgrade_package() {
-    local package_name="$1"
-    local force_check="${2:-false}"
-
-    # Only check if cache is stale or force_check is true
-    if [ "$force_check" != "true" ] && ! is_version_check_stale; then
-        log_info "Version check cache is fresh (checked within ${VERSION_CHECK_INTERVAL_HOURS}h)"
-        return 0
-    fi
-
-    log_info "Checking for updates for: $package_name"
-
-    local installed_version
-    local latest_version
-
-    installed_version=$(get_installed_version "$package_name")
-
-    if [ -z "$installed_version" ]; then
-        log_warning "$package_name is not installed"
-        return 1  # Package not installed
-    fi
-
-    latest_version=$(get_pypi_latest_version "$package_name")
-
-    if [ -z "$latest_version" ]; then
-        log_warning "Could not fetch latest version for $package_name from PyPI"
-        return 0  # Can't check, assume OK
-    fi
-
-    # Update cache
-    update_version_check_cache "$package_name" "$installed_version" "$latest_version"
-
-    if [ "$installed_version" = "$latest_version" ]; then
-        log_success "$package_name is up-to-date (v$installed_version)"
-        return 0
-    fi
-
-    log_warning "$package_name update available: $installed_version -> $latest_version"
-    return 2  # Update available
+atomic_publish_success_state() {
+    local latest_metadata="$1"
+    mkdir -p "$VERSION_CHECK_CACHE_DIR"
+    local temp_file
+    temp_file=$(mktemp "${VERSION_CHECK_CACHE_FILE}.tmp.XXXXXX")
+    {
+        echo "format=1"
+        echo "checked_at=$(date +%s)"
+        local IFS=,
+        echo "packages=${REQUIRED_PACKAGES[*]}"
+        printf '%s\n' "$latest_metadata"
+    } > "$temp_file"
+    mv "$temp_file" "$VERSION_CHECK_CACHE_FILE"
+    rm -f "$VERSION_CHECK_FAILURE_FILE"
 }
 
-# Function to upgrade packages
+acquire_update_lock() {
+    mkdir -p "$VERSION_CHECK_CACHE_DIR"
+    local attempts=0 lock_pid=""
+    while ! mkdir "$VERSION_CHECK_LOCK_DIR" 2>/dev/null; do
+        if [ -f "$VERSION_CHECK_LOCK_DIR/pid" ]; then
+            lock_pid=$(cat "$VERSION_CHECK_LOCK_DIR/pid" 2>/dev/null || true)
+            if [[ "$lock_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+                rm -rf "$VERSION_CHECK_LOCK_DIR"
+                continue
+            fi
+        fi
+        attempts=$(( attempts + 1 ))
+        if [ "$attempts" -ge 300 ]; then
+            log_warning "Timed out waiting for dependency update lock; continuing without a network check"
+            return 1
+        fi
+        sleep 0.1
+    done
+    echo "$$" > "$VERSION_CHECK_LOCK_DIR/pid"
+}
+
+release_update_lock() {
+    rm -rf "$VERSION_CHECK_LOCK_DIR"
+}
+
 upgrade_packages() {
     local packages_to_upgrade=("$@")
-
-    if [ ${#packages_to_upgrade[@]} -eq 0 ]; then
-        return 0
-    fi
-
+    [ ${#packages_to_upgrade[@]} -gt 0 ] || return 0
     log_info "Upgrading packages: ${packages_to_upgrade[*]}"
 
-    # Determine which package manager to use (prefer uv for speed)
-    if command -v uv &>/dev/null; then
-        for package in "${packages_to_upgrade[@]}"; do
-            log_info "Upgrading $package with uv..."
-            if uv pip install --upgrade "$package" --quiet 2>/dev/null; then
-                log_success "Upgraded: $package"
-            else
-                log_warning "Failed to upgrade $package with uv, trying pip..."
-                python3 -m pip install --upgrade "$package" --quiet 2>/dev/null || true
-            fi
-        done
-    elif command -v pipx &>/dev/null && is_externally_managed_python && ! is_in_virtualenv; then
-        for package in "${packages_to_upgrade[@]}"; do
-            log_info "Upgrading $package with pipx..."
-            if pipx upgrade "$package" 2>/dev/null; then
-                log_success "Upgraded: $package"
-            else
-                log_warning "Failed to upgrade $package"
-            fi
-        done
-    else
-        for package in "${packages_to_upgrade[@]}"; do
-            log_info "Upgrading $package with pip..."
-            if python3 -m pip install --upgrade "$package" --quiet 2>/dev/null; then
-                log_success "Upgraded: $package"
-            else
-                log_warning "Failed to upgrade $package"
-            fi
-        done
+    if command -v uv &>/dev/null && uv pip install --upgrade "${packages_to_upgrade[@]}" --quiet 2>/dev/null; then
+        return 0
     fi
+    log_warning "uv upgrade was unavailable or failed; trying pip"
+    python3 -m pip install --upgrade "${packages_to_upgrade[@]}" --quiet 2>/dev/null
 }
 
-# Function to check all packages for updates (periodic check)
 check_all_for_updates() {
     local force_check="${1:-false}"
+    local package installed_version latest_version latest_metadata=""
     local packages_needing_upgrade=()
 
-    # Skip check if cache is fresh and not forcing
+    if [ "$force_check" != "true" ] && [ "$VERSION_CHECK_IS_STALE" = false ]; then
+        return 0
+    fi
+    if [ "$force_check" != "true" ] && is_failure_cooldown_active; then
+        log_warning "Previous PyPI check failed; retry suppressed for one hour"
+        return 0
+    fi
+    if ! acquire_update_lock; then
+        return 0
+    fi
+    trap release_update_lock EXIT
+
+    # Another invocation may have completed while this process waited.
     if [ "$force_check" != "true" ] && ! is_version_check_stale; then
+        release_update_lock
+        trap - EXIT
+        return 0
+    fi
+    if [ "$force_check" != "true" ] && is_failure_cooldown_active; then
+        release_update_lock
+        trap - EXIT
+        log_warning "Previous PyPI check failed; retry suppressed for one hour"
         return 0
     fi
 
     log_info "Performing periodic version check..."
-
     for package in "${REQUIRED_PACKAGES[@]}"; do
-        local result=0
-
-        # check_and_upgrade_package can return 2 when an update is available.
-        # With `set -e`, calling it directly would abort the script before we
-        # can process that status. Wrap it in an if/else so we can capture and
-        # handle non-zero return codes intentionally.
-        if check_and_upgrade_package "$package" "true"; then
-            result=0
-        else
-            result=$?
+        get_installed_version "$package"
+        installed_version="$INSTALLED_VERSION_RESULT"
+        latest_version=$(get_pypi_latest_version "$package")
+        if [ -z "$latest_version" ]; then
+            atomic_write_failure_state
+            log_warning "Could not complete PyPI check; continuing and retrying after one hour"
+            release_update_lock
+            trap - EXIT
+            return 0
         fi
-
-        if [ $result -eq 2 ]; then
+        latest_metadata="${latest_metadata}package.${package}=${latest_version}"$'\n'
+        if [ "$installed_version" != "$latest_version" ]; then
             packages_needing_upgrade+=("$package")
-        elif [ $result -ne 0 ]; then
-            log_warning "Skipping upgrade decision for $package due to check error"
         fi
     done
 
     if [ ${#packages_needing_upgrade[@]} -gt 0 ]; then
-        upgrade_packages "${packages_needing_upgrade[@]}"
-    else
-        log_success "All packages are up-to-date"
+        if ! upgrade_packages "${packages_needing_upgrade[@]}"; then
+            atomic_write_failure_state
+            log_warning "Dependency upgrade failed; continuing and retrying after one hour"
+            release_update_lock
+            trap - EXIT
+            return 0
+        fi
+        if ! load_installed_package_metadata; then
+            atomic_write_failure_state
+            log_warning "Could not verify upgraded dependency metadata"
+            release_update_lock
+            trap - EXIT
+            return 0
+        fi
     fi
+
+    for package in "${REQUIRED_PACKAGES[@]}"; do
+        get_installed_version "$package"
+        installed_version="$INSTALLED_VERSION_RESULT"
+        latest_version=$(printf '%s' "$latest_metadata" | while IFS='=' read -r key value; do
+            [ "$key" = "package.${package}" ] && { echo "$value"; break; }
+        done)
+        if [ -z "$installed_version" ] || [ "$installed_version" != "$latest_version" ]; then
+            atomic_write_failure_state
+            log_warning "Dependency verification did not match complete PyPI metadata; success cache not published"
+            release_update_lock
+            trap - EXIT
+            return 0
+        fi
+    done
+
+    atomic_publish_success_state "${latest_metadata%$'\n'}"
+    log_success "All packages are verified at current PyPI versions"
+    release_update_lock
+    trap - EXIT
 }
 
-# Function to check if all requirements are satisfied
 check_all_requirements_satisfied() {
-    local all_satisfied=true
+    local package version
     local venv_path=".venv_juno"
 
-    # Contract: project bootstrap should produce and use .venv_juno.
-    # If packages are only available globally and .venv_juno is missing,
-    # treat requirements as not satisfied so installer creates the project venv.
     if ! is_in_venv_juno && [ ! -d "$venv_path" ]; then
         log_warning "Project virtual environment missing: $venv_path"
         log_info "Will create $venv_path and install requirements there"
         return 1
     fi
 
+    load_installed_package_metadata || return 1
     for package in "${REQUIRED_PACKAGES[@]}"; do
-        if ! check_package_installed "$package"; then
-            all_satisfied=false
-            break
-        fi
+        get_installed_version "$package"
+        version="$INSTALLED_VERSION_RESULT"
+        [ -n "$version" ] || return 1
     done
-
-    if [ "$all_satisfied" = true ]; then
-        return 0  # All requirements satisfied
-    else
-        return 1  # Some requirements missing
-    fi
+    return 0
 }
 
 # Function to check if we're inside a virtual environment
@@ -737,10 +781,12 @@ main() {
     # Handle --check-updates: just check and report, don't install
     if [ "$check_updates_only" = true ]; then
         log_info "Checking for updates..."
+        load_installed_package_metadata || true
         for package in "${REQUIRED_PACKAGES[@]}"; do
             local installed_ver
             local latest_ver
-            installed_ver=$(get_installed_version "$package")
+            get_installed_version "$package"
+            installed_ver="$INSTALLED_VERSION_RESULT"
             latest_ver=$(get_pypi_latest_version "$package")
 
             if [ -z "$installed_ver" ]; then
@@ -765,7 +811,8 @@ main() {
         log_info "Installed packages:"
         for package in "${REQUIRED_PACKAGES[@]}"; do
             local ver
-            ver=$(get_installed_version "$package")
+            get_installed_version "$package"
+            ver="$INSTALLED_VERSION_RESULT"
             echo "  ✓ $package (v$ver)"
         done
         echo ""
