@@ -743,6 +743,48 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
     expect(manifest.steps[0].session_id).toBe(footerSessionId);
   });
 
+  it('keeps capture_session false metadata out of tracked project files and disables handoff', async () => {
+    const binDir = path.join(testDir, 'bin');
+    const executablePath = path.join(binDir, 'yy');
+    await fs.ensureDir(binDir);
+    await fs.ensureDir(path.join(testDir, '.juno_task'));
+    await fs.writeJson(path.join(testDir, '.juno_task', 'session_history.json'), { version: 1, sessions: [{ id: 'tracked' }] });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'session_branches.json'), { version: 1, scopes: { tracked: {} } });
+    await fs.writeFile(
+      executablePath,
+      `#!/usr/bin/env python3
+import json, os, pathlib
+root = pathlib.Path(os.environ['JUNO_CODE_SESSION_METADATA_DIRECTORY'])
+root.mkdir(parents=True, exist_ok=True)
+(root / 'session_history.json').write_text(json.dumps({'version': 1, 'sessions': [{'id': 'artifact'}]}))
+(root / 'session_branches.json').write_text(json.dumps({'version': 1, 'scopes': {'artifact': {}}}))
+print('response with session_id=session-must-not-be-captured')
+`,
+    );
+    await fs.chmod(executablePath, 0o755);
+    const workflowPath = path.join(testDir, 'no-capture.json');
+    const outDir = path.join(testDir, 'no-capture-out');
+    await fs.writeJson(workflowPath, {
+      name: 'no-capture',
+      steps: [{ id: 'agent', command: [executablePath, 'pi', 'prompt'], capture_session: false }],
+    });
+
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('Session ID(s):');
+    expect(result.stdout).not.toContain('persisted for yy cc');
+    expect(await fs.readJson(path.join(testDir, '.juno_task', 'session_history.json'))).toEqual({ version: 1, sessions: [{ id: 'tracked' }] });
+    expect(await fs.readJson(path.join(testDir, '.juno_task', 'session_branches.json'))).toEqual({ version: 1, scopes: { tracked: {} } });
+    expect(await fs.readJson(path.join(outDir, 'session_metadata', 'session_history.json'))).toEqual({ version: 1, sessions: [{ id: 'artifact' }] });
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].capture_enabled).toBe(false);
+    expect(manifest.steps[0].session_id).toBe('');
+    expect(manifest.continue).toBeUndefined();
+  });
+
   it('prints juno step session ids and persists the last one for yy cc continue', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   MAIN_SESSION_BRANCH,
+  SESSION_METADATA_DIRECTORY_ENV,
   SessionBranchesCorruptStateError,
   assertValidSessionBranchName,
   getActiveSessionBranch,
@@ -29,6 +30,7 @@ async function createTempDir(): Promise<string> {
 }
 
 afterEach(async () => {
+  delete process.env[SESSION_METADATA_DIRECTORY_ENV];
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {
@@ -38,6 +40,24 @@ afterEach(async () => {
 });
 
 describe('session-branches', () => {
+  it('supports an explicit session metadata directory outside the working tree', async () => {
+    const workingDirectory = await createTempDir();
+    const artifactDirectory = path.join(await createTempDir(), 'session-metadata');
+    process.env[SESSION_METADATA_DIRECTORY_ENV] = artifactDirectory;
+
+    await resetMainSessionBranch({
+      workingDirectory,
+      scope: SCOPE_A,
+      sessionId: 'SESSION_A',
+    });
+
+    expect(getSessionBranchesFilePath(workingDirectory)).toBe(
+      path.join(artifactDirectory, 'session_branches.json'),
+    );
+    expect(await fs.pathExists(path.join(workingDirectory, '.juno_task', 'session_branches.json'))).toBe(false);
+    expect((await fs.readJson(path.join(artifactDirectory, 'session_branches.json'))).scopes[SCOPE_A]).toBeTruthy();
+  });
+
   it('missing file initializes an empty document', async () => {
     const workingDirectory = await createTempDir();
 
