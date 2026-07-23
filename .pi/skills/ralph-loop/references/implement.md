@@ -13,6 +13,10 @@ return the most recent 5 Tasks and their status and potential agent response to 
 
 **Important** `./juno_task/scripts/kanban.sh` has already been installed in your environment and you can execute it in your bash.
 
+A.1
+When user provides explicit `[kanban_task:<id>]`, prioritize it over global list, but still run list only for collision/context awareness. and run it in table mode to see `./juno_task/scripts/kanban.sh list --format table`
+
+
 B.
 Based on Items in **./juno_task/scripts/kanban.sh** reflect on @.juno_task/plan.md and keep it up-to-date.
 0g. Entities and their status in **./juno_task/scripts/kanban.sh** has higher priority and level of truth than other parts of the app.

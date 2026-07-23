@@ -250,8 +250,10 @@ async function resolveNamedCloneOptions(options: MainCommandOptions, workingDire
 
   if (branches.length === 0) {
     throw new ValidationError('No named session branches found for this shell scope', [
-      "Run ypl 'init' or juno-code pi 'init' first to create the main session branch",
+      "Run ypl 'init' or juno-code pi 'init' first in this shell/tab to create the main session branch",
       'Then retry: juno-code clone --name C "your prompt"',
+      'For an explicit session id, use: juno-code --resume <session-id> --clone "your prompt"',
+      'Do not use ypl clone C ...; ypl expands to yy pi --live, so clone C becomes prompt text.',
     ]);
   }
 
