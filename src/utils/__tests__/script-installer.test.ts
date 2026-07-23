@@ -542,6 +542,10 @@ describe('ScriptInstaller', () => {
       expect(installed).toContain('exec python3 "$guard_helper"');
       expect(installed).toContain('E2E_CONTRACT_VALIDATION_INTERNAL');
       expect(installed).toContain('validate-kanban-write');
+      const mainBody = installed.slice(installed.indexOf('main() {'));
+      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(mainBody.indexOf('guard-kanban'));
+      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(mainBody.indexOf('validate-kanban-write'));
+      expect((mainBody.match(/if ! ensure_python_environment/g) || [])).toHaveLength(1);
       expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
       expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
     });
