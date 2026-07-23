@@ -192,6 +192,25 @@ def read_literal_block(lines: list[str], start: int, parent_indent: int) -> tupl
     return "\n".join(block_lines).rstrip("\n"), i
 
 
+def read_scalar_list(lines: list[str], start: int, parent_indent: int) -> tuple[list[Any], int]:
+    values: list[Any] = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        indent = count_indent(line)
+        if indent <= parent_indent:
+            break
+        if not stripped.startswith("-"):
+            raise WorkflowError(f"expected scalar list item near line {i + 1}: {line}")
+        values.append(parse_scalar(stripped[1:].strip()))
+        i += 1
+    return values, i
+
+
 def parse_yaml_like(text: str) -> dict[str, Any]:
     """Parse workflow YAML without making PyYAML a hard runtime dependency.
 
@@ -278,6 +297,9 @@ def parse_yaml_like(text: str) -> dict[str, Any]:
                     v = v.strip()
                     if v == "|":
                         item[k], i = read_literal_block(lines, i + 1, child_indent)
+                        continue
+                    if v == "" and k == "command":
+                        item[k], i = read_scalar_list(lines, i + 1, child_indent)
                         continue
                     item[k] = parse_scalar(v)
                     i += 1
@@ -881,14 +903,18 @@ def build_command_env(
     dry_run: bool,
 ) -> tuple[dict[str, str], str | None]:
     env = os.environ.copy()
+    is_juno_command = detect_juno_command(command)
     if capture_enabled:
         env["JUNO_TOOL_ID"] = tool_id
         env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
+        env.pop("JUNO_CODE_SESSION_METADATA_DIRECTORY", None)
     else:
         env.pop("JUNO_TOOL_ID", None)
         env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
+        if is_juno_command:
+            env["JUNO_CODE_SESSION_METADATA_DIRECTORY"] = str(capture_path.parent / "session_metadata")
     child_continue_session_before = (
-        read_child_continue_session(project_root) if detect_juno_command(command) and not dry_run else None
+        read_child_continue_session(project_root) if is_juno_command and capture_enabled and not dry_run else None
     )
     return env, child_continue_session_before
 
@@ -995,16 +1021,17 @@ def maybe_run_summary_command(
             "capture_result": "",
             "session_id": "",
         }
-        apply_agent_session_capture(
-            result,
-            project_root,
-            stdout,
-            stderr,
-            capture_path,
-            child_continue_session_before,
-            dry_run,
-            use_capture_result_as_response=False,
-        )
+        if capture_enabled:
+            apply_agent_session_capture(
+                result,
+                project_root,
+                stdout,
+                stderr,
+                capture_path,
+                child_continue_session_before,
+                dry_run,
+                use_capture_result_as_response=False,
+            )
     return stdout, stderr, exit_code, command, result
 
 
@@ -1195,7 +1222,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "capture_result": "",
             "session_id": "",
         }
-        if is_juno_command or capture_enabled:
+        if capture_enabled:
             apply_agent_session_capture(
                 result,
                 project_root,
@@ -1212,7 +1239,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             result["failure_reason"] = "empty response from detected agent command"
         if stderr and status == "failed":
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
-        if is_juno_command or result.get("session_id") or explicit_continue_from_step in {step_id, str(step.get("name") or "")}:
+        if result.get("session_id") or explicit_continue_from_step in {step_id, str(step.get("name") or "")}:
             session_candidates.append({
                 "index": index,
                 "id": step_id,

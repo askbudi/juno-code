@@ -313,8 +313,13 @@ def _parse_scalar(value):
         return True
     if value in ("false", "False", "FALSE"):
         return False
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-        return value[1:-1]
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise CommandFileError(f"invalid double-quoted scalar: {exc}") from exc
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
     try:
         if re.match(r"^-?\d+$", value):
             return int(value)

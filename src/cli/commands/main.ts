@@ -23,7 +23,7 @@ import {
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
 import { persistContinueScopeSnapshot } from '../../core/session-continuity-state.js';
-import { SessionBranchesError } from '../../core/session-branches.js';
+import { getSessionMetadataDirectory, SessionBranchesError } from '../../core/session-branches.js';
 import {
   getConfiguredDefaultModelForSubagent,
   getDefaultModelForSubagent,
@@ -747,8 +747,7 @@ async function persistSessionHistory(result: ExecutionResult, verboseLevel: numb
     }
 
     const historyPath = path.join(
-      result.request.workingDirectory,
-      '.juno_task',
+      getSessionMetadataDirectory(result.request.workingDirectory),
       SESSION_HISTORY_FILE_NAME,
     );
 

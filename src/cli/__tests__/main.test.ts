@@ -27,6 +27,7 @@ import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
 import {
   getActiveSessionBranch,
+  getSessionMetadataDirectory,
   listSessionBranches,
   resetMainSessionBranch,
   updateActiveSessionBranch,
@@ -112,6 +113,8 @@ vi.mock('../../core/session-branches.js', () => ({
       this.name = 'SessionBranchesError';
     }
   },
+  getSessionMetadataDirectory: vi.fn().mockImplementation((workingDirectory: string) =>
+    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`),
   getActiveSessionBranch: vi.fn().mockResolvedValue(null),
   listSessionBranches: vi.fn().mockResolvedValue([]),
   resetMainSessionBranch: vi.fn().mockResolvedValue(undefined),
@@ -241,6 +244,8 @@ describe('Main Command', () => {
       live: opts.live,
     }));
 
+    vi.mocked(getSessionMetadataDirectory).mockImplementation((workingDirectory: string) =>
+      process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`);
     vi.mocked(getActiveSessionBranch).mockResolvedValue(null as any);
     vi.mocked(listSessionBranches).mockResolvedValue([] as any);
     vi.mocked(resetMainSessionBranch).mockResolvedValue(undefined as any);
@@ -275,6 +280,7 @@ describe('Main Command', () => {
         key.startsWith('JUNO_CODE_LAST_SESSION_ID') ||
         key.startsWith('JUNO_CODE_LAST_EXECUTION_SETTINGS') ||
         key === 'JUNO_CODE_CONTINUE_SCOPE' ||
+        key === 'JUNO_CODE_SESSION_METADATA_DIRECTORY' ||
         key === 'TMUX_PANE'
       ) {
         delete process.env[key];

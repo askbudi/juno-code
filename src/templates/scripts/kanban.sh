@@ -271,6 +271,14 @@ normalize_arguments() {
 main() {
     log_info "=== juno-kanban Wrapper ==="
 
+    # Select the canonical project interpreter before any Python-backed guard.
+    # The guards intentionally reinvoke this wrapper once; activation is idempotent.
+    if ! ensure_python_environment; then
+        log_error "Failed to setup Python environment"
+        exit 1
+    fi
+    log_success "Python environment ready!"
+
     # Sweep workers must route every Kanban operation through the coordinator's
     # assignment guard. The guard reinvokes this wrapper with the internal flag
     # after validating mutation ownership and establishing its audit boundary.
@@ -291,14 +299,6 @@ main() {
             exec python3 "$contract_helper" validate-kanban-write -- "$0" "$@"
         fi
     fi
-
-    # Ensure Python environment is ready
-    if ! ensure_python_environment; then
-        log_error "Failed to setup Python environment"
-        exit 1
-    fi
-
-    log_success "Python environment ready!"
 
     # Normalize argument order (global flags before command)
     # This allows users to write "list -f json --raw" which gets reordered to "-f json --raw list"

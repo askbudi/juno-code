@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import type { ContinueScopeContext } from './continue-scope.js';
 
 export const SESSION_BRANCHES_FILE_NAME = 'session_branches.json';
+export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
 export const SESSION_BRANCHES_VERSION = 1;
 export const MAIN_SESSION_BRANCH = 'main';
 
@@ -162,8 +163,13 @@ function assertValidDocumentShape(value: unknown): asserts value is SessionBranc
   }
 }
 
+export function getSessionMetadataDirectory(workingDirectory: string): string {
+  const override = process.env[SESSION_METADATA_DIRECTORY_ENV]?.trim();
+  return override ? path.resolve(workingDirectory, override) : path.join(workingDirectory, '.juno_task');
+}
+
 export function getSessionBranchesFilePath(workingDirectory: string): string {
-  return path.join(workingDirectory, '.juno_task', SESSION_BRANCHES_FILE_NAME);
+  return path.join(getSessionMetadataDirectory(workingDirectory), SESSION_BRANCHES_FILE_NAME);
 }
 
 export function createEmptySessionBranchesDocument(): SessionBranchesDocument {
