@@ -57,6 +57,9 @@ describe('integration_owner_preflight.py template script', () => {
     expect(receipt.command).not.toHaveProperty('argv');
     expect(receipt.repositories.writers).toEqual([]);
     expect(receipt.repositories.writers_after).toEqual([]);
+    expect(receipt.repositories.process_inventory_count).toBe(0);
+    expect(receipt.repositories.process_candidates).toEqual([]);
+    expect(receipt.repositories.process_candidates_after).toEqual([]);
   });
 
   it('rejects a dirty integration owner before executing a command', async () => {

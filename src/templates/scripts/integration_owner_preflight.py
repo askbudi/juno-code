@@ -167,7 +167,18 @@ def observe_repositories(
                 raise PreflightError(
                     f"repository[{first['name']}].stable[{field}]: expected={first[field]!r} actual={second[field]!r}"
                 )
-    return {"before": before, "after": after, "processes": classified, "writers": writers}
+    candidates = [
+        item
+        for item in classified
+        if item["writer"] or item["matched_repositories"] or item["excluded_as_caller_ancestry"]
+    ]
+    return {
+        "before": before,
+        "after": after,
+        "process_inventory_count": len(classified),
+        "process_candidates": candidates,
+        "writers": writers,
+    }
 
 
 def acquire_leases(snapshots: list[dict[str, Any]]) -> list[Any]:
@@ -248,7 +259,12 @@ def main() -> int:
         boundary_classified, boundary_writers = classify_processes(
             observation["after"], boundary_processes, boundary_excluded
         )
-        observation["processes_after"] = boundary_classified
+        observation["process_inventory_count_after"] = len(boundary_classified)
+        observation["process_candidates_after"] = [
+            item
+            for item in boundary_classified
+            if item["writer"] or item["matched_repositories"] or item["excluded_as_caller_ancestry"]
+        ]
         observation["writers_after"] = boundary_writers
         if boundary_writers:
             raise PreflightError(
