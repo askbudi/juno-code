@@ -126,6 +126,101 @@ class WorkflowError(Exception):
     pass
 
 
+RUN_CONTRACT_SCHEMA = "juno_workflow_run_contract.v1"
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return sha256_bytes(encoded)
+
+
+def file_sha256(path: Path) -> str:
+    return sha256_bytes(path.read_bytes())
+
+
+def dotted_get(value: Any, field: str) -> tuple[bool, Any]:
+    current = value
+    for part in field.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return False, None
+    return True, current
+
+
+def normalize_receipt_contracts(workflow: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = workflow.get("receipts") or []
+    if isinstance(raw, dict):
+        items = [{"id": key, **(value if isinstance(value, dict) else {})} for key, value in raw.items()]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        raise WorkflowError("receipts must be a list or mapping")
+    contracts: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            raise WorkflowError("each receipt contract must be a mapping")
+        receipt_id = str(item.get("id") or "").strip()
+        if not receipt_id or not re.match(r"^[A-Za-z0-9_.-]+$", receipt_id):
+            raise WorkflowError(f"invalid receipt id: {receipt_id!r}")
+        if receipt_id in contracts:
+            raise WorkflowError(f"duplicate receipt id: {receipt_id}")
+        producer = str(item.get("producer") or "").strip()
+        path = str(item.get("path") or "").strip()
+        schema_version = str(item.get("schema_version") or "").strip()
+        required_fields = item.get("required_fields") or []
+        if not producer or not path or not schema_version:
+            raise WorkflowError(f"receipt {receipt_id} requires producer, path, and schema_version")
+        if not isinstance(required_fields, list) or not all(isinstance(field, str) and field for field in required_fields):
+            raise WorkflowError(f"receipt {receipt_id} required_fields must be a list of dotted field names")
+        contracts[receipt_id] = {
+            "id": receipt_id,
+            "producer": producer,
+            "path": path,
+            "schema_version": schema_version,
+            "required_fields": required_fields,
+        }
+    return contracts
+
+
+def validate_receipt_payload(
+    contract: dict[str, Any], payload: Any, producer_step_digest: str, *, location: str
+) -> None:
+    receipt_id = contract["id"]
+    if not isinstance(payload, dict):
+        raise WorkflowError(f"receipt[{receipt_id}] {location}: expected JSON object")
+    actual_schema = payload.get("schema_version")
+    if actual_schema != contract["schema_version"]:
+        raise WorkflowError(
+            f"receipt[{receipt_id}].schema_version: expected={contract['schema_version']!r} actual={actual_schema!r}"
+        )
+    actual_digest = payload.get("producer_step_digest")
+    if actual_digest != producer_step_digest:
+        raise WorkflowError(
+            f"receipt[{receipt_id}].producer_step_digest: expected={producer_step_digest!r} actual={actual_digest!r}"
+        )
+    for field in contract["required_fields"]:
+        present, _ = dotted_get(payload, field)
+        if not present:
+            raise WorkflowError(f"receipt[{receipt_id}].required_field[{field}]: missing at {location}")
+
+
+def load_json_object(path: Path, description: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise WorkflowError(f"{description} not found: {path}") from exc
+    except Exception as exc:
+        raise WorkflowError(f"invalid {description} at {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise WorkflowError(f"{description} must be a JSON object: {path}")
+    return value
+
+
 def color_enabled() -> bool:
     return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
@@ -236,6 +331,20 @@ def parse_yaml_like(text: str) -> dict[str, Any]:
         pass
     except Exception as exc:  # pragma: no cover - exact PyYAML error varies
         raise WorkflowError(f"failed to parse workflow YAML: {exc}") from exc
+
+    advanced_yaml_keys = sorted(
+        set(
+            re.findall(
+                r"(?m)^(?:receipts|frozen_inputs|validation_ownership):\s*(?:#.*)?$",
+                text,
+            )
+        )
+    )
+    if advanced_yaml_keys:
+        raise WorkflowError(
+            "advanced workflow contracts require Python PyYAML or JSON input; "
+            "install PyYAML in the runner environment or encode the workflow as JSON"
+        )
 
     lines = text.splitlines()
     root: dict[str, Any] = {}
@@ -380,6 +489,7 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
     continue_from_step = str(workflow.get("continue_from_step") or "").strip()
     seen: set[str] = set()
     step_names: set[str] = set()
+    step_indexes: dict[str, int] = {}
     for idx, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             raise WorkflowError(f"step {idx} must be a mapping")
@@ -391,17 +501,110 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         if step_id in seen:
             raise WorkflowError(f"duplicate step id: {step_id}")
         seen.add(step_id)
+        step_indexes[step_id] = idx
         step_name = str(step.get("name") or "").strip()
         if step_name:
             step_names.add(step_name)
         if "command" not in step:
             raise WorkflowError(f"step {step_id} is missing required command")
+        requires_receipts = step.get("requires_receipts") or []
+        if not isinstance(requires_receipts, list) or not all(isinstance(item, str) for item in requires_receipts):
+            raise WorkflowError(f"step {step_id} requires_receipts must be a list of receipt ids")
+        expected_outcomes = step.get("expected_outcomes")
+        if expected_outcomes is not None and (
+            not isinstance(expected_outcomes, list)
+            or not expected_outcomes
+            or not all(isinstance(item, str) and item for item in expected_outcomes)
+        ):
+            raise WorkflowError(f"step {step_id} expected_outcomes must be a non-empty string list")
     summary = workflow.get("summary")
     summary_has_command = isinstance(summary, dict) and "command" in summary
     if continue_from_step and continue_from_step != "summary" and continue_from_step not in seen and continue_from_step not in step_names:
         raise WorkflowError(f"continue_from_step references unknown step: {continue_from_step}")
     if continue_from_step == "summary" and not summary_has_command:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
+
+    receipts = normalize_receipt_contracts(workflow)
+    for receipt_id, contract in receipts.items():
+        producer = contract["producer"]
+        if producer not in step_indexes:
+            raise WorkflowError(f"receipt {receipt_id} references unknown producer step: {producer}")
+    for step in steps:
+        step_id = str(step["id"])
+        for receipt_id in step.get("requires_receipts") or []:
+            if receipt_id not in receipts:
+                raise WorkflowError(f"step {step_id} requires unknown receipt: {receipt_id}")
+            producer = receipts[receipt_id]["producer"]
+            if step_indexes[producer] >= step_indexes[step_id]:
+                raise WorkflowError(f"step {step_id} requires receipt {receipt_id} before its producer {producer}")
+
+    terminal_gate = str(workflow.get("terminal_gate") or "").strip()
+    if terminal_gate and terminal_gate not in step_indexes:
+        raise WorkflowError(f"terminal_gate references unknown step: {terminal_gate}")
+    validation_ownership = workflow.get("validation_ownership")
+    if validation_ownership is not None and not isinstance(validation_ownership, dict):
+        raise WorkflowError("validation_ownership must be a mapping")
+    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        required_roles = {"preintegration_full", "independent_smoke", "actual_target_full"}
+        missing_roles = sorted(required_roles - set(validation_ownership or {}))
+        if missing_roles:
+            raise WorkflowError(f"local_integration validation_ownership missing roles: {', '.join(missing_roles)}")
+        if not terminal_gate:
+            raise WorkflowError("local_integration workflow requires terminal_gate")
+        integration_step = str(workflow.get("integration_step") or "").strip()
+        if integration_step not in step_indexes:
+            raise WorkflowError("local_integration workflow requires a valid integration_step")
+        integration_command_text = json.dumps(
+            next(step["command"] for step in steps if step["id"] == integration_step), ensure_ascii=False
+        )
+        if "integration_owner_preflight.py" not in integration_command_text or "--exec-command" not in integration_command_text:
+            raise WorkflowError(
+                f"local_integration integration_step {integration_step} must run integration_owner_preflight.py --exec-command"
+            )
+        allowed_dispositions = {
+            "target_integrated_controller_attached_clean",
+            "target_integrated_controller_detached_preserved",
+            "integration_pending_dirty_owner",
+            "integration_failed_preserved",
+        }
+        controller_disposition = str(workflow.get("controller_disposition") or "")
+        if controller_disposition not in allowed_dispositions:
+            raise WorkflowError("local_integration workflow requires a recognized controller_disposition")
+        integration_receipts = [
+            contract
+            for contract in receipts.values()
+            if contract["producer"] == integration_step and "controller_disposition" in contract["required_fields"]
+        ]
+        if not integration_receipts:
+            raise WorkflowError(
+                "local_integration integration_step must produce a typed receipt requiring controller_disposition"
+            )
+        if step_indexes[str(validation_ownership["preintegration_full"])] >= step_indexes[integration_step]:
+            raise WorkflowError("validation_ownership.preintegration_full must precede integration_step")
+        if step_indexes[str(validation_ownership["independent_smoke"])] >= step_indexes[integration_step]:
+            raise WorkflowError("validation_ownership.independent_smoke must precede integration_step")
+        if step_indexes[str(validation_ownership["actual_target_full"])] <= step_indexes[integration_step]:
+            raise WorkflowError("validation_ownership.actual_target_full must follow integration_step")
+        if step_indexes[terminal_gate] < step_indexes[str(validation_ownership["actual_target_full"])]:
+            raise WorkflowError("terminal_gate must not precede validation_ownership.actual_target_full")
+    for role, step_id_value in (validation_ownership or {}).items():
+        if str(step_id_value) not in step_indexes:
+            raise WorkflowError(f"validation_ownership.{role} references unknown step: {step_id_value}")
+
+    frozen_inputs = workflow.get("frozen_inputs") or []
+    if not isinstance(frozen_inputs, list):
+        raise WorkflowError("frozen_inputs must be a list")
+    frozen_ids: set[str] = set()
+    for item in frozen_inputs:
+        if not isinstance(item, dict):
+            raise WorkflowError("each frozen_inputs entry must be a mapping")
+        input_id = str(item.get("id") or "").strip()
+        path = str(item.get("path") or "").strip()
+        if not input_id or not path:
+            raise WorkflowError("each frozen_inputs entry requires id and path")
+        if input_id in frozen_ids:
+            raise WorkflowError(f"duplicate frozen input id: {input_id}")
+        frozen_ids.add(input_id)
 
 
 def workflow_to_yaml(data: Any, indent: int = 0) -> str:
@@ -904,19 +1107,43 @@ def build_command_env(
 ) -> tuple[dict[str, str], str | None]:
     env = os.environ.copy()
     is_juno_command = detect_juno_command(command)
+    if is_juno_command:
+        metadata_dir = capture_path.parent / "session_metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        env["JUNO_CODE_SESSION_METADATA_DIRECTORY"] = str(metadata_dir)
     if capture_enabled:
         env["JUNO_TOOL_ID"] = tool_id
         env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
-        env.pop("JUNO_CODE_SESSION_METADATA_DIRECTORY", None)
     else:
         env.pop("JUNO_TOOL_ID", None)
         env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
-        if is_juno_command:
-            env["JUNO_CODE_SESSION_METADATA_DIRECTORY"] = str(capture_path.parent / "session_metadata")
     child_continue_session_before = (
         read_child_continue_session(project_root) if is_juno_command and capture_enabled and not dry_run else None
     )
     return env, child_continue_session_before
+
+
+def apply_semantic_outcome_contract(step: dict[str, Any], result: dict[str, Any], dry_run: bool) -> None:
+    expected = step.get("expected_outcomes")
+    if expected is None:
+        return
+    if not isinstance(expected, list) or not expected or not all(isinstance(item, str) and item for item in expected):
+        raise WorkflowError(f"step {step.get('id', '<unknown>')} expected_outcomes must be a non-empty string list")
+    if dry_run or result.get("status") != "success":
+        return
+    matches = re.findall(
+        r"(?m)^JUNO_WORKFLOW_OUTCOME:\s*([A-Za-z0-9_.-]+)\s*$",
+        str(result.get("response") or ""),
+    )
+    if not matches:
+        result["status"] = "failed"
+        result["failure_reason"] = "missing JUNO_WORKFLOW_OUTCOME footer"
+        return
+    outcome = matches[-1]
+    result["semantic_outcome"] = outcome
+    if outcome not in expected:
+        result["status"] = "failed"
+        result["failure_reason"] = f"semantic outcome {outcome!r} is not one of {expected!r}"
 
 
 def apply_agent_session_capture(
@@ -1054,6 +1281,121 @@ def resolve_from_step(steps: list[dict[str, Any]], selector: str | None) -> int:
     return value
 
 
+def build_run_contract(
+    workflow_text: str,
+    workflow: dict[str, Any],
+    context: dict[str, Any],
+    project_root: Path,
+) -> dict[str, Any]:
+    frozen_inputs: list[dict[str, Any]] = []
+    for item in workflow.get("frozen_inputs") or []:
+        rendered_path = Path(str(render(item["path"], context))).expanduser()
+        if not rendered_path.is_absolute():
+            rendered_path = project_root / rendered_path
+        required = bool(item.get("required", True))
+        if required and not rendered_path.is_file():
+            raise WorkflowError(f"frozen_input[{item['id']}]: required file not found: {rendered_path}")
+        frozen_inputs.append(
+            {
+                "id": item["id"],
+                "path": str(rendered_path.resolve()),
+                "required": required,
+                "sha256": file_sha256(rendered_path) if rendered_path.is_file() else None,
+            }
+        )
+    receipts = normalize_receipt_contracts(workflow)
+    return {
+        "schema_version": RUN_CONTRACT_SCHEMA,
+        "workflow_id": context["workflow_id"],
+        "workflow_source_sha256": sha256_bytes(workflow_text.encode("utf-8")),
+        "resolved_vars_sha256": canonical_sha256(context["vars"]),
+        "steps": {
+            str(step["id"]): {
+                "template_sha256": canonical_sha256(step["command"]),
+                "initial_rendered_sha256": canonical_sha256(render(step["command"], context)),
+            }
+            for step in workflow["steps"]
+        },
+        "frozen_inputs": frozen_inputs,
+        "receipt_contracts": receipts,
+        "receipt_contracts_sha256": canonical_sha256(receipts),
+        "terminal_gate": str(workflow.get("terminal_gate") or ""),
+        "validation_ownership": workflow.get("validation_ownership") or {},
+        "workflow_class": str(workflow.get("workflow_class") or ""),
+        "integration_step": str(workflow.get("integration_step") or ""),
+        "controller_disposition": str(workflow.get("controller_disposition") or ""),
+        "completed_steps": {},
+        "attempts": [],
+    }
+
+
+def verify_run_contract(frozen: dict[str, Any], current: dict[str, Any]) -> None:
+    checks = {
+        "schema_version": (RUN_CONTRACT_SCHEMA, frozen.get("schema_version")),
+        "workflow_id": (frozen.get("workflow_id"), current.get("workflow_id")),
+        "workflow_source_sha256": (frozen.get("workflow_source_sha256"), current.get("workflow_source_sha256")),
+        "resolved_vars_sha256": (frozen.get("resolved_vars_sha256"), current.get("resolved_vars_sha256")),
+        "steps": (frozen.get("steps"), current.get("steps")),
+        "frozen_inputs": (frozen.get("frozen_inputs"), current.get("frozen_inputs")),
+        "receipt_contracts_sha256": (
+            frozen.get("receipt_contracts_sha256"),
+            current.get("receipt_contracts_sha256"),
+        ),
+        "terminal_gate": (frozen.get("terminal_gate"), current.get("terminal_gate")),
+        "validation_ownership": (frozen.get("validation_ownership"), current.get("validation_ownership")),
+        "workflow_class": (frozen.get("workflow_class"), current.get("workflow_class")),
+        "integration_step": (frozen.get("integration_step"), current.get("integration_step")),
+        "controller_disposition": (frozen.get("controller_disposition"), current.get("controller_disposition")),
+    }
+    for name, (expected, actual) in checks.items():
+        if expected != actual:
+            raise WorkflowError(f"resume_contract[{name}]: expected={expected!r} actual={actual!r}")
+
+
+def receipt_path(contract: dict[str, Any], context: dict[str, Any], project_root: Path) -> Path:
+    path = Path(str(render(contract["path"], context))).expanduser()
+    return path if path.is_absolute() else project_root / path
+
+
+def validate_receipt_file(
+    contract: dict[str, Any],
+    context: dict[str, Any],
+    project_root: Path,
+    producer_step_digest: str,
+    expected_artifact_sha256: str | None = None,
+) -> dict[str, Any]:
+    path = receipt_path(contract, context, project_root)
+    payload = load_json_object(path, f"receipt[{contract['id']}]")
+    validate_receipt_payload(contract, payload, producer_step_digest, location=str(path))
+    digest = file_sha256(path)
+    if expected_artifact_sha256 is not None and digest != expected_artifact_sha256:
+        raise WorkflowError(
+            f"receipt[{contract['id']}].artifact_sha256: expected={expected_artifact_sha256!r} actual={digest!r}"
+        )
+    return {"path": str(path.resolve()), "sha256": digest, "schema_version": payload["schema_version"]}
+
+
+def archive_attempt(out_dir: Path, manifest: dict[str, Any]) -> None:
+    attempt_id = str(manifest["run_id"])
+    attempt_dir = out_dir / "attempts" / attempt_id
+    if attempt_dir.exists():
+        raise WorkflowError(f"attempt archive already exists: {attempt_dir}")
+    attempt_dir.mkdir(parents=True)
+    write_text(attempt_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    for step in manifest.get("steps", []):
+        for key in ("stdout_path", "stderr_path", "response_path"):
+            raw_path = str(step.get(key) or "")
+            if not raw_path:
+                continue
+            source = Path(raw_path)
+            if source.is_file():
+                shutil.copy2(source, attempt_dir / source.name)
+    for name in ("summary.md", "summary.stdout.txt", "summary.stderr.txt", "summary.command.sh"):
+        source = out_dir / name
+        if source.is_file():
+            shutil.copy2(source, attempt_dir / name)
+
+
 def selected_final_output(print_output: str, context: dict[str, Any], summary: str) -> str:
     if print_output == "summary":
         return summary
@@ -1123,6 +1465,41 @@ def run_workflow(args: argparse.Namespace) -> int:
         if isinstance(key, str) and key not in context:
             context[key] = value
 
+    start_index = resolve_from_step(workflow["steps"], args.from_step)
+    requested_from_step = args.from_step is not None and str(args.from_step).strip() != ""
+    if requested_from_step and args.amends_run:
+        raise WorkflowError("--from-step and --amends-run are mutually exclusive")
+    run_contract_path = out_dir / "run_contract.json"
+    is_resume = requested_from_step and run_contract_path.exists()
+    current_contract = build_run_contract(workflow_text, workflow, context, project_root)
+    if args.amends_run:
+        if str(workflow.get("amendment_mode") or "") != "harness_only_validation":
+            raise WorkflowError("--amends-run requires amendment_mode: harness_only_validation")
+        parent = Path(args.amends_run).expanduser().resolve()
+        parent_contract_path = parent / "run_contract.json" if parent.is_dir() else parent
+        parent_contract = load_json_object(parent_contract_path, "amended run contract")
+        if parent_contract.get("schema_version") != RUN_CONTRACT_SCHEMA:
+            raise WorkflowError(f"amended run contract has unsupported schema: {parent_contract.get('schema_version')!r}")
+        current_contract["amendment_of"] = {
+            "run_contract": str(parent_contract_path),
+            "sha256": file_sha256(parent_contract_path),
+            "workflow_id": parent_contract.get("workflow_id"),
+            "mode": "harness_only_validation",
+        }
+    previous_manifest: dict[str, Any] | None = None
+    if is_resume:
+        frozen_contract = load_json_object(run_contract_path, "run contract")
+        verify_run_contract(frozen_contract, current_contract)
+        previous_manifest = load_json_object(out_dir / "manifest.json", "previous workflow manifest")
+        run_contract = frozen_contract
+    else:
+        if run_contract_path.exists():
+            raise WorkflowError(
+                f"run directory already has an immutable contract: {run_contract_path}; use a fresh --out-dir or --from-step"
+            )
+        run_contract = current_contract
+        write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
+
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
         "workflow_id": workflow_id,
@@ -1141,18 +1518,71 @@ def run_workflow(args: argparse.Namespace) -> int:
     session_candidates: list[dict[str, Any]] = []
     explicit_continue_from_step = str(workflow.get("continue_from_step") or "").strip()
     persisted_continue: dict[str, str] | None = None
-    start_index = resolve_from_step(workflow["steps"], args.from_step)
     manifest["from_step"] = args.from_step
     manifest["from_step_index"] = start_index
+    manifest["attempt_number"] = len(run_contract.get("attempts") or []) + 1
+    manifest["run_contract_path"] = str(run_contract_path)
+    previous_steps = {
+        str(item.get("id")): item for item in (previous_manifest or {}).get("steps", []) if isinstance(item, dict)
+    }
+    receipts = normalize_receipt_contracts(workflow)
+    receipts_by_producer: dict[str, list[dict[str, Any]]] = {}
+    for contract in receipts.values():
+        receipts_by_producer.setdefault(contract["producer"], []).append(contract)
     for index, step in enumerate(workflow["steps"], start=1):
         step_id = str(step["id"])
         if index - 1 < start_index:
+            if not is_resume:
+                command = render(step["command"], context)
+                skipped_result: dict[str, Any] = {
+                    "id": step_id,
+                    "command": command,
+                    "command_preview": command_preview(command),
+                    "status": "skipped",
+                    "exit_code": 0,
+                    "transport_status": "skipped",
+                    "transport_exit_code": 0,
+                    "duration_seconds": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "stdout_path": "",
+                    "stderr_path": "",
+                    "response": "",
+                    "response_path": "",
+                    "capture_enabled": False,
+                    "capture_json": "",
+                    "capture_json_path": "",
+                    "capture_result": "",
+                    "session_id": "",
+                }
+                context["steps"][step_id] = skipped_result
+                manifest["steps"].append(
+                    {k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}}
+                )
+                continue
+            previous = previous_steps.get(step_id)
+            completed = (run_contract.get("completed_steps") or {}).get(step_id)
+            if not previous or not completed or previous.get("status") not in {"success", "reused_verified"}:
+                raise WorkflowError(f"resume_prerequisite[{step_id}]: no reusable successful predecessor evidence")
+            for contract in receipts_by_producer.get(step_id, []):
+                receipt_evidence = (completed.get("receipts") or {}).get(contract["id"])
+                if not receipt_evidence:
+                    raise WorkflowError(f"resume_prerequisite[{step_id}].receipt[{contract['id']}]: evidence missing")
+                validate_receipt_file(
+                    contract,
+                    context,
+                    project_root,
+                    str(completed["command_sha256"]),
+                    str(receipt_evidence["sha256"]),
+                )
             skipped_result: dict[str, Any] = {
                 "id": step_id,
-                "command": render(step["command"], context),
-                "command_preview": command_preview(render(step["command"], context)),
-                "status": "skipped",
-                "exit_code": None,
+                "command": previous.get("command", render(step["command"], context)),
+                "command_preview": previous.get("command_preview", command_preview(render(step["command"], context))),
+                "status": "reused_verified",
+                "exit_code": previous.get("exit_code", 0),
+                "transport_status": previous.get("transport_status", previous.get("status")),
+                "transport_exit_code": previous.get("transport_exit_code", previous.get("exit_code", 0)),
                 "duration_seconds": 0,
                 "stdout": "",
                 "stderr": "",
@@ -1165,12 +1595,16 @@ def run_workflow(args: argparse.Namespace) -> int:
                 "capture_json_path": "",
                 "capture_result": "",
                 "session_id": "",
+                "reused_from_attempt": previous_manifest.get("run_id"),
+                "producer_command_sha256": completed.get("command_sha256"),
+                "semantic_outcome": previous.get("semantic_outcome", ""),
             }
             context["steps"][step_id] = skipped_result
             manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
             continue
         command = render(step["command"], context)
         preview = command_preview(command)
+        command_digest = canonical_sha256(command)
         is_juno_command = detect_juno_command(command)
         capture_enabled = step_capture_enabled(step, command)
         step_slug = safe_id(step_id, f"step-{index}")
@@ -1189,8 +1623,32 @@ def run_workflow(args: argparse.Namespace) -> int:
         env, child_continue_session_before = build_command_env(
             project_root, command, capture_enabled, capture_path, f"workflow_{step_slug}", bool(args.dry_run)
         )
+        env["JUNO_WORKFLOW_STEP_ID"] = step_id
+        env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
+        precondition_error = ""
+        if not args.dry_run:
+            try:
+                for receipt_id in step.get("requires_receipts") or []:
+                    producer = receipts[receipt_id]["producer"]
+                    evidence = (run_contract.get("completed_steps") or {}).get(producer, {})
+                    receipt_evidence = (evidence.get("receipts") or {}).get(receipt_id)
+                    if not receipt_evidence:
+                        raise WorkflowError(f"step[{step_id}].requires_receipt[{receipt_id}]: producer evidence missing")
+                    validate_receipt_file(
+                        receipts[receipt_id],
+                        context,
+                        project_root,
+                        str(evidence["command_sha256"]),
+                        str(receipt_evidence["sha256"]),
+                    )
+            except WorkflowError as exc:
+                precondition_error = str(exc)
         if args.dry_run:
             status = "dry_run"
+        elif precondition_error:
+            stderr = precondition_error + "\n"
+            exit_code = 1
+            status = "failed"
         else:
             proc = execute_rendered_command(command, project_root, env)
             stdout = proc.stdout or ""
@@ -1209,6 +1667,8 @@ def run_workflow(args: argparse.Namespace) -> int:
             "command_preview": preview,
             "status": status,
             "exit_code": exit_code,
+            "transport_status": status,
+            "transport_exit_code": exit_code,
             "duration_seconds": duration,
             "stdout": stdout,
             "stderr": stderr,
@@ -1221,6 +1681,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "capture_json_path": str(capture_path) if capture_enabled else "",
             "capture_result": "",
             "session_id": "",
+            "command_sha256": command_digest,
         }
         if capture_enabled:
             apply_agent_session_capture(
@@ -1233,10 +1694,41 @@ def run_workflow(args: argparse.Namespace) -> int:
                 bool(args.dry_run),
                 use_capture_result_as_response=True,
             )
+        apply_semantic_outcome_contract(step, result, bool(args.dry_run))
+        status = str(result.get("status", status))
         if is_juno_command and not args.dry_run and status == "success" and not str(result.get("response", "")).strip():
             status = "failed"
             result["status"] = status
             result["failure_reason"] = "empty response from detected agent command"
+        if status == "success" and not args.dry_run:
+            try:
+                produced_receipts: dict[str, Any] = {}
+                for contract in receipts_by_producer.get(step_id, []):
+                    produced_receipts[contract["id"]] = validate_receipt_file(
+                        contract, context, project_root, command_digest
+                    )
+                run_contract.setdefault("completed_steps", {})[step_id] = {
+                    "attempt_id": run_id,
+                    "command_sha256": command_digest,
+                    "status": "success",
+                    "receipts": produced_receipts,
+                }
+                write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
+            except WorkflowError as exc:
+                status = "failed"
+                result["status"] = "failed"
+                result["failure_reason"] = str(exc)
+                stderr = (stderr + ("\n" if stderr else "") + str(exc) + "\n")
+                result["stderr"] = stderr
+        if status == "failed" and exit_code == 0:
+            exit_code = 1
+            result["exit_code"] = 1
+            failure_reason = str(result.get("failure_reason") or "semantic contract failed")
+            if failure_reason not in stderr:
+                stderr = (stderr + ("\n" if stderr else "") + failure_reason + "\n")
+                result["stderr"] = stderr
+        write_text(stderr_path, stderr)
+        write_text(legacy_step_dir / "stderr.txt", stderr)
         if stderr and status == "failed":
             print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         if result.get("session_id") or explicit_continue_from_step in {step_id, str(step.get("name") or "")}:
@@ -1265,6 +1757,26 @@ def run_workflow(args: argparse.Namespace) -> int:
             if step_should_fail_process(step):
                 final_exit = exit_code or 1
                 break
+
+    terminal_gate = str(workflow.get("terminal_gate") or "").strip()
+    terminal_result = context["steps"].get(terminal_gate) if terminal_gate else None
+    if args.dry_run:
+        semantic_status = "dry_run"
+    elif terminal_result is None:
+        semantic_status = "failed" if manifest["failed_steps"] else "completed"
+    elif terminal_result.get("status") in {"success", "reused_verified"}:
+        semantic_status = str(terminal_result.get("semantic_outcome") or "completed")
+    else:
+        semantic_status = "failed"
+    successful_terminal_outcomes = workflow.get("terminal_success_outcomes") or ["completed"]
+    if terminal_gate and not args.dry_run and semantic_status not in successful_terminal_outcomes:
+        manifest["status"] = "failed"
+        if terminal_gate not in manifest["failed_steps"]:
+            manifest["failed_steps"].append(terminal_gate)
+        final_exit = final_exit or 1
+    manifest["terminal_gate"] = terminal_gate or None
+    manifest["semantic_status"] = semantic_status
+    context["workflow_semantic"] = {"terminal_gate": terminal_gate or "none", "status": semantic_status}
 
     summary_stdout, summary_stderr, summary_exit, summary_command, summary_session = maybe_run_summary_command(
         workflow, context, project_root, out_dir, bool(args.dry_run)
@@ -1297,6 +1809,11 @@ def run_workflow(args: argparse.Namespace) -> int:
         if summary_stdout
         else make_summary(workflow, context, manifest["failed_steps"], bool(args.dry_run))
     )
+    semantic_header = (
+        f"Controlling gate: {terminal_gate or 'none'}\n"
+        f"Semantic outcome: {semantic_status}\n\n"
+    )
+    summary = semantic_header + summary
     write_text(out_dir / "summary.md", summary)
     manifest["summary_path"] = str(out_dir / "summary.md")
     manifest["summary"] = {
@@ -1317,6 +1834,17 @@ def run_workflow(args: argparse.Namespace) -> int:
         manifest["summary"]["stderr"] = summary_stderr
     write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     write_text(out_dir / "manifest.yaml", workflow_to_yaml(manifest) + "\n")
+    archive_attempt(out_dir, manifest)
+    run_contract.setdefault("attempts", []).append(
+        {
+            "attempt_id": run_id,
+            "from_step": args.from_step,
+            "status": manifest["status"],
+            "semantic_status": semantic_status,
+            "manifest": str((out_dir / "attempts" / run_id / "manifest.json").resolve()),
+        }
+    )
+    write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
 
     output = selected_final_output(args.print_output, context, summary)
     if output:
@@ -1746,6 +2274,13 @@ def build_parser() -> argparse.ArgumentParser:
   Set top-level continue_from_step: <step-id-or-name-or-summary> to persist a specific agent command;
   explicit continue_from_step is strict and fails if that command has no session id.
   Disable capture env per step/summary command with capture_session: false (or capture: false).
+  Each run directory owns an immutable run_contract.json. --from-step verifies the
+  original workflow, variables, commands, frozen_inputs, typed receipts, and reused
+  predecessor artifacts. A harness-only correction uses a fresh out-dir,
+  amendment_mode: harness_only_validation, and --amends-run PRIOR_RUN.
+  Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST.
+  Declare terminal_gate for semantic summaries. local_integration workflows also
+  declare preintegration_full, independent_smoke, and actual_target_full owners.
 
 Helper commands:
   workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns
@@ -1779,6 +2314,7 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--var", dest="vars", action="append", default=[], metavar="NAME=VALUE", help="Template variable override in NAME=VALUE form")
     parser.add_argument("--dry-run", action="store_true", help="Render commands and write artifacts without executing steps")
     parser.add_argument("--from-step", help="Start at zero-based step index, step id/name, or -1 for the last step")
+    parser.add_argument("--amends-run", help="Start a fresh harness-only validation run linked to a prior run directory or run_contract.json")
     parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step response/stdout as it completes (default); successful stderr stays in artifacts")
     parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step response/stdout to the console; artifacts are still written")
     parser.add_argument(

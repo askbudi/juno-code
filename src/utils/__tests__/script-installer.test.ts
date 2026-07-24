@@ -58,6 +58,8 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('kanban.sh');
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
       expect(missing).toContain('workflow_runner.sh');
+      expect(missing).toContain('workflow_assert.py');
+      expect(missing).toContain('integration_owner_preflight.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -122,6 +124,14 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'workflow_runner.sh'),
         '#!/usr/bin/env python3\nprint("workflow")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_assert.py'),
+        '#!/usr/bin/env python3\nprint("assert")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'integration_owner_preflight.py'),
+        '#!/usr/bin/env python3\nprint("preflight")',
       );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
@@ -201,6 +211,8 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner.sh', installed: false },
         { name: 'parallel_runner_wait.sh', installed: false },
         { name: 'workflow_runner.sh', installed: false },
+        { name: 'workflow_assert.py', installed: false },
+        { name: 'integration_owner_preflight.py', installed: false },
       ]);
     });
 
@@ -266,6 +278,14 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'workflow_runner.sh'),
         '#!/usr/bin/env python3\nprint("workflow")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_assert.py'),
+        '#!/usr/bin/env python3\nprint("assert")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'integration_owner_preflight.py'),
+        '#!/usr/bin/env python3\nprint("preflight")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -291,6 +311,8 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner.sh', installed: true },
         { name: 'parallel_runner_wait.sh', installed: true },
         { name: 'workflow_runner.sh', installed: true },
+        { name: 'workflow_assert.py', installed: true },
+        { name: 'integration_owner_preflight.py', installed: true },
       ]);
     });
   });

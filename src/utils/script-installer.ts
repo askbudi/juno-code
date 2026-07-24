@@ -43,6 +43,8 @@ export class ScriptInstaller {
     'parallel_runner.sh', // Run juno-code tasks in parallel with tmux visualization
     'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
     'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
+    'workflow_assert.py', // Emit named, machine-readable workflow assertions
+    'integration_owner_preflight.py', // Prove bounded stable Git integration ownership
   ];
 
   /**

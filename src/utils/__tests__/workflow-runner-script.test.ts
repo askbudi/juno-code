@@ -577,7 +577,10 @@ steps:
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('AGENT-SUMMARY');
-    expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toBe('AGENT-SUMMARY\n');
+    const semanticSummary = await fs.readFile(path.join(outDir, 'summary.md'), 'utf8');
+    expect(semanticSummary).toContain('Controlling gate: none');
+    expect(semanticSummary).toContain('Semantic outcome: completed');
+    expect(semanticSummary).toMatch(/AGENT-SUMMARY\n$/);
     expect(await fs.readFile(path.join(outDir, 'summary.stdout.txt'), 'utf8')).toBe('AGENT-SUMMARY\n');
   });
 
@@ -674,7 +677,8 @@ exit 0
     expect(manifest.status).toBe('failed');
     expect(manifest.failed_steps).toEqual(['agent']);
     expect(manifest.steps[0].status).toBe('failed');
-    expect(manifest.steps[0].exit_code).toBe(0);
+    expect(manifest.steps[0].exit_code).toBe(1);
+    expect(manifest.steps[0].transport_exit_code).toBe(0);
     expect(manifest.steps[0].failure_reason).toBe('empty response from detected agent command');
   });
 
@@ -1124,5 +1128,145 @@ print('response with session_id=session-must-not-be-captured')
     expect(manifest.steps[0].capture_enabled).toBe(true);
     expect(manifest.steps[0].capture_warning).toContain('invalid capture JSON');
     expect(manifest.steps[0].session_id).toBe('');
+  });
+
+  it('resumes only from immutable workflow and receipt evidence', async () => {
+    const workflowPath = path.join(testDir, 'receipt-resume.json');
+    const outDir = path.join(testDir, 'receipt-resume-out');
+    const receiptPath = path.join(testDir, 'producer-receipt.json');
+    const markerPath = path.join(testDir, 'mutation-count.txt');
+    const producerCode = [
+      'import json, os, pathlib',
+      `marker = pathlib.Path(${JSON.stringify(markerPath)})`,
+      "marker.write_text(marker.read_text() + 'x' if marker.exists() else 'x')",
+      `pathlib.Path(${JSON.stringify(receiptPath)}).write_text(json.dumps({` +
+        "'schema_version':'fixture.v1','producer_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST'],'outcome':'completed'}))",
+    ].join('; ');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'receipt-resume',
+      receipts: [
+        {
+          id: 'producer_receipt',
+          producer: 'producer',
+          path: receiptPath,
+          schema_version: 'fixture.v1',
+          required_fields: ['outcome'],
+        },
+      ],
+      terminal_gate: 'gate',
+      steps: [
+        { id: 'producer', command: ['python3', '-c', producerCode] },
+        { id: 'gate', requires_receipts: ['producer_receipt'], command: ['true'] },
+      ],
+    });
+
+    const first = runWorkflow([
+      '--workflow', workflowPath,
+      '--project-root', testDir,
+      '--out-dir', outDir,
+      '--print-output', 'none',
+    ]);
+    expect(first.status).toBe(0);
+    const resumed = runWorkflow([
+      '--workflow', workflowPath,
+      '--project-root', testDir,
+      '--out-dir', outDir,
+      '--from-step', 'gate',
+      '--print-output', 'none',
+    ]);
+    expect(resumed.status).toBe(0);
+    expect(await fs.readFile(markerPath, 'utf8')).toBe('x');
+    let manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].status).toBe('reused_verified');
+    expect((await fs.readJson(path.join(outDir, 'run_contract.json'))).attempts).toHaveLength(2);
+
+    const receipt = await fs.readJson(receiptPath);
+    receipt.outcome = 'tampered';
+    await fs.writeJson(receiptPath, receipt);
+    const rejected = runWorkflow([
+      '--workflow', workflowPath,
+      '--project-root', testDir,
+      '--out-dir', outDir,
+      '--from-step', 'gate',
+      '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('artifact_sha256');
+    manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].status).toBe('reused_verified');
+    expect(await fs.readFile(markerPath, 'utf8')).toBe('x');
+  });
+
+  it('separates semantic terminal failure from successful transport', async () => {
+    const workflowPath = path.join(testDir, 'semantic-terminal.json');
+    const outDir = path.join(testDir, 'semantic-terminal-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'semantic-terminal',
+      terminal_gate: 'review',
+      steps: [
+        {
+          id: 'review',
+          expected_outcomes: ['PASS'],
+          command: ['bash', '-lc', 'printf transport-success'],
+        },
+      ],
+    });
+
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status).toBe(1);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.semantic_status).toBe('failed');
+    expect(manifest.steps[0].transport_exit_code).toBe(0);
+    expect(manifest.steps[0].exit_code).toBe(1);
+    expect(manifest.steps[0].failure_reason).toContain('missing JUNO_WORKFLOW_OUTCOME footer');
+  });
+
+  it('keeps terminal-gated dry runs successful and labels them dry_run', async () => {
+    const workflowPath = path.join(testDir, 'terminal-dry-run.json');
+    const outDir = path.join(testDir, 'terminal-dry-run-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'terminal-dry-run',
+      terminal_gate: 'gate',
+      steps: [{ id: 'gate', expected_outcomes: ['PASS'], command: ['false'] }],
+    });
+
+    const result = runWorkflow([
+      '--workflow', workflowPath,
+      '--out-dir', outDir,
+      '--dry-run',
+      '--print-output', 'none',
+    ]);
+    expect(result.status).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.semantic_status).toBe('dry_run');
+    expect(manifest.status).toBe('success');
+  });
+
+  it('fails explicitly when advanced YAML is used without Python PyYAML', async () => {
+    const workflowPath = path.join(testDir, 'advanced-without-pyyaml.yaml');
+    await fs.writeFile(
+      workflowPath,
+      `schema_version: 1
+workflow_id: advanced_without_pyyaml
+receipts:
+  - id: evidence
+    producer: producer
+    path: receipt.json
+    schema_version: evidence.v1
+steps:
+  - id: producer
+    command: true
+`,
+    );
+
+    const result = spawnSync('python3', ['-S', templateScript, 'lint', '--workflow', workflowPath], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('advanced workflow contracts require Python PyYAML or JSON input');
   });
 });
