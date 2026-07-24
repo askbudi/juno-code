@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const templateWrapper = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
+const templateResolver = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 
 describe('kanban wrapper runtime selection', () => {
   let projectRoot: string;
@@ -26,6 +27,7 @@ describe('kanban wrapper runtime selection', () => {
     ]);
 
     await fs.copy(templateWrapper, path.join(scriptsDir, 'kanban.sh'));
+    await fs.copy(templateResolver, path.join(scriptsDir, 'controller_resolver.py'));
     await fs.chmod(path.join(scriptsDir, 'kanban.sh'), 0o755);
     await fs.writeJson(path.join(projectRoot, '.juno_task', 'tasks', 'config.json'), {
       storage: 'legacy-ndjson',
@@ -55,12 +57,13 @@ describe('kanban wrapper runtime selection', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
+        JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
       },
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe(`installed-legacy|${projectRoot}`);
+    expect(result.stdout.trim()).toBe(`installed-legacy|${fs.realpathSync(projectRoot)}`);
   });
 });

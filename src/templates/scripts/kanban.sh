@@ -173,30 +173,20 @@ ensure_python_environment() {
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Auto-discover project root by walking up the directory tree looking for .juno_task/
-# This makes kanban.sh work from any installation depth (e.g. .juno_task/scripts/,
-# .claude/skills/ralph-loop/scripts/, etc.) without a hardcoded relative path.
-PROJECT_ROOT=""
-_dir="$SCRIPT_DIR"
-while [[ "$_dir" != "/" ]]; do
-    if [[ -d "$_dir/.juno_task" ]]; then
-        PROJECT_ROOT="$_dir"
-        break
-    fi
-    _dir="$( cd "$_dir/.." && pwd )"
-done
-if [[ -z "$PROJECT_ROOT" ]]; then
-    echo "ERROR: Could not find project root (no .juno_task/ directory found above $SCRIPT_DIR)" >&2
+# Resolve the canonical controller from the invocation checkout. The shared
+# resolver never changes refs and refuses invalid explicit/registered settings.
+RESOLVER="$SCRIPT_DIR/controller_resolver.py"
+if [[ ! -f "$RESOLVER" ]]; then
+    echo "ERROR: Controller resolver not installed: $RESOLVER" >&2
     exit 1
 fi
+INVOCATION_CWD="$PWD"
+RESOLVED_ENV=$(python3 "$RESOLVER" --cwd "$INVOCATION_CWD" --operation kanban --format shell)
+eval "$RESOLVED_ENV"
+PROJECT_ROOT="$JUNO_TASK_ROOT"
 
-# Change to project root
+# Kanban runtime and storage both belong to the verified controller checkout.
 cd "$PROJECT_ROOT"
-
-# Export JUNO_TASK_ROOT so juno-kanban resolves .juno_task paths from this
-# wrapper's project root, regardless of a stale parent-shell value or where
-# the calling agent happens to be.
-export JUNO_TASK_ROOT="$PROJECT_ROOT"
 
 # Runtime selection deliberately follows the executable installed in .venv_juno.
 # Never prepend a neighboring source checkout to PYTHONPATH: source integration
@@ -306,8 +296,13 @@ main() {
         echo "[DEBUG] Normalized command args: ${NORMALIZED_COMMAND_ARGS[*]:-<none>}" >&2
     fi
 
-    # Execute juno-kanban with normalized arguments from project root
-    # Build the command properly preserving argument quoting
+    # Execute the controller checkout's isolated runtime explicitly. Do not rely
+    # on a hashed or unrelated global executable remaining earlier on PATH.
+    local kanban_executable="$PROJECT_ROOT/.venv_juno/bin/juno-kanban"
+    if [[ ! -x "$kanban_executable" ]]; then
+        log_error "juno-kanban executable missing from controller environment: $kanban_executable"
+        exit 1
+    fi
     log_info "Executing juno-kanban with normalized arguments"
 
     # Execute with proper array expansion to preserve quoting
@@ -327,11 +322,11 @@ main() {
 
     if [[ "$stdin_type" == "p" || "$stdin_type" == "-" ]]; then
         # stdin is a pipe or regular file (heredoc) - pass it through
-        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+        "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"}
     else
         # stdin is a character device or unknown - redirect from /dev/null to prevent hanging
-        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+        "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
     fi
 }

@@ -56,6 +56,7 @@ describe('ScriptInstaller', () => {
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toContain('run_until_completion.sh');
       expect(missing).toContain('kanban.sh');
+      expect(missing).toContain('controller_resolver.py');
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
@@ -73,6 +74,10 @@ describe('ScriptInstaller', () => {
         '#!/bin/bash\necho "test"',
       );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'controller_resolver.py'),
+        '#!/usr/bin/env python3\nprint("controller")',
+      );
       await fs.writeFile(
         path.join(scriptsDir, 'install_requirements.sh'),
         '#!/bin/bash\necho "install"',
@@ -192,6 +197,7 @@ describe('ScriptInstaller', () => {
       expect(list).toEqual([
         { name: 'run_until_completion.sh', installed: false },
         { name: 'kanban.sh', installed: false },
+        { name: 'controller_resolver.py', installed: false },
         { name: 'install_requirements.sh', installed: false },
         // Shared utilities
         { name: 'attachment_downloader.py', installed: false },
@@ -226,6 +232,10 @@ describe('ScriptInstaller', () => {
         '#!/bin/bash\necho "test"',
       );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "kanban"');
+      await fs.writeFile(
+        path.join(scriptsDir, 'controller_resolver.py'),
+        '#!/usr/bin/env python3\nprint("controller")',
+      );
       await fs.writeFile(
         path.join(scriptsDir, 'install_requirements.sh'),
         '#!/bin/bash\necho "install"',
@@ -292,6 +302,7 @@ describe('ScriptInstaller', () => {
       expect(list).toEqual([
         { name: 'run_until_completion.sh', installed: true },
         { name: 'kanban.sh', installed: true },
+        { name: 'controller_resolver.py', installed: true },
         { name: 'install_requirements.sh', installed: true },
         // Shared utilities
         { name: 'attachment_downloader.py', installed: true },

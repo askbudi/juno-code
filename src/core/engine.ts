@@ -29,6 +29,7 @@ import { type QuotaLimitInfo, formatDuration } from './backends/shell-backend.js
 import { resolvePromptCommandSubstitutions } from './prompt-command-substitution.js';
 import { resolvePromptMacros } from './prompt-macro-resolver.js';
 import { getPromptMacroDictionary } from './config.js';
+import { resolveController } from '../utils/controller-resolver.js';
 
 // =============================================================================
 // Type Definitions
@@ -716,6 +717,8 @@ export class ExecutionEngine extends EventEmitter {
     const { ShellBackend } = await import('./backends/shell-backend.js');
     const backend = new ShellBackend();
 
+    const controller = resolveController(request.workingDirectory, 'orchestration');
+
     // Configure
     (backend as any).configure({
       workingDirectory: request.workingDirectory,
@@ -726,7 +729,9 @@ export class ExecutionEngine extends EventEmitter {
       outputRawJson: this.engineConfig.config.verbose >= 1,
       environment: {
         ...process.env,
-        JUNO_TASK_ROOT: request.workingDirectory,
+        JUNO_TASK_ROOT: controller.path,
+        JUNO_CONTROLLER_SOURCE: controller.source,
+        JUNO_WORKSPACE_ROLE: controller.role,
       },
       sessionId: request.requestId,
     });
@@ -900,10 +905,9 @@ export class ExecutionEngine extends EventEmitter {
     context.status = ExecutionStatus.RUNNING;
     context.sessionContext = { ...context.sessionContext, state: 'active' as any };
 
-    // Pin JUNO_TASK_ROOT to workingDirectory so juno-kanban always resolves
-    // .juno_task from the project root, not from a stale parent shell value or
-    // wherever the agent cds to during execution.
-    process.env.JUNO_TASK_ROOT = context.request.workingDirectory;
+    // Resolve once at the orchestration boundary. Explicit or registered
+    // controller settings are authoritative and invalid settings fail closed.
+    resolveController(context.request.workingDirectory, 'orchestration');
 
     // Initialize backend for this execution request
     await this.initializeBackend(context.request);
@@ -1114,7 +1118,7 @@ export class ExecutionEngine extends EventEmitter {
           workingDirectory: context.request.workingDirectory,
           environment: {
             ...process.env,
-            JUNO_TASK_ROOT: context.request.workingDirectory,
+            JUNO_TASK_ROOT: resolveController(context.request.workingDirectory, 'orchestration').path,
           },
         });
 

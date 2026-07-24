@@ -3868,9 +3868,30 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def resolve_controller_environment() -> dict[str, str]:
+    resolver = Path(__file__).resolve().with_name("controller_resolver.py")
+    if not resolver.is_file():
+        resolver = next(
+            (parent / ".juno_task/scripts/controller_resolver.py" for parent in (Path.cwd(), *Path.cwd().parents)
+             if (parent / ".juno_task/scripts/controller_resolver.py").is_file()),
+            resolver,
+        )
+    completed = subprocess.run(
+        [sys.executable, str(resolver), "--cwd", os.getcwd(), "--operation", "orchestration"],
+        text=True, capture_output=True, check=True,
+    )
+    resolution = json.loads(completed.stdout)
+    return {
+        "JUNO_TASK_ROOT": resolution["path"],
+        "JUNO_CONTROLLER_SOURCE": resolution["source"],
+        "JUNO_WORKSPACE_ROLE": resolution["role"],
+    }
+
+
 def main():
     global LOG_DIR, COMBINED_LOG, STATUS_FILE, _run_id, _run_started_at
 
+    os.environ.update(resolve_controller_environment())
     warn_if_runtime_script_is_stale("parallel_runner.sh")
     args = parse_args()
 

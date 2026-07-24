@@ -2351,7 +2351,28 @@ Example boilerplates (written only when explicitly requested):
     return parser
 
 
+def resolve_controller_environment() -> dict[str, str]:
+    resolver = Path(__file__).resolve().with_name("controller_resolver.py")
+    if not resolver.is_file():
+        resolver = next(
+            (parent / ".juno_task/scripts/controller_resolver.py" for parent in (Path.cwd(), *Path.cwd().parents)
+             if (parent / ".juno_task/scripts/controller_resolver.py").is_file()),
+            resolver,
+        )
+    completed = subprocess.run(
+        [sys.executable, str(resolver), "--cwd", os.getcwd(), "--operation", "orchestration"],
+        text=True, capture_output=True, check=True,
+    )
+    resolution = json.loads(completed.stdout)
+    return {
+        "JUNO_TASK_ROOT": resolution["path"],
+        "JUNO_CONTROLLER_SOURCE": resolution["source"],
+        "JUNO_WORKSPACE_ROLE": resolution["role"],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    os.environ.update(resolve_controller_environment())
     warn_if_runtime_script_is_stale("workflow_runner.sh")
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "lint":

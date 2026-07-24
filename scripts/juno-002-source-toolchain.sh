@@ -104,6 +104,18 @@ run_selected() {
     exec "$SELECTED_KANBAN" "$@"
 }
 
+controller_status() {
+    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" \
+        --cwd "$REPOSITORY_ROOT" --operation diagnostic --format json
+}
+
+register_controller() {
+    local controller_path=${1:?controller path required} branch=${2:-}
+    local args=(--cwd "$REPOSITORY_ROOT" --register "$controller_path" --format json)
+    [[ -n "$branch" ]] && args+=(--branch "$branch")
+    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" "${args[@]}"
+}
+
 status() {
     load_selection
     validate_code "$SELECTED_CODE"
@@ -138,10 +150,12 @@ case "$invoked_as" in
                 select_paths "$1" "$2" "$3" "$4"
                 ;;
             rollback-selection) rollback_selection ;;
+            controller-status) controller_status ;;
+            register-controller) register_controller "$@" ;;
             status) status ;;
             run-yy) run_selected code "$@" ;;
             run-kanban) run_selected kanban "$@" ;;
-            *) fail "usage: $0 {install|select|rollback-selection|status|run-yy|run-kanban}" ;;
+            *) fail "usage: $0 {install|select|rollback-selection|controller-status|register-controller PATH [BRANCH]|status|run-yy|run-kanban}" ;;
         esac
         ;;
 esac

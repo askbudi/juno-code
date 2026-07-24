@@ -24,6 +24,7 @@ export class ScriptInstaller {
   private static readonly REQUIRED_SCRIPTS = [
     'run_until_completion.sh',
     'kanban.sh',
+    'controller_resolver.py', // Shared canonical controller/workspace-role resolver
     'install_requirements.sh', // Required by kanban.sh for Python venv creation
     // Shared utilities
     'attachment_downloader.py', // File attachment downloading utility (used by Slack/GitHub)

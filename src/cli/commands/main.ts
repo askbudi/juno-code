@@ -33,6 +33,7 @@ import { createExecutionEngine, createExecutionRequest } from '../../core/engine
 import { getCurrentGitBranch } from '../../core/git.js';
 import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
+import { resolveController } from '../../utils/controller-resolver.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import type { MainCommandOptions } from '../types.js';
 import {
@@ -198,13 +199,16 @@ async function runKanbanGetCommand(
   args: string[],
   workingDirectory: string,
 ): Promise<KanbanTaskRecord[] | null> {
+  const controller = resolveController(workingDirectory, 'kanban');
   try {
     const execFile = promisify(childProcess.execFile);
     const result = await execFile(command, args, {
       cwd: workingDirectory,
       env: {
         ...process.env,
-        JUNO_TASK_ROOT: workingDirectory,
+        JUNO_TASK_ROOT: controller.path,
+        JUNO_CONTROLLER_SOURCE: controller.source,
+        JUNO_WORKSPACE_ROLE: controller.role,
       },
       maxBuffer: 1024 * 1024,
       timeout: KANBAN_GET_COMMAND_TIMEOUT_MS,
