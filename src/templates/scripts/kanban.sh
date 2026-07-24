@@ -11,6 +11,9 @@
 # Example: ./.juno_task/scripts/kanban.sh list --limit 5
 # Example: ./.juno_task/scripts/kanban.sh list -f json --raw  # (flag order normalized)
 # Example: ./.juno_task/scripts/kanban.sh -f json --raw list  # (also works)
+# Cold exact reads are transparent; archive-search is explicit and bounded.
+# Archive maintenance requires owner approval and external plan/create receipts.
+# Example: ./.juno_task/scripts/kanban.sh archive-pack doctor
 #
 # Note: Global flags (-f/--format, -p/--pretty, --raw, -v/--verbose, -c/--config)
 #       can be placed anywhere in the command line. This wrapper normalizes them

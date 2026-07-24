@@ -94,16 +94,25 @@ juno-code -b shell -s claude
 ```
 
 ### Task Tracking: Structured, Not Prose
-Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Unlike Ralph's markdown files, kanban uses **NDJSON** - a strict format that can't be corrupted by LLM formatting errors:
+Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Hot current state uses safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use immutable NDJSON packs:
 ```bash
 # Query tasks programmatically - always parseable
 ./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
 
-# Each task is isolated and linked to a git commit
+# Each task is isolated; exact get transparently resolves hot or archived state
 ./.juno_task/scripts/kanban.sh get TASK_ID
 
 # Scale to thousands of tasks without context bloat
-./.juno_task/scripts/kanban.sh list --limit 5  # Shows only what matters
+./.juno_task/scripts/kanban.sh list --limit 5  # Shows only hot work that matters
+```
+
+Cold archives never enter normal discovery. Owner-authorized maintenance uses a clean tree, an external revision-bound plan/receipt, `archive-pack create`, and both archive/global doctors. Never edit sealed packs, reopen an archived ID, infer production authorization, or combine implementation work with push/deploy/post-deploy E2E; create a new related hot task instead.
+
+```bash
+./.juno_task/scripts/kanban.sh archive-pack plan --status done,archive --older-than 90d --report /external/archive-plan.json
+./.juno_task/scripts/kanban.sh archive-pack create --plan /external/archive-plan.json --report /external/archive-create.json
+./.juno_task/scripts/kanban.sh archive-pack doctor
+./.juno_task/scripts/kanban.sh archive-search --tag backend --limit 20 --projection metadata
 ```
 
 ### Task Dependencies

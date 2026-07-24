@@ -56,6 +56,27 @@ Required: `--id` and `--response`. Optional: `--commit` (recommended for done).
 ./.juno_task/scripts/kanban.sh archive TASK_ID
 ```
 
+### Immutable cold archive packs
+
+Normal `list`, `search`, `ready`, and `order` are deliberately hot-only. Exact `get TASK_ID` transparently resolves a hot task or a read-only archived task; use `history TASK_ID` explicitly for its ledger. Discover cold tasks only with bounded, projected `archive-search` output:
+
+```bash
+./.juno_task/scripts/kanban.sh archive-search --tag backend --before 2026-01-01 --limit 20 --projection metadata
+```
+
+Before archive maintenance, preflight the installed version/help and obtain explicit owner authorization. The repository and index must be clean, and reports must be durable new paths outside the repository:
+
+```bash
+./.juno_task/scripts/kanban.sh --version
+./.juno_task/scripts/kanban.sh archive-pack plan --status done,archive --older-than 90d --max-tasks 1000 --target-bytes 26214400 --hard-max-bytes 47185920 --report /external/receipts/archive-plan.json
+# Independently inspect selected IDs, revisions, source HEAD, policy, and plan hash.
+./.juno_task/scripts/kanban.sh archive-pack create --plan /external/receipts/archive-plan.json --report /external/receipts/archive-create.json
+./.juno_task/scripts/kanban.sh archive-pack doctor
+./.juno_task/scripts/kanban.sh doctor
+```
+
+A stale plan or selected-task/worktree conflict must fail closed: discard the plan, resolve the conflict, and plan again. Never automate archival, edit/append packs or manifests, restore/reopen an archived ID, use force/lossy controls, or enumerate archive files directly. Create follow-up work as a new hot task related to the archived ID. Production archival, push/deploy, and post-deploy E2E each require separate authorization; agents must not infer it from implementation approval.
+
 ### Dependency Management
 
 **DEPS** — View, add, or remove task dependencies
