@@ -1216,7 +1216,7 @@ export class ShellBackend implements Backend {
   ): { content: string; metadata?: ToolExecutionMetadata } {
     if (subagentType === 'claude') {
       const claudeEvent = result.subAgentResponse ?? this.extractLastJsonEvent(result.output);
-      const isError = claudeEvent?.is_error ?? (claudeEvent?.subtype === 'error' || !result.success);
+      const isError = claudeEvent?.is_error ?? claudeEvent?.subtype === 'error';
 
       // Check for quota limit error
       const resultText = claudeEvent?.result ?? claudeEvent?.error ?? '';
