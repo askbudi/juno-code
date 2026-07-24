@@ -198,16 +198,9 @@ cd "$PROJECT_ROOT"
 # the calling agent happens to be.
 export JUNO_TASK_ROOT="$PROJECT_ROOT"
 
-# Prefer local kanban source when available.
-# - Monorepo root:   $PROJECT_ROOT/juno_kanban/src
-# - juno_kanban root: $PROJECT_ROOT/src
-# This keeps wrapper behavior aligned with working-tree changes without requiring
-# immediate reinstall from PyPI between local iterations.
-if [[ -d "$PROJECT_ROOT/src/kanban" ]]; then
-    export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-elif [[ -d "$PROJECT_ROOT/juno_kanban/src/kanban" ]]; then
-    export PYTHONPATH="$PROJECT_ROOT/juno_kanban/src${PYTHONPATH:+:$PYTHONPATH}"
-fi
+# Runtime selection deliberately follows the executable installed in .venv_juno.
+# Never prepend a neighboring source checkout to PYTHONPATH: source integration
+# alone does not authorize switching the active Kanban storage implementation.
 
 # Arrays to store normalized arguments (declared at script level for proper handling)
 declare -a NORMALIZED_GLOBAL_FLAGS=()

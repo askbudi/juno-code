@@ -71,6 +71,19 @@ describe('parallel_runner.sh command file foundation', () => {
     expect(result.stderr).not.toContain('runtime script differs');
   });
 
+  it('decodes escaped double quotes and doubled YAML single quotes identically', () => {
+    const probe = (script: string) => spawnSync('python3', ['-c', `
+import importlib.machinery, json
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(script)}).load_module()
+print(json.dumps([mod._parse_scalar(r'''"say \\"hello\\""'''), mod._parse_scalar("'owner''s task'")]))
+`], { cwd: repoRoot, encoding: 'utf8' });
+    for (const script of [templateScript, runtimeScript]) {
+      const result = probe(script);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual(['say "hello"', "owner's task"]);
+    }
+  });
+
   it('loads and prints help under PATH python3 without evaluating modern generic annotations', () => {
     const python = spawnSync('python3', ['--version'], { encoding: 'utf8' });
     expect(python.status).toBe(0);
