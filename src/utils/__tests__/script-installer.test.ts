@@ -57,6 +57,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('run_until_completion.sh');
       expect(missing).toContain('kanban.sh');
       expect(missing).toContain('controller_resolver.py');
+      expect(missing).toContain('orchestration_guard.py');
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
@@ -77,6 +78,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'controller_resolver.py'),
         '#!/usr/bin/env python3\nprint("controller")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'orchestration_guard.py'),
+        '#!/usr/bin/env python3\nprint("guard")',
       );
       await fs.writeFile(
         path.join(scriptsDir, 'install_requirements.sh'),
@@ -198,6 +203,7 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: false },
         { name: 'kanban.sh', installed: false },
         { name: 'controller_resolver.py', installed: false },
+        { name: 'orchestration_guard.py', installed: false },
         { name: 'install_requirements.sh', installed: false },
         // Shared utilities
         { name: 'attachment_downloader.py', installed: false },
@@ -235,6 +241,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'controller_resolver.py'),
         '#!/usr/bin/env python3\nprint("controller")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'orchestration_guard.py'),
+        '#!/usr/bin/env python3\nprint("guard")',
       );
       await fs.writeFile(
         path.join(scriptsDir, 'install_requirements.sh'),
@@ -303,6 +313,7 @@ describe('ScriptInstaller', () => {
         { name: 'run_until_completion.sh', installed: true },
         { name: 'kanban.sh', installed: true },
         { name: 'controller_resolver.py', installed: true },
+        { name: 'orchestration_guard.py', installed: true },
         { name: 'install_requirements.sh', installed: true },
         // Shared utilities
         { name: 'attachment_downloader.py', installed: true },

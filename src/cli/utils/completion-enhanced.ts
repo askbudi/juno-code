@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import fs from 'fs-extra';
 import { glob } from 'glob';
+import { getSessionMetadataDirectory } from '../../core/session-metadata.js';
 import { ShellDetector, type ShellType } from './shell-detector.js';
 
 // ============================================================================
@@ -225,7 +226,7 @@ export class ProjectStateCompletion {
    */
   async getRecentSessions(): Promise<string[]> {
     try {
-      const historyFile = path.join(process.cwd(), '.juno_task', 'session_history.json');
+      const historyFile = path.join(getSessionMetadataDirectory(process.cwd()), 'session_history.json');
       if (!(await fs.pathExists(historyFile))) {
         return [];
       }

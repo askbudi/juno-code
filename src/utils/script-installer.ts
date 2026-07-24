@@ -25,6 +25,7 @@ export class ScriptInstaller {
     'run_until_completion.sh',
     'kanban.sh',
     'controller_resolver.py', // Shared canonical controller/workspace-role resolver
+    'orchestration_guard.py', // Cron/workflow singleton and controller-role ownership guard
     'install_requirements.sh', // Required by kanban.sh for Python venv creation
     // Shared utilities
     'attachment_downloader.py', // File attachment downloading utility (used by Slack/GitHub)

@@ -3868,6 +3868,22 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def resolve_session_metadata_directory(controller_root: str) -> str:
+    override = os.environ.get("JUNO_CODE_SESSION_METADATA_DIRECTORY", "").strip()
+    if override:
+        candidate = Path(override)
+        return str(candidate if candidate.is_absolute() else (Path(controller_root) / candidate).resolve())
+    completed = subprocess.run(
+        ["git", "-C", controller_root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        text=True, capture_output=True,
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        return str(Path(completed.stdout.strip()).resolve() / "juno" / "session_metadata")
+    identity = hashlib.sha256(str(Path(controller_root).resolve()).encode()).hexdigest()[:16]
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return str(state_home / "juno-code" / "session_metadata" / identity)
+
+
 def resolve_controller_environment() -> dict[str, str]:
     resolver = Path(__file__).resolve().with_name("controller_resolver.py")
     if not resolver.is_file():
@@ -3881,10 +3897,12 @@ def resolve_controller_environment() -> dict[str, str]:
         text=True, capture_output=True, check=True,
     )
     resolution = json.loads(completed.stdout)
+    controller_root = str(resolution["path"])
     return {
-        "JUNO_TASK_ROOT": resolution["path"],
+        "JUNO_TASK_ROOT": controller_root,
         "JUNO_CONTROLLER_SOURCE": resolution["source"],
         "JUNO_WORKSPACE_ROLE": resolution["role"],
+        "JUNO_CODE_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
     }
 
 

@@ -1,0 +1,133 @@
+import { createHash, randomUUID } from 'node:crypto';
+import * as childProcess from 'node:child_process';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import fs from 'fs-extra';
+
+export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
+const LOCK_RETRY_MS = 25;
+const LOCK_TIMEOUT_MS = 5_000;
+
+function canonicalPath(candidate: string): string {
+  const absolute = path.resolve(candidate.trim() || process.cwd());
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function gitCommonDirectory(workingDirectory: string): string | null {
+  try {
+    const output = childProcess.execFileSync(
+      'git', ['-C', workingDirectory, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1_000 },
+    ).trim();
+    return output ? canonicalPath(output) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve every volatile session producer to one untracked repository-local state root. */
+export function getSessionMetadataDirectory(
+  workingDirectory: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env[SESSION_METADATA_DIRECTORY_ENV]?.trim();
+  if (override) {
+    return path.resolve(workingDirectory, override);
+  }
+
+  const canonicalWorkingDirectory = canonicalPath(workingDirectory);
+  const commonDirectory = gitCommonDirectory(canonicalWorkingDirectory);
+  if (commonDirectory) {
+    return path.join(commonDirectory, 'juno', 'session_metadata');
+  }
+
+  const identity = createHash('sha256').update(canonicalWorkingDirectory).digest('hex').slice(0, 16);
+  const stateHome = env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), '.local', 'state');
+  return path.join(stateHome, 'juno-code', 'session_metadata', identity);
+}
+
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function removeStaleLock(lockDirectory: string): Promise<boolean> {
+  try {
+    const owner = await fs.readJson(path.join(lockDirectory, 'owner.json')) as { pid?: unknown };
+    if (typeof owner.pid === 'number' && processAlive(owner.pid)) return false;
+  } catch {
+    // An incomplete lock older than the retry interval is safe to reclaim.
+    try {
+      const stat = await fs.stat(lockDirectory);
+      if (Date.now() - stat.mtimeMs < 250) return false;
+    } catch {
+      return true;
+    }
+  }
+  const quarantine = `${lockDirectory}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    await fs.rename(lockDirectory, quarantine);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    return false;
+  }
+  await fs.remove(quarantine);
+  return true;
+}
+
+export async function withSessionMetadataLock<T>(
+  metadataDirectory: string,
+  name: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  await fs.ensureDir(metadataDirectory);
+  const lockDirectory = path.join(metadataDirectory, `${name}.lock`);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const token = randomUUID();
+
+  while (true) {
+    try {
+      await fs.mkdir(lockDirectory);
+      await fs.writeJson(path.join(lockDirectory, 'owner.json'), {
+        pid: process.pid,
+        token,
+        started_at: new Date().toISOString(),
+      });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (await removeStaleLock(lockDirectory)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for session metadata lock '${name}' at ${lockDirectory}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+    }
+  }
+
+  try {
+    return await operation();
+  } finally {
+    try {
+      const owner = await fs.readJson(path.join(lockDirectory, 'owner.json')) as { token?: unknown };
+      if (owner.token === token) await fs.remove(lockDirectory);
+    } catch {
+      // Never remove a lock whose ownership cannot be proven.
+    }
+  }
+}
+
+export async function writeSessionMetadataFileAtomic(filePath: string, content: string): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  await fs.writeFile(temporaryPath, content, 'utf8');
+  await fs.rename(temporaryPath, filePath);
+}

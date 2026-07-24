@@ -3,6 +3,12 @@ import * as childProcess from 'node:child_process';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 
+import {
+  getSessionMetadataDirectory,
+  withSessionMetadataLock,
+  writeSessionMetadataFileAtomic,
+} from './session-metadata.js';
+
 export const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
 export const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
 export const CONTINUE_SCOPE_OVERRIDE_ENV_KEY = 'JUNO_CODE_CONTINUE_SCOPE';
@@ -160,7 +166,7 @@ function buildContextFromHash(fullHash: string, scopeSource: string): ContinueSc
 }
 
 function getRuntimeFilePath(workingDirectory: string): string {
-  return path.join(workingDirectory, '.juno_task', CONTINUE_SCOPE_RUNTIME_FILE_NAME);
+  return path.join(getSessionMetadataDirectory(workingDirectory), CONTINUE_SCOPE_RUNTIME_FILE_NAME);
 }
 
 function parseRuntimeDocument(raw: string): ContinueScopeRuntimeDocument {
@@ -215,8 +221,19 @@ async function writeRuntimeDocument(
   runtimeFilePath: string,
   document: ContinueScopeRuntimeDocument,
 ): Promise<void> {
-  await fs.ensureDir(path.dirname(runtimeFilePath));
-  await fs.writeFile(runtimeFilePath, JSON.stringify(document, null, 2), 'utf-8');
+  await writeSessionMetadataFileAtomic(runtimeFilePath, JSON.stringify(document, null, 2));
+}
+
+async function mutateRuntimeDocument<T>(
+  workingDirectory: string,
+  mutation: (document: ContinueScopeRuntimeDocument, runtimeFilePath: string) => Promise<T>,
+): Promise<T> {
+  const metadataDirectory = getSessionMetadataDirectory(workingDirectory);
+  return withSessionMetadataLock(metadataDirectory, CONTINUE_SCOPE_RUNTIME_FILE_NAME, async () => {
+    const runtimeFilePath = getRuntimeFilePath(workingDirectory);
+    const document = await readRuntimeDocument(runtimeFilePath);
+    return mutation(document, runtimeFilePath);
+  });
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -366,36 +383,28 @@ export async function markContinueScopeRunning(
   context: ContinueScopeContext,
   pid: number = process.pid,
 ): Promise<void> {
-  const runtimeFilePath = getRuntimeFilePath(workingDirectory);
-  const document = await readRuntimeDocument(runtimeFilePath);
-
-  document.scopes[context.scopeHash] = {
-    pid,
-    startedAt: new Date().toISOString(),
-  };
-
-  await writeRuntimeDocument(runtimeFilePath, document);
+  await mutateRuntimeDocument(workingDirectory, async (document, runtimeFilePath) => {
+    document.scopes[context.scopeHash] = {
+      pid,
+      startedAt: new Date().toISOString(),
+    };
+    await writeRuntimeDocument(runtimeFilePath, document);
+  });
 }
 
 export async function clearContinueScopeRunning(
   workingDirectory: string,
   context: ContinueScopeContext,
 ): Promise<void> {
-  const runtimeFilePath = getRuntimeFilePath(workingDirectory);
-  const document = await readRuntimeDocument(runtimeFilePath);
-
-  if (!document.scopes[context.scopeHash]) {
-    return;
-  }
-
-  delete document.scopes[context.scopeHash];
-
-  if (Object.keys(document.scopes).length === 0) {
-    await fs.remove(runtimeFilePath);
-    return;
-  }
-
-  await writeRuntimeDocument(runtimeFilePath, document);
+  await mutateRuntimeDocument(workingDirectory, async (document, runtimeFilePath) => {
+    if (!document.scopes[context.scopeHash]) return;
+    delete document.scopes[context.scopeHash];
+    if (Object.keys(document.scopes).length === 0) {
+      await fs.remove(runtimeFilePath);
+      return;
+    }
+    await writeRuntimeDocument(runtimeFilePath, document);
+  });
 }
 
 export async function resolveContinueScopeStatus(options: {
@@ -441,12 +450,16 @@ export async function resolveContinueScopeStatus(options: {
       };
     }
 
-    delete runtimeDocument.scopes[scopeHash];
-    if (Object.keys(runtimeDocument.scopes).length === 0) {
-      await fs.remove(runtimeFilePath);
-    } else {
-      await writeRuntimeDocument(runtimeFilePath, runtimeDocument);
-    }
+    await mutateRuntimeDocument(options.workingDirectory, async (latestDocument, latestPath) => {
+      const latestEntry = latestDocument.scopes[scopeHash];
+      if (!latestEntry || latestEntry.pid !== runtimeEntry.pid || isProcessAlive(latestEntry.pid)) return;
+      delete latestDocument.scopes[scopeHash];
+      if (Object.keys(latestDocument.scopes).length === 0) {
+        await fs.remove(latestPath);
+      } else {
+        await writeRuntimeDocument(latestPath, latestDocument);
+      }
+    });
 
     return {
       status: 'error',

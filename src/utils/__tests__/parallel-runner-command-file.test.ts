@@ -347,6 +347,28 @@ commands:
     expect(cliOverride.stdout).toContain('Parallelism: 2');
   });
 
+  it('propagates canonical controller and isolated metadata roots across command process boundaries', async () => {
+    const target = path.join(testDir, 'environment.json');
+    const evidence = path.join(testDir, 'environment-evidence.json');
+    const metadata = path.join(testDir, 'metadata');
+    await fs.writeJson(target, {
+      schema_version: 1,
+      parallel: 1,
+      commands: [{
+        id: 'environment',
+        command: ['python3', '-c', `import json, os; open(${JSON.stringify(evidence)}, 'w').write(json.dumps({"task_root": os.environ["JUNO_TASK_ROOT"], "metadata": os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"]}))`],
+      }],
+    });
+
+    const result = runParallelScript(templateScript, ['--commands-file', target], undefined, {
+      JUNO_TASK_ROOT: repoRoot,
+      JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
+    });
+    expect(result.status).toBe(0);
+    expect(await fs.readJson(evidence)).toEqual({ task_root: repoRoot, metadata });
+  });
+
   it('validates ids, uniqueness, command shape, env shape, and timeout in lint mode', async () => {
     const invalid = path.join(testDir, 'invalid.yaml');
     await fs.writeFile(

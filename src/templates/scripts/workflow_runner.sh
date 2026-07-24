@@ -9,6 +9,7 @@ process unless a step opts into fail-fast behavior.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -868,8 +870,9 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
     return settings
 
 
-def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
-    branches_path = project_root / ".juno_task" / "session_branches.json"
+def _update_main_session_branch_unlocked(project_root: Path, context: dict[str, str], session_id: str) -> None:
+    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
+    branches_path = metadata_root / "session_branches.json"
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     try:
         document = json.loads(branches_path.read_text(encoding="utf-8")) if branches_path.exists() else {}
@@ -893,7 +896,64 @@ def update_main_session_branch(project_root: Path, context: dict[str, str], sess
         scope_entry["branches"] = branches
     branches["main"] = {"session_id": session_id, "parent": None, "updated_at": now}
     branches_path.parent.mkdir(parents=True, exist_ok=True)
-    branches_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    temporary = branches_path.with_name(f"{branches_path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(branches_path)
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return pid > 0
+    except PermissionError:
+        return True
+    except (ProcessLookupError, ValueError):
+        return False
+
+
+@contextlib.contextmanager
+def session_metadata_lock(metadata_root: Path, name: str):
+    lock = metadata_root / f"{name}.lock"
+    token = uuid.uuid4().hex
+    deadline = time.monotonic() + 5
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            lock.mkdir()
+            (lock / "owner.json").write_text(json.dumps({"pid": os.getpid(), "token": token}) + "\n")
+            break
+        except FileExistsError:
+            try:
+                owner = json.loads((lock / "owner.json").read_text())
+                live = _process_alive(int(owner.get("pid", 0)))
+            except Exception:
+                live = time.time() - lock.stat().st_mtime < 0.25
+            if not live:
+                quarantine = lock.with_name(f"{lock.name}.stale-{os.getpid()}-{uuid.uuid4().hex}")
+                try:
+                    lock.rename(quarantine)
+                except FileNotFoundError:
+                    continue
+                shutil.rmtree(quarantine, ignore_errors=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise WorkflowError(f"timed out waiting for session metadata lock {lock}")
+            time.sleep(0.025)
+    try:
+        yield
+    finally:
+        try:
+            owner = json.loads((lock / "owner.json").read_text())
+            if owner.get("token") == token:
+                shutil.rmtree(lock)
+        except Exception:
+            pass
+
+
+def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
+    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
+    with session_metadata_lock(metadata_root, "session_branches.json"):
+        _update_main_session_branch_unlocked(project_root, context, session_id)
 
 
 def read_continue_snapshot(project_root: Path, context: dict[str, str]) -> dict[str, str] | None:
@@ -2351,6 +2411,22 @@ Example boilerplates (written only when explicitly requested):
     return parser
 
 
+def resolve_session_metadata_directory(controller_root: str) -> str:
+    override = os.environ.get("JUNO_CODE_SESSION_METADATA_DIRECTORY", "").strip()
+    if override:
+        candidate = Path(override)
+        return str(candidate if candidate.is_absolute() else (Path(controller_root) / candidate).resolve())
+    completed = subprocess.run(
+        ["git", "-C", controller_root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        text=True, capture_output=True,
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        return str(Path(completed.stdout.strip()).resolve() / "juno" / "session_metadata")
+    identity = hashlib.sha256(str(Path(controller_root).resolve()).encode()).hexdigest()[:16]
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return str(state_home / "juno-code" / "session_metadata" / identity)
+
+
 def resolve_controller_environment() -> dict[str, str]:
     resolver = Path(__file__).resolve().with_name("controller_resolver.py")
     if not resolver.is_file():
@@ -2364,10 +2440,12 @@ def resolve_controller_environment() -> dict[str, str]:
         text=True, capture_output=True, check=True,
     )
     resolution = json.loads(completed.stdout)
+    controller_root = str(resolution["path"])
     return {
-        "JUNO_TASK_ROOT": resolution["path"],
+        "JUNO_TASK_ROOT": controller_root,
         "JUNO_CONTROLLER_SOURCE": resolution["source"],
         "JUNO_WORKSPACE_ROLE": resolution["role"],
+        "JUNO_CODE_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
     }
 
 

@@ -19,10 +19,12 @@ const tempDirs: string[] = [];
 async function createTempDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-continue-scope-'));
   tempDirs.push(dir);
+  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
   return dir;
 }
 
 afterEach(async () => {
+  delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {

@@ -24,6 +24,7 @@ import {
 } from '../../core/continue-scope.js';
 import { persistContinueScopeSnapshot } from '../../core/session-continuity-state.js';
 import { getSessionMetadataDirectory, SessionBranchesError } from '../../core/session-branches.js';
+import { withSessionMetadataLock } from '../../core/session-metadata.js';
 import {
   getConfiguredDefaultModelForSubagent,
   getDefaultModelForSubagent,
@@ -756,12 +757,12 @@ async function persistSessionHistory(result: ExecutionResult, verboseLevel: numb
       SESSION_HISTORY_FILE_NAME,
     );
 
-    await fs.ensureDir(path.dirname(historyPath));
-
-    const document = await readSessionHistoryDocument(historyPath, verboseLevel);
-
-    document.sessions.unshift(buildSessionHistoryEntry(result));
-    await fs.writeJson(historyPath, document, { spaces: 2 });
+    const metadataDirectory = path.dirname(historyPath);
+    await withSessionMetadataLock(metadataDirectory, SESSION_HISTORY_FILE_NAME, async () => {
+      const document = await readSessionHistoryDocument(historyPath, verboseLevel);
+      document.sessions.unshift(buildSessionHistoryEntry(result));
+      await fs.writeJson(historyPath, document, { spaces: 2 });
+    });
   } catch (error) {
     if (verboseLevel >= 1) {
       console.error(chalk.yellow(`Warning: Failed to persist session history: ${error}`));

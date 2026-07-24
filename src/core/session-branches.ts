@@ -2,9 +2,14 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 
 import type { ContinueScopeContext } from './continue-scope.js';
+import {
+  getSessionMetadataDirectory,
+  withSessionMetadataLock,
+  writeSessionMetadataFileAtomic,
+} from './session-metadata.js';
 
+export { getSessionMetadataDirectory, SESSION_METADATA_DIRECTORY_ENV } from './session-metadata.js';
 export const SESSION_BRANCHES_FILE_NAME = 'session_branches.json';
-export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
 export const SESSION_BRANCHES_VERSION = 1;
 export const MAIN_SESSION_BRANCH = 'main';
 
@@ -163,11 +168,6 @@ function assertValidDocumentShape(value: unknown): asserts value is SessionBranc
   }
 }
 
-export function getSessionMetadataDirectory(workingDirectory: string): string {
-  const override = process.env[SESSION_METADATA_DIRECTORY_ENV]?.trim();
-  return override ? path.resolve(workingDirectory, override) : path.join(workingDirectory, '.juno_task');
-}
-
 export function getSessionBranchesFilePath(workingDirectory: string): string {
   return path.join(getSessionMetadataDirectory(workingDirectory), SESSION_BRANCHES_FILE_NAME);
 }
@@ -194,14 +194,35 @@ export async function loadSessionBranchesDocument(
   }
 }
 
-export async function saveSessionBranchesDocument(
+async function writeSessionBranchesDocumentUnlocked(
   workingDirectory: string,
   document: SessionBranchesDocument,
 ): Promise<void> {
   assertValidDocumentShape(document);
   const filePath = getSessionBranchesFilePath(workingDirectory);
-  await fs.ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, `${JSON.stringify(document, null, 2)}\n`, 'utf-8');
+  await writeSessionMetadataFileAtomic(filePath, `${JSON.stringify(document, null, 2)}\n`);
+}
+
+export async function saveSessionBranchesDocument(
+  workingDirectory: string,
+  document: SessionBranchesDocument,
+): Promise<void> {
+  const metadataDirectory = getSessionMetadataDirectory(workingDirectory);
+  await withSessionMetadataLock(metadataDirectory, SESSION_BRANCHES_FILE_NAME, () =>
+    writeSessionBranchesDocumentUnlocked(workingDirectory, document));
+}
+
+async function mutateSessionBranchesDocument<T>(
+  workingDirectory: string,
+  mutation: (document: SessionBranchesDocument) => T,
+): Promise<T> {
+  const metadataDirectory = getSessionMetadataDirectory(workingDirectory);
+  return withSessionMetadataLock(metadataDirectory, SESSION_BRANCHES_FILE_NAME, async () => {
+    const document = await loadSessionBranchesDocument(workingDirectory);
+    const result = mutation(document);
+    await writeSessionBranchesDocumentUnlocked(workingDirectory, document);
+    return result;
+  });
 }
 
 export function validateSessionBranchName(
@@ -242,25 +263,24 @@ export async function resetMainSessionBranch(options: {
   sessionId: string;
   now?: Date;
 }): Promise<SessionBranchScope> {
-  const document = await loadSessionBranchesDocument(options.workingDirectory);
   const scopeHash = normalizeScopeHash(options.scope);
   const sessionId = normalizeSessionId(options.sessionId, MAIN_SESSION_BRANCH);
   const updatedAt = (options.now ?? new Date()).toISOString();
 
-  const scope: SessionBranchScope = {
-    active: MAIN_SESSION_BRANCH,
-    branches: {
-      [MAIN_SESSION_BRANCH]: {
-        session_id: sessionId,
-        parent: null,
-        updated_at: updatedAt,
+  return mutateSessionBranchesDocument(options.workingDirectory, (document) => {
+    const scope: SessionBranchScope = {
+      active: MAIN_SESSION_BRANCH,
+      branches: {
+        [MAIN_SESSION_BRANCH]: {
+          session_id: sessionId,
+          parent: null,
+          updated_at: updatedAt,
+        },
       },
-    },
-  };
-
-  document.scopes[scopeHash] = scope;
-  await saveSessionBranchesDocument(options.workingDirectory, document);
-  return scope;
+    };
+    document.scopes[scopeHash] = scope;
+    return scope;
+  });
 }
 
 export async function getActiveSessionBranch(options: {
@@ -293,28 +313,28 @@ export async function setActiveSessionBranch(options: {
   scope: ScopeIdentity;
   branchName: string;
 }): Promise<ActiveSessionBranch> {
-  const document = await loadSessionBranchesDocument(options.workingDirectory);
   const scopeHash = normalizeScopeHash(options.scope);
   const branchName = assertValidSessionBranchName(options.branchName);
-  const scope = document.scopes[scopeHash];
-  if (!scope) {
-    throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
-  }
-  const entry = scope.branches[branchName];
-  if (!entry) {
-    throw new SessionBranchesError(
-      `Unknown session branch '${branchName}' for continue scope ${scopeHash}.`,
-    );
-  }
-  scope.active = branchName;
-  await saveSessionBranchesDocument(options.workingDirectory, document);
-  return {
-    name: branchName,
-    sessionId: entry.session_id,
-    parent: entry.parent,
-    sourceSessionId: entry.source_session_id ?? null,
-    updatedAt: entry.updated_at,
-  };
+  return mutateSessionBranchesDocument(options.workingDirectory, (document) => {
+    const scope = document.scopes[scopeHash];
+    if (!scope) {
+      throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
+    }
+    const entry = scope.branches[branchName];
+    if (!entry) {
+      throw new SessionBranchesError(
+        `Unknown session branch '${branchName}' for continue scope ${scopeHash}.`,
+      );
+    }
+    scope.active = branchName;
+    return {
+      name: branchName,
+      sessionId: entry.session_id,
+      parent: entry.parent,
+      sourceSessionId: entry.source_session_id ?? null,
+      updatedAt: entry.updated_at,
+    };
+  });
 }
 
 export async function upsertClonedSessionBranch(options: {
@@ -326,32 +346,31 @@ export async function upsertClonedSessionBranch(options: {
   sourceSessionId: string;
   now?: Date;
 }): Promise<ListedSessionBranch> {
-  const document = await loadSessionBranchesDocument(options.workingDirectory);
   const scopeHash = normalizeScopeHash(options.scope);
   const branchName = assertValidSessionBranchName(options.branchName, { allowMain: false });
   const sessionId = normalizeSessionId(options.sessionId, branchName);
   const sourceSessionId = normalizeSessionId(options.sourceSessionId, 'source');
   const parent = assertValidSessionBranchName(options.parent);
   const updatedAt = (options.now ?? new Date()).toISOString();
-  const scope = document.scopes[scopeHash];
-  if (!scope) {
-    throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
-  }
-  if (!scope.branches[parent]) {
-    throw new SessionBranchesError(
-      `Cannot clone from missing parent branch '${parent}' in continue scope ${scopeHash}.`,
-    );
-  }
-
-  const entry: SessionBranchEntry = {
-    session_id: sessionId,
-    parent,
-    source_session_id: sourceSessionId,
-    updated_at: updatedAt,
-  };
-  scope.branches[branchName] = entry;
-  await saveSessionBranchesDocument(options.workingDirectory, document);
-  return toListedBranch(branchName, scope.active, entry);
+  return mutateSessionBranchesDocument(options.workingDirectory, (document) => {
+    const scope = document.scopes[scopeHash];
+    if (!scope) {
+      throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
+    }
+    if (!scope.branches[parent]) {
+      throw new SessionBranchesError(
+        `Cannot clone from missing parent branch '${parent}' in continue scope ${scopeHash}.`,
+      );
+    }
+    const entry: SessionBranchEntry = {
+      session_id: sessionId,
+      parent,
+      source_session_id: sourceSessionId,
+      updated_at: updatedAt,
+    };
+    scope.branches[branchName] = entry;
+    return toListedBranch(branchName, scope.active, entry);
+  });
 }
 
 export async function updateActiveSessionBranch(options: {
@@ -360,29 +379,29 @@ export async function updateActiveSessionBranch(options: {
   sessionId: string;
   now?: Date;
 }): Promise<ActiveSessionBranch> {
-  const document = await loadSessionBranchesDocument(options.workingDirectory);
   const scopeHash = normalizeScopeHash(options.scope);
   const sessionId = normalizeSessionId(options.sessionId, 'active branch');
-  const scope = document.scopes[scopeHash];
-  if (!scope) {
-    throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
-  }
-  const entry = scope.branches[scope.active];
-  if (!entry) {
-    throw new SessionBranchesError(
-      `Active branch '${scope.active}' is missing for continue scope ${scopeHash}.`,
-    );
-  }
-  entry.session_id = sessionId;
-  entry.updated_at = (options.now ?? new Date()).toISOString();
-  await saveSessionBranchesDocument(options.workingDirectory, document);
-  return {
-    name: scope.active,
-    sessionId: entry.session_id,
-    parent: entry.parent,
-    sourceSessionId: entry.source_session_id ?? null,
-    updatedAt: entry.updated_at,
-  };
+  return mutateSessionBranchesDocument(options.workingDirectory, (document) => {
+    const scope = document.scopes[scopeHash];
+    if (!scope) {
+      throw new SessionBranchesError(`No named session branches found for continue scope ${scopeHash}.`);
+    }
+    const entry = scope.branches[scope.active];
+    if (!entry) {
+      throw new SessionBranchesError(
+        `Active branch '${scope.active}' is missing for continue scope ${scopeHash}.`,
+      );
+    }
+    entry.session_id = sessionId;
+    entry.updated_at = (options.now ?? new Date()).toISOString();
+    return {
+      name: scope.active,
+      sessionId: entry.session_id,
+      parent: entry.parent,
+      sourceSessionId: entry.source_session_id ?? null,
+      updatedAt: entry.updated_at,
+    };
+  });
 }
 
 export async function listSessionBranches(options: {

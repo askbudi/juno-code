@@ -135,6 +135,14 @@ vi.mock('../../core/session-branches.js', () => ({
   }),
 }));
 
+vi.mock('../../core/session-metadata.js', () => ({
+  SESSION_METADATA_DIRECTORY_ENV: 'JUNO_CODE_SESSION_METADATA_DIRECTORY',
+  getSessionMetadataDirectory: (workingDirectory: string) =>
+    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`,
+  withSessionMetadataLock: async (_directory: string, _name: string, operation: () => Promise<unknown>) => operation(),
+  writeSessionMetadataFileAtomic: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
