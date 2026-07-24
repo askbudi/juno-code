@@ -25,6 +25,7 @@ import { ConfigurationError } from '../types.js';
 
 import { loadConfig } from '../../core/config.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import { getCurrentGitBranch } from '../../core/git.js';
 import {
   getActiveSessionBranch,
   getSessionMetadataDirectory,
@@ -95,6 +96,10 @@ vi.mock('../../core/engine.js', () => ({
     cloneFromSession: opts.cloneFromSession,
     live: opts.live,
   })),
+}));
+
+vi.mock('../../core/git.js', () => ({
+  getCurrentGitBranch: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../../core/session.js', () => ({
@@ -244,6 +249,7 @@ describe('Main Command', () => {
       live: opts.live,
     }));
 
+    vi.mocked(getCurrentGitBranch).mockResolvedValue(null);
     vi.mocked(getSessionMetadataDirectory).mockImplementation((workingDirectory: string) =>
       process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`);
     vi.mocked(getActiveSessionBranch).mockResolvedValue(null as any);
@@ -3664,6 +3670,40 @@ describe('Verbose/Quiet Output Modes', () => {
     expect(allCalls.some((c: string) => c.includes('Statistics:'))).toBe(true);
     expect(allCalls.some((c: string) => c.includes('Total Iterations:'))).toBe(true);
     expect(allCalls.some((c: string) => c.includes('Branch: main'))).toBe(true);
+  });
+
+  it('should show the current Git branch at session start and in completion statistics', async () => {
+    vi.mocked(getCurrentGitBranch).mockResolvedValue('feature/git-context');
+
+    const options: MainCommandOptions = {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    };
+
+    await mainCommandHandler([], options, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    const gitBranchLines = allCalls.filter((line) => line.includes('Git Branch: feature/git-context'));
+    expect(gitBranchLines).toHaveLength(2);
+    expect(allCalls.some((line) => line.includes('Branch: main'))).toBe(true);
+  });
+
+  it('should omit Git branch output when the working directory has no named Git branch', async () => {
+    vi.mocked(getCurrentGitBranch).mockResolvedValue(null);
+
+    await mainCommandHandler([], {
+      subagent: 'claude',
+      prompt: 'test prompt',
+      verbose: 1,
+      quiet: false,
+      logLevel: 'info',
+    }, mockCommand);
+
+    const allCalls = consoleErrorSpy.mock.calls.map(c => String(c[0]));
+    expect(allCalls.some((line) => line.includes('Git Branch:'))).toBe(false);
   });
 
   it('should show active named branch in completion statistics for branch continues', async () => {

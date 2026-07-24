@@ -30,6 +30,7 @@ import {
   isModelCompatibleWithSubagent,
 } from '../../core/subagent-models.js';
 import { createExecutionEngine, createExecutionRequest } from '../../core/engine.js';
+import { getCurrentGitBranch } from '../../core/git.js';
 import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
@@ -1002,7 +1003,7 @@ class MainProgressDisplay {
     this.verboseLevel = verboseLevel;
   }
 
-  start(request: ExecutionRequest): void {
+  start(request: ExecutionRequest, gitBranch: string | null = null): void {
     this.startTime = new Date();
 
     // Level 0 (quiet): suppress all start info
@@ -1025,6 +1026,9 @@ class MainProgressDisplay {
         `   Max Iterations: ${request.maxIterations === -1 ? 'unlimited' : request.maxIterations}`,
       ),
     );
+    if (gitBranch) {
+      console.error(chalk.gray(`   Git Branch: ${gitBranch}`));
+    }
 
     for (const [label, value] of this.getSelectedExecutionOptions(request)) {
       console.error(chalk.gray(`   ${label}: ${value}`));
@@ -1313,7 +1317,11 @@ class MainProgressDisplay {
     return null;
   }
 
-  complete(result: ExecutionResult, branchName: string = 'main'): void {
+  complete(
+    result: ExecutionResult,
+    branchName: string = 'main',
+    gitBranch: string | null = null,
+  ): void {
     const elapsed = this.getElapsedTime();
     const summaryBranchName = branchName.trim() || 'main';
 
@@ -1379,6 +1387,9 @@ class MainProgressDisplay {
       );
       console.error(chalk.white(`   Tool Calls: ${stats.totalToolCalls}`));
       console.error(chalk.white(`   Branch: ${summaryBranchName}`));
+      if (gitBranch) {
+        console.error(chalk.white(`   Git Branch: ${gitBranch}`));
+      }
       console.error(chalk.white(`   Completed At: ${this.formatHumanDateTime(completedAt)}`));
 
       if (iterationCosts.size > 0) {
@@ -1673,8 +1684,11 @@ class MainExecutionCoordinator {
     });
 
     try {
+      // Resolve once so the start and completion views describe the same execution context.
+      const gitBranch = await getCurrentGitBranch(request.workingDirectory);
+
       // Start progress display
-      this.progressDisplay.start(request);
+      this.progressDisplay.start(request, gitBranch);
 
       // Start feedback collector if enabled
       if (this.feedbackCollector) {
@@ -1689,7 +1703,7 @@ class MainExecutionCoordinator {
       const result = await engine.execute(request);
 
       // Complete progress display
-      this.progressDisplay.complete(result, branchName);
+      this.progressDisplay.complete(result, branchName, gitBranch);
 
       return result;
     } catch (error) {

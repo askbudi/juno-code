@@ -43,6 +43,7 @@ vi.mock('execa', () => ({
 import {
   GitManager,
   GitUrlUtils,
+  getCurrentGitBranch,
   GitUrlSchema,
   GitHttpsUrlSchema,
   GitSshUrlSchema,
@@ -50,6 +51,32 @@ import {
   type GitCommitInfo,
   type GitUpstreamConfig,
 } from '../git.js';
+
+describe('getCurrentGitBranch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the trimmed current named branch', async () => {
+    const { execa } = await import('execa');
+    vi.mocked(execa).mockResolvedValue({ stdout: ' feature/git-context\n' } as any);
+
+    await expect(getCurrentGitBranch('/project')).resolves.toBe('feature/git-context');
+    expect(execa).toHaveBeenCalledWith('git', ['branch', '--show-current'], {
+      cwd: '/project',
+      stdio: 'pipe',
+    });
+  });
+
+  it('returns null for detached HEAD and Git command failures', async () => {
+    const { execa } = await import('execa');
+    vi.mocked(execa).mockResolvedValueOnce({ stdout: '' } as any);
+    await expect(getCurrentGitBranch('/detached')).resolves.toBeNull();
+
+    vi.mocked(execa).mockRejectedValueOnce(new Error('not a repository'));
+    await expect(getCurrentGitBranch('/not-a-repo')).resolves.toBeNull();
+  });
+});
 
 describe('GitManager', () => {
   let gitManager: GitManager;

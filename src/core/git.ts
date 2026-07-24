@@ -90,6 +90,26 @@ export type GitRepositoryStatus =
 /**
  * Git upstream configuration
  */
+/**
+ * Return the current named Git branch for a working directory.
+ *
+ * A detached HEAD or non-repository is represented as null so callers can omit
+ * branch UI instead of presenting a commit as a branch name.
+ */
+export async function getCurrentGitBranch(workingDirectory: string): Promise<string | null> {
+  try {
+    const { execa } = await import('execa');
+    const result = await execa('git', ['branch', '--show-current'], {
+      cwd: workingDirectory,
+      stdio: 'pipe',
+    });
+    const branch = result.stdout.trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface GitUpstreamConfig {
   /** Upstream URL */
   url?: string | undefined;
