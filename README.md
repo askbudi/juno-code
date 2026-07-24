@@ -199,7 +199,7 @@ Use `workflow_assert.py` for named machine-readable diagnostics. On macOS/Linux,
   --repository root=/path/to/clean-owner,refs/heads/main \
   --quiescence-seconds 2 \
   --output /path/outside/checkout/integration-owner.json \
-  --exec-command -- ./scripts/integrate-reviewed-tip.sh
+  --exec-command ./scripts/integrate-reviewed-tip.sh
 ```
 
 ### Full Traceability: Every Change Tracked
