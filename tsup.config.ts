@@ -69,7 +69,7 @@ export default defineConfig({
 
   // Define globals for better optimization
   define: {
-    __VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0'),
+    __VERSION__: JSON.stringify(process.env.npm_package_version || '2.0.1'),
     __DEV__: process.env.NODE_ENV === 'development' ? 'true' : 'false'
   },
 

@@ -15,6 +15,28 @@
 
 ## Installation
 
+### Isolated Juno 2 source toolchain
+
+From a monorepo checkout containing `juno-code/` and `juno_kanban/`:
+
+```bash
+./juno-code/scripts/juno-002-source-toolchain.sh install
+export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
+yy-juno-002 --version
+juno-kanban-juno-002 --version
+./juno-code/scripts/juno-002-source-toolchain.sh status
+```
+
+The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.0,<3.0.0` policy before execution. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
+
+Rollback operations are intentionally separate:
+
+1. **Source rollback:** use Git in the source worktrees to choose reviewed source commits; this does not select executables or alter Kanban data.
+2. **Executable selector rollback:** run `./juno-code/scripts/juno-002-source-toolchain.sh rollback-selection`; this swaps only the repository-local selected executable paths.
+3. **Kanban data rollback:** restore/migrate a separately backed-up disposable board with Kanban's data procedures. Switching source branches or selectors never claims to downgrade or restore board data.
+
+Normal stable installation remains explicit and independent:
+
 ```bash
 npm install -g juno-code
 

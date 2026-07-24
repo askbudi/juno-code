@@ -1,0 +1,151 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'fs-extra';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+const tool = path.resolve(process.cwd(), 'scripts/juno-002-source-toolchain.sh');
+const policy = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
+const tempDirs: string[] = [];
+
+async function executable(file: string, content: string) {
+  await fs.outputFile(file, content);
+  await fs.chmod(file, 0o755);
+}
+
+function run(args: string[], env: Record<string, string>) {
+  return spawnSync('bash', [tool, ...args], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  });
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe('Juno 2 Kanban compatibility policy', () => {
+  it.each([
+    ['task 1.99.9', false],
+    ['task 2.0.0', true],
+    ['juno-kanban 2.8.4', true],
+    ['task 3.0.0', false],
+    ['', false],
+    ['not-a-version', false],
+    ['task 2.0.0 extra 2.1.0', false],
+  ])('validates %j', (output, accepted) => {
+    const result = spawnSync(
+      'bash',
+      ['-c', 'source "$1"; juno_kanban_parse_compatible_version "$2"', 'test', policy, output],
+      { encoding: 'utf8' },
+    );
+    expect(result.status === 0).toBe(accepted);
+  });
+});
+
+describe('repository-local Juno 2 source installer', () => {
+  it('quotes source paths, repeats safely, preserves source identity, and rolls selector back', async () => {
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno 002 toolchain '));
+    tempDirs.push(temp);
+    const state = path.join(temp, 'state with spaces');
+    const codeSource = path.join(temp, 'code source');
+    const kanbanSource = path.join(temp, 'kanban source');
+    const fakeBin = path.join(temp, 'fake bin');
+    await fs.outputJson(path.join(codeSource, 'package.json'), { name: 'juno-code', version: '2.0.1' });
+    await fs.outputFile(path.join(kanbanSource, 'setup.py'), '# fixture\n');
+
+    const fakePython = path.join(fakeBin, 'python fixture');
+    await executable(
+      fakePython,
+      `#!/usr/bin/env bash
+set -eu
+if [[ "$1 $2" == "-m venv" ]]; then
+  mkdir -p "$3/bin"
+  cp "$0" "$3/bin/python"
+  chmod +x "$3/bin/python"
+  exit 0
+fi
+if [[ "$1 $2" == "-m pip" ]]; then
+  target="$(cd "$(dirname "$0")" && pwd)/juno-kanban"
+  printf '#!/usr/bin/env bash\\nprintf "task %%s\\n" "${'${FAKE_KANBAN_VERSION:-2.0.0}'}"\\n' > "$target"
+  chmod +x "$target"
+  exit 0
+fi
+exit 9
+`,
+    );
+    const fakeNpm = path.join(fakeBin, 'npm fixture');
+    await executable(
+      fakeNpm,
+      `#!/usr/bin/env bash
+set -eu
+[[ "$1" == run ]] && exit 0
+prefix=""
+while [[ $# -gt 0 ]]; do
+  [[ "$1" == --prefix ]] && { prefix="$2"; shift 2; continue; }
+  shift
+done
+mkdir -p "$prefix/node_modules/.bin"
+printf '#!/usr/bin/env bash\\necho 2.0.1\\n' > "$prefix/node_modules/.bin/yy"
+chmod +x "$prefix/node_modules/.bin/yy"
+`,
+    );
+    const env = {
+      JUNO_002_STATE_DIR: state,
+      JUNO_002_CODE_SOURCE: codeSource,
+      JUNO_002_KANBAN_SOURCE: kanbanSource,
+      JUNO_002_PYTHON: fakePython,
+      JUNO_002_NPM: fakeNpm,
+    };
+
+    const first = run(['install'], env);
+    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    const second = run(['install'], env);
+    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+    const yy = spawnSync(path.join(state, 'bin', 'yy-juno-002'), ['--version'], {
+      env: { ...process.env, JUNO_002_STATE_DIR: state }, encoding: 'utf8',
+    });
+    expect(yy.status, yy.stderr).toBe(0);
+    expect(yy.stdout.trim()).toBe('2.0.1');
+    const kanban = spawnSync(path.join(state, 'bin', 'juno-kanban-juno-002'), ['--version'], {
+      env: { ...process.env, JUNO_002_STATE_DIR: state }, encoding: 'utf8',
+    });
+    expect(kanban.status, kanban.stderr).toBe(0);
+    expect(kanban.stdout.trim()).toBe('task 2.0.0');
+
+    const alternateCode = path.join(temp, 'alternate code');
+    const alternateKanban = path.join(temp, 'alternate kanban');
+    await executable(alternateCode, '#!/usr/bin/env bash\necho 2.0.1\n');
+    await executable(alternateKanban, '#!/usr/bin/env bash\necho task 2.7.0\n');
+    expect(run(['select', alternateCode, alternateKanban, codeSource, kanbanSource], env).status).toBe(0);
+    expect(run(['rollback-selection'], env).status).toBe(0);
+    const status = run(['status'], env);
+    expect(status.status, status.stderr).toBe(0);
+    expect(status.stdout).toContain(`juno_code_source=${await fs.realpath(codeSource)}`);
+    expect(status.stdout).toContain(`juno_kanban_source=${await fs.realpath(kanbanSource)}`);
+    expect(status.stdout).toContain('policy=>=2.0.0,<3.0.0');
+  });
+
+  it.each(['1.9.9', '3.0.0'])('rejects source Kanban %s during install', async (version) => {
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-002-reject-'));
+    tempDirs.push(temp);
+    const codeSource = path.join(temp, 'code');
+    const kanbanSource = path.join(temp, 'kanban');
+    await fs.outputJson(path.join(codeSource, 'package.json'), { version: '2.0.1' });
+    await fs.outputFile(path.join(kanbanSource, 'setup.py'), '# fixture\n');
+    const fakePython = path.join(temp, 'python');
+    await executable(fakePython, `#!/usr/bin/env bash
+if [[ "$1 $2" == "-m venv" ]]; then mkdir -p "$3/bin"; cp "$0" "$3/bin/python"; chmod +x "$3/bin/python"; exit 0; fi
+printf '#!/usr/bin/env bash\\necho task ${version}\\n' > "$(dirname "$0")/juno-kanban"; chmod +x "$(dirname "$0")/juno-kanban"
+`);
+    const fakeNpm = path.join(temp, 'npm');
+    await executable(fakeNpm, '#!/usr/bin/env bash\n[[ "$1" == run ]] && exit 0\nwhile [[ $# -gt 0 ]]; do [[ "$1" == --prefix ]] && { p="$2"; shift 2; continue; }; shift; done\nmkdir -p "$p/node_modules/.bin"; printf "#!/usr/bin/env bash\\necho 2.0.1\\n" > "$p/node_modules/.bin/yy"; chmod +x "$p/node_modules/.bin/yy"\n');
+    const result = run(['install'], {
+      JUNO_002_STATE_DIR: path.join(temp, 'state'), JUNO_002_CODE_SOURCE: codeSource,
+      JUNO_002_KANBAN_SOURCE: kanbanSource, JUNO_002_PYTHON: fakePython, JUNO_002_NPM: fakeNpm,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('identity rejected');
+  });
+});
