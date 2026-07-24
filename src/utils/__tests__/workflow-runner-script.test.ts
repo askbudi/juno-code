@@ -1152,6 +1152,7 @@ print('response with session_id=session-must-not-be-captured')
           path: receiptPath,
           schema_version: 'fixture.v1',
           required_fields: ['outcome'],
+          expected_fields: { outcome: 'completed' },
         },
       ],
       terminal_gate: 'gate',
@@ -1182,7 +1183,7 @@ print('response with session_id=session-must-not-be-captured')
     expect((await fs.readJson(path.join(outDir, 'run_contract.json'))).attempts).toHaveLength(2);
 
     const receipt = await fs.readJson(receiptPath);
-    receipt.outcome = 'tampered';
+    receipt.note = 'tampered';
     await fs.writeJson(receiptPath, receipt);
     const rejected = runWorkflow([
       '--workflow', workflowPath,

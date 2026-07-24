@@ -173,16 +173,22 @@ def normalize_receipt_contracts(workflow: dict[str, Any]) -> dict[str, dict[str,
         path = str(item.get("path") or "").strip()
         schema_version = str(item.get("schema_version") or "").strip()
         required_fields = item.get("required_fields") or []
+        expected_fields = item.get("expected_fields") or {}
         if not producer or not path or not schema_version:
             raise WorkflowError(f"receipt {receipt_id} requires producer, path, and schema_version")
         if not isinstance(required_fields, list) or not all(isinstance(field, str) and field for field in required_fields):
             raise WorkflowError(f"receipt {receipt_id} required_fields must be a list of dotted field names")
+        if not isinstance(expected_fields, dict) or not all(
+            isinstance(field, str) and field for field in expected_fields
+        ):
+            raise WorkflowError(f"receipt {receipt_id} expected_fields must be a mapping of dotted fields to values")
         contracts[receipt_id] = {
             "id": receipt_id,
             "producer": producer,
             "path": path,
             "schema_version": schema_version,
             "required_fields": required_fields,
+            "expected_fields": expected_fields,
         }
     return contracts
 
@@ -207,6 +213,14 @@ def validate_receipt_payload(
         present, _ = dotted_get(payload, field)
         if not present:
             raise WorkflowError(f"receipt[{receipt_id}].required_field[{field}]: missing at {location}")
+    for field, expected in contract.get("expected_fields", {}).items():
+        present, actual = dotted_get(payload, field)
+        if not present:
+            raise WorkflowError(f"receipt[{receipt_id}].expected_field[{field}]: missing at {location}")
+        if actual != expected:
+            raise WorkflowError(
+                f"receipt[{receipt_id}].expected_field[{field}]: expected={expected!r} actual={actual!r}"
+            )
 
 
 def load_json_object(path: Path, description: str) -> dict[str, Any]:
@@ -573,11 +587,14 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         integration_receipts = [
             contract
             for contract in receipts.values()
-            if contract["producer"] == integration_step and "controller_disposition" in contract["required_fields"]
+            if contract["producer"] == integration_step
+            and "controller_disposition" in contract["required_fields"]
+            and contract["expected_fields"].get("controller_disposition") == controller_disposition
         ]
         if not integration_receipts:
             raise WorkflowError(
-                "local_integration integration_step must produce a typed receipt requiring controller_disposition"
+                "local_integration integration_step must produce a typed receipt requiring controller_disposition "
+                "and binding its expected value to the declared controller_disposition"
             )
         if step_indexes[str(validation_ownership["preintegration_full"])] >= step_indexes[integration_step]:
             raise WorkflowError("validation_ownership.preintegration_full must precede integration_step")
