@@ -330,6 +330,12 @@ main() {
     # socket; probing by type either discards real bodies or leaves query commands
     # hanging. Only commands whose syntax explicitly needs stdin receive it.
     local pass_stdin=false arg_index arg
+    # Preserve the commandless stdin shortcut (`kanban.sh <<'EOF' ...`). This
+    # includes socket-backed subprocess input on macOS, not only pipes/files.
+    # Interactive no-argument calls remain nonblocking because a TTY is excluded.
+    if [[ ${#NORMALIZED_COMMAND_ARGS[@]} -eq 0 && ! -t 0 ]]; then
+        pass_stdin=true
+    fi
     for ((arg_index = 0; arg_index < ${#NORMALIZED_COMMAND_ARGS[@]}; arg_index++)); do
         arg="${NORMALIZED_COMMAND_ARGS[$arg_index]}"
         if [[ ( "$arg" == "--body-file" || "$arg" == "--response-file" ) && "${NORMALIZED_COMMAND_ARGS[$((arg_index + 1))]:-}" == "-" ]] \

@@ -55,6 +55,11 @@ if [[ "${'$'}{1:-}" == "create" ]]; then
   printf 'created:%s\\n' "${'$'}body"
   exit 0
 fi
+if [[ ${'$'}# -eq 0 ]]; then
+  body=${'$'}(cat)
+  printf 'implicit-created:%s\\n' "${'$'}body"
+  exit 0
+fi
 python3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_ROOT\"]}")'
 `,
     );
@@ -80,6 +85,24 @@ python3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('created:heredoc regression body');
+    expect(result.stderr).not.toContain('version probe consumed stdin');
+  });
+
+  it('forwards commandless heredoc input for the implicit create shortcut', () => {
+    const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), [], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      input: 'commandless heredoc body\n',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: '',
+        VIRTUAL_ENV: '',
+        PYTHONPATH: path.join(projectRoot, 'installed-site'),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('implicit-created:commandless heredoc body');
     expect(result.stderr).not.toContain('version probe consumed stdin');
   });
 
