@@ -31,7 +31,10 @@ juno_kanban_check_executable() {
         echo "juno-kanban $label executable is missing or not executable: $executable" >&2
         return 1
     fi
-    if ! output=$("$executable" --version 2>&1); then
+    # Identity checks are metadata-only. Close stdin so a heredoc/pipe remains
+    # untouched for the subsequent create command; the CLI treats readable stdin
+    # as task-body input even when --version is present.
+    if ! output=$("$executable" --version </dev/null 2>&1); then
         echo "juno-kanban $label --version failed: $executable: $output" >&2
         return 1
     fi

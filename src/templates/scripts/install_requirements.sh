@@ -77,6 +77,38 @@ package_install_target() {
     printf '%s\n' "$package"
 }
 
+is_source_managed_package() {
+    [ "$1" = "juno-kanban" ] && [ -n "${JUNO_002_KANBAN_SOURCE:-}" ]
+}
+
+juno_kanban_runtime_is_v2() {
+    local executable output
+    executable=$(command -v juno-kanban 2>/dev/null || true)
+    [ -n "$executable" ] || return 1
+    output=$("$executable" --version </dev/null 2>/dev/null) || return 1
+    [[ "$output" =~ (^|[^0-9])2\.[0-9]+\.[0-9]+([^0-9]|$) ]]
+}
+
+ensure_selected_juno_kanban_runtime() {
+    [ -n "${JUNO_002_KANBAN_SOURCE:-}" ] || return 0
+    [ -f "$JUNO_002_KANBAN_SOURCE/setup.py" ] || {
+        log_error "Selected juno-kanban source is invalid: $JUNO_002_KANBAN_SOURCE"
+        return 1
+    }
+    juno_kanban_runtime_is_v2 && return 0
+
+    log_warning "Repairing incompatible juno-kanban runtime from selected source: $JUNO_002_KANBAN_SOURCE"
+    if command -v uv &>/dev/null; then
+        uv pip install --reinstall "$JUNO_002_KANBAN_SOURCE" --quiet || return 1
+    else
+        python3 -m pip install --force-reinstall "$JUNO_002_KANBAN_SOURCE" --quiet || return 1
+    fi
+    if ! juno_kanban_runtime_is_v2; then
+        log_error "Selected juno-kanban source did not produce a compatible v2 runtime"
+        return 1
+    fi
+}
+
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5).
 # Keep the cache project-local so one repository cannot suppress update checks for another
@@ -315,6 +347,7 @@ reconcile_fresh_cached_versions() {
     local package installed_version expected_version
     local cached_requirements=()
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        is_source_managed_package "$package" && continue
         get_installed_version "$package"
         installed_version="$INSTALLED_VERSION_RESULT"
         get_cached_expected_version "$package"
@@ -348,6 +381,7 @@ reconcile_fresh_cached_versions() {
     fi
     cached_requirements=()
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        is_source_managed_package "$package" && continue
         get_installed_version "$package"
         installed_version="$INSTALLED_VERSION_RESULT"
         get_cached_expected_version "$package"
@@ -376,6 +410,7 @@ reconcile_fresh_cached_versions() {
     fi
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        is_source_managed_package "$package" && continue
         get_installed_version "$package"
         installed_version="$INSTALLED_VERSION_RESULT"
         get_cached_expected_version "$package"
@@ -430,7 +465,11 @@ check_all_for_updates() {
     for package in "${REQUIRED_PACKAGES[@]}"; do
         get_installed_version "$package"
         installed_version="$INSTALLED_VERSION_RESULT"
-        latest_version=$(get_pypi_latest_version "$package")
+        if is_source_managed_package "$package"; then
+            latest_version="$installed_version"
+        else
+            latest_version=$(get_pypi_latest_version "$package")
+        fi
         if [ -z "$latest_version" ]; then
             atomic_write_failure_state
             log_warning "Could not complete PyPI check; continuing and retrying after one hour"
@@ -908,6 +947,10 @@ main() {
 
     # Align all checks with project-local installation target when available.
     activate_project_venv_if_available
+    if ! ensure_selected_juno_kanban_runtime; then
+        log_error "Failed to restore the selected Juno 2 Kanban runtime"
+        exit 1
+    fi
 
     # Handle --check-updates: just check and report, don't install
     if [ "$check_updates_only" = true ]; then
@@ -918,7 +961,11 @@ main() {
             local latest_ver
             get_installed_version "$package"
             installed_ver="$INSTALLED_VERSION_RESULT"
-            latest_ver=$(get_pypi_latest_version "$package")
+            if is_source_managed_package "$package"; then
+                latest_ver="$installed_ver"
+            else
+                latest_ver=$(get_pypi_latest_version "$package")
+            fi
 
             if [ -z "$installed_ver" ]; then
                 log_warning "$package is not installed"

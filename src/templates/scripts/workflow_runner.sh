@@ -2204,12 +2204,7 @@ steps:
     command:
       - yy
       - pi
-      - |
-        Plan mode: create the concrete kanban tasks needed for this topic, then print one machine-readable line:
-        TASK_IDS=<comma-separated-kanban-task-ids>
-
-        Topic: {{ review_topic }}
-        Use ./.juno_task/scripts/kanban.sh as the source of truth. Keep task bodies complete enough for parallel agents.
+      - "Plan mode: create the concrete kanban tasks needed for this topic, then print TASK_IDS=<comma-separated-kanban-task-ids>. Topic: {{ review_topic }}. Use ./.juno_task/scripts/kanban.sh as the source of truth. Keep task bodies complete enough for parallel agents."
   - id: resolve_task_ids
     capture_session: false
     command: |

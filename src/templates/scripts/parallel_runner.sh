@@ -303,10 +303,57 @@ def _count_indent(line):
     return len(line) - len(line.lstrip(" "))
 
 
+def _parse_flow_sequence(value):
+    content = value[1:-1].strip()
+    if not content:
+        return []
+    items = []
+    token = []
+    quote = None
+    escaped = False
+    for char in content:
+        if escaped:
+            token.append(char)
+            escaped = False
+            continue
+        if quote == '"' and char == "\\":
+            token.append(char)
+            escaped = True
+            continue
+        if quote:
+            token.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            token.append(char)
+            continue
+        if char == ",":
+            item = "".join(token).strip()
+            if not item:
+                raise CommandFileError("flow sequence contains an empty item")
+            items.append(_parse_scalar(item))
+            token = []
+            continue
+        if char in "[]{}":
+            raise CommandFileError("nested flow collections require PyYAML")
+        token.append(char)
+    if quote or escaped:
+        raise CommandFileError("unterminated quoted scalar in flow sequence")
+    item = "".join(token).strip()
+    if not item:
+        raise CommandFileError("flow sequence contains an empty item")
+    items.append(_parse_scalar(item))
+    return items
+
+
 def _parse_scalar(value):
     value = value.strip()
     if value == "":
         return ""
+    if value.startswith("[") and value.endswith("]"):
+        return _parse_flow_sequence(value)
     if value in ("null", "Null", "NULL", "~"):
         return None
     if value in ("true", "True", "TRUE"):

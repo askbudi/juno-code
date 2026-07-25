@@ -292,6 +292,43 @@ exit 0
     expect(await fs.readFile(uvLogPath, 'utf-8')).toContain('juno-kanban==1.0.0');
   });
 
+  it('repairs an incompatible controller from selected source without cached PyPI downgrade', async () => {
+    await createVenv();
+    await writeSuccessCache();
+    const selectedSource = path.join(tempDir, 'selected juno kanban');
+    await fs.ensureDir(selectedSource);
+    await fs.writeFile(path.join(selectedSource, 'setup.py'), '# selected source fixture\n');
+    await fs.writeFile(path.join(installedDir, 'juno-kanban'), '1.42.0');
+    await writeExecutable(
+      path.join(binDir, 'juno-kanban'),
+      `#!/usr/bin/env bash
+if [[ -f "${'${SELECTED_SOURCE_REPAIRED_MARKER:?}'}" ]]; then echo 'task 2.0.0'; exit 0; fi
+echo 'juno-kanban: error: unrecognized arguments: --version' >&2
+exit 2
+`,
+    );
+    const repairedMarker = path.join(tempDir, 'source-repaired');
+    const originalUv = await fs.readFile(path.join(binDir, 'uv'), 'utf8');
+    await writeExecutable(
+      path.join(binDir, 'uv'),
+      originalUv.replace('[[ "${UV_FAIL:-0}" == "1" ]] && exit 1', '[[ "${UV_FAIL:-0}" == "1" ]] && exit 1\n[[ "$*" == *"${JUNO_002_KANBAN_SOURCE:-__unset__}"* ]] && touch "${SELECTED_SOURCE_REPAIRED_MARKER:?}"'),
+    );
+
+    const result = runScript([], {
+      JUNO_002_KANBAN_SOURCE: selectedSource,
+      SELECTED_SOURCE_REPAIRED_MARKER: repairedMarker,
+    });
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const uvLog = await fs.readFile(uvLogPath, 'utf8');
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain('Repairing incompatible juno-kanban runtime from selected source');
+    expect(uvLog).toContain(selectedSource);
+    expect(uvLog).not.toContain('juno-kanban==1.0.0');
+    expect(await fs.pathExists(repairedMarker)).toBe(true);
+    expect(await lineCount(curlLogPath)).toBe(0);
+  });
+
   it('repairs a missing package from a fresh complete cache without PyPI', async () => {
     await createVenv();
     await writeSuccessCache();

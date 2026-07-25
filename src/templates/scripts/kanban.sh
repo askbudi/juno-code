@@ -325,17 +325,41 @@ main() {
     # - 'c' (character device) or other: Redirect from /dev/null to prevent hanging
     #   when called from tools that don't provide stdin (Issue #42, #60)
     #
-    # The first character of `ls -la /dev/fd/0` indicates the file type:
-    # p = pipe, - = regular file, c = character device, l = symlink, etc.
-    local stdin_type
-    stdin_type=$(ls -la /dev/fd/0 2>/dev/null | cut -c1)
+    # Decide from command semantics rather than descriptor type. On macOS both a
+    # populated subprocess pipe and an inherited idle descriptor can appear as a
+    # socket; probing by type either discards real bodies or leaves query commands
+    # hanging. Only commands whose syntax explicitly needs stdin receive it.
+    local pass_stdin=false arg_index arg
+    for ((arg_index = 0; arg_index < ${#NORMALIZED_COMMAND_ARGS[@]}; arg_index++)); do
+        arg="${NORMALIZED_COMMAND_ARGS[$arg_index]}"
+        if [[ ( "$arg" == "--body-file" || "$arg" == "--response-file" ) && "${NORMALIZED_COMMAND_ARGS[$((arg_index + 1))]:-}" == "-" ]] \
+            || [[ "$arg" == "--body-file=-" || "$arg" == "--response-file=-" ]]; then
+            pass_stdin=true
+            break
+        fi
+    done
+    if [[ "${NORMALIZED_COMMAND_ARGS[0]:-}" == "create" ]]; then
+        # Bare create (including status/tag-only options) is the legacy implicit
+        # stdin form. Recognized explicit body/title forms do not read stdin.
+        pass_stdin=true
+        if [[ "${NORMALIZED_COMMAND_ARGS[1]:-}" != -* && -n "${NORMALIZED_COMMAND_ARGS[1]:-}" ]]; then
+            pass_stdin=false
+        fi
+        for arg in "${NORMALIZED_COMMAND_ARGS[@]:1}"; do
+            [[ "$arg" == "--body" || "$arg" == --body=* || "$arg" == "--title" || "$arg" == --title=* || "$arg" == "--body-file" || "$arg" == --body-file=* ]] && pass_stdin=false
+        done
+        for ((arg_index = 0; arg_index < ${#NORMALIZED_COMMAND_ARGS[@]}; arg_index++)); do
+            arg="${NORMALIZED_COMMAND_ARGS[$arg_index]}"
+            if [[ "$arg" == "--body-file" && "${NORMALIZED_COMMAND_ARGS[$((arg_index + 1))]:-}" == "-" ]] || [[ "$arg" == "--body-file=-" ]]; then
+                pass_stdin=true
+            fi
+        done
+    fi
 
-    if [[ "$stdin_type" == "p" || "$stdin_type" == "-" ]]; then
-        # stdin is a pipe or regular file (heredoc) - pass it through
+    if [[ "$pass_stdin" == true ]]; then
         "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"}
     else
-        # stdin is a character device or unknown - redirect from /dev/null to prevent hanging
         "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
     fi

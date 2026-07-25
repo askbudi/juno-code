@@ -44,13 +44,43 @@ describe('kanban wrapper runtime selection', () => {
     );
     await fs.writeFile(
       path.join(venvBin, 'juno-kanban'),
-      `#!/usr/bin/env bash\nif [[ "${'$'}{1:-}" == "--version" ]]; then echo "task 2.0.0"; exit 0; fi\npython3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_ROOT\"]}")'\n`,
+      `#!/usr/bin/env bash
+if [[ "${'$'}{1:-}" == "--version" ]]; then
+  if IFS= read -r unexpected; then echo "version probe consumed stdin: ${'$'}unexpected" >&2; exit 2; fi
+  echo "task 2.0.0"
+  exit 0
+fi
+if [[ "${'$'}{1:-}" == "create" ]]; then
+  body=${'$'}(cat)
+  printf 'created:%s\\n' "${'$'}body"
+  exit 0
+fi
+python3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_ROOT\"]}")'
+`,
     );
     await fs.chmod(path.join(venvBin, 'juno-kanban'), 0o755);
   });
 
   afterEach(async () => {
     await fs.remove(projectRoot);
+  });
+
+  it('closes stdin for the identity probe without consuming a heredoc create body', () => {
+    const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['create'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      input: 'heredoc regression body\n',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: '',
+        VIRTUAL_ENV: '',
+        PYTHONPATH: path.join(projectRoot, 'installed-site'),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('created:heredoc regression body');
+    expect(result.stderr).not.toContain('version probe consumed stdin');
   });
 
   it('uses the compatible controller executable even when a neighboring source tree is present', () => {
