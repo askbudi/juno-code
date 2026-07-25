@@ -687,7 +687,7 @@ describe('ExecutionEngine', () => {
       const rateLimitError = new RateLimitError(
         'Rate limit exceeded',
         5,
-        new Date(Date.now() + 1000),
+        new Date(Date.now() + 30_000),
         'premium',
       );
 
