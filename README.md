@@ -27,7 +27,7 @@ juno-kanban-juno-002 --version
 ./juno-code/scripts/juno-002-source-toolchain.sh status
 ```
 
-The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.0,<3.0.0` policy before execution. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
+The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.0,<3.0.0` policy before execution. `yy-juno-002 init` provisions the disposable controller's own `.venv_juno` from that selected Kanban source; it never adopts an unrelated active/global environment, and generated linked-worktree wrappers continue to execute only the controller runtime. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
 
 Adopt the isolated executables only in the intended shell, then inspect executable, source, and compatibility identities:
 

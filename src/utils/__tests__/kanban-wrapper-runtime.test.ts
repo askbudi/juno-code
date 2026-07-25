@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 const templateWrapper = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
 const templateResolver = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
+const templatePolicy = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
 
 describe('kanban wrapper runtime selection', () => {
   let projectRoot: string;
@@ -28,13 +29,14 @@ describe('kanban wrapper runtime selection', () => {
 
     await fs.copy(templateWrapper, path.join(scriptsDir, 'kanban.sh'));
     await fs.copy(templateResolver, path.join(scriptsDir, 'controller_resolver.py'));
+    await fs.copy(templatePolicy, path.join(scriptsDir, 'juno-toolchain-policy.sh'));
     await fs.chmod(path.join(scriptsDir, 'kanban.sh'), 0o755);
     await fs.writeJson(path.join(projectRoot, '.juno_task', 'tasks', 'config.json'), {
       storage: 'legacy-ndjson',
     });
     await fs.writeFile(path.join(projectRoot, '.juno_task', 'tasks', 'backlog.ndjson'), '');
 
-    await fs.writeFile(path.join(installedSite, 'kanban', '__init__.py'), "RUNTIME = 'installed-legacy'\n");
+    await fs.writeFile(path.join(installedSite, 'kanban', '__init__.py'), "RUNTIME = 'installed-controller-v2'\n");
     await fs.writeFile(path.join(localSource, '__init__.py'), "RUNTIME = 'local-v2'\n");
     await fs.writeFile(
       path.join(venvBin, 'activate'),
@@ -42,7 +44,7 @@ describe('kanban wrapper runtime selection', () => {
     );
     await fs.writeFile(
       path.join(venvBin, 'juno-kanban'),
-      `#!/usr/bin/env python3\nimport os\nimport kanban\nprint(f"{kanban.RUNTIME}|{os.environ['JUNO_TASK_ROOT']}")\n`,
+      `#!/usr/bin/env bash\nif [[ "${'$'}{1:-}" == "--version" ]]; then echo "task 2.0.0"; exit 0; fi\npython3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_ROOT\"]}")'\n`,
     );
     await fs.chmod(path.join(venvBin, 'juno-kanban'), 0o755);
   });
@@ -51,7 +53,7 @@ describe('kanban wrapper runtime selection', () => {
     await fs.remove(projectRoot);
   });
 
-  it('uses the installed legacy executable even when a local v2 source tree is present', () => {
+  it('uses the compatible controller executable even when a neighboring source tree is present', () => {
     const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['list'], {
       cwd: projectRoot,
       encoding: 'utf8',
@@ -64,6 +66,6 @@ describe('kanban wrapper runtime selection', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe(`installed-legacy|${fs.realpathSync(projectRoot)}`);
+    expect(result.stdout.trim()).toBe(`installed-controller-v2|${fs.realpathSync(projectRoot)}`);
   });
 });

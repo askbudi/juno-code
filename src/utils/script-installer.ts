@@ -24,6 +24,7 @@ export class ScriptInstaller {
   private static readonly REQUIRED_SCRIPTS = [
     'run_until_completion.sh',
     'kanban.sh',
+    'juno-toolchain-policy.sh', // Kanban >=2,<3 runtime identity SOT used by kanban.sh
     'controller_resolver.py', // Shared canonical controller/workspace-role resolver
     'orchestration_guard.py', // Cron/workflow singleton and controller-role ownership guard
     'install_requirements.sh', // Required by kanban.sh for Python venv creation

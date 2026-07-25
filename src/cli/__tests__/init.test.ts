@@ -207,7 +207,7 @@ describe('Init Command', () => {
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 
-      it('should run install requirements inside the target directory with JUNO_TASK_ROOT pinned', async () => {
+      it('should run install requirements inside the target directory with JUNO_TASK_ROOT pinned and no inherited venv', async () => {
         vi.mocked(fs.readdir).mockResolvedValue(['install_requirements.sh'] as any);
         vi.mocked(fs.pathExists).mockImplementation(async (target: any) =>
           String(target).endsWith('/my-project/.juno_task/scripts/install_requirements.sh'),
@@ -224,7 +224,14 @@ describe('Init Command', () => {
           variables: {},
         };
 
-        await runInit([], options, mockCommand);
+        const originalVenv = process.env.VIRTUAL_ENV;
+        process.env.VIRTUAL_ENV = '/unrelated/project/.venv_juno';
+        try {
+          await runInit([], options, mockCommand);
+        } finally {
+          if (originalVenv === undefined) delete process.env.VIRTUAL_ENV;
+          else process.env.VIRTUAL_ENV = originalVenv;
+        }
 
         expect(execSync).toHaveBeenCalledWith(
           '/current/dir/my-project/.juno_task/scripts/install_requirements.sh',
@@ -233,6 +240,10 @@ describe('Init Command', () => {
             env: expect.objectContaining({ JUNO_TASK_ROOT: '/current/dir/my-project' }),
           }),
         );
+        const installOptions = vi.mocked(execSync).mock.calls.at(-1)?.[1] as {
+          env?: NodeJS.ProcessEnv;
+        };
+        expect(installOptions.env?.VIRTUAL_ENV).toBeUndefined();
       });
 
       it('should use default task when not provided', async () => {

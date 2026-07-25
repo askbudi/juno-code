@@ -303,6 +303,16 @@ main() {
         log_error "juno-kanban executable missing from controller environment: $kanban_executable"
         exit 1
     fi
+    local policy_file="$SCRIPT_DIR/juno-toolchain-policy.sh"
+    if [[ ! -f "$policy_file" ]]; then
+        log_error "Juno 2 Kanban compatibility policy missing: $policy_file"
+        exit 1
+    fi
+    # shellcheck source=juno-toolchain-policy.sh
+    source "$policy_file"
+    if ! juno_kanban_check_executable "$kanban_executable" controller-runtime; then
+        exit 1
+    fi
     log_info "Executing juno-kanban with normalized arguments"
 
     # Execute with proper array expansion to preserve quoting

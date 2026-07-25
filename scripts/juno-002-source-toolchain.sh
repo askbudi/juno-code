@@ -116,14 +116,20 @@ run_selected() {
     load_selection
     validate_code "$SELECTED_CODE"
     juno_kanban_check_executable "$SELECTED_KANBAN" runtime
-    export VIRTUAL_ENV="$(cd "$(dirname "$SELECTED_KANBAN")/.." && pwd -P)"
-    export PATH="$VIRTUAL_ENV/bin:$PATH"
+    local selected_venv
+    selected_venv="$(cd "$(dirname "$SELECTED_KANBAN")/.." && pwd -P)"
+    export PATH="$selected_venv/bin:$PATH"
     export JUNO_002_CODE_SOURCE="$SELECTED_CODE_SOURCE"
     export JUNO_002_KANBAN_SOURCE="$SELECTED_KANBAN_SOURCE"
     if [[ "$kind" == code ]]; then
+        # The selected generation is an executable toolchain, not the initialized
+        # project's runtime.  In particular, init must see no active .venv_juno so
+        # it provisions <project>/.venv_juno for the canonical controller wrapper.
+        unset VIRTUAL_ENV
         if [[ $# -eq 1 && ( "$1" == "--version" || "$1" == "-V" ) ]]; then cd "$STATE_DIR"; fi
         exec "$SELECTED_CODE" "$@"
     fi
+    export VIRTUAL_ENV="$selected_venv"
     exec "$SELECTED_KANBAN" "$@"
 }
 

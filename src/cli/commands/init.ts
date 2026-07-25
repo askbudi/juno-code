@@ -745,12 +745,17 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         // Also pin JUNO_TASK_ROOT for juno-kanban so fresh projects cannot inherit a
         // stale task root from the parent shell and write tasks/config elsewhere.
         const projectRoot = this.context.targetDirectory;
+        const installEnvironment: NodeJS.ProcessEnv = {
+          ...process.env,
+          JUNO_TASK_ROOT: projectRoot,
+        };
+        // init always provisions/selects the target project's runtime. An invoking
+        // alias or unrelated activated project must not make install_requirements
+        // treat its .venv_juno as the new controller's environment.
+        delete installEnvironment.VIRTUAL_ENV;
         const output = execSync(installScript, {
           cwd: projectRoot,
-          env: {
-            ...process.env,
-            JUNO_TASK_ROOT: projectRoot,
-          },
+          env: installEnvironment,
           encoding: 'utf8',
           stdio: 'pipe', // Capture output instead of inheriting
         });

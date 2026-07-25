@@ -61,6 +61,22 @@ REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
 # with "No apps associated" and breaks requirements bootstrapping.
 PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
 
+# An isolated Juno 2 alias exports the one selected source checkout. Keep the
+# package-name list above as the metadata/cache SOT while installing that reviewed
+# source into the initialized project's own runtime.
+package_install_target() {
+    local package=$1
+    if [ "$package" = "juno-kanban" ] && [ -n "${JUNO_002_KANBAN_SOURCE:-}" ]; then
+        if [ ! -f "$JUNO_002_KANBAN_SOURCE/setup.py" ]; then
+            log_error "Selected juno-kanban source is invalid: $JUNO_002_KANBAN_SOURCE"
+            return 1
+        fi
+        printf '%s\n' "$JUNO_002_KANBAN_SOURCE"
+        return 0
+    fi
+    printf '%s\n' "$package"
+}
+
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5).
 # Keep the cache project-local so one repository cannot suppress update checks for another
@@ -675,8 +691,10 @@ install_with_pipx() {
     local failed_packages=()
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        local install_target
+        install_target=$(package_install_target "$package") || return 1
         log_info "Installing: $package"
-        if pipx install "$package" --force &>/dev/null || pipx install "$package" &>/dev/null; then
+        if pipx install "$install_target" --force &>/dev/null || pipx install "$install_target" &>/dev/null; then
             log_success "Successfully installed: $package"
         else
             log_error "Failed to install: $package"
@@ -766,8 +784,10 @@ install_with_uv() {
     local failed_packages=()
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        local install_target
+        install_target=$(package_install_target "$package") || return 1
         log_info "Installing: $package"
-        if uv pip install "$package" $uv_flags; then
+        if uv pip install "$install_target" $uv_flags; then
             log_success "Successfully installed: $package"
         else
             log_error "Failed to install: $package"
@@ -841,8 +861,10 @@ install_with_pip() {
     local failed_packages=()
 
     for package in "${REQUIRED_PACKAGES[@]}"; do
+        local install_target
+        install_target=$(package_install_target "$package") || return 1
         log_info "Installing: $package"
-        if $python_cmd -m pip install "$package" --quiet; then
+        if $python_cmd -m pip install "$install_target" --quiet; then
             log_success "Successfully installed: $package"
         else
             log_error "Failed to install: $package"
