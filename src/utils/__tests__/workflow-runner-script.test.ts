@@ -159,6 +159,8 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stdout).toContain('step:<step_id>');
     expect(result.stdout).toContain('--print-step-stdout');
     expect(result.stdout).toContain('--no-print-step-stdout');
+    expect(result.stdout).toContain('--tmux');
+    expect(result.stdout).toContain('--tmux-session');
     expect(result.stdout).toContain('--init-example NAME PATH');
     expect(result.stdout).toContain('production-triage-handoff');
     expect(result.stdout).toContain('parallel-kanban-review');
@@ -582,6 +584,70 @@ steps:
     expect(semanticSummary).toContain('Semantic outcome: completed');
     expect(semanticSummary).toMatch(/AGENT-SUMMARY\n$/);
     expect(await fs.readFile(path.join(outDir, 'summary.stdout.txt'), 'utf8')).toBe('AGENT-SUMMARY\n');
+  });
+
+  it('creates a dedicated detached tmux observer with live hidden step output', async () => {
+    const binDir = path.join(testDir, 'tmux-bin');
+    const tmuxLog = path.join(testDir, 'tmux-invocations.log');
+    await fs.ensureDir(binDir);
+    await fs.writeFile(
+      path.join(binDir, 'tmux'),
+      `#!/usr/bin/env sh
+printf '%s\\n' "$*" >> "$FAKE_TMUX_LOG"
+if [ "\${1:-}" = "has-session" ]; then exit 1; fi
+exit 0
+`,
+    );
+    await fs.chmod(path.join(binDir, 'tmux'), 0o755);
+    const workflowPath = path.join(testDir, 'tmux-observer.yml');
+    const outDir = path.join(testDir, 'tmux-observer-out');
+    await fs.writeFile(
+      workflowPath,
+      `workflow_id: tmux-observer
+steps:
+  - id: hidden
+    command: python3 -c "import time; print(''.join(map(chr, [76,73,86,69,95,72,73,68,68,69,78,95,79,85,84,80,85,84])), flush=True); time.sleep(0.05)"
+`,
+    );
+
+    const result = runWorkflow(
+      [
+        '--workflow',
+        workflowPath,
+        '--out-dir',
+        outDir,
+        '--tmux',
+        '--tmux-session',
+        'review-session',
+        '--no-print-step-stdout',
+        '--final-output',
+        'none',
+      ],
+      undefined,
+      {
+        PATH: `${binDir}:${process.env.PATH}`,
+        FAKE_TMUX_LOG: tmuxLog,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Workflow observer tmux session: review-session");
+    expect(result.stdout).toContain("tmux attach -t review-session");
+    expect(result.stdout).not.toContain('LIVE_HIDDEN_OUTPUT');
+    expect(await fs.readFile(path.join(outDir, 'workflow.live.log'), 'utf8')).toContain('LIVE_HIDDEN_OUTPUT');
+    expect(await fs.readFile(tmuxLog, 'utf8')).toContain('new-session -d -s review-session');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.tmux_observer).toMatchObject({ enabled: true, session: 'review-session' });
+  });
+
+  it('rejects --tmux-session without --tmux', async () => {
+    const workflowPath = path.join(testDir, 'tmux-invalid.yml');
+    await fs.writeFile(workflowPath, 'name: invalid\nsteps:\n  - id: one\n    command: echo one\n');
+
+    const result = runWorkflow(['--workflow', workflowPath, '--tmux-session', 'orphan']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--tmux-session requires --tmux');
   });
 
   it('--no-print-step-stdout suppresses console stdout while preserving artifact stdout', async () => {

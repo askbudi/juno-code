@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1161,17 +1162,111 @@ def make_summary(workflow: dict[str, Any], context: dict[str, Any], failed_steps
     return "\n".join(lines)
 
 
-def execute_rendered_command(command: Any, project_root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    if isinstance(command, list):
+def append_live_log(path: Path | None, text: str) -> None:
+    if path is None:
+        return
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+
+
+def execute_rendered_command(
+    command: Any,
+    project_root: Path,
+    env: dict[str, str],
+    live_log_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    argv: Any = [str(part) for part in command] if isinstance(command, list) else str(command)
+    shell = not isinstance(command, list)
+    if live_log_path is None:
         return subprocess.run(
-            [str(part) for part in command],
-            shell=False,
+            argv,
+            shell=shell,
             cwd=str(project_root),
             text=True,
             capture_output=True,
             env=env,
         )
-    return subprocess.run(str(command), shell=True, cwd=str(project_root), text=True, capture_output=True, env=env)
+
+    proc = subprocess.Popen(
+        argv,
+        shell=shell,
+        cwd=str(project_root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        bufsize=1,
+    )
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    log_lock = threading.Lock()
+
+    def relay(stream: Any, label: str, chunks: list[str]) -> None:
+        if stream is None:
+            return
+        for chunk in iter(stream.readline, ""):
+            chunks.append(chunk)
+            with log_lock:
+                append_live_log(live_log_path, f"[{label}] {chunk}")
+        stream.close()
+
+    threads = [
+        threading.Thread(target=relay, args=(proc.stdout, "stdout", stdout_chunks), daemon=True),
+        threading.Thread(target=relay, args=(proc.stderr, "stderr", stderr_chunks), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    return_code = proc.wait()
+    for thread in threads:
+        thread.join()
+    return subprocess.CompletedProcess(argv, return_code, "".join(stdout_chunks), "".join(stderr_chunks))
+
+
+def start_tmux_observer(out_dir: Path, workflow_id: str, run_id: str, requested_session: str | None) -> dict[str, Any]:
+    tmux = shutil.which("tmux")
+    if not tmux:
+        raise WorkflowError("--tmux requires tmux to be installed and available on PATH")
+    session = requested_session or safe_id(f"wf-{workflow_id}-{run_id[-14:-1]}", "workflow-observer")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        raise WorkflowError("--tmux-session must contain only letters, numbers, '.', '_', or '-'")
+    existing = subprocess.run([tmux, "has-session", "-t", session], capture_output=True, text=True)
+    if existing.returncode == 0:
+        raise WorkflowError(f"tmux session already exists: {session}")
+
+    live_log = out_dir / "workflow.live.log"
+    observer_script = out_dir / "tmux_observer.sh"
+    append_live_log(
+        live_log,
+        f"Workflow observer started\nworkflow={workflow_id}\nrun_id={run_id}\nout_dir={out_dir}\n\n",
+    )
+    observer_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        f"printf '%s\\n' 'Juno workflow observer: {workflow_id}' 'Artifacts: {out_dir}' "
+        "'This session remains available after workflow completion. Press Ctrl-C to stop following.'\n"
+        f"exec tail -n +1 -F {shlex.quote(str(live_log))}\n",
+        encoding="utf-8",
+    )
+    observer_script.chmod(0o755)
+    launched = subprocess.run(
+        [tmux, "new-session", "-d", "-s", session, str(observer_script)],
+        capture_output=True,
+        text=True,
+    )
+    if launched.returncode != 0:
+        detail = (launched.stderr or launched.stdout or "unknown tmux error").strip()
+        raise WorkflowError(f"could not create tmux observer session {session}: {detail}")
+    print(f"Workflow observer tmux session: {session}")
+    print(f"Attach: tmux attach -t {shlex.quote(session)}")
+    print(f"Live log: {live_log}")
+    return {
+        "enabled": True,
+        "session": session,
+        "live_log": str(live_log),
+        "observer_script": str(observer_script),
+        "attach_command": f"tmux attach -t {shlex.quote(session)}",
+    }
 
 
 def build_command_env(
@@ -1280,7 +1375,12 @@ def resolve_workflow_vars(workflow_vars: dict[str, Any], context: dict[str, Any]
 
 
 def maybe_run_summary_command(
-    workflow: dict[str, Any], context: dict[str, Any], project_root: Path, out_dir: Path, dry_run: bool
+    workflow: dict[str, Any],
+    context: dict[str, Any],
+    project_root: Path,
+    out_dir: Path,
+    dry_run: bool,
+    live_log_path: Path | None = None,
 ) -> tuple[str, str, int, Any | None, dict[str, Any] | None]:
     explicit = workflow.get("summary")
     if not isinstance(explicit, dict) or "command" not in explicit:
@@ -1300,7 +1400,8 @@ def maybe_run_summary_command(
         stderr = ""
         exit_code = 0
     else:
-        proc = execute_rendered_command(command, project_root, env)
+        append_live_log(live_log_path, "\n=== SUMMARY COMMAND ===\n")
+        proc = execute_rendered_command(command, project_root, env, live_log_path)
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         exit_code = int(proc.returncode)
@@ -1577,6 +1678,15 @@ def run_workflow(args: argparse.Namespace) -> int:
         run_contract = current_contract
         write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
 
+    if args.tmux_session and not args.tmux:
+        raise WorkflowError("--tmux-session requires --tmux")
+    tmux_observer = (
+        start_tmux_observer(out_dir, workflow_id, run_id, args.tmux_session)
+        if args.tmux and not args.dry_run
+        else {"enabled": False}
+    )
+    live_log_path = Path(tmux_observer["live_log"]) if tmux_observer.get("enabled") else None
+
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
         "workflow_id": workflow_id,
@@ -1589,6 +1699,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         "steps": [],
         "failed_steps": [],
         "status": "success",
+        "tmux_observer": tmux_observer,
     }
 
     final_exit = 0
@@ -1693,6 +1804,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         write_text(legacy_step_dir / "command.sh", preview + "\n")
         print("\n" + step_separator("START", index, step_id))
         print(preview)
+        append_live_log(live_log_path, f"\n=== START step {index} [{step_id}] ===\n{preview}\n")
         started = time.monotonic()
         stdout = ""
         stderr = ""
@@ -1727,7 +1839,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             exit_code = 1
             status = "failed"
         else:
-            proc = execute_rendered_command(command, project_root, env)
+            proc = execute_rendered_command(command, project_root, env, live_log_path)
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
@@ -1828,6 +1940,10 @@ def run_workflow(args: argparse.Namespace) -> int:
         context["steps"][step_id] = result
         manifest["steps"].append({k: v for k, v in result.items() if k not in {"stdout", "stderr"}})
         print(step_separator("END", index, step_id, f"status={status} duration={duration:.3f}s exit={exit_code}"))
+        append_live_log(
+            live_log_path,
+            f"=== END step {index} [{step_id}] status={status} duration={duration:.3f}s exit={exit_code} ===\n",
+        )
         if status == "failed":
             manifest["failed_steps"].append(step_id)
             manifest["status"] = "failed"
@@ -1856,7 +1972,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     context["workflow_semantic"] = {"terminal_gate": terminal_gate or "none", "status": semantic_status}
 
     summary_stdout, summary_stderr, summary_exit, summary_command, summary_session = maybe_run_summary_command(
-        workflow, context, project_root, out_dir, bool(args.dry_run)
+        workflow, context, project_root, out_dir, bool(args.dry_run), live_log_path
     )
     if summary_session:
         session_candidates.append(summary_session)
@@ -1927,6 +2043,14 @@ def run_workflow(args: argparse.Namespace) -> int:
     if output:
         print("\n" + output, end="" if output.endswith("\n") else "\n")
     print_session_summary([item for item in session_candidates if item.get("session_id")], persisted_continue)
+    if tmux_observer.get("enabled"):
+        append_live_log(
+            live_log_path,
+            f"\n=== WORKFLOW COMPLETE status={manifest['status']} exit={final_exit} ===\n"
+            f"Manifest: {out_dir / 'manifest.json'}\n"
+            "The tmux observer remains available for review.\n",
+        )
+        print(f"Observer remains available: {tmux_observer['attach_command']}")
     return final_exit
 
 
@@ -2394,6 +2518,8 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--amends-run", help="Start a fresh harness-only validation run linked to a prior run directory or run_contract.json")
     parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step response/stdout as it completes (default); successful stderr stays in artifacts")
     parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step response/stdout to the console; artifacts are still written")
+    parser.add_argument("--tmux", action="store_true", help="Create a dedicated detached tmux observer that follows live step stdout/stderr and remains available for review")
+    parser.add_argument("--tmux-session", help="Observer session name (requires --tmux; default is derived from workflow/run id)")
     parser.add_argument(
         "--print-output",
         "--final-output",
