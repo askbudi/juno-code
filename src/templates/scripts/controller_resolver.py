@@ -77,11 +77,12 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
     else:
         actual_branch = git(controller, "symbolic-ref", "--quiet", "--short", "HEAD")
         result["actual_branch"] = actual_branch
-        if source == "registration":
+        if source in {"environment", "registration"} and repo_root_text:
             current_identity = repository_identity(current_root)
             controller_identity = repository_identity(controller)
             if not current_identity or current_identity != controller_identity:
-                errors.append("registered controller is not a linked worktree of the invoking repository")
+                label = "explicit" if source == "environment" else "registered"
+                errors.append(f"{label} controller is not a linked worktree of the invoking repository")
         if expected_branch and actual_branch != expected_branch:
             errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {actual_branch or 'detached HEAD'!r}")
     if role not in VALID_ROLES:

@@ -48,12 +48,24 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
-  it('gives an explicit root priority and never falls back from an invalid explicit root', () => {
+  it('gives an explicit linked root priority and never falls back from invalid or unrelated roots', async () => {
     const explicit = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, { JUNO_TASK_ROOT: controller });
     expect(JSON.parse(explicit.stdout).source).toBe('environment');
     const invalid = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, { JUNO_TASK_ROOT: path.join(sandbox, 'missing') });
     expect(invalid.status).toBe(2);
     expect(invalid.stderr).toContain('does not exist');
+
+    const unrelated = path.join(sandbox, 'unrelated controller');
+    await fs.ensureDir(path.join(unrelated, '.juno_task'));
+    git(unrelated, 'init', '-b', 'controller-branch');
+    const wrongRepository = run(
+      'python3',
+      [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task],
+      task,
+      { JUNO_TASK_ROOT: unrelated, JUNO_CONTROLLER_BRANCH: 'controller-branch' },
+    );
+    expect(wrongRepository.status).toBe(2);
+    expect(wrongRepository.stderr).toContain('explicit controller is not a linked worktree');
   });
 
   it('rejects stale and wrong-branch registrations without changing either HEAD', () => {

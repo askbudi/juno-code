@@ -127,6 +127,7 @@ exit 9
       fakeNpm,
       `#!/usr/bin/env bash
 set -eu
+[[ "${'${FAIL_NPM:-0}'}" == 1 ]] && exit 19
 [[ "$1" == run ]] && exit 0
 prefix=""
 while [[ $# -gt 0 ]]; do
@@ -150,6 +151,13 @@ chmod +x "$prefix/node_modules/.bin/yy"
     expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
     const second = run(['install'], env);
     expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+    const interrupted = run(['install'], { ...env, FAKE_KANBAN_VERSION: '3.0.0', FAIL_NPM: '1' });
+    expect(interrupted.status).toBe(1);
+    expect(interrupted.stderr).toContain('previous executable selection was preserved');
+    const preserved = run(['status'], env);
+    expect(preserved.status, preserved.stderr).toBe(0);
+    expect(await fs.readdir(path.join(state, 'generations'))).toHaveLength(2);
 
     const yy = spawnSync(path.join(state, 'bin', 'yy-juno-002'), ['--version'], {
       env: { ...process.env, JUNO_002_STATE_DIR: state }, encoding: 'utf8',

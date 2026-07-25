@@ -19,8 +19,7 @@ STATE_DIR="${JUNO_002_STATE_DIR:-$REPOSITORY_ROOT/.juno_toolchain/juno-002}"
 BIN_DIR="$STATE_DIR/bin"
 SELECTED_FILE="$STATE_DIR/selected"
 PREVIOUS_FILE="$STATE_DIR/previous"
-NPM_PREFIX="$STATE_DIR/npm"
-VENV_DIR="$STATE_DIR/.venv_juno"
+GENERATIONS_DIR="$STATE_DIR/generations"
 NPM_CMD="${JUNO_002_NPM:-npm}"
 PYTHON_CMD="${JUNO_002_PYTHON:-python3}"
 CODE_SOURCE="${JUNO_002_CODE_SOURCE:-$JUNO_CODE_ROOT}"
@@ -64,26 +63,50 @@ select_paths() {
     echo "selected: juno-code=$code_executable juno-kanban=$kanban_executable"
 }
 
+cleanup_unselected_generations() {
+    local selected_code="" previous_code="" candidate
+    [[ -f "$SELECTED_FILE" ]] && selected_code=$(sed -n '1p' "$SELECTED_FILE")
+    [[ -f "$PREVIOUS_FILE" ]] && previous_code=$(sed -n '1p' "$PREVIOUS_FILE")
+    for candidate in "$GENERATIONS_DIR"/generation.*; do
+        [[ -d "$candidate" ]] || continue
+        if [[ "$selected_code" == "$candidate/"* || "$previous_code" == "$candidate/"* ]]; then
+            continue
+        fi
+        rm -rf -- "$candidate"
+    done
+}
+
+install_generation() {
+    local generation=$1 npm_prefix="$1/npm" venv_dir="$1/.venv_juno"
+    mkdir -p "$npm_prefix" || return
+    "$PYTHON_CMD" -m venv "$venv_dir" || return
+    "$venv_dir/bin/python" -m pip install --disable-pip-version-check --upgrade "$KANBAN_SOURCE" || return
+    "$NPM_CMD" run build --prefix "$CODE_SOURCE" || return
+    "$NPM_CMD" install --prefix "$npm_prefix" --no-audit --no-fund --ignore-scripts "$CODE_SOURCE" || return
+    validate_code "$npm_prefix/node_modules/.bin/yy" || return
+    juno_kanban_check_executable "$venv_dir/bin/juno-kanban" installed-source || return
+}
+
 install_sources() {
     CODE_SOURCE=$(canonical_dir "$CODE_SOURCE")
     KANBAN_SOURCE=$(canonical_dir "$KANBAN_SOURCE")
     [[ -f "$CODE_SOURCE/package.json" ]] || fail "juno-code source is invalid: $CODE_SOURCE"
     [[ -f "$KANBAN_SOURCE/setup.py" ]] || fail "juno-kanban source is invalid: $KANBAN_SOURCE"
-    mkdir -p "$STATE_DIR" "$BIN_DIR" "$NPM_PREFIX"
+    mkdir -p "$STATE_DIR" "$BIN_DIR" "$GENERATIONS_DIR"
 
-    if [[ ! -x "$VENV_DIR/bin/python" ]]; then "$PYTHON_CMD" -m venv "$VENV_DIR"; fi
-    "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade "$KANBAN_SOURCE"
-    "$NPM_CMD" run build --prefix "$CODE_SOURCE"
-    "$NPM_CMD" install --prefix "$NPM_PREFIX" --no-audit --no-fund --ignore-scripts "$CODE_SOURCE"
-
-    local code_executable="$NPM_PREFIX/node_modules/.bin/yy"
-    local kanban_executable="$VENV_DIR/bin/juno-kanban"
-    validate_code "$code_executable"
-    juno_kanban_check_executable "$kanban_executable" installed-source
+    local generation code_executable kanban_executable
+    generation=$(mktemp -d "$GENERATIONS_DIR/generation.XXXXXX")
+    if ! install_generation "$generation"; then
+        rm -rf -- "$generation"
+        fail "source installation failed; previous executable selection was preserved"
+    fi
+    code_executable="$generation/npm/node_modules/.bin/yy"
+    kanban_executable="$generation/.venv_juno/bin/juno-kanban"
 
     ln -sfn "$SCRIPT_DIR/juno-002-source-toolchain.sh" "$BIN_DIR/yy-juno-002"
     ln -sfn "$SCRIPT_DIR/juno-002-source-toolchain.sh" "$BIN_DIR/juno-kanban-juno-002"
     select_paths "$code_executable" "$kanban_executable" "$CODE_SOURCE" "$KANBAN_SOURCE"
+    cleanup_unselected_generations
     echo "aliases: $BIN_DIR/yy-juno-002 $BIN_DIR/juno-kanban-juno-002"
 }
 
