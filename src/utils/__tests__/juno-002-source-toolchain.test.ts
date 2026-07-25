@@ -130,6 +130,9 @@ set -eu
 [[ "${'${FAIL_NPM:-0}'}" == 1 ]] && exit 19
 if [[ "$1" == ci ]]; then
   touch "${codeSource}/.npm-ci-ran"
+  mkdir -p "${codeSource}/node_modules/.bin"
+  touch "${codeSource}/node_modules/.bin/tsup"
+  chmod +x "${codeSource}/node_modules/.bin/tsup"
   exit 0
 fi
 [[ "$1" == run ]] && exit 0

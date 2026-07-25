@@ -82,8 +82,11 @@ install_generation() {
     "$PYTHON_CMD" -m venv "$venv_dir" || return
     "$venv_dir/bin/python" -m pip install --disable-pip-version-check --upgrade "$KANBAN_SOURCE" || return
     # Fresh worktrees do not have node_modules. Provision the locked source
-    # dependencies before building so install is genuinely source-complete.
-    "$NPM_CMD" ci --prefix "$CODE_SOURCE" --no-audit --no-fund || return
+    # dependencies before building, but never replace an active dependency tree
+    # (for example while its test runner is using Vitest workers).
+    if [[ ! -x "$CODE_SOURCE/node_modules/.bin/tsup" ]]; then
+        "$NPM_CMD" ci --prefix "$CODE_SOURCE" --no-audit --no-fund || return
+    fi
     "$NPM_CMD" run build --prefix "$CODE_SOURCE" || return
     "$NPM_CMD" install --prefix "$npm_prefix" --no-audit --no-fund --ignore-scripts "$CODE_SOURCE" || return
     validate_code "$npm_prefix/node_modules/.bin/yy" || return
