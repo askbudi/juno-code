@@ -128,6 +128,10 @@ exit 9
       `#!/usr/bin/env bash
 set -eu
 [[ "${'${FAIL_NPM:-0}'}" == 1 ]] && exit 19
+if [[ "$1" == ci ]]; then
+  touch "${codeSource}/.npm-ci-ran"
+  exit 0
+fi
 [[ "$1" == run ]] && exit 0
 prefix=""
 while [[ $# -gt 0 ]]; do
@@ -149,6 +153,7 @@ chmod +x "$prefix/node_modules/.bin/yy"
 
     const first = run(['install'], env);
     expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    expect(await fs.pathExists(path.join(codeSource, '.npm-ci-ran'))).toBe(true);
     const second = run(['install'], env);
     expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
 

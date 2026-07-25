@@ -81,6 +81,9 @@ install_generation() {
     mkdir -p "$npm_prefix" || return
     "$PYTHON_CMD" -m venv "$venv_dir" || return
     "$venv_dir/bin/python" -m pip install --disable-pip-version-check --upgrade "$KANBAN_SOURCE" || return
+    # Fresh worktrees do not have node_modules. Provision the locked source
+    # dependencies before building so install is genuinely source-complete.
+    "$NPM_CMD" ci --prefix "$CODE_SOURCE" --no-audit --no-fund || return
     "$NPM_CMD" run build --prefix "$CODE_SOURCE" || return
     "$NPM_CMD" install --prefix "$npm_prefix" --no-audit --no-fund --ignore-scripts "$CODE_SOURCE" || return
     validate_code "$npm_prefix/node_modules/.bin/yy" || return
