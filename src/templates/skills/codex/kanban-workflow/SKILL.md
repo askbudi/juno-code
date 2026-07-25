@@ -150,9 +150,18 @@ Add `--raw` for compact output. Add `-p` for pretty print.
 9. **Use `get TASK_ID`** to see full task details including resolved dependency and related task info
 10. **One task in_progress at a time** — finish or re-queue before starting the next
 
+### Canonical Controller Routing
+
+Kanban mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`; register a linked controller with `--register /path/to/controller --branch <branch>`. Explicit/registered path or branch errors fail closed—Kanban never switches Git branches or falls back silently.
+
+Run Kanban and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
+
 ### Environment Variables
 
-- `JUNO_TASK_ROOT` — Pin kanban operations to a specific project root directory
+- `JUNO_TASK_ROOT` — Explicit canonical controller/task-storage root (not the product `TASK_ROOT`)
+- `JUNO_CONTROLLER_BRANCH` — Expected controller branch for environment-based routing
+- `JUNO_WORKSPACE_ROLE` — `controller`, `task`, or `integration-owner`
+- `JUNO_WORKSPACE_ENFORCEMENT` — `off`, `warn`, or `strict`
 - `JUNO_DEBUG=true` — Show diagnostic messages
 - `JUNO_VERBOSE=true` — Show informational messages
 - `JUNO_KANBAN_LIST_BODY_TRUNCATE_CHARS=N` — Override list body truncation (default: 1200)

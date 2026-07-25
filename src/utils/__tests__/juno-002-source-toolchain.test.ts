@@ -43,6 +43,54 @@ describe('Juno 2 Kanban compatibility policy', () => {
   });
 });
 
+describe('Juno 2 shipped guidance', () => {
+  it('keeps aliases, compatibility, controller routing, and rollback boundaries aligned', async () => {
+    const repositoryRoot = path.resolve(process.cwd(), '..');
+    const read = (relative: string) => fs.readFile(path.join(repositoryRoot, relative), 'utf8');
+    const [rootReadme, codeReadme, policyText, newTask, runWorkflow, cleanWorktree] = await Promise.all([
+      read('README.md'),
+      read('juno-code/README.md'),
+      read('juno-code/src/templates/scripts/juno-toolchain-policy.sh'),
+      read('.juno_task/prompts/new_task_workflow.md'),
+      read('.juno_task/prompts/run_workflow.md'),
+      read('.juno_task/prompts/clean_worktree.md'),
+    ]);
+
+    for (const documentation of [rootReadme, codeReadme]) {
+      expect(documentation).toContain('yy-juno-002');
+      expect(documentation).toContain('juno-kanban-juno-002');
+      expect(documentation).toContain('>=2.0.0,<3.0.0');
+      expect(documentation).toMatch(/(branch switch[^\n]*not[^\n]*(roll back|rollback|downgrade)|branches[^\n]*never[^\n]*(downgrade|restore))/i);
+    }
+    expect(policyText).toContain("JUNO_KANBAN_COMPAT_RANGE='>=2.0.0,<3.0.0'");
+    expect(codeReadme).toContain('rollback-selection');
+    expect(codeReadme).toContain('register-controller');
+    expect(codeReadme).toContain('Controller |');
+    expect(codeReadme).toContain('Guarded small fix |');
+
+    for (const prompt of [newTask, runWorkflow, cleanWorktree]) {
+      expect(prompt).toContain('controller');
+      expect(prompt).toContain('TASK_ROOT');
+      expect(prompt).toMatch(/never (switches|silently switch)|never clean or switch/i);
+    }
+
+    const skillPaths = [
+      '.pi/skills/kanban-workflow/SKILL.md',
+      '.claude/skills/kanban-workflow/SKILL.md',
+      'juno-code/src/templates/skills/pi/kanban-workflow/SKILL.md',
+      'juno-code/src/templates/skills/claude/kanban-workflow/SKILL.md',
+      'juno-code/src/templates/skills/codex/kanban-workflow/SKILL.md',
+    ];
+    const skills = await Promise.all(skillPaths.map(read));
+    for (const skill of skills) {
+      expect(skill).toContain('### Canonical Controller Routing');
+      expect(skill).toContain('explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root');
+      expect(skill).toContain('JUNO_WORKSPACE_ENFORCEMENT');
+      expect(skill).toContain('product checkout separately as `TASK_ROOT`');
+    }
+  });
+});
+
 describe('repository-local Juno 2 source installer', () => {
   it('quotes source paths, repeats safely, preserves source identity, and rolls selector back', async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno 002 toolchain '));

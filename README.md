@@ -29,11 +29,43 @@ juno-kanban-juno-002 --version
 
 The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.0,<3.0.0` policy before execution. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
 
+Adopt the isolated executables only in the intended shell, then inspect executable, source, and compatibility identities:
+
+```bash
+export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
+hash -r
+command -v yy-juno-002 juno-kanban-juno-002
+yy-juno-002 --version
+juno-kanban-juno-002 --version
+./juno-code/scripts/juno-002-source-toolchain.sh status
+./juno-code/scripts/juno-002-source-toolchain.sh controller-status
+```
+
+Register a controller checkout from a linked task checkout when an environment override is not preferable:
+
+```bash
+./juno-code/scripts/juno-002-source-toolchain.sh register-controller /path/to/controller controller-branch
+./.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation diagnostic --format shell
+```
+
+Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local controller registration, then the current project root. A configured controller is branch-verified and invalid configuration fails closed. Juno and Kanban never switch, detach, stash, or update branches to manufacture compliance.
+
+| Lane | Permitted | Forbidden |
+|---|---|---|
+| Controller | Kanban/Juno mutation, orchestration, prompts, and durable receipts; pass the product checkout as explicit `TASK_ROOT` | Product implementation or integration; implicit ref changes |
+| Task checkout | Implementation, focused tests, and coherent task commits against the declared base | Private Kanban/session state or integration-target mutation; route writes to the controller |
+| Integration owner | Reviewed integration on the exact clean target while the repository lease is held | Kanban/orchestration/session writes, unrelated edits, or implicit push/deploy |
+| Guarded small fix | From the controller, target one clean product checkout with exact ref, lease, declared paths, validation, and one coherent commit | Broad refactors, dirty targets, concurrent integration, or bypassing review/release authority |
+
+Choose the smallest lane that satisfies the work. Controller, task, and integration-owner cleanliness are independent: a clean task tree does not prove a clean controller or integration owner. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
+
 Rollback operations are intentionally separate:
 
 1. **Source rollback:** use Git in the source worktrees to choose reviewed source commits; this does not select executables or alter Kanban data.
-2. **Executable selector rollback:** run `./juno-code/scripts/juno-002-source-toolchain.sh rollback-selection`; this swaps only the repository-local selected executable paths.
-3. **Kanban data rollback:** restore/migrate a separately backed-up disposable board with Kanban's data procedures. Switching source branches or selectors never claims to downgrade or restore board data.
+2. **Executable selector rollback:** run `./juno-code/scripts/juno-002-source-toolchain.sh rollback-selection`, then `status`; this swaps only the repository-local selected executable paths and does not replace normal global tools.
+3. **Kanban data rollback:** restore/migrate a separately backed-up board with Kanban's reviewed data procedures. Switching source branches—including switching to `master`—or selectors never downgrades, reverses conversion, or restores board data.
+
+These local commands authorize neither push/deploy nor production-board conversion or post-deploy E2E.
 
 Normal stable installation remains explicit and independent:
 
