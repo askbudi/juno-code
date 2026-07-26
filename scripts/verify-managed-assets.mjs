@@ -11,6 +11,7 @@ const assets = [
   ['prompts', 'migrate_juno_code_v1_to_v2.md'],
   ['prompts', 'migrate_juno_kanban_v1_to_v2.md'],
   ['wiki', 'git_worktree_lifecycle.md'],
+  ['scripts', 'worktree_lifecycle_audit.py'],
 ];
 
 for (const [directory, file] of assets) {

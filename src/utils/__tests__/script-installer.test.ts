@@ -63,6 +63,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
       expect(missing).toContain('integration_owner_preflight.py');
+      expect(missing).toContain('worktree_lifecycle_audit.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -148,6 +149,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'integration_owner_preflight.py'),
         '#!/usr/bin/env python3\nprint("preflight")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
+        '#!/usr/bin/env python3\nprint("audit")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -231,6 +236,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
+        { name: 'worktree_lifecycle_audit.py', installed: false },
       ]);
     });
 
@@ -316,6 +322,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'integration_owner_preflight.py'),
         '#!/usr/bin/env python3\nprint("preflight")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
+        '#!/usr/bin/env python3\nprint("audit")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -346,6 +356,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
+        { name: 'worktree_lifecycle_audit.py', installed: true },
       ]);
     });
   });

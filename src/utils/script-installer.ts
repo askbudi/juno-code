@@ -48,6 +48,7 @@ export class ScriptInstaller {
     'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
     'workflow_assert.py', // Emit named, machine-readable workflow assertions
     'integration_owner_preflight.py', // Prove bounded stable Git integration ownership
+    'worktree_lifecycle_audit.py', // Read-only cleanup classification for root/nested worktrees
   ];
 
   /**

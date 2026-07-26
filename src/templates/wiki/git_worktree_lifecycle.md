@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Canonical lifecycle for isolated Git worktrees used by task, review, and workflow agents."
   failure_mode_prevented: "Agents share a dirty checkout, mutate a target beside another writer, strand commits, integrate into the wrong branch, run E2E before integration, or destroy active/uncommitted work during cleanup."
   runtime_contract_enforced: "Every isolated task records its repository, base SHA, integration target and owner, proves bounded quiescence under repository leases, validates the integrated target, and ends with an explicit controller/cleanup disposition."
-  validation_gate: "python3 -m pytest -q .juno_task/scripts/tests/test_worktree_lifecycle_audit.py .juno_task/scripts/tests/test_integration_owner_preflight.py && ./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/git_worktree_lifecycle.md"
+  validation_gate: "python3 -m py_compile .juno_task/scripts/worktree_lifecycle_audit.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json"
   related_sots:
     - "parallel_runner_task_creation_best_practices.md"
     - "parallel_runner_and_spec_review.md"
@@ -108,7 +108,7 @@ git worktree prune --dry-run --verbose
 
 Pass explicit `--target REPOSITORY=REF` mappings when the default upstream is not the approved integration target. The helper is read-only; `cleanup_candidate=true` means an auxiliary worktree is clean, has no initialized nested repository, and its tip is an ancestor of the selected target. It never removes anything.
 
-Before removal, recheck all tracked and untracked status, target reachability, locked/prunable state, initialized submodules, and bounded no-writer stability through the same helper with `--mode cleanup` and no exec command. Cleanup mode permits a task branch only when its clean stable tip is reachable from the declared target. Remove nested worktrees before parent worktrees. Do not use filesystem deletion as a substitute for `git worktree remove`; use `prune` only for already-missing registrations. Force removal is allowed only with explicit cleanup authorization plus recorded proof that no dirty, active, or unintegrated work will be lost.
+Before removal, recheck all tracked and untracked status, target reachability, locked/prunable state, initialized submodules, and active processes using the worktree. `worktree_lifecycle_audit.py` owns read-only cleanup classification; `integration_owner_preflight.py` owns target-ref integration leases and has no cleanup mode. Do not pass undocumented modes or treat either helper as permission to remove files. A task branch is removable only when the audit reports it clean and its reviewed tip is reachable from the declared exact target, followed by an explicit no-active-process check. Remove nested worktrees before parent worktrees. Do not use filesystem deletion as a substitute for `git worktree remove`; use `prune` only for already-missing registrations. Force removal is allowed only with explicit cleanup authorization plus recorded proof that no dirty, active, or unintegrated work will be lost.
 
 Delete a task branch only after its reviewed tip is reachable from the approved target or a recorded squash replacement preserves the patch. Finish with another repository-wide inventory and prune dry-run. Keep blocked trees with an owner and reason rather than guessing from age.
 
@@ -126,14 +126,17 @@ Failure mode prevented: parallel agents leave large worktrees, lose detached com
 
 Runtime contract enforced: isolation begins with an explicit fetched base and ends only after integration, integrated-target validation, E2E handoff, and a repository-wide cleanup disposition.
 
-Exact validation gate:
+Exact installed-project validation gate:
 
 ```bash
-python3 -m pytest -q .juno_task/scripts/tests/test_worktree_lifecycle_audit.py .juno_task/scripts/tests/test_integration_owner_preflight.py
-python3 -m py_compile .juno_task/scripts/integration_owner_preflight.py
+python3 -m py_compile \
+  .juno_task/scripts/integration_owner_preflight.py \
+  .juno_task/scripts/worktree_lifecycle_audit.py
 python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json
-./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/git_worktree_lifecycle.md
-git diff --check -- .juno_task/wiki/git_worktree_lifecycle.md .juno_task/scripts/integration_owner_preflight.py .juno_task/scripts/tests/test_integration_owner_preflight.py .juno_task/scripts/worktree_lifecycle_audit.py .juno_task/scripts/tests/test_worktree_lifecycle_audit.py
+git worktree list --porcelain
+git worktree prune --dry-run --verbose
 ```
+
+The Juno Code source package additionally runs focused helper tests and source/dist/npm-tarball parity. Runtime projects are not required to carry package test sources or a private wiki linter.
 
 Why tests/backing implementation matter: prose cannot reliably enumerate embedded repositories, serialize target mutation, observe ref/status stability, or distinguish clean-integrated, dirty, active, missing, nested, and divergent states. The helpers make those states and leases reviewable while keeping integration commands and destructive cleanup explicit.

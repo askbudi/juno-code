@@ -229,6 +229,11 @@ describe('Binary Execution Tests', () => {
         expect(result.exitCode).toBe(0);
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'managed-assets.json'))).toBe(true);
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'prompts', 'clean_worktree.md'))).toBe(true);
+        expect(
+          await fs.pathExists(
+            path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle_audit.py'),
+          ),
+        ).toBe(true);
         const config = await fs.readJson(path.join(targetDir, '.juno_task', 'config.json'));
         expect(config.promptMacros.global.clean_worktree).toEqual({
           path: '.juno_task/prompts/clean_worktree.md',
