@@ -26,6 +26,15 @@ CODE_SOURCE="${JUNO_002_CODE_SOURCE:-$JUNO_CODE_ROOT}"
 KANBAN_SOURCE="${JUNO_002_KANBAN_SOURCE:-$REPOSITORY_ROOT/juno_kanban}"
 
 fail() { echo "juno-002-toolchain: $*" >&2; exit 1; }
+
+code_source_version() {
+    local package_file="$1/package.json" version
+    [[ -f "$package_file" ]] || fail "juno-code package identity is missing: $package_file"
+    version=$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$package_file" | head -n 1)
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] ||
+        fail "invalid juno-code source version in $package_file: ${version:-missing}"
+    printf '%s\n' "$version"
+}
 canonical_dir() { (cd "$1" && pwd -P); }
 
 write_selection() {
@@ -47,16 +56,19 @@ load_selection() {
 }
 
 validate_code() {
-    local executable=$1 output
+    local executable=$1 source=${2:-$CODE_SOURCE} output required escaped
     [[ -x "$executable" ]] || fail "juno-code executable is missing or not executable: $executable"
+    required=$(code_source_version "$source")
+    escaped=${required//./\\.}
     output=$(cd "$STATE_DIR" && "$executable" --version 2>&1) || fail "juno-code --version failed: $executable: $output"
-    [[ "$output" =~ (^|[^0-9])2\.0\.1([^0-9]|$) ]] || fail "juno-code identity rejected: executable=$executable output=$output required=2.0.1"
-    printf 'juno-code identity: executable=%s version=2.0.1\n' "$executable" >&2
+    [[ "$output" =~ (^|[^0-9])${escaped}([^0-9]|$) ]] ||
+        fail "juno-code identity rejected: executable=$executable output=$output required=$required"
+    printf 'juno-code identity: executable=%s version=%s\n' "$executable" "$required" >&2
 }
 
 select_paths() {
     local code_executable=$1 kanban_executable=$2 code_source=$3 kanban_source=$4
-    validate_code "$code_executable"
+    validate_code "$code_executable" "$code_source"
     juno_kanban_check_executable "$kanban_executable" selected
     if [[ -f "$SELECTED_FILE" ]]; then cp "$SELECTED_FILE" "$PREVIOUS_FILE"; fi
     write_selection "$SELECTED_FILE" "$code_executable" "$kanban_executable" "$code_source" "$kanban_source"
@@ -120,7 +132,7 @@ run_selected() {
     local kind=$1
     shift
     load_selection
-    validate_code "$SELECTED_CODE"
+    validate_code "$SELECTED_CODE" "$SELECTED_CODE_SOURCE"
     juno_kanban_check_executable "$SELECTED_KANBAN" runtime
     local selected_venv
     selected_venv="$(cd "$(dirname "$SELECTED_KANBAN")/.." && pwd -P)"
@@ -153,7 +165,7 @@ register_controller() {
 
 status() {
     load_selection
-    validate_code "$SELECTED_CODE"
+    validate_code "$SELECTED_CODE" "$SELECTED_CODE_SOURCE"
     juno_kanban_check_executable "$SELECTED_KANBAN" selected
     printf 'state=%s\nalias_dir=%s\njuno_code_source=%s\njuno_kanban_source=%s\npolicy=%s\n' \
         "$STATE_DIR" "$BIN_DIR" "$SELECTED_CODE_SOURCE" "$SELECTED_KANBAN_SOURCE" "$JUNO_KANBAN_COMPAT_RANGE"
@@ -162,7 +174,7 @@ status() {
 rollback_selection() {
     [[ -f "$PREVIOUS_FILE" ]] || fail "no previous executable selection to restore"
     load_selection "$PREVIOUS_FILE"
-    validate_code "$SELECTED_CODE"
+    validate_code "$SELECTED_CODE" "$SELECTED_CODE_SOURCE"
     juno_kanban_check_executable "$SELECTED_KANBAN" rollback
     local current
     current=$(mktemp "${SELECTED_FILE}.current.XXXXXX")
