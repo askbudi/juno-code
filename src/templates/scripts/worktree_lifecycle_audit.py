@@ -103,6 +103,22 @@ def initialized_nested_paths(worktree: Path) -> list[str]:
         nested_path = worktree / path_text
         if nested_path.is_symlink() or (nested_path / ".git").exists():
             nested.append(path_text)
+
+    # `git submodule deinit` clears the nested working directory but intentionally
+    # retains worktree-specific Git metadata. Git refuses ordinary worktree
+    # removal while this modules directory exists, so cleanup classification must
+    # not claim the parent is an automatic candidate.
+    git_dir_result = git(worktree, "rev-parse", "--git-dir")
+    if git_dir_result.returncode == 0:
+        git_dir = Path(git_dir_result.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (worktree / git_dir).resolve()
+        modules_dir = git_dir / "modules"
+        if modules_dir.is_dir():
+            for entry in sorted(modules_dir.iterdir()):
+                marker = f"git-metadata:{entry.name}"
+                if entry.is_dir() and marker not in nested:
+                    nested.append(marker)
     return nested
 
 

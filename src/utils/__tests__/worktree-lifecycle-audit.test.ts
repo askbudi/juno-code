@@ -34,6 +34,22 @@ describe('packaged worktree lifecycle audit', () => {
     expect(await fs.readFile(helper, 'utf8')).toContain('Read-only');
   });
 
+  it('blocks automatic cleanup when deinitialized nested Git metadata remains', async () => {
+    const gitDirRaw = execFileSync('git', ['-C', repository, 'rev-parse', '--git-dir'], {
+      encoding: 'utf8',
+    }).trim();
+    const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(repository, gitDirRaw);
+    await fs.ensureDir(path.join(gitDir, 'modules', 'deinitialized-child'));
+
+    const report = JSON.parse(
+      execFileSync('python3', [helper, '--root', repository, '--json'], { encoding: 'utf8' }),
+    );
+    const worktree = report.repositories[0].worktrees[0];
+    expect(worktree.initialized_nested_paths).toContain('git-metadata:deinitialized-child');
+    expect(worktree.disposition).toBe('clean_integrated_nested');
+    expect(worktree.cleanup_candidate).toBe(false);
+  });
+
   it('keeps installed guidance aligned with the two shipped helper capabilities', async () => {
     const guidance = await fs.readFile(wiki, 'utf8');
     expect(guidance).toContain(
