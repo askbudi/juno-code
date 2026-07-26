@@ -16,6 +16,7 @@ import * as fs from 'fs-extra';
 import { execSync } from 'child_process';
 
 import { initCommandHandler, configureInitCommand } from '../commands/init.js';
+import { ManagedProjectAssets } from '../../utils/managed-project-assets.js';
 
 import type { InitCommandOptions } from '../types.js';
 
@@ -43,6 +44,15 @@ vi.mock('fs-extra', () => {
 
 vi.mock('child_process', () => ({
   execSync: vi.fn().mockReturnValue(''),
+}));
+
+vi.mock('../../utils/managed-project-assets.js', () => ({
+  ManagedProjectAssets: {
+    update: vi.fn().mockResolvedValue({
+      installed: [], updated: [], unchanged: [], conflicts: [], backups: [],
+      macrosAdded: [], macroConflicts: [],
+    }),
+  },
 }));
 
 vi.mock('../../templates/default-hooks.js', () => ({
@@ -459,6 +469,7 @@ describe('Init Command', () => {
             .mocked(fs.writeFile)
             .mock.calls.some(([filePath]) => String(filePath).endsWith('.env.juno')),
         ).toBe(true);
+        expect(ManagedProjectAssets.update).toHaveBeenCalledWith('/current/dir', { silent: false });
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
 

@@ -644,7 +644,10 @@ steps:
     const workflowPath = path.join(testDir, 'tmux-invalid.yml');
     await fs.writeFile(workflowPath, 'name: invalid\nsteps:\n  - id: one\n    command: echo one\n');
 
-    const result = runWorkflow(['--workflow', workflowPath, '--tmux-session', 'orphan']);
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--tmux-session', 'orphan',
+      '--run-root', testDir, '--out-dir', path.join(testDir, 'tmux-invalid-out'),
+    ]);
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('--tmux-session requires --tmux');
@@ -1089,7 +1092,10 @@ print('response with session_id=session-must-not-be-captured')
       summary: { command: 'printf summary' },
     });
 
-    const result = runWorkflow(['--workflow', workflowPath, '--print-output', 'none']);
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--print-output', 'none',
+      '--run-root', testDir, '--out-dir', path.join(testDir, 'continue-from-summary-missing-out'),
+    ]);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("continue_from_step 'summary' did not match an executed Juno invocation with a session_id");
@@ -1107,7 +1113,10 @@ print('response with session_id=session-must-not-be-captured')
       ],
     });
 
-    const result = runWorkflow(['--workflow', workflowPath, '--print-output', 'none']);
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--print-output', 'none',
+      '--run-root', testDir, '--out-dir', path.join(testDir, 'continue-from-missing-out'),
+    ]);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("continue_from_step 'plain' selected step 2 [plain], but it did not produce a session_id");

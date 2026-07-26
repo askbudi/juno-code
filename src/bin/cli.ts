@@ -975,31 +975,41 @@ function displayBanner(verbose: number = 0): void {
  */
 function setupScriptManagementCommands(program: Command): void {
   const runUpdate = async (options: { force?: boolean; cwd?: string }) => {
+    // Commander may consume --cwd as a parent/global option even when it appears
+    // after this nested command, so retain argv fallback as the CLI-facing truth.
+    const argvCwd = extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
     const workingDirectory =
       typeof options.cwd === 'string' && options.cwd.trim().length > 0
         ? options.cwd.trim()
-        : process.cwd();
-    const { ScriptInstaller } = await import('../utils/script-installer.js');
+        : typeof argvCwd === 'string' && argvCwd.trim().length > 0
+          ? argvCwd.trim()
+          : process.cwd();
+    const [{ ScriptInstaller }, { ManagedProjectAssets }] = await Promise.all([
+      import('../utils/script-installer.js'),
+      import('../utils/managed-project-assets.js'),
+    ]);
 
     if (options.force) {
-      console.log(chalk.blue('🔄 Force updating project scripts and Python dependencies...'));
-      const updated = await ScriptInstaller.forceUpdateAll(workingDirectory, false);
-      if (!updated) {
-        console.log(chalk.yellow('No scripts updated. Is this an initialized juno-code project with .juno_task/?'));
+      console.log(chalk.blue('🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
+      const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, false);
+      const assets = await ManagedProjectAssets.update(workingDirectory, { force: true, silent: false });
+      if (!scriptsUpdated && assets.installed.length + assets.updated.length === 0) {
+        console.log(chalk.yellow('No project assets updated. Is this an initialized juno-code project with .juno_task/?'));
       }
       return;
     }
 
-    console.log(chalk.blue('🔄 Updating missing/outdated project scripts...'));
-    const updated = await ScriptInstaller.autoUpdate(workingDirectory, false);
-    if (!updated) {
-      console.log(chalk.green('✓ Project scripts are already up to date'));
+    console.log(chalk.blue('🔄 Updating project scripts and checksum-managed prompts/wiki/macros...'));
+    const scriptsUpdated = await ScriptInstaller.autoUpdate(workingDirectory, false);
+    const assets = await ManagedProjectAssets.update(workingDirectory, { silent: false });
+    if (!scriptsUpdated && assets.installed.length + assets.updated.length === 0 && assets.conflicts.length === 0) {
+      console.log(chalk.green('✓ Managed project assets are already up to date'));
     }
   };
 
   const scriptsCommand = program
     .command('scripts')
-    .description('Manage installed .juno_task/scripts files')
+    .description('Manage project scripts plus checksum-managed prompts/wiki/macros')
     .addHelpText(
       'after',
       `
@@ -1013,8 +1023,8 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
 
   scriptsCommand
     .command('update')
-    .description('Install or refresh .juno_task/scripts from the current juno-code package')
-    .option('-f, --force', 'Force reinstall all scripts and run install_requirements.sh --force-update')
+    .description('Refresh scripts plus managed prompts/wiki/macros from the current package')
+    .option('-f, --force', 'Force replacement with backups and update Python dependencies')
     .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
     .action(async (options) => {
       await runUpdate(options);
@@ -1022,11 +1032,28 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
 
   program
     .command('install-scripts')
-    .description('Alias for scripts update; install or refresh .juno_task/scripts')
-    .option('-f, --force', 'Force reinstall all scripts and run install_requirements.sh --force-update')
+    .description('Alias for scripts update; refresh scripts plus managed prompts/wiki/macros')
+    .option('-f, --force', 'Force reinstall scripts/assets, back up custom managed files, and update Python dependencies')
     .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
     .action(async (options) => {
       await runUpdate(options);
+    });
+
+  const promptsCommand = program.command('prompts').description('Manage installed Juno prompt policies');
+  promptsCommand
+    .command('specialize-clean-worktree')
+    .description('Render exact migration-approved repository integration targets into clean_worktree.md')
+    .requiredOption('--policy-file <path>', 'JSON file containing exact controller/task/repository integration policy')
+    .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
+    .action(async (options: { policyFile: string; cwd?: string }) => {
+      const argvCwd = extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
+      const workingDirectory = options.cwd?.trim() || argvCwd?.trim() || process.cwd();
+      const { CleanWorktreeSpecializer } = await import('../utils/clean-worktree-specializer.js');
+      const result = await CleanWorktreeSpecializer.specializeFromFile(workingDirectory, options.policyFile);
+      console.log(chalk.green(`✓ Specialized ${result.promptPath}`));
+      console.log(chalk.gray(`  SHA-256: ${result.promptSha256}`));
+      console.log(chalk.gray(`  Receipt: ${result.receiptPath}`));
+      if (result.backupPath) console.log(chalk.yellow(`  Backup: ${result.backupPath}`));
     });
 }
 

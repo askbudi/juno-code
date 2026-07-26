@@ -557,6 +557,12 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
     console.log(chalk.blue('📦 Installing utility scripts...'));
     await this.copyScriptsFromTemplates(junoTaskDir);
 
+    // Install portable lifecycle prompts/wiki and register their file-backed macros.
+    // This is a required fresh-install contract: initialization must not succeed with missing macros.
+    console.log(chalk.blue('🧭 Installing managed prompts and lifecycle guidance...'));
+    const { ManagedProjectAssets } = await import('../../utils/managed-project-assets.js');
+    await ManagedProjectAssets.update(targetDirectory, { silent: false });
+
     // Execute install_requirements.sh to install Python dependencies
     console.log(chalk.blue('🐍 Installing Python requirements...'));
     await this.executeInstallRequirements(junoTaskDir);

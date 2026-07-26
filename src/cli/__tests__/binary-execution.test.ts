@@ -219,6 +219,26 @@ describe('Binary Execution Tests', () => {
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
     });
 
+    it('should honor nested-command --cwd when installing managed prompts and macros', async () => {
+      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-managed-cwd-'));
+      try {
+        await fs.ensureDir(path.join(targetDir, '.juno_task'));
+        await fs.writeJson(path.join(targetDir, '.juno_task', 'config.json'), {});
+
+        const result = await executeCLI(['scripts', 'update', '--cwd', targetDir]);
+        expect(result.exitCode).toBe(0);
+        expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'managed-assets.json'))).toBe(true);
+        expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'prompts', 'clean_worktree.md'))).toBe(true);
+        const config = await fs.readJson(path.join(targetDir, '.juno_task', 'config.json'));
+        expect(config.promptMacros.global.clean_worktree).toEqual({
+          path: '.juno_task/prompts/clean_worktree.md',
+        });
+        expect(await fs.pathExists(path.join(tempDir, '.juno_task', 'managed-assets.json'))).toBe(false);
+      } finally {
+        await fs.remove(targetDir);
+      }
+    });
+
     it('should retain assignment isolation after real CLI startup refreshes project scripts', async () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       const guardDir = path.join(tempDir, 'guard');
