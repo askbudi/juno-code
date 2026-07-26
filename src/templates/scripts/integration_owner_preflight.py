@@ -89,6 +89,34 @@ def process_ancestry(pid: int) -> set[int]:
     return ancestry
 
 
+def process_cwd(pid: int) -> Path | None:
+    proc_cwd = Path(f"/proc/{pid}/cwd")
+    try:
+        return proc_cwd.resolve(strict=True)
+    except OSError:
+        pass
+    result = subprocess.run(
+        ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+        text=True,
+        capture_output=True,
+    )
+    for line in result.stdout.splitlines():
+        if line.startswith("n/"):
+            return Path(line[1:]).resolve()
+    return None
+
+
+def cwd_git_common_dir(cwd: Path | None) -> str | None:
+    if cwd is None:
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        text=True,
+        capture_output=True,
+    )
+    return str(Path(result.stdout.strip()).resolve()) if result.returncode == 0 and result.stdout.strip() else None
+
+
 def system_process_inventory() -> list[dict[str, Any]]:
     result = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], text=True, capture_output=True)
     if result.returncode != 0:
@@ -102,7 +130,12 @@ def system_process_inventory() -> list[dict[str, Any]]:
             pid, ppid = int(parts[0]), int(parts[1])
         except ValueError:
             continue
-        processes.append({"pid": pid, "ppid": ppid, "command": parts[2]})
+        command = parts[2]
+        process: dict[str, Any] = {"pid": pid, "ppid": ppid, "command": command}
+        if WRITER_RE.search(command):
+            cwd = process_cwd(pid)
+            process["cwd_git_common_dir"] = cwd_git_common_dir(cwd)
+        processes.append(process)
     return processes
 
 
@@ -116,10 +149,14 @@ def classify_processes(
         command = str(process.get("command") or "")
         explicit_writer = process.get("writer")
         matched = [repo["name"] for repo in repositories if str(repo["path"]) in command or str(repo.get("root")) in command]
-        # Process cwd is not portable in `ps` output. Treat every external Juno
-        # runner as write-capable instead of silently missing a writer whose
-        # argv omits the repository path.
-        is_writer = bool(explicit_writer) if explicit_writer is not None else bool(WRITER_RE.search(command))
+        writer_command = bool(explicit_writer) if explicit_writer is not None else bool(WRITER_RE.search(command))
+        process_common_dir = process.get("cwd_git_common_dir")
+        repository_common_dirs = {repo["git_common_dir"] for repo in repositories}
+        scope_known_elsewhere = bool(process_common_dir) and process_common_dir not in repository_common_dirs
+        # Repository leases are authoritative for current Juno wrappers. Keep a
+        # fail-closed process fallback for legacy/uninstrumented writers whose
+        # repository cannot be resolved, but do not block a proven different repo.
+        is_writer = writer_command and not scope_known_elsewhere
         excluded = pid in excluded_pids
         item = {
             "pid": pid,
@@ -187,7 +224,7 @@ def acquire_leases(snapshots: list[dict[str, Any]]) -> list[Any]:
             "integration-owner leases require POSIX fcntl support; this helper currently supports macOS and Linux"
         )
     handles: list[Any] = []
-    paths = sorted({Path(item["git_common_dir"]) / "juno-integration-owner.lock" for item in snapshots})
+    paths = sorted({Path(item["git_common_dir"]) / "juno-repository-writer.lock" for item in snapshots})
     try:
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)

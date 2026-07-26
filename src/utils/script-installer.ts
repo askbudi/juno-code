@@ -9,6 +9,11 @@
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import managedAssetManifest from '../templates/managed-assets.json';
+
+const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
+  .filter((asset) => asset.installClass === 'script')
+  .map((asset) => path.basename(asset.destination));
 
 export class ScriptInstaller {
   /**
@@ -47,8 +52,7 @@ export class ScriptInstaller {
     'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
     'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
     'workflow_assert.py', // Emit named, machine-readable workflow assertions
-    'integration_owner_preflight.py', // Prove bounded stable Git integration ownership
-    'worktree_lifecycle_audit.py', // Read-only cleanup classification for root/nested worktrees
+    ...MANAGED_SCRIPT_NAMES, // Lifecycle scripts are declared once in managed-assets.json
   ];
 
   /**

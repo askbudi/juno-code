@@ -152,6 +152,7 @@ export PATH
     INSTALLED_VERSION_DIR: installedDir,
     LATEST_VERSION_DIR: latestDir,
     VERSION_CHECK_INTERVAL_HOURS: '24',
+    VERSION_CHECK_CACHE_DIR: path.join(tempDir, '.juno_task'),
     VIRTUAL_ENV: '',
     CONDA_DEFAULT_ENV: '',
     ...extra,
@@ -258,6 +259,22 @@ exit 0
 
   afterEach(async () => {
     await fs.remove(tempDir);
+  });
+
+  it('keeps default transient version-check state outside a Git worktree', async () => {
+    expect(spawnSync('git', ['init', '-q', tempDir], { encoding: 'utf8' }).status).toBe(0);
+    await createVenv();
+
+    const result = runScript([], { VERSION_CHECK_CACHE_DIR: undefined });
+
+    expect(result.status).toBe(0);
+    expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_cache'))).toBe(false);
+    const commonDir = spawnSync(
+      'git',
+      ['-C', tempDir, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8' },
+    ).stdout.trim();
+    expect(await fs.pathExists(path.join(commonDir, 'juno', 'version-checks', '.version_check_cache'))).toBe(true);
   });
 
   it('uses one metadata process and no network on a fresh complete cache', async () => {

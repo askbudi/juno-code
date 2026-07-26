@@ -2,48 +2,29 @@ import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
+import managedAssetManifest from '../templates/managed-assets.json';
 import { version as packageVersion } from '../version.js';
 
-export const MANAGED_PROMPT_MACROS = {
-  clean_worktree: { path: '.juno_task/prompts/clean_worktree.md' },
-  new_task_workflow: { path: '.juno_task/prompts/new_task_workflow.md' },
-  run_workflow: { path: '.juno_task/prompts/run_workflow.md' },
-  migrate_juno_code_v1_to_v2: { path: '.juno_task/prompts/migrate_juno_code_v1_to_v2.md' },
-  migrate_juno_kanban_v1_to_v2: { path: '.juno_task/prompts/migrate_juno_kanban_v1_to_v2.md' },
-} as const;
+type ManagedAssetDefinition = {
+  source: string;
+  destination: string;
+  installClass: 'project' | 'script';
+  type: string;
+  macro?: string;
+};
 
-export const MANAGED_PROJECT_ASSETS = [
-  {
-    source: 'prompts/clean_worktree.md',
-    destination: '.juno_task/prompts/clean_worktree.md',
-    type: 'prompt',
-  },
-  {
-    source: 'prompts/new_task_workflow.md',
-    destination: '.juno_task/prompts/new_task_workflow.md',
-    type: 'prompt',
-  },
-  {
-    source: 'prompts/run_workflow.md',
-    destination: '.juno_task/prompts/run_workflow.md',
-    type: 'prompt',
-  },
-  {
-    source: 'prompts/migrate_juno_code_v1_to_v2.md',
-    destination: '.juno_task/prompts/migrate_juno_code_v1_to_v2.md',
-    type: 'prompt',
-  },
-  {
-    source: 'prompts/migrate_juno_kanban_v1_to_v2.md',
-    destination: '.juno_task/prompts/migrate_juno_kanban_v1_to_v2.md',
-    type: 'prompt',
-  },
-  {
-    source: 'wiki/git_worktree_lifecycle.md',
-    destination: '.juno_task/wiki/git_worktree_lifecycle.md',
-    type: 'wiki',
-  },
-] as const;
+const MANAGED_ASSET_DEFINITIONS = managedAssetManifest.assets as ManagedAssetDefinition[];
+
+export const MANAGED_PROJECT_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
+  (asset) => asset.installClass === 'project',
+);
+
+export const MANAGED_PROMPT_MACROS = Object.fromEntries(
+  MANAGED_ASSET_DEFINITIONS.filter((asset) => asset.macro).map((asset) => [
+    asset.macro as string,
+    { path: asset.destination },
+  ]),
+) as Record<string, { path: string }>;
 
 interface ManagedAssetRecord {
   type: string;

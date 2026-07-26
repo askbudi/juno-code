@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "source": "prompts/clean_worktree.md",
+      "destination": ".juno_task/prompts/clean_worktree.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "clean_worktree"
+    },
+    {
+      "source": "prompts/new_task_workflow.md",
+      "destination": ".juno_task/prompts/new_task_workflow.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "new_task_workflow"
+    },
+    {
+      "source": "prompts/run_workflow.md",
+      "destination": ".juno_task/prompts/run_workflow.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "run_workflow"
+    },
+    {
+      "source": "prompts/migrate_juno_code_v1_to_v2.md",
+      "destination": ".juno_task/prompts/migrate_juno_code_v1_to_v2.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "migrate_juno_code_v1_to_v2"
+    },
+    {
+      "source": "prompts/migrate_juno_kanban_v1_to_v2.md",
+      "destination": ".juno_task/prompts/migrate_juno_kanban_v1_to_v2.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "migrate_juno_kanban_v1_to_v2"
+    },
+    {
+      "source": "wiki/git_worktree_lifecycle.md",
+      "destination": ".juno_task/wiki/git_worktree_lifecycle.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "scripts/integration_owner_preflight.py",
+      "destination": ".juno_task/scripts/integration_owner_preflight.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/repository_writer_guard.py",
+      "destination": ".juno_task/scripts/repository_writer_guard.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/worktree_lifecycle_audit.py",
+      "destination": ".juno_task/scripts/worktree_lifecycle_audit.py",
+      "installClass": "script",
+      "type": "script"
+    }
+  ]
+}

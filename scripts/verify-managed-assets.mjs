@@ -4,22 +4,30 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const assets = [
-  ['prompts', 'clean_worktree.md'],
-  ['prompts', 'new_task_workflow.md'],
-  ['prompts', 'run_workflow.md'],
-  ['prompts', 'migrate_juno_code_v1_to_v2.md'],
-  ['prompts', 'migrate_juno_kanban_v1_to_v2.md'],
-  ['wiki', 'git_worktree_lifecycle.md'],
-  ['scripts', 'worktree_lifecycle_audit.py'],
-];
+const manifest = JSON.parse(readFileSync(path.join('src', 'templates', 'managed-assets.json'), 'utf8'));
+if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.assets)) {
+  throw new Error('Unsupported managed asset manifest');
+}
+const assets = manifest.assets;
+const manifestSource = readFileSync(path.join('src', 'templates', 'managed-assets.json'));
+const uniqueSources = new Set(assets.map((asset) => asset.source));
+const uniqueDestinations = new Set(assets.map((asset) => asset.destination));
+if (uniqueSources.size !== assets.length || uniqueDestinations.size !== assets.length) {
+  throw new Error('Managed asset manifest contains duplicate source or destination entries');
+}
 
-for (const [directory, file] of assets) {
-  const source = readFileSync(path.join('src', 'templates', directory, file));
-  const built = readFileSync(path.join('dist', 'templates', directory, file));
+for (const asset of assets) {
+  const source = readFileSync(path.join('src', 'templates', asset.source));
+  const built = readFileSync(path.join('dist', 'templates', asset.source));
+  const [directory, file] = asset.source.split(/\/(.*)/s);
   if (!source.equals(built)) {
     throw new Error(`Managed asset differs between source and dist: ${directory}/${file}`);
   }
+}
+
+const manifestBuilt = readFileSync(path.join('dist', 'templates', 'managed-assets.json'));
+if (!manifestSource.equals(manifestBuilt)) {
+  throw new Error('Managed asset manifest differs between source and dist');
 }
 
 const packDirectory = mkdtempSync(path.join(os.tmpdir(), 'juno-code-managed-pack-'));
@@ -34,15 +42,24 @@ try {
     throw new Error('npm pack returned no artifact inventory');
   }
   const inventory = new Set(pack[0].files.map((entry) => entry.path));
+  const manifestPackedPath = 'dist/templates/managed-assets.json';
+  if (!inventory.has(manifestPackedPath)) {
+    throw new Error(`npm package omits managed asset manifest: ${manifestPackedPath}`);
+  }
   const archivePath = path.join(packDirectory, pack[0].filename);
   execFileSync('tar', ['-xzf', archivePath, '-C', packDirectory]);
 
-  for (const [directory, file] of assets) {
-    const packedPath = `dist/templates/${directory}/${file}`;
+  const packedManifest = readFileSync(path.join(packDirectory, 'package', manifestPackedPath));
+  if (!manifestSource.equals(packedManifest)) {
+    throw new Error('Managed asset manifest differs between source and packed npm artifact');
+  }
+
+  for (const asset of assets) {
+    const packedPath = `dist/templates/${asset.source}`;
     if (!inventory.has(packedPath)) {
       throw new Error(`npm package omits managed asset: ${packedPath}`);
     }
-    const source = readFileSync(path.join('src', 'templates', directory, file));
+    const source = readFileSync(path.join('src', 'templates', asset.source));
     const packed = readFileSync(path.join(packDirectory, 'package', packedPath));
     if (!source.equals(packed)) {
       throw new Error(

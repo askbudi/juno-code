@@ -81,7 +81,31 @@ describe('integration_owner_preflight.py template script', () => {
     expect(result.stderr).toContain('clean: expected=true actual=false');
   });
 
-  it('rejects external Juno writers even when argv omits the repository path', async () => {
+  it('allows a Juno writer proven to belong to a different Git common directory', async () => {
+    await fs.writeJson(inventoryPath, [
+      {
+        pid: 987653,
+        ppid: 1,
+        command: 'workflow_runner.sh --workflow unrelated.yaml',
+        cwd_git_common_dir: path.join(testDir, 'different.git'),
+      },
+    ]);
+    const result = run(
+      'python3',
+      [
+        helper,
+        '--root', testDir,
+        '--repository', `root=${repository},refs/heads/main`,
+        '--quiescence-seconds', '0',
+        '--process-inventory-json', inventoryPath,
+      ],
+      testDir,
+    );
+
+    expect(result.status).toBe(0);
+  });
+
+  it('rejects external Juno writers when their repository scope is unknown', async () => {
     await fs.writeJson(inventoryPath, [
       { pid: 987654, ppid: 1, command: 'yy -s codex secret-prompt' },
     ]);

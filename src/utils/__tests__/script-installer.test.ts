@@ -63,6 +63,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
       expect(missing).toContain('integration_owner_preflight.py');
+      expect(missing).toContain('repository_writer_guard.py');
       expect(missing).toContain('worktree_lifecycle_audit.py');
     });
 
@@ -148,6 +149,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'integration_owner_preflight.py'),
         '#!/usr/bin/env python3\nprint("preflight")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'repository_writer_guard.py'),
+        '#!/usr/bin/env python3\nprint("writer guard")',
       );
       await fs.writeFile(
         path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
@@ -236,6 +241,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
+        { name: 'repository_writer_guard.py', installed: false },
         { name: 'worktree_lifecycle_audit.py', installed: false },
       ]);
     });
@@ -323,6 +329,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("preflight")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'repository_writer_guard.py'),
+        '#!/usr/bin/env python3\nprint("writer guard")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
         '#!/usr/bin/env python3\nprint("audit")',
       );
@@ -356,6 +366,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
+        { name: 'repository_writer_guard.py', installed: true },
         { name: 'worktree_lifecycle_audit.py', installed: true },
       ]);
     });

@@ -111,9 +111,20 @@ ensure_selected_juno_kanban_runtime() {
 
 # Version check cache configuration
 # This ensures we don't check PyPI on every run (performance optimization per Task RTafs5).
-# Keep the cache project-local so one repository cannot suppress update checks for another
-# repository whose .venv_juno may still have stale dependencies.
-VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"
+# Keep transient state repository-scoped but outside the tracked worktree. Linked worktrees
+# share one Git-common-dir cache; non-Git initialization falls back to an XDG cache key.
+default_version_check_cache_dir() {
+    local common_dir cache_root cache_key
+    common_dir=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [ -n "$common_dir" ]; then
+        printf '%s\n' "$common_dir/juno/version-checks"
+        return
+    fi
+    cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/juno-code/version-checks"
+    cache_key=$(printf '%s' "$PWD" | cksum | awk '{print $1}')
+    printf '%s\n' "$cache_root/$cache_key"
+}
+VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$(default_version_check_cache_dir)}"
 VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
 VERSION_CHECK_FAILURE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_failure"
 VERSION_CHECK_LOCK_DIR="${VERSION_CHECK_CACHE_DIR}/.version_check_lock"
