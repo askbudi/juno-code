@@ -43,12 +43,23 @@ describe('ManagedProjectAssets', () => {
       expect(await fs.pathExists(path.join(projectDir, mapping.path))).toBe(true);
     }
 
-    const loader = new ConfigLoader(projectDir);
-    await loader.fromProjectConfig();
-    const dictionary = getPromptMacroDictionary(loader.merge());
-    expect(dictionary.clean_worktree).toBe('local override');
+    const overrideLoader = new ConfigLoader(projectDir);
+    await overrideLoader.fromProjectConfig();
+    expect(getPromptMacroDictionary(overrideLoader.merge()).clean_worktree).toBe('local override');
+
+    configJson.promptMacros.local = {};
+    await fs.writeJson(path.join(projectDir, '.juno_task', 'config.json'), configJson);
+    const freshLoader = new ConfigLoader(projectDir);
+    await freshLoader.fromProjectConfig();
+    const dictionary = getPromptMacroDictionary(freshLoader.merge());
+    expect(dictionary.clean_worktree).toContain('First choose the minimum lane');
     expect(dictionary.new_task_workflow).toContain('# Create task workflow');
     expect(dictionary.run_workflow).toContain('# Run task workflow');
+    expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
+    expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
+
+    const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
+    expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
   });
 
   it('updates a stale unmodified managed file and reinstalls a missing file', async () => {
