@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const assets = [
@@ -20,14 +21,38 @@ for (const [directory, file] of assets) {
   }
 }
 
-const packOutput = execFileSync('npm', ['pack', '--json', '--dry-run', '--ignore-scripts'], {
-  encoding: 'utf8',
-});
-const pack = JSON.parse(packOutput);
-if (!Array.isArray(pack) || !pack[0]?.files) throw new Error('npm pack returned no inventory');
-const inventory = new Set(pack[0].files.map((entry) => entry.path));
-for (const [directory, file] of assets) {
-  const packedPath = `dist/templates/${directory}/${file}`;
-  if (!inventory.has(packedPath)) throw new Error(`npm package omits managed asset: ${packedPath}`);
+const packDirectory = mkdtempSync(path.join(os.tmpdir(), 'juno-code-managed-pack-'));
+try {
+  const packOutput = execFileSync(
+    'npm',
+    ['pack', '--json', '--ignore-scripts', '--pack-destination', packDirectory],
+    { encoding: 'utf8' },
+  );
+  const pack = JSON.parse(packOutput);
+  if (!Array.isArray(pack) || !pack[0]?.files || !pack[0]?.filename) {
+    throw new Error('npm pack returned no artifact inventory');
+  }
+  const inventory = new Set(pack[0].files.map((entry) => entry.path));
+  const archivePath = path.join(packDirectory, pack[0].filename);
+  execFileSync('tar', ['-xzf', archivePath, '-C', packDirectory]);
+
+  for (const [directory, file] of assets) {
+    const packedPath = `dist/templates/${directory}/${file}`;
+    if (!inventory.has(packedPath)) {
+      throw new Error(`npm package omits managed asset: ${packedPath}`);
+    }
+    const source = readFileSync(path.join('src', 'templates', directory, file));
+    const packed = readFileSync(path.join(packDirectory, 'package', packedPath));
+    if (!source.equals(packed)) {
+      throw new Error(
+        `Managed asset differs between source and packed npm artifact: ${packedPath}`,
+      );
+    }
+  }
+} finally {
+  rmSync(packDirectory, { recursive: true, force: true });
 }
-console.log(`Verified ${assets.length} managed assets in source, dist, and npm pack inventory.`);
+
+console.log(
+  `Verified ${assets.length} managed assets byte-identically in source, dist, and the npm tarball.`,
+);
