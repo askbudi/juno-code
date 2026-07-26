@@ -60,7 +60,7 @@ if [[ ${'$'}# -eq 0 ]]; then
   printf 'implicit-created:%s\\n' "${'$'}body"
   exit 0
 fi
-python3 -c 'import os, kanban; print(f"{kanban.RUNTIME}|{os.environ[\"JUNO_TASK_ROOT\"]}")'
+python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TASK_ROOT"])'
 `,
     );
     await fs.chmod(path.join(venvBin, 'juno-kanban'), 0o755);
