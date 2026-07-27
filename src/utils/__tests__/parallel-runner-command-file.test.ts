@@ -360,9 +360,12 @@ commands:
       }],
     });
 
+    const currentBranch = spawnSync('git', ['-C', repoRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
     const result = runParallelScript(templateScript, ['--commands-file', target], undefined, {
       JUNO_TASK_ROOT: repoRoot,
       JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_WORKSPACE_ENFORCEMENT: 'off',
+      JUNO_CONTROLLER_BRANCH: currentBranch,
       JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
     });
     expect(result.status).toBe(0);

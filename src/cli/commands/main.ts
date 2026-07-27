@@ -36,6 +36,7 @@ import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { resolveController } from '../../utils/controller-resolver.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
+import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 import type { MainCommandOptions } from '../types.js';
 import {
   areLifecycleHooksDisabled,
@@ -1904,6 +1905,7 @@ export async function mainCommandHandler(
     const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
     let continueScopeMarkedRunning = false;
     let exitCode: number | null = null;
+    let executionError: unknown;
 
     try {
       await markContinueScopeRunning(config.workingDirectory, continueScope);
@@ -1918,6 +1920,9 @@ export async function mainCommandHandler(
 
       // Set exit code based on result
       exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
+    } catch (error) {
+      executionError = error;
+      exitCode = 1;
     } finally {
       if (continueScopeMarkedRunning) {
         try {
@@ -1931,6 +1936,10 @@ export async function mainCommandHandler(
     }
 
     if (exitCode !== null) {
+      // This is the true outer execution finalizer: history, session branches,
+      // continuation state, and the running marker have already been persisted.
+      await checkpointControllerAfterFinalization(config.workingDirectory, exitCode);
+      if (executionError !== undefined) throw executionError;
       process.exit(exitCode);
       return;
     }

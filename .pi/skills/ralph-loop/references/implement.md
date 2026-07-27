@@ -92,9 +92,6 @@ You **MUST** consider the user input before proceeding (if not empty).
    - When the issue is resolved always update ./juno_task/scripts/kanban.sh
      `./juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}"`
 
-10. Git
+10. Git and controller checkpoint
 
-When the tests pass update ./juno_task/scripts/kanban.sh, then add changed code with "git add -A" via bash then do a "git commit" with a message that describes the changes you made to the code. After the commit do a "git push" to push the changes to the remote repository.
-Use commit message as a backlog of what has achieved. So later on we would know exactly what we achieved in each commit.
-Update the task in ./juno_task/scripts/kanban.sh with the commit hash so later on we could map each task to a specific git commit
-`./juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`
+After tests pass, explicitly stage and commit only task-owned product paths; never use broad staging and never push without separate authorization. Then update Kanban through its wrapper and run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` so allowlisted controller residue is durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block this checkpoint rather than being absorbed. Record the product commit on the task with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`.

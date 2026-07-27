@@ -66,12 +66,19 @@ owner-approved task and isolation decision
 
 Integration is an explicit stage after independent review and before deployment/E2E. A successful worker, task commit, or clean worktree is not integration evidence.
 
+## Controller checkpoint boundary
+
+After an ordinary, workflow, or parallel run writes its final durable state, its outer finalizer invokes `controller_checkpoint.py commit` best-effort. Failure is warned without replacing the run status; failed runs may preserve valid allowlisted state with a failure-state message. The helper rejects product dirt, a pre-existing index, conflicts, unsafe paths/repository boundaries, detached HEAD, races, and lease contention, stages only frozen explicit paths, and never pushes or orchestrates refs. Agent mode can propose strict JSON grouping/messages with hooks disabled, closed stdin, bounded time, and read-only tools; deterministic code remains the only staging/commit owner.
+
+Immediately before integration, pass `--checkpoint-controller "$CONTROLLER_ROOT"` to `integration_owner_preflight.py`, before `--exec-command`. It runs `controller_checkpoint.py require-clean --checkpoint`, records checkpoint evidence, and only then acquires the integration leases. Product dirt fails closed and remains untouched. This is clean proof, not merge authority or a substitute for review, ancestry, or integrated-target validation.
+
 ## Integration-owner quiescence
 
 Immediately before any target-ref mutation, acquire fixed-order cooperative leases for every affected repository and prove each named target owner is clean, checked out on the exact target ref, and unchanged across a bounded observation window. Use the shared helper; pass the mutation as `--exec-command` so leases remain held through it:
 
 ```bash
 python3 .juno_task/scripts/integration_owner_preflight.py \
+  --checkpoint-controller "$CONTROLLER_ROOT" \
   --repository "root=$ROOT_INTEGRATION_OWNER,$ROOT_EXACT_TARGET_REF" \
   --repository "child=$CHILD_INTEGRATION_OWNER,$CHILD_EXACT_TARGET_REF" \
   --quiescence-seconds 2 --output "$DURABLE_RUN/preflight.json" \

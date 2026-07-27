@@ -3953,6 +3953,32 @@ def resolve_controller_environment() -> dict[str, str]:
     }
 
 
+def checkpoint_after_finalization(exit_code: int) -> None:
+    """Best effort only; terminal parallel artifacts must already exist."""
+    if os.environ.get("JUNO_CONTROLLER_CHECKPOINT_ACTIVE") == "1":
+        return
+    root = Path(os.environ["JUNO_TASK_ROOT"]).resolve()
+    script = root / ".juno_task/scripts/controller_checkpoint.py"
+    if not script.is_file():
+        return
+    message = "chore(controller): checkpoint finalized parallel run state"
+    if exit_code:
+        message = f"chore(controller): checkpoint failed parallel run state (exit {exit_code})"
+    env = dict(os.environ)
+    env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "commit", "--message", message],
+            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"[parallel_runner] WARNING: controller checkpoint failed after finalization; "
+            f"run {script} --root {root} commit manually: {exc}", file=sys.stderr,
+        )
+
+
 def main():
     global LOG_DIR, COMBINED_LOG, STATUS_FILE, _run_id, _run_started_at
 
@@ -4009,4 +4035,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _final_exit_code = 0
+    try:
+        main()
+    except SystemExit as exc:
+        _final_exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+        raise
+    except BaseException:
+        _final_exit_code = 1
+        raise
+    finally:
+        # main returns only after task/session summaries and parent handoff
+        # manifests have reached their terminal durable state.
+        checkpoint_after_finalization(_final_exit_code)

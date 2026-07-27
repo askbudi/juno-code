@@ -256,6 +256,11 @@ def main() -> int:
     parser.add_argument("--root", default=os.getcwd(), help="Project root used only for receipt context")
     parser.add_argument("--repository", action="append", required=True, type=parse_repository, metavar="NAME=PATH,TARGET_REF")
     parser.add_argument("--quiescence-seconds", type=float, default=2.0)
+    parser.add_argument(
+        "--checkpoint-controller",
+        metavar="PATH",
+        help="Mandatory pre-integration controller root: checkpoint and prove clean before leases/preflight",
+    )
     parser.add_argument("--process-inventory-json", help="Optional deterministic process inventory fixture")
     parser.add_argument("--output", help="Write JSON receipt to this path; stdout is always concise JSON")
     parser.add_argument("--exec-command", nargs=argparse.REMAINDER, help="Command to execute while leases remain held")
@@ -279,6 +284,23 @@ def main() -> int:
         processes = payload
     else:
         processes = system_process_inventory()
+
+    checkpoint_result = None
+    if args.checkpoint_controller:
+        controller = Path(args.checkpoint_controller).expanduser().resolve()
+        checkpoint_script = controller / ".juno_task/scripts/controller_checkpoint.py"
+        if not checkpoint_script.is_file():
+            raise PreflightError(f"controller checkpoint helper missing: {checkpoint_script}")
+        completed = subprocess.run(
+            [sys.executable, str(checkpoint_script), "--root", str(controller), "require-clean", "--checkpoint", "--json"],
+            cwd=controller, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            raise PreflightError(f"controller checkpoint failed before integration preflight: {completed.stderr.strip()}")
+        try:
+            checkpoint_result = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise PreflightError("controller checkpoint returned invalid evidence") from exc
 
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     leases: list[Any] = []
@@ -333,6 +355,7 @@ def main() -> int:
             "started_at": started,
             "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "quiescence_seconds": args.quiescence_seconds,
+            "controller_checkpoint": checkpoint_result,
             "repositories": observation,
             "leases_held_through_command": bool(args.exec_command),
             "command": command_result,

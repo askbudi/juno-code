@@ -253,11 +253,14 @@ Use `workflow_assert.py` for named machine-readable diagnostics. On macOS/Linux,
 
 ```bash
 ./.juno_task/scripts/integration_owner_preflight.py \
+  --checkpoint-controller /path/to/controller \
   --repository root=/path/to/clean-owner,refs/heads/main \
   --quiescence-seconds 2 \
   --output /path/outside/checkout/integration-owner.json \
   --exec-command ./scripts/integrate-reviewed-tip.sh
 ```
+
+Controller checkpoints are local-only and bounded. `controller_checkpoint.py plan --json` is read-only; `commit --message ...` deterministically commits only configured controller paths; `commit --agent` lets a hook-disabled, timeout-bounded read-only agent propose grouping/messages while deterministic code still stages explicit paths; and `require-clean --checkpoint` is the mandatory pre-integration gate. Configure repository-relative files or directory prefixes in `gitCheckpoint.include`. Product dirt, pre-staged/conflicted paths, unsafe symlinks or nested repositories/submodules, races, and lock contention fail closed without broad staging. Ordinary/workflow/parallel outer finalizers invoke checkpoints best-effort after terminal writes and preserve the original run status. The helper never pushes, fetches, merges, switches, or otherwise orchestrates refs.
 
 ### Full Traceability: Every Change Tracked
 - Every task links to a git commit

@@ -62,6 +62,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
+      expect(missing).toContain('controller_checkpoint.py');
       expect(missing).toContain('integration_owner_preflight.py');
       expect(missing).toContain('repository_writer_guard.py');
       expect(missing).toContain('worktree_lifecycle_audit.py');
@@ -145,6 +146,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'workflow_assert.py'),
         '#!/usr/bin/env python3\nprint("assert")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'controller_checkpoint.py'),
+        '#!/usr/bin/env python3\nprint("checkpoint")',
       );
       await fs.writeFile(
         path.join(scriptsDir, 'integration_owner_preflight.py'),
@@ -240,6 +245,7 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: false },
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
+        { name: 'controller_checkpoint.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'repository_writer_guard.py', installed: false },
         { name: 'worktree_lifecycle_audit.py', installed: false },
@@ -325,6 +331,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("assert")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'controller_checkpoint.py'),
+        '#!/usr/bin/env python3\nprint("checkpoint")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'integration_owner_preflight.py'),
         '#!/usr/bin/env python3\nprint("preflight")',
       );
@@ -365,6 +375,7 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: true },
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
+        { name: 'controller_checkpoint.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'repository_writer_guard.py', installed: true },
         { name: 'worktree_lifecycle_audit.py', installed: true },
@@ -398,10 +409,22 @@ describe('ScriptInstaller', () => {
       );
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
+      const repositoryRoot = path.resolve(process.cwd(), '..');
+      const currentBranch = spawnSync('git', ['-C', repositoryRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(
         'python3',
         [scriptPath, '--commands-file', commandsFile, '--parallel', '2', '--output-dir', outputDir],
-        { cwd: testDir, encoding: 'utf8', timeout: 30000 },
+        {
+          cwd: testDir,
+          encoding: 'utf8',
+          timeout: 30000,
+          env: {
+            ...process.env,
+            JUNO_TASK_ROOT: repositoryRoot,
+            JUNO_WORKSPACE_ROLE: 'controller',
+            JUNO_CONTROLLER_BRANCH: currentBranch,
+          },
+        },
       );
 
       expect(result.status).toBe(0);
@@ -436,10 +459,22 @@ describe('ScriptInstaller', () => {
       );
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
+      const repositoryRoot = path.resolve(process.cwd(), '..');
+      const currentBranch = spawnSync('git', ['-C', repositoryRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(
         'python3',
         [scriptPath, '--commands-file', commandsFile, '--parallel', '1'],
-        { cwd: testDir, encoding: 'utf8', timeout: 30000 },
+        {
+          cwd: testDir,
+          encoding: 'utf8',
+          timeout: 30000,
+          env: {
+            ...process.env,
+            JUNO_TASK_ROOT: repositoryRoot,
+            JUNO_WORKSPACE_ROLE: 'controller',
+            JUNO_CONTROLLER_BRANCH: currentBranch,
+          },
+        },
       );
 
       expect(result.status).toBe(1);

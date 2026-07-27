@@ -43,6 +43,12 @@
       "type": "wiki"
     },
     {
+      "source": "scripts/controller_checkpoint.py",
+      "destination": ".juno_task/scripts/controller_checkpoint.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/integration_owner_preflight.py",
       "destination": ".juno_task/scripts/integration_owner_preflight.py",
       "installClass": "script",

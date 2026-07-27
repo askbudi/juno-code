@@ -62,6 +62,31 @@ describe('integration_owner_preflight.py template script', () => {
     expect(receipt.repositories.process_candidates_after).toEqual([]);
   });
 
+  it('checkpoints and proves the controller clean before integration leases', async () => {
+    const checkpoint = path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py');
+    await fs.ensureDir(path.join(repository, '.juno_task', 'scripts'));
+    await fs.ensureDir(path.join(repository, '.juno_task', 'tasks'));
+    await fs.copyFile(checkpoint, path.join(repository, '.juno_task', 'scripts', 'controller_checkpoint.py'));
+    await fs.writeFile(path.join(repository, '.juno_task', 'tasks', 'state.md'), 'initial\n');
+    expect(run('git', ['-C', repository, 'add', '.juno_task/tasks/state.md', '.juno_task/scripts/controller_checkpoint.py'], testDir).status).toBe(0);
+    expect(run('git', ['-C', repository, 'commit', '-m', 'controller baseline'], testDir).status).toBe(0);
+    await fs.writeFile(path.join(repository, '.juno_task', 'tasks', 'state.md'), 'durable\n');
+    const receiptPath = path.join(testDir, 'checkpoint-preflight.json');
+    const result = run('python3', [
+      helper,
+      '--root', testDir,
+      '--checkpoint-controller', repository,
+      '--repository', `root=${repository},refs/heads/main`,
+      '--quiescence-seconds', '0',
+      '--process-inventory-json', inventoryPath,
+      '--output', receiptPath,
+    ], testDir);
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = await fs.readJson(receiptPath);
+    expect(receipt.controller_checkpoint.outcome).toBe('committed');
+    expect(run('git', ['-C', repository, 'status', '--porcelain'], testDir).stdout).toBe('');
+  });
+
   it('rejects a dirty integration owner before executing a command', async () => {
     await fs.writeFile(path.join(repository, 'tracked.txt'), 'dirty\n');
     const result = run(

@@ -574,10 +574,18 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         integration_command_text = json.dumps(
             next(step["command"] for step in steps if step["id"] == integration_step), ensure_ascii=False
         )
-        if "integration_owner_preflight.py" not in integration_command_text or "--exec-command" not in integration_command_text:
+        required_integration_tokens = (
+            "integration_owner_preflight.py",
+            "--checkpoint-controller",
+            "--exec-command",
+        )
+        if any(token not in integration_command_text for token in required_integration_tokens):
             raise WorkflowError(
-                f"local_integration integration_step {integration_step} must run integration_owner_preflight.py --exec-command"
+                f"local_integration integration_step {integration_step} must run controller checkpoint + clean proof "
+                "before integration_owner_preflight.py --exec-command by passing --checkpoint-controller"
             )
+        if integration_command_text.index("--checkpoint-controller") > integration_command_text.index("--exec-command"):
+            raise WorkflowError("local_integration checkpoint option must precede --exec-command")
         allowed_dispositions = {
             "target_integrated_controller_attached_clean",
             "target_integrated_controller_detached_preserved",
@@ -2570,6 +2578,32 @@ def resolve_controller_environment() -> dict[str, str]:
     }
 
 
+def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
+    """Best effort only; never replace the owning runner's status."""
+    if os.environ.get("JUNO_CONTROLLER_CHECKPOINT_ACTIVE") == "1":
+        return
+    root = Path(os.environ["JUNO_TASK_ROOT"]).resolve()
+    script = root / ".juno_task/scripts/controller_checkpoint.py"
+    if not script.is_file():
+        return
+    message = f"chore(controller): checkpoint finalized {owner} state"
+    if exit_code:
+        message = f"chore(controller): checkpoint failed {owner} state (exit {exit_code})"
+    env = dict(os.environ)
+    env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "commit", "--message", message],
+            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"workflow_runner.sh: WARNING: controller checkpoint failed after finalization; "
+            f"run {script} --root {root} commit manually: {exc}", file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     os.environ.update(resolve_controller_environment())
     warn_if_runtime_script_is_stale("workflow_runner.sh")
@@ -2588,11 +2622,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     parser = build_parser()
     args = parser.parse_args(argv)
+    exit_code = 0
     try:
-        return run_workflow(args)
+        exit_code = run_workflow(args)
     except WorkflowError as exc:
         print(f"workflow_runner.sh: error: {exc}", file=sys.stderr)
-        return 2
+        exit_code = 2
+    except BaseException:
+        exit_code = 1
+        raise
+    finally:
+        # run_workflow has returned or failed only after its terminal manifest,
+        # receipts, summary, and continuation metadata writes.
+        checkpoint_after_finalization(exit_code, "workflow")
+    return exit_code
 
 
 if __name__ == "__main__":
