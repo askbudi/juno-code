@@ -27,7 +27,7 @@ exact base -> named clean task tree -> pre-merge review PASS
 
 ## Exact-base creation
 
-Use `worktree_lifecycle.py create` with full `refs/...` names, task ID, expected paths, validation commands, and cleanup owner. `--fetch REMOTE,REF` is narrow and uses `--no-tags`. `--expected-base` binds the fetched identity. Existing paths/branches are accepted only when path, branch, HEAD, and clean state exactly match.
+Use `worktree_lifecycle.py create` with full `refs/...` names, task ID, expected paths, validation commands, and cleanup owner. `--fetch REMOTE,REF` is narrow, uses `--no-tags`, and resolves `FETCH_HEAD` without advancing the approved local target. `--expected-base` binds the fetched identity. Existing paths/branches are accepted only when path, branch, HEAD, and clean state exactly match.
 
 Controller status is intentionally absent. Capacity is advisory. `--hard-min-free-bytes` blocks only when measurement succeeds and reports threshold, observation, and recovery. Git's actual worktree-add result remains authoritative.
 
@@ -51,7 +51,7 @@ Controller status is intentionally absent. Capacity is advisory. `--hard-min-fre
 
 The helper validates every candidate before mutation, derives a channel from `(resolved Git common directory, full target ref)`, acquires all channels in deterministic order, rechecks expected SHAs under lock, and updates refs with `git update-ref <ref> <new> <expected-old>`. Unrelated controller/task processes do not gate the transaction.
 
-Multi-repository arguments are updated in caller order, so callers list nested children before parents. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds.
+Multi-repository arguments are updated in caller order, so callers list nested children before parents and bind each child to its root-relative gitlink with `--gitlink CHILD=PATH`. Every root gitlink must equal the child candidate before any target moves. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds.
 
 After updates, every `--validation-command` runs against the actual target state. `--actual-review-command` must produce the named `--actual-review-receipt` with `review_kind=actual_target`, exact integrated tip, `passed=true`, and no open bugs.
 
@@ -78,7 +78,7 @@ Validation ownership names `pre_merge_review`, `candidate_review`, and `actual_t
 
 ## Cleanup
 
-`worktree_lifecycle.py cleanup` requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. Expected disappearance is success; optional branch deletion uses non-force `git branch -d`. Every attempt records final inventory and prune dry-run. There is no automatic force mode.
+`worktree_lifecycle.py cleanup` requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. Expected disappearance is idempotent success; optional branch deletion uses exact-old-SHA `git update-ref -d`. Every attempt records final inventory and prune dry-run. There is no automatic force mode.
 
 ## Shipping and validation
 

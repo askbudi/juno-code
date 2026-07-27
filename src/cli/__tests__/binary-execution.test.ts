@@ -230,10 +230,11 @@ describe('Binary Execution Tests', () => {
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'managed-assets.json'))).toBe(true);
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'prompts', 'clean_worktree.md'))).toBe(true);
         expect(
-          await fs.pathExists(
-            path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle_audit.py'),
-          ),
+          await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle.py')),
         ).toBe(true);
+        expect(
+          await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle_audit.py')),
+        ).toBe(false);
         expect(
           await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'git_index_lock.py')),
         ).toBe(true);

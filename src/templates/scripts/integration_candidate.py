@@ -14,7 +14,7 @@ def run(repo: Path, *args: str, check: bool=True) -> subprocess.CompletedProcess
 
 def git(repo: Path,*args: str,check: bool=True)->str:return run(repo,*args,check=check).stdout.strip()
 def full_ref(value:str)->str:
-    if not value.startswith("refs/"): raise CandidateError("target ref must be a full refs/... name")
+    if not value.startswith("refs/heads/"): raise CandidateError("target ref must be a full refs/heads/... name")
     return value
 
 def load_pass(path:Path,kind:str,tip:str|None=None)->dict[str,Any]:
@@ -36,7 +36,7 @@ def plan(args:argparse.Namespace)->dict[str,Any]:
     load_pass(args.premerge_review,"pre_merge",tip)
     if run(repo,"merge-base","--is-ancestor",base,tip,check=False).returncode: raise CandidateError("reviewed tip does not descend from base")
     task_paths=paths(repo,base,tip); target_paths=paths(repo,base,target)
-    expected=sorted(set(args.expected_path)); unexpected=sorted(set(task_paths)-set(expected)) if expected else []
+    expected=sorted(set(args.expected_path)); unexpected=sorted(path for path in task_paths if expected and not any(path==prefix or path.startswith(prefix.rstrip("/")+"/") for prefix in expected))
     if unexpected: raise CandidateError("unexpected task paths: "+",".join(unexpected))
     direct=run(repo,"merge-base","--is-ancestor",target,tip,check=False).returncode==0
     strategy="direct" if direct else "merge_both_parents"
@@ -53,7 +53,9 @@ def build(args:argparse.Namespace)->dict[str,Any]:
     plan_data=json.loads(args.plan.read_text()); repo=Path(plan_data["repository"])
     if plan_data.get("schema_version")!=SCHEMA or plan_data.get("operation")!="plan":raise CandidateError("invalid plan receipt")
     if git(repo,"rev-parse",f"{plan_data['target_ref']}^{{commit}}")!=plan_data["expected_target_sha"]:raise CandidateError("stale_target_replan_required")
-    if git(repo,"rev-parse",f"{plan_data['reviewed_tip']}^{{commit}}")!=plan_data["reviewed_tip"]:raise CandidateError("moved_task_tip")
+    task_worktree=Path(plan_data["task_worktree"])
+    if git(task_worktree,"rev-parse","HEAD")!=plan_data["reviewed_tip"] or git(task_worktree,"status","--porcelain=v2","--untracked-files=all"):
+      raise CandidateError("moved_or_dirty_task_tip")
     candidate=plan_data["reviewed_tip"]; candidate_path=Path(plan_data["task_worktree"])
     try:
       if plan_data["strategy"]=="merge_both_parents":
@@ -68,7 +70,8 @@ def build(args:argparse.Namespace)->dict[str,Any]:
       work=Path(candidate_path)
       if git(work,"status","--porcelain=v2","--untracked-files=all"):raise CandidateError("dirty_candidate")
       candidate_paths=paths(repo,plan_data["expected_target_sha"],candidate)
-      unexpected=sorted(set(candidate_paths)-set(plan_data["expected_paths"])) if plan_data["expected_paths"] else []
+      expected=plan_data["expected_paths"]
+      unexpected=sorted(path for path in candidate_paths if expected and not any(path==prefix or path.startswith(prefix.rstrip("/")+"/") for prefix in expected))
       if unexpected:raise CandidateError("unexpected candidate paths: "+",".join(unexpected))
       validations=[]
       for command in args.validation_command:
@@ -84,10 +87,17 @@ def build(args:argparse.Namespace)->dict[str,Any]:
 
 def verify(args:argparse.Namespace)->dict[str,Any]:
     candidate=json.loads(args.candidate.read_text()); tip=candidate.get("candidate_sha")
+    if candidate.get("schema_version")!=SCHEMA or candidate.get("operation")!="build" or candidate.get("eligible") is not False:
+      raise CandidateError("valid ineligible build receipt required")
+    validations=candidate.get("validation")
+    if not isinstance(validations,list) or not validations or any(item.get("exit_code")!=0 for item in validations):
+      raise CandidateError("successful candidate validation evidence required")
     review=load_pass(args.candidate_review,"candidate",tip)
     repo=Path(candidate["repository"])
     if git(repo,"rev-parse",f"{candidate['target_ref']}^{{commit}}")!=candidate["expected_target_sha"]:raise CandidateError("stale_target_rebuild_review_required")
-    if candidate.get("candidate_path") and git(Path(candidate["candidate_path"]),"status","--porcelain=v2","--untracked-files=all"):raise CandidateError("dirty_candidate")
+    candidate_path=Path(candidate.get("candidate_path") or "")
+    if not candidate.get("candidate_path") or git(candidate_path,"rev-parse","HEAD")!=tip or git(candidate_path,"status","--porcelain=v2","--untracked-files=all"):
+      raise CandidateError("moved_or_dirty_candidate")
     payload={**candidate,"operation":"verify","eligible":True,"candidate_receipt_sha256":hashlib.sha256(args.candidate.read_bytes()).hexdigest(),"candidate_review_sha256":hashlib.sha256(args.candidate_review.read_bytes()).hexdigest()}
     write(args.output,payload);return payload
 
@@ -95,7 +105,7 @@ def parser()->argparse.ArgumentParser:
  p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);s=p.add_subparsers(dest="command",required=True)
  q=s.add_parser("plan",allow_abbrev=False);q.set_defaults(func=plan)
  q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path,required=True);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
- q=s.add_parser("build",allow_abbrev=False);q.set_defaults(func=build);q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path,required=True);q.add_argument("--validation-command",action="append",default=[]);q.add_argument("--validation-timeout",type=float,default=1800);q.add_argument("--output",type=Path,required=True)
+ q=s.add_parser("build",allow_abbrev=False);q.set_defaults(func=build);q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path,required=True);q.add_argument("--validation-command",action="append",required=True);q.add_argument("--validation-timeout",type=float,default=1800);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("verify",allow_abbrev=False);q.set_defaults(func=verify);q.add_argument("--candidate",type=Path,required=True);q.add_argument("--candidate-review",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
  return p
 def main(argv:list[str]|None=None)->int:

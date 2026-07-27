@@ -76,11 +76,17 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
     if args.fetch:
         remote, separator, ref = args.fetch.partition(",")
         if not separator or not remote or not ref: raise LifecycleError("--fetch must be REMOTE,REF")
-        git(repo, "fetch", "--no-tags", remote, f"{ref}:{target_ref}")
-    base = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
+        # Fetch only into FETCH_HEAD. Creation must never advance the approved
+        # local integration target as a side effect of discovering its base.
+        git(repo, "fetch", "--no-tags", remote, ref)
+        base = git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+    else:
+        base = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
     if args.expected_base and base != args.expected_base: raise LifecycleError(f"base_mismatch expected={args.expected_base} actual={base}")
     path = args.path.resolve(); branch = branch_ref(args.branch_ref)
     capacity = measure_capacity(path)
+    if args.hard_min_free_bytes is not None and args.hard_min_free_bytes < 0:
+        raise LifecycleError("--hard-min-free-bytes must be non-negative")
     if args.hard_min_free_bytes is not None and capacity["available"] and capacity["free_bytes"] < args.hard_min_free_bytes:
         raise LifecycleError(f"capacity_below_hard_threshold threshold={args.hard_min_free_bytes} observed={capacity['free_bytes']} recovery=free_space")
     if lock_path(repo).exists(): raise LifecycleError(f"git_index_lock_present: {lock_path(repo)}")
@@ -104,8 +110,13 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
 
 def verify(args: argparse.Namespace) -> dict[str, Any]:
     receipt = json.loads(args.manifest.read_text(encoding="utf-8")); path = Path(receipt["worktree"])
-    actual = {"head": git(path, "rev-parse", "HEAD"), "branch_ref": git(path, "symbolic-ref", "-q", "HEAD", check=False), "clean": status(path) == ""}
-    passed = actual == {"head": receipt["base_sha"], "branch_ref": receipt["branch_ref"], "clean": True}
+    if receipt.get("schema_version") != SCHEMA or receipt.get("operation") != "create":
+        raise LifecycleError("invalid create manifest")
+    _, common = identity(path)
+    actual = {"head": git(path, "rev-parse", "HEAD"), "branch_ref": git(path, "symbolic-ref", "-q", "HEAD", check=False), "clean": status(path) == "",
+              "worktree": str(path.resolve()), "git_common_dir": str(common)}
+    passed = actual == {"head": receipt["base_sha"], "branch_ref": receipt["branch_ref"], "clean": True,
+                        "worktree": str(Path(receipt["worktree"]).resolve()), "git_common_dir": receipt["git_common_dir"]}
     payload = {"schema_version": SCHEMA, "operation": "verify", "passed": passed, "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(), "actual": actual}
     write_receipt(args.output, payload)
     if not passed: raise LifecycleError("worktree verification failed")
@@ -140,8 +151,12 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     expected = args.expected_head
     refusals: list[str] = []
     if args.delete_branch and branch == "DETACHED": refusals.append("detached_has_no_branch")
-    if not path.exists(): refusals.append("worktree_missing")
-    else:
+    registered = any(Path(row["worktree"]).resolve() == path for row in listed(repo))
+    already_removed = not path.exists() and not registered
+    if not path.exists() and registered: refusals.append("worktree_missing_but_registered")
+    elif not path.exists() and run_returncode(repo, "merge-base", "--is-ancestor", expected, target):
+        refusals.append("unreachable_from_target")
+    elif path.exists():
         if lock_path(path).exists(): refusals.append("index_lock_present")
         if status(path): refusals.append("dirty")
         if git(path, "rev-parse", "HEAD") != expected: refusals.append("unexpected_head")
@@ -149,19 +164,21 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
         if actual_branch != branch: refusals.append("unexpected_branch")
         if run_returncode(repo, "merge-base", "--is-ancestor", expected, target):
             refusals.append("unreachable_from_target")
-        if (path / ".gitmodules").exists() and git(path, "submodule", "status", "--recursive", check=False): refusals.append("nested_repository_initialized")
+        if (path / ".gitmodules").exists():
+            nested = git(path, "submodule", "status", "--recursive", check=False).splitlines()
+            if any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
         if active(path): refusals.append("active_process")
-    removed = False
-    if not refusals:
+    removed = already_removed
+    if not refusals and not already_removed:
         git(repo, "worktree", "remove", str(path)); removed = not path.exists()
         if not removed: refusals.append("expected_removal_failed")
-        elif args.delete_branch:
-            # Reachability was proven above; delete the exact branch tip with CAS
-            # instead of relying on the caller checkout's current HEAD.
-            git(repo, "update-ref", "-d", branch, expected)
+    if not refusals and args.delete_branch:
+        existing = git(repo, "rev-parse", "--verify", branch, check=False)
+        if existing and existing != expected: refusals.append("branch_tip_mismatch")
+        elif existing: git(repo, "update-ref", "-d", branch, expected)
     inventory = listed(repo); prune = git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()
     payload = {"schema_version": SCHEMA, "operation": "cleanup", "passed": removed and not refusals,
-               "removed": removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
+               "removed": removed, "already_removed": already_removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
                "target_ref": target, "branch_ref": branch, "inventory": inventory, "prune_dry_run": prune}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("cleanup_refused: " + ",".join(refusals))
