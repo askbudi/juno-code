@@ -10,6 +10,13 @@ function run(repo: string, ...args: string[]) {
   return spawnSync('python3', [helper, '--root', repo, ...args], { encoding: 'utf8' });
 }
 
+function runWithEnv(repo: string, env: NodeJS.ProcessEnv, ...args: string[]) {
+  return spawnSync('python3', [helper, '--root', repo, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
 function git(repo: string, ...args: string[]) {
   const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
   expect(result.status, result.stderr).toBe(0);
@@ -58,11 +65,12 @@ describe('controller_checkpoint.py template script', () => {
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
   });
 
-  it('rejects staged work, detached HEAD, conflicts, and unsafe allowlist entries', async () => {
+  it('rejects staged or alternate-index work, detached HEAD, conflicts, and unsafe allowlist entries', async () => {
     await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'staged\n');
     git(repo, 'add', '.juno_task/tasks/one.md');
     expect(run(repo, 'plan').stderr).toContain('pre-existing staged');
     git(repo, 'restore', '--staged', '.juno_task/tasks/one.md');
+    expect(runWithEnv(repo, { GIT_INDEX_FILE: path.join(testDir, 'alternate-index') }, 'plan').stderr).toContain('alternate GIT_INDEX_FILE');
     git(repo, 'restore', '.juno_task/tasks/one.md');
     const attachedHead = git(repo, 'rev-parse', 'HEAD');
     await fs.writeFile(path.join(repo, '.git', 'HEAD'), `${attachedHead}\n`);
@@ -70,6 +78,14 @@ describe('controller_checkpoint.py template script', () => {
     await fs.writeFile(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/task\n');
     await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), { gitCheckpoint: { include: ['../escape'] } });
     expect(run(repo, 'plan').stderr).toContain('unsafe allowlist');
+  });
+
+  it('parses porcelain-v2 renames and commits only the renamed controller path', async () => {
+    git(repo, 'mv', '.juno_task/tasks/one.md', '.juno_task/tasks/renamed.md');
+    git(repo, 'restore', '--staged', '.juno_task/tasks/one.md', '.juno_task/tasks/renamed.md');
+    const result = run(repo, 'commit', '--message', 'chore(controller): rename fixture');
+    expect(result.status, result.stderr).toBe(0);
+    expect(git(repo, 'show', '--name-status', '--format=', 'HEAD')).toMatch(/R\d+\s+\.juno_task\/tasks\/one\.md\s+\.juno_task\/tasks\/renamed\.md/);
   });
 
   it('rejects symlink escapes and nested repositories', async () => {
@@ -88,10 +104,30 @@ describe('controller_checkpoint.py template script', () => {
     await fs.writeFile(path.join(repo, '.git', 'index.lock'), 'busy');
     expect(run(repo, 'plan').stderr).toContain('index.lock');
     await fs.remove(path.join(repo, '.git', 'index.lock'));
-    await fs.ensureDir(path.join(repo, 'juno_kanban'));
-    await fs.writeFile(path.join(repo, 'juno_kanban', '.git'), 'gitdir: nowhere\n');
-    await fs.writeFile(path.join(repo, 'juno_kanban', 'dirty'), 'x\n');
-    expect(run(repo, 'plan').stderr).toContain('nested repository');
+    const child = path.join(testDir, 'child');
+    git(testDir, 'init', '-b', 'main', child);
+    git(child, 'config', 'user.email', 'fixture@example.invalid');
+    git(child, 'config', 'user.name', 'Fixture');
+    await fs.writeFile(path.join(child, 'tracked'), 'initial\n');
+    git(child, 'add', 'tracked');
+    git(child, 'commit', '-m', 'child initial');
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', child, 'juno_kanban');
+    git(repo, 'commit', '-m', 'add child submodule');
+    await fs.writeFile(path.join(repo, 'juno_kanban', 'tracked'), 'dirty\n');
+    expect(run(repo, 'plan').stderr).toContain('dirty submodule state');
+  });
+
+  it('removes only checkpoint-owned staging when commit fails', async () => {
+    await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'must remain unstaged\n');
+    const bin = path.join(testDir, 'bin');
+    await fs.ensureDir(bin);
+    const wrapper = path.join(bin, 'git');
+    await fs.writeFile(wrapper, `#!/bin/sh\nfor arg in "$@"; do test "$arg" = commit && exit 73; done\nexec ${JSON.stringify(spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim())} "$@"\n`);
+    await fs.chmod(wrapper, 0o755);
+    const result = runWithEnv(repo, { PATH: `${bin}:${process.env.PATH}` }, 'commit', '--message', 'must fail');
+    expect(result.status).toBe(2);
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(repo, 'status', '--porcelain')).toContain('.juno_task/tasks/one.md');
   });
 
   it('fails promptly when the repository lease is held', async () => {

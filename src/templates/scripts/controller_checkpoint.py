@@ -33,17 +33,23 @@ class CheckpointError(Exception):
 
 @dataclass(frozen=True)
 class Dirty:
+    kind: str
     xy: str
     path: str
     original: str | None = None
+    submodule: str = "N..."
 
     @property
     def staged(self) -> bool:
-        return self.xy[0] not in {" ", "?", "!"}
+        return self.xy[0] not in {".", "?", "!"}
 
     @property
     def conflicted(self) -> bool:
-        return self.xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+        return self.kind == "u" or self.xy in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+    @property
+    def dirty_submodule(self) -> bool:
+        return self.submodule != "N..."
 
 
 def git(root: Path, *args: str, check: bool = True, text: bool = True) -> Any:
@@ -118,29 +124,49 @@ def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
 
 
 def parse_status(root: Path) -> list[Dirty]:
-    raw = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", text=False)
+    """Parse porcelain v2 so index, rename, conflict, and submodule state are explicit."""
+    raw = git(root, "status", "--porcelain=v2", "-z", "--untracked-files=all", text=False)
     fields = raw.split(b"\0")
     dirty: list[Dirty] = []
     index = 0
     while index < len(fields) and fields[index]:
         field = fields[index]
-        if len(field) < 4:
-            raise CheckpointError("could not parse Git status")
-        xy = field[:2].decode("ascii", errors="replace")
-        path = field[3:].decode("utf-8", errors="surrogateescape")
-        original = None
-        if "R" in xy or "C" in xy:
-            index += 1
-            if index >= len(fields) or not fields[index]:
-                raise CheckpointError("could not parse renamed Git status")
-            original = fields[index].decode("utf-8", errors="surrogateescape")
-        dirty.append(Dirty(xy, path, original))
+        kind = field[:1].decode("ascii", errors="replace")
+        try:
+            if kind == "1":
+                parts = field.split(b" ", 8)
+                if len(parts) != 9:
+                    raise ValueError
+                dirty.append(Dirty(kind, parts[1].decode("ascii"), parts[8].decode("utf-8", errors="surrogateescape"), submodule=parts[2].decode("ascii")))
+            elif kind == "2":
+                parts = field.split(b" ", 9)
+                if len(parts) != 10:
+                    raise ValueError
+                index += 1
+                if index >= len(fields) or not fields[index]:
+                    raise ValueError
+                dirty.append(Dirty(kind, parts[1].decode("ascii"), parts[9].decode("utf-8", errors="surrogateescape"), fields[index].decode("utf-8", errors="surrogateescape"), parts[2].decode("ascii")))
+            elif kind == "u":
+                parts = field.split(b" ", 10)
+                if len(parts) != 11:
+                    raise ValueError
+                dirty.append(Dirty(kind, parts[1].decode("ascii"), parts[10].decode("utf-8", errors="surrogateescape"), submodule=parts[2].decode("ascii")))
+            elif kind in {"?", "!"}:
+                dirty.append(Dirty(kind, kind * 2, field[2:].decode("utf-8", errors="surrogateescape")))
+            else:
+                raise ValueError
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise CheckpointError("could not parse Git porcelain-v2 status") from exc
         index += 1
     return dirty
 
 
 def selected(path: str, includes: tuple[str, ...]) -> bool:
     return any(path == entry or path.startswith(entry + "/") for entry in includes)
+
+
+def status_names(item: Dirty) -> tuple[str, ...]:
+    return (item.path, item.original) if item.original else (item.path,)
 
 
 def inspect_boundary(root: Path, relative: str) -> None:
@@ -189,6 +215,8 @@ def fingerprint(root: Path, path: str) -> str:
 
 
 def inspect(root: Path, includes: tuple[str, ...]) -> dict[str, Any]:
+    if os.environ.get("GIT_INDEX_FILE"):
+        raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for controller checkpoints")
     index_lock = git_path(root, "index.lock")
     if index_lock.exists():
         raise CheckpointError(f"Git index.lock exists; never delete it: {index_lock}")
@@ -197,15 +225,17 @@ def inspect(root: Path, includes: tuple[str, ...]) -> dict[str, Any]:
     if any(item.conflicted for item in dirt):
         paths = [item.path for item in dirt if item.conflicted]
         raise CheckpointError(f"unmerged conflict paths block checkpoint: {paths}")
-    staged = [item.path for item in dirt if item.staged]
+    if any(item.dirty_submodule for item in dirt):
+        paths = [item.path for item in dirt if item.dirty_submodule]
+        raise CheckpointError(f"dirty submodule state blocks checkpoint: {paths}")
+    staged = sorted({name for item in dirt if item.staged for name in status_names(item)})
     if staged:
         raise CheckpointError(f"pre-existing staged index blocks checkpoint: {staged}")
     for item in dirt:
-        inspect_boundary(root, item.path)
-        if item.original:
-            inspect_boundary(root, item.original)
-    chosen = sorted({item.path for item in dirt if selected(item.path, includes)})
-    blocked = sorted({item.path for item in dirt if not selected(item.path, includes)})
+        for name in status_names(item):
+            inspect_boundary(root, name)
+    chosen = sorted({name for item in dirt for name in status_names(item) if selected(name, includes)})
+    blocked = sorted({name for item in dirt for name in status_names(item) if not selected(name, includes)})
     if blocked:
         raise CheckpointError(f"blocked non-controller paths: {blocked}")
     return {
@@ -240,15 +270,17 @@ def assert_staged_boundary(
     dirt = parse_status(root)
     if any(item.conflicted for item in dirt):
         raise CheckpointError("conflict appeared during checkpoint staging")
-    blocked = sorted({item.path for item in dirt if not selected(item.path, includes)})
+    if any(item.dirty_submodule for item in dirt):
+        raise CheckpointError("dirty submodule state appeared during checkpoint staging")
+    blocked = sorted({name for item in dirt for name in status_names(item) if not selected(name, includes)})
     if blocked:
         raise CheckpointError(f"blocked non-controller paths appeared during checkpoint: {blocked}")
-    actual_staged = sorted({item.path for item in dirt if item.staged})
+    actual_staged = sorted({name for item in dirt if item.staged for name in status_names(item)})
     if actual_staged != sorted(staged_paths):
         raise CheckpointError(
             f"staged path set escaped frozen group: expected={sorted(staged_paths)} actual={actual_staged}"
         )
-    dirty_paths = sorted({item.path for item in dirt})
+    dirty_paths = sorted({name for item in dirt for name in status_names(item)})
     if dirty_paths != sorted(remaining):
         raise CheckpointError("dirty path set changed after staging")
     if any(fingerprint(root, path) != frozen["fingerprints"][path] for path in remaining):
@@ -294,6 +326,8 @@ def agent_groups(root: Path, frozen: dict[str, Any], config: dict[str, Any]) -> 
         raise CheckpointError("agent proposal is not valid JSON") from exc
     if not isinstance(proposal, dict) or proposal.get("schema_version") != AGENT_SCHEMA_VERSION:
         raise CheckpointError("agent proposal has an invalid schema_version")
+    if set(proposal) != {"schema_version", "groups"}:
+        raise CheckpointError("agent proposal contains unknown top-level fields")
     groups = proposal.get("groups")
     if not isinstance(groups, list):
         raise CheckpointError("agent proposal groups must be an array")
@@ -301,7 +335,9 @@ def agent_groups(root: Path, frozen: dict[str, Any], config: dict[str, Any]) -> 
     flattened: list[str] = []
     allowed = set(frozen["selected"])
     for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get("paths"), list) or not group["paths"]:
+        if not isinstance(group, dict) or set(group) != {"paths", "message"}:
+            raise CheckpointError("agent proposal group must contain only paths and message")
+        if not isinstance(group.get("paths"), list) or not group["paths"]:
             raise CheckpointError("agent proposal contains an invalid group")
         paths = group["paths"]
         if any(not isinstance(path, str) or path not in allowed for path in paths):
@@ -318,15 +354,26 @@ def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, An
     commits: list[str] = []
     for paths, message in groups:
         assert_frozen(root, includes, frozen, remaining)
-        git(root, "add", "--", *paths)
-        staged = sorted(filter(None, git(root, "diff", "--cached", "--name-only", "-z").split("\0")))
-        if staged != sorted(paths):
-            raise CheckpointError(f"staged path set escaped frozen group: expected={sorted(paths)} actual={staged}")
-        # inspect() rejects any index ownership, so use the staging-aware
-        # boundary check to catch blocked paths, conflicts, ref/content races,
-        # and any path staged outside this explicit group.
-        assert_staged_boundary(root, includes, frozen, remaining, paths)
-        git(root, "commit", "--no-verify", "-m", message, "--", *paths)
+        staged_by_checkpoint = False
+        try:
+            git(root, "add", "--", *paths)
+            staged_by_checkpoint = True
+            staged_status = parse_status(root)
+            staged = sorted({name for item in staged_status if item.staged for name in status_names(item)})
+            if staged != sorted(paths):
+                raise CheckpointError(f"staged path set escaped frozen group: expected={sorted(paths)} actual={staged}")
+            # inspect() rejects any index ownership, so use the staging-aware
+            # boundary check to catch blocked paths, conflicts, ref/content races,
+            # and any path staged outside this explicit group.
+            assert_staged_boundary(root, includes, frozen, remaining, paths)
+            git(root, "commit", "--no-verify", "-m", message, "--", *paths)
+            staged_by_checkpoint = False
+        except BaseException:
+            # A failed/raced commit must not strand checkpoint-owned index state.
+            # Restore only the explicit group; worktree content remains untouched.
+            if staged_by_checkpoint:
+                git(root, "restore", "--staged", "--", *paths, check=False)
+            raise
         commits.append(git(root, "rev-parse", "HEAD").strip())
         frozen["head"] = commits[-1]
         remaining = [path for path in remaining if path not in paths]
