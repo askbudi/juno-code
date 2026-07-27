@@ -1,164 +1,87 @@
 ---
 wiki_contract:
   line_limit: 220
-  purpose: "Canonical lifecycle for isolated Git worktrees used by task, review, and workflow agents."
-  failure_mode_prevented: "Agents share a dirty checkout, mutate a target beside another writer, delete an unexplained Git index lock, strand commits, integrate into the wrong branch, run E2E before integration, or destroy active/uncommitted work during cleanup."
-  runtime_contract_enforced: "Every isolated task records its repository, base SHA, integration target and owner, preserves and diagnoses an existing checkout-specific index lock, proves bounded quiescence under repository leases, validates the integrated target, and ends with an explicit controller/cleanup disposition."
-  validation_gate: "python3 -m py_compile .juno_task/scripts/git_index_lock.py .juno_task/scripts/controller_checkpoint.py .juno_task/scripts/worktree_lifecycle_audit.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/git_index_lock.py --repository . && python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json"
+  purpose: "Canonical exact-base worktree, reviewed candidate, target-channel integration, feature-tag, and cleanup lifecycle."
+  failure_mode_prevented: "Dirty controllers block unrelated work, stale integrations overwrite refs, tags lie, or cleanup destroys unintegrated work."
+  runtime_contract_enforced: "Immutable identities and three review receipts gate target-ref CAS, actual-target validation, local feature tags, and cleanup."
+  validation_gate: "python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/tests/test_integration_concurrency.py"
   related_sots:
     - "parallel_runner_task_creation_best_practices.md"
     - "parallel_runner_and_spec_review.md"
-    - "runtime_migration_and_replacement_contract.md"
   owns:
-    - "Decision, creation, integration, validation, and cleanup rules for Git worktrees."
-    - "Repository-wide worktree inventory and cleanup classification contract."
+    - "Named worktree creation, candidate, local integration, feature tag, and cleanup contracts."
   does_not_own:
-    - "Task-specific paths, branches, commits, evidence, or current inventory counts."
-    - "Production deployment mechanics or domain-specific test gates."
+    - "Push, publication, release, deployment, or post-deploy E2E authority."
 ---
 
 # Git Worktree Lifecycle
 
-Use this SOT whenever a task, workflow, or reviewer creates or inherits a Git worktree. Worktrees isolate files; they do not integrate commits or make cleanup safe automatically.
-
-## Isolation decision
-
-Use the existing checkout only for one bounded owner when it is clean or all existing changes are explicitly owned by that same task. Create an isolated branch worktree when any of these apply:
-
-- the primary checkout is dirty with unrelated work;
-- multiple agents may edit overlapping repositories or generated files;
-- a dependency-ordered task set needs one shared task branch;
-- validation requires a clean committed tree;
-- a task crosses a submodule boundary and must preserve parent-pointer ownership.
-
-Use a detached worktree only for read-only review or validation. Any edit made there must be committed onto a named branch before the worktree is disposable. Path-ownership controls are still required when agents share one task worktree.
-
-## Preflight and creation
-
-Before creation, record this manifest in the task, workflow preflight, or durable artifact:
+Every product change, including a small fix, uses a named exact-base worktree. Controller dirt and unrelated processes are not integration inputs and do not block creation or a proven disjoint target channel.
 
 ```text
-repository | primary checkout | integration target | fetched base SHA
-worktree path | task branch or detached purpose | integration owner
-expected touched paths | nested submodules | validation gate | cleanup owner
+exact base -> named clean task tree -> pre-merge review PASS
+ -> direct or both-parent candidate -> candidate review PASS
+ -> ordered channel lock + expected-SHA CAS -> actual-target tests/review PASS
+ -> local juno-feature tag -> safe typed cleanup
 ```
 
-Discover repositories rather than assuming the superproject is the only one. Include the root, declared recursive submodules, and embedded repositories. Discover the intended integration target from the approved task/deployment path; do not globally assume `main` or `master`. Fetch that target immediately before recording its base SHA.
+## Exact-base creation
 
-Creation must fail closed when the path or branch already exists with the wrong HEAD, an existing worktree is dirty, the target ref cannot be resolved, or another worktree already owns the branch. Prefer a task-identifying path and branch. For a shared dependency-ordered worktree, every worker must verify the same branch and predecessor commit before editing.
+Use `worktree_lifecycle.py create` with full `refs/...` names, task ID, expected paths, validation commands, and cleanup owner. `--fetch REMOTE,REF` is narrow and uses `--no-tags`. `--expected-base` binds the fetched identity. Existing paths/branches are accepted only when path, branch, HEAD, and clean state exactly match.
 
-## Required lifecycle
+Controller status is intentionally absent. Capacity is advisory. `--hard-min-free-bytes` blocks only when measurement succeeds and reports threshold, observation, and recovery. Git's actual worktree-add result remains authoritative.
+
+`verify` binds later work to the immutable manifest. `audit` records inventory, target reachability, and prune dry-run.
+
+## Three semantic gates and candidate composition
+
+`integration_candidate.py plan` requires a `pre_merge` PASS receipt, exact base/target/task identities, expected paths, no open bugs, and a PDR matrix whose values are all `PASS`. It records task, target, overlap, and candidate path classes.
+
+`build` leaves a linear candidate at the reviewed task tip. If the target advanced, it creates an isolated candidate at the exact target and merges the reviewed tip with `--no-ff`; the resulting parents must be exactly target then task. Candidate construction never updates the official target. Conflicts are preserved for diagnosis. Candidate commands are timeout-bounded.
+
+`verify` requires a separate `candidate` PASS receipt for the exact candidate and rejects target movement. Target movement means rebuild **and re-review**, never reuse a stale receipt.
+
+## Target-ref channels
+
+`integration_owner_preflight.py integrate` is the only local target mutation authority. Each repository argument is:
 
 ```text
-owner-approved task and isolation decision
-  -> fetch target; record base SHA; create/verify worktree
-  -> implementation commits with task validation
-  -> independent review and coherent review-fix commits
-  -> fetch target again; classify integrated/ahead/divergent
-  -> integration owner merges/rebases/cherry-picks or pushes as approved
-  -> for submodules: push child commit, then commit parent pointer
-  -> validate the actual integrated target
-  -> only then permit deployment or post-deploy E2E
-  -> remove nested worktrees before parents; remove task worktree
-  -> delete task branch only after reachability proof
-  -> final inventory and prune dry-run
+--repository NAME=PATH,TARGET_REF,EXPECTED_SHA,CANDIDATE_SHA
 ```
 
-Integration is an explicit stage after independent review and before deployment/E2E. A successful worker, task commit, or clean worktree is not integration evidence.
+The helper validates every candidate before mutation, derives a channel from `(resolved Git common directory, full target ref)`, acquires all channels in deterministic order, rechecks expected SHAs under lock, and updates refs with `git update-ref <ref> <new> <expected-old>`. Unrelated controller/task processes do not gate the transaction.
 
-## Controller checkpoint boundary
+Multi-repository arguments are updated in caller order, so callers list nested children before parents. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds.
 
-Before any Juno-owned Git index mutation, resolve the checkout-specific lock with `git rev-parse --path-format=absolute --git-path index.lock`. The default diagnostic mode and `controller_checkpoint.py plan` are read-only: they preserve any existing lock and return non-zero with `safe_next_action=preserve_and_coordinate`.
+After updates, every `--validation-command` runs against the actual target state. `--actual-review-command` must produce the named `--actual-review-receipt` with `review_kind=actual_target`, exact integrated tip, `passed=true`, and no open bugs.
 
-```bash
-python3 .juno_task/scripts/git_index_lock.py \
-  --repository /path/to/checkout \
-  --output /durable/index-lock.json
+Only then does the helper create an annotated local tag:
+
+```text
+juno-feature/<task-id>/<integrated-short-sha>
 ```
 
-The receipt records checkout/common-directory identity, bounded hashes and metadata for the lock and index, and hashed process names when owner inspection is available. A lock is eligible for automatic recovery only when every high-confidence condition holds: it is at least 300 seconds old, empty, fully hashed, owner probing is available with no open owner, the real index exists and is non-empty, and the lock inode/size/mtime/hash remain stable across two observations plus a final owner/identity check. The recovery atomically renames that exact inode beside the index as `index.lock.stale.<UTC>.<inode>` and verifies the quarantine; it never deletes the lock. Young, non-empty, changing, owned, unprobeable, or otherwise uncertain locks remain untouched and block the operation.
+Its message binds full SHA, target ref, candidate receipt hash, validation receipt hash, and task ID. Exact retries are idempotent; collisions fail. `vX.Y.Z` is package-release-only and must align package metadata, built CLI version, and release identity. No helper here pushes tags/code, publishes, releases, deploys, or runs E2E.
 
-After an ordinary, workflow, or parallel run writes its final durable state, its outer finalizer invokes `controller_checkpoint.py commit` best-effort. The mutating checkpoint path holds the exclusive `juno-repository-writer.lock` lease before attempting high-confidence stale-lock recovery; `require-clean --checkpoint` uses the same boundary. Direct `git_index_lock.py --recover-high-confidence-stale` is an explicit mutating operator action and must not be run without equivalent repository-writer coordination. Failure is warned without replacing the run status; failed runs may preserve valid allowlisted state with a failure-state message. The helper rejects product dirt, a pre-existing staged index, conflicts, unsafe paths/repository boundaries, detached HEAD, races, and lease contention, stages only frozen explicit paths, and never pushes or orchestrates refs. Agent mode can propose strict JSON grouping/messages with hooks disabled, closed stdin, bounded time, and read-only tools; deterministic code remains the only staging/commit owner.
+## Automatic workflow queue
 
-Age, emptiness, or missing `lsof` owners alone never establish staleness. Keep `safe_next_action=preserve_and_coordinate` as the hard boundary whenever the complete predicate does not pass. Juno startup provenance should eventually correlate an invocation/session ID, PID/PPID, repository common directory, bounded Git operation class, start/end/exit state, and lock observations in the isolated session-metadata directory; do not record prompts, credentials, full command lines, or repository file contents.
+A `workflow_class: local_integration` declares this exact policy:
 
-Immediately before integration, pass `--checkpoint-controller "$CONTROLLER_ROOT"` to `integration_owner_preflight.py`, before `--exec-command`. It runs `controller_checkpoint.py require-clean --checkpoint`, records checkpoint evidence, and only then acquires the integration leases. Product dirt fails closed and remains untouched. This is clean proof, not merge authority or a substitute for review, ancestry, or integrated-target validation.
-
-## Integration-owner quiescence
-
-Immediately before any target-ref mutation, acquire fixed-order cooperative leases for every affected repository and prove each named target owner is clean, checked out on the exact target ref, and unchanged across a bounded observation window. Use the shared helper; pass the mutation as `--exec-command` so leases remain held through it:
-
-```bash
-python3 .juno_task/scripts/integration_owner_preflight.py \
-  --checkpoint-controller "$CONTROLLER_ROOT" \
-  --repository "root=$ROOT_INTEGRATION_OWNER,$ROOT_EXACT_TARGET_REF" \
-  --repository "child=$CHILD_INTEGRATION_OWNER,$CHILD_EXACT_TARGET_REF" \
-  --quiescence-seconds 2 --output "$DURABLE_RUN/preflight.json" \
-  --exec-command "$REVIEWED_INTEGRATION_SCRIPT"
+```yaml
+integration_policy:
+  queue: automatic_after_review_pass
+  channel_scope: git_common_dir_and_target_ref
+  target_movement: rebuild_and_rereview
 ```
 
-Long-running non-integration launchers can use `repository_writer_guard.py --cwd PATH -- COMMAND` to hold a shared `juno-repository-writer.lock` lease in the Git common directory; integration takes that lease exclusively through the preflight helper. Do not wrap an agent that must itself perform integration, because its own shared lease would correctly block the exclusive mutation. The preflight hashes process commands in receipts, excludes caller ancestry, never signals processes, rejects same-repository legacy writers, and permits writers whose Git common directory proves they belong to another repository. Process discovery remains a fail-closed compatibility fallback when legacy writer scope is unknown. Any integration workflow capable of target mutation must use the exclusive preflight rather than inventing task-local lock directories.
+Validation ownership names `pre_merge_review`, `candidate_review`, and `actual_target_review`. The integration step consumes the eligible receipt and runs actual-target review. Same-channel jobs serialize on the channel lock; disjoint channels can progress independently.
 
-Workflow-launched Juno commands redirect volatile session metadata beside run artifacts. Interactive integration owners should use an equivalent isolated `JUNO_CODE_SESSION_METADATA_DIRECTORY`. If tracked session/Kanban metadata changes during quiescence, stop and preserve ownership; do not repeatedly commit runtime churn merely to manufacture a clean target owner.
+## Cleanup
 
-## Integration gate
+`worktree_lifecycle.py cleanup` requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. Expected disappearance is success; optional branch deletion uses non-force `git branch -d`. Every attempt records final inventory and prune dry-run. There is no automatic force mode.
 
-The named integration owner must:
+## Shipping and validation
 
-1. Fetch the approved target and detect remote movement.
-2. Inspect the complete base-to-task diff and task/review commits.
-3. Stop on divergence or conflicts unless the approved strategy names how to resolve them.
-4. Integrate through the repository's approved route: fast-forward/merge, reviewed rebase, selected cherry-pick, direct protected-branch push, or submodule child push plus parent-pointer commit.
-5. Prove `git merge-base --is-ancestor <task-tip> <integration-target>` after integration. For squash integration, record the replacement commit and prove the reviewed patch equivalence because task-tip ancestry will intentionally be false.
-6. Run the required tests against the integrated target, not only the task branch.
-7. Record final target ref/SHA, integration method, validation result, and E2E eligibility.
+The canonical bytes are under `juno-code/src/templates/scripts/`. ScriptInstaller installs every helper into `.juno_task/scripts/`; build copies those bytes to `dist/templates/scripts/`. Runtime/template/dist parity is mandatory. The old repository-wide writer guard and read-only cleanup authority were removed rather than retained as alternate engines.
 
-Target-ref integration and primary-controller restoration are separate outcomes. End with exactly one durable disposition: `target_integrated_controller_attached_clean`, `target_integrated_controller_detached_preserved`, `integration_pending_dirty_owner`, or `integration_failed_preserved`. A request to restore the root/controller channel requires the attached-clean disposition: quiesce writers, preserve or externalize metadata, release any auxiliary owner holding the branch, attach the controller to the integrated target, update nested checkouts to exact gitlinks, and revalidate cleanliness/ref/gitlink equality. Never switch a dirty controller merely to make it current.
-
-## Cleanup gate
-
-Inventory first:
-
-```bash
-python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json
-git worktree list --porcelain
-git worktree prune --dry-run --verbose
-```
-
-Pass explicit `--target REPOSITORY=REF` mappings when the default upstream is not the approved integration target. The helper is read-only; `cleanup_candidate=true` means an auxiliary worktree is clean, has neither an initialized nested repository nor retained worktree-specific `modules/` metadata, and its tip is an ancestor of the selected target. `git submodule deinit` alone does not make retained metadata automatically removable. The helper never removes anything.
-
-Before removal, recheck all tracked and untracked status, target reachability, locked/prunable state, initialized submodules, and active processes using the worktree. `worktree_lifecycle_audit.py` owns read-only cleanup classification; `integration_owner_preflight.py` owns target-ref integration leases and has no cleanup mode. Do not pass undocumented modes or treat either helper as permission to remove files. A task branch is removable only when the audit reports it clean and its reviewed tip is reachable from the declared exact target, followed by an explicit no-active-process check. Remove nested worktrees before parent worktrees. Do not use filesystem deletion as a substitute for `git worktree remove`; use `prune` only for already-missing registrations. Force removal is allowed only with explicit cleanup authorization plus recorded proof that no dirty, active, or unintegrated work will be lost.
-
-Delete a task branch only after its reviewed tip is reachable from the approved target or a recorded squash replacement preserves the patch. Finish with another repository-wide inventory and prune dry-run. Keep blocked trees with an owner and reason rather than guessing from age.
-
-## Dispositions
-
-- `clean_integrated`: eligible for ordinary removal when auxiliary.
-- `clean_integrated_nested`: integrated, but nested repositories require ordered manual cleanup.
-- `clean_unintegrated_ahead`: preserve until integration or intentional archival protects the tip.
-- `clean_divergent`: preserve; fetch and integration-owner decision required.
-- `dirty`: preserve; classify and commit, transfer, or intentionally discard with authorization.
-- `stale_missing_path` / `prunable_registration`: audit the protected commit, then prune the registration.
-- `locked`, `status_error`, `target_unknown`, or `reachability_error`: fail closed and resolve the named condition.
-
-Failure mode prevented: parallel agents leave large worktrees, lose detached commits, target the wrong shared branch, or clean up before reviewed work is integrated.
-
-Runtime contract enforced: isolation begins with an explicit fetched base and ends only after integration, integrated-target validation, E2E handoff, and a repository-wide cleanup disposition.
-
-Exact installed-project validation gate:
-
-```bash
-python3 -m py_compile \
-  .juno_task/scripts/git_index_lock.py \
-  .juno_task/scripts/controller_checkpoint.py \
-  .juno_task/scripts/integration_owner_preflight.py \
-  .juno_task/scripts/worktree_lifecycle_audit.py
-python3 .juno_task/scripts/git_index_lock.py --repository .
-python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json
-git worktree list --porcelain
-git worktree prune --dry-run --verbose
-```
-
-The Juno Code source package additionally runs focused helper tests and source/dist/npm-tarball parity. Runtime projects are not required to carry package test sources or a private wiki linter.
-
-Why tests/backing implementation matter: prose cannot reliably enumerate embedded repositories, serialize target mutation, observe ref/status stability, or distinguish clean-integrated, dirty, active, missing, nested, and divergent states. The helpers make those states and leases reviewable while keeping integration commands and destructive cleanup explicit.
+Real Git/worktree tests matter: prose cannot prove dirty-controller isolation, both-parent composition, stale compare-and-swap refusal, lock serialization, partial multi-repository truth, tag collisions, or reachability-safe removal. Package-install tests matter because source-only helpers do not fix existing or fresh projects.

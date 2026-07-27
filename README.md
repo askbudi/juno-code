@@ -54,10 +54,10 @@ Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local c
 |---|---|---|
 | Controller | Kanban/Juno mutation, orchestration, prompts, and durable receipts; pass the product checkout as explicit `TASK_ROOT` | Product implementation or integration; implicit ref changes |
 | Task checkout | Implementation, focused tests, and coherent task commits against the declared base | Private Kanban/session state or integration-target mutation; route writes to the controller |
-| Integration owner | Reviewed integration on the exact clean target while the repository lease is held | Kanban/orchestration/session writes, unrelated edits, or implicit push/deploy |
-| Guarded small fix | From the controller, target one clean product checkout with exact ref, lease, declared paths, validation, and one coherent commit | Broad refactors, dirty targets, concurrent integration, or bypassing review/release authority |
+| Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
+| Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
 
-Choose the smallest lane that satisfies the work. Controller, task, and integration-owner cleanliness are independent: a clean task tree does not prove a clean controller or integration owner. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
+Choose the smallest lane that satisfies the work. Controller dirt and unrelated agents do not gate exact-base creation or a disjoint target channel. Every product change uses a named worktree. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
 
 Rollback operations are intentionally separate:
 
@@ -249,18 +249,11 @@ Cron owners should wrap a launch with `orchestration_guard.py --key <stable-name
 
 For mutation or integration workflows, declare `frozen_inputs`, typed `receipts`, `requires_receipts`, and a `terminal_gate`. Receipt contracts can require dotted fields and bind semantic values with `expected_fields`. The first attempt writes an immutable `run_contract.json`; resuming into the same output directory with `--from-step` verifies the workflow, variables, rendered commands, frozen inputs, producer digests, and receipt hashes before reusing a predecessor as `reused_verified`. A validation-only correction must use a fresh output directory with `amendment_mode: harness_only_validation` and `--amends-run`, preserving the original evidence. Advanced contract YAML requires Python PyYAML; JSON workflows remain dependency-free and the runner fails explicitly instead of partially parsing unsupported YAML.
 
-Use `workflow_assert.py` for named machine-readable diagnostics. On macOS/Linux, `integration_owner_preflight.py` can hold per-repository Git-common-dir leases through an integration command while proving a bounded clean/ref-stable window and writing a redacted receipt outside the checkout:
+Use `workflow_assert.py` for named machine-readable diagnostics. Local integration uses three installed helpers: `worktree_lifecycle.py` creates/verifies exact-base named trees and performs typed safe cleanup; `integration_candidate.py` plans/builds direct or both-parent candidates and requires pre-merge plus candidate review receipts; `integration_owner_preflight.py integrate` locks each `(Git common directory, full target ref)` channel, performs exact expected-SHA CAS, validates/reviews the actual target, and creates the local annotated `juno-feature/<task>/<sha>` tag. Target movement requires candidate rebuild and re-review. Multi-repository updates are child-first and later failure is recorded as `partial_local_integration` without rewind.
 
-```bash
-./.juno_task/scripts/integration_owner_preflight.py \
-  --checkpoint-controller /path/to/controller \
-  --repository root=/path/to/clean-owner,refs/heads/main \
-  --quiescence-seconds 2 \
-  --output /path/outside/checkout/integration-owner.json \
-  --exec-command ./scripts/integrate-reviewed-tip.sh
-```
+A `local_integration` workflow sets `integration_policy.queue: automatic_after_review_pass`, `channel_scope: git_common_dir_and_target_ref`, and `target_movement: rebuild_and_rereview`. Same-channel jobs serialize while disjoint channels proceed independently. Feature tags are local integration evidence; `vX.Y.Z`, push, publication, release, deployment, and post-deploy E2E each require separate authority.
 
-Controller checkpoints are local-only and bounded. `controller_checkpoint.py plan --json` is read-only; `commit --message ...` deterministically commits only configured controller paths; `commit --agent` lets a hook-disabled, timeout-bounded read-only agent propose grouping/messages while deterministic code still stages explicit paths; and `require-clean --checkpoint` is the mandatory pre-integration gate. Configure repository-relative files or directory prefixes in `gitCheckpoint.include`. Product dirt, pre-staged/conflicted paths, unsafe symlinks or nested repositories/submodules, races, and lock contention fail closed without broad staging. Ordinary/workflow/parallel outer finalizers invoke checkpoints best-effort after terminal writes and preserve the original run status. The helper never pushes, fetches, merges, switches, or otherwise orchestrates refs.
+Controller checkpoints remain local orchestration durability only. They are not product inputs or integration gates. `controller_checkpoint.py plan --json` is read-only; configured commits remain bounded to explicit controller paths. Ordinary/workflow/parallel outer finalizers may checkpoint after terminal writes, but target integration never requires an unrelated controller checkout to become clean or idle.
 
 ### Full Traceability: Every Change Tracked
 - Every task links to a git commit

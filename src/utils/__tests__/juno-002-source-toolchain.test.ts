@@ -66,7 +66,7 @@ describe('Juno 2 shipped guidance', () => {
     expect(codeReadme).toContain('rollback-selection');
     expect(codeReadme).toContain('register-controller');
     expect(codeReadme).toContain('Controller |');
-    expect(codeReadme).toContain('Guarded small fix |');
+    expect(codeReadme).toContain('Small fix worktree |');
 
     for (const prompt of [newTask, runWorkflow, cleanWorktree]) {
       expect(prompt).toContain('controller');

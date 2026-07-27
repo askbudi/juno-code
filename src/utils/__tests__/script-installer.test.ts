@@ -65,8 +65,8 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('git_index_lock.py');
       expect(missing).toContain('controller_checkpoint.py');
       expect(missing).toContain('integration_owner_preflight.py');
-      expect(missing).toContain('repository_writer_guard.py');
-      expect(missing).toContain('worktree_lifecycle_audit.py');
+      expect(missing).toContain('integration_candidate.py');
+      expect(missing).toContain('worktree_lifecycle.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -161,11 +161,11 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("preflight")',
       );
       await fs.writeFile(
-        path.join(scriptsDir, 'repository_writer_guard.py'),
+        path.join(scriptsDir, 'integration_candidate.py'),
         '#!/usr/bin/env python3\nprint("writer guard")',
       );
       await fs.writeFile(
-        path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
+        path.join(scriptsDir, 'worktree_lifecycle.py'),
         '#!/usr/bin/env python3\nprint("audit")',
       );
 
@@ -252,9 +252,9 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_assert.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
+        { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
-        { name: 'repository_writer_guard.py', installed: false },
-        { name: 'worktree_lifecycle_audit.py', installed: false },
+        { name: 'worktree_lifecycle.py', installed: false },
       ]);
     });
 
@@ -349,11 +349,11 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("preflight")',
       );
       await fs.writeFile(
-        path.join(scriptsDir, 'repository_writer_guard.py'),
+        path.join(scriptsDir, 'integration_candidate.py'),
         '#!/usr/bin/env python3\nprint("writer guard")',
       );
       await fs.writeFile(
-        path.join(scriptsDir, 'worktree_lifecycle_audit.py'),
+        path.join(scriptsDir, 'worktree_lifecycle.py'),
         '#!/usr/bin/env python3\nprint("audit")',
       );
 
@@ -387,9 +387,9 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_assert.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
+        { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
-        { name: 'repository_writer_guard.py', installed: true },
-        { name: 'worktree_lifecycle_audit.py', installed: true },
+        { name: 'worktree_lifecycle.py', installed: true },
       ]);
     });
   });

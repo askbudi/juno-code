@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Create, verify, audit, and safely clean exact-base named Git worktrees."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+SCHEMA = "juno_worktree_lifecycle.v2"
+
+class LifecycleError(Exception): pass
+
+def git(repo: Path, *args: str, check: bool = True) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    if check and result.returncode:
+        raise LifecycleError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+def full_ref(value: str) -> str:
+    if not value.startswith("refs/"):
+        raise LifecycleError("refs must be full names beginning with refs/")
+    return value
+
+def branch_ref(value: str, *, allow_detached: bool = False) -> str:
+    if allow_detached and value == "DETACHED":
+        return value
+    if not value.startswith("refs/heads/"):
+        raise LifecycleError("branch refs must be full refs/heads/... names" + (" or DETACHED" if allow_detached else ""))
+    return value
+
+def identity(repo: Path) -> tuple[Path, Path]:
+    root = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
+    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    return root, common
+
+def status(repo: Path) -> str:
+    return git(repo, "status", "--porcelain=v2", "--untracked-files=all")
+
+def lock_path(repo: Path) -> Path:
+    return Path(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "index.lock")).resolve()
+
+def write_receipt(path: Path, payload: dict[str, Any]) -> None:
+    path = path.expanduser().resolve()
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") != encoded:
+        raise LifecycleError(f"immutable receipt already exists with different content: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(encoded, encoding="utf-8")
+
+def listed(repo: Path) -> list[dict[str, str]]:
+    rows, row = [], {}
+    for line in [*git(repo, "worktree", "list", "--porcelain").splitlines(), ""]:
+        if not line:
+            if row: rows.append(row); row = {}
+        else:
+            key, _, value = line.partition(" "); row[key] = value or "true"
+    return rows
+
+def measure_capacity(path: Path) -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(path if path.exists() else path.parent)
+        return {"available": True, "free_bytes": usage.free}
+    except OSError as exc:
+        return {"available": False, "error": type(exc).__name__}
+
+def create(args: argparse.Namespace) -> dict[str, Any]:
+    repo = args.repository.resolve(); root, common = identity(repo)
+    target_ref = full_ref(args.target_ref)
+    if args.fetch:
+        remote, separator, ref = args.fetch.partition(",")
+        if not separator or not remote or not ref: raise LifecycleError("--fetch must be REMOTE,REF")
+        git(repo, "fetch", "--no-tags", remote, f"{ref}:{target_ref}")
+    base = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
+    if args.expected_base and base != args.expected_base: raise LifecycleError(f"base_mismatch expected={args.expected_base} actual={base}")
+    path = args.path.resolve(); branch = branch_ref(args.branch_ref)
+    capacity = measure_capacity(path)
+    if args.hard_min_free_bytes is not None and capacity["available"] and capacity["free_bytes"] < args.hard_min_free_bytes:
+        raise LifecycleError(f"capacity_below_hard_threshold threshold={args.hard_min_free_bytes} observed={capacity['free_bytes']} recovery=free_space")
+    if lock_path(repo).exists(): raise LifecycleError(f"git_index_lock_present: {lock_path(repo)}")
+    matches = [row for row in listed(repo) if Path(row["worktree"]).resolve() == path]
+    if matches:
+        row = matches[0]
+        if row.get("branch") != branch or row.get("HEAD") != base: raise LifecycleError("existing_worktree_identity_mismatch")
+        if status(path): raise LifecycleError("existing_worktree_dirty")
+        outcome = "verified_existing"
+    else:
+        if path.exists(): raise LifecycleError("worktree_path_collision")
+        if git(repo, "show-ref", "--verify", "--quiet", branch, check=False): raise LifecycleError("branch_ref_collision")
+        git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
+        outcome = "created"
+    payload = {"schema_version": SCHEMA, "operation": "create", "outcome": outcome, "repository_root": str(root),
+               "git_common_dir": str(common), "target_ref": target_ref, "base_sha": base, "task_id": args.task_id,
+               "branch_ref": branch, "worktree": str(path), "expected_paths": sorted(set(args.expected_path)),
+               "validation_commands": args.validation_command, "cleanup_owner": args.cleanup_owner,
+               "capacity": capacity, "clean": status(path) == ""}
+    write_receipt(args.output, payload); return payload
+
+def verify(args: argparse.Namespace) -> dict[str, Any]:
+    receipt = json.loads(args.manifest.read_text(encoding="utf-8")); path = Path(receipt["worktree"])
+    actual = {"head": git(path, "rev-parse", "HEAD"), "branch_ref": git(path, "symbolic-ref", "-q", "HEAD", check=False), "clean": status(path) == ""}
+    passed = actual == {"head": receipt["base_sha"], "branch_ref": receipt["branch_ref"], "clean": True}
+    payload = {"schema_version": SCHEMA, "operation": "verify", "passed": passed, "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(), "actual": actual}
+    write_receipt(args.output, payload)
+    if not passed: raise LifecycleError("worktree verification failed")
+    return payload
+
+def active(path: Path) -> bool:
+    try: result = subprocess.run(["lsof", "+D", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired): return True
+    return result.returncode == 0
+
+def audit(args: argparse.Namespace) -> dict[str, Any]:
+    repo = args.repository.resolve(); target = full_ref(args.target_ref)
+    target_exists = run_returncode(repo, "rev-parse", "--verify", target) == 0
+    rows = []
+    for row in listed(repo):
+        path = Path(row["worktree"]); exists = path.exists(); dirt = None if not exists else status(path)
+        reachable = target_exists and run_returncode(repo, "merge-base", "--is-ancestor", row["HEAD"], target) == 0
+        rows.append({**row, "exists": exists, "clean": dirt == "" if dirt is not None else False,
+                     "reachable_from_target": reachable,
+                     "cleanup_eligible": exists and dirt == "" and reachable and "locked" not in row and "prunable" not in row})
+    payload = {"schema_version": SCHEMA, "operation": "audit", "repository": str(repo), "target_ref": target,
+               "target_exists": target_exists, "worktrees": rows,
+               "prune_dry_run": git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()}
+    write_receipt(args.output, payload); return payload
+
+def run_returncode(repo: Path, *args: str) -> int:
+    return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).returncode
+
+def cleanup(args: argparse.Namespace) -> dict[str, Any]:
+    repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
+    expected = args.expected_head
+    refusals: list[str] = []
+    if args.delete_branch and branch == "DETACHED": refusals.append("detached_has_no_branch")
+    if not path.exists(): refusals.append("worktree_missing")
+    else:
+        if lock_path(path).exists(): refusals.append("index_lock_present")
+        if status(path): refusals.append("dirty")
+        if git(path, "rev-parse", "HEAD") != expected: refusals.append("unexpected_head")
+        actual_branch = git(path, "symbolic-ref", "-q", "HEAD", check=False) or "DETACHED"
+        if actual_branch != branch: refusals.append("unexpected_branch")
+        if run_returncode(repo, "merge-base", "--is-ancestor", expected, target):
+            refusals.append("unreachable_from_target")
+        if (path / ".gitmodules").exists() and git(path, "submodule", "status", "--recursive", check=False): refusals.append("nested_repository_initialized")
+        if active(path): refusals.append("active_process")
+    removed = False
+    if not refusals:
+        git(repo, "worktree", "remove", str(path)); removed = not path.exists()
+        if not removed: refusals.append("expected_removal_failed")
+        elif args.delete_branch:
+            # Reachability was proven above; delete the exact branch tip with CAS
+            # instead of relying on the caller checkout's current HEAD.
+            git(repo, "update-ref", "-d", branch, expected)
+    inventory = listed(repo); prune = git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()
+    payload = {"schema_version": SCHEMA, "operation": "cleanup", "passed": removed and not refusals,
+               "removed": removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
+               "target_ref": target, "branch_ref": branch, "inventory": inventory, "prune_dry_run": prune}
+    write_receipt(args.output, payload)
+    if refusals: raise LifecycleError("cleanup_refused: " + ",".join(refusals))
+    return payload
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(description=__doc__, allow_abbrev=False); sub = root.add_subparsers(dest="command", required=True)
+    create_p = sub.add_parser("create", allow_abbrev=False); create_p.set_defaults(func=create)
+    create_p.add_argument("--repository", type=Path, required=True); create_p.add_argument("--target-ref", required=True); create_p.add_argument("--expected-base")
+    create_p.add_argument("--fetch"); create_p.add_argument("--path", type=Path, required=True); create_p.add_argument("--branch-ref", required=True)
+    create_p.add_argument("--task-id", required=True); create_p.add_argument("--expected-path", action="append", default=[]); create_p.add_argument("--validation-command", action="append", default=[])
+    create_p.add_argument("--cleanup-owner", required=True); create_p.add_argument("--hard-min-free-bytes", type=int); create_p.add_argument("--output", type=Path, required=True)
+    verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--output", type=Path, required=True)
+    audit_p = sub.add_parser("audit", allow_abbrev=False); audit_p.set_defaults(func=audit); audit_p.add_argument("--repository", type=Path, required=True); audit_p.add_argument("--target-ref", required=True); audit_p.add_argument("--output", type=Path, required=True)
+    clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)
+    for name in ("repository", "path", "output"): clean_p.add_argument(f"--{name}", type=Path, required=True)
+    clean_p.add_argument("--target-ref", required=True); clean_p.add_argument("--branch-ref", required=True); clean_p.add_argument("--expected-head", required=True); clean_p.add_argument("--delete-branch", action="store_true")
+    return root
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    try: payload = args.func(args); print(json.dumps({"schema_version": SCHEMA, "operation": payload["operation"], "passed": payload.get("passed", True)}, sort_keys=True)); return 0
+    except (LifecycleError, OSError, json.JSONDecodeError) as exc: print(f"worktree_lifecycle: error: {exc}", file=sys.stderr); return 2
+if __name__ == "__main__": raise SystemExit(main())

@@ -200,15 +200,17 @@ describe('controller_checkpoint.py template script', () => {
     expect(result.stderr).toContain('timed out');
   });
 
-  it('wires checkpoints only at outer finalizers and requires pre-integration ordering', async () => {
+  it('keeps checkpoints at outer finalizers and out of target-ref integration', async () => {
     const main = await fs.readFile(path.resolve(process.cwd(), 'src/cli/commands/main.ts'), 'utf8');
     expect(main.indexOf('clearContinueScopeRunning')).toBeLessThan(main.lastIndexOf('checkpointControllerAfterFinalization'));
     const workflow = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh'), 'utf8');
     expect(workflow).toContain('checkpoint_after_finalization(exit_code, "workflow")');
-    expect(workflow).toContain('integration_command_text.index("--checkpoint-controller")');
+    expect(workflow).toContain('automatic_after_review_pass');
+    expect(workflow).not.toContain('integration_command_text.index("--checkpoint-controller")');
     const parallel = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh'), 'utf8');
     expect(parallel).toContain('finally:\n        # main returns only after task/session summaries');
     const preflight = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/integration_owner_preflight.py'), 'utf8');
-    expect(preflight.indexOf('require-clean", "--checkpoint"')).toBeLessThan(preflight.indexOf('initial = [repository_snapshot'));
+    expect(preflight).not.toContain('--checkpoint-controller');
+    expect(preflight).toContain('update-ref');
   });
 });

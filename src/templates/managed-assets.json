@@ -55,20 +55,20 @@
       "type": "script"
     },
     {
+      "source": "scripts/integration_candidate.py",
+      "destination": ".juno_task/scripts/integration_candidate.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/integration_owner_preflight.py",
       "destination": ".juno_task/scripts/integration_owner_preflight.py",
       "installClass": "script",
       "type": "script"
     },
     {
-      "source": "scripts/repository_writer_guard.py",
-      "destination": ".juno_task/scripts/repository_writer_guard.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/worktree_lifecycle_audit.py",
-      "destination": ".juno_task/scripts/worktree_lifecycle_audit.py",
+      "source": "scripts/worktree_lifecycle.py",
+      "destination": ".juno_task/scripts/worktree_lifecycle.py",
       "installClass": "script",
       "type": "script"
     }

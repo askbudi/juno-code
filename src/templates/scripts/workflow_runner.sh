@@ -562,10 +562,21 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
     if validation_ownership is not None and not isinstance(validation_ownership, dict):
         raise WorkflowError("validation_ownership must be a mapping")
     if str(workflow.get("workflow_class") or "").strip() == "local_integration":
-        required_roles = {"preintegration_full", "independent_smoke", "actual_target_full"}
+        required_roles = {"pre_merge_review", "candidate_review", "actual_target_review"}
         missing_roles = sorted(required_roles - set(validation_ownership or {}))
         if missing_roles:
             raise WorkflowError(f"local_integration validation_ownership missing roles: {', '.join(missing_roles)}")
+        policy = workflow.get("integration_policy")
+        allowed_policy = {
+            "queue": "automatic_after_review_pass",
+            "channel_scope": "git_common_dir_and_target_ref",
+            "target_movement": "rebuild_and_rereview",
+        }
+        if policy != allowed_policy:
+            raise WorkflowError(
+                "local_integration integration_policy must exactly select automatic_after_review_pass, "
+                "git_common_dir_and_target_ref, and rebuild_and_rereview"
+            )
         if not terminal_gate:
             raise WorkflowError("local_integration workflow requires terminal_gate")
         integration_step = str(workflow.get("integration_step") or "").strip()
@@ -575,46 +586,31 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             next(step["command"] for step in steps if step["id"] == integration_step), ensure_ascii=False
         )
         required_integration_tokens = (
-            "integration_owner_preflight.py",
-            "--checkpoint-controller",
-            "--exec-command",
+            "integration_owner_preflight.py integrate",
+            "--candidate-receipt",
+            "--actual-review-command",
+            "--actual-review-receipt",
         )
         if any(token not in integration_command_text for token in required_integration_tokens):
             raise WorkflowError(
-                f"local_integration integration_step {integration_step} must run controller checkpoint + clean proof "
-                "before integration_owner_preflight.py --exec-command by passing --checkpoint-controller"
+                f"local_integration integration_step {integration_step} must drain an eligible candidate through "
+                "target-ref CAS and actual-target review"
             )
-        if integration_command_text.index("--checkpoint-controller") > integration_command_text.index("--exec-command"):
-            raise WorkflowError("local_integration checkpoint option must precede --exec-command")
-        allowed_dispositions = {
-            "target_integrated_controller_attached_clean",
-            "target_integrated_controller_detached_preserved",
-            "integration_pending_dirty_owner",
-            "integration_failed_preserved",
-        }
-        controller_disposition = str(workflow.get("controller_disposition") or "")
-        if controller_disposition not in allowed_dispositions:
-            raise WorkflowError("local_integration workflow requires a recognized controller_disposition")
+        review_steps = [str(validation_ownership["pre_merge_review"]), str(validation_ownership["candidate_review"])]
+        if any(step_indexes[step] >= step_indexes[integration_step] for step in review_steps):
+            raise WorkflowError("pre_merge_review and candidate_review must precede integration_step")
+        if str(validation_ownership["actual_target_review"]) != integration_step:
+            raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
         integration_receipts = [
-            contract
-            for contract in receipts.values()
+            contract for contract in receipts.values()
             if contract["producer"] == integration_step
-            and "controller_disposition" in contract["required_fields"]
-            and contract["expected_fields"].get("controller_disposition") == controller_disposition
+            and contract["expected_fields"].get("outcome") == "integrated"
+            and "feature_tag" in contract["required_fields"]
         ]
         if not integration_receipts:
-            raise WorkflowError(
-                "local_integration integration_step must produce a typed receipt requiring controller_disposition "
-                "and binding its expected value to the declared controller_disposition"
-            )
-        if step_indexes[str(validation_ownership["preintegration_full"])] >= step_indexes[integration_step]:
-            raise WorkflowError("validation_ownership.preintegration_full must precede integration_step")
-        if step_indexes[str(validation_ownership["independent_smoke"])] >= step_indexes[integration_step]:
-            raise WorkflowError("validation_ownership.independent_smoke must precede integration_step")
-        if step_indexes[str(validation_ownership["actual_target_full"])] <= step_indexes[integration_step]:
-            raise WorkflowError("validation_ownership.actual_target_full must follow integration_step")
-        if step_indexes[terminal_gate] < step_indexes[str(validation_ownership["actual_target_full"])]:
-            raise WorkflowError("terminal_gate must not precede validation_ownership.actual_target_full")
+            raise WorkflowError("integration_step must produce a typed integrated receipt requiring feature_tag")
+        if step_indexes[terminal_gate] < step_indexes[integration_step]:
+            raise WorkflowError("terminal_gate must not precede integration_step")
     for role, step_id_value in (validation_ownership or {}).items():
         if str(step_id_value) not in step_indexes:
             raise WorkflowError(f"validation_ownership.{role} references unknown step: {step_id_value}")
@@ -2483,8 +2479,9 @@ def build_parser() -> argparse.ArgumentParser:
   predecessor artifacts. A harness-only correction uses a fresh out-dir,
   amendment_mode: harness_only_validation, and --amends-run PRIOR_RUN.
   Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST.
-  Declare terminal_gate for semantic summaries. local_integration workflows also
-  declare preintegration_full, independent_smoke, and actual_target_full owners.
+  Declare terminal_gate for semantic summaries. local_integration workflows declare
+  pre_merge_review, candidate_review, and receipt-gated actual_target_review owners,
+  plus the exact automatic queue/channel/rebuild integration_policy.
 
 Helper commands:
   workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns

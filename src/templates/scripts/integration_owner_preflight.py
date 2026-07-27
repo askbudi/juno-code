@@ -1,390 +1,125 @@
 #!/usr/bin/env python3
-"""Prove clean, stable integration owners and optionally hold leases around a command."""
+"""Receipt-gated, target-ref-scoped local integration with exact CAS updates."""
 from __future__ import annotations
-
-import argparse
-import datetime as dt
-import hashlib
-import json
-import os
-import re
-import subprocess
-import sys
-import time
+import argparse, fcntl, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+SCHEMA="juno_local_integration.v2"; TAG_RE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+class IntegrationError(Exception):pass
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+def run(repo:Path,*args:str,check:bool=True,env:dict[str,str]|None=None)->subprocess.CompletedProcess[str]:
+ r=subprocess.run(["git","-C",str(repo),*args],text=True,capture_output=True,stdin=subprocess.DEVNULL,env=env or {**os.environ,"GIT_OPTIONAL_LOCKS":"0"})
+ if check and r.returncode:raise IntegrationError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
+ return r
+def git(repo:Path,*args:str,check:bool=True)->str:return run(repo,*args,check=check).stdout.strip()
+def sha(path:Path)->str:return hashlib.sha256(path.read_bytes()).hexdigest()
+def full_ref(v:str)->str:
+ if not v.startswith("refs/heads/"):raise IntegrationError("integration target must be a full refs/heads/... name")
+ return v
 
-from git_index_lock import IndexLockError, require_index_unlocked
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - exercised on non-POSIX platforms
-    fcntl = None  # type: ignore[assignment]
-
-
-SCHEMA_VERSION = "juno_integration_owner_preflight.v1"
-WRITER_RE = re.compile(r"(?:^|[ /])(juno-code|yy|ypl|workflow_runner\.sh)(?:[ /]|$)")
-
-
-class PreflightError(Exception):
-    pass
-
-
-def run_git(path: Path, *args: str, check: bool = True) -> str:
-    result = subprocess.run(["git", "-C", str(path), *args], text=True, capture_output=True)
-    if check and result.returncode != 0:
-        raise PreflightError(f"git[{path}] {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def digest(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def parse_repository(value: str) -> dict[str, Any]:
-    if "=" not in value or "," not in value:
-        raise argparse.ArgumentTypeError("repository must be NAME=PATH,TARGET_REF")
-    name, remainder = value.split("=", 1)
-    path_text, target_ref = remainder.rsplit(",", 1)
-    if not name.strip() or not path_text.strip() or not target_ref.strip():
-        raise argparse.ArgumentTypeError("repository must contain non-empty name, path, and target ref")
-    return {"name": name.strip(), "path": Path(path_text).expanduser().resolve(), "target_ref": target_ref.strip()}
-
-
-def repository_snapshot(repository: dict[str, Any]) -> dict[str, Any]:
-    path = repository["path"]
-    if not path.is_dir():
-        raise PreflightError(f"repository[{repository['name']}].path missing: {path}")
-    root = Path(run_git(path, "rev-parse", "--show-toplevel")).resolve()
-    try:
-        index_lock = require_index_unlocked(path)
-    except IndexLockError as exc:
-        raise PreflightError(f"repository[{repository['name']}].{exc}") from exc
-    head = run_git(path, "rev-parse", "HEAD")
-    checked_out_ref = run_git(path, "symbolic-ref", "-q", "HEAD", check=False)
-    target_sha = run_git(path, "rev-parse", repository["target_ref"])
-    status = run_git(path, "status", "--porcelain=v2", "--untracked-files=all")
-    common_dir_raw = run_git(path, "rev-parse", "--git-common-dir")
-    common_dir = Path(common_dir_raw)
-    if not common_dir.is_absolute():
-        common_dir = path / common_dir
-    return {
-        "name": repository["name"],
-        "path": str(path),
-        "root": str(root),
-        "target_ref": repository["target_ref"],
-        "target_sha": target_sha,
-        "head": head,
-        "checked_out_ref": checked_out_ref,
-        "clean": status == "",
-        "index_lock": index_lock,
-        "status_sha256": digest(status),
-        "git_common_dir": str(common_dir.resolve()),
-    }
-
-
-def process_ancestry(pid: int) -> set[int]:
-    ancestry: set[int] = set()
-    current = pid
-    while current > 0 and current not in ancestry:
-        ancestry.add(current)
-        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(current)], text=True, capture_output=True)
-        try:
-            current = int(result.stdout.strip())
-        except (TypeError, ValueError):
-            break
-    return ancestry
-
-
-def process_cwd(pid: int) -> Path | None:
-    proc_cwd = Path(f"/proc/{pid}/cwd")
-    try:
-        return proc_cwd.resolve(strict=True)
-    except OSError:
-        pass
-    result = subprocess.run(
-        ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-        text=True,
-        capture_output=True,
-    )
-    for line in result.stdout.splitlines():
-        if line.startswith("n/"):
-            return Path(line[1:]).resolve()
-    return None
-
-
-def cwd_git_common_dir(cwd: Path | None) -> str | None:
-    if cwd is None:
-        return None
-    result = subprocess.run(
-        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        text=True,
-        capture_output=True,
-    )
-    return str(Path(result.stdout.strip()).resolve()) if result.returncode == 0 and result.stdout.strip() else None
-
-
-def system_process_inventory() -> list[dict[str, Any]]:
-    result = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], text=True, capture_output=True)
-    if result.returncode != 0:
-        raise PreflightError(f"process inventory failed: {result.stderr.strip()}")
-    processes: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split(None, 2)
-        if len(parts) != 3:
-            continue
-        try:
-            pid, ppid = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        command = parts[2]
-        process: dict[str, Any] = {"pid": pid, "ppid": ppid, "command": command}
-        if WRITER_RE.search(command):
-            cwd = process_cwd(pid)
-            process["cwd_git_common_dir"] = cwd_git_common_dir(cwd)
-        processes.append(process)
-    return processes
-
-
-def classify_processes(
-    repositories: list[dict[str, Any]], processes: list[dict[str, Any]], excluded_pids: set[int]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    classified: list[dict[str, Any]] = []
-    writers: list[dict[str, Any]] = []
-    for process in processes:
-        pid = int(process.get("pid", -1))
-        command = str(process.get("command") or "")
-        explicit_writer = process.get("writer")
-        matched = [repo["name"] for repo in repositories if str(repo["path"]) in command or str(repo.get("root")) in command]
-        writer_command = bool(explicit_writer) if explicit_writer is not None else bool(WRITER_RE.search(command))
-        process_common_dir = process.get("cwd_git_common_dir")
-        repository_common_dirs = {repo["git_common_dir"] for repo in repositories}
-        scope_known_elsewhere = bool(process_common_dir) and process_common_dir not in repository_common_dirs
-        # Repository leases are authoritative for current Juno wrappers. Keep a
-        # fail-closed process fallback for legacy/uninstrumented writers whose
-        # repository cannot be resolved, but do not block a proven different repo.
-        is_writer = writer_command and not scope_known_elsewhere
-        excluded = pid in excluded_pids
-        item = {
-            "pid": pid,
-            "ppid": int(process.get("ppid", -1)),
-            "writer": is_writer,
-            "excluded_as_caller_ancestry": excluded,
-            "matched_repositories": matched,
-            "command_sha256": digest(command),
-        }
-        classified.append(item)
-        if is_writer and not excluded:
-            writers.append(item)
-    return classified, writers
-
-
-def observe_repositories(
-    repositories: list[dict[str, Any]],
-    seconds: float,
-    processes: list[dict[str, Any]],
-    *,
-    sleep_fn: Callable[[float], None] = time.sleep,
-    excluded_pids: set[int] | None = None,
-) -> dict[str, Any]:
-    before = [repository_snapshot(repository) for repository in repositories]
-    for snapshot in before:
-        if snapshot["checked_out_ref"] != snapshot["target_ref"]:
-            raise PreflightError(
-                f"repository[{snapshot['name']}].checked_out_ref: expected={snapshot['target_ref']!r} actual={snapshot['checked_out_ref']!r}"
-            )
-        if snapshot["head"] != snapshot["target_sha"]:
-            raise PreflightError(
-                f"repository[{snapshot['name']}].head: expected target={snapshot['target_sha']} actual={snapshot['head']}"
-            )
-        if not snapshot["clean"]:
-            raise PreflightError(f"repository[{snapshot['name']}].clean: expected=true actual=false")
-    effective_excluded_pids = process_ancestry(os.getpid()) if excluded_pids is None else excluded_pids
-    classified, writers = classify_processes(before, processes, effective_excluded_pids)
-    if writers:
-        raise PreflightError(f"other_write_capable_processes: expected=0 actual={len(writers)}")
-    sleep_fn(seconds)
-    after = [repository_snapshot(repository) for repository in repositories]
-    for first, second in zip(before, after):
-        for field in ("head", "target_sha", "checked_out_ref", "status_sha256", "clean"):
-            if first[field] != second[field]:
-                raise PreflightError(
-                    f"repository[{first['name']}].stable[{field}]: expected={first[field]!r} actual={second[field]!r}"
-                )
-    candidates = [
-        item
-        for item in classified
-        if item["writer"] or item["matched_repositories"] or item["excluded_as_caller_ancestry"]
-    ]
-    return {
-        "before": before,
-        "after": after,
-        "process_inventory_count": len(classified),
-        "process_candidates": candidates,
-        "writers": writers,
-    }
-
-
-def acquire_leases(snapshots: list[dict[str, Any]]) -> list[Any]:
-    if fcntl is None:
-        raise PreflightError(
-            "integration-owner leases require POSIX fcntl support; this helper currently supports macOS and Linux"
-        )
-    handles: list[Any] = []
-    paths = sorted({Path(item["git_common_dir"]) / "juno-repository-writer.lock" for item in snapshots})
-    try:
-        for path in paths:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            handle = path.open("a+", encoding="utf-8")
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                handle.close()
-                raise PreflightError(f"integration lease busy: {path}") from exc
-            handles.append(handle)
-        return handles
-    except Exception:
-        for handle in handles:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            handle.close()
-        raise
-
-
-def release_leases(handles: list[Any]) -> None:
-    if fcntl is None:
-        return
-    for handle in reversed(handles):
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", default=os.getcwd(), help="Project root used only for receipt context")
-    parser.add_argument("--repository", action="append", required=True, type=parse_repository, metavar="NAME=PATH,TARGET_REF")
-    parser.add_argument("--quiescence-seconds", type=float, default=2.0)
-    parser.add_argument(
-        "--checkpoint-controller",
-        metavar="PATH",
-        help="Mandatory pre-integration controller root: checkpoint and prove clean before leases/preflight",
-    )
-    parser.add_argument("--process-inventory-json", help="Optional deterministic process inventory fixture")
-    parser.add_argument("--output", help="Write JSON receipt to this path; stdout is always concise JSON")
-    parser.add_argument("--exec-command", nargs=argparse.REMAINDER, help="Command to execute while leases remain held")
-    args = parser.parse_args()
-    if not 0 <= args.quiescence_seconds <= 300:
-        parser.error("--quiescence-seconds must be between 0 and 300")
-    if args.output:
-        output_path = Path(args.output).expanduser().resolve()
-        for repository in args.repository:
-            try:
-                output_path.relative_to(repository["path"])
-            except ValueError:
-                continue
-            raise PreflightError(
-                f"output receipt must be outside integration-owner checkout {repository['name']}: {output_path}"
-            )
-    if args.process_inventory_json:
-        payload = json.loads(Path(args.process_inventory_json).read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            raise PreflightError("process inventory fixture must be a JSON list")
-        processes = payload
-    else:
-        processes = system_process_inventory()
-
-    checkpoint_result = None
-    if args.checkpoint_controller:
-        controller = Path(args.checkpoint_controller).expanduser().resolve()
-        checkpoint_script = controller / ".juno_task/scripts/controller_checkpoint.py"
-        if not checkpoint_script.is_file():
-            raise PreflightError(f"controller checkpoint helper missing: {checkpoint_script}")
-        completed = subprocess.run(
-            [sys.executable, str(checkpoint_script), "--root", str(controller), "require-clean", "--checkpoint", "--json"],
-            cwd=controller, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
-        if completed.returncode != 0:
-            raise PreflightError(f"controller checkpoint failed before integration preflight: {completed.stderr.strip()}")
-        try:
-            checkpoint_result = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            raise PreflightError("controller checkpoint returned invalid evidence") from exc
-
-    started = dt.datetime.now(dt.timezone.utc).isoformat()
-    leases: list[Any] = []
-    try:
-        initial = [repository_snapshot(repository) for repository in args.repository]
-        leases = acquire_leases(initial)
-        observation = observe_repositories(
-            args.repository,
-            args.quiescence_seconds,
-            processes,
-            excluded_pids={os.getpid()} if args.process_inventory_json else None,
-        )
-        boundary_processes = processes if args.process_inventory_json else system_process_inventory()
-        boundary_excluded = {os.getpid()} if args.process_inventory_json else process_ancestry(os.getpid())
-        boundary_classified, boundary_writers = classify_processes(
-            observation["after"], boundary_processes, boundary_excluded
-        )
-        observation["process_inventory_count_after"] = len(boundary_classified)
-        observation["process_candidates_after"] = [
-            item
-            for item in boundary_classified
-            if item["writer"] or item["matched_repositories"] or item["excluded_as_caller_ancestry"]
-        ]
-        observation["writers_after"] = boundary_writers
-        if boundary_writers:
-            raise PreflightError(
-                f"other_write_capable_processes_after_window: expected=0 actual={len(boundary_writers)}"
-            )
-        command_result = None
-        post_command = None
-        exit_code = 0
-        if args.exec_command:
-            command = args.exec_command[1:] if args.exec_command[:1] == ["--"] else args.exec_command
-            if not command:
-                raise PreflightError("--exec-command requires a command")
-            result = subprocess.run(command, cwd=str(Path(args.root).resolve()))
-            exit_code = int(result.returncode)
-            command_result = {"argv_sha256": digest(json.dumps(command)), "exit_code": exit_code}
-            post_command = [repository_snapshot(repository) for repository in args.repository]
-            for snapshot in post_command:
-                if snapshot["checked_out_ref"] != snapshot["target_ref"]:
-                    raise PreflightError(
-                        f"repository[{snapshot['name']}].post_command_ref: expected={snapshot['target_ref']!r} actual={snapshot['checked_out_ref']!r}"
-                    )
-                if snapshot["head"] != snapshot["target_sha"] or not snapshot["clean"]:
-                    raise PreflightError(
-                        f"repository[{snapshot['name']}].post_command_state: expected=head_equals_target_and_clean actual=head={snapshot['head']} target={snapshot['target_sha']} clean={snapshot['clean']}"
-                    )
-        receipt = {
-            "schema_version": SCHEMA_VERSION,
-            "passed": exit_code == 0,
-            "started_at": started,
-            "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "quiescence_seconds": args.quiescence_seconds,
-            "controller_checkpoint": checkpoint_result,
-            "repositories": observation,
-            "leases_held_through_command": bool(args.exec_command),
-            "command": command_result,
-            "post_command": post_command,
-            "signals_sent": 0,
-        }
-    finally:
-        release_leases(leases)
-    encoded = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
-    if args.output:
-        Path(args.output).write_text(encoded, encoding="utf-8")
-    print(json.dumps({"schema_version": SCHEMA_VERSION, "passed": receipt["passed"], "output": args.output or "stdout"}))
-    return exit_code
-
-
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except (PreflightError, json.JSONDecodeError, OSError) as exc:
-        print(f"integration_owner_preflight: error: {exc}", file=sys.stderr)
-        raise SystemExit(2)
+def parse_repo(v:str)->dict[str,Any]:
+ name,separator,remainder=v.partition("=")
+ parts=remainder.rsplit(",",3)
+ if not separator or len(parts)!=4 or not all([name,*parts]):raise argparse.ArgumentTypeError("repository must be NAME=PATH,TARGET_REF,EXPECTED_SHA,CANDIDATE_SHA")
+ return {"name":name,"path":Path(parts[0]).resolve(),"target_ref":full_ref(parts[1]),"expected_sha":parts[2],"candidate_sha":parts[3]}
+def common(repo:Path)->Path:return Path(git(repo,"rev-parse","--path-format=absolute","--git-common-dir")).resolve()
+def lock_key(item:dict[str,Any])->str:
+ raw=f"{common(item['path'])}\0{item['target_ref']}";return hashlib.sha256(raw.encode()).hexdigest()
+def lock_file(item:dict[str,Any])->Path:return common(item["path"])/"juno-integration-channels"/(lock_key(item)+".lock")
+def index_lock(repo:Path)->Path:return Path(git(repo,"rev-parse","--path-format=absolute","--git-path","index.lock")).resolve()
+def acquire_bounded(handle:Any,timeout:float)->None:
+ deadline=time.monotonic()+timeout
+ while True:
+  try:fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB);return
+  except BlockingIOError:
+   if time.monotonic()>=deadline:raise IntegrationError("integration channel lock timeout")
+   time.sleep(min(0.05,max(0.0,deadline-time.monotonic())))
+def write(path:Path,payload:dict[str,Any])->None:
+ encoded=json.dumps(payload,indent=2,sort_keys=True)+"\n";path=path.resolve();path.parent.mkdir(parents=True,exist_ok=True)
+ if path.exists() and path.read_text()!=encoded:raise IntegrationError(f"immutable receipt collision: {path}")
+ path.write_text(encoded)
+def load_candidate(path:Path,repositories:list[dict[str,Any]])->dict[str,Any]:
+ value=json.loads(path.read_text());
+ if value.get("schema_version")!="juno_integration_candidate.v1" or value.get("operation")!="verify" or value.get("eligible") is not True:raise IntegrationError("eligible verified candidate receipt required")
+ if len(repositories)==1:
+  item=repositories[0]
+  for field,expected in (("target_ref",item["target_ref"]),("expected_target_sha",item["expected_sha"]),("candidate_sha",item["candidate_sha"])):
+   if value.get(field)!=expected:raise IntegrationError(f"candidate receipt {field} mismatch")
+ candidate_path=value.get("candidate_path")
+ if not candidate_path or git(Path(candidate_path),"rev-parse","HEAD")!=value.get("candidate_sha") or git(Path(candidate_path),"status","--porcelain=v2","--untracked-files=all"):
+  raise IntegrationError("candidate worktree is missing, moved, or dirty")
+ if index_lock(Path(candidate_path)).exists():raise IntegrationError("candidate index lock present")
+ return value
+def validate_item(item:dict[str,Any])->dict[str,Any]:
+ repo=item["path"]
+ if index_lock(repo).exists():raise IntegrationError(f"index_lock_present: {index_lock(repo)}")
+ worktrees=git(repo,"worktree","list","--porcelain").splitlines()
+ if f"branch {item['target_ref']}" in worktrees:raise IntegrationError(f"target_ref_checked_out: {item['target_ref']}")
+ actual=git(repo,"rev-parse",f"{item['target_ref']}^{{commit}}")
+ if actual!=item["expected_sha"]:raise IntegrationError(f"stale_target name={item['name']} expected={item['expected_sha']} actual={actual}")
+ candidate=git(repo,"rev-parse",f"{item['candidate_sha']}^{{commit}}")
+ if candidate!=item["candidate_sha"]:raise IntegrationError("candidate identity mismatch")
+ return {**item,"path":str(repo),"git_common_dir":str(common(repo)),"lock_key":lock_key(item),"before_sha":actual}
+def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,validation_hash:str)->str:
+ if not TAG_RE.fullmatch(task_id):raise IntegrationError("task id is not tag-safe")
+ name=f"juno-feature/{task_id}/{integrated[:12]}"; ref=f"refs/tags/{name}"
+ message=f"task_id={task_id}\nintegrated_sha={integrated}\ntarget_ref={target_ref}\ncandidate_receipt_sha256={candidate_hash}\nvalidation_receipt_sha256={validation_hash}"
+ existing=git(repo,"rev-parse","--verify",ref,check=False)
+ if existing:
+  peeled=git(repo,"rev-parse",f"{ref}^{{commit}}");body=git(repo,"for-each-ref","--format=%(contents)",ref)
+  if peeled!=integrated or body.strip()!=message:raise IntegrationError("feature_tag_collision")
+ else:git(repo,"tag","-a",name,integrated,"-m",message)
+ return name
+def main(argv:list[str]|None=None)->int:
+ p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--actual-review-command",required=True);p.add_argument("--actual-review-receipt",type=Path,required=True);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
+ a=p.parse_args(argv)
+ if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
+ if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
+ if not 0<a.validation_timeout<=86400:p.error("--validation-timeout must be between 0 and 86400 seconds")
+ receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"failed_preserved","task_id":a.task_id,"updates":[],"feature_tag":None}
+ try:
+  if len(a.candidate_receipt)!=len(a.repository):raise IntegrationError("one --candidate-receipt is required per --repository")
+  candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
+  receipt_hashes=[sha(path) for path in a.candidate_receipt]
+  candidate_hash=receipt_hashes[0] if len(receipt_hashes)==1 else hashlib.sha256("\n".join(receipt_hashes).encode()).hexdigest()
+  ordered=sorted(a.repository,key=lambda x:(str(common(x["path"])),x["target_ref"]));validated=[validate_item(i) for i in ordered]
+  # Every candidate and exact target is validated before any official ref moves.
+  handles=[]
+  try:
+   for item in validated:
+    path=lock_file(item);path.parent.mkdir(parents=True,exist_ok=True);h=path.open("a+");acquire_bounded(h,a.lock_timeout);handles.append(h)
+   # Revalidate under all ordered locks, then update child-first in caller order.
+   by_name={x["name"]:x for x in validated}
+   for original in a.repository:validate_item(original)
+   for index,original in enumerate(a.repository):
+    item=by_name[original["name"]]
+    if a.inject_failure_after is not None and index>=a.inject_failure_after:raise IntegrationError("injected_update_failure")
+    result=run(Path(item["path"]),"update-ref",item["target_ref"],item["candidate_sha"],item["expected_sha"],check=False)
+    if result.returncode:raise IntegrationError(f"target_cas_failed name={item['name']}: {result.stderr.strip()}")
+    after=git(Path(item["path"]),"rev-parse",item["target_ref"]);receipt["updates"].append({"name":item["name"],"target_ref":item["target_ref"],"before_sha":item["expected_sha"],"after_sha":after})
+   for item in a.repository:
+    if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target readback mismatch")
+   actual_cwd=Path(candidates[-1]["candidate_path"])
+   validations=[]
+   for command in a.validation_command:
+    r=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout)
+    validations.append({"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"exit_code":r.returncode})
+    if r.returncode:raise IntegrationError("actual_target_validation_failed")
+   review_run=subprocess.run(a.actual_review_command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout)
+   if review_run.returncode:raise IntegrationError("actual_target_review_command_failed")
+   review=json.loads(a.actual_review_receipt.read_text())
+   integrated=a.repository[-1]["candidate_sha"]
+   if review.get("schema_version")!="juno_review.v1" or review.get("review_kind")!="actual_target" or review.get("passed") is not True or review.get("reviewed_tip")!=integrated or review.get("open_bugs") != []:raise IntegrationError("actual_target_review_PASS_required")
+   validation_receipt={"validation":validations,"actual_review_sha256":sha(a.actual_review_receipt)};validation_hash=hashlib.sha256(json.dumps(validation_receipt,sort_keys=True).encode()).hexdigest()
+   feature=tag(a.repository[-1]["path"],a.task_id,integrated,a.repository[-1]["target_ref"],candidate_hash,validation_hash)
+   receipt.update({"outcome":"integrated","passed":True,"feature_tag":feature,"candidate_receipt_sha256":candidate_hash,"actual_target":validation_receipt,"lock_order":[x["lock_key"] for x in validated]})
+  finally:
+   for h in reversed(handles):fcntl.flock(h.fileno(),fcntl.LOCK_UN);h.close()
+ except (IntegrationError,OSError,json.JSONDecodeError,subprocess.TimeoutExpired) as exc:
+  receipt.update({"passed":False,"error":str(exc)})
+  if receipt["updates"]:receipt["outcome"]="partial_local_integration"
+  try:write(a.output,receipt)
+  except Exception as write_exc:print(f"integration_owner_preflight: receipt error: {write_exc}",file=sys.stderr)
+  print(f"integration_owner_preflight: error: {exc}",file=sys.stderr);return 2
+ write(a.output,receipt);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
+if __name__=="__main__":raise SystemExit(main())
