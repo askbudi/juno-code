@@ -43,6 +43,12 @@
       "type": "wiki"
     },
     {
+      "source": "scripts/git_index_lock.py",
+      "destination": ".juno_task/scripts/git_index_lock.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/controller_checkpoint.py",
       "destination": ".juno_task/scripts/controller_checkpoint.py",
       "installClass": "script",

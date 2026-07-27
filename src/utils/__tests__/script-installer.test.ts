@@ -62,6 +62,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('install_requirements.sh'); // Required by kanban.sh
       expect(missing).toContain('workflow_runner.sh');
       expect(missing).toContain('workflow_assert.py');
+      expect(missing).toContain('git_index_lock.py');
       expect(missing).toContain('controller_checkpoint.py');
       expect(missing).toContain('integration_owner_preflight.py');
       expect(missing).toContain('repository_writer_guard.py');
@@ -146,6 +147,10 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(
         path.join(scriptsDir, 'workflow_assert.py'),
         '#!/usr/bin/env python3\nprint("assert")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'git_index_lock.py'),
+        '#!/usr/bin/env python3\nprint("index lock")',
       );
       await fs.writeFile(
         path.join(scriptsDir, 'controller_checkpoint.py'),
@@ -245,6 +250,7 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: false },
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
+        { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'repository_writer_guard.py', installed: false },
@@ -331,6 +337,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("assert")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'git_index_lock.py'),
+        '#!/usr/bin/env python3\nprint("index lock")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'controller_checkpoint.py'),
         '#!/usr/bin/env python3\nprint("checkpoint")',
       );
@@ -375,6 +385,7 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: true },
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
+        { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'repository_writer_guard.py', installed: true },

@@ -64,11 +64,13 @@ describe('integration_owner_preflight.py template script', () => {
 
   it('checkpoints and proves the controller clean before integration leases', async () => {
     const checkpoint = path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py');
+    const indexLock = path.resolve(process.cwd(), 'src/templates/scripts/git_index_lock.py');
     await fs.ensureDir(path.join(repository, '.juno_task', 'scripts'));
     await fs.ensureDir(path.join(repository, '.juno_task', 'tasks'));
     await fs.copyFile(checkpoint, path.join(repository, '.juno_task', 'scripts', 'controller_checkpoint.py'));
+    await fs.copyFile(indexLock, path.join(repository, '.juno_task', 'scripts', 'git_index_lock.py'));
     await fs.writeFile(path.join(repository, '.juno_task', 'tasks', 'state.md'), 'initial\n');
-    expect(run('git', ['-C', repository, 'add', '.juno_task/tasks/state.md', '.juno_task/scripts/controller_checkpoint.py'], testDir).status).toBe(0);
+    expect(run('git', ['-C', repository, 'add', '.juno_task/tasks/state.md', '.juno_task/scripts/controller_checkpoint.py', '.juno_task/scripts/git_index_lock.py'], testDir).status).toBe(0);
     expect(run('git', ['-C', repository, 'commit', '-m', 'controller baseline'], testDir).status).toBe(0);
     await fs.writeFile(path.join(repository, '.juno_task', 'tasks', 'state.md'), 'durable\n');
     const receiptPath = path.join(testDir, 'checkpoint-preflight.json');
@@ -104,6 +106,31 @@ describe('integration_owner_preflight.py template script', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('clean: expected=true actual=false');
+  });
+
+  it('preserves and rejects an existing checkout-specific index lock', async () => {
+    const lock = run(
+      'git',
+      ['-C', repository, 'rev-parse', '--path-format=absolute', '--git-path', 'index.lock'],
+      testDir,
+    ).stdout.trim();
+    const payload = 'integration-owner-lock\n';
+    await fs.writeFile(lock, payload);
+    const result = run(
+      'python3',
+      [
+        helper,
+        '--root', testDir,
+        '--repository', `root=${repository},refs/heads/main`,
+        '--quiescence-seconds', '0',
+        '--process-inventory-json', inventoryPath,
+      ],
+      testDir,
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('git_index_lock_present');
+    expect(await fs.readFile(lock, 'utf8')).toBe(payload);
   });
 
   it('allows a Juno writer proven to belong to a different Git common directory', async () => {

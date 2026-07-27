@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from git_index_lock import IndexLockError, require_index_unlocked
+
 SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
 DEFAULT_INCLUDE = (
@@ -217,9 +223,10 @@ def fingerprint(root: Path, path: str) -> str:
 def inspect(root: Path, includes: tuple[str, ...]) -> dict[str, Any]:
     if os.environ.get("GIT_INDEX_FILE"):
         raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for controller checkpoints")
-    index_lock = git_path(root, "index.lock")
-    if index_lock.exists():
-        raise CheckpointError(f"Git index.lock exists; never delete it: {index_lock}")
+    try:
+        index_lock = require_index_unlocked(root)
+    except IndexLockError as exc:
+        raise CheckpointError(str(exc)) from exc
     branch, head = branch_and_head(root)
     dirt = parse_status(root)
     if any(item.conflicted for item in dirt):
@@ -241,6 +248,7 @@ def inspect(root: Path, includes: tuple[str, ...]) -> dict[str, Any]:
     return {
         "branch": branch,
         "head": head,
+        "index_lock": index_lock,
         "selected": chosen,
         "fingerprints": {path: fingerprint(root, path) for path in chosen},
     }
@@ -420,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             "root": str(root),
             "branch": frozen["branch"],
             "head": frozen["head"],
+            "index_lock": frozen["index_lock"],
             "selected": frozen["selected"],
             "commits": [],
         }

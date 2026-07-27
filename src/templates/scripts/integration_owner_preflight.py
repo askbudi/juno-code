@@ -14,6 +14,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from git_index_lock import IndexLockError, require_index_unlocked
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised on non-POSIX platforms
@@ -54,6 +60,10 @@ def repository_snapshot(repository: dict[str, Any]) -> dict[str, Any]:
     if not path.is_dir():
         raise PreflightError(f"repository[{repository['name']}].path missing: {path}")
     root = Path(run_git(path, "rev-parse", "--show-toplevel")).resolve()
+    try:
+        index_lock = require_index_unlocked(path)
+    except IndexLockError as exc:
+        raise PreflightError(f"repository[{repository['name']}].{exc}") from exc
     head = run_git(path, "rev-parse", "HEAD")
     checked_out_ref = run_git(path, "symbolic-ref", "-q", "HEAD", check=False)
     target_sha = run_git(path, "rev-parse", repository["target_ref"])
@@ -71,6 +81,7 @@ def repository_snapshot(repository: dict[str, Any]) -> dict[str, Any]:
         "head": head,
         "checked_out_ref": checked_out_ref,
         "clean": status == "",
+        "index_lock": index_lock,
         "status_sha256": digest(status),
         "git_common_dir": str(common_dir.resolve()),
     }

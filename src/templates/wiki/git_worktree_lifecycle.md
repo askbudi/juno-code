@@ -2,9 +2,9 @@
 wiki_contract:
   line_limit: 220
   purpose: "Canonical lifecycle for isolated Git worktrees used by task, review, and workflow agents."
-  failure_mode_prevented: "Agents share a dirty checkout, mutate a target beside another writer, strand commits, integrate into the wrong branch, run E2E before integration, or destroy active/uncommitted work during cleanup."
-  runtime_contract_enforced: "Every isolated task records its repository, base SHA, integration target and owner, proves bounded quiescence under repository leases, validates the integrated target, and ends with an explicit controller/cleanup disposition."
-  validation_gate: "python3 -m py_compile .juno_task/scripts/worktree_lifecycle_audit.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json"
+  failure_mode_prevented: "Agents share a dirty checkout, mutate a target beside another writer, delete an unexplained Git index lock, strand commits, integrate into the wrong branch, run E2E before integration, or destroy active/uncommitted work during cleanup."
+  runtime_contract_enforced: "Every isolated task records its repository, base SHA, integration target and owner, preserves and diagnoses an existing checkout-specific index lock, proves bounded quiescence under repository leases, validates the integrated target, and ends with an explicit controller/cleanup disposition."
+  validation_gate: "python3 -m py_compile .juno_task/scripts/git_index_lock.py .juno_task/scripts/controller_checkpoint.py .juno_task/scripts/worktree_lifecycle_audit.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/git_index_lock.py --repository . && python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json"
   related_sots:
     - "parallel_runner_task_creation_best_practices.md"
     - "parallel_runner_and_spec_review.md"
@@ -67,6 +67,16 @@ owner-approved task and isolation decision
 Integration is an explicit stage after independent review and before deployment/E2E. A successful worker, task commit, or clean worktree is not integration evidence.
 
 ## Controller checkpoint boundary
+
+Before any Juno-owned Git index mutation, resolve the checkout-specific lock with `git rev-parse --path-format=absolute --git-path index.lock`. If it exists, preserve it and stop. Never infer staleness from age, an empty payload, or absence of an `lsof` owner; those observations do not establish that the writer is dead or that the interrupted index operation is recoverable. Use the shipped read-only helper to create a durable diagnostic receipt:
+
+```bash
+python3 .juno_task/scripts/git_index_lock.py \
+  --repository /path/to/checkout \
+  --output /durable/index-lock.json
+```
+
+The receipt records checkout/common-directory identity, bounded hashes and metadata for the lock and index, and hashed process names when owner inspection is available. It does not delete, rename, rewrite, or unlock anything. `safe_next_action=preserve_and_coordinate` is a hard workflow boundary: identify and coordinate with the active or interrupted Git/Juno operation before any recovery decision. Juno startup provenance should eventually correlate an invocation/session ID, PID/PPID, repository common directory, bounded Git operation class, start/end/exit state, and lock observations in the isolated session-metadata directory; do not record prompts, credentials, full command lines, or repository file contents.
 
 After an ordinary, workflow, or parallel run writes its final durable state, its outer finalizer invokes `controller_checkpoint.py commit` best-effort. Failure is warned without replacing the run status; failed runs may preserve valid allowlisted state with a failure-state message. The helper rejects product dirt, a pre-existing index, conflicts, unsafe paths/repository boundaries, detached HEAD, races, and lease contention, stages only frozen explicit paths, and never pushes or orchestrates refs. Agent mode can propose strict JSON grouping/messages with hooks disabled, closed stdin, bounded time, and read-only tools; deterministic code remains the only staging/commit owner.
 
@@ -137,8 +147,11 @@ Exact installed-project validation gate:
 
 ```bash
 python3 -m py_compile \
+  .juno_task/scripts/git_index_lock.py \
+  .juno_task/scripts/controller_checkpoint.py \
   .juno_task/scripts/integration_owner_preflight.py \
   .juno_task/scripts/worktree_lifecycle_audit.py
+python3 .juno_task/scripts/git_index_lock.py --repository .
 python3 .juno_task/scripts/worktree_lifecycle_audit.py --root . --json
 git worktree list --porcelain
 git worktree prune --dry-run --verbose
