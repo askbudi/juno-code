@@ -253,6 +253,8 @@ Use `workflow_assert.py` for named machine-readable diagnostics. Local integrati
 
 A `local_integration` workflow sets `integration_policy.queue: automatic_after_review_pass`, `channel_scope: git_common_dir_and_target_ref`, and `target_movement: rebuild_and_rereview`. Same-channel jobs serialize while disjoint channels proceed independently. Feature tags are local integration evidence; `vX.Y.Z`, push, publication, release, deployment, and post-deploy E2E each require separate authority.
 
+Some historical local `vX.Y.Z` tags in the development repository do not match the package metadata at their tagged commits. They are retained as immutable history, not accepted as release truth and never rewritten by lifecycle automation. Every new package release must bind one version across `package.json`, the built CLI `--version`, and the newly created release tag before any publication; local feature automation uses only `juno-feature/...` and cannot create or repair release tags.
+
 Controller checkpoints remain local orchestration durability only. They are not product inputs or integration gates. `controller_checkpoint.py plan --json` is read-only; configured commits remain bounded to explicit controller paths. Ordinary/workflow/parallel outer finalizers may checkpoint after terminal writes, but target integration never requires an unrelated controller checkout to become clean or idle.
 
 ### Full Traceability: Every Change Tracked
