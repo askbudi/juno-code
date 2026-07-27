@@ -100,6 +100,23 @@ describe('controller_checkpoint.py template script', () => {
     expect(run(repo, 'plan').stderr).toContain('nested repository');
   });
 
+  it('quarantines a high-confidence stale empty index lock before inspection', async () => {
+    const lock = path.join(repo, '.git', 'index.lock');
+    await fs.writeFile(lock, '');
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await fs.utimes(lock, old, old);
+    const plan = run(repo, 'plan', '--json');
+    expect(plan.status).toBe(2);
+    expect(await fs.pathExists(lock)).toBe(true);
+    const result = run(repo, 'commit', '--message', 'chore(controller): stale lock fixture', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    expect(await fs.pathExists(lock)).toBe(false);
+    const quarantines = (await fs.readdir(path.join(repo, '.git'))).filter((name) =>
+      name.startsWith('index.lock.stale.'),
+    );
+    expect(quarantines).toHaveLength(1);
+  });
+
   it('rejects submodule dirt and an existing index lock', async () => {
     await fs.writeFile(path.join(repo, '.git', 'index.lock'), 'busy');
     expect(run(repo, 'plan').stderr).toContain('index.lock');

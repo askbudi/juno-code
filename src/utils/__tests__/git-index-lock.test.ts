@@ -56,6 +56,55 @@ describe('git_index_lock.py managed template', () => {
     expect(await fs.readFile(lock, 'utf8')).toBe(payload);
   });
 
+  it('quarantines only a high-confidence stale empty lock when recovery is requested', async () => {
+    const lock = git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'index.lock');
+    await fs.writeFile(lock, '');
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await fs.utimes(lock, old, old);
+    const result = spawnSync(
+      'python3',
+      [
+        helper,
+        '--repository',
+        repo,
+        '--recover-high-confidence-stale',
+        '--stability-seconds',
+        '0',
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.lock_present).toBe(false);
+    expect(receipt.mutation_performed).toBe(true);
+    expect(receipt.stale_recovery.outcome).toBe('quarantined');
+    expect(await fs.pathExists(lock)).toBe(false);
+    expect(await fs.pathExists(receipt.stale_recovery.quarantine_path)).toBe(true);
+  });
+
+  it('preserves a young empty lock when recovery is requested', async () => {
+    const lock = git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'index.lock');
+    await fs.writeFile(lock, '');
+    const result = spawnSync(
+      'python3',
+      [
+        helper,
+        '--repository',
+        repo,
+        '--recover-high-confidence-stale',
+        '--stability-seconds',
+        '0',
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(2);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.lock_present).toBe(true);
+    expect(receipt.mutation_performed).toBe(false);
+    expect(receipt.stale_recovery.rejection_reasons).toContain('lock_too_new');
+    expect(await fs.pathExists(lock)).toBe(true);
+  });
+
   it('resolves the checkout-specific lock for a linked worktree', async () => {
     const linked = path.join(testDir, 'linked');
     git(repo, 'worktree', 'add', '-b', 'linked', linked);

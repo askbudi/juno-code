@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Git index-lock diagnostics; never mutate the index or lock."""
+"""Diagnose Git index locks and quarantine only high-confidence stale empty locks."""
 from __future__ import annotations
 
 import argparse
@@ -8,12 +8,16 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 SCHEMA_VERSION = "juno_git_index_lock_diagnostic.v1"
 DEFAULT_HASH_LIMIT_BYTES = 16 * 1024 * 1024
+DEFAULT_STALE_MIN_AGE_SECONDS = 300.0
+DEFAULT_STABILITY_SECONDS = 1.0
 
 
 class IndexLockError(Exception):
@@ -118,12 +122,123 @@ def diagnose_index_lock(
     }
 
 
-def require_index_unlocked(repository: Path) -> dict[str, Any]:
+def _same_lock(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    keys = ("inode", "size_bytes", "mtime_ns", "sha256", "hashed_bytes", "hash_complete")
+    return all(left.get(key) == right.get(key) for key in keys)
+
+
+def _stale_rejection_reasons(receipt: dict[str, Any], min_age_seconds: float) -> list[str]:
+    if not receipt["lock_present"]:
+        return ["lock_absent"]
+    lock = receipt["lock"]
+    index = receipt["index"]
+    owners = receipt["open_owner_probe"]
+    reasons: list[str] = []
+    age_seconds = max(0.0, (time.time_ns() - int(lock["mtime_ns"])) / 1_000_000_000)
+    if age_seconds < min_age_seconds:
+        reasons.append("lock_too_new")
+    if lock["size_bytes"] != 0:
+        reasons.append("lock_not_empty")
+    if not lock["hash_complete"]:
+        reasons.append("lock_hash_incomplete")
+    if not owners.get("available"):
+        reasons.append("owner_probe_unavailable")
+    elif owners.get("owners"):
+        reasons.append("lock_has_open_owner")
+    if not index or index.get("size_bytes", 0) <= 0:
+        reasons.append("index_missing_or_empty")
+    return reasons
+
+
+def recover_high_confidence_stale_index_lock(
+    repository: Path,
+    *,
+    min_age_seconds: float = DEFAULT_STALE_MIN_AGE_SECONDS,
+    stability_seconds: float = DEFAULT_STABILITY_SECONDS,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Atomically quarantine an old, empty, ownerless lock after two stable observations.
+
+    Non-empty, young, changing, owned, or unprobeable locks are never moved. The
+    quarantined inode is retained beside the index for forensic review.
+    """
+    if min_age_seconds < 0 or stability_seconds < 0:
+        raise IndexLockError("stale lock thresholds must be non-negative")
+    repository = repository.expanduser().resolve()
+    first = diagnose_index_lock(repository)
+    if not first["lock_present"]:
+        first["stale_recovery"] = {"outcome": "not_needed", "rejection_reasons": []}
+        return first
+    reasons = _stale_rejection_reasons(first, min_age_seconds)
+    if reasons:
+        first["stale_recovery"] = {"outcome": "preserved", "rejection_reasons": reasons}
+        return first
+
+    sleep_fn(stability_seconds)
+    second = diagnose_index_lock(repository)
+    if not second["lock_present"] or not _same_lock(first["lock"], second["lock"]):
+        second["stale_recovery"] = {
+            "outcome": "preserved",
+            "rejection_reasons": ["lock_changed_during_observation"],
+        }
+        return second
+    reasons = _stale_rejection_reasons(second, min_age_seconds)
+    if reasons:
+        second["stale_recovery"] = {"outcome": "preserved", "rejection_reasons": reasons}
+        return second
+
+    lock_path = Path(second["lock_path"])
+    final_owners = open_owners(lock_path)
+    if not final_owners.get("available") or final_owners.get("owners"):
+        second["open_owner_probe"] = final_owners
+        second["stale_recovery"] = {
+            "outcome": "preserved",
+            "rejection_reasons": [
+                "owner_probe_unavailable" if not final_owners.get("available") else "lock_has_open_owner"
+            ],
+        }
+        return second
+    final_lock = file_evidence(lock_path, DEFAULT_HASH_LIMIT_BYTES)
+    if final_lock is None or not _same_lock(second["lock"], final_lock):
+        second["stale_recovery"] = {
+            "outcome": "preserved",
+            "rejection_reasons": ["lock_changed_before_quarantine"],
+        }
+        return second
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    quarantine_path = lock_path.with_name(f"index.lock.stale.{stamp}.{final_lock['inode']}")
+    if quarantine_path.exists():
+        raise IndexLockError(f"stale lock quarantine path already exists: {quarantine_path}")
+    lock_path.rename(quarantine_path)
+    quarantined = file_evidence(quarantine_path, DEFAULT_HASH_LIMIT_BYTES)
+    if quarantined is None or not _same_lock(final_lock, quarantined):
+        raise IndexLockError(f"stale lock quarantine verification failed: {quarantine_path}")
+
     receipt = diagnose_index_lock(repository)
     if receipt["lock_present"]:
+        raise IndexLockError("a new Git index lock appeared during stale-lock recovery")
+    receipt["mutation_performed"] = True
+    receipt["stale_recovery"] = {
+        "outcome": "quarantined",
+        "rejection_reasons": [],
+        "quarantine_path": str(quarantine_path),
+        "quarantined_lock": quarantined,
+        "observed_lock": second["lock"],
+        "min_age_seconds": min_age_seconds,
+        "stability_seconds": stability_seconds,
+    }
+    return receipt
+
+
+def require_index_unlocked(repository: Path) -> dict[str, Any]:
+    receipt = recover_high_confidence_stale_index_lock(repository)
+    if receipt["lock_present"]:
+        reasons = receipt.get("stale_recovery", {}).get("rejection_reasons", [])
         raise IndexLockError(
             "git_index_lock_present: "
-            f"path={receipt['lock_path']} safe_next_action=preserve_and_coordinate; never delete it"
+            f"path={receipt['lock_path']} rejection_reasons={reasons} "
+            "safe_next_action=preserve_and_coordinate"
         )
     return receipt
 
@@ -133,10 +248,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repository", default=os.getcwd(), help="Path inside the Git repository")
     parser.add_argument("--output", help="Optional JSON receipt path")
     parser.add_argument("--hash-limit-bytes", type=int, default=DEFAULT_HASH_LIMIT_BYTES)
+    parser.add_argument(
+        "--recover-high-confidence-stale",
+        action="store_true",
+        help="Quarantine an old, stable, empty, ownerless lock; preserve all uncertain locks",
+    )
+    parser.add_argument("--stale-min-age-seconds", type=float, default=DEFAULT_STALE_MIN_AGE_SECONDS)
+    parser.add_argument("--stability-seconds", type=float, default=DEFAULT_STABILITY_SECONDS)
     args = parser.parse_args(argv)
     if args.hash_limit_bytes < 0:
         parser.error("--hash-limit-bytes must be non-negative")
-    receipt = diagnose_index_lock(Path(args.repository), hash_limit_bytes=args.hash_limit_bytes)
+    if args.stale_min_age_seconds < 0 or args.stability_seconds < 0:
+        parser.error("stale lock thresholds must be non-negative")
+    if args.recover_high_confidence_stale:
+        receipt = recover_high_confidence_stale_index_lock(
+            Path(args.repository),
+            min_age_seconds=args.stale_min_age_seconds,
+            stability_seconds=args.stability_seconds,
+        )
+    else:
+        receipt = diagnose_index_lock(Path(args.repository), hash_limit_bytes=args.hash_limit_bytes)
     encoded = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
     if args.output:
         Path(args.output).expanduser().resolve().write_text(encoded, encoding="utf-8")

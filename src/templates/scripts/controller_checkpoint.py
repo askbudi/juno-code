@@ -19,7 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from git_index_lock import IndexLockError, require_index_unlocked
+from git_index_lock import IndexLockError, diagnose_index_lock, require_index_unlocked
 
 SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
@@ -59,8 +59,16 @@ class Dirty:
 
 
 def git(root: Path, *args: str, check: bool = True, text: bool = True) -> Any:
+    env = dict(os.environ)
+    # Read-only status/diff calls must not refresh the shared index. Git still
+    # takes mandatory locks for add/commit when optional locks are disabled.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     result = subprocess.run(
-        ["git", "-C", str(root), *args], capture_output=True, text=text, stdin=subprocess.DEVNULL
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=text,
+        stdin=subprocess.DEVNULL,
+        env=env,
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip() if text else result.stderr.decode(errors="replace").strip()
@@ -220,11 +228,20 @@ def fingerprint(root: Path, path: str) -> str:
     return digest.hexdigest()
 
 
-def inspect(root: Path, includes: tuple[str, ...]) -> dict[str, Any]:
+def inspect(
+    root: Path, includes: tuple[str, ...], *, recover_stale_lock: bool = True
+) -> dict[str, Any]:
     if os.environ.get("GIT_INDEX_FILE"):
         raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for controller checkpoints")
     try:
-        index_lock = require_index_unlocked(root)
+        index_lock = (
+            require_index_unlocked(root) if recover_stale_lock else diagnose_index_lock(root)
+        )
+        if index_lock["lock_present"]:
+            raise IndexLockError(
+                "git_index_lock_present: "
+                f"path={index_lock['lock_path']} safe_next_action=preserve_and_coordinate"
+            )
     except IndexLockError as exc:
         raise CheckpointError(str(exc)) from exc
     branch, head = branch_and_head(root)
@@ -420,9 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = repo_root(args.root)
     includes, agent_config = load_config(root)
+    should_commit = args.command == "commit" or (args.command == "require-clean" and args.checkpoint)
     lease = acquire_lease(root)
     try:
-        frozen = inspect(root, includes)
+        frozen = inspect(root, includes, recover_stale_lock=should_commit)
         payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "root": str(root),
@@ -432,7 +450,6 @@ def main(argv: list[str] | None = None) -> int:
             "selected": frozen["selected"],
             "commits": [],
         }
-        should_commit = args.command == "commit" or (args.command == "require-clean" and args.checkpoint)
         if not frozen["selected"]:
             payload["outcome"] = "noop"
         elif should_commit:
