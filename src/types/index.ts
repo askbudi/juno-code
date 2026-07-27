@@ -40,6 +40,18 @@ export interface PromptMacroConfig {
   local: Record<string, string>;
 }
 
+export interface GitCheckpointAgentConfig {
+  enabled?: boolean;
+  service?: string;
+  model?: string;
+  timeoutSeconds?: number;
+}
+
+export interface GitCheckpointConfig {
+  include?: string[];
+  agent?: GitCheckpointAgentConfig;
+}
+
 // Progress event types
 export type ProgressEventType = 'tool_start' | 'tool_result' | 'thinking' | 'error' | 'info';
 
@@ -84,6 +96,9 @@ export interface JunoTaskConfig {
   // Paths
   workingDirectory: string;
   sessionDirectory: string;
+
+  // Controller-owned Git checkpoint configuration
+  gitCheckpoint?: GitCheckpointConfig;
 
   // Project environment bootstrap
   /** Path to project env file loaded on startup (relative to workingDirectory or absolute) */

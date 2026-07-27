@@ -124,6 +124,23 @@ const PromptMacrosSchema = z
   .strict()
   .optional();
 
+const GitCheckpointAgentSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    service: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    timeoutSeconds: z.number().int().min(1).max(600).optional(),
+  })
+  .strict();
+
+const GitCheckpointSchema = z
+  .object({
+    include: z.array(z.string().min(1)).optional(),
+    agent: GitCheckpointAgentSchema.optional(),
+  })
+  .strict()
+  .optional();
+
 /**
  * Zod schema for validating JunoTaskConfig
  * Provides runtime validation with detailed error messages
@@ -227,6 +244,11 @@ export const JunoTaskConfigSchema = z
     workingDirectory: z.string().describe('Working directory for task execution'),
 
     sessionDirectory: z.string().describe('Directory for storing session data'),
+
+    // Controller-owned Git checkpoint configuration
+    gitCheckpoint: GitCheckpointSchema.describe(
+      'Allowlisted controller paths and optional read-only commit-planning agent settings',
+    ),
 
     // Project environment bootstrap
     envFilePath: z

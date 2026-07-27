@@ -123,6 +123,46 @@ describe('Configuration Module', () => {
       });
     });
 
+    it('should accept controller Git checkpoint configuration', () => {
+      const config = validateConfig({
+        ...DEFAULT_CONFIG,
+        gitCheckpoint: {
+          include: ['.juno_task/tasks', '.juno_task/workflows'],
+          agent: {
+            enabled: false,
+            service: 'pi',
+            model: ':luna',
+            timeoutSeconds: 120,
+          },
+        },
+      });
+
+      expect(config.gitCheckpoint).toEqual({
+        include: ['.juno_task/tasks', '.juno_task/workflows'],
+        agent: {
+          enabled: false,
+          service: 'pi',
+          model: ':luna',
+          timeoutSeconds: 120,
+        },
+      });
+    });
+
+    it('should reject malformed controller Git checkpoint configuration', () => {
+      expect(() =>
+        validateConfig({
+          ...DEFAULT_CONFIG,
+          gitCheckpoint: { include: [''] },
+        }),
+      ).toThrow(/gitCheckpoint/);
+      expect(() =>
+        validateConfig({
+          ...DEFAULT_CONFIG,
+          gitCheckpoint: { agent: { timeoutSeconds: 601 } },
+        }),
+      ).toThrow(/gitCheckpoint/);
+    });
+
     it('should reject invalid log level', () => {
       const invalidConfig = {
         ...DEFAULT_CONFIG,
