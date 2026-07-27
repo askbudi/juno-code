@@ -60,5 +60,11 @@ describe('packaged worktree lifecycle audit', () => {
     );
     expect(guidance).not.toContain('--mode cleanup');
     expect(guidance).not.toContain('.juno_task/scripts/tests/');
+    expect(guidance).toContain('default diagnostic mode and `controller_checkpoint.py plan` are read-only');
+    expect(guidance).toContain('at least 300 seconds old');
+    expect(guidance).toContain('stable across two observations plus a final owner/identity check');
+    expect(guidance).toContain('it never deletes the lock');
+    expect(guidance).toContain('holds the exclusive `juno-repository-writer.lock` lease');
+    expect(guidance).toContain('must not be run without equivalent repository-writer coordination');
   });
 });
