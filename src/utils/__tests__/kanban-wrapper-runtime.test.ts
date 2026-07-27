@@ -121,4 +121,47 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe(`installed-controller-v2|${fs.realpathSync(projectRoot)}`);
   });
+
+  it('does not start the E2E write validator for read-only commands', async () => {
+    await fs.writeFile(
+      path.join(projectRoot, '.juno_task', 'scripts', 'e2e_housekeeping.py'),
+      'raise SystemExit("read command incorrectly entered write validator")\n',
+    );
+
+    const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['search', '--body', 'needle'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: '',
+        VIRTUAL_ENV: '',
+        PYTHONPATH: path.join(projectRoot, 'installed-site'),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(`installed-controller-v2|${fs.realpathSync(projectRoot)}`);
+  });
+
+  it('keeps create routed through the E2E write validator when installed', async () => {
+    await fs.writeFile(
+      path.join(projectRoot, '.juno_task', 'scripts', 'e2e_housekeeping.py'),
+      'import sys\nprint("validator:" + "|".join(sys.argv[1:]))\n',
+    );
+
+    const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['create', '--body', 'task'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: '',
+        VIRTUAL_ENV: '',
+        PYTHONPATH: path.join(projectRoot, 'installed-site'),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('validator:validate-kanban-write');
+    expect(result.stdout).toContain('create|--body|task');
+  });
 });

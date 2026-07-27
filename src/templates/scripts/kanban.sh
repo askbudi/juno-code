@@ -208,7 +208,7 @@ normalize_arguments() {
     local found_command=false
 
     # Known subcommands
-    local commands="create search get show update archive mark list merge ready deps order"
+    local commands="create search get show update archive mark list merge ready deps order history doctor archive-search archive-pack reconcile convert rollback"
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -253,6 +253,40 @@ normalize_arguments() {
     done
 }
 
+# The optional housekeeping hook validates Kanban writes, not reads. Avoid a
+# Python helper plus recursive wrapper startup for commands that are provably
+# read-only; unknown/new command shapes remain fail-closed through the helper.
+requires_contract_write_validation() {
+    local command="${NORMALIZED_COMMAND_ARGS[0]:-}"
+    local subcommand="${NORMALIZED_COMMAND_ARGS[1]:-}"
+    case "$command" in
+        get|show|list|search|ready|order|history|doctor|archive-search)
+            return 1
+            ;;
+        deps)
+            [[ "$subcommand" == "add" || "$subcommand" == "remove" ]]
+            return
+            ;;
+        archive-pack)
+            case "archive-pack:$subcommand" in
+                archive-pack:plan|archive-pack:doctor) return 1 ;;
+                *) return 0 ;;
+            esac
+            ;;
+        "")
+            # Commandless non-TTY input is the legacy create shortcut. Interactive
+            # help and explicit --version do not mutate Kanban state.
+            if [[ ! -t 0 ]]; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 # Main kanban logic
 main() {
     log_info "=== juno-kanban Wrapper ==="
@@ -264,6 +298,10 @@ main() {
         exit 1
     fi
     log_success "Python environment ready!"
+
+    # Normalize once before guards so read-only contract hooks can be skipped
+    # without weakening validation for unknown or mutating command shapes.
+    normalize_arguments "$@"
 
     # Sweep workers must route every Kanban operation through the coordinator's
     # assignment guard. The guard reinvokes this wrapper with the internal flag
@@ -279,16 +317,12 @@ main() {
 
     # Projects with canonical E2E contracts validate create/body/tag writes before
     # canonical Kanban execution. The helper reinvokes this wrapper once internally.
-    if [[ "${E2E_CONTRACT_VALIDATION_INTERNAL:-}" != "1" ]]; then
+    if [[ "${E2E_CONTRACT_VALIDATION_INTERNAL:-}" != "1" ]] && requires_contract_write_validation; then
         local contract_helper="${E2E_HOUSEKEEPING_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_housekeeping.py}"
         if [[ -f "$contract_helper" ]]; then
             exec python3 "$contract_helper" validate-kanban-write -- "$0" "$@"
         fi
     fi
-
-    # Normalize argument order (global flags before command)
-    # This allows users to write "list -f json --raw" which gets reordered to "-f json --raw list"
-    normalize_arguments "$@"
 
     if [ "${JUNO_DEBUG:-false}" = "true" ]; then
         echo "[DEBUG] Original args: $*" >&2
