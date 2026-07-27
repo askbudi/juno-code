@@ -47,7 +47,7 @@ describe('canonical controller resolver', () => {
   it('resolves a registered controller across a real linked worktree with spaces', () => {
     const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, source: 'registration', actual_branch: 'controller-branch', role: 'controller', valid: true });
+    expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
   it('gives an explicit linked root priority and never falls back from invalid or unrelated roots', async () => {
