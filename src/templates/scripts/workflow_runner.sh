@@ -2613,8 +2613,12 @@ def workflow_lint_findings(workflow: dict[str, Any]) -> list[dict[str, str]]:
             continue
         producer = steps_by_id.get(str(contract["producer"]))
         producer_command = (producer or {}).get("command")
-        canonical_token = "{{ receipts." + receipt_id + ".path }}"
-        if any(canonical_token in text for _, text in iter_template_strings(producer_command)):
+        canonical_expression = "receipts." + receipt_id + ".path"
+        if any(
+            match.group(1).strip() == canonical_expression
+            for _, text in iter_template_strings(producer_command)
+            for match in TEMPLATE_RE.finditer(text)
+        ):
             continue
         for location, text in iter_template_strings(producer_command, f"steps.{contract['producer']}.command"):
             for literal_path in re.findall(r"\{\{\s*out_dir\s*\}\}/[^\s'\"`]+\.json", text):

@@ -1786,7 +1786,7 @@ print('response with session_id=session-must-not-be-captured')
       }],
       steps: [{
         id: 'producer',
-        command: "printf 'receipt={{ receipts.candidate_report.path }} diagnostic={{ out_dir }}/reviews/report.json'",
+        command: "printf 'receipt={{receipts.candidate_report.path}} diagnostic={{ out_dir }}/reviews/report.json'",
       }],
     });
     const result = runWorkflow(['lint', '--workflow', workflowPath]);
