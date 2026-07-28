@@ -51,6 +51,43 @@ STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
 TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
 
 
+def ensure_controller_python_environment(controller_env: dict[str, str]) -> None:
+    """Run under the controller's .venv_juno, matching the Kanban launcher contract."""
+    root = Path(controller_env["JUNO_TASK_ROOT"]).resolve()
+    venv = root / ".venv_juno"
+    python = venv / "bin" / "python"
+    if not python.is_file():
+        installer = root / ".juno_task" / "scripts" / "install_requirements.sh"
+        if not installer.is_file():
+            raise WorkflowError(
+                f"controller Python environment is missing ({python}) and installer was not found ({installer})"
+            )
+        completed = subprocess.run(
+            ["bash", str(installer)], cwd=root, stdin=subprocess.DEVNULL, check=False
+        )
+        if completed.returncode != 0 or not python.is_file():
+            raise WorkflowError(f"failed to create controller Python environment: {venv}")
+
+    env = dict(os.environ)
+    env.update(controller_env)
+    env["VIRTUAL_ENV"] = str(venv)
+    env["PATH"] = os.pathsep.join(
+        [str(venv / "bin"), *[part for part in env.get("PATH", "").split(os.pathsep) if part != str(venv / "bin")]]
+    )
+    env.pop("PYTHONHOME", None)
+    os.environ.clear()
+    os.environ.update(env)
+
+    try:
+        already_selected = Path(sys.executable).resolve() == python.resolve()
+    except OSError:
+        already_selected = False
+    if os.environ.get("JUNO_DEBUG", "false") == "true":
+        print(f"[DEBUG] workflow_runner.sh Python runtime: {python}", file=sys.stderr)
+    if not already_selected:
+        os.execve(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
 def _display_path(path: Path) -> str:
     try:
         return str(path.resolve().relative_to(Path.cwd().resolve()))
@@ -318,7 +355,12 @@ def read_scalar_list(lines: list[str], start: int, parent_indent: int) -> tuple[
             break
         if not stripped.startswith("-"):
             raise WorkflowError(f"expected scalar list item near line {i + 1}: {line}")
-        values.append(parse_scalar(stripped[1:].strip()))
+        item = stripped[1:].strip()
+        if item == "|":
+            literal, i = read_literal_block(lines, i + 1, indent)
+            values.append(literal)
+            continue
+        values.append(parse_scalar(item))
         i += 1
     return values, i
 
@@ -450,6 +492,9 @@ def parse_yaml_like(text: str) -> dict[str, Any]:
             v = v.strip()
             if v == "|":
                 nested[k], i = read_literal_block(lines, i + 1, indent)
+                continue
+            if v == "" and k == "command":
+                nested[k], i = read_scalar_list(lines, i + 1, indent)
                 continue
             nested[k] = parse_scalar(v)
             i += 1
@@ -2602,7 +2647,12 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    os.environ.update(resolve_controller_environment())
+    controller_env = resolve_controller_environment()
+    try:
+        ensure_controller_python_environment(controller_env)
+    except WorkflowError as exc:
+        print(f"workflow_runner.sh: error: {exc}", file=sys.stderr)
+        return 2
     warn_if_runtime_script_is_stale("workflow_runner.sh")
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "lint":

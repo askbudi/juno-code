@@ -128,6 +128,26 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stderr).toContain('update with: yy scripts update --force');
   });
 
+  it('selects the controller .venv_juno runtime like the Kanban launcher', async () => {
+    const workflowPath = path.join(testDir, 'runtime-check.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'runtime_check',
+      steps: [{ id: 'noop', command: ['printf', 'ok'] }],
+    });
+
+    const result = runWorkflow(['lint', '--workflow', workflowPath], undefined, {
+      JUNO_DEBUG: 'true',
+      VIRTUAL_ENV: '',
+    });
+
+    expect(result.status).toBe(0);
+    const controllerRoot = process.env.JUNO_TASK_ROOT ? path.resolve(process.env.JUNO_TASK_ROOT) : repoRoot;
+    expect(result.stderr).toContain(
+      `[DEBUG] workflow_runner.sh Python runtime: ${path.join(controllerRoot, '.venv_juno', 'bin', 'python')}`,
+    );
+  });
+
   it('allows workflow stale-runtime warnings to be disabled', async () => {
     const templateDir = path.join(testDir, 'templates');
     const staleScript = path.join(testDir, 'workflow_runner_skip.sh');
@@ -183,6 +203,34 @@ describe('workflow_runner.sh template script', () => {
     expect(doctorHelp.status).toBe(0);
     expect(doctorHelp.stdout).toContain('Inspect a workflow run directory');
     expect(doctorHelp.stdout).toContain('workflow_runner.sh dr');
+  });
+
+  it('fallback-parses literal blocks in command and summary.command lists', async () => {
+    const workflowPath = path.join(testDir, 'literal-command-lists.yaml');
+    await fs.writeFile(
+      workflowPath,
+      `schema_version: 1
+workflow_id: literal_command_lists
+steps:
+  - id: multiline
+    command:
+      - printf
+      - |
+        first line
+        second line
+summary:
+  command:
+    - printf
+    - |
+      summary line one
+      summary line two
+`,
+    );
+
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('OK: no issues found');
   });
 
   it('lints workflow YAML for noisy agent stdout/stderr template usage', async () => {
