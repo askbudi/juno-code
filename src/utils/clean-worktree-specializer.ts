@@ -19,29 +19,18 @@ const RepositoryPolicySchema = z.object({
   name: z.string().min(1),
   kind: z.enum(['root', 'nested']),
   repositoryPath: AbsolutePath,
-  integrationTarget: ExactBranchRef,
-  remoteTarget: ExactRemoteRef,
-  integrationOwner: z.object({
-    checkoutPath: AbsolutePath,
-    role: z.literal('integration-owner'),
-    expectedBranch: ExactBranchRef,
-    cleanlinessContract: z.literal('clean'),
-  }),
-  fetchedBaseShaPolicy: z.string().min(1),
-  approvedIntegrationMethod: z.enum([
-    'fast-forward-only',
-    'reviewed-merge',
-    'reviewed-rebase',
-    'reviewed-cherry-pick',
-    'reviewed-squash',
-  ]),
+  targetRef: ExactBranchRef,
+  remoteTarget: ExactRemoteRef.optional(),
+  exactBasePolicy: z.literal('approved_target_sha_or_narrow_fetch_head'),
+  integrationChannel: z.literal('git_common_dir_and_target_ref'),
+  targetMovement: z.literal('rebuild_and_rereview'),
   preMergeValidation: z.array(z.string().min(1)).min(1),
-  integratedTargetValidation: z.array(z.string().min(1)).min(1),
+  actualTargetValidation: z.array(z.string().min(1)).min(1),
 });
 
 export const CleanWorktreePolicySchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     controller: z.object({ checkoutPath: AbsolutePath, branch: ExactBranchRef }),
     taskWorktree: z.object({
       pathConvention: z.string().min(1),
@@ -50,7 +39,7 @@ export const CleanWorktreePolicySchema = z
     repositories: z.array(RepositoryPolicySchema).min(1),
     cleanup: z.object({
       reachabilityPolicy: z.string().min(1),
-      fallback: z.literal('integration_pending_dirty_owner'),
+      fallback: z.literal('preserve_with_owner_and_reason'),
     }),
   })
   .superRefine((policy, context) => {
@@ -71,13 +60,6 @@ export const CleanWorktreePolicySchema = z
         });
       }
       names.add(repository.name);
-      if (repository.integrationOwner.expectedBranch !== repository.integrationTarget) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['repositories', index, 'integrationOwner', 'expectedBranch'],
-          message: 'must exactly equal integrationTarget',
-        });
-      }
     }
   });
 
@@ -118,11 +100,14 @@ export class CleanWorktreeSpecializer {
       'utf8',
     );
     const rootPolicy = policy.repositories.find((repository) => repository.kind === 'root')!;
-    const boundTemplate = portableTemplate
-      .replaceAll('origin/<target>', rootPolicy.remoteTarget.replace(/^refs\/remotes\//, ''))
-      .replaceAll('refs/heads/<target>', rootPolicy.integrationTarget)
-      .replaceAll('refs/heads/<local-target>', rootPolicy.integrationTarget)
-      .replaceAll('<remote-target>', rootPolicy.remoteTarget);
+    let boundTemplate = portableTemplate
+      .replaceAll('refs/heads/<target>', rootPolicy.targetRef)
+      .replaceAll('refs/heads/<local-target>', rootPolicy.targetRef);
+    if (rootPolicy.remoteTarget) {
+      boundTemplate = boundTemplate
+        .replaceAll('origin/<target>', rootPolicy.remoteTarget.replace(/^refs\/remotes\//, ''))
+        .replaceAll('<remote-target>', rootPolicy.remoteTarget);
+    }
     const rendered =
       `${boundTemplate.trimEnd()}\n\n## Project-specialized integration policy\n\n` +
       `This section is generated from owner-reviewed migration facts. It is the exact policy for this project; ` +
@@ -150,7 +135,7 @@ export class CleanWorktreeSpecializer {
     const promptSha256 = hash(rendered);
     const receiptRelative = '.juno_task/managed-specializations/clean-worktree.json';
     const receipt = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       promptPath: promptRelative,
       promptSha256,
       specializedAt: new Date().toISOString(),

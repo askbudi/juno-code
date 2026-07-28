@@ -1,13 +1,20 @@
 # Create task workflow
 
-Own creation; execute only when the request also includes the workflow-execution phase or explicitly requests execution.
+Own task/PDR creation. Execute only when the request also authorizes implementation or explicitly requests workflow execution. Task creation alone never authorizes product edits, local integration, push, release, deployment, or E2E.
 
-Read `.juno_task/wiki/parallel_runner_task_creation_best_practices.md` and choose the minimum lane: direct bounded task, guarded small fix, or isolated worktree/workflow. Do not force a workflow onto one clean owner. Resolve the canonical controller with `.juno_task/scripts/controller_resolver.py --operation diagnostic`; resolution is checkout-aware and branch-verified and never switches refs. Record controller, task, and integration-owner cleanliness separately, and give every product command an explicit `TASK_ROOT`.
+1. Resolve the canonical controller with `.juno_task/scripts/controller_resolver.py --operation diagnostic`; never switch refs to manufacture a controller. Read the task-creation, review, and lifecycle wikis.
+2. Write empty-context task bodies and one symbolic manifest covering the parent, implementation/review tasks, separately reserved E2E, controller root, exact product target refs, expected paths, validation, dependencies, budgets/timeouts, artifact root, and cleanup owner. Every product mutation—including a small fix—must use a named exact-base worktree.
+3. For local integration, declare `workflow_class: local_integration`, `integration_step`, `terminal_gate`, and exactly this policy:
 
-For a workflow:
+   ```yaml
+   integration_policy:
+     queue: automatic_after_review_pass
+     channel_scope: git_common_dir_and_target_ref
+     target_movement: rebuild_and_rereview
+   ```
 
-1. Write empty-context task bodies plus one symbolic manifest covering parent, implementation/reserved E2E tags, controller and product roots, roles/dependencies, workflow path, budget, expected states, and owned/baseline paths. Bodies need context, compact ASCII flow, MUST/MUST NOT, failure/runtime contracts, exact validation, and why tests matter.
-2. Run the controller's `.juno_task/scripts/task_workflow_helper.py create-task-set <manifest> --output-dir <dir>` dry-run, then `--execute` to create/read back tasks. Treat its receipt/resolved manifest as structural truth and publish the generated YAML at the declared workflow path. Task checkouts must route Kanban/session writes back to the verified controller; integration owners remain clean and write-free.
-3. Create E2E only when deployed verification is needed; exclude it from implementation. Update/read back the parent via response-file with IDs, exclusions, paths, and exact lint/run/finalize commands. Lint the workflow.
+4. Assign `validation_ownership.pre_merge_review`, `candidate_review`, and `actual_target_review`. Define typed receipts for the first two independent PASS gates and an integration receipt produced by the integration step with `outcome=integrated` and required `feature_tag`. The integration command must use `integration_owner_preflight.py integrate` with candidate and actual-review receipts.
+5. Run the controller's `task_workflow_helper.py create-task-set` as a dry run, then `--execute`; read back tasks and publish/lint the generated workflow. Task checkouts route Kanban/session writes to the controller and receive explicit product roots.
+6. Create post-deploy E2E only when deployed verification is needed and always exclude it from local implementation. Record task IDs, exact paths, lint/run/finalize commands, expected outcomes, and authority exclusions in the parent response.
 
-Handoff exact manifest/workflow paths, task IDs, timeout/run command, expected outcomes, and lint result. If no execution phase follows, stop. Otherwise continue into execution without recreating or revalidating creation artifacts.
+If execution is not authorized, stop after the handoff. Otherwise consume the exact generated artifacts and proceed without recreating them.

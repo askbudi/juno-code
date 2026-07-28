@@ -52,7 +52,7 @@ describe('ManagedProjectAssets', () => {
     const freshLoader = new ConfigLoader(projectDir);
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
-    expect(dictionary.clean_worktree).toContain('First choose the minimum lane');
+    expect(dictionary.clean_worktree).toContain('# Run an exact-base product-change workflow');
     expect(dictionary.new_task_workflow).toContain('# Create task workflow');
     expect(dictionary.run_workflow).toContain('# Run task workflow');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
@@ -91,7 +91,7 @@ describe('ManagedProjectAssets', () => {
     expect(conflict).toBeDefined();
     expect(await fs.readFile(destinationPath, 'utf8')).toContain('refs/heads/customer-release');
     expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      'First choose the minimum lane',
+      '# Run an exact-base product-change workflow',
     );
   });
 
@@ -106,7 +106,9 @@ describe('ManagedProjectAssets', () => {
     const backup = result.backups.find((entry) => entry.destination === destination);
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup), 'utf8')).toBe(customized);
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain('First choose the minimum lane');
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain(
+      '# Run an exact-base product-change workflow',
+    );
   });
 
   it('preserves a conflicting macro unless force is explicit', async () => {
@@ -143,7 +145,7 @@ describe('CleanWorktreeSpecializer', () => {
   afterEach(async () => fs.remove(projectDir));
 
   const policy = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     controller: { checkoutPath: '/workspace/controller', branch: 'refs/heads/juno/controller-v2' },
     taskWorktree: {
       pathConvention: '/tmp/juno/tasks/{run-id}',
@@ -154,40 +156,30 @@ describe('CleanWorktreeSpecializer', () => {
         name: 'root',
         kind: 'root' as const,
         repositoryPath: '/workspace/product',
-        integrationTarget: 'refs/heads/release/customer-a',
+        targetRef: 'refs/heads/release/customer-a',
         remoteTarget: 'refs/remotes/upstream/release/customer-a',
-        integrationOwner: {
-          checkoutPath: '/workspace/integration/root',
-          role: 'integration-owner' as const,
-          expectedBranch: 'refs/heads/release/customer-a',
-          cleanlinessContract: 'clean' as const,
-        },
-        fetchedBaseShaPolicy: 'fetch immediately and record the immutable SHA',
-        approvedIntegrationMethod: 'fast-forward-only' as const,
+        exactBasePolicy: 'approved_target_sha_or_narrow_fetch_head' as const,
+        integrationChannel: 'git_common_dir_and_target_ref' as const,
+        targetMovement: 'rebuild_and_rereview' as const,
         preMergeValidation: ['npm test'],
-        integratedTargetValidation: ['npm test', 'npm run build'],
+        actualTargetValidation: ['npm test', 'npm run build'],
       },
       {
         name: 'nested-api',
         kind: 'nested' as const,
         repositoryPath: '/workspace/product/api',
-        integrationTarget: 'refs/heads/integration/api-v7',
+        targetRef: 'refs/heads/integration/api-v7',
         remoteTarget: 'refs/remotes/vendor/integration/api-v7',
-        integrationOwner: {
-          checkoutPath: '/workspace/integration/api',
-          role: 'integration-owner' as const,
-          expectedBranch: 'refs/heads/integration/api-v7',
-          cleanlinessContract: 'clean' as const,
-        },
-        fetchedBaseShaPolicy: 'record fetched child SHA separately',
-        approvedIntegrationMethod: 'reviewed-merge' as const,
+        exactBasePolicy: 'approved_target_sha_or_narrow_fetch_head' as const,
+        integrationChannel: 'git_common_dir_and_target_ref' as const,
+        targetMovement: 'rebuild_and_rereview' as const,
         preMergeValidation: ['python -m pytest -q'],
-        integratedTargetValidation: ['python -m pytest -q'],
+        actualTargetValidation: ['python -m pytest -q'],
       },
     ],
     cleanup: {
       reachabilityPolicy: 'remove only after every reviewed tip is reachable from its exact target',
-      fallback: 'integration_pending_dirty_owner' as const,
+      fallback: 'preserve_with_owner_and_reason' as const,
     },
   };
 
@@ -199,22 +191,20 @@ describe('CleanWorktreeSpecializer', () => {
     expect(prompt).toContain('refs/remotes/upstream/release/customer-a');
     expect(prompt).not.toContain('refs/heads/<local-target>');
     expect(prompt).not.toContain('origin/<target>');
-    expect(prompt).toContain('/workspace/integration/root');
-    expect(prompt).toContain('integration_pending_dirty_owner');
+    expect(prompt).toContain('git_common_dir_and_target_ref');
+    expect(prompt).toContain('preserve_with_owner_and_reason');
     expect(prompt).toContain('grants no authority to push, publish, deploy');
     expect(prompt).not.toContain('002-e-mail-services');
   });
 
-  it('rejects an absent nested target and owner/target ambiguity', async () => {
+  it('rejects an absent nested target and retired repository-wide integration policy', async () => {
     const invalid: any = structuredClone(policy);
-    invalid.repositories[1].integrationTarget = '';
+    invalid.repositories[1].targetRef = '';
     await expect(CleanWorktreeSpecializer.specialize(projectDir, invalid)).rejects.toThrow();
 
     const mismatch: any = structuredClone(policy);
-    mismatch.repositories[1].integrationOwner.expectedBranch = 'refs/heads/wrong-target';
-    await expect(CleanWorktreeSpecializer.specialize(projectDir, mismatch)).rejects.toThrow(
-      /exactly equal/,
-    );
+    mismatch.repositories[1].integrationChannel = 'repository_wide_lease';
+    await expect(CleanWorktreeSpecializer.specialize(projectDir, mismatch)).rejects.toThrow();
   });
 
   it('leaves specialization customized so routine update preserves exact targets', async () => {
@@ -240,7 +230,7 @@ describe('CleanWorktreeSpecializer', () => {
     expect(conflict).toBeDefined();
     expect(await fs.pathExists(promptPath)).toBe(false);
     expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      'First choose the minimum lane',
+      '# Run an exact-base product-change workflow',
     );
   });
 });

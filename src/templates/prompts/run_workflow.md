@@ -1,8 +1,14 @@
 # Run task workflow
 
-Own execution/review. If a creation phase already produced a handoff in this request, consume it without repeating creation. Otherwise require one exact existing workflow and task-set manifest; never invent or recreate them.
+Own execution, semantic review, reviewed local integration, and safe cleanup for one exact existing workflow/task-set manifest. Reuse a creation-phase handoff from this request; otherwise require explicit artifact paths and never invent replacement tasks.
 
-1. From the controller, resolve `.juno_task/scripts/controller_resolver.py --operation orchestration`; fail on path/ref/role mismatch. Preflight lint, selected/excluded IDs, dependencies, E2E isolation, authority, worktree, budget/timeout, and fail-on-step-error behavior. Verify controller, task, and integration-owner status independently; never clean or switch one to satisfy another.
-2. Run the declared controller `workflow_runner.sh` command once and wait. Every product step must receive and verify explicit `TASK_ROOT`; Kanban and session writes remain routed to the canonical controller. Never deploy or run excluded E2E without explicit authorization.
-3. Runner exit is not acceptance. Inspect terminal steps, then run the controller's `.juno_task/scripts/task_workflow_helper.py finalize-review <run_dir> --manifest <manifest>`.
-4. Inspect its evidence, Kanban readbacks, validation claims, and git/submodule/worktree state; give a human MUST/MUST NOT verdict. Report runner and semantic outcomes separately. On failure, create/reopen the issue and resume only the smallest invalid stage.
+1. From the controller, resolve `controller_resolver.py --operation orchestration`. Preflight authority, exact target/base identities, task IDs/dependencies, expected paths, budgets/timeouts, excluded E2E, immutable inputs/receipts, and fail-on-error behavior. Controller dirt is not a product integration gate.
+2. For every product mutation, require a `worktree_lifecycle.py create` receipt proving a named exact-base task worktree. Product commands receive explicit worktree roots; Kanban/session writes remain routed to the controller.
+3. Lint local-integration workflows for the exact automatic queue/channel/rebuild policy, three validation owners, candidate/actual-review command tokens, typed integration receipt, terminal gate, and required receipt ordering. Reject retired checkpoint-controller, clean-owner, repository-wide lease, or direct fast-forward integration shapes.
+4. Run the declared controller `workflow_runner.sh` command once and wait. Never deploy or run excluded E2E without separate authorization.
+5. Require a `pre_merge` PASS receipt before candidate planning. Build a direct or both-parent candidate with `integration_candidate.py`; independently produce `candidate` PASS and verify it. If the target moves, rebuild and re-review instead of reusing stale evidence.
+6. Drain only an eligible candidate through `integration_owner_preflight.py integrate`. Require expected-SHA target CAS, actual-target validation, `actual_target` PASS, `outcome=integrated`, and a local feature tag. Preserve conflicts, stale targets, partial updates, failed validation, and failed review without false success or cleanup.
+7. Inspect terminal steps, then run `task_workflow_helper.py finalize-review`. Compare the request/PDR, complete diff, receipts, Kanban readbacks, validation, target/tag identities, and worktree audit. Report runner exit, semantic verdict, local target, and remote/push state separately.
+8. Resume only the smallest invalid stage. Cleanup is allowed only through the typed lifecycle helper after reachability and actual-target acceptance are proven.
+
+Local integration grants no authority to push, publish, create a package-release tag, deploy, mutate production, or run post-deploy E2E.

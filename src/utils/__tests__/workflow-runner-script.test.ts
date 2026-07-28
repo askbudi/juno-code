@@ -109,6 +109,63 @@ describe('workflow_runner.sh template script', () => {
     const templateContent = await fs.readFile(templateScript, 'utf8');
     expect(templateContent).toBe(await fs.readFile(runtimeScript, 'utf8'));
     expect(templateContent).not.toContain('_dt.UTC');
+    expect(templateContent).toContain('integration_owner_preflight.py integrate');
+    expect(templateContent).toContain('--candidate-receipt');
+    expect(templateContent).toContain('--actual-review-receipt');
+    expect(templateContent).toContain('git_common_dir_and_target_ref');
+    expect(templateContent).toContain('rebuild_and_rereview');
+    expect(templateContent).not.toContain('--checkpoint-controller');
+  });
+
+  it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
+    const workflowPath = path.join(testDir, 'local-integration.json');
+    const workflow = {
+      schema_version: 1,
+      workflow_id: 'local_integration_contract',
+      workflow_class: 'local_integration',
+      integration_step: 'integrate',
+      terminal_gate: 'integrate',
+      integration_policy: {
+        queue: 'automatic_after_review_pass',
+        channel_scope: 'git_common_dir_and_target_ref',
+        target_movement: 'rebuild_and_rereview',
+      },
+      validation_ownership: {
+        pre_merge_review: 'pre_merge_review',
+        candidate_review: 'candidate_review',
+        actual_target_review: 'integrate',
+      },
+      receipts: [
+        {
+          id: 'integration',
+          producer: 'integrate',
+          path: 'integration.json',
+          schema_version: 'juno_local_integration.v2',
+          required_fields: ['outcome', 'feature_tag'],
+          expected_fields: { outcome: 'integrated' },
+        },
+      ],
+      steps: [
+        { id: 'pre_merge_review', command: 'true' },
+        { id: 'candidate_review', command: 'true' },
+        {
+          id: 'integrate',
+          command:
+            'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --actual-review-command review.sh --actual-review-receipt actual.json',
+        },
+      ],
+    };
+    await fs.writeJson(workflowPath, workflow);
+
+    const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(accepted.status).toBe(0);
+
+    workflow.steps[2].command =
+      'python3 .juno_task/scripts/integration_owner_preflight.py --checkpoint-controller --exec-command integrate.sh';
+    await fs.writeJson(workflowPath, workflow);
+    const retired = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(retired.status).not.toBe(0);
+    expect(retired.stderr).toMatch(/eligible candidate.*actual-target review/);
   });
 
   it('warns when a runtime copy differs from the installed workflow template', async () => {

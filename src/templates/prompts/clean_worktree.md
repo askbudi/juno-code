@@ -1,46 +1,55 @@
-First choose the minimum lane. Use this isolated-worktree workflow only when the lifecycle SOT requires it; a bounded small fix may instead target one clean exact-ref product checkout under the repository lease with declared paths, validation, and one coherent commit. In either lane, launch orchestration from the canonical branch-verified controller, pass the product checkout as explicit `TASK_ROOT`, and keep controller, task, and integration-owner cleanliness separate. Juno/Kanban must never silently switch branches.
+# Run an exact-base product-change workflow
 
-For the isolated lane, run the requested implementation in a Git worktree, review it independently, integrate the reviewed result into the approved local target branch, review the integrated result, and clean up safely.
+Every product mutation, including a small fix, uses a named exact-base worktree. Launch orchestration from the canonical branch-verified controller, pass product paths explicitly, and route Kanban/session writes through `JUNO_TASK_ROOT`. Controller dirt and unrelated processes are not integration inputs. Juno/Kanban must never silently switch refs.
 
 MUST:
+
 1. Read `.juno_task/wiki/git_worktree_lifecycle.md`, `.juno_task/wiki/parallel_runner_task_creation_best_practices.md`, and `.juno_task/wiki/parallel_runner_and_spec_review.md` before planning or executing.
-2. Use a runnable `.juno_task/workflows/*.yaml` and `./.juno_task/scripts/workflow_runner.sh` so implementation, pre-merge review, and post-merge review run in separate Juno agent contexts. Keep orchestration and durable artifacts in the primary checkout. Because the runner executes steps from its `project_root`, every worktree-bound command must explicitly enter or target the recorded worktree and verify its Git root before acting. Mark every safety-critical preflight, review, integration, validation, and cleanup step `fail_on_error: true`; downstream steps must also recheck their own preconditions because runner transport success is not semantic acceptance.
-3. Resolve the canonical controller before mutation and resolve one exact `refs/heads/...` integration target per changed repository. Use the project-specialized policy embedded below when present. When it is absent, discover the target from owner-approved repository facts and stop for owner confirmation before mutation; never select a conventional or similarly named branch as a default. A source branch switch is not executable selection or Kanban data rollback.
-4. Before worktree creation, persist a manifest/receipt containing: repository, primary checkout, remote target, local integration target, fetched remote SHA, local SHA before synchronization, local SHA after synchronization, worktree path, task branch, integration owner, cleanup owner, expected touched paths, nested repositories, validation gates, artifact root, and permitted integration method.
-5. Synchronize the local integration branch before deriving the task branch. Fetch the remote target, then classify the local/remote refs as equal, local-behind, local-ahead, or divergent. If local is behind, require a clean checkout that owns the local branch and advance it with a fast-forward-only integration. If local is ahead, preserve it and use that local tip as the base while recording that the remote is behind. Stop on divergence, dirtiness, a checked-out branch that cannot be advanced safely, or any required non-fast-forward operation. Verify and record that `git merge-base --is-ancestor <remote-target-sha> <local-target-sha>` succeeds. Updating only `origin/<target>` is not synchronization; the local `refs/heads/<target>` must no longer be behind before work begins.
-6. Create each task worktree below `/tmp/juno-code/worktrees/<workflow-id>/<run-id>/<repo-slug>` on a named branch such as `juno/<workflow-id>-<run-id>`, based on the synchronized local integration branch SHA—not merely the fetched remote-tracking ref. Fail closed if the target is unresolved, the path or branch has unexpected state, an existing worktree is dirty, or another worktree owns the branch.
-7. In the implementation context, verify `git rev-parse --show-toplevel`, branch, HEAD/base relationship, and worktree cleanliness before editing. Implement only the requested scope, run the declared validation, and commit all task-owned changes. Do not mutate Kanban storage private to the temporary checkout; use the absolute primary-checkout Kanban wrapper when task updates are required.
-8. In a fresh pre-merge review context, build an independent acceptance matrix from the user request, Kanban task bodies, specs, AGENTS instructions, and stable wiki contracts before reading the implementation summary. Inspect the complete base-to-tip diff, commits, repository status, tests, generated artifacts, and MUST/MUST NOT requirements. If a mismatch is found, create or reopen the Kanban bug before fixing it, then require a coherent review-fix commit and repeat the relevant review gates.
-9. Integrate only after pre-merge review passes. Re-fetch the approved remote target and verify it has not moved beyond the recorded synchronized base; otherwise stop for an explicit rebase/merge and renewed review decision. Verify the checkout that owns the local integration branch is clean and that its HEAD equals `refs/heads/<local-target>`. Advance the actual local branch with a fast-forward-only integration of the reviewed task tip. Do not treat a merged temporary branch, updated remote-tracking ref, or reviewed diff as proof that the local target moved. Record the local target SHA before and after integration and require the post-integration local ref to equal the reviewed task tip for a fast-forward integration. The invocation of this prompt authorizes that reviewed local integration only; it does not authorize push, deployment, production mutation, or post-deploy E2E.
-10. In a new post-merge review context, inspect the exact integrated local target SHA, compare the integrated result with the independently authored acceptance matrix, and run required validation against the integrated local target rather than only the task branch. Prove all applicable assertions: `git rev-parse refs/heads/<local-target>` equals the recorded integrated SHA; the checkout owning that branch has the same `HEAD`; `git merge-base --is-ancestor <reviewed-task-tip> refs/heads/<local-target>` succeeds; and `git merge-base --is-ancestor <remote-target> refs/heads/<local-target>` succeeds. For an explicitly approved squash, record the replacement commit and prove patch equivalence instead of task-tip ancestry.
-11. Persist the workflow YAML, runner manifest, remote/local pre-sync SHAs, synchronized base SHA, reviewed task SHA, local pre/post-integration SHAs, review verdicts, validation outputs, ancestry or patch-equivalence result, Kanban reconciliation, and cleanup disposition under `.juno_task/specs/workflows/...`; `/tmp` must never be the only evidence location. Report local-target state separately from remote-target state so a local-only merge is never mistaken for a push. Runner success and semantic acceptance must be reported separately.
-12. As the final workflow stage, remove the temporary worktree only after post-merge review and integrated-target validation pass, the reviewed tip is reachable from the actual local target (or approved squash equivalence is proven), the local target ref and its owning checkout agree, the worktree is clean, nested worktrees are handled first, and no active process uses it. Delete the task branch only after the same proof. Finish with `worktree_lifecycle.py audit`, its recorded inventory, and its prune-dry-run receipt. Preserve the worktree and report its owner/reason on any failure.
-13. After the workflow has completed, have the terminal owner run `task_workflow_helper.py finalize-review <run-dir> --manifest <task-set-manifest>` and record a human/agent verdict from its evidence. A review step inside its still-running workflow must not call terminal doctor/finalize on itself.
+2. Resolve the canonical controller and one owner-approved exact `refs/heads/<target>` per changed repository. Record repository identity, target ref/SHA, task ID, expected paths, validation commands, cleanup owner, nested repositories, and durable receipt root. Never infer a conventional target branch.
+3. Use `.juno_task/scripts/worktree_lifecycle.py create` to create a named task worktree from the approved target SHA. A narrow `--fetch REMOTE,REF` may bind `FETCH_HEAD` with `--expected-base`; it must not advance the target ref. Existing paths/branches are reusable only when path, ref, HEAD, and cleanliness exactly match the manifest.
+4. Run implementation only in the task worktree. Verify its Git root, branch, base, and clean starting state; edit only declared paths; validate; and create one or more coherent task commits. Product steps receive explicit `TASK_ROOT`; controller-owned Kanban/session writes stay on the controller.
+5. In a separate context, produce a `pre_merge` PASS receipt bound to the request/PDR, complete base-to-tip diff, expected paths, commits, tests, and open-bug set. A failed review requires a review-fix commit and a fresh receipt.
+6. Use `integration_candidate.py plan` and `build`. When the target is still the task base, the candidate may be the reviewed task tip. When it advanced, build a both-parent candidate whose parents are exactly current target then reviewed task tip. Conflicts or target ambiguity preserve the worktree and fail closed.
+7. Independently validate the candidate and produce a `candidate` PASS receipt. Run `integration_candidate.py verify`; any target movement after review requires candidate rebuild and re-review. Never reuse a stale receipt.
+8. Integrate only through `integration_owner_preflight.py integrate`, using the verified candidate receipt. It must lock `(Git common directory, full target ref)`, recheck the expected SHA, update the target with compare-and-swap, validate the actual target, and require an `actual_target` PASS receipt. List nested repositories child-first and bind root gitlinks. Partial multi-repository integration is preserved and reported; it is never rewound or called success.
+9. Require a typed integration receipt with `outcome=integrated` and a local `juno-feature/<task>/<sha>` tag before cleanup. The tag is local evidence, not package-release or push authority.
+10. Use `worktree_lifecycle.py cleanup` only after actual-target review passes, the reviewed result is reachable from the exact target, the task worktree is clean/inactive, and nested worktrees are handled first. Preserve blocked worktrees with owner and reason; never force cleanup.
+11. Persist creation, pre-merge, candidate, integration, actual-target, validation, feature-tag, cleanup, and final semantic-verdict receipts under the controller's durable workflow artifact root. Report local target, remote target, and runner/semantic outcomes separately.
 
-MUST NOT:
-- Do not auto-stash, reset, discard, force-remove, force-delete, or silently overwrite existing work.
-- Do not merge into a dirty integration checkout.
-- Do not fetch a remote-tracking branch and report synchronization while the corresponding local target branch remains behind.
-- Do not integrate only inside the temporary worktree and leave the approved local target ref unchanged.
-- Do not edit the integration target ad hoc when post-merge review finds drift; fail closure and create/reopen a Kanban bug unless the user explicitly authorizes a repair path.
-- Do not infer integration, deployment, push, or E2E authority from a successful agent, commit, workflow, or test run.
+For an authorized local-integration workflow, declare exactly:
 
-Required workflow shape:
-
-```text
-target/base preflight
-  -> fetch and fast-forward the actual local target when it is behind
-  -> verify remote target is an ancestor of the synchronized local target
-  -> create /tmp/juno-code/worktrees/... worktree
-  -> implementation agent context + commit + task validation
-  -> independent pre-merge review context
-  -> review-fix loop when required
-  -> explicit fast-forward of the actual approved local target ref
-  -> assert the owning checkout HEAD and local target ref equal the integrated SHA
-  -> fresh post-merge review context + integrated-target validation
-  -> ancestry/equivalence and evidence receipts
-  -> safe worktree cleanup
-  -> terminal finalize-review and semantic verdict
+```yaml
+workflow_class: local_integration
+integration_policy:
+  queue: automatic_after_review_pass
+  channel_scope: git_common_dir_and_target_ref
+  target_movement: rebuild_and_rereview
+validation_ownership:
+  pre_merge_review: <step-id>
+  candidate_review: <step-id>
+  actual_target_review: <integration-step-id>
 ```
 
-If any mandatory integration or cleanup precondition cannot be satisfied, preserve the reviewed task branch/worktree, publish the exact blocker and safe next command, and do not claim the workflow completed correctly.
+MUST NOT:
+
+- Do not edit product files in the controller or integration-owner checkout, even for a small fix.
+- Do not pre-advance a local target merely to create a task worktree.
+- Do not require controller cleanliness, repository-wide writer quiescence, or a clean checkout owner as a target-channel gate.
+- Do not use a direct merge/fast-forward command in place of the reviewed candidate and expected-SHA CAS helper.
+- Do not auto-stash, reset, discard, rewind, force-remove, force-delete, or silently overwrite work.
+- Do not infer push, publication, package release, deployment, production mutation, or post-deploy E2E authority from task execution or local integration.
+
+```text
+controller orchestration
+  -> exact approved target SHA
+  -> named task worktree
+  -> implementation + tests + commit
+  -> pre_merge PASS
+  -> direct/both-parent candidate
+  -> candidate PASS
+  -> target-channel lock + expected-SHA CAS
+  -> actual_target PASS + local feature tag
+  -> typed safe cleanup + final verdict
+```
+
+If any identity, review, integration, or cleanup gate cannot be proven, preserve the task/candidate evidence and report the exact blocker and safest next command.
