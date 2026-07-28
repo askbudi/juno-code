@@ -2,7 +2,7 @@
 
 Own task/PDR creation. Execute only when the request also authorizes implementation or explicitly requests workflow execution. Task creation alone never authorizes product edits, local integration, push, release, deployment, or E2E.
 
-1. Resolve the canonical controller with `.juno_task/scripts/controller_resolver.py --operation diagnostic`; never switch refs to manufacture a controller. Read the task-creation, review, and lifecycle wikis.
+1. Resolve the canonical controller with `.juno_task/scripts/controller_resolver.py --operation diagnostic`; Juno never silently switches refs to manufacture a controller. Read the task-creation, review, and lifecycle wikis.
 2. Write empty-context task bodies and one symbolic manifest covering the parent, implementation/review tasks, separately reserved E2E, controller root, exact product target refs, expected paths, validation, dependencies, budgets/timeouts, artifact root, and cleanup owner. Every product mutation—including a small fix—must use a named exact-base worktree.
 3. For local integration, declare `schema_version: 2`, `workflow_class: local_integration`, `integration_step`, `terminal_gate`, and exactly this policy:
 
