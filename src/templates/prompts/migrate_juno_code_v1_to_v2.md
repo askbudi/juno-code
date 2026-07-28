@@ -80,6 +80,7 @@ Do not convert Kanban, copy controller-private state into the task worktree, glo
 An authorized workflow declares:
 
 ```yaml
+schema_version: 2
 workflow_class: local_integration
 integration_policy:
   queue: automatic_after_review_pass
@@ -90,6 +91,8 @@ validation_ownership:
   candidate_review: <step-id>
   actual_target_review: <integration-step-id>
 ```
+
+Every typed receipt `required_fields` list includes `producer_step_digest`, and its producer writes the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
 
 ## Phase E — specialization and cleanup
 

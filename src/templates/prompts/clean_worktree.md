@@ -19,6 +19,7 @@ MUST:
 For an authorized local-integration workflow, declare exactly:
 
 ```yaml
+schema_version: 2
 workflow_class: local_integration
 integration_policy:
   queue: automatic_after_review_pass
@@ -29,6 +30,8 @@ validation_ownership:
   candidate_review: <step-id>
   actual_target_review: <integration-step-id>
 ```
+
+Every typed receipt in this workflow explicitly lists `producer_step_digest` in `required_fields`; producers write the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
 
 MUST NOT:
 

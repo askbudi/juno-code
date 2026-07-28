@@ -114,13 +114,15 @@ describe('workflow_runner.sh template script', () => {
     expect(templateContent).toContain('--actual-review-receipt');
     expect(templateContent).toContain('git_common_dir_and_target_ref');
     expect(templateContent).toContain('rebuild_and_rereview');
+    expect(templateContent).toContain('local_integration requires schema_version: 2');
+    expect(templateContent).toContain('required_fields must include producer_step_digest');
     expect(templateContent).not.toContain('--checkpoint-controller');
   });
 
   it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
     const workflowPath = path.join(testDir, 'local-integration.json');
     const workflow = {
-      schema_version: 1,
+      schema_version: 2,
       workflow_id: 'local_integration_contract',
       workflow_class: 'local_integration',
       integration_step: 'integrate',
@@ -141,7 +143,7 @@ describe('workflow_runner.sh template script', () => {
           producer: 'integrate',
           path: 'integration.json',
           schema_version: 'juno_local_integration.v2',
-          required_fields: ['outcome', 'feature_tag'],
+          required_fields: ['producer_step_digest', 'outcome', 'feature_tag'],
           expected_fields: { outcome: 'integrated' },
         },
       ],
@@ -166,6 +168,21 @@ describe('workflow_runner.sh template script', () => {
     const retired = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(retired.status).not.toBe(0);
     expect(retired.stderr).toMatch(/eligible candidate.*actual-target review/);
+
+    workflow.steps[2].command =
+      'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --actual-review-command review.sh --actual-review-receipt actual.json';
+    workflow.schema_version = 1;
+    await fs.writeJson(workflowPath, workflow);
+    const legacySchema = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(legacySchema.status).not.toBe(0);
+    expect(legacySchema.stderr).toMatch(/schema_version: 2; migration required/);
+
+    workflow.schema_version = 2;
+    workflow.receipts[0].required_fields = ['step_digest', 'outcome', 'feature_tag'];
+    await fs.writeJson(workflowPath, workflow);
+    const undeclaredProducerDigest = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(undeclaredProducerDigest.status).not.toBe(0);
+    expect(undeclaredProducerDigest.stderr).toMatch(/must include producer_step_digest/);
   });
 
   it('warns when a runtime copy differs from the installed workflow template', async () => {
@@ -1331,7 +1348,7 @@ print('response with session_id=session-must-not-be-captured')
           producer: 'producer',
           path: receiptPath,
           schema_version: 'fixture.v1',
-          required_fields: ['outcome'],
+          required_fields: ['producer_step_digest', 'outcome'],
           expected_fields: { outcome: 'completed' },
         },
       ],

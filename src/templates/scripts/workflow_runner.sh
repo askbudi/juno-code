@@ -218,6 +218,10 @@ def normalize_receipt_contracts(workflow: dict[str, Any]) -> dict[str, dict[str,
             raise WorkflowError(f"receipt {receipt_id} requires producer, path, and schema_version")
         if not isinstance(required_fields, list) or not all(isinstance(field, str) and field for field in required_fields):
             raise WorkflowError(f"receipt {receipt_id} required_fields must be a list of dotted field names")
+        if "producer_step_digest" not in required_fields:
+            raise WorkflowError(
+                f"receipt {receipt_id} required_fields must include producer_step_digest so lint and runtime bind the same producer"
+            )
         if not isinstance(expected_fields, dict) or not all(
             isinstance(field, str) and field for field in expected_fields
         ):
@@ -541,7 +545,8 @@ def safe_id(value: Any, fallback: str) -> str:
 
 
 def validate_workflow(workflow: dict[str, Any]) -> None:
-    if "schema_version" in workflow and str(workflow["schema_version"]).strip() not in {"1", "1.0", "v1"}:
+    workflow_schema = str(workflow.get("schema_version") or "").strip()
+    if workflow_schema and workflow_schema not in {"1", "1.0", "v1", "2", "2.0", "v2"}:
         raise WorkflowError(f"unsupported schema_version: {workflow['schema_version']}")
     steps = workflow.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -607,6 +612,10 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
     if validation_ownership is not None and not isinstance(validation_ownership, dict):
         raise WorkflowError("validation_ownership must be a mapping")
     if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        if workflow_schema not in {"2", "2.0", "v2"}:
+            raise WorkflowError(
+                "local_integration requires schema_version: 2; migration required for pre-2.0.14 workflow contracts"
+            )
         required_roles = {"pre_merge_review", "candidate_review", "actual_target_review"}
         missing_roles = sorted(required_roles - set(validation_ownership or {}))
         if missing_roles:
@@ -2523,8 +2532,9 @@ def build_parser() -> argparse.ArgumentParser:
   original workflow, variables, commands, frozen_inputs, typed receipts, and reused
   predecessor artifacts. A harness-only correction uses a fresh out-dir,
   amendment_mode: harness_only_validation, and --amends-run PRIOR_RUN.
-  Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST.
-  Declare terminal_gate for semantic summaries. local_integration workflows declare
+  Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST;
+  every receipt required_fields list explicitly includes producer_step_digest.
+  Declare terminal_gate for semantic summaries. schema_version: 2 local_integration workflows declare
   pre_merge_review, candidate_review, and receipt-gated actual_target_review owners,
   plus the exact automatic queue/channel/rebuild integration_policy.
 
