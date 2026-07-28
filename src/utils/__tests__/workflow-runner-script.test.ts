@@ -1622,6 +1622,46 @@ print('response with session_id=session-must-not-be-captured')
     expect(rejected.stderr).toContain('completed evidence attempt mismatch');
   });
 
+  it('rejects removed or weakened receipt contracts for skipped producers', async () => {
+    const workflowPath = path.join(testDir, 'removed-prefix-receipt.json');
+    const parentOut = path.join(testDir, 'removed-prefix-parent');
+    const amendedOut = path.join(testDir, 'removed-prefix-amended');
+    const producerCode = [
+      'import json, os, pathlib',
+      "path = pathlib.Path(os.environ['JUNO_WORKFLOW_RECEIPT_EVIDENCE'])",
+      "path.parent.mkdir(parents=True, exist_ok=True)",
+      "path.write_text(json.dumps({'schema_version':'fixture.v1','producer_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST']}))",
+    ].join('; ');
+    const steps = [
+      { id: 'producer', command: ['python3', '-c', producerCode] },
+      { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+    ];
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'removed-prefix-receipt',
+      amendment_mode: 'harness_only_validation',
+      receipts: [{
+        id: 'evidence', producer: 'producer', path: '{{ out_dir }}/evidence.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+      steps,
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'removed-prefix-receipt',
+      amendment_mode: 'harness_only_validation',
+      steps,
+    });
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('producer receipt set changed');
+  });
+
   it('rejects newly declared skipped-producer receipts without a parent hash anchor', async () => {
     const workflowPath = path.join(testDir, 'missing-anchor.json');
     const parentOut = path.join(testDir, 'missing-anchor-parent');
@@ -1652,7 +1692,7 @@ print('response with session_id=session-must-not-be-captured')
       '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
     ]);
     expect(rejected.status).not.toBe(0);
-    expect(rejected.stderr).toContain('parent hash anchor missing');
+    expect(rejected.stderr).toContain('producer receipt set changed');
     expect(await fs.pathExists(suffixMarker)).toBe(false);
   });
 

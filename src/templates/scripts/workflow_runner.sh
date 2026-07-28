@@ -1724,6 +1724,9 @@ def prepare_selective_amendment(
     receipts_by_producer: dict[str, list[dict[str, Any]]] = {}
     for contract in normalize_receipt_contracts(workflow).values():
         receipts_by_producer.setdefault(contract["producer"], []).append(contract)
+    parent_receipts_by_producer: dict[str, list[dict[str, Any]]] = {}
+    for contract in (parent_contract.get("receipt_contracts") or {}).values():
+        parent_receipts_by_producer.setdefault(str(contract.get("producer") or ""), []).append(contract)
     parent_context = context_for_out_dir(context, parent_dir, workflow, project_root)
     reused: dict[str, dict[str, Any]] = {}
 
@@ -1743,6 +1746,18 @@ def prepare_selective_amendment(
             raise WorkflowError(f"amendment_prerequisite[{step_id}]: manifest command does not match producer digest")
 
         produced_contracts = receipts_by_producer.get(step_id, [])
+        previous_contracts = parent_receipts_by_producer.get(step_id, [])
+        produced_by_id = {str(contract["id"]): contract for contract in produced_contracts}
+        previous_by_id = {str(contract["id"]): contract for contract in previous_contracts}
+        if set(produced_by_id) != set(previous_by_id):
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: producer receipt set changed")
+        for receipt_id, contract in produced_by_id.items():
+            previous_contract = previous_by_id[receipt_id]
+            for field in ("producer", "schema_version", "required_fields", "expected_fields"):
+                if contract.get(field) != previous_contract.get(field):
+                    raise WorkflowError(
+                        f"amendment_prerequisite[{step_id}].receipt[{receipt_id}]: contract {field} changed"
+                    )
         status = str(previous.get("status") or "")
         normally_reusable = status in {"success", "reused_verified", "amendment_revalidated"} and bool(completed)
         if not normally_reusable:
