@@ -68,6 +68,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('integration_owner_preflight.py');
       expect(missing).toContain('integration_candidate.py');
       expect(missing).toContain('worktree_lifecycle.py');
+      expect(missing).toContain('task_workflow_helper.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -169,6 +170,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'worktree_lifecycle.py'),
         '#!/usr/bin/env python3\nprint("audit")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'task_workflow_helper.py'),
+        '#!/usr/bin/env python3\nprint("task set")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -256,6 +261,7 @@ describe('ScriptInstaller', () => {
         { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'worktree_lifecycle.py', installed: false },
+        { name: 'task_workflow_helper.py', installed: false },
       ]);
     });
 
@@ -357,6 +363,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'worktree_lifecycle.py'),
         '#!/usr/bin/env python3\nprint("audit")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'task_workflow_helper.py'),
+        '#!/usr/bin/env python3\nprint("task set")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -391,6 +401,7 @@ describe('ScriptInstaller', () => {
         { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'worktree_lifecycle.py', installed: true },
+        { name: 'task_workflow_helper.py', installed: true },
       ]);
     });
   });
@@ -619,6 +630,15 @@ describe('ScriptInstaller', () => {
       expect(
         await fs.pathExists(path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py')),
       ).toBe(true);
+      const installedTaskHelper = await fs.readFile(
+        path.join(testDir, '.juno_task/scripts/task_workflow_helper.py'),
+        'utf8',
+      );
+      const packageTaskHelper = await fs.readFile(
+        path.resolve(process.cwd(), 'src/templates/scripts/task_workflow_helper.py'),
+        'utf8',
+      );
+      expect(installedTaskHelper).toBe(packageTaskHelper);
     });
 
     it('does not mix a new lifecycle script generation with customized guidance', async () => {

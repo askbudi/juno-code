@@ -71,6 +71,12 @@
       "destination": ".juno_task/scripts/worktree_lifecycle.py",
       "installClass": "script",
       "type": "script"
+    },
+    {
+      "source": "scripts/task_workflow_helper.py",
+      "destination": ".juno_task/scripts/task_workflow_helper.py",
+      "installClass": "script",
+      "type": "script"
     }
   ]
 }
