@@ -1532,6 +1532,69 @@ print('response with session_id=session-must-not-be-captured')
     expect(await fs.pathExists(suffixMarker)).toBe(false);
   });
 
+  it('fails closed when the newest parent attempt manifest is missing', async () => {
+    const workflowPath = path.join(testDir, 'missing-newest-manifest.json');
+    const parentOut = path.join(testDir, 'missing-newest-parent');
+    const amendedOut = path.join(testDir, 'missing-newest-amended');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'missing-newest-manifest',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'prefix', command: ['bash', '-lc', 'printf prefix'] },
+        { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    const contractPath = path.join(parentOut, 'run_contract.json');
+    const contract = await fs.readJson(contractPath);
+    contract.attempts.push({
+      attempt_id: 'newer', status: 'failed', semantic_status: 'failed',
+      manifest: path.join(parentOut, 'attempts', 'newer', 'manifest.json'),
+      manifest_sha256: '0'.repeat(64),
+    });
+    await fs.writeJson(contractPath, contract);
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('newest parent manifest is missing');
+  });
+
+  it('rejects cross-attempt mixing between manifest context and completed evidence', async () => {
+    const workflowPath = path.join(testDir, 'attempt-mismatch.json');
+    const parentOut = path.join(testDir, 'attempt-mismatch-parent');
+    const amendedOut = path.join(testDir, 'attempt-mismatch-amended');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'attempt-mismatch',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'prefix', command: ['bash', '-lc', 'printf prefix'] },
+        { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    const contractPath = path.join(parentOut, 'run_contract.json');
+    const contract = await fs.readJson(contractPath);
+    const attempt = contract.attempts.at(-1);
+    const manifest = await fs.readJson(attempt.manifest);
+    manifest.steps[0].status = 'reused_verified';
+    manifest.steps[0].reused_from_attempt = 'different-attempt';
+    await fs.writeJson(attempt.manifest, manifest);
+    attempt.manifest_sha256 = createHash('sha256').update(await fs.readFile(attempt.manifest)).digest('hex');
+    await fs.writeJson(contractPath, contract);
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('completed evidence attempt mismatch');
+  });
+
   it('rejects newly declared skipped-producer receipts without a parent hash anchor', async () => {
     const workflowPath = path.join(testDir, 'missing-anchor.json');
     const parentOut = path.join(testDir, 'missing-anchor-parent');
@@ -1637,6 +1700,22 @@ print('response with session_id=session-must-not-be-captured')
     expect(result.status).not.toBe(0);
     expect(result.stdout).toContain('hardcodes receipt path');
     expect(result.stdout).toContain('{{ receipts.verified.path }}');
+  });
+
+  it('rejects receipt IDs that cannot map unambiguously to templates and environment variables', async () => {
+    const workflowPath = path.join(testDir, 'ambiguous-receipt-id.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'ambiguous_receipt_id',
+      receipts: [{
+        id: 'review.pass', producer: 'producer', path: 'review.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+      steps: [{ id: 'producer', command: 'true' }],
+    });
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('use only letters, numbers, and underscores');
   });
 
   it('does not flag unrelated JSON outputs that merely share a receipt basename', async () => {

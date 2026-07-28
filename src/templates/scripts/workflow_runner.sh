@@ -205,8 +205,11 @@ def normalize_receipt_contracts(workflow: dict[str, Any]) -> dict[str, dict[str,
         if not isinstance(item, dict):
             raise WorkflowError("each receipt contract must be a mapping")
         receipt_id = str(item.get("id") or "").strip()
-        if not receipt_id or not re.match(r"^[A-Za-z0-9_.-]+$", receipt_id):
-            raise WorkflowError(f"invalid receipt id: {receipt_id!r}")
+        if not receipt_id or not re.match(r"^[A-Za-z0-9_]+$", receipt_id):
+            raise WorkflowError(
+                f"invalid receipt id: {receipt_id!r}; use only letters, numbers, and underscores "
+                "so template and environment lookups remain unambiguous"
+            )
         if receipt_id in contracts:
             raise WorkflowError(f"duplicate receipt id: {receipt_id}")
         producer = str(item.get("producer") or "").strip()
@@ -1637,10 +1640,12 @@ def validate_receipt_file(
 def latest_contract_manifest(
     parent_contract: dict[str, Any], parent_dir: Path, require_hash: bool = False
 ) -> Path:
-    for attempt in reversed(parent_contract.get("attempts") or []):
+    attempts = parent_contract.get("attempts") or []
+    if attempts:
+        attempt = attempts[-1]
         candidate = Path(str(attempt.get("manifest") or ""))
         if not candidate.is_file():
-            continue
+            raise WorkflowError(f"amendment newest parent manifest is missing: {candidate}")
         expected_hash = str(attempt.get("manifest_sha256") or "")
         if require_hash and not expected_hash:
             raise WorkflowError(f"amendment parent manifest is not hash-bound: {candidate}")
@@ -1742,6 +1747,13 @@ def prepare_selective_amendment(
         normally_reusable = status in {"success", "reused_verified", "amendment_revalidated"} and bool(completed)
         if not normally_reusable:
             raise WorkflowError(f"amendment_prerequisite[{step_id}]: no reusable successful predecessor evidence")
+        manifest_attempt = (
+            previous.get("reused_from_attempt")
+            if status in {"reused_verified", "amendment_revalidated"}
+            else parent_manifest.get("run_id")
+        )
+        if str(manifest_attempt or "") != str(completed.get("attempt_id") or ""):
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: completed evidence attempt mismatch")
 
         inherited_receipts: dict[str, Any] = {}
         for contract in produced_contracts:
