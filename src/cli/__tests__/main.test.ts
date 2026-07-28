@@ -807,7 +807,7 @@ describe('Main Command', () => {
         expect(call.instruction).toContain('## BAD111');
       });
 
-      it('should keep ##task-id text unchanged when kanban lookup fails', async () => {
+      it('should warn the user and instruct the agent to fetch the task manually after hydration timeout', async () => {
         vi.mocked(fs.pathExists)
           .mockResolvedValueOnce(false as any)
           .mockResolvedValueOnce(true as any);
@@ -816,7 +816,11 @@ describe('Main Command', () => {
           (_file: string, _args?: any, _options?: any, callback?: any) => {
             const cb =
               typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
-            cb?.(new Error('kanban unavailable'), '', 'boom');
+            cb?.(
+              Object.assign(new Error('Command timed out'), { killed: true, signal: 'SIGTERM' }),
+              '',
+              '',
+            );
             return {} as any;
           },
         );
@@ -836,11 +840,22 @@ describe('Main Command', () => {
         await mainCommandHandler([], options, mockCommand);
 
         const { createExecutionRequest } = await import('../../core/engine.js');
-        expect(createExecutionRequest).toHaveBeenCalledWith(
-          expect.objectContaining({
-            instruction: 'Please analyze ## c7Lj80 before coding',
-          }),
+        const call = vi.mocked(createExecutionRequest).mock.calls.at(-1)?.[0] as {
+          instruction?: string;
+        };
+        expect(call.instruction).toContain('[kanban_task_hydration_warning:c7Lj80]');
+        expect(call.instruction).toContain('./.juno_task/scripts/kanban.sh get c7Lj80');
+        expect(call.instruction).toContain('## c7Lj80');
+        expect(console.error).toHaveBeenCalledWith(
+          expect.stringContaining('Kanban task hydration timed out for c7Lj80'),
         );
+        expect(childProcess.execFile).toHaveBeenCalledWith(
+          path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'),
+          ['get', 'c7Lj80'],
+          expect.objectContaining({ timeout: 10000 }),
+          expect.any(Function),
+        );
+        expect(childProcess.execFile).toHaveBeenCalledTimes(3);
       });
 
       it('should not fallback to juno-kanban when local kanban script exists', async () => {
@@ -852,7 +867,7 @@ describe('Main Command', () => {
           (_file: string, _args?: any, _options?: any, callback?: any) => {
             const cb =
               typeof _args === 'function' ? _args : typeof _options === 'function' ? _options : callback;
-            cb?.(new Error('task not found'), '', 'Task not found');
+            cb?.(new Error('Task not found: abc123'), '', 'Task not found: abc123');
             return {} as any;
           },
         );
@@ -874,6 +889,10 @@ describe('Main Command', () => {
         const calls = vi.mocked(childProcess.execFile).mock.calls;
         expect(calls.length).toBeGreaterThan(0);
         expect(calls.every((call) => call[0] === path.join('/test/dir', '.juno_task', 'scripts', 'kanban.sh'))).toBe(true);
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        const request = vi.mocked(createExecutionRequest).mock.calls.at(-1)?.[0] as { instruction?: string };
+        expect(request.instruction).toBe('Please analyze ## abc123 before coding');
+        expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining('Kanban task hydration'));
       });
 
       it('should handle file prompt', async () => {

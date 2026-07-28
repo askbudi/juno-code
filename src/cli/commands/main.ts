@@ -164,9 +164,29 @@ const LEADING_PROMPT_DELIMITER_MARKERS = new Set(['---', '***', '___']);
 const LEADING_DIRECTIVE_LINE_REGEX = /^(?:%(?:\{[^\s{}]+\}|[^\s%][^\s]*)|\/skill:[^\s]+|\/[^\s]+|\$[^\s]+)/;
 const KANBAN_TASK_REFERENCE_REGEX = /(?<!#)##\s*\{?([A-Za-z0-9]{6})\}?(?![A-Za-z0-9])/g;
 const KANBAN_TASK_SCRIPT_RELATIVE_PATH = path.join('.juno_task', 'scripts', 'kanban.sh');
-const KANBAN_GET_COMMAND_TIMEOUT_MS = 2000;
+const KANBAN_HYDRATION_TOTAL_TIMEOUT_MS = 30000;
+const KANBAN_GET_ATTEMPT_TIMEOUT_MS = 10000;
+const KANBAN_GET_MAX_ATTEMPTS = 3;
+const KANBAN_GET_RETRY_BASE_DELAY_MS = 100;
 
 type KanbanTaskRecord = Record<string, unknown> & { id?: string };
+type KanbanLookupFailureKind = 'timeout' | 'not_found' | 'error';
+
+interface KanbanLookupFailure {
+  kind: KanbanLookupFailureKind;
+  detail: string;
+}
+
+interface KanbanLookupResult {
+  tasks: KanbanTaskRecord[];
+  failure?: KanbanLookupFailure;
+}
+
+interface KanbanHydrationResult {
+  tasksById: Map<string, KanbanTaskRecord>;
+  failuresById: Map<string, KanbanLookupFailure>;
+  manualCommand: string;
+}
 
 function extractReferencedKanbanTaskIds(prompt: string): string[] {
   const taskIds: string[] = [];
@@ -196,107 +216,161 @@ function normalizeKanbanTaskArray(payload: unknown): KanbanTaskRecord[] {
   return [];
 }
 
+function isKanbanLookupTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const candidate = error as { killed?: unknown; signal?: unknown; code?: unknown; message?: unknown };
+  return (
+    candidate.killed === true ||
+    candidate.signal === 'SIGTERM' ||
+    candidate.code === 'ETIMEDOUT' ||
+    (typeof candidate.message === 'string' && /timed?\s*out/i.test(candidate.message))
+  );
+}
+
+function lookupFailureDetail(error: unknown, stderr: string): string {
+  const stderrDetail = stderr.trim();
+  if (stderrDetail) {
+    return stderrDetail;
+  }
+  return error instanceof Error && error.message.trim() ? error.message.trim() : 'unknown Kanban lookup error';
+}
+
+function retryDelay(attempt: number): Promise<void> {
+  const jitterMs = Math.floor(Math.random() * KANBAN_GET_RETRY_BASE_DELAY_MS);
+  return new Promise((resolve) => setTimeout(resolve, KANBAN_GET_RETRY_BASE_DELAY_MS * attempt + jitterMs));
+}
+
 async function runKanbanGetCommand(
   command: string,
   args: string[],
   workingDirectory: string,
-): Promise<KanbanTaskRecord[] | null> {
+  deadlineMs: number,
+): Promise<KanbanLookupResult> {
   const controller = resolveController(workingDirectory, 'kanban');
-  try {
-    const execFile = promisify(childProcess.execFile);
-    const result = await execFile(command, args, {
-      cwd: workingDirectory,
-      env: {
-        ...process.env,
-        JUNO_TASK_ROOT: controller.path,
-        JUNO_CONTROLLER_SOURCE: controller.source,
-        JUNO_WORKSPACE_ROLE: controller.role,
-      },
-      maxBuffer: 1024 * 1024,
-      timeout: KANBAN_GET_COMMAND_TIMEOUT_MS,
-    });
+  const execFile = promisify(childProcess.execFile);
 
-    const stdout =
-      typeof result === 'string' || Buffer.isBuffer(result)
-        ? String(result)
-        : String((result as { stdout?: unknown }).stdout ?? '');
+  for (let attempt = 1; attempt <= KANBAN_GET_MAX_ATTEMPTS; attempt += 1) {
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      return { tasks: [], failure: { kind: 'timeout', detail: 'total hydration deadline exhausted' } };
+    }
 
-    const parsed = JSON.parse(stdout) as unknown;
-    return normalizeKanbanTaskArray(parsed);
-  } catch {
-    return null;
+    try {
+      const result = await execFile(command, args, {
+        cwd: workingDirectory,
+        env: {
+          ...process.env,
+          JUNO_TASK_ROOT: controller.path,
+          JUNO_CONTROLLER_SOURCE: controller.source,
+          JUNO_WORKSPACE_ROLE: controller.role,
+        },
+        maxBuffer: 1024 * 1024,
+        timeout: Math.min(KANBAN_GET_ATTEMPT_TIMEOUT_MS, remainingMs),
+      });
+
+      const stdout =
+        typeof result === 'string' || Buffer.isBuffer(result)
+          ? String(result)
+          : String((result as { stdout?: unknown }).stdout ?? '');
+
+      try {
+        const parsed = JSON.parse(stdout) as unknown;
+        return { tasks: normalizeKanbanTaskArray(parsed) };
+      } catch (error) {
+        return { tasks: [], failure: { kind: 'error', detail: `invalid Kanban JSON: ${lookupFailureDetail(error, '')}` } };
+      }
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown } | null)?.stderr ?? '');
+      const detail = lookupFailureDetail(error, stderr);
+      if (/Task(?:\(s\))? not found:/i.test(detail)) {
+        return { tasks: [], failure: { kind: 'not_found', detail } };
+      }
+      if (!isKanbanLookupTimeout(error)) {
+        return { tasks: [], failure: { kind: 'error', detail } };
+      }
+      if (attempt < KANBAN_GET_MAX_ATTEMPTS && deadlineMs - Date.now() > KANBAN_GET_RETRY_BASE_DELAY_MS) {
+        await retryDelay(attempt);
+        continue;
+      }
+      return { tasks: [], failure: { kind: 'timeout', detail } };
+    }
   }
+
+  return { tasks: [], failure: { kind: 'timeout', detail: 'Kanban lookup attempts exhausted' } };
 }
 
 async function fetchKanbanTasksForCommand(
   command: string,
   taskIds: string[],
   workingDirectory: string,
-): Promise<Map<string, KanbanTaskRecord>> {
+  deadlineMs: number,
+): Promise<{ tasksById: Map<string, KanbanTaskRecord>; failuresById: Map<string, KanbanLookupFailure> }> {
   const tasksById = new Map<string, KanbanTaskRecord>();
+  const failuresById = new Map<string, KanbanLookupFailure>();
   if (taskIds.length === 0) {
-    return tasksById;
+    return { tasksById, failuresById };
   }
 
   const requestedTaskIds = new Set(taskIds);
-
-  const addFetchedTasks = (fetchedTasks: KanbanTaskRecord[] | null): void => {
-    if (!fetchedTasks) {
-      return;
-    }
-
+  const addFetchedTasks = (fetchedTasks: KanbanTaskRecord[]): void => {
     for (const task of fetchedTasks) {
       const taskId = typeof task.id === 'string' ? task.id : undefined;
-      if (!taskId || !requestedTaskIds.has(taskId)) {
-        continue;
+      if (taskId && requestedTaskIds.has(taskId)) {
+        tasksById.set(taskId, task);
+        failuresById.delete(taskId);
       }
-      tasksById.set(taskId, task);
     }
   };
 
-  addFetchedTasks(await runKanbanGetCommand(command, ['get', ...taskIds], workingDirectory));
-
+  const batchResult = await runKanbanGetCommand(command, ['get', ...taskIds], workingDirectory, deadlineMs);
+  addFetchedTasks(batchResult.tasks);
   const unresolvedTaskIds = taskIds.filter((taskId) => !tasksById.has(taskId));
-  for (const taskId of unresolvedTaskIds) {
-    addFetchedTasks(await runKanbanGetCommand(command, ['get', taskId], workingDirectory));
+
+  // An exhausted batch timeout is a shared operational failure. Starting another
+  // subprocess per ID would amplify the same process storm and exceed the one
+  // hydration deadline, so preserve the failure truth for every unresolved ID.
+  if (batchResult.failure?.kind === 'timeout') {
+    for (const taskId of unresolvedTaskIds) {
+      failuresById.set(taskId, batchResult.failure);
+    }
+    return { tasksById, failuresById };
   }
 
-  return tasksById;
+  for (const taskId of unresolvedTaskIds) {
+    if (Date.now() >= deadlineMs) {
+      failuresById.set(taskId, { kind: 'timeout', detail: 'total hydration deadline exhausted' });
+      continue;
+    }
+    const result = await runKanbanGetCommand(command, ['get', taskId], workingDirectory, deadlineMs);
+    addFetchedTasks(result.tasks);
+    if (!tasksById.has(taskId) && result.failure) {
+      failuresById.set(taskId, result.failure);
+    }
+  }
+
+  return { tasksById, failuresById };
 }
 
 async function fetchReferencedKanbanTasks(
   taskIds: string[],
   workingDirectory: string,
-): Promise<Map<string, KanbanTaskRecord>> {
+): Promise<KanbanHydrationResult> {
   const tasksById = new Map<string, KanbanTaskRecord>();
-  if (taskIds.length === 0) {
-    return tasksById;
-  }
-
+  const failuresById = new Map<string, KanbanLookupFailure>();
   const kanbanScriptPath = path.join(workingDirectory, KANBAN_TASK_SCRIPT_RELATIVE_PATH);
   const hasKanbanScript = await fs.pathExists(kanbanScriptPath);
+  const command = hasKanbanScript ? kanbanScriptPath : 'juno-kanban';
+  const manualCommand = hasKanbanScript ? './.juno_task/scripts/kanban.sh' : 'juno-kanban';
 
-  const commandAttempts: string[] = hasKanbanScript ? [kanbanScriptPath] : ['juno-kanban'];
-
-  let unresolvedTaskIds = [...taskIds];
-  for (const command of commandAttempts) {
-    if (unresolvedTaskIds.length === 0) {
-      break;
-    }
-
-    const fetchedTasks = await fetchKanbanTasksForCommand(command, unresolvedTaskIds, workingDirectory);
-    if (fetchedTasks.size === 0) {
-      continue;
-    }
-
-    for (const [taskId, task] of fetchedTasks.entries()) {
-      tasksById.set(taskId, task);
-    }
-
-    unresolvedTaskIds = unresolvedTaskIds.filter((taskId) => !tasksById.has(taskId));
+  if (taskIds.length === 0) {
+    return { tasksById, failuresById, manualCommand };
   }
 
-  return tasksById;
+  const deadlineMs = Date.now() + KANBAN_HYDRATION_TOTAL_TIMEOUT_MS;
+  const fetched = await fetchKanbanTasksForCommand(command, taskIds, workingDirectory, deadlineMs);
+  return { ...fetched, manualCommand };
 }
 
 export async function expandKanbanTaskReferencesInPrompt(
@@ -308,18 +382,43 @@ export async function expandKanbanTaskReferencesInPrompt(
     return prompt;
   }
 
-  const tasksById = await fetchReferencedKanbanTasks(referencedTaskIds, workingDirectory);
-  if (tasksById.size === 0) {
-    return prompt;
+  const { tasksById, failuresById, manualCommand } = await fetchReferencedKanbanTasks(
+    referencedTaskIds,
+    workingDirectory,
+  );
+
+  for (const [taskId, failure] of failuresById.entries()) {
+    if (failure.kind === 'not_found') {
+      continue;
+    }
+    const reason = failure.kind === 'timeout' ? 'timed out' : 'failed';
+    console.error(
+      chalk.yellow(
+        `Warning: Kanban task hydration ${reason} for ${taskId}. ` +
+          `Automatic substitution was skipped; the agent was instructed to fetch the task manually.`,
+      ),
+    );
   }
 
   return prompt.replace(KANBAN_TASK_REFERENCE_REGEX, (fullMatch, taskId: string) => {
     const task = tasksById.get(taskId);
-    if (!task) {
+    if (task) {
+      return `\n[kanban_task:${taskId}]\n${JSON.stringify(task, null, 2)}\n[/kanban_task]`;
+    }
+
+    const failure = failuresById.get(taskId);
+    if (!failure || failure.kind === 'not_found') {
       return fullMatch;
     }
 
-    return `\n[kanban_task:${taskId}]\n${JSON.stringify(task, null, 2)}\n[/kanban_task]`;
+    const failureLabel = failure.kind === 'timeout' ? 'timed out' : 'failed';
+    return (
+      `\n[kanban_task_hydration_warning:${taskId}]\n` +
+      `Automatic Kanban task hydration ${failureLabel}. Before acting on this task, manually run ` +
+      `\`${manualCommand} get ${taskId}\` from the project root and use its canonical task payload.\n` +
+      `Unresolved task reference: ${fullMatch}\n` +
+      `[/kanban_task_hydration_warning]\n`
+    );
   });
 }
 
