@@ -13,6 +13,8 @@ describe('target-ref integration channel', () => {
     expect(source).toContain('git_common_dir');
     expect(source).toContain('update-ref');
     expect(source).toContain('partial_local_integration');
+    expect(source).toContain('--resume-receipt');
+    expect(source).toContain('resume_stage');
     expect(source).toContain('juno-feature/');
     expect(source).toContain('--actual-review-command');
     expect(source).not.toContain('--checkpoint-controller');

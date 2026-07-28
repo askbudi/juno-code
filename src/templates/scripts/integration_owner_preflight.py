@@ -38,10 +38,10 @@ def acquire_bounded(handle:Any,timeout:float)->None:
   except BlockingIOError:
    if time.monotonic()>=deadline:raise IntegrationError("integration channel lock timeout")
    time.sleep(min(0.05,max(0.0,deadline-time.monotonic())))
-def write(path:Path,payload:dict[str,Any])->None:
+def write(path:Path,payload:dict[str,Any],*,replace:bool=False)->None:
  encoded=json.dumps(payload,indent=2,sort_keys=True)+"\n";path=path.resolve();path.parent.mkdir(parents=True,exist_ok=True)
- if path.exists() and path.read_text()!=encoded:raise IntegrationError(f"immutable receipt collision: {path}")
- path.write_text(encoded)
+ if path.exists() and not replace and path.read_text()!=encoded:raise IntegrationError(f"immutable receipt collision: {path}")
+ temporary=path.with_name(f".{path.name}.tmp-{os.getpid()}");temporary.write_text(encoded);temporary.replace(path)
 def load_candidate(path:Path,repositories:list[dict[str,Any]])->dict[str,Any]:
  value=json.loads(path.read_text());
  if value.get("schema_version")!="juno_integration_candidate.v1" or value.get("operation")!="verify" or value.get("eligible") is not True:raise IntegrationError("eligible verified candidate receipt required")
@@ -52,6 +52,7 @@ def load_candidate(path:Path,repositories:list[dict[str,Any]])->dict[str,Any]:
   if not re.fullmatch(r"[0-9a-f]{64}",str(value.get(field) or "")):raise IntegrationError(f"candidate receipt missing {field}")
  if len(repositories)==1:
   item=repositories[0]
+  if Path(str(value.get("repository") or "")).resolve()!=item["path"]:raise IntegrationError("candidate receipt repository mismatch")
   for field,expected in (("target_ref",item["target_ref"]),("expected_target_sha",item["expected_sha"]),("candidate_sha",item["candidate_sha"])):
    if value.get(field)!=expected:raise IntegrationError(f"candidate receipt {field} mismatch")
  candidate_path=value.get("candidate_path")
@@ -70,16 +71,42 @@ def verify_gitlinks(repositories:list[dict[str,Any]],gitlinks:list[tuple[str,str
   fields=entry.split(None,3)
   if len(fields)<3 or fields[0]!="160000" or fields[2]!=by_name[child]["candidate_sha"]:raise IntegrationError(f"root_gitlink_mismatch child={child} path={path}")
 
-def validate_item(item:dict[str,Any])->dict[str,Any]:
+def validate_item(item:dict[str,Any],expected_current_sha:str|None=None)->dict[str,Any]:
  repo=item["path"]
  if index_lock(repo).exists():raise IntegrationError(f"index_lock_present: {index_lock(repo)}")
  worktrees=git(repo,"worktree","list","--porcelain").splitlines()
  if f"branch {item['target_ref']}" in worktrees:raise IntegrationError(f"target_ref_checked_out: {item['target_ref']}")
  actual=git(repo,"rev-parse",f"{item['target_ref']}^{{commit}}")
- if actual!=item["expected_sha"]:raise IntegrationError(f"stale_target name={item['name']} expected={item['expected_sha']} actual={actual}")
+ expected_current_sha=expected_current_sha or item["expected_sha"]
+ if actual!=expected_current_sha:raise IntegrationError(f"stale_target name={item['name']} expected={expected_current_sha} actual={actual}")
  candidate=git(repo,"rev-parse",f"{item['candidate_sha']}^{{commit}}")
  if candidate!=item["candidate_sha"]:raise IntegrationError("candidate identity mismatch")
  return {**item,"path":str(repo),"git_common_dir":str(common(repo)),"lock_key":lock_key(item),"before_sha":actual}
+def public_plan(repositories:list[dict[str,Any]],receipt_hashes:list[str])->list[dict[str,str]]:
+ return [{"name":item["name"],"path":str(item["path"]),"target_ref":item["target_ref"],"expected_sha":item["expected_sha"],"candidate_sha":item["candidate_sha"],"candidate_receipt_sha256":receipt_hashes[index]} for index,item in enumerate(repositories)]
+def load_resume(path:Path,task_id:str,plan:list[dict[str,str]])->set[str]:
+ value=json.loads(path.read_text())
+ if value.get("schema_version")!=SCHEMA or value.get("outcome") not in {"running","partial_local_integration"}:raise IntegrationError("running or partial v2 integration receipt required for resume")
+ if value.get("task_id")!=task_id or value.get("repositories")!=plan:raise IntegrationError("resume receipt does not match task or repository plan")
+ updates=value.get("updates")
+ if not isinstance(updates,list):raise IntegrationError("resume receipt updates must be a list")
+ names=[];completed:set[str]=set()
+ by_name={item["name"]:item for item in plan}
+ for update in updates:
+  name=str(update.get("name") or "") if isinstance(update,dict) else ""
+  if name not in by_name or update.get("before_sha")!=by_name[name]["expected_sha"]:raise IntegrationError("resume receipt contains an invalid target update")
+  item=by_name[name];actual=git(Path(item["path"]),"rev-parse",item["target_ref"]);status=update.get("status")
+  if status in {"moved","resumed_already_moved"}:
+   if update.get("after_sha")!=item["candidate_sha"] or actual!=item["candidate_sha"]:raise IntegrationError("resume receipt moved target no longer matches candidate")
+   completed.add(name)
+  elif status in {"attempting","cas_failed"}:
+   if actual==item["candidate_sha"]:completed.add(name)
+   elif actual!=item["expected_sha"]:raise IntegrationError("resume receipt attempted target has unexpected current SHA")
+  else:raise IntegrationError("resume receipt contains an unsupported update status")
+  names.append(name)
+ if names!=[item["name"] for item in plan[:len(names)]] or len(names)!=len(set(names)):raise IntegrationError("resume receipt updates must be a unique child-first prefix")
+ if any(name not in completed for name in names[:-1]):raise IntegrationError("only the final attempted target may remain unmoved")
+ return completed
 def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,validation_hash:str)->str:
  if not TAG_RE.fullmatch(task_id):raise IntegrationError("task id is not tag-safe")
  name=f"juno-feature/{task_id}/{integrated[:12]}"; ref=f"refs/tags/{name}"
@@ -91,19 +118,23 @@ def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,v
  else:git(repo,"tag","-a",name,integrated,"-m",message)
  return name
 def main(argv:list[str]|None=None)->int:
- p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--actual-review-command",required=True);p.add_argument("--actual-review-receipt",type=Path,required=True);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
+ p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--actual-review-command",required=True);p.add_argument("--actual-review-receipt",type=Path,required=True);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
  a=p.parse_args(argv)
  if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
  if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
  if not 0<a.validation_timeout<=86400:p.error("--validation-timeout must be between 0 and 86400 seconds")
- receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"failed_preserved","task_id":a.task_id,"updates":[],"feature_tag":None}
+ if a.output.resolve().exists():print(f"integration_owner_preflight: error: immutable receipt collision: {a.output.resolve()}",file=sys.stderr);return 2
+ receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"running","task_id":a.task_id,"updates":[],"feature_tag":None}
  try:
   if len(a.candidate_receipt)!=len(a.repository):raise IntegrationError("one --candidate-receipt is required per --repository")
   candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
   receipt_hashes=[sha(path) for path in a.candidate_receipt]
   candidate_hash=receipt_hashes[0] if len(receipt_hashes)==1 else hashlib.sha256("\n".join(receipt_hashes).encode()).hexdigest()
+  plan=public_plan(a.repository,receipt_hashes);receipt.update({"repositories":plan,"candidate_receipt_sha256":candidate_hash})
+  resumed=load_resume(a.resume_receipt,a.task_id,plan) if a.resume_receipt else set()
+  if a.resume_receipt:receipt["resume_receipt_sha256"]=sha(a.resume_receipt)
   verify_gitlinks(a.repository,a.gitlink)
-  ordered=sorted(a.repository,key=lambda x:(str(common(x["path"])),x["target_ref"]));validated=[validate_item(i) for i in ordered]
+  ordered=sorted(a.repository,key=lambda x:(str(common(x["path"])),x["target_ref"]));validated=[validate_item(i,i["candidate_sha"] if i["name"] in resumed else i["expected_sha"]) for i in ordered]
   if len({x["lock_key"] for x in validated})!=len(validated):raise IntegrationError("duplicate integration channel")
   # Every candidate and exact target is validated before any official ref moves.
   handles=[]
@@ -116,15 +147,21 @@ def main(argv:list[str]|None=None)->int:
    candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
    verify_gitlinks(a.repository,a.gitlink)
    by_name={x["name"]:x for x in validated}
-   for original in a.repository:validate_item(original)
+   for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"])
+   for original in a.repository:
+    if original["name"] in resumed:receipt["updates"].append({"name":original["name"],"target_ref":original["target_ref"],"before_sha":original["expected_sha"],"after_sha":original["candidate_sha"],"status":"resumed_already_moved"})
+   receipt["resume_stage"]="target_updates";write(a.output,receipt,replace=True)
    for index,original in enumerate(a.repository):
     item=by_name[original["name"]]
+    if original["name"] in resumed:continue
     if a.inject_failure_after is not None and index>=a.inject_failure_after:raise IntegrationError("injected_update_failure")
+    update={"name":item["name"],"target_ref":item["target_ref"],"before_sha":item["expected_sha"],"after_sha":None,"status":"attempting"};receipt["updates"].append(update);write(a.output,receipt,replace=True)
     result=run(Path(item["path"]),"update-ref",item["target_ref"],item["candidate_sha"],item["expected_sha"],check=False)
-    if result.returncode:raise IntegrationError(f"target_cas_failed name={item['name']}: {result.stderr.strip()}")
-    after=git(Path(item["path"]),"rev-parse",item["target_ref"]);receipt["updates"].append({"name":item["name"],"target_ref":item["target_ref"],"before_sha":item["expected_sha"],"after_sha":after})
+    if result.returncode:update["status"]="cas_failed";write(a.output,receipt,replace=True);raise IntegrationError(f"target_cas_failed name={item['name']}: {result.stderr.strip()}")
+    after=git(Path(item["path"]),"rev-parse",item["target_ref"]);update.update({"after_sha":after,"status":"moved"});write(a.output,receipt,replace=True)
    for item in a.repository:
     if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target readback mismatch")
+   receipt["resume_stage"]="actual_target_validation";write(a.output,receipt,replace=True)
    actual_cwd=Path(candidates[-1]["candidate_path"])
    if git(actual_cwd,"rev-parse","HEAD")!=a.repository[-1]["candidate_sha"] or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):
     raise IntegrationError("actual target validation checkout moved or dirty")
@@ -142,16 +179,18 @@ def main(argv:list[str]|None=None)->int:
    if git(actual_cwd,"rev-parse","HEAD")!=integrated or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):
     raise IntegrationError("actual target validation checkout changed during validation/review")
    if review.get("schema_version")!="juno_review.v1" or review.get("review_kind")!="actual_target" or review.get("passed") is not True or review.get("reviewed_tip")!=integrated or review.get("open_bugs") != []:raise IntegrationError("actual_target_review_PASS_required")
-   validation_receipt={"validation":validations,"actual_review_sha256":sha(a.actual_review_receipt)};validation_hash=hashlib.sha256(json.dumps(validation_receipt,sort_keys=True).encode()).hexdigest()
+   validation_receipt={"validation":validations,"actual_review_sha256":sha(a.actual_review_receipt),"target_refs":{item["name"]:{"target_ref":item["target_ref"],"reviewed_tip":item["candidate_sha"]} for item in a.repository}};validation_hash=hashlib.sha256(json.dumps(validation_receipt,sort_keys=True).encode()).hexdigest()
    feature=tag(a.repository[-1]["path"],a.task_id,integrated,a.repository[-1]["target_ref"],candidate_hash,validation_hash)
    receipt.update({"outcome":"integrated","passed":True,"feature_tag":feature,"candidate_receipt_sha256":candidate_hash,"actual_target":validation_receipt,"lock_order":[x["lock_key"] for x in validated]})
   finally:
    for h in reversed(handles):fcntl.flock(h.fileno(),fcntl.LOCK_UN);h.close()
  except (IntegrationError,OSError,json.JSONDecodeError,subprocess.TimeoutExpired) as exc:
   receipt.update({"passed":False,"error":str(exc)})
-  if receipt["updates"]:receipt["outcome"]="partial_local_integration"
-  try:write(a.output,receipt)
+  if any(update.get("status") in {"moved","resumed_already_moved"} for update in receipt["updates"]):receipt["outcome"]="partial_local_integration"
+  else:receipt["outcome"]="failed_preserved"
+  if receipt["updates"] and not receipt.get("resume_stage"):receipt["resume_stage"]="target_updates"
+  try:write(a.output,receipt,replace=a.output.resolve().exists())
   except Exception as write_exc:print(f"integration_owner_preflight: receipt error: {write_exc}",file=sys.stderr)
   print(f"integration_owner_preflight: error: {exc}",file=sys.stderr);return 2
- write(a.output,receipt);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
+ write(a.output,receipt,replace=True);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
 if __name__=="__main__":raise SystemExit(main())
