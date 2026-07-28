@@ -50,6 +50,23 @@ export interface ManagedAssetUpdateResult {
   macroConflicts: string[];
 }
 
+export type ManagedAssetGenerationState =
+  | 'current'
+  | 'specialized'
+  | 'missing'
+  | 'outdated'
+  | 'customized';
+
+export interface ManagedAssetGenerationReport {
+  status: 'coherent' | 'mixed' | 'incomplete' | 'customized';
+  coherent: boolean;
+  entries: Array<{
+    destination: string;
+    installClass: 'project' | 'script';
+    state: ManagedAssetGenerationState;
+  }>;
+}
+
 function sha256(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -209,6 +226,88 @@ export class ManagedProjectAssets {
       }
     }
     return result;
+  }
+
+  /** Inspect the installed lifecycle bundle without changing project files. */
+  static async inspectGeneration(projectDir: string): Promise<ManagedAssetGenerationReport> {
+    const templatesDir = this.getTemplatesDirectory();
+    if (!templatesDir) {
+      throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
+    }
+    const manifestPath = path.join(projectDir, '.juno_task', 'managed-assets.json');
+    let manifest = emptyManifest();
+    if (await fs.pathExists(manifestPath)) {
+      const parsed = await fs.readJson(manifestPath);
+      if (
+        parsed?.schemaVersion !== 1 ||
+        typeof parsed.assets !== 'object' ||
+        parsed.assets === null
+      ) {
+        throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
+      }
+      manifest = parsed as ManagedAssetManifest;
+    }
+
+    const specializationReceipt = path.join(
+      projectDir,
+      '.juno_task',
+      'managed-specializations',
+      'clean-worktree.json',
+    );
+    const entries: ManagedAssetGenerationReport['entries'] = [];
+    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+      const sourceContent = await fs.readFile(path.join(templatesDir, asset.source));
+      const sourceHash = sha256(sourceContent);
+      const destinationPath = path.join(projectDir, asset.destination);
+      let state: ManagedAssetGenerationState;
+      if (!(await fs.pathExists(destinationPath))) {
+        state = 'missing';
+      } else {
+        const currentHash = sha256(await fs.readFile(destinationPath));
+        const record = manifest.assets[asset.destination];
+        if (currentHash === sourceHash) {
+          state = 'current';
+        } else if (
+          asset.destination === '.juno_task/prompts/clean_worktree.md' &&
+          (await fs.pathExists(specializationReceipt))
+        ) {
+          state = 'specialized';
+        } else if (record?.installedSha256 === currentHash) {
+          state = 'outdated';
+        } else {
+          state = 'customized';
+        }
+      }
+      entries.push({
+        destination: asset.destination,
+        installClass: asset.installClass,
+        state,
+      });
+    }
+
+    const scripts = entries.filter((entry) => entry.installClass === 'script');
+    const guidance = entries.filter(
+      (entry) =>
+        entry.installClass === 'project' &&
+        entry.destination !== '.juno_task/prompts/clean_worktree.md',
+    );
+    const cleanPolicy = entries.find(
+      (entry) => entry.destination === '.juno_task/prompts/clean_worktree.md',
+    );
+    const scriptsCurrent = scripts.every((entry) => entry.state === 'current');
+    const guidanceCurrent = guidance.every((entry) => entry.state === 'current');
+    const cleanCurrent = cleanPolicy?.state === 'current' || cleanPolicy?.state === 'specialized';
+    const coherent = scriptsCurrent && guidanceCurrent && cleanCurrent;
+    const anyMissing = entries.some((entry) => entry.state === 'missing');
+    const someScriptsCurrent = scripts.some((entry) => entry.state === 'current');
+    const someGuidanceCurrent = guidance.some((entry) => entry.state === 'current');
+    const mixed =
+      (someScriptsCurrent && !guidanceCurrent) || (someGuidanceCurrent && !scriptsCurrent);
+    return {
+      status: coherent ? 'coherent' : mixed ? 'mixed' : anyMissing ? 'incomplete' : 'customized',
+      coherent,
+      entries,
+    };
   }
 
   private static async registerPromptMacros(

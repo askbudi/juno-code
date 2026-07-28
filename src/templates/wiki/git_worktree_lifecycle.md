@@ -51,7 +51,7 @@ Controller status is intentionally absent. Capacity is advisory. `--hard-min-fre
 
 The helper validates every candidate before mutation, derives a channel from `(resolved Git common directory, full target ref)`, acquires all channels in deterministic order, rechecks expected SHAs under lock, and updates refs with `git update-ref <ref> <new> <expected-old>`. Unrelated controller/task processes do not gate the transaction.
 
-Multi-repository arguments are updated in caller order, so callers list nested children before parents and bind each child to its root-relative gitlink with `--gitlink CHILD=PATH`. Every root gitlink must equal the child candidate before any target moves. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds.
+Multi-repository arguments are updated in caller order, so callers list nested children before parents and bind each child to its root-relative gitlink with `--gitlink CHILD=PATH`. Every root gitlink must equal the child candidate before any target moves. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds. Resume that exact operation with `--resume-receipt <partial-receipt>`: repository identities and candidate-receipt hashes must match, already-moved refs are reconciled, and remaining refs still use expected-SHA CAS. Never start an unrelated integration to repair partial state.
 
 After updates, every `--validation-command` runs against the actual target state. `--actual-review-command` must produce the named `--actual-review-receipt` with `review_kind=actual_target`, exact integrated tip, `passed=true`, and no open bugs.
 
@@ -82,6 +82,6 @@ Validation ownership names `pre_merge_review`, `candidate_review`, and `actual_t
 
 ## Shipping and validation
 
-The canonical bytes are under `juno-code/src/templates/scripts/`. ScriptInstaller installs every helper into `.juno_task/scripts/`; build copies those bytes to `dist/templates/scripts/`. Runtime/template/dist parity is mandatory. The old repository-wide writer guard and read-only cleanup authority were removed rather than retained as alternate engines.
+The canonical bytes are under `juno-code/src/templates/scripts/`. ScriptInstaller installs lifecycle scripts only as a bundle with their checksum-managed prompts/wiki; customized guidance blocks an ordinary generation change and `yy scripts doctor` reports incomplete or mixed installations. `yy scripts update --force` is the explicit backup-and-replace recovery path. Build copies canonical bytes to `dist/templates/scripts/`. Runtime/template/dist parity is mandatory. The old repository-wide writer guard and read-only cleanup authority were removed rather than retained as alternate engines.
 
 Real Git/worktree tests matter: prose cannot prove dirty-controller isolation, both-parent composition, stale compare-and-swap refusal, lock serialization, partial multi-repository truth, tag collisions, or reachability-safe removal. Package-install tests matter because source-only helpers do not fix existing or fresh projects.

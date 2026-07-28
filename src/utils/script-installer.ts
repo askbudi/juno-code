@@ -15,7 +15,46 @@ const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
   .filter((asset) => asset.installClass === 'script')
   .map((asset) => path.basename(asset.destination));
 
+const COHERENCE_BLOCKING_PROJECT_ASSETS = new Set(
+  managedAssetManifest.assets
+    .filter(
+      (asset) =>
+        asset.installClass === 'project' &&
+        asset.destination !== '.juno_task/prompts/clean_worktree.md',
+    )
+    .map((asset) => asset.destination),
+);
+
 export class ScriptInstaller {
+  /**
+   * Update lifecycle guidance before installing a new lifecycle script generation.
+   * A specialized clean_worktree policy is intentionally exempt; any other
+   * customized lifecycle prompt/wiki must be reviewed or force-backed-up first.
+   */
+  private static async prepareManagedLifecycleBundle(
+    projectDir: string,
+    silent: boolean,
+    force: boolean,
+  ): Promise<boolean> {
+    const { ManagedProjectAssets } = await import('./managed-project-assets.js');
+    const assets = await ManagedProjectAssets.update(projectDir, { force, silent });
+    const blocking = assets.conflicts.filter((conflict) =>
+      COHERENCE_BLOCKING_PROJECT_ASSETS.has(conflict.destination),
+    );
+    if (blocking.length === 0) return true;
+
+    if (!silent || process.env.JUNO_CODE_DEBUG === '1') {
+      console.error(
+        '⚠ Lifecycle scripts were not updated because managed guidance has unresolved conflicts:',
+      );
+      for (const conflict of blocking) {
+        console.error(`  ${conflict.destination} (candidate: ${conflict.candidate})`);
+      }
+      console.error('  Review the candidates, then run: yy scripts update --force');
+    }
+    return false;
+  }
+
   /**
    * Scripts that should be auto-installed if missing
    * These are critical scripts that users expect to be available
@@ -197,8 +236,16 @@ export class ScriptInstaller {
         console.error(`[DEBUG] ScriptInstaller: Missing scripts: ${missing.join(', ')}`);
       }
 
+      let scriptsToInstall = missing;
+      if (missing.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
+        const lifecycleReady = await this.prepareManagedLifecycleBundle(projectDir, silent, false);
+        if (!lifecycleReady) {
+          scriptsToInstall = missing.filter((script) => !MANAGED_SCRIPT_NAMES.includes(script));
+        }
+      }
+
       let installedAny = false;
-      for (const script of missing) {
+      for (const script of scriptsToInstall) {
         const installed = await this.installScript(projectDir, script, silent);
         if (installed) {
           installedAny = true;
@@ -206,7 +253,7 @@ export class ScriptInstaller {
       }
 
       if (installedAny && !silent) {
-        console.log(`✓ Auto-installed ${missing.length} missing script(s)`);
+        console.log(`✓ Auto-installed ${scriptsToInstall.length} missing script(s)`);
       }
 
       return installedAny;
@@ -427,6 +474,21 @@ export class ScriptInstaller {
 
         scriptsToUpdate = [...new Set([...missing, ...outdated])];
       }
+
+      if (scriptsToUpdate.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
+        const lifecycleReady = await this.prepareManagedLifecycleBundle(
+          projectDir,
+          silent,
+          force,
+        );
+        if (!lifecycleReady) {
+          scriptsToUpdate = scriptsToUpdate.filter(
+            (script) => !MANAGED_SCRIPT_NAMES.includes(script),
+          );
+        }
+      }
+
+      if (scriptsToUpdate.length === 0) return false;
 
       let updatedAny = false;
       for (const script of scriptsToUpdate) {

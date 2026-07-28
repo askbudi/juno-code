@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { ScriptInstaller } from '../script-installer.js';
+import { ManagedProjectAssets } from '../managed-project-assets.js';
 
 describe('ScriptInstaller', () => {
   let testDir: string;
@@ -611,8 +612,71 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
 
       const updated = await ScriptInstaller.autoUpdate(testDir, true);
-      // Result depends on whether templates are accessible
-      expect(typeof updated).toBe('boolean');
+      expect(updated).toBe(true);
+      expect(
+        await fs.pathExists(path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md')),
+      ).toBe(true);
+      expect(
+        await fs.pathExists(path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py')),
+      ).toBe(true);
+    });
+
+    it('does not mix a new lifecycle script generation with customized guidance', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await ManagedProjectAssets.update(testDir, { silent: true });
+      const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
+      const scriptPath = path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py');
+      await fs.writeFile(wikiPath, '# owner-specific lifecycle policy\n');
+      await fs.ensureDir(path.dirname(scriptPath));
+      await fs.writeFile(scriptPath, '# old lifecycle generation\n');
+
+      await ScriptInstaller.autoUpdate(testDir, true);
+
+      expect(await fs.readFile(wikiPath, 'utf8')).toBe('# owner-specific lifecycle policy\n');
+      expect(await fs.readFile(scriptPath, 'utf8')).toBe('# old lifecycle generation\n');
+      const managedManifest = await fs.readJson(
+        path.join(testDir, '.juno_task/managed-assets.json'),
+      );
+      expect(
+        await fs.pathExists(
+          path.join(
+            testDir,
+            '.juno_task/managed-conflicts',
+            managedManifest.packageVersion,
+            '.juno_task/wiki/git_worktree_lifecycle.md.candidate',
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('force-updates lifecycle guidance before replacing lifecycle scripts', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await ManagedProjectAssets.update(testDir, { silent: true });
+      const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
+      const scriptPath = path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py');
+      await fs.writeFile(wikiPath, '# owner-specific lifecycle policy\n');
+      await fs.ensureDir(path.dirname(scriptPath));
+      await fs.writeFile(scriptPath, '# old lifecycle generation\n');
+
+      const updated = await ScriptInstaller.autoUpdate(testDir, true, true);
+
+      expect(updated).toBe(true);
+      expect(await fs.readFile(wikiPath, 'utf8')).toContain('# Git Worktree Lifecycle');
+      expect(await fs.readFile(scriptPath, 'utf8')).toContain('def main(');
+      const backupRoot = path.join(testDir, '.juno_task/managed-conflicts');
+      const backupDirectories = await fs.readdir(backupRoot);
+      const backupChecks = await Promise.all(
+        backupDirectories.map((directory) =>
+          fs.pathExists(
+            path.join(
+              backupRoot,
+              directory,
+              '.juno_task/wiki/git_worktree_lifecycle.md.backup',
+            ),
+          ),
+        ),
+      );
+      expect(backupChecks.filter(Boolean)).toHaveLength(1);
     });
 
     it('should update outdated scripts', async () => {

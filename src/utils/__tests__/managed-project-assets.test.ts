@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigLoader, getPromptMacroDictionary } from '../../core/config.js';
 import { CleanWorktreeSpecializer } from '../clean-worktree-specializer.js';
+import { ScriptInstaller } from '../script-installer.js';
 import {
   MANAGED_PROJECT_ASSETS,
   MANAGED_PROMPT_MACROS,
@@ -60,6 +61,25 @@ describe('ManagedProjectAssets', () => {
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
+  });
+
+  it('detects a mixed lifecycle generation without changing project files', async () => {
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    await ScriptInstaller.autoUpdate(projectDir, true);
+    expect((await ManagedProjectAssets.inspectGeneration(projectDir)).status).toBe('coherent');
+
+    const wikiPath = path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md');
+    await fs.writeFile(wikiPath, '# stale lifecycle guidance\n');
+    const report = await ManagedProjectAssets.inspectGeneration(projectDir);
+
+    expect(report.status).toBe('mixed');
+    expect(report.coherent).toBe(false);
+    expect(
+      report.entries.find(
+        (entry) => entry.destination === '.juno_task/wiki/git_worktree_lifecycle.md',
+      )?.state,
+    ).toBe('customized');
+    expect(await fs.readFile(wikiPath, 'utf8')).toBe('# stale lifecycle guidance\n');
   });
 
   it('updates a stale unmodified managed file and reinstalls a missing file', async () => {

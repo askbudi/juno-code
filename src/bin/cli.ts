@@ -1030,6 +1030,27 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
       await runUpdate(options);
     });
 
+  scriptsCommand
+    .command('doctor')
+    .description('Check that lifecycle scripts and managed guidance are one coherent generation')
+    .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
+    .action(async (options: { cwd?: string }) => {
+      const argvCwd = extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
+      const workingDirectory = options.cwd?.trim() || argvCwd?.trim() || process.cwd();
+      const { ManagedProjectAssets } = await import('../utils/managed-project-assets.js');
+      const report = await ManagedProjectAssets.inspectGeneration(workingDirectory);
+      if (report.coherent) {
+        console.log(chalk.green('✓ Lifecycle scripts and managed guidance are coherent'));
+        return;
+      }
+      console.error(chalk.red(`✗ Lifecycle asset generation is ${report.status}`));
+      for (const entry of report.entries.filter((item) => item.state !== 'current')) {
+        console.error(`  ${entry.state}: ${entry.destination}`);
+      }
+      console.error(chalk.yellow('Run `yy scripts update`; use `--force` only after reviewing backups.'));
+      process.exitCode = 1;
+    });
+
   program
     .command('install-scripts')
     .description('Alias for scripts update; refresh scripts plus managed prompts/wiki/macros')
