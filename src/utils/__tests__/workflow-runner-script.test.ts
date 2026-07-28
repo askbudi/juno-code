@@ -1501,6 +1501,126 @@ print('response with session_id=session-must-not-be-captured')
     expect(await fs.pathExists(suffixMarker)).toBe(false);
   });
 
+  it('rejects a tampered hash-bound parent manifest before selective amendment dispatch', async () => {
+    const workflowPath = path.join(testDir, 'manifest-tamper.json');
+    const parentOut = path.join(testDir, 'manifest-parent');
+    const amendedOut = path.join(testDir, 'manifest-amended');
+    const suffixMarker = path.join(testDir, 'manifest-suffix.txt');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'manifest-tamper',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'producer', command: ['bash', '-lc', 'printf trusted'] },
+        { id: 'suffix', command: ['bash', '-lc', `touch ${JSON.stringify(suffixMarker)}`] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    await fs.remove(suffixMarker);
+    const parentContract = await fs.readJson(path.join(parentOut, 'run_contract.json'));
+    const manifestPath = parentContract.attempts.at(-1).manifest;
+    const manifest = await fs.readJson(manifestPath);
+    manifest.steps[0].response = 'tampered';
+    await fs.writeJson(manifestPath, manifest);
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('manifest hash mismatch');
+    expect(await fs.pathExists(suffixMarker)).toBe(false);
+  });
+
+  it('rejects newly declared skipped-producer receipts without a parent hash anchor', async () => {
+    const workflowPath = path.join(testDir, 'missing-anchor.json');
+    const parentOut = path.join(testDir, 'missing-anchor-parent');
+    const amendedOut = path.join(testDir, 'missing-anchor-amended');
+    const suffixMarker = path.join(testDir, 'missing-anchor-suffix.txt');
+    const baseWorkflow = {
+      schema_version: 1,
+      workflow_id: 'missing-anchor',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'producer', command: ['bash', '-lc', 'printf complete'] },
+        { id: 'suffix', command: ['bash', '-lc', `touch ${JSON.stringify(suffixMarker)}`] },
+      ],
+    };
+    await fs.writeJson(workflowPath, baseWorkflow);
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    await fs.remove(suffixMarker);
+    await fs.writeJson(workflowPath, {
+      ...baseWorkflow,
+      receipts: [{
+        id: 'new_evidence', producer: 'producer', path: '{{ out_dir }}/new.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+    });
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('parent hash anchor missing');
+    expect(await fs.pathExists(suffixMarker)).toBe(false);
+  });
+
+  it('reuses hash-bound dynamic prefix commands rendered from predecessor responses', async () => {
+    const workflowPath = path.join(testDir, 'dynamic-prefix.json');
+    const parentOut = path.join(testDir, 'dynamic-prefix-parent');
+    const amendedOut = path.join(testDir, 'dynamic-prefix-amended');
+    const secondMarker = path.join(testDir, 'dynamic-second.txt');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'dynamic-prefix',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'first', command: ['bash', '-lc', 'printf alpha'] },
+        { id: 'second', command: ['bash', '-lc', `printf '{{ steps.first.response }}' > ${JSON.stringify(secondMarker)}`] },
+        { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    expect(await fs.readFile(secondMarker, 'utf8')).toBe('alpha');
+    await fs.remove(secondMarker);
+
+    const amended = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(amended.status).toBe(0);
+    expect(await fs.pathExists(secondMarker)).toBe(false);
+    const manifest = await fs.readJson(path.join(amendedOut, 'manifest.json'));
+    expect(manifest.steps.slice(0, 2).map((step: { status: string }) => step.status)).toEqual([
+      'amendment_revalidated', 'amendment_revalidated',
+    ]);
+  });
+
+  it('keeps full amendments runnable when the parent has only a run contract', async () => {
+    const workflowPath = path.join(testDir, 'full-amendment.json');
+    const parentOut = path.join(testDir, 'contract-only-parent');
+    const amendedOut = path.join(testDir, 'full-amendment-out');
+    await fs.ensureDir(parentOut);
+    await fs.writeJson(path.join(parentOut, 'run_contract.json'), {
+      schema_version: 'juno_workflow_run_contract.v1',
+      workflow_id: 'full-amendment',
+      attempts: [],
+    });
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'full-amendment',
+      amendment_mode: 'harness_only_validation',
+      steps: [{ id: 'only', command: ['bash', '-lc', 'printf amended'] }],
+    });
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--print-output', 'none',
+    ]);
+    expect(result.status).toBe(0);
+    expect((await fs.readJson(path.join(amendedOut, 'run_contract.json'))).amendment_of.manifest).toBeUndefined();
+  });
+
   it('lints contradictory hardcoded receipt paths and points to the canonical receipt context', async () => {
     const workflowPath = path.join(testDir, 'receipt-path-conflict.json');
     await fs.writeJson(workflowPath, {
@@ -1515,8 +1635,24 @@ print('response with session_id=session-must-not-be-captured')
     });
     const result = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('hardcodes receipt path');
-    expect(result.stderr).toContain('{{ receipts.<id>.path }}');
+    expect(result.stdout).toContain('hardcodes receipt path');
+    expect(result.stdout).toContain('{{ receipts.verified.path }}');
+  });
+
+  it('does not flag unrelated JSON outputs that merely share a receipt basename', async () => {
+    const workflowPath = path.join(testDir, 'receipt-path-non-conflict.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'receipt_path_non_conflict',
+      receipts: [{
+        id: 'evidence', producer: 'producer',
+        path: '{{ out_dir }}/candidates/report.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+      steps: [{ id: 'producer', command: "printf 'diagnostic {{ out_dir }}/reviews/report.json'" }],
+    });
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(result.status).toBe(0);
   });
 
   it('separates semantic terminal failure from successful transport', async () => {

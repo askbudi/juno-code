@@ -592,27 +592,6 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
     receipts = normalize_receipt_contracts(workflow)
-    declared_paths_by_name: dict[str, set[str]] = {}
-    for contract in receipts.values():
-        declared_path = str(contract["path"])
-        declared_name = Path(declared_path.replace("{{ out_dir }}", "out")).name
-        declared_paths_by_name.setdefault(declared_name, set()).add(declared_path)
-    literal_receipt_path_pattern = re.compile(r"\{\{\s*out_dir\s*\}\}/[^\s'\"`]+\.json")
-    for step in steps:
-        command_text = json.dumps(step["command"], ensure_ascii=False)
-        for literal_path in literal_receipt_path_pattern.findall(command_text):
-            normalized_path = re.sub(r"\{\{\s*out_dir\s*\}\}", "{{ out_dir }}", literal_path)
-            declared_for_name = declared_paths_by_name.get(Path(normalized_path.replace("{{ out_dir }}", "out")).name)
-            if declared_for_name and normalized_path not in declared_for_name:
-                receipt_ids = sorted(
-                    receipt_id for receipt_id, contract in receipts.items()
-                    if str(contract["path"]) in declared_for_name
-                )
-                raise WorkflowError(
-                    f"step {step['id']} hardcodes receipt path {normalized_path!r}, but receipt "
-                    f"{', '.join(receipt_ids)} declares {sorted(declared_for_name)!r}; "
-                    "reference {{ receipts.<id>.path }} instead"
-                )
     for receipt_id, contract in receipts.items():
         producer = contract["producer"]
         if producer not in step_indexes:
@@ -1655,15 +1634,23 @@ def validate_receipt_file(
     return {"path": str(path.resolve()), "sha256": digest, "schema_version": payload["schema_version"]}
 
 
-def latest_contract_manifest(parent_contract: dict[str, Any], parent_dir: Path) -> Path:
+def latest_contract_manifest(
+    parent_contract: dict[str, Any], parent_dir: Path, require_hash: bool = False
+) -> Path:
     for attempt in reversed(parent_contract.get("attempts") or []):
         candidate = Path(str(attempt.get("manifest") or ""))
-        if candidate.is_file():
-            return candidate
-    candidate = parent_dir / "manifest.json"
-    if candidate.is_file():
+        if not candidate.is_file():
+            continue
+        expected_hash = str(attempt.get("manifest_sha256") or "")
+        if require_hash and not expected_hash:
+            raise WorkflowError(f"amendment parent manifest is not hash-bound: {candidate}")
+        if expected_hash and file_sha256(candidate) != expected_hash:
+            raise WorkflowError(f"amendment parent manifest hash mismatch: {candidate}")
         return candidate
-    raise WorkflowError(f"amendment parent has no readable manifest: {parent_dir}")
+    candidate = parent_dir / "manifest.json"
+    if candidate.is_file() and not require_hash:
+        return candidate
+    raise WorkflowError(f"amendment parent has no hash-bound readable manifest: {parent_dir}")
 
 
 def materialize_inherited_receipt(
@@ -1711,6 +1698,7 @@ def prepare_selective_amendment(
     context: dict[str, Any],
     project_root: Path,
     parent_dir: Path,
+    parent_manifest_path: Path,
     start_index: int,
 ) -> dict[str, dict[str, Any]]:
     """Revalidate a parent prefix before any amendment suffix command is dispatched."""
@@ -1742,10 +1730,12 @@ def prepare_selective_amendment(
         completed = parent_completed.get(step_id) or {}
         if not previous:
             raise WorkflowError(f"amendment_prerequisite[{step_id}]: parent manifest evidence missing")
-        command_digest = str(completed.get("command_sha256") or previous.get("command_sha256") or "")
-        expected_parent_digest = str((parent_steps.get(step_id) or {}).get("initial_rendered_sha256") or "")
-        if not command_digest or command_digest != expected_parent_digest:
+        command_digest = str(completed.get("command_sha256") or "")
+        previous_digest = str(previous.get("command_sha256") or "")
+        if not command_digest or previous_digest != command_digest:
             raise WorkflowError(f"amendment_prerequisite[{step_id}]: producer command digest mismatch")
+        if "command" not in previous or canonical_sha256(previous["command"]) != command_digest:
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: manifest command does not match producer digest")
 
         produced_contracts = receipts_by_producer.get(step_id, [])
         status = str(previous.get("status") or "")
@@ -1756,6 +1746,11 @@ def prepare_selective_amendment(
         inherited_receipts: dict[str, Any] = {}
         for contract in produced_contracts:
             old_evidence = (completed.get("receipts") or {}).get(contract["id"]) or {}
+            if not old_evidence.get("path") or not old_evidence.get("sha256"):
+                raise WorkflowError(
+                    f"amendment_prerequisite[{step_id}].receipt[{contract['id']}]: "
+                    "parent hash anchor missing"
+                )
             inherited_receipts[contract["id"]] = materialize_inherited_receipt(
                 contract,
                 parent_context,
@@ -1770,7 +1765,7 @@ def prepare_selective_amendment(
             "command_sha256": command_digest,
             "receipts": inherited_receipts,
             "parent_attempt": parent_manifest.get("run_id"),
-            "parent_manifest": str(latest_contract_manifest(parent_contract, parent_dir).resolve()),
+            "parent_manifest": str(parent_manifest_path.resolve()),
         }
     return reused
 
@@ -1874,6 +1869,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     current_contract = build_run_contract(workflow_text, workflow, context, project_root)
     parent_contract: dict[str, Any] | None = None
     parent_manifest: dict[str, Any] | None = None
+    parent_manifest_path: Path | None = None
     parent_dir: Path | None = None
     if args.amends_run:
         if str(workflow.get("amendment_mode") or "") != "harness_only_validation":
@@ -1888,15 +1884,17 @@ def run_workflow(args: argparse.Namespace) -> int:
             raise WorkflowError(
                 f"amended run contract workflow mismatch: expected={workflow_id!r} actual={parent_contract.get('workflow_id')!r}"
             )
-        parent_manifest_path = latest_contract_manifest(parent_contract, parent_dir)
-        parent_manifest = load_json_object(parent_manifest_path, "amended run manifest")
         current_contract["amendment_of"] = {
             "run_contract": str(parent_contract_path),
             "sha256": file_sha256(parent_contract_path),
             "workflow_id": parent_contract.get("workflow_id"),
             "mode": "harness_only_validation",
-            "manifest": str(parent_manifest_path.resolve()),
         }
+        if is_selective_amendment:
+            parent_manifest_path = latest_contract_manifest(parent_contract, parent_dir, require_hash=True)
+            parent_manifest = load_json_object(parent_manifest_path, "amended run manifest")
+            current_contract["amendment_of"]["manifest"] = str(parent_manifest_path.resolve())
+            current_contract["amendment_of"]["manifest_sha256"] = file_sha256(parent_manifest_path)
     previous_manifest: dict[str, Any] | None = None
     amendment_reuse: dict[str, dict[str, Any]] = {}
     if is_resume:
@@ -1911,7 +1909,12 @@ def run_workflow(args: argparse.Namespace) -> int:
             )
         run_contract = current_contract
         if is_selective_amendment:
-            assert parent_contract is not None and parent_manifest is not None and parent_dir is not None
+            assert (
+                parent_contract is not None
+                and parent_manifest is not None
+                and parent_manifest_path is not None
+                and parent_dir is not None
+            )
             amendment_reuse = prepare_selective_amendment(
                 workflow,
                 current_contract,
@@ -1920,6 +1923,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                 context,
                 project_root,
                 parent_dir,
+                parent_manifest_path,
                 start_index,
             )
             previous_manifest = parent_manifest
@@ -2308,13 +2312,15 @@ def run_workflow(args: argparse.Namespace) -> int:
     write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     write_text(out_dir / "manifest.yaml", workflow_to_yaml(manifest) + "\n")
     archive_attempt(out_dir, manifest)
+    archived_manifest = out_dir / "attempts" / run_id / "manifest.json"
     run_contract.setdefault("attempts", []).append(
         {
             "attempt_id": run_id,
             "from_step": args.from_step,
             "status": manifest["status"],
             "semantic_status": semantic_status,
-            "manifest": str((out_dir / "attempts" / run_id / "manifest.json").resolve()),
+            "manifest": str(archived_manifest.resolve()),
+            "manifest_sha256": file_sha256(archived_manifest),
         }
     )
     write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
@@ -2578,6 +2584,28 @@ def workflow_lint_findings(workflow: dict[str, Any]) -> list[dict[str, str]]:
         if detect_juno_command(step.get("command"))
     }
     findings: list[dict[str, str]] = []
+    steps_by_id = {str(step["id"]): step for step in workflow.get("steps", [])}
+    for receipt_id, contract in normalize_receipt_contracts(workflow).items():
+        declared_path = str(contract["path"])
+        filename = Path(declared_path.replace("{{ out_dir }}", "out")).name
+        stem = re.sub(r"[^a-z0-9]+", "_", Path(filename).stem.lower()).strip("_")
+        normalized_id = re.sub(r"[^a-z0-9]+", "_", receipt_id.lower()).strip("_")
+        if not stem or not normalized_id.endswith(stem):
+            continue
+        producer = steps_by_id.get(str(contract["producer"]))
+        for location, text in iter_template_strings((producer or {}).get("command"), f"steps.{contract['producer']}.command"):
+            for literal_path in re.findall(r"\{\{\s*out_dir\s*\}\}/[^\s'\"`]+\.json", text):
+                normalized_path = re.sub(r"\{\{\s*out_dir\s*\}\}", "{{ out_dir }}", literal_path)
+                if Path(normalized_path.replace("{{ out_dir }}", "out")).name == filename and normalized_path != declared_path:
+                    findings.append({
+                        "level": "error",
+                        "code": "CONTRADICTORY_RECEIPT_PATH",
+                        "location": location,
+                        "message": (
+                            f"Producer hardcodes receipt path {normalized_path!r}, but receipt {receipt_id} "
+                            f"declares {declared_path!r}; reference {{{{ receipts.{receipt_id}.path }}}} instead."
+                        ),
+                    })
     for location, text in iter_template_strings(workflow):
         for match in re.finditer(r"steps\.([A-Za-z_][A-Za-z0-9_-]*)\.stderr\b", text):
             findings.append({
@@ -2614,6 +2642,7 @@ def run_lint_command(argv: list[str]) -> int:
         epilog="""Checks:
   - summary/step templates should use steps.<id>.response for agent final answers
   - steps.<id>.stderr should not be injected into prompts/summaries by default
+  - producer paths that contradict an identifiable declared receipt are rejected
   - YAML/schema validation is performed using the same parser as workflow execution
 
 Examples:
