@@ -205,10 +205,10 @@ def normalize_receipt_contracts(workflow: dict[str, Any]) -> dict[str, dict[str,
         if not isinstance(item, dict):
             raise WorkflowError("each receipt contract must be a mapping")
         receipt_id = str(item.get("id") or "").strip()
-        if not receipt_id or not re.match(r"^[A-Za-z0-9_]+$", receipt_id):
+        if not receipt_id or not re.match(r"^[a-z][a-z0-9_]*$", receipt_id):
             raise WorkflowError(
-                f"invalid receipt id: {receipt_id!r}; use only letters, numbers, and underscores "
-                "so template and environment lookups remain unambiguous"
+                f"invalid receipt id: {receipt_id!r}; use lowercase letters, numbers, and underscores, "
+                "starting with a letter, so template and environment lookups remain unambiguous"
             )
         if receipt_id in contracts:
             raise WorkflowError(f"duplicate receipt id: {receipt_id}")
@@ -1776,7 +1776,7 @@ def prepare_selective_amendment(
             "previous": previous,
             "command_sha256": command_digest,
             "receipts": inherited_receipts,
-            "parent_attempt": parent_manifest.get("run_id"),
+            "parent_attempt": completed.get("attempt_id"),
             "parent_manifest": str(parent_manifest_path.resolve()),
         }
     return reused
@@ -1905,6 +1905,12 @@ def run_workflow(args: argparse.Namespace) -> int:
         if is_selective_amendment:
             parent_manifest_path = latest_contract_manifest(parent_contract, parent_dir, require_hash=True)
             parent_manifest = load_json_object(parent_manifest_path, "amended run manifest")
+            newest_attempt_id = str((parent_contract.get("attempts") or [])[-1].get("attempt_id") or "")
+            if str(parent_manifest.get("run_id") or "") != newest_attempt_id:
+                raise WorkflowError(
+                    "amendment newest attempt identity does not match its hash-bound manifest: "
+                    f"attempt={newest_attempt_id!r} manifest={parent_manifest.get('run_id')!r}"
+                )
             current_contract["amendment_of"]["manifest"] = str(parent_manifest_path.resolve())
             current_contract["amendment_of"]["manifest_sha256"] = file_sha256(parent_manifest_path)
     previous_manifest: dict[str, Any] | None = None
@@ -2077,6 +2083,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                 "session_id": "",
                 "reused_from_attempt": completed.get("attempt_id") or previous_manifest.get("run_id"),
                 "reused_from_manifest": completed.get("inherited_from_manifest", ""),
+                "command_sha256": completed.get("command_sha256"),
                 "producer_command_sha256": completed.get("command_sha256"),
                 "semantic_outcome": previous.get("semantic_outcome", ""),
             }
@@ -2605,7 +2612,11 @@ def workflow_lint_findings(workflow: dict[str, Any]) -> list[dict[str, str]]:
         if not stem or not normalized_id.endswith(stem):
             continue
         producer = steps_by_id.get(str(contract["producer"]))
-        for location, text in iter_template_strings((producer or {}).get("command"), f"steps.{contract['producer']}.command"):
+        producer_command = (producer or {}).get("command")
+        canonical_token = "{{ receipts." + receipt_id + ".path }}"
+        if any(canonical_token in text for _, text in iter_template_strings(producer_command)):
+            continue
+        for location, text in iter_template_strings(producer_command, f"steps.{contract['producer']}.command"):
             for literal_path in re.findall(r"\{\{\s*out_dir\s*\}\}/[^\s'\"`]+\.json", text):
                 normalized_path = re.sub(r"\{\{\s*out_dir\s*\}\}", "{{ out_dir }}", literal_path)
                 if Path(normalized_path.replace("{{ out_dir }}", "out")).name == filename and normalized_path != declared_path:

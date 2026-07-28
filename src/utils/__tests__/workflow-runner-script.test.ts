@@ -1563,6 +1563,33 @@ print('response with session_id=session-must-not-be-captured')
     expect(rejected.stderr).toContain('newest parent manifest is missing');
   });
 
+  it('binds the newest parent attempt ID to its hash-bound manifest', async () => {
+    const workflowPath = path.join(testDir, 'attempt-identity.json');
+    const parentOut = path.join(testDir, 'attempt-identity-parent');
+    const amendedOut = path.join(testDir, 'attempt-identity-amended');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'attempt-identity',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'prefix', command: ['bash', '-lc', 'printf prefix'] },
+        { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    const contractPath = path.join(parentOut, 'run_contract.json');
+    const contract = await fs.readJson(contractPath);
+    contract.attempts.at(-1).attempt_id = 'forged-attempt';
+    await fs.writeJson(contractPath, contract);
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('attempt identity does not match');
+  });
+
   it('rejects cross-attempt mixing between manifest context and completed evidence', async () => {
     const workflowPath = path.join(testDir, 'attempt-mismatch.json');
     const parentOut = path.join(testDir, 'attempt-mismatch-parent');
@@ -1660,6 +1687,35 @@ print('response with session_id=session-must-not-be-captured')
     ]);
   });
 
+  it('preserves the original completed producer attempt across amendment generations', async () => {
+    const workflowPath = path.join(testDir, 'multi-generation-lineage.json');
+    const parentOut = path.join(testDir, 'lineage-parent');
+    const firstAmendmentOut = path.join(testDir, 'lineage-amendment-one');
+    const secondAmendmentOut = path.join(testDir, 'lineage-amendment-two');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'multi-generation-lineage',
+      amendment_mode: 'harness_only_validation',
+      steps: [
+        { id: 'prefix', command: ['bash', '-lc', 'printf prefix'] },
+        { id: 'suffix', command: ['bash', '-lc', 'printf suffix'] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    const originalContract = await fs.readJson(path.join(parentOut, 'run_contract.json'));
+    const originalAttempt = originalContract.completed_steps.prefix.attempt_id;
+    expect(runWorkflow([
+      '--workflow', workflowPath, '--out-dir', firstAmendmentOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]).status).toBe(0);
+    expect(runWorkflow([
+      '--workflow', workflowPath, '--out-dir', secondAmendmentOut,
+      '--amends-run', firstAmendmentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]).status).toBe(0);
+    const secondContract = await fs.readJson(path.join(secondAmendmentOut, 'run_contract.json'));
+    expect(secondContract.completed_steps.prefix.attempt_id).toBe(originalAttempt);
+  });
+
   it('keeps full amendments runnable when the parent has only a run contract', async () => {
     const workflowPath = path.join(testDir, 'full-amendment.json');
     const parentOut = path.join(testDir, 'contract-only-parent');
@@ -1715,7 +1771,7 @@ print('response with session_id=session-must-not-be-captured')
     });
     const result = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('use only letters, numbers, and underscores');
+    expect(result.stderr).toContain('use lowercase letters, numbers, and underscores');
   });
 
   it('does not flag unrelated JSON outputs that merely share a receipt basename', async () => {
@@ -1724,11 +1780,14 @@ print('response with session_id=session-must-not-be-captured')
       schema_version: 1,
       workflow_id: 'receipt_path_non_conflict',
       receipts: [{
-        id: 'evidence', producer: 'producer',
+        id: 'candidate_report', producer: 'producer',
         path: '{{ out_dir }}/candidates/report.json',
         schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
       }],
-      steps: [{ id: 'producer', command: "printf 'diagnostic {{ out_dir }}/reviews/report.json'" }],
+      steps: [{
+        id: 'producer',
+        command: "printf 'receipt={{ receipts.candidate_report.path }} diagnostic={{ out_dir }}/reviews/report.json'",
+      }],
     });
     const result = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(result.status).toBe(0);
