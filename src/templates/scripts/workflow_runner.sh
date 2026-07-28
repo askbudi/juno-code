@@ -592,6 +592,27 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
     receipts = normalize_receipt_contracts(workflow)
+    declared_paths_by_name: dict[str, set[str]] = {}
+    for contract in receipts.values():
+        declared_path = str(contract["path"])
+        declared_name = Path(declared_path.replace("{{ out_dir }}", "out")).name
+        declared_paths_by_name.setdefault(declared_name, set()).add(declared_path)
+    literal_receipt_path_pattern = re.compile(r"\{\{\s*out_dir\s*\}\}/[^\s'\"`]+\.json")
+    for step in steps:
+        command_text = json.dumps(step["command"], ensure_ascii=False)
+        for literal_path in literal_receipt_path_pattern.findall(command_text):
+            normalized_path = re.sub(r"\{\{\s*out_dir\s*\}\}", "{{ out_dir }}", literal_path)
+            declared_for_name = declared_paths_by_name.get(Path(normalized_path.replace("{{ out_dir }}", "out")).name)
+            if declared_for_name and normalized_path not in declared_for_name:
+                receipt_ids = sorted(
+                    receipt_id for receipt_id, contract in receipts.items()
+                    if str(contract["path"]) in declared_for_name
+                )
+                raise WorkflowError(
+                    f"step {step['id']} hardcodes receipt path {normalized_path!r}, but receipt "
+                    f"{', '.join(receipt_ids)} declares {sorted(declared_for_name)!r}; "
+                    "reference {{ receipts.<id>.path }} instead"
+                )
     for receipt_id, contract in receipts.items():
         producer = contract["producer"]
         if producer not in step_indexes:
@@ -1593,6 +1614,29 @@ def receipt_path(contract: dict[str, Any], context: dict[str, Any], project_root
     return path if path.is_absolute() else project_root / path
 
 
+def populate_receipt_context(
+    context: dict[str, Any], workflow: dict[str, Any], project_root: Path
+) -> dict[str, dict[str, Any]]:
+    """Expose each declared receipt as the only canonical rendered path source."""
+    resolved: dict[str, dict[str, Any]] = {}
+    for receipt_id, contract in normalize_receipt_contracts(workflow).items():
+        path = receipt_path(contract, context, project_root)
+        resolved[receipt_id] = {**contract, "path": str(path.resolve())}
+    context["receipts"] = resolved
+    return resolved
+
+
+def context_for_out_dir(
+    context: dict[str, Any], out_dir: Path, workflow: dict[str, Any], project_root: Path
+) -> dict[str, Any]:
+    inherited = dict(context)
+    inherited["out_dir"] = str(out_dir)
+    inherited["workflow"] = {**context["workflow"], "out_dir": str(out_dir)}
+    inherited["steps"] = {}
+    populate_receipt_context(inherited, workflow, project_root)
+    return inherited
+
+
 def validate_receipt_file(
     contract: dict[str, Any],
     context: dict[str, Any],
@@ -1609,6 +1653,126 @@ def validate_receipt_file(
             f"receipt[{contract['id']}].artifact_sha256: expected={expected_artifact_sha256!r} actual={digest!r}"
         )
     return {"path": str(path.resolve()), "sha256": digest, "schema_version": payload["schema_version"]}
+
+
+def latest_contract_manifest(parent_contract: dict[str, Any], parent_dir: Path) -> Path:
+    for attempt in reversed(parent_contract.get("attempts") or []):
+        candidate = Path(str(attempt.get("manifest") or ""))
+        if candidate.is_file():
+            return candidate
+    candidate = parent_dir / "manifest.json"
+    if candidate.is_file():
+        return candidate
+    raise WorkflowError(f"amendment parent has no readable manifest: {parent_dir}")
+
+
+def materialize_inherited_receipt(
+    contract: dict[str, Any],
+    source_context: dict[str, Any],
+    destination_context: dict[str, Any],
+    project_root: Path,
+    producer_step_digest: str,
+    expected_artifact_sha256: str | None = None,
+    inherited_source_path: str | None = None,
+) -> dict[str, Any]:
+    source = (
+        Path(inherited_source_path).expanduser()
+        if inherited_source_path
+        else receipt_path(contract, source_context, project_root)
+    )
+    payload = load_json_object(source, f"amendment receipt[{contract['id']}]")
+    validate_receipt_payload(contract, payload, producer_step_digest, location=str(source))
+    digest = file_sha256(source)
+    if expected_artifact_sha256 is not None and digest != expected_artifact_sha256:
+        raise WorkflowError(
+            f"amendment receipt[{contract['id']}].artifact_sha256: "
+            f"expected={expected_artifact_sha256!r} actual={digest!r}"
+        )
+    destination = receipt_path(contract, destination_context, project_root)
+    if source.resolve() != destination.resolve():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and file_sha256(destination) != digest:
+            raise WorkflowError(f"amendment receipt[{contract['id']}]: destination already differs: {destination}")
+        if not destination.exists():
+            shutil.copy2(source, destination)
+    inherited = validate_receipt_file(
+        contract, destination_context, project_root, producer_step_digest, digest
+    )
+    inherited["inherited_from"] = str(source.resolve())
+    inherited["lineage"] = "amendment_revalidated"
+    return inherited
+
+
+def prepare_selective_amendment(
+    workflow: dict[str, Any],
+    current_contract: dict[str, Any],
+    parent_contract: dict[str, Any],
+    parent_manifest: dict[str, Any],
+    context: dict[str, Any],
+    project_root: Path,
+    parent_dir: Path,
+    start_index: int,
+) -> dict[str, dict[str, Any]]:
+    """Revalidate a parent prefix before any amendment suffix command is dispatched."""
+    for field in ("schema_version", "workflow_id", "resolved_vars_sha256", "frozen_inputs", "workflow_class"):
+        if parent_contract.get(field) != current_contract.get(field):
+            raise WorkflowError(
+                f"amendment_contract[{field}]: expected={parent_contract.get(field)!r} "
+                f"actual={current_contract.get(field)!r}"
+            )
+    parent_steps = parent_contract.get("steps") or {}
+    current_steps = current_contract.get("steps") or {}
+    manifest_steps = {
+        str(item.get("id")): item
+        for item in parent_manifest.get("steps") or []
+        if isinstance(item, dict)
+    }
+    parent_completed = parent_contract.get("completed_steps") or {}
+    receipts_by_producer: dict[str, list[dict[str, Any]]] = {}
+    for contract in normalize_receipt_contracts(workflow).values():
+        receipts_by_producer.setdefault(contract["producer"], []).append(contract)
+    parent_context = context_for_out_dir(context, parent_dir, workflow, project_root)
+    reused: dict[str, dict[str, Any]] = {}
+
+    for step in workflow["steps"][:start_index]:
+        step_id = str(step["id"])
+        if (parent_steps.get(step_id) or {}).get("template_sha256") != (current_steps.get(step_id) or {}).get("template_sha256"):
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: command template changed")
+        previous = manifest_steps.get(step_id)
+        completed = parent_completed.get(step_id) or {}
+        if not previous:
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: parent manifest evidence missing")
+        command_digest = str(completed.get("command_sha256") or previous.get("command_sha256") or "")
+        expected_parent_digest = str((parent_steps.get(step_id) or {}).get("initial_rendered_sha256") or "")
+        if not command_digest or command_digest != expected_parent_digest:
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: producer command digest mismatch")
+
+        produced_contracts = receipts_by_producer.get(step_id, [])
+        status = str(previous.get("status") or "")
+        normally_reusable = status in {"success", "reused_verified", "amendment_revalidated"} and bool(completed)
+        if not normally_reusable:
+            raise WorkflowError(f"amendment_prerequisite[{step_id}]: no reusable successful predecessor evidence")
+
+        inherited_receipts: dict[str, Any] = {}
+        for contract in produced_contracts:
+            old_evidence = (completed.get("receipts") or {}).get(contract["id"]) or {}
+            inherited_receipts[contract["id"]] = materialize_inherited_receipt(
+                contract,
+                parent_context,
+                context,
+                project_root,
+                command_digest,
+                str(old_evidence.get("sha256")) if old_evidence.get("sha256") else None,
+                str(old_evidence.get("path")) if old_evidence.get("path") else None,
+            )
+        reused[step_id] = {
+            "previous": previous,
+            "command_sha256": command_digest,
+            "receipts": inherited_receipts,
+            "parent_attempt": parent_manifest.get("run_id"),
+            "parent_manifest": str(latest_contract_manifest(parent_contract, parent_dir).resolve()),
+        }
+    return reused
 
 
 def archive_attempt(out_dir: Path, manifest: dict[str, Any]) -> None:
@@ -1700,29 +1864,41 @@ def run_workflow(args: argparse.Namespace) -> int:
     for key, value in workflow_vars.items():
         if isinstance(key, str) and key not in context:
             context[key] = value
+    populate_receipt_context(context, workflow, project_root)
 
     start_index = resolve_from_step(workflow["steps"], args.from_step)
     requested_from_step = args.from_step is not None and str(args.from_step).strip() != ""
-    if requested_from_step and args.amends_run:
-        raise WorkflowError("--from-step and --amends-run are mutually exclusive")
     run_contract_path = out_dir / "run_contract.json"
-    is_resume = requested_from_step and run_contract_path.exists()
+    is_resume = requested_from_step and run_contract_path.exists() and not args.amends_run
+    is_selective_amendment = bool(args.amends_run and requested_from_step)
     current_contract = build_run_contract(workflow_text, workflow, context, project_root)
+    parent_contract: dict[str, Any] | None = None
+    parent_manifest: dict[str, Any] | None = None
+    parent_dir: Path | None = None
     if args.amends_run:
         if str(workflow.get("amendment_mode") or "") != "harness_only_validation":
             raise WorkflowError("--amends-run requires amendment_mode: harness_only_validation")
         parent = Path(args.amends_run).expanduser().resolve()
         parent_contract_path = parent / "run_contract.json" if parent.is_dir() else parent
+        parent_dir = parent_contract_path.parent
         parent_contract = load_json_object(parent_contract_path, "amended run contract")
         if parent_contract.get("schema_version") != RUN_CONTRACT_SCHEMA:
             raise WorkflowError(f"amended run contract has unsupported schema: {parent_contract.get('schema_version')!r}")
+        if parent_contract.get("workflow_id") != workflow_id:
+            raise WorkflowError(
+                f"amended run contract workflow mismatch: expected={workflow_id!r} actual={parent_contract.get('workflow_id')!r}"
+            )
+        parent_manifest_path = latest_contract_manifest(parent_contract, parent_dir)
+        parent_manifest = load_json_object(parent_manifest_path, "amended run manifest")
         current_contract["amendment_of"] = {
             "run_contract": str(parent_contract_path),
             "sha256": file_sha256(parent_contract_path),
             "workflow_id": parent_contract.get("workflow_id"),
             "mode": "harness_only_validation",
+            "manifest": str(parent_manifest_path.resolve()),
         }
     previous_manifest: dict[str, Any] | None = None
+    amendment_reuse: dict[str, dict[str, Any]] = {}
     if is_resume:
         frozen_contract = load_json_object(run_contract_path, "run contract")
         verify_run_contract(frozen_contract, current_contract)
@@ -1734,6 +1910,28 @@ def run_workflow(args: argparse.Namespace) -> int:
                 f"run directory already has an immutable contract: {run_contract_path}; use a fresh --out-dir or --from-step"
             )
         run_contract = current_contract
+        if is_selective_amendment:
+            assert parent_contract is not None and parent_manifest is not None and parent_dir is not None
+            amendment_reuse = prepare_selective_amendment(
+                workflow,
+                current_contract,
+                parent_contract,
+                parent_manifest,
+                context,
+                project_root,
+                parent_dir,
+                start_index,
+            )
+            previous_manifest = parent_manifest
+            for step_id, evidence in amendment_reuse.items():
+                run_contract.setdefault("completed_steps", {})[step_id] = {
+                    "attempt_id": evidence["parent_attempt"],
+                    "command_sha256": evidence["command_sha256"],
+                    "status": "amendment_revalidated",
+                    "receipts": evidence["receipts"],
+                    "inherited_from_manifest": evidence["parent_manifest"],
+                }
+            run_contract["amendment_reused_steps"] = list(amendment_reuse)
         write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
 
     if args.tmux_session and not args.tmux:
@@ -1768,6 +1966,17 @@ def run_workflow(args: argparse.Namespace) -> int:
     manifest["from_step_index"] = start_index
     manifest["attempt_number"] = len(run_contract.get("attempts") or []) + 1
     manifest["run_contract_path"] = str(run_contract_path)
+    if is_selective_amendment:
+        reused_ids = [str(step["id"]) for step in workflow["steps"][:start_index]]
+        executed_ids = [str(step["id"]) for step in workflow["steps"][start_index:]]
+        manifest["amendment_plan"] = {
+            "parent_manifest": current_contract["amendment_of"]["manifest"],
+            "reused_steps": reused_ids,
+            "executed_steps": executed_ids,
+        }
+        print("Amendment execution plan")
+        print("  Revalidate/reuse: " + (", ".join(reused_ids) if reused_ids else "none"))
+        print("  Execute: " + (", ".join(executed_ids) if executed_ids else "none"))
     previous_steps = {
         str(item.get("id")): item for item in (previous_manifest or {}).get("steps", []) if isinstance(item, dict)
     }
@@ -1778,7 +1987,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     for index, step in enumerate(workflow["steps"], start=1):
         step_id = str(step["id"])
         if index - 1 < start_index:
-            if not is_resume:
+            if not is_resume and not is_selective_amendment:
                 command = render(step["command"], context)
                 skipped_result: dict[str, Any] = {
                     "id": step_id,
@@ -1808,7 +2017,15 @@ def run_workflow(args: argparse.Namespace) -> int:
                 continue
             previous = previous_steps.get(step_id)
             completed = (run_contract.get("completed_steps") or {}).get(step_id)
-            if not previous or not completed or previous.get("status") not in {"success", "reused_verified"}:
+            reusable_statuses = {"success", "reused_verified", "amendment_revalidated"}
+            if is_selective_amendment:
+                evidence = amendment_reuse.get(step_id)
+                if not evidence:
+                    raise WorkflowError(f"amendment_prerequisite[{step_id}]: prepared evidence missing")
+                previous = evidence["previous"]
+            if not previous or not completed or (
+                not is_selective_amendment and previous.get("status") not in reusable_statuses
+            ):
                 raise WorkflowError(f"resume_prerequisite[{step_id}]: no reusable successful predecessor evidence")
             for contract in receipts_by_producer.get(step_id, []):
                 receipt_evidence = (completed.get("receipts") or {}).get(contract["id"])
@@ -1821,11 +2038,12 @@ def run_workflow(args: argparse.Namespace) -> int:
                     str(completed["command_sha256"]),
                     str(receipt_evidence["sha256"]),
                 )
+            reused_status = "amendment_revalidated" if is_selective_amendment else "reused_verified"
             skipped_result: dict[str, Any] = {
                 "id": step_id,
                 "command": previous.get("command", render(step["command"], context)),
                 "command_preview": previous.get("command_preview", command_preview(render(step["command"], context))),
-                "status": "reused_verified",
+                "status": reused_status,
                 "exit_code": previous.get("exit_code", 0),
                 "transport_status": previous.get("transport_status", previous.get("status")),
                 "transport_exit_code": previous.get("transport_exit_code", previous.get("exit_code", 0)),
@@ -1834,14 +2052,15 @@ def run_workflow(args: argparse.Namespace) -> int:
                 "stderr": "",
                 "stdout_path": "",
                 "stderr_path": "",
-                "response": "",
-                "response_path": "",
+                "response": previous.get("response", ""),
+                "response_path": previous.get("response_path", ""),
                 "capture_enabled": False,
                 "capture_json": "",
                 "capture_json_path": "",
                 "capture_result": "",
                 "session_id": "",
-                "reused_from_attempt": previous_manifest.get("run_id"),
+                "reused_from_attempt": completed.get("attempt_id") or previous_manifest.get("run_id"),
+                "reused_from_manifest": completed.get("inherited_from_manifest", ""),
                 "producer_command_sha256": completed.get("command_sha256"),
                 "semantic_outcome": previous.get("semantic_outcome", ""),
             }
@@ -1872,6 +2091,9 @@ def run_workflow(args: argparse.Namespace) -> int:
         )
         env["JUNO_WORKFLOW_STEP_ID"] = step_id
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
+        for receipt_id, receipt in context.get("receipts", {}).items():
+            env_key = "JUNO_WORKFLOW_RECEIPT_" + re.sub(r"[^A-Za-z0-9]", "_", receipt_id).upper()
+            env[env_key] = str(receipt["path"])
         precondition_error = ""
         if not args.dry_run:
             try:
@@ -2015,7 +2237,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         semantic_status = "dry_run"
     elif terminal_result is None:
         semantic_status = "failed" if manifest["failed_steps"] else "completed"
-    elif terminal_result.get("status") in {"success", "reused_verified"}:
+    elif terminal_result.get("status") in {"success", "reused_verified", "amendment_revalidated"}:
         semantic_status = str(terminal_result.get("semantic_outcome") or "completed")
     else:
         semantic_status = "failed"
@@ -2531,8 +2753,11 @@ def build_parser() -> argparse.ArgumentParser:
   Each run directory owns an immutable run_contract.json. --from-step verifies the
   original workflow, variables, commands, frozen_inputs, typed receipts, and reused
   predecessor artifacts. A harness-only correction uses a fresh out-dir,
-  amendment_mode: harness_only_validation, and --amends-run PRIOR_RUN.
-  Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST;
+  amendment_mode: harness_only_validation, --amends-run PRIOR_RUN, and optionally
+  --from-step STEP to revalidate/import the successful prefix before executing only
+  the requested suffix. Failed or changed predecessor steps are never reused.
+  Receipt paths are available as {{ receipts.<id>.path }} and as
+  JUNO_WORKFLOW_RECEIPT_<ID>. Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST;
   every receipt required_fields list explicitly includes producer_step_digest.
   Declare terminal_gate for semantic summaries. schema_version: 2 local_integration workflows declare
   pre_merge_review, candidate_review, and receipt-gated actual_target_review owners,
@@ -2570,7 +2795,7 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--var", dest="vars", action="append", default=[], metavar="NAME=VALUE", help="Template variable override in NAME=VALUE form")
     parser.add_argument("--dry-run", action="store_true", help="Render commands and write artifacts without executing steps")
     parser.add_argument("--from-step", help="Start at zero-based step index, step id/name, or -1 for the last step")
-    parser.add_argument("--amends-run", help="Start a fresh harness-only validation run linked to a prior run directory or run_contract.json")
+    parser.add_argument("--amends-run", help="Start a fresh harness-only run linked to a prior run; combine with --from-step to revalidate/import its successful prefix")
     parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step response/stdout as it completes (default); successful stderr stays in artifacts")
     parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step response/stdout to the console; artifacts are still written")
     parser.add_argument("--tmux", action="store_true", help="Create a dedicated detached tmux observer that follows live step stdout/stderr and remains available for review")

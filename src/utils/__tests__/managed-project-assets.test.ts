@@ -55,7 +55,10 @@ describe('ManagedProjectAssets', () => {
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
     expect(dictionary.clean_worktree).toContain('# Run an exact-base product-change workflow');
     expect(dictionary.new_task_workflow).toContain('# Create task workflow');
+    expect(dictionary.new_task_workflow).toContain('{{ receipts.<id>.path }}');
+    expect(dictionary.new_task_workflow).toContain('Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps');
     expect(dictionary.run_workflow).toContain('# Run task workflow');
+    expect(dictionary.run_workflow).toContain('--amends-run PRIOR_RUN --from-step STEP');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
 

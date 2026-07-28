@@ -1396,6 +1396,129 @@ print('response with session_id=session-must-not-be-captured')
     expect(await fs.readFile(markerPath, 'utf8')).toBe('x');
   });
 
+  it('selectively amends from a verified prefix without re-executing its producer', async () => {
+    const workflowPath = path.join(testDir, 'selective-amendment.json');
+    const parentOut = path.join(testDir, 'selective-parent');
+    const amendedOut = path.join(testDir, 'selective-amended');
+    const markerPath = path.join(testDir, 'producer-count.txt');
+    const gateMarkerPath = path.join(testDir, 'gate-count.txt');
+    const producerCode = [
+      'import json, os, pathlib',
+      `marker = pathlib.Path(${JSON.stringify(markerPath)})`,
+      "marker.write_text(marker.read_text() + 'x' if marker.exists() else 'x')",
+      "receipt = pathlib.Path(os.environ['JUNO_WORKFLOW_RECEIPT_PRODUCER_RECEIPT'])",
+      "receipt.parent.mkdir(parents=True, exist_ok=True)",
+      "receipt.write_text(json.dumps({'schema_version':'fixture.v1','producer_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST'],'outcome':'completed'}))",
+    ].join('; ');
+    const workflow = (receiptDir: string) => ({
+      schema_version: 1,
+      workflow_id: 'selective-amendment',
+      amendment_mode: 'harness_only_validation',
+      receipts: [{
+        id: 'producer_receipt',
+        producer: 'producer',
+        path: `{{ out_dir }}/${receiptDir}/producer.json`,
+        schema_version: 'fixture.v1',
+        required_fields: ['producer_step_digest', 'outcome'],
+        expected_fields: { outcome: 'completed' },
+      }],
+      terminal_gate: 'gate',
+      steps: [
+        { id: 'producer', command: ['python3', '-c', producerCode] },
+        {
+          id: 'gate',
+          requires_receipts: ['producer_receipt'],
+          command: ['python3', '-c', `from pathlib import Path; Path(${JSON.stringify(gateMarkerPath)}).write_text('gate')`],
+        },
+      ],
+    });
+    await fs.writeJson(workflowPath, workflow('candidates'));
+
+    const first = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir,
+      '--out-dir', parentOut, '--print-output', 'none',
+    ]);
+    expect(first.status).toBe(0);
+    await fs.remove(gateMarkerPath);
+    await fs.writeJson(workflowPath, workflow('reviews'));
+
+    const amended = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir,
+      '--out-dir', amendedOut, '--amends-run', parentOut,
+      '--from-step', 'gate', '--print-output', 'none',
+    ]);
+    expect(amended.status).toBe(0);
+    expect(amended.stdout).toContain('Revalidate/reuse: producer');
+    expect(amended.stdout).toContain('Execute: gate');
+    expect(await fs.readFile(markerPath, 'utf8')).toBe('x');
+    expect(await fs.readFile(gateMarkerPath, 'utf8')).toBe('gate');
+    expect(await fs.pathExists(path.join(amendedOut, 'reviews', 'producer.json'))).toBe(true);
+    const manifest = await fs.readJson(path.join(amendedOut, 'manifest.json'));
+    expect(manifest.steps[0].status).toBe('amendment_revalidated');
+    expect(manifest.amendment_plan.reused_steps).toEqual(['producer']);
+    const contract = await fs.readJson(path.join(amendedOut, 'run_contract.json'));
+    expect(contract.completed_steps.producer.receipts.producer_receipt.lineage).toBe('amendment_revalidated');
+    expect(contract.completed_steps.producer.receipts.producer_receipt.inherited_from).toContain('/candidates/producer.json');
+  });
+
+  it('rejects tampered amendment evidence before executing the requested suffix', async () => {
+    const workflowPath = path.join(testDir, 'tampered-amendment.json');
+    const parentOut = path.join(testDir, 'tampered-parent');
+    const amendedOut = path.join(testDir, 'tampered-amended');
+    const receiptPath = path.join(parentOut, 'receipt.json');
+    const suffixMarker = path.join(testDir, 'suffix-ran.txt');
+    const producerCode = [
+      'import json, os, pathlib',
+      "path = pathlib.Path(os.environ['JUNO_WORKFLOW_RECEIPT_EVIDENCE'])",
+      "path.parent.mkdir(parents=True, exist_ok=True)",
+      "path.write_text(json.dumps({'schema_version':'fixture.v1','producer_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST']}))",
+    ].join('; ');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'tampered-amendment',
+      amendment_mode: 'harness_only_validation',
+      receipts: [{
+        id: 'evidence', producer: 'producer', path: '{{ out_dir }}/receipt.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+      steps: [
+        { id: 'producer', command: ['python3', '-c', producerCode] },
+        { id: 'suffix', requires_receipts: ['evidence'], command: ['bash', '-lc', `touch ${JSON.stringify(suffixMarker)}`] },
+      ],
+    });
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', parentOut, '--print-output', 'none']).status).toBe(0);
+    await fs.remove(suffixMarker);
+    const tampered = await fs.readJson(receiptPath);
+    tampered.changed = true;
+    await fs.writeJson(receiptPath, tampered);
+
+    const rejected = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', amendedOut,
+      '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('artifact_sha256');
+    expect(await fs.pathExists(suffixMarker)).toBe(false);
+  });
+
+  it('lints contradictory hardcoded receipt paths and points to the canonical receipt context', async () => {
+    const workflowPath = path.join(testDir, 'receipt-path-conflict.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'receipt_path_conflict',
+      receipts: [{
+        id: 'verified', producer: 'producer',
+        path: '{{ out_dir }}/candidates/verified.json',
+        schema_version: 'fixture.v1', required_fields: ['producer_step_digest'],
+      }],
+      steps: [{ id: 'producer', command: "printf 'write {{ out_dir }}/reviews/verified.json'" }],
+    });
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('hardcodes receipt path');
+    expect(result.stderr).toContain('{{ receipts.<id>.path }}');
+  });
+
   it('separates semantic terminal failure from successful transport', async () => {
     const workflowPath = path.join(testDir, 'semantic-terminal.json');
     const outDir = path.join(testDir, 'semantic-terminal-out');
