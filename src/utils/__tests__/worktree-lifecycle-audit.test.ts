@@ -33,6 +33,9 @@ describe('packaged worktree lifecycle', () => {
     expect(guidance).toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
     expect(guidance).toContain('canonical-to-canonical');
     expect(guidance).toContain('--nested-owner-receipt');
+    expect(guidance).toContain('Runtime checkout identity');
+    expect(guidance).toContain('A healthy port is not source identity');
+    expect(guidance).toContain('process CWD and PID');
     expect(guidance).not.toContain('worktree_lifecycle_audit.py');
   });
 });
