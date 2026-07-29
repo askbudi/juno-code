@@ -619,6 +619,9 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             raise WorkflowError(
                 "local_integration requires schema_version: 2; migration required for pre-2.0.14 workflow contracts"
             )
+        risk_tier = str(workflow.get("risk_tier") or "").strip()
+        if risk_tier not in {"low", "medium", "high", "release"}:
+            raise WorkflowError("local_integration requires exactly one risk_tier: low, medium, high, or release")
         required_roles = {"pre_merge_review", "candidate_review", "actual_target_review"}
         missing_roles = sorted(required_roles - set(validation_ownership or {}))
         if missing_roles:
@@ -628,11 +631,12 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             "queue": "automatic_after_review_pass",
             "channel_scope": "git_common_dir_and_target_ref",
             "target_movement": "rebuild_and_rereview",
+            "checked_out_target": "detach_same_sha",
         }
         if policy != allowed_policy:
             raise WorkflowError(
                 "local_integration integration_policy must exactly select automatic_after_review_pass, "
-                "git_common_dir_and_target_ref, and rebuild_and_rereview"
+                "git_common_dir_and_target_ref, rebuild_and_rereview, and detach_same_sha"
             )
         if not terminal_gate:
             raise WorkflowError("local_integration workflow requires terminal_gate")
@@ -645,8 +649,8 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         required_integration_tokens = (
             "integration_owner_preflight.py integrate",
             "--candidate-receipt",
-            "--actual-review-command",
-            "--actual-review-receipt",
+            "--risk-tier",
+            "--checked-out-target detach_same_sha",
         )
         if any(token not in integration_command_text for token in required_integration_tokens):
             raise WorkflowError(
@@ -662,10 +666,10 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             contract for contract in receipts.values()
             if contract["producer"] == integration_step
             and contract["expected_fields"].get("outcome") == "integrated"
-            and "feature_tag" in contract["required_fields"]
+            and "feature_tag_policy" in contract["required_fields"]
         ]
         if not integration_receipts:
-            raise WorkflowError("integration_step must produce a typed integrated receipt requiring feature_tag")
+            raise WorkflowError("integration_step must produce a typed integrated receipt requiring feature_tag_policy")
         if step_indexes[terminal_gate] < step_indexes[integration_step]:
             raise WorkflowError("terminal_gate must not precede integration_step")
     for role, step_id_value in (validation_ownership or {}).items():

@@ -74,6 +74,9 @@ describe('isolated Juno 2 controller initialization', () => {
       PATH: `${stableBin}:${process.env.PATH ?? ''}`,
       VIRTUAL_ENV: path.dirname(path.dirname(unrelatedKanban)),
       JUNO_TASK_ROOT: '',
+      JUNO_CONTROLLER_BRANCH: '',
+      JUNO_WORKSPACE_ENFORCEMENT: 'off',
+      JUNO_WORKSPACE_ROLE: '',
     };
 
     const install = run('bash', [tool, 'install'], { cwd: repositoryRoot, env: isolatedEnv });

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "juno_worktree_lifecycle.v2"
+SCHEMA = "juno_worktree_lifecycle.v3"
 
 class LifecycleError(Exception): pass
 
@@ -149,23 +149,83 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     if not passed: raise LifecycleError("worktree_verification_refused: " + ",".join(refusals))
     return payload
 
-def active(path: Path) -> bool:
-    try: result = subprocess.run(["lsof", "+D", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-    except (FileNotFoundError, subprocess.TimeoutExpired): return True
-    return result.returncode == 0
+def cleanup_activity(path: Path) -> dict[str, Any]:
+    try:
+        result = subprocess.run(["lsof", "-n", "-P", "+D", str(path)], text=True, capture_output=True,
+                                stdin=subprocess.DEVNULL, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"probe_status": "unknown", "blocking": True, "error": type(exc).__name__}
+    return {"probe_status": "active" if result.returncode == 0 else "none", "blocking": result.returncode == 0,
+            "observed_lines": result.stdout.splitlines()[:100]}
 
-def active_cwd_processes(path: Path) -> tuple[bool, list[dict[str, Any]]]:
+def active_cwd_processes(path: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Read-only process discovery. Unknown is evidence, never absence."""
     try:
         result = subprocess.run(["lsof", "-n", "-P", "-a", "-d", "cwd", "-Fpn"], text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return True, [{"probe_error": type(exc).__name__}]
+        return "unknown", [{"probe_error": type(exc).__name__}]
     root = path.resolve(); processes: list[dict[str, Any]] = []; pid: int | None = None
     for line in result.stdout.splitlines():
         if line.startswith("p") and line[1:].isdigit(): pid = int(line[1:])
         elif line.startswith("n") and pid is not None:
             cwd = Path(line[1:]).resolve()
             if cwd == root or root in cwd.parents: processes.append({"pid": pid, "cwd": str(cwd)})
-    return bool(processes), processes
+    return ("found" if processes else "none"), processes
+
+def file_sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+def detach_snapshot(path: Path) -> dict[str, Any]:
+    index = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "index")).resolve()
+    return {"head": git(path, "rev-parse", "HEAD"),
+            "branch": git(path, "symbolic-ref", "-q", "HEAD", check=False) or "DETACHED",
+            "index_path": str(index), "index_sha256": file_sha256(index), "index_tree": git(path, "write-tree"),
+            "tracked_status": git(path, "status", "--porcelain=v2", "--untracked-files=no"),
+            "porcelain_status": status(path),
+            "submodules": git(path, "submodule", "status", "--recursive", check=False).splitlines()}
+
+def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
+                    *, controller: Path | None = None) -> dict[str, Any]:
+    """Detach HEAD metadata only; preserve processes and every worktree/index byte."""
+    repository = repository.resolve(); path = path.resolve(); target = full_ref(target)
+    root, path_common = identity(path); _, repo_common = identity(repository); refusals: list[str] = []
+    rows = listed(repository); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
+    embedded_primary = False
+    if not matches and path.exists():
+        candidate = [row for row in rows if Path(row["worktree"]).resolve() == path_common and row.get("HEAD") == expected]
+        if os.path.samefile(root, path) and len(candidate) == 1: matches = candidate; embedded_primary = True
+    if not os.path.samefile(root, path): refusals.append("path_is_not_worktree_root")
+    if path_common != repo_common: refusals.append("git_common_dir_mismatch")
+    if len(matches) != 1: refusals.append("duplicate_worktree_registration" if len(matches) > 1 else "worktree_not_registered")
+    target_sha = git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
+    if target_sha != expected: refusals.append(f"target_sha_mismatch expected={expected} actual={target_sha or 'missing'}")
+    before = detach_snapshot(path)
+    already = before["branch"] == "DETACHED" and before["head"] == expected
+    if before["head"] != expected: refusals.append("unexpected_head")
+    if not already and before["branch"] != target: refusals.append("worktree_does_not_own_target_ref")
+    if lock_path(path).exists(): refusals.append("index_lock_present")
+    if run_returncode(path, "diff", "--quiet"): refusals.append("tracked_worktree_dirty")
+    if run_returncode(path, "diff", "--cached", "--quiet"): refusals.append("index_dirty")
+    topology = None
+    if controller:
+        topology, topology_refusals = controller_topology(controller, path, expected); refusals.extend(topology_refusals)
+    probe_status, processes = active_cwd_processes(path)
+    process_evidence = {"probe_status": probe_status, "processes": processes,
+                        "classification": "preserved_non_blocking" if probe_status == "found" else
+                                          "preserved_unknown_non_blocking" if probe_status == "unknown" else "none_found_non_blocking",
+                        "policy": "preserved_no_signal"}
+    if not refusals and git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
+        refusals.append("target_sha_changed_before_release")
+    if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
+    if not already: git(path, "update-ref", "--no-deref", "HEAD", expected, target)
+    after = detach_snapshot(path)
+    immutable_fields = ("head", "index_path", "index_sha256", "index_tree", "tracked_status", "porcelain_status", "submodules")
+    changed = [field for field in immutable_fields if after[field] != before[field]]
+    if after["branch"] != "DETACHED" or changed: raise LifecycleError("metadata_detach_postcondition_failed:" + ",".join(changed))
+    if git(repository, "rev-parse", target) != expected: raise LifecycleError("target_ref_changed_during_release")
+    return {"outcome": "already_released" if already else "detached_same_sha", "before": before, "after": after,
+            "target_sha_after": expected, "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
+            "topology": topology, "process_evidence": process_evidence, "refusals": []}
 
 def audit(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); target = full_ref(args.target_ref)
@@ -206,85 +266,23 @@ def controller_topology(controller: Path, path: Path, expected: str) -> tuple[di
 
 def release_target(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref)
-    if not target.startswith("refs/heads/"):
-        raise LifecycleError("target release requires a full refs/heads/... name")
-    expected = args.expected_head
-    topology: dict[str, Any] | None = None
-    target_sha = git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
-    rows = listed(repo); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
-    refusals: list[str] = []; embedded_primary = False; active_process_evidence: list[dict[str, Any]] = []
-    if args.controller_checkout:
-        topology, topology_refusals = controller_topology(args.controller_checkout, path, expected); refusals.extend(topology_refusals)
-        if topology.get("classification") == "controller_nested_integration_owner" and args.disposition != "detach_same_sha":
-            refusals.append("controller_nested_owner_requires_detach_same_sha")
-    if topology and topology.get("classification") == "controller_nested_integration_owner" and not matches and path.exists():
-        path_root, path_common = identity(path)
-        embedded = [row for row in rows if Path(row["worktree"]).resolve() == path_common and row.get("HEAD") == expected and row.get("branch") == target]
-        if path_root == path and len(embedded) == 1: matches = embedded; embedded_primary = True
-    if target_sha != expected: refusals.append(f"target_sha_mismatch expected={expected} actual={target_sha or 'missing'}")
-    if len(matches) > 1: refusals.append("duplicate_worktree_registration")
-    row = matches[0] if len(matches) == 1 else None
-    already_released = False
-    before_branch = None if row is None else row.get("branch", "DETACHED")
-    before_head = None if row is None else row.get("HEAD")
-    if row is None:
-        if path.exists(): refusals.append("path_exists_but_unregistered")
-        elif args.disposition == "remove" and target_sha == expected: already_released = True
-        else: refusals.append("worktree_not_registered")
-    else:
-        if not path.exists(): refusals.append("worktree_missing_but_registered")
-        else:
-            _, path_common = identity(path); _, repo_common = identity(repo)
-            if path_common != repo_common: refusals.append("git_common_dir_mismatch")
-            if before_head != expected: refusals.append("unexpected_head")
-            if lock_path(path).exists(): refusals.append("index_lock_present")
-            if status(path): refusals.append("dirty")
-            if (path / ".gitmodules").exists():
-                nested = git(path, "submodule", "status", "--recursive", check=False).splitlines()
-                if args.disposition != "detach_same_sha" and any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
-            has_active_cwd, active_process_evidence = active_cwd_processes(path)
-            if has_active_cwd: refusals.append("active_process")
-            if args.disposition == "detach_same_sha":
-                if before_branch == "DETACHED" and before_head == expected: already_released = True
-                elif before_branch != target: refusals.append("worktree_does_not_own_target_ref")
-            elif before_branch != target:
-                refusals.append("worktree_does_not_own_target_ref")
-    outcome = "refused"
-    if not refusals and git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
-        refusals.append("target_sha_changed_before_release")
-    if not refusals:
-        if already_released: outcome = "already_released"
-        elif args.disposition == "detach_same_sha":
-            git(path, "checkout", "--detach", expected); outcome = "detached_same_sha"
-        else:
-            git(repo, "worktree", "remove", str(path)); outcome = "removed"
-        if git(repo, "rev-parse", "--verify", f"{target}^{{commit}}") != expected:
-            raise LifecycleError("target_ref_changed_during_release")
-        if args.controller_checkout and topology and topology.get("classification") == "controller_nested_integration_owner":
-            final_topology, final_topology_refusals = controller_topology(args.controller_checkout, path, expected)
-            if final_topology_refusals: raise LifecycleError("controller_topology_changed_during_release:" + ",".join(final_topology_refusals))
-            topology = final_topology
-    final_rows = listed(repo)
-    final = next((item for item in final_rows if Path(item["worktree"]).resolve() == path), None)
-    if embedded_primary and path.exists():
-        final = {"worktree": str(path), "HEAD": git(path, "rev-parse", "HEAD"),
-                 "branch": git(path, "symbolic-ref", "-q", "HEAD", check=False) or "DETACHED"}
-    payload = {"schema_version": SCHEMA, "operation": "release-target", "passed": not refusals,
-               "outcome": outcome, "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
-               "target_ref": target, "expected_head": expected, "worktree": str(path), "disposition": args.disposition,
-               "task_id": args.task_id, "owner": args.owner, "before_branch": before_branch, "before_head": before_head,
-               "after_branch": None if final is None else final.get("branch", "DETACHED"),
-               "after_head": None if final is None else final.get("HEAD"), "target_sha_after": git(repo, "rev-parse", target, check=False),
-               "already_released": already_released, "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
-               "topology": topology, "active_processes": active_process_evidence, "refusals": refusals, "inventory": final_rows}
-    write_receipt(args.output, payload)
-    if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
-    return payload
+    if not target.startswith("refs/heads/"): raise LifecycleError("target release requires a full refs/heads/... name")
+    evidence = detach_same_sha(repo, path, target, args.expected_head, controller=args.controller_checkout)
+    payload = {"schema_version": SCHEMA, "operation": "release-target", "passed": True, **evidence,
+               "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
+               "target_ref": target, "expected_head": args.expected_head, "worktree": str(path),
+               "disposition": "detach_same_sha", "task_id": args.task_id, "owner": args.owner,
+               "before_branch": evidence["before"]["branch"], "before_head": evidence["before"]["head"],
+               "after_branch": evidence["after"]["branch"], "after_head": evidence["after"]["head"],
+               "already_released": evidence["outcome"] == "already_released", "active_processes": evidence["process_evidence"]["processes"],
+               "inventory": listed(repo)}
+    write_receipt(args.output, payload); return payload
 
 def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
     expected = args.expected_head
     refusals: list[str] = []; deinitialized: list[dict[str, Any]] = []; admins_to_remove: list[Path] = []
+    activity_evidence: dict[str, Any] = {"probe_status": "not_run", "blocking": False}
     approved = dict(args.deinitialized_submodule)
     if len(approved) != len(args.deinitialized_submodule): refusals.append("duplicate_deinitialized_submodule_path")
     if args.delete_branch and branch == "DETACHED": refusals.append("detached_has_no_branch")
@@ -349,7 +347,9 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
                                   "approved_git_dir": str(approved_git_dir), "containing_refs": containing_refs,
                                   "reachable": object_exists and bool(containing_refs)})
             admins_to_remove.append(admin)
-        if active(path): refusals.append("active_process")
+        activity_evidence = cleanup_activity(path)
+        if activity_evidence["blocking"]:
+            refusals.append("process_probe_unknown" if activity_evidence["probe_status"] == "unknown" else "active_process")
     removed = already_removed; removed_admin_paths: list[str] = []
     if not refusals and not already_removed:
         for admin in admins_to_remove:
@@ -369,7 +369,7 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     inventory = listed(repo); prune = git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()
     payload = {"schema_version": SCHEMA, "operation": "cleanup", "passed": removed and not refusals,
                "removed": removed, "already_removed": already_removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
-               "target_ref": target, "branch_ref": branch, "deinitialized_submodules": deinitialized,
+               "target_ref": target, "branch_ref": branch, "activity_evidence": activity_evidence, "deinitialized_submodules": deinitialized,
                "removed_admin_paths": removed_admin_paths, "inventory": inventory, "prune_dry_run": prune}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("cleanup_refused: " + ",".join(refusals))
@@ -387,7 +387,7 @@ def parser() -> argparse.ArgumentParser:
     release_p = sub.add_parser("release-target", allow_abbrev=False); release_p.set_defaults(func=release_target)
     for name in ("repository", "path", "output"): release_p.add_argument(f"--{name}", type=Path, required=True)
     release_p.add_argument("--target-ref", required=True); release_p.add_argument("--expected-head", required=True)
-    release_p.add_argument("--disposition", choices=("detach_same_sha", "remove"), required=True)
+    release_p.add_argument("--disposition", choices=("detach_same_sha",), required=True)
     release_p.add_argument("--task-id", required=True); release_p.add_argument("--owner", required=True)
     release_p.add_argument("--controller-checkout", type=Path)
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)

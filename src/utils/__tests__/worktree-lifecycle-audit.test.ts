@@ -18,6 +18,11 @@ describe('packaged worktree lifecycle', () => {
     expect(source).toContain('canonical_path_resolution_changed');
     expect(source).toContain('controller_nested_integration_owner');
     expect(source).toContain('embedded_submodule_primary');
+    expect(source).toContain('update-ref", "--no-deref", "HEAD"');
+    expect(source).toContain('preserved_unknown_non_blocking');
+    expect(source).toContain('tracked_worktree_dirty');
+    expect(source).toContain('index_dirty');
+    expect(source).not.toContain('choices=("detach_same_sha", "remove")');
     expect(source).toContain('gitlink_unreachable_from_approved_repository');
     expect(source).toContain('worktree", "prune", "--dry-run"');
     expect(source).not.toContain('force');
@@ -32,7 +37,9 @@ describe('packaged worktree lifecycle', () => {
     expect(guidance).toContain('--deinitialized-submodule');
     expect(guidance).toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
     expect(guidance).toContain('canonical-to-canonical');
-    expect(guidance).toContain('--nested-owner-receipt');
+    expect(guidance).toContain('--checked-out-target detach_same_sha');
+    expect(guidance).toContain('no prior release receipt or second detach engine');
+    expect(guidance).not.toContain('--nested-owner-receipt');
     expect(guidance).toContain('Runtime checkout identity');
     expect(guidance).toContain('A healthy port is not source identity');
     expect(guidance).toContain('process CWD and PID');

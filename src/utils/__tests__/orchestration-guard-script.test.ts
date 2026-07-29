@@ -22,7 +22,7 @@ afterEach(async () => {
 describe('orchestration guard', () => {
   it('fails visibly on overlap and permits a later owner', async () => {
     const state = await stateRoot();
-    const env = { ...process.env, JUNO_TASK_ROOT: projectRoot, JUNO_CODE_SESSION_METADATA_DIRECTORY: state, JUNO_WORKSPACE_ROLE: 'controller' };
+    const env = { ...process.env, JUNO_TASK_ROOT: projectRoot, JUNO_CODE_SESSION_METADATA_DIRECTORY: state, JUNO_WORKSPACE_ROLE: 'controller', JUNO_CONTROLLER_BRANCH: '', JUNO_WORKSPACE_ENFORCEMENT: 'off' };
     const first = childProcess.spawn('python3', [script, '--key', 'cron-test', '--', 'python3', '-c', 'import time; time.sleep(1)'], {
       cwd: projectRoot, env, stdio: 'ignore',
     });
@@ -44,7 +44,7 @@ describe('orchestration guard', () => {
     const lock = path.join(state, 'orchestration_locks', `${digest}.lock`);
     await fs.ensureDir(lock);
     await fs.writeJson(path.join(lock, 'owner.json'), { pid: 99999999 });
-    const env = { ...process.env, JUNO_TASK_ROOT: projectRoot, JUNO_CODE_SESSION_METADATA_DIRECTORY: state, JUNO_WORKSPACE_ROLE: 'controller' };
+    const env = { ...process.env, JUNO_TASK_ROOT: projectRoot, JUNO_CODE_SESSION_METADATA_DIRECTORY: state, JUNO_WORKSPACE_ROLE: 'controller', JUNO_CONTROLLER_BRANCH: '', JUNO_WORKSPACE_ENFORCEMENT: 'off' };
     const result = childProcess.spawnSync('python3', [script, '--key', key, '--', 'python3', '-c', 'import os; print(os.environ["JUNO_TASK_ROOT"]); print(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])'], {
       cwd: projectRoot, env, encoding: 'utf8',
     });

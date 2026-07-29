@@ -2,7 +2,7 @@
 
 Own a preservation-first local migration from a checkout that mixes product work, Juno/Kanban state, and integration into the v2 controller plus exact-base task-worktree architecture. This portable prompt must not assume a Juno Code source tree or conventional target branch.
 
-Invocation authorizes inventory, reviewed controller registration, local named task-worktree creation, bootstrap implementation, the three semantic review gates, expected-SHA local target integration, typed cleanup, and durable receipts. It does not authorize Kanban data conversion, push, publication, package release, deployment, production mutation, post-deploy E2E, destructive cleanup, or discarding existing work.
+Invocation authorizes inventory, reviewed controller registration, local named task-worktree creation, bootstrap implementation, risk-tiered semantic review gates, expected-SHA local target integration, typed cleanup, and durable receipts. It does not authorize Kanban data conversion, push, publication, package release, deployment, production mutation, post-deploy E2E, destructive cleanup, or discarding existing work.
 
 ## Target architecture
 
@@ -72,20 +72,22 @@ Do not convert Kanban, copy controller-private state into the task worktree, glo
 
 1. Produce an independent `pre_merge` PASS receipt bound to the migration manifest/PDR, complete diff, expected paths, commits, validations, and open-bug set.
 2. Run `integration_candidate.py plan` and `build`. Use the reviewed task tip directly only when the target remains its ancestor; otherwise build a both-parent candidate at the exact current target. Conflicts preserve evidence.
-3. Validate the candidate independently and produce a `candidate` PASS receipt. `integration_candidate.py verify` must reject target movement; movement requires rebuild and re-review.
-4. Run `integration_owner_preflight.py integrate` with the verified candidate receipt. It locks each `(Git common directory, full target ref)` channel, rechecks expected SHAs, updates refs by compare-and-swap, validates the actual target, and requires an `actual_target` PASS receipt.
+3. Run deterministic candidate verification. Direct candidates reuse pre-merge review; composed candidates require a `candidate` PASS receipt. Target movement requires rebuild and re-review.
+4. Run `integration_owner_preflight.py integrate` with declared risk and explicit `--checked-out-target detach_same_sha`. It preserves active processes, performs expected-SHA CAS, and always validates the actual target; effective high/release also requires semantic actual review.
 5. For nested repositories, integrate child targets before the root and bind child candidate SHAs to root gitlinks. A later failure is truthful `partial_local_integration`; never rewind or claim success.
-6. Require an integrated receipt and local `juno-feature/<task>/<sha>` tag before cleanup. Report the local target separately from the remote.
+6. Require an integrated receipt. High/release requires a local `juno-feature/<task>/<sha>` tag; low/medium tagging is opt-in. Report the local target separately from the remote.
 
 An authorized workflow declares:
 
 ```yaml
 schema_version: 2
 workflow_class: local_integration
+risk_tier: <low|medium|high|release>
 integration_policy:
   queue: automatic_after_review_pass
   channel_scope: git_common_dir_and_target_ref
   target_movement: rebuild_and_rereview
+  checked_out_target: detach_same_sha
 validation_ownership:
   pre_merge_review: <step-id>
   candidate_review: <step-id>

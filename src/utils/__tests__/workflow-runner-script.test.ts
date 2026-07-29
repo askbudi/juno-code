@@ -118,7 +118,9 @@ describe('workflow_runner.sh template script', () => {
     expect(templateContent).not.toContain('_dt.UTC');
     expect(templateContent).toContain('integration_owner_preflight.py integrate');
     expect(templateContent).toContain('--candidate-receipt');
-    expect(templateContent).toContain('--actual-review-receipt');
+    expect(templateContent).toContain('--risk-tier');
+    expect(templateContent).toContain('--checked-out-target detach_same_sha');
+    expect(templateContent).toContain('feature_tag_policy');
     expect(templateContent).toContain('git_common_dir_and_target_ref');
     expect(templateContent).toContain('rebuild_and_rereview');
     expect(templateContent).toContain('local_integration requires schema_version: 2');
@@ -132,12 +134,14 @@ describe('workflow_runner.sh template script', () => {
       schema_version: 2,
       workflow_id: 'local_integration_contract',
       workflow_class: 'local_integration',
+      risk_tier: 'high',
       integration_step: 'integrate',
       terminal_gate: 'integrate',
       integration_policy: {
         queue: 'automatic_after_review_pass',
         channel_scope: 'git_common_dir_and_target_ref',
         target_movement: 'rebuild_and_rereview',
+        checked_out_target: 'detach_same_sha',
       },
       validation_ownership: {
         pre_merge_review: 'pre_merge_review',
@@ -149,8 +153,8 @@ describe('workflow_runner.sh template script', () => {
           id: 'integration',
           producer: 'integrate',
           path: 'integration.json',
-          schema_version: 'juno_local_integration.v2',
-          required_fields: ['producer_step_digest', 'outcome', 'feature_tag'],
+          schema_version: 'juno_local_integration.v3',
+          required_fields: ['producer_step_digest', 'outcome', 'feature_tag_policy'],
           expected_fields: { outcome: 'integrated' },
         },
       ],
@@ -160,7 +164,7 @@ describe('workflow_runner.sh template script', () => {
         {
           id: 'integrate',
           command:
-            'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --actual-review-command review.sh --actual-review-receipt actual.json',
+            'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --risk-tier high --checked-out-target detach_same_sha --actual-review-command review.sh --actual-review-receipt actual.json',
         },
       ],
     };
@@ -174,10 +178,10 @@ describe('workflow_runner.sh template script', () => {
     await fs.writeJson(workflowPath, workflow);
     const retired = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(retired.status).not.toBe(0);
-    expect(retired.stderr).toMatch(/eligible candidate.*actual-target review/);
+    expect(retired.stderr).toMatch(/eligible candidate.*target-ref CAS/);
 
     workflow.steps[2].command =
-      'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --actual-review-command review.sh --actual-review-receipt actual.json';
+      'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --risk-tier high --checked-out-target detach_same_sha --actual-review-command review.sh --actual-review-receipt actual.json';
     workflow.schema_version = 1;
     await fs.writeJson(workflowPath, workflow);
     const legacySchema = runWorkflow(['lint', '--workflow', workflowPath]);
@@ -185,7 +189,7 @@ describe('workflow_runner.sh template script', () => {
     expect(legacySchema.stderr).toMatch(/schema_version: 2; migration required/);
 
     workflow.schema_version = 2;
-    workflow.receipts[0].required_fields = ['step_digest', 'outcome', 'feature_tag'];
+    workflow.receipts[0].required_fields = ['step_digest', 'outcome', 'feature_tag_policy'];
     await fs.writeJson(workflowPath, workflow);
     const undeclaredProducerDigest = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(undeclaredProducerDigest.status).not.toBe(0);

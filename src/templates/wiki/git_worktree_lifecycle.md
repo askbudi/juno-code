@@ -3,7 +3,7 @@ wiki_contract:
   line_limit: 220
   purpose: "Canonical exact-base worktree, reviewed candidate, target-channel integration, feature-tag, and cleanup lifecycle."
   failure_mode_prevented: "Dirty controllers block unrelated work, stale integrations overwrite refs, tags lie, or cleanup destroys unintegrated work."
-  runtime_contract_enforced: "Immutable identities and three review receipts gate target-ref CAS, actual-target validation, local feature tags, and cleanup."
+  runtime_contract_enforced: "Risk-tiered immutable review identities, metadata-only detach, target-ref CAS, actual-target validation, tiered tags, and strict cleanup."
   validation_gate: "python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/tests/test_integration_concurrency.py"
   related_sots:
     - "parallel_runner_task_creation_best_practices.md"
@@ -20,9 +20,9 @@ Every product change, including a small fix, uses a named exact-base worktree. C
 
 ```text
 exact base -> named clean task tree -> pre-merge review PASS
- -> direct or both-parent candidate -> candidate review PASS
- -> ordered channel lock + expected-SHA CAS -> actual-target tests/review PASS
- -> local juno-feature tag -> safe typed cleanup
+ -> direct review reuse or reviewed both-parent candidate
+ -> ordered lock + same-SHA metadata detach + expected-SHA CAS
+ -> deterministic actual-target validation + tiered review/tag -> typed cleanup
 ```
 
 ## Exact-base creation
@@ -39,11 +39,11 @@ Controller status is intentionally absent. Capacity is advisory. `--hard-min-fre
 
 `build` leaves a linear candidate at the reviewed task tip. If the target advanced, it creates an isolated candidate at the exact target and merges the reviewed tip with `--no-ff`; the resulting parents must be exactly target then task. Candidate construction never updates the official target. Conflicts are preserved for diagnosis. Candidate commands are timeout-bounded.
 
-`verify` requires a separate `candidate` PASS receipt for the exact candidate and rejects target movement. Target movement means rebuild **and re-review**, never reuse a stale receipt.
+`verify` reuses the immutable `pre_merge` review when the candidate SHA equals the reviewed tip and records `candidate_semantic_review_source=pre_merge` plus `candidate_bytes_changed_by_composition=false`. A both-parent/composed candidate requires a separate exact `candidate` PASS receipt. Target movement means rebuild **and re-review**.
 
 ## Target-ref channels
 
-`integration_owner_preflight.py integrate` is the only local target mutation authority. Each repository argument is:
+`integration_owner_preflight.py integrate` is the only local target mutation authority. It accepts `--risk-tier low|medium|high|release` (omission defaults high) and explicit `--checked-out-target detach_same_sha` (omission refuses an attached target). Each repository argument is:
 
 ```text
 --repository NAME=PATH,TARGET_REF,EXPECTED_SHA,CANDIDATE_SHA
@@ -53,15 +53,15 @@ The helper validates every candidate before mutation, derives a channel from `(r
 
 Multi-repository arguments are updated in caller order, so callers list nested children before parents and bind each child to its root-relative gitlink with `--gitlink CHILD=PATH`. Every root gitlink must equal the child candidate before any target moves. All locks remain held. A later failure emits `partial_local_integration`, preserves evidence, and withholds success, tag, and cleanup; it never rewinds. Resume that exact operation with `--resume-receipt <partial-receipt>`: repository identities and candidate-receipt hashes must match, already-moved refs are reconciled, and remaining refs still use expected-SHA CAS. Never start an unrelated integration to repair partial state.
 
-After updates, every `--validation-command` runs against the actual target state. `--actual-review-command` must produce the named `--actual-review-receipt` with `review_kind=actual_target`, exact integrated tip, `passed=true`, and no open bugs.
+After updates, every `--validation-command` runs against the actual integrated candidate and target readback is proven. Effective high/release risk— including composed, multi-repository, or controller-nested escalation—requires `--actual-review-command` and an exact `actual_target` PASS receipt. Direct low/medium records semantic review as not required; deterministic validation still runs.
 
-Only then does the helper create an annotated local tag:
+High/release creates an annotated local tag; low/medium skips it by default and may request one with `--feature-tag`:
 
 ```text
 juno-feature/<task-id>/<integrated-short-sha>
 ```
 
-Its message binds full SHA, target ref, candidate receipt hash, validation receipt hash, and task ID. Exact retries are idempotent; collisions fail. `vX.Y.Z` is package-release-only and must align package metadata, built CLI version, and release identity. No helper here pushes tags/code, publishes, releases, deploys, or runs E2E.
+Its message binds full SHA, target ref, candidate receipt hash, validation receipt hash, and task ID. Exact retries are idempotent; collisions fail. Receipts explicitly record required/requested/created/skipped tag policy. `vX.Y.Z` is package-release-only and must align package metadata, built CLI version, and release identity. No helper here pushes tags/code, publishes, releases, deploys, or runs E2E.
 
 ## Automatic workflow queue
 
@@ -72,19 +72,22 @@ integration_policy:
   queue: automatic_after_review_pass
   channel_scope: git_common_dir_and_target_ref
   target_movement: rebuild_and_rereview
+  checked_out_target: detach_same_sha
 ```
+
+The workflow also declares exactly one `risk_tier`; legacy CLI omission defaults to high.
 
 Validation ownership names `pre_merge_review`, `candidate_review`, and `actual_target_review`. The integration step consumes the eligible receipt and runs actual-target review. Same-channel jobs serialize on the channel lock; disjoint channels can progress independently.
 
-Pass the exact canonical controller root as `integration_owner_preflight.py --controller-checkout`. Repository owners outside it are classified as auxiliary. A child owner nested under the controller must be its committed gitlink and requires `--nested-owner-receipt NAME=RELEASE_RECEIPT` from an owner-approved `release-target --controller-checkout CONTROLLER --disposition detach_same_sha`. Integration binds the receipt hash, controller HEAD, gitlink path/SHA, detached child checkout, child target ref, and expected SHA before and under channel locks, then proves after target advancement/review that the child target reached the candidate while the controller's nested checkout stayed detached at its committed gitlink and its parent path stayed clean. Missing, stale, removal-disposition, non-gitlink, or dirty topology fails before target mutation. Prefer an auxiliary owner; the nested receipt is an explicit target-preserving exception, not authority to mutate unrelated controller dirt.
+Pass the exact canonical controller root as `--controller-checkout`. Repository owners outside it are auxiliary. A nested owner must be the clean committed gitlink at the expected SHA. With explicit detach policy, integration invokes the same canonical metadata detach under channel locks and embeds its evidence; no prior release receipt or second detach engine is used. After CAS it proves the nested checkout stayed detached at the committed SHA while the child target advanced.
 
 ## Checked-out target release
 
-When integration reports `target_ref_checked_out`, do not switch or remove the owner ad hoc. Obtain owner approval and run `worktree_lifecycle.py release-target` with the exact repository, registered worktree, full target ref, expected target SHA, task/owner identity, immutable output receipt, and an explicit `detach_same_sha` or `remove` disposition. For a controller-nested submodule owner, also pass the canonical `--controller-checkout`; the helper recognizes Git's embedded-primary registration, requires same-SHA detach, and binds the controller HEAD and clean committed gitlink in the receipt. The helper canonicalizes registration identity; records processes whose CWD is inside the checkout; refuses dirty, locked, active, stale, or mismatched owners; and proves the target ref remains at the expected SHA. Same-SHA detach changes only checkout attachment and may preserve clean initialized submodules because no worktree bytes are removed. Removal additionally refuses initialized nested repositories and uses ordinary no-force Git worktree removal. A matching retry is idempotent. The release receipt grants no integration, branch deletion, process signal, push, or target-rewind authority.
+When integration reports `target_ref_checked_out`, rerun only with owner-approved `--checked-out-target detach_same_sha`, or use `worktree_lifecycle.py release-target --disposition detach_same_sha` separately for an explicit lifecycle operation. For a controller-nested submodule owner, also pass the canonical `--controller-checkout`; the helper recognizes Git's embedded-primary registration, requires same-SHA detach, and binds the controller HEAD and clean committed gitlink in the receipt. The helper requires clean tracked/index state while allowing untracked files. It snapshots index bytes/tree, complete status, submodules, registration, and target identity; uses `git update-ref --no-deref HEAD`; and proves them unchanged. Processes and probe uncertainty are preserved as non-blocking evidence. `release-target` has no removal disposition. A matching retry is idempotent. The release receipt grants no integration, branch deletion, process signal, push, or target-rewind authority.
 
 ## Cleanup
 
-`worktree_lifecycle.py cleanup` requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. If an initialized submodule was explicitly deinitialized but its exact linked-worktree administration remains, pass `--deinitialized-submodule RELATIVE_PATH=APPROVED_REPOSITORY`. Cleanup verifies the path is a deinitialized gitlink at the expected parent commit, the stale administration HEAD equals that gitlink, and the commit is reachable from a ref in the separately approved repository. It then removes only that linked-worktree-owned administration plus empty owned parent directories before ordinary removal; unapproved, mismatched, initialized, or unreachable entries fail closed. Expected disappearance is idempotent success; optional branch deletion uses exact-old-SHA `git update-ref -d`. Every attempt records reachability evidence, final inventory, and prune dry run. There is no automatic force mode.
+`worktree_lifecycle.py cleanup` is the sole destructive checkout authority and is asynchronous—it never gates integration. Any active use or missing/timed-out activity probe blocks cleanup. It requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. If an initialized submodule was explicitly deinitialized but its exact linked-worktree administration remains, pass `--deinitialized-submodule RELATIVE_PATH=APPROVED_REPOSITORY`. Cleanup verifies the path is a deinitialized gitlink at the expected parent commit, the stale administration HEAD equals that gitlink, and the commit is reachable from a ref in the separately approved repository. It then removes only that linked-worktree-owned administration plus empty owned parent directories before ordinary removal; unapproved, mismatched, initialized, or unreachable entries fail closed. Expected disappearance is idempotent success; optional branch deletion uses exact-old-SHA `git update-ref -d`. Every attempt records reachability evidence, final inventory, and prune dry run. There is no automatic force mode.
 
 ## Runtime checkout identity
 

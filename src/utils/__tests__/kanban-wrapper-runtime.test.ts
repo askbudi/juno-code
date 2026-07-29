@@ -81,6 +81,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       input: 'heredoc regression body\n',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
@@ -99,6 +102,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       input: 'commandless heredoc body\n',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
@@ -117,6 +123,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       encoding: 'utf8',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: otherVenv,
         PATH: `${path.join(otherVenv, 'bin')}:${process.env.PATH}`,
@@ -133,6 +142,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       encoding: 'utf8',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
@@ -154,6 +166,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       encoding: 'utf8',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
@@ -175,6 +190,9 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       encoding: 'utf8',
       env: {
         ...process.env,
+        JUNO_CONTROLLER_BRANCH: '',
+        JUNO_WORKSPACE_ENFORCEMENT: 'off',
+        JUNO_WORKSPACE_ROLE: '',
         JUNO_TASK_ROOT: '',
         VIRTUAL_ENV: '',
         PYTHONPATH: path.join(projectRoot, 'installed-site'),
