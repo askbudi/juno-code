@@ -61,6 +61,8 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.run_workflow).toContain('--amends-run PRIOR_RUN --from-step STEP');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
+    expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
+    expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('a merely compatible but older installed v2 is stale');
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
