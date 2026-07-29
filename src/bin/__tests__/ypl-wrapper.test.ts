@@ -23,6 +23,40 @@ describe('ypl wrapper', () => {
     expect(pkg.scripts['build:copy-wrapper']).toContain('dist/bin/ypl.sh');
   });
 
+  it('keeps --version read-only by bypassing project bootstrap', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-version-wrapper-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
+      const bootstrapMarker = path.join(tempDir, 'bootstrap-ran');
+      await fs.ensureDir(binDir);
+      await fs.ensureDir(scriptsDir);
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
+      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.writeFile(
+        path.join(binDir, 'cli.mjs'),
+        'console.log(JSON.stringify(process.argv.slice(2)))\n',
+        'utf8',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'bootstrap.sh'),
+        `#!/usr/bin/env bash\ntouch "${bootstrapMarker}"\nexit 91\n`,
+        { mode: 0o755 },
+      );
+
+      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+        cwd: tempDir,
+        reject: false,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(['--version']);
+      expect(await fs.pathExists(bootstrapMarker)).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('executes the juno-code wrapper with pi --live before forwarded args', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-ypl-wrapper-'));
     try {

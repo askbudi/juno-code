@@ -361,6 +361,19 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toMatch(/\d+\.\d+\.\d+/); // Version pattern
     });
 
+    it('should keep --version read-only in an initialized project', async () => {
+      const junoTaskDir = path.join(tempDir, '.juno_task');
+      await fs.ensureDir(junoTaskDir);
+      await fs.writeFile(path.join(junoTaskDir, 'sentinel.txt'), 'unchanged\n');
+
+      const result = await executeCLI(['--version']);
+
+      expect(result.exitCode).toBe(0);
+      expect(await fs.readdir(junoTaskDir)).toEqual(['sentinel.txt']);
+      expect(await fs.pathExists(path.join(tempDir, '.agents'))).toBe(false);
+      expect(await fs.pathExists(path.join(tempDir, '.claude'))).toBe(false);
+    });
+
     it.skip('should handle invalid commands gracefully', async () => {
       // TODO: CLI design consideration - current behavior treats unknown arguments as main command input
       // Current CLI design: unknown commands like 'invalid-command' are treated as arguments to the main command

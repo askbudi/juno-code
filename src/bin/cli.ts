@@ -1632,13 +1632,17 @@ async function main(): Promise<void> {
   // Configure environment
   configureEnvironment();
 
-  // Check for --force-update flag early
+  // Identity discovery must not refresh scripts, skills, services, or project state.
+  const isReadOnlyVersionRequest = process.argv.slice(2).some(
+    (arg) => arg === '--version' || arg === '-V',
+  );
   const isForceUpdate = process.argv.includes('--force-update');
 
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
   try {
-    const { ServiceInstaller } = await import('../utils/service-installer.js');
+    if (!isReadOnlyVersionRequest) {
+      const { ServiceInstaller } = await import('../utils/service-installer.js');
 
     if (isForceUpdate) {
       console.log(
@@ -1660,6 +1664,7 @@ async function main(): Promise<void> {
         console.error('[DEBUG] Service scripts auto-updated to latest version');
       }
     }
+    }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
     if (process.env.JUNO_CODE_DEBUG === '1') {
@@ -1675,7 +1680,8 @@ async function main(): Promise<void> {
   // If --force-update flag is present, force reinstall all scripts and bypass Python dependency cache
 
   try {
-    const { ScriptInstaller } = await import('../utils/script-installer.js');
+    if (!isReadOnlyVersionRequest) {
+      const { ScriptInstaller } = await import('../utils/script-installer.js');
 
     if (isForceUpdate) {
       // Force update all scripts and Python dependencies
@@ -1691,6 +1697,7 @@ async function main(): Promise<void> {
         console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
       }
     }
+    }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
     if (process.env.JUNO_CODE_DEBUG === '1') {
@@ -1704,7 +1711,8 @@ async function main(): Promise<void> {
   // Auto-update agent skill files in .agents/skills/ and .claude/skills/
   // Skills are installed for ALL agents regardless of which subagent is selected
   try {
-    const { SkillInstaller } = await import('../utils/skill-installer.js');
+    if (!isReadOnlyVersionRequest) {
+      const { SkillInstaller } = await import('../utils/skill-installer.js');
 
     if (isForceUpdate) {
       console.log(chalk.blue('🔄 Force updating agent skill files...'));
@@ -1716,6 +1724,7 @@ async function main(): Promise<void> {
       if (updated && process.env.JUNO_CODE_DEBUG === '1') {
         console.error('[DEBUG] Agent skill files auto-updated');
       }
+    }
     }
   } catch (error) {
     if (process.env.JUNO_CODE_DEBUG === '1') {

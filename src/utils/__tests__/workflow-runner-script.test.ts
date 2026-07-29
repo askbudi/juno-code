@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -8,12 +8,19 @@ import { createHash } from 'node:crypto';
 const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner.sh');
+const WORKFLOW_CHILD_TIMEOUT_MS = 30_000;
+
+// This process-heavy file runs real Python/Git subprocesses. Keep the larger
+// budget file-scoped while every child remains independently bounded above.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 });
+afterAll(() => vi.resetConfig());
 
 function runWorkflowScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
   return spawnSync('python3', [scriptPath, ...args], {
     input,
     cwd: repoRoot,
     encoding: 'utf8',
+    timeout: WORKFLOW_CHILD_TIMEOUT_MS,
     env: env ? { ...process.env, ...env } : process.env,
   });
 }
@@ -97,11 +104,11 @@ describe('workflow_runner.sh template script', () => {
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-runner-test-'));
-  });
+  }, 30_000);
 
   afterEach(async () => {
     await fs.remove(testDir);
-  });
+  }, 30_000);
 
   it('exists in template scripts and remains synced with runtime script', async () => {
     expect(await fs.pathExists(templateScript)).toBe(true);
@@ -183,7 +190,7 @@ describe('workflow_runner.sh template script', () => {
     const undeclaredProducerDigest = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(undeclaredProducerDigest.status).not.toBe(0);
     expect(undeclaredProducerDigest.stderr).toMatch(/must include producer_step_digest/);
-  });
+  }, 120_000);
 
   it('warns when a runtime copy differs from the installed workflow template', async () => {
     const templateDir = path.join(testDir, 'templates');
