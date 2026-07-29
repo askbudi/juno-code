@@ -13,6 +13,8 @@ describe('packaged worktree lifecycle', () => {
     for (const command of ['create', 'verify', 'audit', 'release-target', 'cleanup']) expect(source).toContain(`"${command}"`);
     expect(source).toContain('unreachable_from_target');
     expect(source).toContain('active_process');
+    expect(source).toContain('--deinitialized-submodule');
+    expect(source).toContain('gitlink_unreachable_from_approved_repository');
     expect(source).toContain('worktree", "prune", "--dry-run"');
     expect(source).not.toContain('force');
   });
@@ -23,6 +25,7 @@ describe('packaged worktree lifecycle', () => {
     expect(guidance).toContain('Package-install tests matter');
     expect(guidance).toContain('vX.Y.Z');
     expect(guidance).toContain('There is no automatic force mode');
+    expect(guidance).toContain('--deinitialized-submodule');
     expect(guidance).not.toContain('worktree_lifecycle_audit.py');
   });
 });

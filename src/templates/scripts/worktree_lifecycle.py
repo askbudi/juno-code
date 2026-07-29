@@ -35,6 +35,13 @@ def branch_ref(value: str, *, allow_detached: bool = False) -> str:
         raise LifecycleError("branch refs must be full refs/heads/... names" + (" or DETACHED" if allow_detached else ""))
     return value
 
+def submodule_repository(value: str) -> tuple[str, Path]:
+    relative, separator, repository = value.partition("=")
+    path = Path(relative)
+    if not separator or not relative or not repository or path.is_absolute() or ".." in path.parts:
+        raise argparse.ArgumentTypeError("deinitialized submodule must be RELATIVE_PATH=APPROVED_REPOSITORY")
+    return path.as_posix(), Path(repository).expanduser().resolve()
+
 def identity(repo: Path) -> tuple[Path, Path]:
     root = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
     common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
@@ -206,7 +213,9 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
 def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
     expected = args.expected_head
-    refusals: list[str] = []
+    refusals: list[str] = []; deinitialized: list[dict[str, Any]] = []; admins_to_remove: list[Path] = []
+    approved = dict(args.deinitialized_submodule)
+    if len(approved) != len(args.deinitialized_submodule): refusals.append("duplicate_deinitialized_submodule_path")
     if args.delete_branch and branch == "DETACHED": refusals.append("detached_has_no_branch")
     registered = any(Path(row["worktree"]).resolve() == path for row in listed(repo))
     already_removed = not path.exists() and not registered
@@ -224,11 +233,51 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
         if (path / ".gitmodules").exists():
             nested = git(path, "submodule", "status", "--recursive", check=False).splitlines()
             if any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
+        worktree_git_dir = Path(git(path, "rev-parse", "--absolute-git-dir")).resolve()
+        modules_root = worktree_git_dir / "modules"
+        discovered: dict[str, Path] = {}
+        if modules_root.is_dir():
+            for current, directories, files in os.walk(modules_root):
+                candidate = Path(current)
+                if "HEAD" in files and "config" in files and (candidate / "objects").is_dir():
+                    discovered[candidate.relative_to(modules_root).as_posix()] = candidate.resolve(); directories[:] = []
+        if discovered and not approved: refusals.append("deinitialized_submodule_admin_requires_approval")
+        for relative in sorted(set(discovered) | set(approved)):
+            admin = discovered.get(relative); approved_repo = approved.get(relative)
+            if admin is None: refusals.append(f"approved_submodule_admin_missing:{relative}"); continue
+            if approved_repo is None: refusals.append(f"unapproved_deinitialized_submodule_admin:{relative}"); continue
+            if not approved_repo.exists(): refusals.append(f"approved_submodule_repository_missing:{relative}"); continue
+            if (path / relative / ".git").exists(): refusals.append(f"submodule_still_initialized:{relative}"); continue
+            sub_status = git(path, "submodule", "status", "--", relative, check=False)
+            if not sub_status.startswith("-"): refusals.append(f"submodule_not_deinitialized:{relative}"); continue
+            entry = git(path, "ls-tree", expected, "--", relative).split(None, 3)
+            if len(entry) < 3 or entry[0] != "160000": refusals.append(f"expected_gitlink_missing:{relative}"); continue
+            gitlink_sha = entry[2]
+            admin_head = subprocess.run(["git", f"--git-dir={admin}", "rev-parse", "HEAD"], text=True, capture_output=True, stdin=subprocess.DEVNULL).stdout.strip()
+            approved_git_dir = Path(git(approved_repo, "rev-parse", "--absolute-git-dir")).resolve()
+            if approved_git_dir == admin or admin in approved_git_dir.parents: refusals.append(f"approved_repository_is_stale_admin:{relative}"); continue
+            object_exists = run_returncode(approved_repo, "cat-file", "-e", f"{gitlink_sha}^{{commit}}") == 0
+            containing_refs = git(approved_repo, "for-each-ref", "--contains", gitlink_sha, "--format=%(refname)", check=False).splitlines()
+            if admin_head != gitlink_sha: refusals.append(f"stale_admin_head_mismatch:{relative}")
+            if not object_exists or not containing_refs: refusals.append(f"gitlink_unreachable_from_approved_repository:{relative}")
+            deinitialized.append({"path": relative, "gitlink_sha": gitlink_sha, "stale_admin": str(admin),
+                                  "admin_head": admin_head, "approved_repository": str(approved_repo),
+                                  "approved_git_dir": str(approved_git_dir), "containing_refs": containing_refs,
+                                  "reachable": object_exists and bool(containing_refs)})
+            admins_to_remove.append(admin)
         if active(path): refusals.append("active_process")
-    removed = already_removed
+    removed = already_removed; removed_admin_paths: list[str] = []
     if not refusals and not already_removed:
-        git(repo, "worktree", "remove", str(path)); removed = not path.exists()
-        if not removed: refusals.append("expected_removal_failed")
+        for admin in admins_to_remove:
+            shutil.rmtree(admin); removed_admin_paths.append(str(admin))
+            parent = admin.parent
+            while parent != worktree_git_dir and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir(); removed_admin_paths.append(str(parent)); parent = parent.parent
+        removal = subprocess.run(["git", "-C", str(repo), "worktree", "remove", str(path)], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                                 env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        removed = removal.returncode == 0 and not path.exists()
+        if removal.returncode: refusals.append("ordinary_worktree_remove_failed:" + removal.stderr.strip().replace("\n", " "))
+        elif not removed: refusals.append("expected_removal_failed")
     if not refusals and args.delete_branch:
         existing = git(repo, "rev-parse", "--verify", branch, check=False)
         if existing and existing != expected: refusals.append("branch_tip_mismatch")
@@ -236,7 +285,8 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     inventory = listed(repo); prune = git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()
     payload = {"schema_version": SCHEMA, "operation": "cleanup", "passed": removed and not refusals,
                "removed": removed, "already_removed": already_removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
-               "target_ref": target, "branch_ref": branch, "inventory": inventory, "prune_dry_run": prune}
+               "target_ref": target, "branch_ref": branch, "deinitialized_submodules": deinitialized,
+               "removed_admin_paths": removed_admin_paths, "inventory": inventory, "prune_dry_run": prune}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("cleanup_refused: " + ",".join(refusals))
     return payload
@@ -258,6 +308,7 @@ def parser() -> argparse.ArgumentParser:
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)
     for name in ("repository", "path", "output"): clean_p.add_argument(f"--{name}", type=Path, required=True)
     clean_p.add_argument("--target-ref", required=True); clean_p.add_argument("--branch-ref", required=True); clean_p.add_argument("--expected-head", required=True); clean_p.add_argument("--delete-branch", action="store_true")
+    clean_p.add_argument("--deinitialized-submodule", action="append", type=submodule_repository, default=[], metavar="RELATIVE_PATH=APPROVED_REPOSITORY")
     return root
 
 def main(argv: list[str] | None = None) -> int:
