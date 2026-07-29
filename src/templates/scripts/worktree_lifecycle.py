@@ -236,6 +236,8 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
             elif before_branch != target:
                 refusals.append("worktree_does_not_own_target_ref")
     outcome = "refused"
+    if not refusals and git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
+        refusals.append("target_sha_changed_before_release")
     if not refusals:
         if already_released: outcome = "already_released"
         elif args.disposition == "detach_same_sha":
@@ -290,14 +292,25 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
             if any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
         worktree_git_dir = Path(git(path, "rev-parse", "--absolute-git-dir")).resolve()
         modules_root = worktree_git_dir / "modules"
-        discovered: dict[str, Path] = {}
+        discovered: dict[str, Path] = {}; invalid_admin_paths: set[str] = set()
         if modules_root.is_dir():
+            modules_canonical = modules_root.resolve()
             for current, directories, files in os.walk(modules_root):
-                candidate = Path(current)
+                current_path = Path(current)
+                for directory in list(directories):
+                    candidate_child = current_path / directory
+                    if candidate_child.is_symlink():
+                        relative_child = candidate_child.relative_to(modules_root).as_posix(); invalid_admin_paths.add(relative_child)
+                        refusals.append(f"deinitialized_submodule_admin_symlink_or_escape:{relative_child}"); directories.remove(directory)
+                candidate = current_path; candidate_canonical = candidate.resolve()
+                if candidate_canonical != modules_canonical and modules_canonical not in candidate_canonical.parents:
+                    relative_escape = candidate.relative_to(modules_root).as_posix(); invalid_admin_paths.add(relative_escape)
+                    refusals.append(f"deinitialized_submodule_admin_symlink_or_escape:{relative_escape}"); directories[:] = []; continue
                 if "HEAD" in files and "config" in files and (candidate / "objects").is_dir():
-                    discovered[candidate.relative_to(modules_root).as_posix()] = candidate.resolve(); directories[:] = []
+                    discovered[candidate.relative_to(modules_root).as_posix()] = candidate_canonical; directories[:] = []
         if discovered and not approved: refusals.append("deinitialized_submodule_admin_requires_approval")
         for relative in sorted(set(discovered) | set(approved)):
+            if relative in invalid_admin_paths: continue
             admin = discovered.get(relative); approved_repo = approved.get(relative)
             if admin is None: refusals.append(f"approved_submodule_admin_missing:{relative}"); continue
             if approved_repo is None: refusals.append(f"unapproved_deinitialized_submodule_admin:{relative}"); continue
