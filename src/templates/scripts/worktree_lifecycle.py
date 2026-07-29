@@ -16,6 +16,11 @@ SCHEMA = "juno_worktree_lifecycle.v3"
 
 class LifecycleError(Exception): pass
 
+class DetachRefusal(LifecycleError):
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        super().__init__(message)
+        self.evidence = evidence
+
 def git(repo: Path, *args: str, check: bool = True) -> str:
     result = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, stdin=subprocess.DEVNULL,
                             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
@@ -155,7 +160,13 @@ def cleanup_activity(path: Path) -> dict[str, Any]:
                                 stdin=subprocess.DEVNULL, timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return {"probe_status": "unknown", "blocking": True, "error": type(exc).__name__}
-    return {"probe_status": "active" if result.returncode == 0 else "none", "blocking": result.returncode == 0,
+    if result.returncode == 0:
+        return {"probe_status": "active", "blocking": True, "returncode": 0,
+                "observed_lines": result.stdout.splitlines()[:100]}
+    if result.returncode == 1:  # lsof's documented no-match result
+        return {"probe_status": "none", "blocking": False, "returncode": 1, "observed_lines": []}
+    return {"probe_status": "unknown", "blocking": True, "returncode": result.returncode,
+            "error": "lsof_probe_failed", "stderr": result.stderr.splitlines()[:20],
             "observed_lines": result.stdout.splitlines()[:100]}
 
 def active_cwd_processes(path: Path) -> tuple[str, list[dict[str, Any]]]:
@@ -164,6 +175,9 @@ def active_cwd_processes(path: Path) -> tuple[str, list[dict[str, Any]]]:
         result = subprocess.run(["lsof", "-n", "-P", "-a", "-d", "cwd", "-Fpn"], text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return "unknown", [{"probe_error": type(exc).__name__}]
+    if result.returncode not in (0, 1):
+        return "unknown", [{"probe_error": "lsof_probe_failed", "probe_returncode": result.returncode,
+                            "stderr": result.stderr.splitlines()[:20]}]
     root = path.resolve(); processes: list[dict[str, Any]] = []; pid: int | None = None
     for line in result.stdout.splitlines():
         if line.startswith("p") and line[1:].isdigit(): pid = int(line[1:])
@@ -184,12 +198,18 @@ def detach_snapshot(path: Path) -> dict[str, Any]:
             "porcelain_status": status(path),
             "submodules": git(path, "submodule", "status", "--recursive", check=False).splitlines()}
 
+def registration_identity(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Registration identity excludes only symbolic attachment, which detach intentionally changes."""
+    return sorted(({key: value for key, value in row.items() if key not in {"branch", "detached"}} for row in rows),
+                  key=lambda row: row.get("worktree", ""))
+
 def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
                     *, controller: Path | None = None) -> dict[str, Any]:
     """Detach HEAD metadata only; preserve processes and every worktree/index byte."""
     repository = repository.resolve(); path = path.resolve(); target = full_ref(target)
     root, path_common = identity(path); _, repo_common = identity(repository); refusals: list[str] = []
-    rows = listed(repository); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
+    rows = listed(repository); inventory_before = rows
+    matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
     embedded_primary = False
     if not matches and path.exists():
         candidate = [row for row in rows if Path(row["worktree"]).resolve() == path_common and row.get("HEAD") == expected]
@@ -197,10 +217,16 @@ def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
     if not os.path.samefile(root, path): refusals.append("path_is_not_worktree_root")
     if path_common != repo_common: refusals.append("git_common_dir_mismatch")
     if len(matches) != 1: refusals.append("duplicate_worktree_registration" if len(matches) > 1 else "worktree_not_registered")
+    target_owners = [row for row in rows if row.get("branch") == target]
     target_sha = git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
     if target_sha != expected: refusals.append(f"target_sha_mismatch expected={expected} actual={target_sha or 'missing'}")
     before = detach_snapshot(path)
     already = before["branch"] == "DETACHED" and before["head"] == expected
+    expected_owner_count = 0 if already else 1
+    if len(target_owners) != expected_owner_count:
+        refusals.append("target_ref_owner_count_mismatch")
+    elif not already and Path(target_owners[0]["worktree"]).resolve() != Path(matches[0]["worktree"]).resolve():
+        refusals.append("target_ref_owned_by_different_worktree")
     if before["head"] != expected: refusals.append("unexpected_head")
     if not already and before["branch"] != target: refusals.append("worktree_does_not_own_target_ref")
     if lock_path(path).exists(): refusals.append("index_lock_present")
@@ -214,18 +240,46 @@ def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
                         "classification": "preserved_non_blocking" if probe_status == "found" else
                                           "preserved_unknown_non_blocking" if probe_status == "unknown" else "none_found_non_blocking",
                         "policy": "preserved_no_signal"}
-    if not refusals and git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
+    evidence: dict[str, Any] = {"before": before, "after": None, "target_sha_after": target_sha or None,
+        "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
+        "registration_before": registration_identity(rows), "registration_after": None,
+        "inventory_before": inventory_before, "inventory_after": None,
+        "target_owner_count_before": len(target_owners), "target_owner_count_after": None,
+        "topology": topology, "process_evidence": process_evidence, "refusals": refusals}
+    # Bind the complete registration and controller composition at the final mutation boundary.
+    boundary_rows = listed(repository)
+    if boundary_rows != rows: refusals.append("worktree_inventory_changed_before_release")
+    if git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
         refusals.append("target_sha_changed_before_release")
-    if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
+    if controller:
+        boundary_topology, boundary_refusals = controller_topology(controller, path, expected)
+        if boundary_topology != topology: refusals.append("controller_topology_changed_before_release")
+        refusals.extend(boundary_refusals)
+    if refusals:
+        evidence["refusals"] = refusals
+        raise DetachRefusal("target_release_refused: " + ",".join(refusals), evidence)
     if not already: git(path, "update-ref", "--no-deref", "HEAD", expected, target)
-    after = detach_snapshot(path)
+    after = detach_snapshot(path); after_rows = listed(repository)
+    evidence.update({"after": after, "inventory_after": after_rows,
+                     "registration_after": registration_identity(after_rows),
+                     "target_owner_count_after": len([row for row in after_rows if row.get("branch") == target]),
+                     "target_sha_after": git(repository, "rev-parse", target, check=False) or None})
     immutable_fields = ("head", "index_path", "index_sha256", "index_tree", "tracked_status", "porcelain_status", "submodules")
     changed = [field for field in immutable_fields if after[field] != before[field]]
-    if after["branch"] != "DETACHED" or changed: raise LifecycleError("metadata_detach_postcondition_failed:" + ",".join(changed))
-    if git(repository, "rev-parse", target) != expected: raise LifecycleError("target_ref_changed_during_release")
-    return {"outcome": "already_released" if already else "detached_same_sha", "before": before, "after": after,
-            "target_sha_after": expected, "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
-            "topology": topology, "process_evidence": process_evidence, "refusals": []}
+    post_refusals = []
+    if after["branch"] != "DETACHED" or changed: post_refusals.append("metadata_detach_postcondition_failed:" + ",".join(changed))
+    if evidence["target_sha_after"] != expected: post_refusals.append("target_ref_changed_during_release")
+    if evidence["registration_after"] != evidence["registration_before"]: post_refusals.append("worktree_registration_changed_during_release")
+    if evidence["target_owner_count_after"] != 0: post_refusals.append("target_ref_owner_remained_after_release")
+    if controller:
+        final_topology, final_refusals = controller_topology(controller, path, expected)
+        if final_topology != topology: post_refusals.append("controller_topology_changed_during_release")
+        post_refusals.extend(final_refusals)
+    if post_refusals:
+        evidence["refusals"] = post_refusals
+        raise DetachRefusal("target_release_postcondition_refused: " + ",".join(post_refusals), evidence)
+    evidence.update({"outcome": "already_released" if already else "detached_same_sha", "refusals": []})
+    return evidence
 
 def audit(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); target = full_ref(args.target_ref)
@@ -265,17 +319,34 @@ def controller_topology(controller: Path, path: Path, expected: str) -> tuple[di
             "gitlink_sha": gitlink_sha, "gitlink_clean": path_status == ""}, refusals
 
 def release_target(args: argparse.Namespace) -> dict[str, Any]:
-    repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref)
-    if not target.startswith("refs/heads/"): raise LifecycleError("target release requires a full refs/heads/... name")
-    evidence = detach_same_sha(repo, path, target, args.expected_head, controller=args.controller_checkout)
-    payload = {"schema_version": SCHEMA, "operation": "release-target", "passed": True, **evidence,
-               "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
-               "target_ref": target, "expected_head": args.expected_head, "worktree": str(path),
-               "disposition": "detach_same_sha", "task_id": args.task_id, "owner": args.owner,
-               "before_branch": evidence["before"]["branch"], "before_head": evidence["before"]["head"],
-               "after_branch": evidence["after"]["branch"], "after_head": evidence["after"]["head"],
-               "already_released": evidence["outcome"] == "already_released", "active_processes": evidence["process_evidence"]["processes"],
-               "inventory": listed(repo)}
+    repo = args.repository.resolve(); path = args.path.resolve()
+    base = {"schema_version": SCHEMA, "operation": "release-target", "passed": False,
+            "repository": str(repo), "target_ref": args.target_ref, "expected_head": args.expected_head,
+            "worktree": str(path), "disposition": args.disposition, "task_id": args.task_id, "owner": args.owner,
+            "controller_checkout": None if args.controller_checkout is None else str(args.controller_checkout.resolve())}
+    try:
+        target = full_ref(args.target_ref)
+        if not target.startswith("refs/heads/"): raise LifecycleError("target release requires a full refs/heads/... name")
+        if args.disposition != "detach_same_sha": raise LifecycleError("release disposition must be detach_same_sha")
+        evidence = detach_same_sha(repo, path, target, args.expected_head, controller=args.controller_checkout)
+        payload = {**base, "passed": True, **evidence,
+                   "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
+                   "before_branch": evidence["before"]["branch"], "before_head": evidence["before"]["head"],
+                   "after_branch": evidence["after"]["branch"], "after_head": evidence["after"]["head"],
+                   "already_released": evidence["outcome"] == "already_released",
+                   "active_processes": evidence["process_evidence"]["processes"], "inventory": listed(repo)}
+    except (LifecycleError, OSError) as exc:
+        evidence = exc.evidence if isinstance(exc, DetachRefusal) else {}
+        fallback_inventory = evidence.get("inventory_before")
+        if fallback_inventory is None:
+            try: fallback_inventory = listed(repo) if repo.exists() else []
+            except (LifecycleError, OSError): fallback_inventory = []
+        payload = {**base, **evidence, "passed": False, "outcome": "refused",
+                   "error": str(exc), "refusals": evidence.get("refusals", [str(exc)]),
+                   "process_evidence": evidence.get("process_evidence", {"probe_status": "not_run", "classification": "unknown", "processes": []}),
+                   "inventory_before": fallback_inventory}
+        write_receipt(args.output, payload)
+        raise
     write_receipt(args.output, payload); return payload
 
 def cleanup(args: argparse.Namespace) -> dict[str, Any]:
@@ -387,7 +458,7 @@ def parser() -> argparse.ArgumentParser:
     release_p = sub.add_parser("release-target", allow_abbrev=False); release_p.set_defaults(func=release_target)
     for name in ("repository", "path", "output"): release_p.add_argument(f"--{name}", type=Path, required=True)
     release_p.add_argument("--target-ref", required=True); release_p.add_argument("--expected-head", required=True)
-    release_p.add_argument("--disposition", choices=("detach_same_sha",), required=True)
+    release_p.add_argument("--disposition", required=True, help="only detach_same_sha is accepted; refusals are receipted")
     release_p.add_argument("--task-id", required=True); release_p.add_argument("--owner", required=True)
     release_p.add_argument("--controller-checkout", type=Path)
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)

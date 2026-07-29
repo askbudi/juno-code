@@ -101,7 +101,7 @@ def verify_nested_owners(repositories:list[dict[str,Any]],controller:Path|None)-
 def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_policy:str|None=None)->dict[str,Any]:
  repo=item["path"]
  if index_lock(repo).exists():raise IntegrationError(f"index_lock_present: {index_lock(repo)}")
- owners=[row for row in lifecycle.listed(repo) if row.get("branch")==item["target_ref"]]
+ inventory=lifecycle.listed(repo);owners=[row for row in inventory if row.get("branch")==item["target_ref"]]
  if len(owners)>1:raise IntegrationError("duplicate target checkout owner")
  if owners and checked_policy!="detach_same_sha":raise IntegrationError(f"target_ref_checked_out: {item['target_ref']}; pass --checked-out-target detach_same_sha")
  actual=git(repo,"rev-parse",f"{item['target_ref']}^{{commit}}")
@@ -112,12 +112,18 @@ def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_
  owner_path=None
  if owners:
   owner_path=str(repo.resolve()) if git(repo,"symbolic-ref","-q","HEAD",check=False)==item["target_ref"] else str(Path(owners[0]["worktree"]).resolve())
+ elif checked_policy=="detach_same_sha":
+  # A prior attempt may have completed metadata detach before its first CAS/write.
+  detached=[row for row in inventory if row.get("HEAD")==expected_current_sha and not row.get("branch")]
+  if len(detached)==1:owner_path=str(repo.resolve()) if Path(detached[0]["worktree"]).resolve()==common(repo) and git(repo,"rev-parse","HEAD",check=False)==expected_current_sha else str(Path(detached[0]["worktree"]).resolve())
+  elif len(detached)>1:raise IntegrationError("ambiguous detached runtime identity for target retry")
  return {**item,"path":str(repo),"git_common_dir":str(common(repo)),"lock_key":lock_key(item),"before_sha":actual,"target_checkout":owner_path}
 def public_plan(repositories:list[dict[str,Any]],receipt_hashes:list[str])->list[dict[str,str]]:
  return [{"name":item["name"],"path":str(item["path"]),"target_ref":item["target_ref"],"expected_sha":item["expected_sha"],"candidate_sha":item["candidate_sha"],"candidate_receipt_sha256":receipt_hashes[index]} for index,item in enumerate(repositories)]
-def load_resume(path:Path,task_id:str,plan:list[dict[str,str]])->set[str]:
+def load_resume(path:Path,task_id:str,plan:list[dict[str,str]])->tuple[set[str],list[dict[str,Any]]]:
  value=json.loads(path.read_text())
- if value.get("schema_version")!=SCHEMA or value.get("outcome") not in {"running","partial_local_integration"}:raise IntegrationError("running or partial v2 integration receipt required for resume")
+ allowed=value.get("outcome") in {"running","partial_local_integration"} or (value.get("outcome")=="failed_preserved" and value.get("resume_stage")=="target_updates")
+ if value.get("schema_version")!=SCHEMA or not allowed:raise IntegrationError("retryable running, partial, or detached-preserved integration receipt required for resume")
  if value.get("task_id")!=task_id or value.get("repositories")!=plan:raise IntegrationError("resume receipt does not match task or repository plan")
  updates=value.get("updates")
  if not isinstance(updates,list):raise IntegrationError("resume receipt updates must be a list")
@@ -137,7 +143,17 @@ def load_resume(path:Path,task_id:str,plan:list[dict[str,str]])->set[str]:
   names.append(name)
  if names!=[item["name"] for item in plan[:len(names)]] or len(names)!=len(set(names)):raise IntegrationError("resume receipt updates must be a unique child-first prefix")
  if any(name not in completed for name in names[:-1]):raise IntegrationError("only the final attempted target may remain unmoved")
- return completed
+ detaches=value.get("checked_out_target_policy",{}).get("detachments",[])
+ if not isinstance(detaches,list):raise IntegrationError("resume receipt detachments must be a list")
+ detached_names=[]
+ for evidence in detaches:
+  name=evidence.get("name") if isinstance(evidence,dict) else None
+  if name not in by_name or evidence.get("checkout_sha")!=by_name[name]["expected_sha"]:raise IntegrationError("resume receipt contains invalid detached runtime identity")
+  worktree=Path(str(evidence.get("worktree") or ""))
+  if not worktree.exists() or common(worktree)!=common(Path(by_name[name]["path"])) or git(worktree,"rev-parse","HEAD",check=False)!=evidence["checkout_sha"] or git(worktree,"symbolic-ref","-q","HEAD",check=False):raise IntegrationError("resume receipt detached runtime identity is no longer present")
+  detached_names.append(name)
+ if len(detached_names)!=len(set(detached_names)):raise IntegrationError("resume receipt contains duplicate detached runtime identity")
+ return completed,detaches
 def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,validation_hash:str)->str:
  if not TAG_RE.fullmatch(task_id):raise IntegrationError("task id is not tag-safe")
  name=f"juno-feature/{task_id}/{integrated[:12]}"; ref=f"refs/tags/{name}"
@@ -179,7 +195,8 @@ def main(argv:list[str]|None=None)->int:
   actual_required=effective in {"high","release"}
   receipt.update({"repositories":plan,"candidate_receipt_sha256":candidate_hash,"topology":topology,"declared_risk_tier":a.risk_tier,"effective_risk_tier":effective,"risk_escalation_reasons":reasons})
   if actual_required and (not a.actual_review_command or not a.actual_review_receipt):raise IntegrationError("actual_target semantic review required by effective risk tier")
-  resumed=load_resume(a.resume_receipt,a.task_id,plan) if a.resume_receipt else set()
+  resumed,prior_detaches=load_resume(a.resume_receipt,a.task_id,plan) if a.resume_receipt else (set(),[])
+  detaches.extend(prior_detaches)
   if a.resume_receipt:receipt["resume_receipt_sha256"]=sha(a.resume_receipt)
   verify_gitlinks(a.repository,a.gitlink)
   ordered=sorted(a.repository,key=lambda x:(str(common(x["path"])),x["target_ref"]));validated=[validate_item(i,i["candidate_sha"] if i["name"] in resumed else i["expected_sha"],a.checked_out_target) for i in ordered]
@@ -192,9 +209,10 @@ def main(argv:list[str]|None=None)->int:
    candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
    verify_gitlinks(a.repository,a.gitlink);verify_nested_owners(a.repository,a.controller_checkout)
    by_name={x["name"]:x for x in validated}
+   detached_names={entry["name"] for entry in detaches}
    for item in validated:
-    if item["target_checkout"] and item["name"] not in resumed:
-     evidence=lifecycle.detach_same_sha(Path(item["path"]),Path(item["target_checkout"]),item["target_ref"],item["expected_sha"])
+    if item["target_checkout"] and item["name"] not in resumed and item["name"] not in detached_names:
+     evidence=lifecycle.detach_same_sha(Path(item["path"]),Path(item["target_checkout"]),item["target_ref"],item["expected_sha"],controller=a.controller_checkout)
      detaches.append({"name":item["name"],"worktree":item["target_checkout"],"checkout_sha":item["expected_sha"],"evidence":evidence})
    receipt["checked_out_target_policy"]={"requested":a.checked_out_target,"detachments":detaches};receipt["runtime_identities"]=runtime_identities(detaches,a.repository)
    for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"],a.checked_out_target)
