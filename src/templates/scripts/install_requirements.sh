@@ -55,6 +55,10 @@ NC='\033[0m' # No Color
 # Note: requests and python-dotenv are required by github.py
 # slack_sdk is required by Slack integration scripts (slack_fetch.py, slack_respond.py)
 REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
+JUNO_KANBAN_MIN_VERSION="2.0.5"
+JUNO_KANBAN_COMPAT_RANGE=">=${JUNO_KANBAN_MIN_VERSION},<3.0.0"
+JUNO_KANBAN_REQUIREMENT="juno-kanban${JUNO_KANBAN_COMPAT_RANGE}"
+VERSION_CHECK_CACHE_FORMAT="2"
 
 # pipx is suitable only for app-style packages that expose console entry points.
 # Installing pure libraries (e.g. requests/python-dotenv/slack_sdk) via pipx fails
@@ -66,12 +70,16 @@ PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
 # source into the initialized project's own runtime.
 package_install_target() {
     local package=$1
-    if [ "$package" = "juno-kanban" ] && [ -n "${JUNO_002_KANBAN_SOURCE:-}" ]; then
-        if [ ! -f "$JUNO_002_KANBAN_SOURCE/setup.py" ]; then
-            log_error "Selected juno-kanban source is invalid: $JUNO_002_KANBAN_SOURCE"
-            return 1
+    if [ "$package" = "juno-kanban" ]; then
+        if [ -n "${JUNO_002_KANBAN_SOURCE:-}" ]; then
+            if [ ! -f "$JUNO_002_KANBAN_SOURCE/setup.py" ]; then
+                log_error "Selected juno-kanban source is invalid: $JUNO_002_KANBAN_SOURCE"
+                return 1
+            fi
+            printf '%s\n' "$JUNO_002_KANBAN_SOURCE"
+        else
+            printf '%s\n' "$JUNO_KANBAN_REQUIREMENT"
         fi
-        printf '%s\n' "$JUNO_002_KANBAN_SOURCE"
         return 0
     fi
     printf '%s\n' "$package"
@@ -81,12 +89,23 @@ is_source_managed_package() {
     [ "$1" = "juno-kanban" ] && [ -n "${JUNO_002_KANBAN_SOURCE:-}" ]
 }
 
-juno_kanban_runtime_is_v2() {
+juno_kanban_runtime_is_compatible() {
     local executable output
     executable=$(command -v juno-kanban 2>/dev/null || true)
     [ -n "$executable" ] || return 1
     output=$("$executable" --version </dev/null 2>/dev/null) || return 1
-    [[ "$output" =~ (^|[^0-9])2\.[0-9]+\.[0-9]+([^0-9]|$) ]]
+    python3 - "$output" "$JUNO_KANBAN_MIN_VERSION" <<'PY'
+import re
+import sys
+
+output, minimum = sys.argv[1:]
+matches = re.findall(r"(?<![0-9A-Za-z])([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9A-Za-z])", output)
+if len(matches) != 1:
+    raise SystemExit(1)
+version = tuple(int(part) for part in matches[0])
+minimum_version = tuple(int(part) for part in minimum.split("."))
+raise SystemExit(0 if minimum_version <= version < (3, 0, 0) else 1)
+PY
 }
 
 ensure_selected_juno_kanban_runtime() {
@@ -95,7 +114,7 @@ ensure_selected_juno_kanban_runtime() {
         log_error "Selected juno-kanban source is invalid: $JUNO_002_KANBAN_SOURCE"
         return 1
     }
-    juno_kanban_runtime_is_v2 && return 0
+    juno_kanban_runtime_is_compatible && return 0
 
     log_warning "Repairing incompatible juno-kanban runtime from selected source: $JUNO_002_KANBAN_SOURCE"
     if command -v uv &>/dev/null; then
@@ -103,8 +122,8 @@ ensure_selected_juno_kanban_runtime() {
     else
         python3 -m pip install --force-reinstall "$JUNO_002_KANBAN_SOURCE" --quiet || return 1
     fi
-    if ! juno_kanban_runtime_is_v2; then
-        log_error "Selected juno-kanban source did not produce a compatible v2 runtime"
+    if ! juno_kanban_runtime_is_compatible; then
+        log_error "Selected juno-kanban source did not produce a compatible runtime ($JUNO_KANBAN_COMPAT_RANGE)"
         return 1
     fi
 }
@@ -183,7 +202,8 @@ try:
 except (OSError, ValueError):
     checked_at = 0
 complete = (
-    cache.get("format") == "1"
+    cache.get("format") == "2"
+    and cache.get("policy.juno-kanban") == ">=2.0.5,<3.0.0"
     and cache.get("packages") == ",".join(packages)
     and all(cache.get(f"package.{package}") for package in packages)
 )
@@ -269,7 +289,7 @@ is_version_check_stale() {
 
     local IFS=,
     expected="${REQUIRED_PACKAGES[*]}"
-    if [ "$cache_format" != "1" ] || [[ ! "$checked_at" =~ ^[0-9]+$ ]] || [ "$packages" != "$expected" ] || [ "$package_line_count" -ne "${#REQUIRED_PACKAGES[@]}" ]; then
+    if [ "$cache_format" != "$VERSION_CHECK_CACHE_FORMAT" ] || [[ ! "$checked_at" =~ ^[0-9]+$ ]] || [ "$packages" != "$expected" ] || [ "$package_line_count" -ne "${#REQUIRED_PACKAGES[@]}" ] || ! grep -Fxq "policy.juno-kanban=$JUNO_KANBAN_COMPAT_RANGE" "$VERSION_CHECK_CACHE_FILE"; then
         return 0
     fi
     now=$(date +%s)
@@ -305,8 +325,9 @@ atomic_publish_success_state() {
     local temp_file
     temp_file=$(mktemp "${VERSION_CHECK_CACHE_FILE}.tmp.XXXXXX")
     {
-        echo "format=1"
+        echo "format=$VERSION_CHECK_CACHE_FORMAT"
         echo "checked_at=$(date +%s)"
+        echo "policy.juno-kanban=$JUNO_KANBAN_COMPAT_RANGE"
         local IFS=,
         echo "packages=${REQUIRED_PACKAGES[*]}"
         printf '%s\n' "$latest_metadata"

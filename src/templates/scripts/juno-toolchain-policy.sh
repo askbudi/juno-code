@@ -2,7 +2,7 @@
 # Single compatibility policy for Juno 2's Kanban runtime.
 # Keep consumers executable-agnostic: they source this file and validate output.
 
-JUNO_KANBAN_COMPAT_RANGE='>=2.0.0,<3.0.0'
+JUNO_KANBAN_COMPAT_RANGE='>=2.0.5,<3.0.0'
 
 juno_kanban_parse_compatible_version() {
     local output="${1-}"
@@ -16,8 +16,8 @@ if len(matches) != 1:
     print("expected exactly one semantic version in --version output", file=sys.stderr)
     raise SystemExit(2)
 major, minor, patch = (int(part) for part in matches[0])
-if major != 2:
-    print(f"unsupported juno-kanban version {major}.{minor}.{patch}; required >=2.0.0,<3.0.0", file=sys.stderr)
+if (major, minor, patch) < (2, 0, 5) or major >= 3:
+    print(f"unsupported juno-kanban version {major}.{minor}.{patch}; required >=2.0.5,<3.0.0", file=sys.stderr)
     raise SystemExit(3)
 print(f"{major}.{minor}.{patch}")
 PY

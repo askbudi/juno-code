@@ -47,7 +47,7 @@ describe('kanban wrapper runtime selection', () => {
       `#!/usr/bin/env bash
 if [[ "${'$'}{1:-}" == "--version" ]]; then
   if IFS= read -r unexpected; then echo "version probe consumed stdin: ${'$'}unexpected" >&2; exit 2; fi
-  echo "task 2.0.0"
+  echo "task 2.0.5"
   exit 0
 fi
 if [[ "${'$'}{1:-}" == "create" ]]; then

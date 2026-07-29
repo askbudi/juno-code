@@ -108,7 +108,7 @@ describe('canonical controller resolver', () => {
     const bin = path.join(controller, '.venv_juno', 'bin');
     await fs.ensureDir(bin);
     await fs.writeFile(path.join(bin, 'activate'), `export VIRTUAL_ENV=${JSON.stringify(path.join(controller, '.venv_juno'))}\nexport PATH=${JSON.stringify(bin)}:$PATH\n`);
-    await fs.writeFile(path.join(bin, 'juno-kanban'), '#!/usr/bin/env python3\nimport os,sys\nif sys.argv[1:] == ["--version"]: print("task 2.0.0")\nelse: print(os.environ["JUNO_TASK_ROOT"] + "|" + " ".join(sys.argv[1:]))\n');
+    await fs.writeFile(path.join(bin, 'juno-kanban'), '#!/usr/bin/env python3\nimport os,sys\nif sys.argv[1:] == ["--version"]: print("task 2.0.5")\nelse: print(os.environ["JUNO_TASK_ROOT"] + "|" + " ".join(sys.argv[1:]))\n');
     await fs.chmod(path.join(bin, 'juno-kanban'), 0o755);
     const result = run(path.join(task, '.juno_task/scripts/kanban.sh'), ['mark', 'done', '--id', 'ABC123'], task);
     expect(result.status, result.stderr).toBe(0);

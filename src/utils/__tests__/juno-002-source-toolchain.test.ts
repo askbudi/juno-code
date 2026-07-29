@@ -27,12 +27,13 @@ afterEach(async () => {
 describe('Juno 2 Kanban compatibility policy', () => {
   it.each([
     ['task 1.99.9', false],
-    ['task 2.0.0', true],
+    ['task 2.0.0', false],
+    ['task 2.0.5', true],
     ['juno-kanban 2.8.4', true],
     ['task 3.0.0', false],
     ['', false],
     ['not-a-version', false],
-    ['task 2.0.0 extra 2.1.0', false],
+    ['task 2.0.5 extra 2.1.0', false],
   ])('validates %j', (output, accepted) => {
     const result = spawnSync(
       'bash',
@@ -59,10 +60,10 @@ describe('Juno 2 shipped guidance', () => {
     for (const documentation of [rootReadme, codeReadme]) {
       expect(documentation).toContain('yy-juno-002');
       expect(documentation).toContain('juno-kanban-juno-002');
-      expect(documentation).toContain('>=2.0.0,<3.0.0');
+      expect(documentation).toContain('>=2.0.5,<3.0.0');
       expect(documentation).toMatch(/(branch switch[^\n]*not[^\n]*(roll back|rollback|downgrade)|branches[^\n]*never[^\n]*(downgrade|restore))/i);
     }
-    expect(policyText).toContain("JUNO_KANBAN_COMPAT_RANGE='>=2.0.0,<3.0.0'");
+    expect(policyText).toContain("JUNO_KANBAN_COMPAT_RANGE='>=2.0.5,<3.0.0'");
     expect(codeReadme).toContain('rollback-selection');
     expect(codeReadme).toContain('register-controller');
     expect(codeReadme).toContain('Controller |');
@@ -115,7 +116,7 @@ if [[ "$1 $2" == "-m venv" ]]; then
 fi
 if [[ "$1 $2" == "-m pip" ]]; then
   target="$(cd "$(dirname "$0")" && pwd)/juno-kanban"
-  printf '#!/usr/bin/env bash\\nprintf "task %%s\\n" "${'${FAKE_KANBAN_VERSION:-2.0.0}'}"\\n' > "$target"
+  printf '#!/usr/bin/env bash\\nprintf "task %%s\\n" "${'${FAKE_KANBAN_VERSION:-2.0.5}'}"\\n' > "$target"
   chmod +x "$target"
   exit 0
 fi
@@ -176,7 +177,7 @@ chmod +x "$prefix/node_modules/.bin/yy"
       env: { ...process.env, JUNO_002_STATE_DIR: state }, encoding: 'utf8',
     });
     expect(kanban.status, kanban.stderr).toBe(0);
-    expect(kanban.stdout.trim()).toBe('task 2.0.0');
+    expect(kanban.stdout.trim()).toBe('task 2.0.5');
 
     const alternateCode = path.join(temp, 'alternate code');
     const alternateKanban = path.join(temp, 'alternate kanban');
@@ -188,10 +189,10 @@ chmod +x "$prefix/node_modules/.bin/yy"
     expect(status.status, status.stderr).toBe(0);
     expect(status.stdout).toContain(`juno_code_source=${await fs.realpath(codeSource)}`);
     expect(status.stdout).toContain(`juno_kanban_source=${await fs.realpath(kanbanSource)}`);
-    expect(status.stdout).toContain('policy=>=2.0.0,<3.0.0');
+    expect(status.stdout).toContain('policy=>=2.0.5,<3.0.0');
   });
 
-  it.each(['1.9.9', '3.0.0'])('rejects source Kanban %s during install', async (version) => {
+  it.each(['1.9.9', '2.0.4', '3.0.0'])('rejects source Kanban %s during install', async (version) => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-002-reject-'));
     tempDirs.push(temp);
     const codeSource = path.join(temp, 'code');

@@ -54,11 +54,15 @@ if [[ "$1" == "-" ]]; then
     [[ -n "$expected" ]] && expected="${'${expected}'},"
     expected="${'${expected}'}${'${package}'}"
   done
+  cache_format=""
+  cache_policy=""
   checked_at=""
   cached_packages=""
   package_lines=0
   if [[ -f "$cache_file" ]]; then
     while IFS='=' read -r key value; do
+      [[ "$key" == "format" ]] && cache_format="$value"
+      [[ "$key" == "policy.juno-kanban" ]] && cache_policy="$value"
       [[ "$key" == "checked_at" ]] && checked_at="$value"
       [[ "$key" == "packages" ]] && cached_packages="$value"
       [[ "$key" == package.* && -n "$value" ]] && package_lines=$((package_lines + 1))
@@ -66,7 +70,7 @@ if [[ "$1" == "-" ]]; then
   fi
   cache_status=stale
   now=$(date +%s)
-  if [[ "$checked_at" =~ ^[0-9]+$ && "$cached_packages" == "$expected" && "$package_lines" -eq "$#" && $((now - checked_at)) -lt $((interval_hours * 3600)) ]]; then
+  if [[ "$cache_format" == "2" && "$cache_policy" == ">=2.0.5,<3.0.0" && "$checked_at" =~ ^[0-9]+$ && "$cached_packages" == "$expected" && "$package_lines" -eq "$#" && $((now - checked_at)) -lt $((interval_hours * 3600)) ]]; then
     cache_status=fresh
   fi
   printf '__cache__|%s|\\n' "$cache_status"
@@ -92,7 +96,7 @@ if [[ "$1" == "-m" && "$2" == "pip" && "$3" == "install" ]]; then
   for arg in "$@"; do
     [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
     if [[ "$upgrade" == true && "$arg" != --* ]]; then
-      package="${'${arg%%==*}'}"
+      package="${'${arg%%[<>=!~]*}'}"
       if [[ "$arg" == *"=="* ]]; then
         printf '%s' "${'${arg#*==}'}" > "${'${INSTALLED_VERSION_DIR:?}'}/$package"
       elif [[ -f "${'${LATEST_VERSION_DIR:?}'}/$package" ]]; then
@@ -172,8 +176,9 @@ export PATH
     const cacheDir = path.join(tempDir, '.juno_task');
     await fs.ensureDir(cacheDir);
     const lines = [
-      'format=1',
+      'format=2',
       `checked_at=${checkedAt}`,
+      'policy.juno-kanban=>=2.0.5,<3.0.0',
       `packages=${packages.join(',')}`,
       ...packages.map((packageName) => `package.${packageName}=1.0.0`),
       '',
@@ -237,7 +242,7 @@ upgrade=false
 for arg in "$@"; do
   [[ "$arg" == "--upgrade" ]] && upgrade=true && continue
   if [[ "$upgrade" == true && "$arg" != --* ]]; then
-    package="${'${arg%%==*}'}"
+    package="${'${arg%%[<>=!~]*}'}"
     if [[ "$arg" == *"=="* ]]; then
       printf '%s' "${'${arg#*==}'}" > "${'${INSTALLED_VERSION_DIR:?}'}/$package"
     elif [[ -f "${'${LATEST_VERSION_DIR:?}'}/$package" ]]; then
@@ -319,7 +324,7 @@ exit 0
     await writeExecutable(
       path.join(binDir, 'juno-kanban'),
       `#!/usr/bin/env bash
-if [[ -f "${'${SELECTED_SOURCE_REPAIRED_MARKER:?}'}" ]]; then echo 'task 2.0.0'; exit 0; fi
+if [[ -f "${'${SELECTED_SOURCE_REPAIRED_MARKER:?}'}" ]]; then echo 'task 2.0.5'; exit 0; fi
 echo 'juno-kanban: error: unrecognized arguments: --version' >&2
 exit 2
 `,
@@ -386,7 +391,7 @@ exit 2
 
   it('blocks on a stale check, upgrades, verifies, then atomically publishes success', async () => {
     await createVenv();
-    await fs.writeFile(path.join(latestDir, 'juno-kanban'), '2.0.0');
+    await fs.writeFile(path.join(latestDir, 'juno-kanban'), '2.0.5');
     await writeSuccessCache(0);
 
     const startedAt = Date.now();
@@ -397,11 +402,13 @@ exit 2
     expect(result.status).toBe(0);
     expect(elapsedMs).toBeGreaterThanOrEqual(120);
     expect(combinedOutput).toContain('Upgrading packages: juno-kanban');
-    expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf-8')).toBe('2.0.0');
+    expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf-8')).toBe('2.0.5');
     expect(await lineCount(metadataLogPath)).toBe(2);
     expect(await lineCount(curlLogPath)).toBe(4);
     const cache = await fs.readFile(path.join(tempDir, '.juno_task', '.version_check_cache'), 'utf-8');
-    expect(cache).toContain('package.juno-kanban=2.0.0');
+    expect(cache).toContain('format=2');
+    expect(cache).toContain('policy.juno-kanban=>=2.0.5,<3.0.0');
+    expect(cache).toContain('package.juno-kanban=2.0.5');
     expect((await fs.readdir(path.join(tempDir, '.juno_task'))).some((name) => name.includes('.tmp.'))).toBe(false);
   });
 
@@ -456,6 +463,25 @@ exit 2
     expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_lock'))).toBe(false);
   });
 
+  it('invalidates a legacy cache that could pin juno-kanban below the minimum', async () => {
+    await createVenv();
+    await fs.writeFile(path.join(installedDir, 'juno-kanban'), '1.42.0');
+    await fs.writeFile(path.join(latestDir, 'juno-kanban'), '2.0.5');
+    await writeSuccessCache();
+    const cachePath = path.join(tempDir, '.juno_task', '.version_check_cache');
+    const cache = await fs.readFile(cachePath, 'utf8');
+    await fs.writeFile(
+      cachePath,
+      cache.replace('format=2', 'format=1').replace('policy.juno-kanban=>=2.0.5,<3.0.0\n', ''),
+    );
+
+    const result = runScript();
+    expect(result.status).toBe(0);
+    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf8')).toBe('2.0.5');
+    expect(await fs.readFile(cachePath, 'utf8')).toContain('policy.juno-kanban=>=2.0.5,<3.0.0');
+  });
+
   it('invalidates a fresh-looking cache when the required package list drifts', async () => {
     await createVenv();
     await writeSuccessCache(Math.floor(Date.now() / 1000), REQUIRED_PACKAGES.slice(0, 3));
@@ -489,5 +515,6 @@ exit 2
     expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
     expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
     expect(await fs.pathExists(path.join(tempDir, '.env_juno'))).toBe(false);
+    expect(await fs.readFile(uvLogPath, 'utf8')).toContain('juno-kanban>=2.0.5,<3.0.0');
   });
 });
