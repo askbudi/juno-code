@@ -154,6 +154,19 @@ def active(path: Path) -> bool:
     except (FileNotFoundError, subprocess.TimeoutExpired): return True
     return result.returncode == 0
 
+def active_cwd_processes(path: Path) -> tuple[bool, list[dict[str, Any]]]:
+    try:
+        result = subprocess.run(["lsof", "-n", "-P", "-a", "-d", "cwd", "-Fpn"], text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return True, [{"probe_error": type(exc).__name__}]
+    root = path.resolve(); processes: list[dict[str, Any]] = []; pid: int | None = None
+    for line in result.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit(): pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            cwd = Path(line[1:]).resolve()
+            if cwd == root or root in cwd.parents: processes.append({"pid": pid, "cwd": str(cwd)})
+    return bool(processes), processes
+
 def audit(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); target = full_ref(args.target_ref)
     target_exists = run_returncode(repo, "rev-parse", "--verify", target) == 0
@@ -199,7 +212,7 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
     topology: dict[str, Any] | None = None
     target_sha = git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
     rows = listed(repo); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
-    refusals: list[str] = []; embedded_primary = False
+    refusals: list[str] = []; embedded_primary = False; active_process_evidence: list[dict[str, Any]] = []
     if args.controller_checkout:
         topology, topology_refusals = controller_topology(args.controller_checkout, path, expected); refusals.extend(topology_refusals)
         if topology.get("classification") == "controller_nested_integration_owner" and args.disposition != "detach_same_sha":
@@ -228,8 +241,9 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
             if status(path): refusals.append("dirty")
             if (path / ".gitmodules").exists():
                 nested = git(path, "submodule", "status", "--recursive", check=False).splitlines()
-                if any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
-            if active(path): refusals.append("active_process")
+                if args.disposition != "detach_same_sha" and any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
+            has_active_cwd, active_process_evidence = active_cwd_processes(path)
+            if has_active_cwd: refusals.append("active_process")
             if args.disposition == "detach_same_sha":
                 if before_branch == "DETACHED" and before_head == expected: already_released = True
                 elif before_branch != target: refusals.append("worktree_does_not_own_target_ref")
@@ -262,7 +276,7 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
                "after_branch": None if final is None else final.get("branch", "DETACHED"),
                "after_head": None if final is None else final.get("HEAD"), "target_sha_after": git(repo, "rev-parse", target, check=False),
                "already_released": already_released, "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
-               "topology": topology, "refusals": refusals, "inventory": final_rows}
+               "topology": topology, "active_processes": active_process_evidence, "refusals": refusals, "inventory": final_rows}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
     return payload
