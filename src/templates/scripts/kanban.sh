@@ -77,20 +77,14 @@ log_error() {
 # Function to check if we're inside .venv_juno specifically
 # CRITICAL: Don't just check for ANY venv - check if we're in .venv_juno
 is_in_venv_juno() {
-    # Check if VIRTUAL_ENV is set and points to .venv_juno
-    if [ -n "${VIRTUAL_ENV:-}" ]; then
-        # Check if VIRTUAL_ENV path contains .venv_juno
-        if [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
-            return 0  # Inside .venv_juno
-        fi
-
-        # Check if the basename is .venv_juno
-        if [ "$(basename "${VIRTUAL_ENV:-}")" = ".venv_juno" ]; then
-            return 0  # Inside .venv_juno
-        fi
-    fi
-
-    return 1  # Not inside .venv_juno (or not in any venv)
+    # A shell may inherit another project's identically named `.venv_juno`.
+    # Compare canonical directories, not basename/substrings, before skipping
+    # activation of this controller's environment.
+    local active_venv expected_venv
+    [ -n "${VIRTUAL_ENV:-}" ] && [ -d "${VIRTUAL_ENV:-}" ] || return 1
+    active_venv=$(cd "${VIRTUAL_ENV:-}" 2>/dev/null && pwd -P) || return 1
+    expected_venv=$(cd "$PROJECT_ROOT/$VENV_DIR" 2>/dev/null && pwd -P) || return 1
+    [ "$active_venv" = "$expected_venv" ]
 }
 
 # Function to activate virtual environment

@@ -60,6 +60,10 @@ if [[ ${'$'}# -eq 0 ]]; then
   printf 'implicit-created:%s\\n' "${'$'}body"
   exit 0
 fi
+if [[ "${'$'}{1:-}" == "show-env" ]]; then
+  printf '%s\\n' "${'$'}{VIRTUAL_ENV:-}"
+  exit 0
+fi
 python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TASK_ROOT"])'
 `,
     );
@@ -104,6 +108,23 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('implicit-created:commandless heredoc body');
     expect(result.stderr).not.toContain('version probe consumed stdin');
+  });
+
+  it('reactivates this project when the caller inherited another project .venv_juno', () => {
+    const otherVenv = path.join(path.dirname(projectRoot), 'other-project', '.venv_juno');
+    const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['show-env'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: '',
+        VIRTUAL_ENV: otherVenv,
+        PATH: `${path.join(otherVenv, 'bin')}:${process.env.PATH}`,
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.realpathSync(result.stdout.trim())).toBe(fs.realpathSync(path.join(projectRoot, '.venv_juno')));
   });
 
   it('uses the compatible controller executable even when a neighboring source tree is present', () => {
