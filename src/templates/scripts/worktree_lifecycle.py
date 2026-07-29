@@ -146,6 +146,63 @@ def run_returncode(repo: Path, *args: str) -> int:
     return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).returncode
 
+def release_target(args: argparse.Namespace) -> dict[str, Any]:
+    repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref)
+    if not target.startswith("refs/heads/"):
+        raise LifecycleError("target release requires a full refs/heads/... name")
+    expected = args.expected_head
+    target_sha = git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
+    rows = listed(repo); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
+    refusals: list[str] = []
+    if target_sha != expected: refusals.append(f"target_sha_mismatch expected={expected} actual={target_sha or 'missing'}")
+    if len(matches) > 1: refusals.append("duplicate_worktree_registration")
+    row = matches[0] if len(matches) == 1 else None
+    already_released = False
+    before_branch = None if row is None else row.get("branch", "DETACHED")
+    before_head = None if row is None else row.get("HEAD")
+    if row is None:
+        if path.exists(): refusals.append("path_exists_but_unregistered")
+        elif args.disposition == "remove" and target_sha == expected: already_released = True
+        else: refusals.append("worktree_not_registered")
+    else:
+        if not path.exists(): refusals.append("worktree_missing_but_registered")
+        else:
+            _, path_common = identity(path); _, repo_common = identity(repo)
+            if path_common != repo_common: refusals.append("git_common_dir_mismatch")
+            if before_head != expected: refusals.append("unexpected_head")
+            if lock_path(path).exists(): refusals.append("index_lock_present")
+            if status(path): refusals.append("dirty")
+            if (path / ".gitmodules").exists():
+                nested = git(path, "submodule", "status", "--recursive", check=False).splitlines()
+                if any(line and not line.startswith("-") for line in nested): refusals.append("nested_repository_initialized")
+            if active(path): refusals.append("active_process")
+            if args.disposition == "detach_same_sha":
+                if before_branch == "DETACHED" and before_head == expected: already_released = True
+                elif before_branch != target: refusals.append("worktree_does_not_own_target_ref")
+            elif before_branch != target:
+                refusals.append("worktree_does_not_own_target_ref")
+    outcome = "refused"
+    if not refusals:
+        if already_released: outcome = "already_released"
+        elif args.disposition == "detach_same_sha":
+            git(path, "checkout", "--detach", expected); outcome = "detached_same_sha"
+        else:
+            git(repo, "worktree", "remove", str(path)); outcome = "removed"
+        if git(repo, "rev-parse", "--verify", f"{target}^{{commit}}") != expected:
+            raise LifecycleError("target_ref_changed_during_release")
+    final_rows = listed(repo)
+    final = next((item for item in final_rows if Path(item["worktree"]).resolve() == path), None)
+    payload = {"schema_version": SCHEMA, "operation": "release-target", "passed": not refusals,
+               "outcome": outcome, "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
+               "target_ref": target, "expected_head": expected, "worktree": str(path), "disposition": args.disposition,
+               "task_id": args.task_id, "owner": args.owner, "before_branch": before_branch, "before_head": before_head,
+               "after_branch": None if final is None else final.get("branch", "DETACHED"),
+               "after_head": None if final is None else final.get("HEAD"), "target_sha_after": git(repo, "rev-parse", target, check=False),
+               "already_released": already_released, "refusals": refusals, "inventory": final_rows}
+    write_receipt(args.output, payload)
+    if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
+    return payload
+
 def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
     expected = args.expected_head
@@ -193,6 +250,11 @@ def parser() -> argparse.ArgumentParser:
     create_p.add_argument("--cleanup-owner", required=True); create_p.add_argument("--hard-min-free-bytes", type=int); create_p.add_argument("--output", type=Path, required=True)
     verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--output", type=Path, required=True)
     audit_p = sub.add_parser("audit", allow_abbrev=False); audit_p.set_defaults(func=audit); audit_p.add_argument("--repository", type=Path, required=True); audit_p.add_argument("--target-ref", required=True); audit_p.add_argument("--output", type=Path, required=True)
+    release_p = sub.add_parser("release-target", allow_abbrev=False); release_p.set_defaults(func=release_target)
+    for name in ("repository", "path", "output"): release_p.add_argument(f"--{name}", type=Path, required=True)
+    release_p.add_argument("--target-ref", required=True); release_p.add_argument("--expected-head", required=True)
+    release_p.add_argument("--disposition", choices=("detach_same_sha", "remove"), required=True)
+    release_p.add_argument("--task-id", required=True); release_p.add_argument("--owner", required=True)
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)
     for name in ("repository", "path", "output"): clean_p.add_argument(f"--{name}", type=Path, required=True)
     clean_p.add_argument("--target-ref", required=True); clean_p.add_argument("--branch-ref", required=True); clean_p.add_argument("--expected-head", required=True); clean_p.add_argument("--delete-branch", action="store_true")

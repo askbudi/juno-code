@@ -75,7 +75,7 @@ def validate_item(item:dict[str,Any],expected_current_sha:str|None=None)->dict[s
  repo=item["path"]
  if index_lock(repo).exists():raise IntegrationError(f"index_lock_present: {index_lock(repo)}")
  worktrees=git(repo,"worktree","list","--porcelain").splitlines()
- if f"branch {item['target_ref']}" in worktrees:raise IntegrationError(f"target_ref_checked_out: {item['target_ref']}")
+ if f"branch {item['target_ref']}" in worktrees:raise IntegrationError(f"target_ref_checked_out: {item['target_ref']}; use worktree_lifecycle.py release-target with an owner-approved exact-SHA disposition receipt")
  actual=git(repo,"rev-parse",f"{item['target_ref']}^{{commit}}")
  expected_current_sha=expected_current_sha or item["expected_sha"]
  if actual!=expected_current_sha:raise IntegrationError(f"stale_target name={item['name']} expected={expected_current_sha} actual={actual}")

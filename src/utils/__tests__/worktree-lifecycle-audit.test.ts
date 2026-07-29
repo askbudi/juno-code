@@ -7,10 +7,10 @@ const helper = path.resolve(process.cwd(), 'src/templates/scripts/worktree_lifec
 const wiki = path.resolve(process.cwd(), 'src/templates/wiki/git_worktree_lifecycle.md');
 
 describe('packaged worktree lifecycle', () => {
-  it('ships one compilable create/verify/audit/cleanup authority', async () => {
+  it('ships one compilable create/verify/audit/release-target/cleanup authority', async () => {
     execFileSync('python3', ['-m', 'py_compile', helper]);
     const source = await fs.readFile(helper, 'utf8');
-    for (const command of ['create', 'verify', 'audit', 'cleanup']) expect(source).toContain(`"${command}"`);
+    for (const command of ['create', 'verify', 'audit', 'release-target', 'cleanup']) expect(source).toContain(`"${command}"`);
     expect(source).toContain('unreachable_from_target');
     expect(source).toContain('active_process');
     expect(source).toContain('worktree", "prune", "--dry-run"');

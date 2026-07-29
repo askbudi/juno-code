@@ -76,6 +76,10 @@ integration_policy:
 
 Validation ownership names `pre_merge_review`, `candidate_review`, and `actual_target_review`. The integration step consumes the eligible receipt and runs actual-target review. Same-channel jobs serialize on the channel lock; disjoint channels can progress independently.
 
+## Checked-out target release
+
+When integration reports `target_ref_checked_out`, do not switch or remove the owner ad hoc. Obtain owner approval and run `worktree_lifecycle.py release-target` with the exact repository, registered worktree, full target ref, expected target SHA, task/owner identity, immutable output receipt, and an explicit `detach_same_sha` or `remove` disposition. The helper canonicalizes registration identity; refuses dirty, locked, active, stale, mismatched, or initialized-nested owners; and proves the target ref remains at the expected SHA. Same-SHA detach changes only checkout attachment. Removal uses ordinary no-force Git worktree removal. A matching retry is idempotent. The release receipt grants no integration, branch deletion, process signal, push, or target-rewind authority.
+
 ## Cleanup
 
 `worktree_lifecycle.py cleanup` requires explicit repository, target ref, task/candidate path, expected HEAD, and `--branch-ref` as a full `refs/heads/...` name or the exact literal `DETACHED`. It refuses dirty, locked, active, wrong-identity, unreachable, or initialized-nested worktrees. Remove nested worktrees before parents. Expected disappearance is idempotent success; optional branch deletion uses exact-old-SHA `git update-ref -d`. Every attempt records final inventory and prune dry-run. There is no automatic force mode.
