@@ -17,6 +17,9 @@ describe('target-ref integration channel', () => {
     expect(source).toContain('resume_stage');
     expect(source).toContain('juno-feature/');
     expect(source).toContain('--actual-review-command');
+    expect(source).toContain('--controller-checkout');
+    expect(source).toContain('--nested-owner-receipt');
+    expect(source).toContain('controller_nested_integration_owner_receipt_required');
     expect(source).not.toContain('--checkpoint-controller');
     expect(source).not.toContain('other_write_capable_processes');
   });

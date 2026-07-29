@@ -173,14 +173,41 @@ def run_returncode(repo: Path, *args: str) -> int:
     return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).returncode
 
+def controller_topology(controller: Path, path: Path, expected: str) -> tuple[dict[str, Any], list[str]]:
+    controller = controller.resolve(); controller_root, _ = identity(controller); refusals: list[str] = []
+    if controller_root != controller: refusals.append("controller_checkout_is_not_git_root")
+    try: relative = path.relative_to(controller_root)
+    except ValueError:
+        return {"classification": "auxiliary_integration_owner", "controller_root": str(controller_root)}, refusals
+    if not relative.parts: refusals.append("controller_root_cannot_be_target_owner")
+    entry = git(controller_root, "ls-tree", "HEAD", "--", relative.as_posix()).split(None, 3)
+    if len(entry) < 3 or entry[0] != "160000":
+        refusals.append("controller_nested_owner_is_not_bound_gitlink"); gitlink_sha = None
+    else: gitlink_sha = entry[2]
+    if gitlink_sha != expected: refusals.append("controller_gitlink_sha_mismatch")
+    path_status = git(controller_root, "status", "--porcelain=v2", "--untracked-files=all", "--", relative.as_posix())
+    if path_status: refusals.append("controller_gitlink_dirty")
+    return {"classification": "controller_nested_integration_owner", "controller_root": str(controller_root),
+            "controller_head": git(controller_root, "rev-parse", "HEAD"), "gitlink_path": relative.as_posix(),
+            "gitlink_sha": gitlink_sha, "gitlink_clean": path_status == ""}, refusals
+
 def release_target(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref)
     if not target.startswith("refs/heads/"):
         raise LifecycleError("target release requires a full refs/heads/... name")
     expected = args.expected_head
+    topology: dict[str, Any] | None = None
     target_sha = git(repo, "rev-parse", "--verify", f"{target}^{{commit}}", check=False)
     rows = listed(repo); matches = [row for row in rows if Path(row["worktree"]).resolve() == path]
-    refusals: list[str] = []
+    refusals: list[str] = []; embedded_primary = False
+    if args.controller_checkout:
+        topology, topology_refusals = controller_topology(args.controller_checkout, path, expected); refusals.extend(topology_refusals)
+        if topology.get("classification") == "controller_nested_integration_owner" and args.disposition != "detach_same_sha":
+            refusals.append("controller_nested_owner_requires_detach_same_sha")
+    if topology and topology.get("classification") == "controller_nested_integration_owner" and not matches and path.exists():
+        path_root, path_common = identity(path)
+        embedded = [row for row in rows if Path(row["worktree"]).resolve() == path_common and row.get("HEAD") == expected and row.get("branch") == target]
+        if path_root == path and len(embedded) == 1: matches = embedded; embedded_primary = True
     if target_sha != expected: refusals.append(f"target_sha_mismatch expected={expected} actual={target_sha or 'missing'}")
     if len(matches) > 1: refusals.append("duplicate_worktree_registration")
     row = matches[0] if len(matches) == 1 else None
@@ -217,15 +244,23 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
             git(repo, "worktree", "remove", str(path)); outcome = "removed"
         if git(repo, "rev-parse", "--verify", f"{target}^{{commit}}") != expected:
             raise LifecycleError("target_ref_changed_during_release")
+        if args.controller_checkout and topology and topology.get("classification") == "controller_nested_integration_owner":
+            final_topology, final_topology_refusals = controller_topology(args.controller_checkout, path, expected)
+            if final_topology_refusals: raise LifecycleError("controller_topology_changed_during_release:" + ",".join(final_topology_refusals))
+            topology = final_topology
     final_rows = listed(repo)
     final = next((item for item in final_rows if Path(item["worktree"]).resolve() == path), None)
+    if embedded_primary and path.exists():
+        final = {"worktree": str(path), "HEAD": git(path, "rev-parse", "HEAD"),
+                 "branch": git(path, "symbolic-ref", "-q", "HEAD", check=False) or "DETACHED"}
     payload = {"schema_version": SCHEMA, "operation": "release-target", "passed": not refusals,
                "outcome": outcome, "repository_root": str(identity(repo)[0]), "git_common_dir": str(identity(repo)[1]),
                "target_ref": target, "expected_head": expected, "worktree": str(path), "disposition": args.disposition,
                "task_id": args.task_id, "owner": args.owner, "before_branch": before_branch, "before_head": before_head,
                "after_branch": None if final is None else final.get("branch", "DETACHED"),
                "after_head": None if final is None else final.get("HEAD"), "target_sha_after": git(repo, "rev-parse", target, check=False),
-               "already_released": already_released, "refusals": refusals, "inventory": final_rows}
+               "already_released": already_released, "registration_kind": "embedded_submodule_primary" if embedded_primary else "worktree_list",
+               "topology": topology, "refusals": refusals, "inventory": final_rows}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("target_release_refused: " + ",".join(refusals))
     return payload
@@ -325,6 +360,7 @@ def parser() -> argparse.ArgumentParser:
     release_p.add_argument("--target-ref", required=True); release_p.add_argument("--expected-head", required=True)
     release_p.add_argument("--disposition", choices=("detach_same_sha", "remove"), required=True)
     release_p.add_argument("--task-id", required=True); release_p.add_argument("--owner", required=True)
+    release_p.add_argument("--controller-checkout", type=Path)
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)
     for name in ("repository", "path", "output"): clean_p.add_argument(f"--{name}", type=Path, required=True)
     clean_p.add_argument("--target-ref", required=True); clean_p.add_argument("--branch-ref", required=True); clean_p.add_argument("--expected-head", required=True); clean_p.add_argument("--delete-branch", action="store_true")

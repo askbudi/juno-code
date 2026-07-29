@@ -26,6 +26,10 @@ def parse_gitlink(v:str)->tuple[str,str]:
  name,separator,path=v.partition("=")
  if not separator or not name or not path or Path(path).is_absolute() or ".." in Path(path).parts:raise argparse.ArgumentTypeError("gitlink must be CHILD_REPOSITORY_NAME=ROOT_RELATIVE_PATH")
  return name,path
+def parse_named_receipt(v:str)->tuple[str,Path]:
+ name,separator,receipt=v.partition("=")
+ if not separator or not name or not receipt:raise argparse.ArgumentTypeError("nested owner receipt must be REPOSITORY_NAME=RECEIPT_PATH")
+ return name,Path(receipt).resolve()
 def common(repo:Path)->Path:return Path(git(repo,"rev-parse","--path-format=absolute","--git-common-dir")).resolve()
 def lock_key(item:dict[str,Any])->str:
  raw=f"{common(item['path'])}\0{item['target_ref']}";return hashlib.sha256(raw.encode()).hexdigest()
@@ -70,6 +74,36 @@ def verify_gitlinks(repositories:list[dict[str,Any]],gitlinks:list[tuple[str,str
   entry=git(root["path"],"ls-tree",root["candidate_sha"],"--",path)
   fields=entry.split(None,3)
   if len(fields)<3 or fields[0]!="160000" or fields[2]!=by_name[child]["candidate_sha"]:raise IntegrationError(f"root_gitlink_mismatch child={child} path={path}")
+
+def verify_nested_owners(repositories:list[dict[str,Any]],controller:Path|None,receipt_items:list[tuple[str,Path]])->list[dict[str,Any]]:
+ if controller is None:
+  if receipt_items:raise IntegrationError("--nested-owner-receipt requires --controller-checkout")
+  return []
+ controller=controller.resolve();controller_root=Path(git(controller,"rev-parse","--show-toplevel")).resolve()
+ if controller_root!=controller:raise IntegrationError("controller checkout must be its exact Git root")
+ receipts=dict(receipt_items)
+ if len(receipts)!=len(receipt_items):raise IntegrationError("duplicate nested owner receipt name")
+ known={item["name"] for item in repositories}
+ if set(receipts)-known:raise IntegrationError("nested owner receipt names an unknown repository")
+ evidence=[]
+ for item in repositories:
+  try:relative=item["path"].relative_to(controller_root)
+  except ValueError:
+   evidence.append({"name":item["name"],"classification":"auxiliary_integration_owner","path":str(item["path"])});continue
+  if not relative.parts:raise IntegrationError("controller checkout cannot be an integration owner")
+  entry=git(controller_root,"ls-tree","HEAD","--",relative.as_posix()).split(None,3)
+  if len(entry)<3 or entry[0]!="160000":raise IntegrationError(f"controller_nested_owner_not_gitlink name={item['name']}")
+  gitlink_sha=entry[2];receipt_path=receipts.get(item["name"])
+  if receipt_path is None:raise IntegrationError(f"controller_nested_integration_owner_receipt_required name={item['name']}")
+  release=json.loads(receipt_path.read_text());topology=release.get("topology") or {}
+  expected_topology={"classification":"controller_nested_integration_owner","controller_root":str(controller_root),"controller_head":git(controller_root,"rev-parse","HEAD"),"gitlink_path":relative.as_posix(),"gitlink_sha":gitlink_sha,"gitlink_clean":True}
+  if release.get("schema_version")!="juno_worktree_lifecycle.v2" or release.get("operation")!="release-target" or release.get("passed") is not True:raise IntegrationError("valid target release receipt required for controller-nested owner")
+  if release.get("disposition")!="detach_same_sha" or Path(str(release.get("worktree") or "")).resolve()!=item["path"] or release.get("target_ref")!=item["target_ref"] or release.get("expected_head")!=item["expected_sha"]:raise IntegrationError("controller-nested target release receipt identity mismatch")
+  if topology!=expected_topology:raise IntegrationError("controller-nested target release topology mismatch")
+  if git(item["path"],"rev-parse","HEAD")!=item["expected_sha"] or git(item["path"],"symbolic-ref","-q","HEAD",check=False):raise IntegrationError("controller-nested checkout is not detached at expected gitlink SHA")
+  if git(controller_root,"status","--porcelain=v2","--untracked-files=all","--",relative.as_posix()):raise IntegrationError("controller nested gitlink is dirty")
+  evidence.append({"name":item["name"],**expected_topology,"path":str(item["path"]),"target_ref":item["target_ref"],"integrated_target_sha":item["candidate_sha"],"release_receipt_sha256":sha(receipt_path)})
+ return evidence
 
 def validate_item(item:dict[str,Any],expected_current_sha:str|None=None)->dict[str,Any]:
  repo=item["path"]
@@ -118,7 +152,7 @@ def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,v
  else:git(repo,"tag","-a",name,integrated,"-m",message)
  return name
 def main(argv:list[str]|None=None)->int:
- p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--actual-review-command",required=True);p.add_argument("--actual-review-receipt",type=Path,required=True);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
+ p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--nested-owner-receipt",action="append",type=parse_named_receipt,default=[]);p.add_argument("--actual-review-command",required=True);p.add_argument("--actual-review-receipt",type=Path,required=True);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
  a=p.parse_args(argv)
  if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
  if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
@@ -130,7 +164,7 @@ def main(argv:list[str]|None=None)->int:
   candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
   receipt_hashes=[sha(path) for path in a.candidate_receipt]
   candidate_hash=receipt_hashes[0] if len(receipt_hashes)==1 else hashlib.sha256("\n".join(receipt_hashes).encode()).hexdigest()
-  plan=public_plan(a.repository,receipt_hashes);receipt.update({"repositories":plan,"candidate_receipt_sha256":candidate_hash})
+  plan=public_plan(a.repository,receipt_hashes);topology=verify_nested_owners(a.repository,a.controller_checkout,a.nested_owner_receipt);receipt.update({"repositories":plan,"candidate_receipt_sha256":candidate_hash,"topology":topology})
   resumed=load_resume(a.resume_receipt,a.task_id,plan) if a.resume_receipt else set()
   if a.resume_receipt:receipt["resume_receipt_sha256"]=sha(a.resume_receipt)
   verify_gitlinks(a.repository,a.gitlink)
@@ -145,7 +179,7 @@ def main(argv:list[str]|None=None)->int:
    # ordered locks, then update child-first in caller order.
    if [sha(path) for path in a.candidate_receipt]!=receipt_hashes:raise IntegrationError("candidate_receipt_changed_under_lock")
    candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
-   verify_gitlinks(a.repository,a.gitlink)
+   verify_gitlinks(a.repository,a.gitlink);verify_nested_owners(a.repository,a.controller_checkout,a.nested_owner_receipt)
    by_name={x["name"]:x for x in validated}
    for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"])
    for original in a.repository:
@@ -176,6 +210,7 @@ def main(argv:list[str]|None=None)->int:
    integrated=a.repository[-1]["candidate_sha"]
    for item in a.repository:
     if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target moved during validation/review")
+   verify_nested_owners(a.repository,a.controller_checkout,a.nested_owner_receipt)
    if git(actual_cwd,"rev-parse","HEAD")!=integrated or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):
     raise IntegrationError("actual target validation checkout changed during validation/review")
    if review.get("schema_version")!="juno_review.v1" or review.get("review_kind")!="actual_target" or review.get("passed") is not True or review.get("reviewed_tip")!=integrated or review.get("open_bugs") != []:raise IntegrationError("actual_target_review_PASS_required")

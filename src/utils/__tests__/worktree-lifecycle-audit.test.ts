@@ -16,6 +16,8 @@ describe('packaged worktree lifecycle', () => {
     expect(source).toContain('--deinitialized-submodule');
     expect(source).toContain('canonical_path_mismatch');
     expect(source).toContain('canonical_path_resolution_changed');
+    expect(source).toContain('controller_nested_integration_owner');
+    expect(source).toContain('embedded_submodule_primary');
     expect(source).toContain('gitlink_unreachable_from_approved_repository');
     expect(source).toContain('worktree", "prune", "--dry-run"');
     expect(source).not.toContain('force');
@@ -30,6 +32,7 @@ describe('packaged worktree lifecycle', () => {
     expect(guidance).toContain('--deinitialized-submodule');
     expect(guidance).toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
     expect(guidance).toContain('canonical-to-canonical');
+    expect(guidance).toContain('--nested-owner-receipt');
     expect(guidance).not.toContain('worktree_lifecycle_audit.py');
   });
 });
