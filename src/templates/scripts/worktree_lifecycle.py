@@ -116,17 +116,37 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
     write_receipt(args.output, payload); return payload
 
 def verify(args: argparse.Namespace) -> dict[str, Any]:
-    receipt = json.loads(args.manifest.read_text(encoding="utf-8")); path = Path(receipt["worktree"])
+    receipt = json.loads(args.manifest.read_text(encoding="utf-8"))
     if receipt.get("schema_version") != SCHEMA or receipt.get("operation") != "create":
         raise LifecycleError("invalid create manifest")
-    _, common = identity(path)
-    actual = {"head": git(path, "rev-parse", "HEAD"), "branch_ref": git(path, "symbolic-ref", "-q", "HEAD", check=False), "clean": status(path) == "",
-              "worktree": str(path.resolve()), "git_common_dir": str(common)}
-    passed = actual == {"head": receipt["base_sha"], "branch_ref": receipt["branch_ref"], "clean": True,
-                        "worktree": str(Path(receipt["worktree"]).resolve()), "git_common_dir": receipt["git_common_dir"]}
-    payload = {"schema_version": SCHEMA, "operation": "verify", "passed": passed, "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(), "actual": actual}
+    display_path = args.path or Path(receipt["worktree"]); refusals: list[str] = []
+    try: expected_path = Path(receipt["worktree"]).resolve(strict=True)
+    except OSError: expected_path = None; refusals.append("manifest_worktree_missing")
+    try: actual_path = display_path.resolve(strict=True)
+    except OSError: actual_path = None; refusals.append("path_missing_or_dangling")
+    actual: dict[str, Any] = {"head": None, "branch_ref": None, "clean": False,
+                              "worktree": None if actual_path is None else str(actual_path), "git_common_dir": None}
+    if expected_path is not None and actual_path is not None:
+        if expected_path != actual_path: refusals.append("canonical_path_mismatch")
+        try:
+            root, common = identity(actual_path)
+            actual.update({"head": git(actual_path, "rev-parse", "HEAD"),
+                           "branch_ref": git(actual_path, "symbolic-ref", "-q", "HEAD", check=False),
+                           "clean": status(actual_path) == "", "worktree": str(root), "git_common_dir": str(common)})
+            if root != actual_path: refusals.append("path_is_not_worktree_root")
+            if actual["head"] != receipt["base_sha"]: refusals.append("unexpected_head")
+            if actual["branch_ref"] != receipt["branch_ref"]: refusals.append("unexpected_branch")
+            if not actual["clean"]: refusals.append("dirty")
+            if actual["git_common_dir"] != receipt["git_common_dir"]: refusals.append("git_common_dir_mismatch")
+            if display_path.resolve(strict=True) != actual_path: refusals.append("canonical_path_resolution_changed")
+        except LifecycleError: refusals.append("path_is_not_registered_git_worktree")
+    passed = not refusals
+    payload = {"schema_version": SCHEMA, "operation": "verify", "passed": passed,
+               "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
+               "display_path": str(display_path), "expected_canonical_path": None if expected_path is None else str(expected_path),
+               "actual": actual, "refusals": refusals}
     write_receipt(args.output, payload)
-    if not passed: raise LifecycleError("worktree verification failed")
+    if not passed: raise LifecycleError("worktree_verification_refused: " + ",".join(refusals))
     return payload
 
 def active(path: Path) -> bool:
@@ -298,7 +318,7 @@ def parser() -> argparse.ArgumentParser:
     create_p.add_argument("--fetch"); create_p.add_argument("--path", type=Path, required=True); create_p.add_argument("--branch-ref", required=True)
     create_p.add_argument("--task-id", required=True); create_p.add_argument("--expected-path", action="append", default=[]); create_p.add_argument("--validation-command", action="append", default=[])
     create_p.add_argument("--cleanup-owner", required=True); create_p.add_argument("--hard-min-free-bytes", type=int); create_p.add_argument("--output", type=Path, required=True)
-    verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--output", type=Path, required=True)
+    verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--path", type=Path); verify_p.add_argument("--output", type=Path, required=True)
     audit_p = sub.add_parser("audit", allow_abbrev=False); audit_p.set_defaults(func=audit); audit_p.add_argument("--repository", type=Path, required=True); audit_p.add_argument("--target-ref", required=True); audit_p.add_argument("--output", type=Path, required=True)
     release_p = sub.add_parser("release-target", allow_abbrev=False); release_p.set_defaults(func=release_target)
     for name in ("repository", "path", "output"): release_p.add_argument(f"--{name}", type=Path, required=True)

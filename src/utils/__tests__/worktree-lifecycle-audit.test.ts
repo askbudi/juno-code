@@ -14,6 +14,8 @@ describe('packaged worktree lifecycle', () => {
     expect(source).toContain('unreachable_from_target');
     expect(source).toContain('active_process');
     expect(source).toContain('--deinitialized-submodule');
+    expect(source).toContain('canonical_path_mismatch');
+    expect(source).toContain('canonical_path_resolution_changed');
     expect(source).toContain('gitlink_unreachable_from_approved_repository');
     expect(source).toContain('worktree", "prune", "--dry-run"');
     expect(source).not.toContain('force');
@@ -26,6 +28,8 @@ describe('packaged worktree lifecycle', () => {
     expect(guidance).toContain('vX.Y.Z');
     expect(guidance).toContain('There is no automatic force mode');
     expect(guidance).toContain('--deinitialized-submodule');
+    expect(guidance).toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
+    expect(guidance).toContain('canonical-to-canonical');
     expect(guidance).not.toContain('worktree_lifecycle_audit.py');
   });
 });

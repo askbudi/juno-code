@@ -27,7 +27,7 @@ exact base -> named clean task tree -> pre-merge review PASS
 
 ## Exact-base creation
 
-Use `worktree_lifecycle.py create` with full `refs/...` names, task ID, expected paths, validation commands, and cleanup owner. `--fetch REMOTE,REF` is narrow, uses `--no-tags`, and resolves `FETCH_HEAD` without advancing the approved local target. `--expected-base` binds the fetched identity. Existing paths/branches are accepted only when path, branch, HEAD, and clean state exactly match.
+Use `worktree_lifecycle.py create` with full `refs/...` names, task ID, expected paths, validation commands, and cleanup owner. `--fetch REMOTE,REF` is narrow, uses `--no-tags`, and resolves `FETCH_HEAD` without advancing the approved local target. `--expected-base` binds the fetched identity. Existing paths/branches are accepted only when path, branch, HEAD, and clean state exactly match. The create receipt's resolved `worktree` is the canonical identity source. For a configured/display spelling, run `worktree_lifecycle.py verify --manifest CREATE_RECEIPT --path DISPLAY_PATH --output VERIFY_RECEIPT`; it compares canonical-to-canonical and also binds the Git top level, common directory, branch, base HEAD, cleanliness, receipt hash, and stable resolution. Equivalent aliases such as macOS `/tmp` and `/private/tmp` pass; missing, dangling, substituted, non-root, or resolution-drifted paths fail closed. Do not hardcode platform aliases or use lexical shell equality for worktree identity.
 
 Controller status is intentionally absent. Capacity is advisory. `--hard-min-free-bytes` blocks only when measurement succeeds and reports threshold, observation, and recovery. Git's actual worktree-add result remains authoritative.
 
