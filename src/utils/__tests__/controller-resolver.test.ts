@@ -9,7 +9,18 @@ const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanba
 const policyTemplate = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
 
 function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(command, args, { cwd, encoding: 'utf8', env: { ...process.env, JUNO_TASK_ROOT: '', ...env } });
+  return spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      JUNO_TASK_ROOT: '',
+      JUNO_CONTROLLER_BRANCH: '',
+      JUNO_WORKSPACE_ROLE: '',
+      JUNO_WORKSPACE_ENFORCEMENT: '',
+      ...env,
+    },
+  });
 }
 
 function git(cwd: string, ...args: string[]) {
