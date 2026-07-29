@@ -340,6 +340,8 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
             if approved_git_dir == admin or admin in approved_git_dir.parents: refusals.append(f"approved_repository_is_stale_admin:{relative}"); continue
             object_exists = run_returncode(approved_repo, "cat-file", "-e", f"{gitlink_sha}^{{commit}}") == 0
             containing_refs = git(approved_repo, "for-each-ref", "--contains", gitlink_sha, "--format=%(refname)", check=False).splitlines()
+            approved_head = git(approved_repo, "rev-parse", "HEAD", check=False)
+            if approved_head == gitlink_sha: containing_refs.append("HEAD")
             if admin_head != gitlink_sha: refusals.append(f"stale_admin_head_mismatch:{relative}")
             if not object_exists or not containing_refs: refusals.append(f"gitlink_unreachable_from_approved_repository:{relative}")
             deinitialized.append({"path": relative, "gitlink_sha": gitlink_sha, "stale_admin": str(admin),
