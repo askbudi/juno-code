@@ -376,6 +376,7 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     refusals: list[str] = []; deinitialized: list[dict[str, Any]] = []; admins_to_remove: list[Path] = []
     activity_evidence: dict[str, Any] = {
         "probe_status": "not_run", "blocking": True,
+        "command": ["lsof", "-n", "-P", "+D", str(path)],
         "timeout_seconds": args.activity_probe_timeout_seconds,
         "maximum_timeout_seconds": MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS,
     }
