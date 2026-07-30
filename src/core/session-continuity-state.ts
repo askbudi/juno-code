@@ -611,6 +611,5 @@ export async function setContinueScopePinned(options: {
     const scope = doc.scopes[hash];
     if (!scope) throw new SessionContinuityStateError(`Unknown continue scope ${hash}.`);
     scope.pinned = options.pinned;
-    scope.lastUsedAt = nowIso();
   });
 }

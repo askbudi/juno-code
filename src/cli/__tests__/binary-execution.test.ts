@@ -1061,7 +1061,7 @@ describe('Binary Execution Tests', () => {
       const mismatchResult = await executeCLI(['cc', '-p', 'conflict should not dispatch', '-i', 'invalid'], {
         expectError: true,
         env: {
-          JUNO_CODE_CONTINUE_SCOPE: scopeA,
+          ...envA,
           [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_ENV_CONFLICT',
           [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
             version: 1,
@@ -1576,6 +1576,50 @@ echo "RUN_UNTIL_ARGS:$*"
 
       // Completion might not be fully implemented
       expect(typeof result.exitCode).toBe('number');
+    });
+  });
+
+  describe('Continuity maintenance commands', () => {
+    it('doctors, plans, explicitly applies, pins, unpins, and rolls back only isolated fixture state', async () => {
+      const metadata = path.join(tempDir, 'metadata');
+      const env = {
+        JUNO_CODE_CONTINUE_SCOPE: 'binary-continuity-fixture',
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
+      };
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        envFilePath: '.env.juno',
+        envFileCopied: false,
+      });
+      const scope = explicitContinueScopeHash('binary-continuity-fixture');
+      const suffix = scope.replace('SCOPE_', '');
+      const original = `SECRET=DO_NOT_PRINT\nJUNO_CODE_LAST_SESSION_ID_SCOPE_${suffix}=SESSION_DO_NOT_PRINT\nJUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='{"version":1,"subagent":"pi"}'\n`;
+      await fs.writeFile(path.join(tempDir, '.env.juno'), original);
+
+      const doctor = await executeCLI(['continuity', 'doctor', '--json'], { env });
+      expect(doctor.exitCode).toBe(0);
+      expect(doctor.stdout).not.toContain('DO_NOT_PRINT');
+      expect(JSON.parse(doctor.stdout).totals.completePairs).toBe(1);
+
+      const planPath = path.join(tempDir, 'reviewed.json');
+      const planned = await executeCLI(['continuity', 'clean', '--plan', planPath], { env });
+      expect(planned.exitCode).toBe(0);
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+      const applied = await executeCLI(['continuity', 'clean', '--apply', planPath], { env });
+      expect(applied.exitCode).toBe(0);
+      const receiptPath = JSON.parse(applied.stdout).receiptPath;
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(
+        'SECRET=DO_NOT_PRINT\n',
+      );
+
+      expect((await executeCLI(['continuity', 'rollback', receiptPath], { env })).exitCode).toBe(0);
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+
+      expect(
+        (await executeCLI(['continuity', 'clean', '--apply', planPath], { env })).exitCode,
+      ).toBe(0);
+      expect((await executeCLI(['continuity', 'pin', scope], { env })).exitCode).toBe(0);
+      expect((await executeCLI(['continuity', 'unpin', scope], { env })).exitCode).toBe(0);
     });
   });
 

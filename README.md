@@ -449,7 +449,19 @@ CLI run summaries also surface these fields live in the terminal:
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
 - `Session ID(s)` entries with per-session cost when available
 
-For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten for continuity.
+For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten during normal continuity operation.
+
+Legacy continuity cleanup is explicit and reversible:
+```bash
+juno-code continuity doctor --json
+juno-code continuity clean                         # dry-run inventory only
+juno-code continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
+juno-code continuity clean --apply /tmp/review.json
+juno-code continuity rollback <receipt-path>
+juno-code continuity pin [SCOPE_0123456789ABCDEF]
+juno-code continuity unpin [SCOPE_0123456789ABCDEF]
+```
+Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. The 30-day plus 128-inactive LRU policy protects the current, live, pinned, and named-branch scopes. Rollback is hash-guarded and refuses concurrent changes; neither cleanup nor rollback inspects or deletes Pi session files.
 
 Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`. `JUNO_CODE_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
 

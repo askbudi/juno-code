@@ -13,6 +13,7 @@ import {
   resetMainSessionBranch,
   resolveScopedContinueSessionState,
   setActiveSessionBranch,
+  setContinueScopePinned,
   upsertClonedSessionBranch,
 } from '../session-continuity-state.js';
 
@@ -161,6 +162,23 @@ describe('session continuity state service', () => {
       }),
     ).rejects.toThrow(/Unsupported continue setting/);
     expect(await fs.pathExists(getSessionContinuityFilePath(root))).toBe(false);
+  });
+
+  it('pins and unpins without treating the owner control as scope use', async () => {
+    const root = await temporaryRoot();
+    const scope = context(root, 'pin-control');
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    await resetMainSessionBranch({ workingDirectory: root, scope, sessionId: 'MAIN', now: at });
+    await setContinueScopePinned({ workingDirectory: root, scope, pinned: true });
+    expect((await loadSessionContinuityDocument(root)).scopes[scope.scopeHash]).toMatchObject({
+      pinned: true,
+      lastUsedAt: at.toISOString(),
+    });
+    await setContinueScopePinned({ workingDirectory: root, scope, pinned: false });
+    expect((await loadSessionContinuityDocument(root)).scopes[scope.scopeHash]).toMatchObject({
+      pinned: false,
+      lastUsedAt: at.toISOString(),
+    });
   });
 
   it('resolves session and settings from the same active branch document', async () => {
