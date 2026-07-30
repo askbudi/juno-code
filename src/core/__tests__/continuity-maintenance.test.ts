@@ -53,7 +53,10 @@ describe('continuity maintenance', () => {
       `# keep\r\nTOKEN = "s3cr3t"\r\n\r\n${legacy(current.scopeHash, 'SESSION_SECRET').replaceAll('\n', '\r\n')}TAIL=' exact '`,
       'utf8',
     );
-    await fs.writeFile(path.join(root, '.env.juno'), original);
+    await fs.writeFile(path.join(root, '.env.juno'), original, { mode: 0o644 });
+    const metadataPath = getSessionContinuityFilePath(root);
+    await fs.ensureDir(path.dirname(metadataPath));
+    await fs.writeJson(metadataPath, { version: 2, scopes: {} }, { mode: 0o644 });
 
     const report = await inspectContinuityState({ workingDirectory: root, context: current });
     expect(report.files[0]).toMatchObject({
@@ -87,10 +90,15 @@ describe('continuity maintenance', () => {
     const receipt = await fs.readJson(result.receiptPath);
     expect(JSON.stringify(receipt)).not.toContain('SESSION_SECRET');
     expect((await fs.stat(receipt.backups[0].path)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(receipt.metadata.backupPath)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(metadataPath)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(path.join(root, '.env.juno'))).mode & 0o777).toBe(0o600);
 
     await rollbackContinuityMigration({ workingDirectory: root, receiptPath: result.receiptPath });
     expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(original);
-    expect(await fs.pathExists(getSessionContinuityFilePath(root))).toBe(false);
+    expect((await fs.stat(path.join(root, '.env.juno'))).mode & 0o777).toBe(0o600);
+    expect(await fs.readJson(metadataPath)).toEqual({ version: 2, scopes: {} });
+    expect((await fs.stat(metadataPath)).mode & 0o777).toBe(0o600);
   });
 
   it('handles default and custom files, rejects conflicts, duplicates and malformed continuity assignments', async () => {

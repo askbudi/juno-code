@@ -543,7 +543,7 @@ export async function inspectContinuityState(options: {
 async function atomicWrite(filePath: string, bytes: Buffer, mode: number): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  const handle = await nodeFs.open(temporary, 'w', mode || 0o600);
+  const handle = await nodeFs.open(temporary, 'wx', mode || 0o600);
   try {
     await handle.writeFile(bytes);
     await handle.sync();
@@ -552,6 +552,7 @@ async function atomicWrite(filePath: string, bytes: Buffer, mode: number): Promi
   }
   await fs.chmod(temporary, mode || 0o600);
   await fs.rename(temporary, filePath);
+  await fs.chmod(filePath, mode || 0o600);
   try {
     const directory = await nodeFs.open(path.dirname(filePath), 'r');
     try {
@@ -789,7 +790,7 @@ export async function applyContinuityMigrationPlan(options: {
     // Persist the rollback contract before the first destructive write.
     await writePrivateJson(receiptPath, receipt);
     try {
-      await atomicWrite(beforeMetadata.path, metadataBytes, savedMetadata.mode || 0o600);
+      await atomicWrite(beforeMetadata.path, metadataBytes, 0o600);
       await loadSessionContinuityDocument(root);
       for (const file of files) {
         const expectedDigest = file.exists ? file.sha256 : null;
@@ -798,7 +799,7 @@ export async function applyContinuityMigrationPlan(options: {
             `Env file changed concurrently: ${file.filePath}; refusing to overwrite it.`,
           );
         if (file.exists)
-          await atomicWrite(file.filePath, withoutContinuity(file), file.mode || 0o600);
+          await atomicWrite(file.filePath, withoutContinuity(file), 0o600);
       }
     } catch (error) {
       throw new Error(
@@ -829,7 +830,7 @@ async function currentDigest(filePath: string): Promise<string | null> {
     throw error;
   }
 }
-async function restore(item: ReceiptFile): Promise<void> {
+async function restore(item: ReceiptFile, forcedMode?: number): Promise<void> {
   if (!item.existed) {
     await fs.remove(item.path);
     return;
@@ -837,7 +838,7 @@ async function restore(item: ReceiptFile): Promise<void> {
   const bytes = await fs.readFile(item.backupPath);
   if (digest(bytes) !== item.beforeSha256)
     throw new Error(`Backup changed for ${item.path}; refusing rollback.`);
-  await atomicWrite(item.path, bytes, item.mode || 0o600);
+  await atomicWrite(item.path, bytes, forcedMode ?? (item.mode || 0o600));
 }
 export async function rollbackContinuityMigration(options: {
   workingDirectory: string;
@@ -876,8 +877,8 @@ export async function rollbackContinuityMigration(options: {
         if (observed !== item.afterSha256 && observed !== before)
           throw new Error(`File changed since continuity apply: ${item.path}; refusing rollback.`);
       }
-      await restore(receipt.metadata);
-      for (const item of receipt.files) await restore(item);
+      await restore(receipt.metadata, 0o600);
+      for (const item of receipt.files) await restore(item, 0o600);
     },
   );
 }

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as childProcess from 'node:child_process';
+import * as nodeFs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import fs from 'fs-extra';
@@ -86,24 +87,33 @@ async function removeStaleLock(lockDirectory: string): Promise<boolean> {
   return true;
 }
 
+async function ensurePrivateMetadataDirectory(metadataDirectory: string): Promise<void> {
+  await fs.ensureDir(metadataDirectory, 0o700);
+  await fs.chmod(metadataDirectory, 0o700);
+}
+
 export async function withSessionMetadataLock<T>(
   metadataDirectory: string,
   name: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  await fs.ensureDir(metadataDirectory);
+  await ensurePrivateMetadataDirectory(metadataDirectory);
   const lockDirectory = path.join(metadataDirectory, `${name}.lock`);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   const token = randomUUID();
 
   while (true) {
     try {
-      await fs.mkdir(lockDirectory);
-      await fs.writeJson(path.join(lockDirectory, 'owner.json'), {
-        pid: process.pid,
-        token,
-        started_at: new Date().toISOString(),
-      });
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, 'owner.json'),
+        `${JSON.stringify({
+          pid: process.pid,
+          token,
+          started_at: new Date().toISOString(),
+        }, null, 2)}\n`,
+        { encoding: 'utf8', mode: 0o600 },
+      );
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -128,8 +138,17 @@ export async function withSessionMetadataLock<T>(
 }
 
 export async function writeSessionMetadataFileAtomic(filePath: string, content: string): Promise<void> {
-  await fs.ensureDir(path.dirname(filePath));
+  await ensurePrivateMetadataDirectory(path.dirname(filePath));
   const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  await fs.writeFile(temporaryPath, content, 'utf8');
+  const handle = await nodeFs.open(temporaryPath, 'wx', 0o600);
+  try {
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fs.chmod(temporaryPath, 0o600);
   await fs.rename(temporaryPath, filePath);
+  // A rename over legacy permissive metadata must not preserve its old mode.
+  await fs.chmod(filePath, 0o600);
 }

@@ -7,6 +7,7 @@ import { resetMainSessionBranch, loadSessionContinuityDocument } from '../sessio
 import {
   getSessionMetadataDirectory,
   withSessionMetadataLock,
+  writeSessionMetadataFileAtomic,
 } from '../session-metadata.js';
 
 const roots: string[] = [];
@@ -61,6 +62,24 @@ describe('session metadata resolver', () => {
     );
     process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = '../explicit-metadata';
     expect(getSessionMetadataDirectory(root)).toBe(path.resolve(root, '../explicit-metadata'));
+  });
+
+  it('atomically replaces metadata and lock ownership with private modes', async () => {
+    const root = await temporaryDirectory('private-modes');
+    const metadata = path.join(root, 'metadata');
+    const file = path.join(metadata, 'session_continuity.v2.json');
+    await fs.ensureDir(metadata);
+    await fs.chmod(metadata, 0o755);
+    await fs.writeFile(file, 'legacy', { mode: 0o644 });
+
+    await writeSessionMetadataFileAtomic(file, 'private');
+    expect((await fs.stat(metadata)).mode & 0o777).toBe(0o700);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+
+    await withSessionMetadataLock(metadata, 'mode-proof', async () => {
+      expect((await fs.stat(path.join(metadata, 'mode-proof.lock'))).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(metadata, 'mode-proof.lock', 'owner.json'))).mode & 0o777).toBe(0o600);
+    });
   });
 
   it('serializes concurrent branch producers without dropping scopes', async () => {

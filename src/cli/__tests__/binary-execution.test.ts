@@ -77,8 +77,17 @@ async function executeCLI(
   } = options;
 
   const binaryPath = binary === 'js' ? BINARY_JS : BINARY_MJS;
+  const requestedMetadata = env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  const metadataDirectory = requestedMetadata
+    ? path.resolve(cwd, requestedMetadata)
+    : path.join(tempDir, 'built-cli-session-metadata');
+  const relativeMetadata = path.relative(tempDir, metadataDirectory);
+  if (relativeMetadata.startsWith('..') || path.isAbsolute(relativeMetadata)) {
+    throw new Error(`Binary validation metadata must stay inside its fresh fixture: ${metadataDirectory}`);
+  }
 
-  // Set up environment
+  // Set up environment. The final assignment prevents an inherited real metadata
+  // override from routing a validation command into Git-common user state.
   const testEnv = {
     ...process.env,
     // Disable colors for consistent output testing
@@ -89,6 +98,7 @@ async function executeCLI(
     JUNO_CODE_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env,
+    JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
   };
 
   try {
@@ -281,7 +291,7 @@ describe('Binary Execution Tests', () => {
         ].join('\n'),
       );
 
-      const startup = await executeCLI(['--version']);
+      const startup = await executeCLI(['--help']);
       expect(startup.exitCode).toBe(0);
       const wrapper = path.join(scriptsDir, 'kanban.sh');
       const installed = await fs.readFile(wrapper, 'utf8');
@@ -829,7 +839,6 @@ describe('Binary Execution Tests', () => {
 
     it('should parse clone <branch> <prompt> as named-branch shorthand instead of dropping the branch name into prompt text', async () => {
       const scope = 'binary-clone-branch-prompt-shorthand';
-      const scopeHash = explicitContinueScopeHash(scope);
       const config = {
         defaultSubagent: 'pi',
         defaultBackend: 'shell',
@@ -854,25 +863,6 @@ describe('Binary Execution Tests', () => {
       await createMockProject({
         '.juno_task': {
           'config.json': JSON.stringify(config, null, 2),
-          'session_continuity.v2.json': JSON.stringify(
-            {
-              version: 1,
-              scopes: {
-                [scopeHash]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_MAIN',
-                      parent: null,
-                      updated_at: '2026-06-27T00:00:00.000Z',
-                    },
-                  },
-                },
-              },
-            },
-            null,
-            2,
-          ),
         },
       });
 
@@ -1335,6 +1325,30 @@ echo "RUN_UNTIL_ARGS:$*"
       },
     );
 
+    it('should keep built continuity scope validation writes out of a fixture Git common directory by default', async () => {
+      const repository = path.join(tempDir, 'repository');
+      await fs.ensureDir(repository);
+      expect((await execa('git', ['init', '-q'], { cwd: repository })).exitCode).toBe(0);
+
+      const result = await executeCLI([
+        'continue-scope', '--json', '--cwd', repository,
+        '--handoff-session', 'isolated-validation-session',
+        '--handoff-settings', JSON.stringify({ version: 1, subagent: 'pi' }),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      const isolatedFile = path.join(tempDir, 'built-cli-session-metadata', 'session_continuity.v2.json');
+      expect(await fs.pathExists(isolatedFile)).toBe(true);
+      expect((await fs.stat(isolatedFile)).mode & 0o777).toBe(0o600);
+      expect(await fs.pathExists(path.join(repository, '.git', 'juno', 'session_metadata'))).toBe(false);
+    });
+
+    it('should reject a built continuity validation metadata override outside its fresh fixture', async () => {
+      await expect(executeCLI(['--version'], {
+        env: { JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(os.tmpdir(), 'not-this-fixture') },
+      })).rejects.toThrow('Binary validation metadata must stay inside its fresh fixture');
+    });
+
     it('should expose continue scope hash/status as JSON for script integrations', async () => {
       const env = buildContinueSnapshotEnv('binary-continue-scope-json');
       const result = await executeCLI(['continue-scope', '--json'], { env });
@@ -1436,6 +1450,7 @@ echo "RUN_UNTIL_ARGS:$*"
             JUNO_CODE_CONFIG: '',
             JUNO_TASK_CONFIG: '',
             PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
           },
           timeout: BINARY_TIMEOUT,
           reject: false,
@@ -1483,6 +1498,7 @@ echo "RUN_UNTIL_ARGS:$*"
               JUNO_TASK_CONFIG: '',
               ...withoutStableTerminalMarkers,
               ...env,
+              JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
             },
             timeout: BINARY_TIMEOUT,
             reject: false,

@@ -61,6 +61,7 @@ describe('session continuity state service', () => {
     expect(Date.parse(stored.lastUsedAt)).not.toBeNaN();
     expect(await fs.readFile(path.join(root, '.env.custom'), 'utf8')).toBe('SECRET=unchanged\n');
     expect(await fs.pathExists(path.join(root, '.env.juno'))).toBe(false);
+    expect((await fs.stat(getSessionContinuityFilePath(root))).mode & 0o777).toBe(0o600);
   });
 
   it('serializes concurrent writers without losing unrelated scopes or branch updates', async () => {
