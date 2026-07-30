@@ -131,11 +131,14 @@ async function writeBranchRegistry(
   scope: ContinueScopeContext,
   branches: SessionContinuityBranchFixture[],
   activeBranch: string | undefined,
+  fallbackSessionId: string | undefined,
+  settings: Record<string, unknown> | undefined,
 ): Promise<void> {
-  if (branches.length === 0) return;
+  if (branches.length === 0 && fallbackSessionId === undefined) return;
+  const effectiveBranches = branches.length > 0 ? branches : [{ name: 'main', sessionId: fallbackSessionId! }];
 
   const branchEntries = Object.fromEntries(
-    branches.map((branch, index) => [
+    effectiveBranches.map((branch, index) => [
       branch.name,
       {
         session_id: branch.sessionId,
@@ -147,20 +150,25 @@ async function writeBranchRegistry(
   );
 
   await fs.ensureDir(path.join(projectRoot, '.juno_task'));
-  const registryPath = path.join(projectRoot, '.juno_task', 'session_branches.json');
+  const registryPath = path.join(projectRoot, '.juno_task', 'session_continuity.v2.json');
   const existing = (await fs.pathExists(registryPath))
     ? await fs.readJson(registryPath)
-    : { version: 1, scopes: {} };
+    : { version: 2, scopes: {} };
 
   await fs.writeJson(
     registryPath,
     {
-      version: 1,
+      version: 2,
       ...existing,
       scopes: {
         ...(existing.scopes ?? {}),
         [scope.scopeHash]: {
-          active: activeBranch ?? branches[0]?.name ?? 'main',
+          source: scope.scopeSource,
+          createdAt: '2026-07-08T00:00:00.000Z',
+          lastUsedAt: '2026-07-08T00:00:00.000Z',
+          pinned: false,
+          settings: settings ?? null,
+          active: activeBranch ?? effectiveBranches[0]?.name ?? 'main',
           branches: branchEntries,
         },
       },
@@ -181,6 +189,8 @@ export async function createSessionContinuityFixture(
   const settings = options.settings ?? DEFAULT_SESSION_CONTINUITY_SETTINGS;
   const env = await writeEnvSnapshot(projectRoot, options.scope, scope, options.envSessionId, settings);
 
+  const metadataDirectory = path.join(projectRoot, '.juno_task');
+  env.JUNO_CODE_SESSION_METADATA_DIRECTORY = metadataDirectory;
   const originalProcessEnv = new Map<string, string | undefined>();
   const keysToSeed = Object.keys(env);
   if (options.seedProcessEnv) {
@@ -194,15 +204,15 @@ export async function createSessionContinuityFixture(
     await fs.writeJson(path.join(projectRoot, '.juno_task', 'config.json'), options.config, { spaces: 2 });
   }
 
-  await writeBranchRegistry(projectRoot, scope, options.branches ?? [], options.activeBranch);
+  await writeBranchRegistry(projectRoot, scope, options.branches ?? [], options.activeBranch, options.envSessionId, settings);
 
   if (options.history !== undefined) {
     await fs.writeJson(path.join(projectRoot, '.juno_task', 'session_history.json'), options.history, { spaces: 2 });
   }
 
   const restoreProcessEnv = () => {
-    if (!options.seedProcessEnv) return;
     for (const key of keysToSeed) {
+      if (!options.seedProcessEnv) continue;
       if (!originalProcessEnv.has(key) || originalProcessEnv.get(key) === undefined) {
         delete process.env[key];
       } else {
@@ -212,7 +222,7 @@ export async function createSessionContinuityFixture(
   };
 
   const readEnvFile = () => fs.readFile(path.join(projectRoot, '.env.juno'), 'utf-8');
-  const readBranchState = () => fs.readJson(path.join(projectRoot, '.juno_task', 'session_branches.json'));
+  const readBranchState = () => fs.readJson(path.join(projectRoot, '.juno_task', 'session_continuity.v2.json'));
   const writeEnvSession = async (sessionId: string) => {
     const envPath = path.join(projectRoot, '.env.juno');
     const existing = (await fs.pathExists(envPath)) ? await fs.readFile(envPath, 'utf-8') : '';
@@ -225,8 +235,9 @@ export async function createSessionContinuityFixture(
     await fs.writeFile(envPath, next.replace(/^\n/, ''), 'utf-8');
   };
   const assertEnvSession = async (sessionId: string) => {
-    const envFile = await readEnvFile();
-    expect(envFile).toContain(`${scope.sessionEnvKey}=${quoteEnvValue(sessionId, 'double')}`);
+    const state = await readBranchState();
+    const storedScope = state.scopes[scope.scopeHash];
+    expect(storedScope.branches[storedScope.active].session_id).toBe(sessionId);
   };
   const assertActiveBranch = async (branchName: string, sessionId?: string) => {
     const state = await readBranchState();

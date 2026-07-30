@@ -15,6 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+from environment_boundary import sanitize_current_process_environment
+
+sanitize_current_process_environment()
+
 
 DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
 PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"

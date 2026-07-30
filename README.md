@@ -449,24 +449,34 @@ CLI run summaries also surface these fields live in the terminal:
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
 - `Session ID(s)` entries with per-session cost when available
 
-For `juno-code continue`, the latest session context is persisted into the project env file (`.env.juno` by default) using **shell-scoped keys** so panes/tabs do not overwrite each other:
-- `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
-- `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>` (JSON runtime-settings snapshot)
+For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten during normal continuity operation.
 
-Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`.
+Legacy continuity cleanup is explicit and reversible:
+```bash
+juno-code continuity doctor --json
+juno-code continuity clean                         # dry-run inventory only
+juno-code continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
+juno-code continuity clean --apply /tmp/review.json
+juno-code continuity rollback <receipt-path>
+juno-code continuity pin [SCOPE_0123456789ABCDEF]
+juno-code continuity unpin [SCOPE_0123456789ABCDEF]
+```
+Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `JUNO_CODE_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
 
-Short help text for scripts that need pane-scoped continue state:
-- Session key pattern: `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
-- Settings key pattern: `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>`
-- Deterministic override: set `JUNO_CODE_CONTINUE_SCOPE=<your-pane-id>` before running `juno-code` so external scripts can target a stable scope name across runs.
+Expiration removes only automatic lookup metadata. A missing Pi session fails without deleting its continuity record or trying another scope, and the error directs the operator to an explicit `--resume <session-id>` or a new run. Deterministic clock/TTL/LRU/live/pin/named/concurrency/missing-session tests plus the persisted 2,500-scope structural regression matter because prose or cleanup commands cannot enforce the hard bound, prove lost-update safety, or prove that explicit recovery remains available without cross-scope routing.
+
+Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`. `JUNO_CODE_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
+
+Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Concurrency, malformed-document, stale-lock, routing, and deterministic 2,500-pair boundary tests matter because only the locked backing service prevents lost updates, while routing tests prove no caller silently restores the retired env/branch stores.
 
 Script endpoint for hash/status lookups:
 ```bash
-juno-code continue-scope --json          # current scope hash + status
-juno-code continue-scope A1B2C3 --json   # lookup by short hash prefix (5-6 chars)
+juno-code continue-scope --json                    # current scope hash + status
+juno-code continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
+juno-code continue-scope --json --parent-pid 1234  # scope seen by a child of PID 1234
 ```
 
-`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`.
+`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`. Script runners use `--parent-pid` for caller/child handoff scopes; descriptor selection, hashing, and environment-key generation remain owned exclusively by TypeScript rather than being mirrored in runner code.
 
 ### Pi Session Cloning and Named Branches
 

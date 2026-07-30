@@ -11,7 +11,13 @@ import { createRequire } from 'node:module';
 import semver from 'semver';
 
 export class ServiceInstaller {
-  private static readonly REQUIRED_SCRIPTS = ['codex.py', 'claude.py', 'gemini.py', 'pi.py'];
+  private static readonly REQUIRED_SCRIPTS = [
+    'codex.py',
+    'claude.py',
+    'gemini.py',
+    'pi.py',
+    'environment_boundary.py',
+  ];
   private static readonly SERVICES_DIR = path.join(homedir(), '.juno_code', 'services');
   private static readonly VERSION_FILE = path.join(homedir(), '.juno_code', 'services', '.version');
 
@@ -186,7 +192,7 @@ export class ServiceInstaller {
     }
 
     throw new Error(
-      'Could not find services directory in package containing codex.py, claude.py, and gemini.py. ' +
+      'Could not find services directory in package containing provider scripts and environment_boundary.py. ' +
         'Try reinstalling juno-code or re-running npm run build to refresh service scripts.',
     );
   }

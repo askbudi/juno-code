@@ -14,6 +14,10 @@ import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+from environment_boundary import sanitize_current_process_environment
+
+sanitize_current_process_environment()
+
 
 DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
 PROMPT_ARG_MAX_BYTES_ENV = "JUNO_PROMPT_ARG_MAX_BYTES"

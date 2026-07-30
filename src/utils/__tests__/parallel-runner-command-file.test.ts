@@ -84,6 +84,25 @@ print(json.dumps([mod._parse_scalar(r'''"say \\"hello\\""'''), mod._parse_scalar
     }
   });
 
+  it('filters continuity from parallel child environments without dropping routing/config', () => {
+    const code = `
+import importlib.machinery, json, os
+mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
+os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF'] = 'historical'
+os.environ['JUNO_CODE_LAST_EXECUTION_SETTINGS'] = 'legacy'
+os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix'] = 'historical-malformed'
+os.environ['JUNO_TASK_ROOT'] = '/controller'
+os.environ['ARBITRARY_CONFIG'] = 'preserved'
+env = mod._build_process_env({'JUNO_MODEL': 'current'})
+print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG'), 'model': env.get('JUNO_MODEL')}))
+`;
+    for (const script of [templateScript, runtimeScript]) {
+      const result = spawnSync('python3', ['-c', code.replace(JSON.stringify(templateScript), JSON.stringify(script))], { cwd: repoRoot, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual({ continuity: [], root: '/controller', config: 'preserved', model: 'current' });
+    }
+  });
+
   it('loads and prints help under PATH python3 without evaluating modern generic annotations', () => {
     const python = spawnSync('python3', ['--version'], { encoding: 'utf8' });
     expect(python.status).toBe(0);

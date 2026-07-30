@@ -48,17 +48,19 @@ describe('ServiceInstaller', () => {
     const codexPath = path.join(servicesDir, 'codex.py');
     const claudePath = path.join(servicesDir, 'claude.py');
     const piPath = path.join(servicesDir, 'pi.py');
+    const environmentBoundaryPath = path.join(servicesDir, 'environment_boundary.py');
 
     expect(await fs.pathExists(geminiPath)).toBe(true);
     expect(await fs.pathExists(codexPath)).toBe(true);
     expect(await fs.pathExists(claudePath)).toBe(true);
     expect(await fs.pathExists(piPath)).toBe(true);
+    expect(await fs.pathExists(environmentBoundaryPath)).toBe(true);
 
     // With all scripts present and matching package contents, no update should be needed
     expect(await ServiceInstaller.needsUpdate()).toBe(false);
 
-    // Removing gemini.py should trigger an update requirement
-    await fs.remove(geminiPath);
+    // Removing the shared provider dependency should trigger an update requirement.
+    await fs.remove(environmentBoundaryPath);
     expect(await ServiceInstaller.needsUpdate()).toBe(true);
 
     packageSpy.mockRestore();

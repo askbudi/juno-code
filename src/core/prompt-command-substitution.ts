@@ -1,5 +1,6 @@
 import * as childProcess from 'node:child_process';
 import { promisify } from 'node:util';
+import { buildChildProcessEnvironment } from './child-process-environment.js';
 
 export type PromptCommandSubstitutionSyntax = 'single-quoted' | 'triple-backtick';
 
@@ -196,7 +197,7 @@ function createDefaultPromptCommandExecutor(
     try {
       const result = await execFile(shell, ['-lc', commandForExecution], {
         cwd: options.workingDirectory,
-        env: options.environment ?? process.env,
+        env: buildChildProcessEnvironment(options.environment ?? process.env),
         maxBuffer: maxBufferBytes,
         timeout: commandTimeoutMs,
       });

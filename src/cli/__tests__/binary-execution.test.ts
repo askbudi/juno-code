@@ -36,16 +36,21 @@ let tempDir: string;
 
 function buildContinueSnapshotEnv(scope: string): Record<string, string> {
   const scopeHash = explicitContinueScopeHash(scope);
-
-  return {
-    JUNO_CODE_CONTINUE_SCOPE: scope,
-    [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'session-continue-stdin',
-    [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
-      version: 1,
-      subagent: 'claude',
-      maxIterations: 5,
-    }),
+  const metadataDirectory = path.join(tempDir, '.juno_task');
+  const statePath = path.join(metadataDirectory, 'session_continuity.v2.json');
+  fs.ensureDirSync(metadataDirectory);
+  const document = fs.pathExistsSync(statePath) ? fs.readJsonSync(statePath) : { version: 2, scopes: {} };
+  document.scopes[scopeHash] = {
+    source: 'JUNO_CODE_CONTINUE_SCOPE',
+    createdAt: '2026-07-30T00:00:00.000Z',
+    lastUsedAt: '2026-07-30T00:00:00.000Z',
+    pinned: false,
+    settings: { version: 1, subagent: 'claude', maxIterations: 5 },
+    active: 'main',
+    branches: { main: { session_id: 'session-continue-stdin', parent: null, updated_at: '2026-07-30T00:00:00.000Z' } },
   };
+  fs.writeJsonSync(statePath, document);
+  return { JUNO_CODE_CONTINUE_SCOPE: scope, JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory };
 }
 
 /**
@@ -72,8 +77,17 @@ async function executeCLI(
   } = options;
 
   const binaryPath = binary === 'js' ? BINARY_JS : BINARY_MJS;
+  const requestedMetadata = env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  const metadataDirectory = requestedMetadata
+    ? path.resolve(cwd, requestedMetadata)
+    : path.join(tempDir, 'built-cli-session-metadata');
+  const relativeMetadata = path.relative(tempDir, metadataDirectory);
+  if (relativeMetadata.startsWith('..') || path.isAbsolute(relativeMetadata)) {
+    throw new Error(`Binary validation metadata must stay inside its fresh fixture: ${metadataDirectory}`);
+  }
 
-  // Set up environment
+  // Set up environment. The final assignment prevents an inherited real metadata
+  // override from routing a validation command into Git-common user state.
   const testEnv = {
     ...process.env,
     // Disable colors for consistent output testing
@@ -84,6 +98,7 @@ async function executeCLI(
     JUNO_CODE_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env,
+    JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
   };
 
   try {
@@ -276,7 +291,7 @@ describe('Binary Execution Tests', () => {
         ].join('\n'),
       );
 
-      const startup = await executeCLI(['--version']);
+      const startup = await executeCLI(['--help']);
       expect(startup.exitCode).toBe(0);
       const wrapper = path.join(scriptsDir, 'kanban.sh');
       const installed = await fs.readFile(wrapper, 'utf8');
@@ -824,7 +839,6 @@ describe('Binary Execution Tests', () => {
 
     it('should parse clone <branch> <prompt> as named-branch shorthand instead of dropping the branch name into prompt text', async () => {
       const scope = 'binary-clone-branch-prompt-shorthand';
-      const scopeHash = explicitContinueScopeHash(scope);
       const config = {
         defaultSubagent: 'pi',
         defaultBackend: 'shell',
@@ -849,25 +863,6 @@ describe('Binary Execution Tests', () => {
       await createMockProject({
         '.juno_task': {
           'config.json': JSON.stringify(config, null, 2),
-          'session_branches.json': JSON.stringify(
-            {
-              version: 1,
-              scopes: {
-                [scopeHash]: {
-                  active: 'main',
-                  branches: {
-                    main: {
-                      session_id: 'SESSION_MAIN',
-                      parent: null,
-                      updated_at: '2026-06-27T00:00:00.000Z',
-                    },
-                  },
-                },
-              },
-            },
-            null,
-            2,
-          ),
         },
       });
 
@@ -907,10 +902,9 @@ describe('Binary Execution Tests', () => {
         ],
       });
       const scopeHash = fixture.scope.scopeHash;
-      const settingsJson = JSON.stringify(settings);
 
       const branchesResult = await executeCLI(['branches', '--json'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(branchesResult.exitCode).toBe(0);
       const payload = JSON.parse(branchesResult.stdout);
@@ -921,33 +915,31 @@ describe('Binary Execution Tests', () => {
       ]);
 
       const switchResult = await executeCLI(['switch', 'C'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchResult.exitCode).toBe(0);
       expect(switchResult.stdout).toContain('Switched to branch C');
       await fixture.assertEnvSession('SESSION_C');
-      let envFile = await fixture.readEnvFile();
-      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
+      expect((await fixture.readBranchState()).scopes[scopeHash].settings).toEqual(settings);
 
       const switchNextResult = await executeCLI(['switch', '+'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchNextResult.exitCode).toBe(0);
       expect(switchNextResult.stdout).toContain('Switched to branch D');
 
       const switchWrapNextResult = await executeCLI(['switch', '+'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchWrapNextResult.exitCode).toBe(0);
       expect(switchWrapNextResult.stdout).toContain('Switched to branch main');
 
       const switchWrapPreviousResult = await executeCLI(['switch', '-'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchWrapPreviousResult.exitCode).toBe(0);
       expect(switchWrapPreviousResult.stdout).toContain('Switched to branch D');
-      envFile = await fixture.readEnvFile();
-      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
+      expect((await fixture.readBranchState()).scopes[scopeHash].settings).toEqual(settings);
       await fixture.assertScopeInvariant('D', 'SESSION_D');
     });
 
@@ -973,6 +965,7 @@ describe('Binary Execution Tests', () => {
       const result = await executeCLI(['switch', 'C', 'continue C now', '-i', 'invalid'], {
         expectError: true,
         env: {
+          ...fixture.env,
           JUNO_CODE_CONTINUE_SCOPE: scope,
           [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'SESSION_C',
           [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
@@ -1058,7 +1051,7 @@ describe('Binary Execution Tests', () => {
       const mismatchResult = await executeCLI(['cc', '-p', 'conflict should not dispatch', '-i', 'invalid'], {
         expectError: true,
         env: {
-          JUNO_CODE_CONTINUE_SCOPE: scopeA,
+          ...envA,
           [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_ENV_CONFLICT',
           [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
             version: 1,
@@ -1069,11 +1062,9 @@ describe('Binary Execution Tests', () => {
       });
       const mismatchOutput = mismatchResult.all || `${mismatchResult.stdout}\n${mismatchResult.stderr}`;
       expect(mismatchResult.exitCode).not.toBe(0);
-      expect(mismatchOutput).toContain('Continue session mismatch for this shell context');
-      expect(mismatchOutput).toContain('SESSION_ENV_CONFLICT');
-      expect(mismatchOutput).toContain('SESSION_A');
-      expect(mismatchOutput).toContain('juno-code continue-scope --json');
-      expect(mismatchOutput).not.toContain('Max iterations must be a valid number');
+      expect(mismatchOutput).toContain('Max iterations must be a valid number');
+      expect(mismatchOutput).not.toContain('SESSION_ENV_CONFLICT');
+      expect((await fixtureA.readBranchState()).scopes[scopeHashA].branches.main.session_id).toBe('SESSION_A');
     });
 
     it('should handle subagent direct commands (if implemented)', async () => {
@@ -1334,6 +1325,30 @@ echo "RUN_UNTIL_ARGS:$*"
       },
     );
 
+    it('should keep built continuity scope validation writes out of a fixture Git common directory by default', async () => {
+      const repository = path.join(tempDir, 'repository');
+      await fs.ensureDir(repository);
+      expect((await execa('git', ['init', '-q'], { cwd: repository })).exitCode).toBe(0);
+
+      const result = await executeCLI([
+        'continue-scope', '--json', '--cwd', repository,
+        '--handoff-session', 'isolated-validation-session',
+        '--handoff-settings', JSON.stringify({ version: 1, subagent: 'pi' }),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      const isolatedFile = path.join(tempDir, 'built-cli-session-metadata', 'session_continuity.v2.json');
+      expect(await fs.pathExists(isolatedFile)).toBe(true);
+      expect((await fs.stat(isolatedFile)).mode & 0o777).toBe(0o600);
+      expect(await fs.pathExists(path.join(repository, '.git', 'juno', 'session_metadata'))).toBe(false);
+    });
+
+    it('should reject a built continuity validation metadata override outside its fresh fixture', async () => {
+      await expect(executeCLI(['--version'], {
+        env: { JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(os.tmpdir(), 'not-this-fixture') },
+      })).rejects.toThrow('Binary validation metadata must stay inside its fresh fixture');
+    });
+
     it('should expose continue scope hash/status as JSON for script integrations', async () => {
       const env = buildContinueSnapshotEnv('binary-continue-scope-json');
       const result = await executeCLI(['continue-scope', '--json'], { env });
@@ -1344,6 +1359,27 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(payload.hash).toMatch(/^[A-F0-9]{6}$/);
       expect(payload.fullHash).toMatch(/^SCOPE_[A-F0-9]{16}$/);
       expect(payload.sessionId).toBe('session-continue-stdin');
+    });
+
+    it('should expose caller/parent scope resolution for script integrations', async () => {
+      const withoutTerminalMarkers = {
+        TMUX_PANE: '', WEZTERM_PANE: '', KITTY_WINDOW_ID: '', KITTY_PID: '',
+        TERM_SESSION_ID: '', WT_SESSION: '', ZELLIJ_PANE_ID: '', STY: '',
+        WINDOWID: '', SSH_TTY: '',
+      };
+      const first = await executeCLI(['continue-scope', '--json', '--parent-pid', '8123'], {
+        env: withoutTerminalMarkers,
+      });
+      const second = await executeCLI(['continue-scope', '--json', '--parent-pid', '8123'], {
+        env: withoutTerminalMarkers,
+      });
+      const isolated = await executeCLI(['continue-scope', '--json', '--parent-pid', '8124'], {
+        env: withoutTerminalMarkers,
+      });
+
+      expect(first.exitCode).toBe(0);
+      expect(JSON.parse(first.stdout).fullHash).toBe(JSON.parse(second.stdout).fullHash);
+      expect(JSON.parse(first.stdout).fullHash).not.toBe(JSON.parse(isolated.stdout).fullHash);
     });
 
     it('should resolve continue scope status by short hash', async () => {
@@ -1369,6 +1405,7 @@ echo "RUN_UNTIL_ARGS:$*"
         [
           '#!/usr/bin/env bash',
           'set -euo pipefail',
+          `if [ "\${1:-}" = "continue-scope" ]; then exec node ${JSON.stringify(BINARY_MJS)} "$@"; fi`,
           'printf \'workflow fake agent response\\n\'',
           'printf \'{"session_id":"session-workflow-handoff"}\\n\'',
         ].join('\n') + '\n',
@@ -1413,6 +1450,7 @@ echo "RUN_UNTIL_ARGS:$*"
             JUNO_CODE_CONFIG: '',
             JUNO_TASK_CONFIG: '',
             PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
           },
           timeout: BINARY_TIMEOUT,
           reject: false,
@@ -1460,6 +1498,7 @@ echo "RUN_UNTIL_ARGS:$*"
               JUNO_TASK_CONFIG: '',
               ...withoutStableTerminalMarkers,
               ...env,
+              JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
             },
             timeout: BINARY_TIMEOUT,
             reject: false,
@@ -1482,7 +1521,17 @@ echo "RUN_UNTIL_ARGS:$*"
 
       const paneAFullHash = String(paneAFirst.fullHash);
       const paneBFullHash = String(paneB.fullHash);
+      const metadataDirectory = path.join(tempDir, '.juno_task');
+      const timestamp = '2026-07-30T00:00:00.000Z';
+      await fs.writeJson(path.join(metadataDirectory, 'session_continuity.v2.json'), {
+        version: 2,
+        scopes: Object.fromEntries([
+          [paneAFullHash, 'SESSION_PANE_A'],
+          [paneBFullHash, 'SESSION_PANE_B'],
+        ].map(([hash, id]) => [hash, { source: 'project+stable_terminal+TMUX_PANE', createdAt: timestamp, lastUsedAt: timestamp, pinned: false, settings: { version: 1, subagent: 'pi', maxIterations: 1 }, active: 'main', branches: { main: { session_id: id, parent: null, updated_at: timestamp } } }])),
+      });
       const paneAEnv = {
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneA',
         [`JUNO_CODE_LAST_SESSION_ID_${paneAFullHash}`]: 'SESSION_PANE_A',
@@ -1493,6 +1542,7 @@ echo "RUN_UNTIL_ARGS:$*"
         }),
       };
       const paneBEnv = {
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneB',
         [`JUNO_CODE_LAST_SESSION_ID_${paneBFullHash}`]: 'SESSION_PANE_B',
@@ -1542,6 +1592,50 @@ echo "RUN_UNTIL_ARGS:$*"
 
       // Completion might not be fully implemented
       expect(typeof result.exitCode).toBe('number');
+    });
+  });
+
+  describe('Continuity maintenance commands', () => {
+    it('doctors, plans, explicitly applies, pins, unpins, and rolls back only isolated fixture state', async () => {
+      const metadata = path.join(tempDir, 'metadata');
+      const env = {
+        JUNO_CODE_CONTINUE_SCOPE: 'binary-continuity-fixture',
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
+      };
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        envFilePath: '.env.juno',
+        envFileCopied: false,
+      });
+      const scope = explicitContinueScopeHash('binary-continuity-fixture');
+      const suffix = scope.replace('SCOPE_', '');
+      const original = `SECRET=DO_NOT_PRINT\nJUNO_CODE_LAST_SESSION_ID_SCOPE_${suffix}=SESSION_DO_NOT_PRINT\nJUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='{"version":1,"subagent":"pi"}'\n`;
+      await fs.writeFile(path.join(tempDir, '.env.juno'), original);
+
+      const doctor = await executeCLI(['continuity', 'doctor', '--json'], { env });
+      expect(doctor.exitCode).toBe(0);
+      expect(doctor.stdout).not.toContain('DO_NOT_PRINT');
+      expect(JSON.parse(doctor.stdout).totals.completePairs).toBe(1);
+
+      const planPath = path.join(tempDir, 'reviewed.json');
+      const planned = await executeCLI(['continuity', 'clean', '--plan', planPath], { env });
+      expect(planned.exitCode).toBe(0);
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+      const applied = await executeCLI(['continuity', 'clean', '--apply', planPath], { env });
+      expect(applied.exitCode).toBe(0);
+      const receiptPath = JSON.parse(applied.stdout).receiptPath;
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(
+        'SECRET=DO_NOT_PRINT\n',
+      );
+
+      expect((await executeCLI(['continuity', 'rollback', receiptPath], { env })).exitCode).toBe(0);
+      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+
+      expect(
+        (await executeCLI(['continuity', 'clean', '--apply', planPath], { env })).exitCode,
+      ).toBe(0);
+      expect((await executeCLI(['continuity', 'pin', scope], { env })).exitCode).toBe(0);
+      expect((await executeCLI(['continuity', 'unpin', scope], { env })).exitCode).toBe(0);
     });
   });
 

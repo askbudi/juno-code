@@ -76,6 +76,17 @@ def _make_args(**overrides):
 # 1. Model shorthand expansion
 # ===================================================================
 
+class TestMissingSessionRecovery:
+    def test_missing_session_provider_error_has_value_free_recovery_guidance(self):
+        svc = _load_pi_service()
+        message = svc._extract_error_message_from_text("Error: Session not found")
+
+        assert "session is unavailable" in message.lower()
+        assert "--resume <session-id>" in message
+        assert "never falls back" in message.lower()
+        assert "Session not found" not in message
+
+
 class TestModelShorthandExpansion:
     """Test all MODEL_SHORTHANDS plus edge cases."""
 

@@ -3,10 +3,11 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { resetMainSessionBranch, loadSessionBranchesDocument } from '../session-branches.js';
+import { resetMainSessionBranch, loadSessionContinuityDocument } from '../session-continuity-state.js';
 import {
   getSessionMetadataDirectory,
   withSessionMetadataLock,
+  writeSessionMetadataFileAtomic,
 } from '../session-metadata.js';
 
 const roots: string[] = [];
@@ -63,6 +64,24 @@ describe('session metadata resolver', () => {
     expect(getSessionMetadataDirectory(root)).toBe(path.resolve(root, '../explicit-metadata'));
   });
 
+  it('atomically replaces metadata and lock ownership with private modes', async () => {
+    const root = await temporaryDirectory('private-modes');
+    const metadata = path.join(root, 'metadata');
+    const file = path.join(metadata, 'session_continuity.v2.json');
+    await fs.ensureDir(metadata);
+    await fs.chmod(metadata, 0o755);
+    await fs.writeFile(file, 'legacy', { mode: 0o644 });
+
+    await writeSessionMetadataFileAtomic(file, 'private');
+    expect((await fs.stat(metadata)).mode & 0o777).toBe(0o700);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+
+    await withSessionMetadataLock(metadata, 'mode-proof', async () => {
+      expect((await fs.stat(path.join(metadata, 'mode-proof.lock'))).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(metadata, 'mode-proof.lock', 'owner.json'))).mode & 0o777).toBe(0o600);
+    });
+  });
+
   it('serializes concurrent branch producers without dropping scopes', async () => {
     const root = await temporaryDirectory('concurrent');
     process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
@@ -70,7 +89,7 @@ describe('session metadata resolver', () => {
       resetMainSessionBranch({ workingDirectory: root, scope: scope('A'), sessionId: 'one' }),
       resetMainSessionBranch({ workingDirectory: root, scope: scope('B'), sessionId: 'two' }),
     ]);
-    const document = await loadSessionBranchesDocument(root);
+    const document = await loadSessionContinuityDocument(root);
     expect(Object.keys(document.scopes).sort()).toEqual([
       'SCOPE_A000000000000000', 'SCOPE_B000000000000000',
     ]);

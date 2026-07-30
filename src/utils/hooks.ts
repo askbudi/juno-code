@@ -9,6 +9,7 @@
 
 import { execa } from 'execa';
 import { logger, LogContext } from '../cli/utils/advanced-logger.js';
+import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
 
 /**
  * Supported hook types for lifecycle execution
@@ -256,8 +257,7 @@ export async function executeHook(
 
     try {
       // Prepare environment variables with context
-      const execEnv = {
-        ...process.env,
+      const execEnv = buildChildProcessEnvironment(process.env, {
         ...env,
         // Add context as environment variables
         HOOK_TYPE: hookType,
@@ -272,7 +272,7 @@ export async function executeHook(
             String(value),
           ]),
         ),
-      };
+      });
 
       // Execute command with timeout and proper working directory
       //

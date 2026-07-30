@@ -23,7 +23,7 @@ import {
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
 import { persistContinueScopeSnapshot } from '../../core/session-continuity-state.js';
-import { getSessionMetadataDirectory, SessionBranchesError } from '../../core/session-branches.js';
+import { getSessionMetadataDirectory, SessionContinuityStateError } from '../../core/session-continuity-state.js';
 import { withSessionMetadataLock } from '../../core/session-metadata.js';
 import {
   getConfiguredDefaultModelForSubagent,
@@ -35,6 +35,7 @@ import { getCurrentGitBranch } from '../../core/git.js';
 import { logger, LogLevel } from '../utils/advanced-logger.js';
 import { ConcurrentFeedbackCollector } from '../../utils/concurrent-feedback-collector.js';
 import { resolveController } from '../../utils/controller-resolver.js';
+import { buildChildProcessEnvironment } from '../../core/child-process-environment.js';
 import { writeTerminalProgress } from '../../utils/terminal-progress-writer.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 import type { MainCommandOptions } from '../types.js';
@@ -260,12 +261,11 @@ async function runKanbanGetCommand(
     try {
       const result = await execFile(command, args, {
         cwd: workingDirectory,
-        env: {
-          ...process.env,
+        env: buildChildProcessEnvironment(process.env, {
           JUNO_TASK_ROOT: controller.path,
           JUNO_CONTROLLER_SOURCE: controller.source,
           JUNO_WORKSPACE_ROLE: controller.role,
-        },
+        }),
         maxBuffer: 1024 * 1024,
         timeout: Math.min(KANBAN_GET_ATTEMPT_TIMEOUT_MS, remainingMs),
       });
@@ -541,7 +541,6 @@ async function persistContinueContext(
 
     await persistContinueScopeSnapshot({
       workingDirectory: config.workingDirectory,
-      envFilePath: config.envFilePath,
       context: continueScope,
       sessionId: latestSessionId,
       serializedSettings,
@@ -2082,7 +2081,7 @@ export async function mainCommandHandler(
 
       process.exit(5);
       return;
-    } else if (error instanceof SessionBranchesError) {
+    } else if (error instanceof SessionContinuityStateError) {
       console.error(chalk.red.bold('\n❌ Branch Registry Error'));
       console.error(chalk.red(`   ${error.message}`));
       console.error(chalk.yellow('\n💡 Suggestions:'));

@@ -9,7 +9,6 @@ process unless a step opts into fail-fast behavior.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime as _dt
 import errno
 import hashlib
@@ -35,26 +34,34 @@ from workflow_run_evidence import WorkflowRunEvidenceError, resolve_workflow_man
 JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
 TEMPLATE_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
-CONTINUE_SESSION_ENV_KEY_BASE = "JUNO_CODE_LAST_SESSION_ID"
-CONTINUE_SETTINGS_ENV_KEY_BASE = "JUNO_CODE_LAST_EXECUTION_SETTINGS"
-CONTINUE_SCOPE_OVERRIDE_ENV_KEY = "JUNO_CODE_CONTINUE_SCOPE"
-CONTINUE_SCOPE_ENV_MARKERS = [
-    "TMUX_PANE",
-    "WEZTERM_PANE",
-    "KITTY_WINDOW_ID",
-    "KITTY_PID",
-    "TERM_SESSION_ID",
-    "WT_SESSION",
-    "ZELLIJ_PANE_ID",
-    "STY",
-    "WINDOWID",
-    "SSH_TTY",
-]
 ANSI_RESET = "\033[0m"
 STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
 STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
 TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
+SCOPED_CONTINUITY_KEY_PREFIXES = (
+    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
+)
+LEGACY_CONTINUITY_KEYS = {
+    "JUNO_CODE_LAST_SESSION_ID",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS",
+}
+
+
+def child_process_environment(base: dict[str, str]) -> dict[str, str]:
+    """Preserve child config/routing while dropping historical continuity values."""
+    return {
+        name: value
+        for name, value in base.items()
+        if name not in LEGACY_CONTINUITY_KEYS and not name.startswith(SCOPED_CONTINUITY_KEY_PREFIXES)
+    }
+
+
+def sanitize_current_process_environment() -> None:
+    environment = child_process_environment(dict(os.environ))
+    os.environ.clear()
+    os.environ.update(environment)
 
 
 def ensure_controller_python_environment(controller_env: dict[str, str]) -> None:
@@ -809,134 +816,62 @@ def extract_model_from_command(command: Any) -> str | None:
     return None
 
 
-def canonicalize_working_directory(working_directory: Path) -> str:
-    try:
-        return str(working_directory.resolve())
-    except OSError:
-        return str(working_directory.absolute())
-
-
-def resolve_parent_pid(pid: int) -> int | None:
-    if not isinstance(pid, int) or pid <= 1:
-        return None
-    try:
-        proc = subprocess.run(
-            ["ps", "-o", "ppid=", "-p", str(pid)],
-            text=True,
-            capture_output=True,
-            timeout=0.5,
-            check=False,
-        )
-        parent = int((proc.stdout or "").strip())
-        return parent if parent > 0 else None
-    except Exception:
-        return None
-
-
-def build_parent_shell_lineage(fallback_parent_pid: int) -> str:
-    lineage: list[int] = []
-    current = fallback_parent_pid
-    for _ in range(8):
-        if not isinstance(current, int) or current <= 0 or current in lineage:
-            break
-        lineage.append(current)
-        parent = resolve_parent_pid(current)
-        if parent is None:
-            break
-        current = parent
-    return ">".join(str(pid) for pid in lineage) if lineage else str(fallback_parent_pid)
-
-
-def collect_terminal_scope_markers(env: dict[str, str]) -> list[str]:
-    markers: list[str] = []
-    for key in CONTINUE_SCOPE_ENV_MARKERS:
-        value = str(env.get(key, "")).strip()
-        if value:
-            markers.append(f"{key}:{value}")
-    return markers
-
-
-def resolve_continue_scope_context(
+def resolve_continue_scope_from_juno(
     project_root: Path,
-    env: dict[str, str] | None = None,
-    fallback_parent_pid: int | None = None,
+    parent_pid: int,
+    command: Any,
 ) -> dict[str, str]:
-    env = env or os.environ
-    override = str(env.get(CONTINUE_SCOPE_OVERRIDE_ENV_KEY, "")).strip()
-    if override:
-        descriptor = f"{CONTINUE_SCOPE_OVERRIDE_ENV_KEY}:{override}"
-        source = CONTINUE_SCOPE_OVERRIDE_ENV_KEY
-    else:
-        project_path = canonicalize_working_directory(project_root)
-        parent_pid = fallback_parent_pid if fallback_parent_pid is not None else os.getppid()
-        shell_lineage = build_parent_shell_lineage(parent_pid)
-        terminal_markers = collect_terminal_scope_markers(env)
-        terminal_descriptor = "|".join(terminal_markers) if terminal_markers else "none"
-        descriptor = "\n".join([
-            f"PROJECT:{project_path}",
-            f"SHELL_LINEAGE:{shell_lineage}",
-            f"TERMINAL:{terminal_descriptor}",
-        ])
-        source = (
-            "project+shell_lineage+" + "+".join(marker.split(":", 1)[0] for marker in terminal_markers)
-            if terminal_markers
-            else "project+shell_lineage"
-        )
-    digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()[:16].upper()
-    scope_hash = f"SCOPE_{digest}"
-    return {
-        "scope_descriptor": descriptor,
-        "scope_source": source,
-        "scope_hash": scope_hash,
-        "short_hash": digest[:6],
-        "session_env_key": f"{CONTINUE_SESSION_ENV_KEY_BASE}_{scope_hash}",
-        "settings_env_key": f"{CONTINUE_SETTINGS_ENV_KEY_BASE}_{scope_hash}",
-    }
+    """Ask the selected Juno executable for its TypeScript-owned scope identity."""
+    parts = command_argv(command)
+    executable = parts[0] if parts and Path(parts[0]).name in {"yy", "juno-code"} else None
+    if not executable:
+        # ypl is a prompt shortcut (`juno-code pi --live`), not a control-command API.
+        executable = next((path for name in ("yy", "juno-code") if (path := shutil.which(name))), None)
+    if not executable:
+        raise WorkflowError("cannot resolve continue scope: yy or juno-code was not found")
 
-
-def resolve_env_file_path(project_root: Path) -> Path:
-    config_path = project_root / ".juno_task" / "config.json"
-    env_file = ".env.juno"
+    completed = subprocess.run(
+        [
+            executable,
+            "continue-scope",
+            "--json",
+            "--cwd",
+            str(project_root),
+            "--parent-pid",
+            str(parent_pid),
+        ],
+        cwd=project_root,
+        env=child_process_environment(dict(os.environ)),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise WorkflowError(f"juno-code continue-scope failed: {detail}")
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        configured = config.get("envFilePath")
-        if isinstance(configured, str) and configured.strip():
-            env_file = configured.strip()
-    except Exception:
-        pass
-    candidate = Path(env_file)
-    return candidate if candidate.is_absolute() else project_root / candidate
+        payload = json.loads(completed.stdout)
+    except Exception as error:
+        raise WorkflowError("juno-code continue-scope returned invalid JSON") from error
 
-
-def shell_quote_env_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def upsert_env_variable(content: str, key: str, value: str) -> str:
-    line = f'{key}="{shell_quote_env_value(value)}"'
-    pattern = re.compile(rf"^(?:export\s+)?{re.escape(key)}=.*$", re.M)
-    if pattern.search(content):
-        return pattern.sub(line, content)
-    if not content:
-        return line + "\n"
-    return content.rstrip() + "\n" + line + "\n"
-
-
-def unquote_env_value(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        value = value[1:-1]
-        return value.replace('\\"', '"').replace('\\\\', '\\')
-    return value
-
-
-def parse_env_variables(content: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line in content.splitlines():
-        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-        if match:
-            values[match.group(1)] = unquote_env_value(match.group(2))
-    return values
+    scope_hash = str(payload.get("fullHash") or "") if isinstance(payload, dict) else ""
+    session_key = str(payload.get("sessionEnvKey") or "") if isinstance(payload, dict) else ""
+    settings_key = str(payload.get("settingsEnvKey") or "") if isinstance(payload, dict) else ""
+    if not re.fullmatch(r"SCOPE_[A-F0-9]{16}", scope_hash):
+        raise WorkflowError("juno-code continue-scope returned an invalid fullHash")
+    if not re.fullmatch(r"JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}", session_key):
+        raise WorkflowError("juno-code continue-scope returned an invalid sessionEnvKey")
+    if not re.fullmatch(r"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_[A-F0-9]{16}", settings_key):
+        raise WorkflowError("juno-code continue-scope returned an invalid settingsEnvKey")
+    return {
+        "scope_hash": scope_hash,
+        "session_env_key": session_key,
+        "settings_env_key": settings_key,
+        "session_id": str(payload.get("sessionId") or ""),
+        "executable": executable,
+    }
 
 
 def build_continue_settings(command: Any) -> dict[str, Any] | None:
@@ -950,136 +885,39 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
     return settings
 
 
-def _update_main_session_branch_unlocked(project_root: Path, context: dict[str, str], session_id: str) -> None:
-    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
-    branches_path = metadata_root / "session_branches.json"
-    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    try:
-        document = json.loads(branches_path.read_text(encoding="utf-8")) if branches_path.exists() else {}
-        if not isinstance(document, dict):
-            document = {}
-    except Exception:
-        document = {}
-    document["version"] = 1
-    scopes = document.setdefault("scopes", {})
-    if not isinstance(scopes, dict):
-        scopes = {}
-        document["scopes"] = scopes
-    scope_entry = scopes.setdefault(context["scope_hash"], {})
-    if not isinstance(scope_entry, dict):
-        scope_entry = {}
-        scopes[context["scope_hash"]] = scope_entry
-    scope_entry["active"] = "main"
-    branches = scope_entry.setdefault("branches", {})
-    if not isinstance(branches, dict):
-        branches = {}
-        scope_entry["branches"] = branches
-    branches["main"] = {"session_id": session_id, "parent": None, "updated_at": now}
-    branches_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = branches_path.with_name(f"{branches_path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(branches_path)
-
-
-def _process_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return pid > 0
-    except PermissionError:
-        return True
-    except (ProcessLookupError, ValueError):
-        return False
-
-
-@contextlib.contextmanager
-def session_metadata_lock(metadata_root: Path, name: str):
-    lock = metadata_root / f"{name}.lock"
-    token = uuid.uuid4().hex
-    deadline = time.monotonic() + 5
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            lock.mkdir()
-            (lock / "owner.json").write_text(json.dumps({"pid": os.getpid(), "token": token}) + "\n")
-            break
-        except FileExistsError:
-            try:
-                owner = json.loads((lock / "owner.json").read_text())
-                live = _process_alive(int(owner.get("pid", 0)))
-            except Exception:
-                live = time.time() - lock.stat().st_mtime < 0.25
-            if not live:
-                quarantine = lock.with_name(f"{lock.name}.stale-{os.getpid()}-{uuid.uuid4().hex}")
-                try:
-                    lock.rename(quarantine)
-                except FileNotFoundError:
-                    continue
-                shutil.rmtree(quarantine, ignore_errors=True)
-                continue
-            if time.monotonic() >= deadline:
-                raise WorkflowError(f"timed out waiting for session metadata lock {lock}")
-            time.sleep(0.025)
-    try:
-        yield
-    finally:
-        try:
-            owner = json.loads((lock / "owner.json").read_text())
-            if owner.get("token") == token:
-                shutil.rmtree(lock)
-        except Exception:
-            pass
-
-
-def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
-    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
-    with session_metadata_lock(metadata_root, "session_branches.json"):
-        _update_main_session_branch_unlocked(project_root, context, session_id)
-
-
-def read_continue_snapshot(project_root: Path, context: dict[str, str]) -> dict[str, str] | None:
-    env_file = resolve_env_file_path(project_root)
-    if not env_file.exists():
-        return None
-    values = parse_env_variables(env_file.read_text(encoding="utf-8"))
-    session_id = values.get(context["session_env_key"], "").strip()
-    settings = values.get(context["settings_env_key"], "").strip()
-    if not session_id or not settings:
-        return None
-    try:
-        parsed_settings = json.loads(settings)
-    except Exception:
-        return None
-    if not isinstance(parsed_settings, dict):
-        return None
-    return {"session_id": session_id, "settings": settings, "env_file": str(env_file), **context}
-
-
-def read_child_continue_session(project_root: Path) -> str | None:
+def read_child_continue_session(project_root: Path, command: Any) -> str | None:
     # Top-level yy/juno-code commands persist their own continue snapshot, but when
     # launched by this runner without terminal markers their PPID fallback is the
     # workflow_runner process. Adopt that child snapshot, then persist it to the
     # caller's shell scope so `workflow_runner.sh ... ; yy cc` works.
-    child_context = resolve_continue_scope_context(project_root, fallback_parent_pid=os.getpid())
-    snapshot = read_continue_snapshot(project_root, child_context)
-    return snapshot["session_id"] if snapshot else None
+    child_context = resolve_continue_scope_from_juno(project_root, os.getpid(), command)
+    return child_context["session_id"] or None
 
 
 def persist_continue_context(project_root: Path, session_id: str, command: Any) -> dict[str, str] | None:
     settings = build_continue_settings(command)
     if not settings:
         return None
-    context = resolve_continue_scope_context(project_root)
-    env_file = resolve_env_file_path(project_root)
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    current = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    context = resolve_continue_scope_from_juno(project_root, os.getppid(), command)
     serialized_settings = json.dumps(settings, separators=(",", ":"))
-    current = upsert_env_variable(current, context["session_env_key"], session_id)
-    current = upsert_env_variable(current, context["settings_env_key"], serialized_settings)
-    env_file.write_text(current, encoding="utf-8")
-    update_main_session_branch(project_root, context, session_id)
-    os.environ[context["session_env_key"]] = session_id
-    os.environ[context["settings_env_key"]] = serialized_settings
-    return {**context, "env_file": str(env_file), "settings": serialized_settings}
+    completed = subprocess.run(
+        [
+            context["executable"], "continue-scope", "--json", "--cwd", str(project_root),
+            "--parent-pid", str(os.getppid()), "--handoff-session", session_id,
+            "--handoff-settings", serialized_settings,
+        ],
+        cwd=project_root,
+        env=child_process_environment(dict(os.environ)),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise WorkflowError(f"juno-code continuity handoff failed: {detail}")
+    return {**context, "metadata_file": "session_continuity.v2.json", "settings": serialized_settings}
 
 
 def select_continue_step(workflow: dict[str, Any], session_candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1118,10 +956,10 @@ def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[s
     if persisted:
         selected_label = persisted.get("selected_label")
         if selected_label:
-            print(f"  handoff: {selected_label} persisted for yy cc ({persisted['session_env_key']})")
+            print(f"  handoff: {selected_label} persisted for yy cc ({persisted['scope_hash']})")
         else:
-            print(f"  handoff: last session persisted for yy cc ({persisted['session_env_key']})")
-        print(f"  env_file: {persisted['env_file']}")
+            print(f"  handoff: last session persisted for yy cc ({persisted['scope_hash']})")
+        print(f"  metadata_file: {persisted['metadata_file']}")
 
 
 SESSION_FOOTER_TOKEN_RE = re.compile(
@@ -1481,7 +1319,7 @@ def build_command_env(
     tool_id: str,
     dry_run: bool,
 ) -> tuple[dict[str, str], str | None]:
-    env = os.environ.copy()
+    env = child_process_environment(dict(os.environ))
     is_juno_command = detect_juno_command(command)
     if is_juno_command:
         metadata_dir = capture_path.parent / "session_metadata"
@@ -1494,7 +1332,9 @@ def build_command_env(
         env.pop("JUNO_TOOL_ID", None)
         env.pop("JUNO_SUBAGENT_CAPTURE_PATH", None)
     child_continue_session_before = (
-        read_child_continue_session(project_root) if is_juno_command and capture_enabled and not dry_run else None
+        read_child_continue_session(project_root, command)
+        if is_juno_command and capture_enabled and not dry_run
+        else None
     )
     return env, child_continue_session_before
 
@@ -1555,7 +1395,7 @@ def apply_agent_session_capture(
     if not result.get("session_id"):
         fallback_session_id = extract_session_id(stdout, stderr)
         if not fallback_session_id and not dry_run:
-            child_continue_session_after = read_child_continue_session(project_root)
+            child_continue_session_after = read_child_continue_session(project_root, result.get("command"))
             if child_continue_session_after and child_continue_session_after != child_continue_session_before:
                 fallback_session_id = child_continue_session_after
         if fallback_session_id:
@@ -2538,7 +2378,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "step_index": selected_continue_step["index"],
             "step_id": selected_continue_step["id"],
             "session_id": selected_continue_step["session_id"],
-            "env_key": persisted_continue.get("session_env_key") if persisted_continue else "",
+            "scope_hash": persisted_continue.get("scope_hash") if persisted_continue else "",
         }
     elif str(workflow.get("continue_from_step") or "").strip():
         raise WorkflowError(f"continue_from_step '{workflow.get('continue_from_step')}' did not produce a session_id")
@@ -3410,7 +3250,7 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
     message = f"chore(controller): checkpoint finalized {owner} state"
     if exit_code:
         message = f"chore(controller): checkpoint failed {owner} state (exit {exit_code})"
-    env = dict(os.environ)
+    env = child_process_environment(dict(os.environ))
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     try:
         subprocess.run(
@@ -3426,6 +3266,7 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    sanitize_current_process_environment()
     controller_env = resolve_controller_environment()
     try:
         ensure_controller_python_environment(controller_env)

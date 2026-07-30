@@ -37,7 +37,7 @@ import CompletionCommand from '../cli/commands/completion.js';
 // Import version from package.json
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -109,7 +109,7 @@ function isConnectionLikeError(err: unknown): boolean {
  * Global error handler for CLI operations
  */
 function handleCLIError(error: unknown, verbose: number = 0): void {
-  if (error instanceof Error && error.name.startsWith('SessionBranches')) {
+  if (error instanceof Error && error.name.startsWith('SessionContinuity')) {
     console.error(chalk.red.bold('\n❌ Branch Registry Error'));
     console.error(chalk.red(`   ${error.message}`));
     console.error(chalk.yellow('\n💡 Suggestions:'));
@@ -614,7 +614,7 @@ function setupNamedBranchCommands(program: Command): void {
       try {
         const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
           import('../core/continue-scope.js'),
-          import('../core/session-branches.js'),
+          import('../core/session-continuity-state.js'),
         ]);
         const config = await resolveWorkingDirectory(options);
         const scope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
@@ -689,7 +689,6 @@ ${chalk.blue.bold('Behavior:')}
         const config = await resolveWorkingDirectory(options);
         const active = await persistActiveSessionBranchSelection({
           workingDirectory: config.workingDirectory,
-          envFilePath: config.envFilePath,
           branchName,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
@@ -739,13 +738,130 @@ ${chalk.blue.bold('Behavior:')}
   switchCommand.allowUnknownOption(true);
 }
 
+function setupContinuityCommand(program: Command): void {
+  const continuity = program
+    .command('continuity')
+    .description('Inventory, migrate, retain, and roll back automatic session continuity state');
+  const root = (options: { cwd?: string }) => resolvePath(options.cwd?.trim() || process.cwd());
+
+  continuity
+    .command('doctor')
+    .description('Print a redacted, read-only continuity inventory (never values)')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options) => {
+      try {
+        const { inspectContinuityState } = await import('../core/continuity-maintenance.js');
+        const report = await inspectContinuityState({ workingDirectory: root(options) });
+        console.log(JSON.stringify(report, null, 2));
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  continuity
+    .command('clean')
+    .description('Generate a dry-run reviewed plan, or explicitly apply one')
+    .option('-w, --cwd <path>', 'Working directory')
+    .option(
+      '--plan <path>',
+      'Write a redacted reviewed plan without changing env or continuity state',
+    )
+    .option('--apply <path>', 'Apply an explicitly reviewed plan under the shared lock')
+    .action(async (options) => {
+      try {
+        const maintenance = await import('../core/continuity-maintenance.js');
+        if (options.plan && options.apply)
+          throw new Error('Choose exactly one of --plan or --apply.');
+        if (options.apply) {
+          const result = await maintenance.applyContinuityMigrationPlan({
+            workingDirectory: root(options),
+            planPath: resolvePath(options.apply),
+          });
+          console.log(JSON.stringify({ applied: true, receiptPath: result.receiptPath }, null, 2));
+          return;
+        }
+        if (options.plan) {
+          const plan = await maintenance.createContinuityMigrationPlan({
+            workingDirectory: root(options),
+            planPath: resolvePath(options.plan),
+          });
+          console.log(
+            JSON.stringify(
+              { dryRun: true, planPath: resolvePath(options.plan), projected: plan.projected },
+              null,
+              2,
+            ),
+          );
+          return;
+        }
+        const report = await maintenance.inspectContinuityState({
+          workingDirectory: root(options),
+        });
+        console.log(JSON.stringify({ dryRun: true, ...report }, null, 2));
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  continuity
+    .command('rollback')
+    .description('Restore exact backup bytes only when all post-apply hashes still match')
+    .argument('<receipt>', 'Receipt path emitted by continuity clean --apply')
+    .option('-w, --cwd <path>', 'Working directory')
+    .action(async (receipt, options) => {
+      try {
+        const { rollbackContinuityMigration } = await import('../core/continuity-maintenance.js');
+        await rollbackContinuityMigration({
+          workingDirectory: root(options),
+          receiptPath: resolvePath(receipt),
+        });
+        console.log(
+          JSON.stringify({ rolledBack: true, receiptPath: resolvePath(receipt) }, null, 2),
+        );
+      } catch (error) {
+        handleCLIError(error, normalizeVerbose(options.verbose));
+      }
+    });
+
+  for (const pinned of [true, false]) {
+    continuity
+      .command(pinned ? 'pin' : 'unpin')
+      .description(`${pinned ? 'Protect' : 'Unprotect'} a continuity scope from retention cleanup`)
+      .argument('[scope]', 'Full SCOPE_<16 uppercase hex> hash; defaults to the current scope')
+      .option('-w, --cwd <path>', 'Working directory')
+      .action(async (scopeHash, options) => {
+        try {
+          const [{ resolveContinueScopeContext }, state] = await Promise.all([
+            import('../core/continue-scope.js'),
+            import('../core/session-continuity-state.js'),
+          ]);
+          const workingDirectory = root(options);
+          const scope =
+            scopeHash ||
+            resolveContinueScopeContext(process.env, process.ppid, workingDirectory).scopeHash;
+          await state.setContinueScopePinned({ workingDirectory, scope, pinned });
+          console.log(JSON.stringify({ scope, pinned }, null, 2));
+        } catch (error) {
+          handleCLIError(error, normalizeVerbose(options.verbose));
+        }
+      });
+  }
+}
+
 function setupContinueScopeCommand(program: Command): void {
   const continueScopeCommand = program
     .command('continue-scope')
     .description('Show continue scope hash and status (running, finished, not_found, error)')
     .argument('[hash]', 'Optional hash (5-6 char prefix or full SCOPE_<HASH>)')
     .option('-w, --cwd <path>', 'Working directory')
+    .option(
+      '--parent-pid <pid>',
+      'Resolve the caller scope as if this process had the given parent PID (script integrations)',
+    )
     .option('--json', 'Output machine-readable JSON')
+    .option('--handoff-session <session-id>', 'Persist a workflow handoff session for the resolved caller scope')
+    .option('--handoff-settings <json>', 'Validated bounded execution settings for --handoff-session')
     .action(async (hash: string | undefined, options) => {
       try {
         const workingDirectory =
@@ -768,7 +884,29 @@ function setupContinueScopeCommand(program: Command): void {
           },
         });
 
-        const currentScope = continueScope.resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
+        const parentPid =
+          options.parentPid === undefined ? process.ppid : Number(options.parentPid);
+        const currentScope = continueScope.resolveContinueScopeContextForParent({
+          env: process.env,
+          parentPid,
+          workingDirectory: config.workingDirectory,
+        });
+        if (options.handoffSession !== undefined) {
+          if (hash !== undefined) throw new Error('Workflow handoff cannot target a hash lookup; resolve the caller scope directly.');
+          if (typeof options.handoffSettings !== 'string' || !options.handoffSettings.trim()) {
+            throw new Error('--handoff-settings is required with --handoff-session.');
+          }
+          const state = await import('../core/session-continuity-state.js');
+          await state.persistContinueScopeSnapshot({
+            workingDirectory: config.workingDirectory,
+            context: currentScope,
+            sessionId: String(options.handoffSession),
+            serializedSettings: options.handoffSettings,
+          });
+        } else if (options.handoffSettings !== undefined) {
+          throw new Error('--handoff-settings requires --handoff-session.');
+        }
+
         const status = await continueScope.resolveContinueScopeStatus({
           workingDirectory: config.workingDirectory,
           ...(hash !== undefined ? { requestedHash: hash } : {}),
@@ -1792,6 +1930,7 @@ async function main(): Promise<void> {
 
   // Named Pi session branches for the current continue scope
   setupNamedBranchCommands(program);
+  setupContinuityCommand(program);
 
   // Continue scope hash/status endpoint for scripts
   setupContinueScopeCommand(program);

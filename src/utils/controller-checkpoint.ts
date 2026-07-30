@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import { promisify } from 'node:util';
+import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
 
 export interface ControllerCheckpointResult {
   attempted: boolean;
@@ -29,7 +30,9 @@ export async function checkpointControllerAfterFinalization(
     const execFile = promisify(childProcess.execFile);
     await execFile('python3', [script, '--root', root, 'commit', '--message', message], {
       cwd: root,
-      env: { ...process.env, JUNO_CONTROLLER_CHECKPOINT_ACTIVE: '1' },
+      env: buildChildProcessEnvironment(process.env, {
+        JUNO_CONTROLLER_CHECKPOINT_ACTIVE: '1',
+      }),
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });

@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 
 import {
   getSessionMetadataDirectory,
+  SESSION_CONTINUITY_SHARED_LOCK_NAME,
   withSessionMetadataLock,
   writeSessionMetadataFileAtomic,
 } from './session-metadata.js';
@@ -51,6 +52,12 @@ export interface ContinueScopeContext {
   scopeSource: string;
   sessionEnvKey: string;
   settingsEnvKey: string;
+}
+
+export interface ContinueScopeParentRequest {
+  env?: NodeJS.ProcessEnv;
+  parentPid: number;
+  workingDirectory: string;
 }
 
 export type ContinueScopeStatus = 'running' | 'finished' | 'not_found' | 'error';
@@ -229,7 +236,7 @@ async function mutateRuntimeDocument<T>(
   mutation: (document: ContinueScopeRuntimeDocument, runtimeFilePath: string) => Promise<T>,
 ): Promise<T> {
   const metadataDirectory = getSessionMetadataDirectory(workingDirectory);
-  return withSessionMetadataLock(metadataDirectory, CONTINUE_SCOPE_RUNTIME_FILE_NAME, async () => {
+  return withSessionMetadataLock(metadataDirectory, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
     const runtimeFilePath = getRuntimeFilePath(workingDirectory);
     const document = await readRuntimeDocument(runtimeFilePath);
     return mutation(document, runtimeFilePath);
@@ -253,38 +260,17 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function looksLikeValidSettingsSnapshot(raw: string | undefined): boolean {
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return false;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
-  } catch {
-    return false;
-  }
-}
-
-function extractKnownScopeHashesFromEnv(env: NodeJS.ProcessEnv): Set<string> {
-  const hashes = new Set<string>();
-  const sessionRegex = new RegExp(`^${CONTINUE_SESSION_ENV_KEY_BASE}_(SCOPE_[A-F0-9]{16})$`);
-  const settingsRegex = new RegExp(`^${CONTINUE_SETTINGS_ENV_KEY_BASE}_(SCOPE_[A-F0-9]{16})$`);
-
-  for (const key of Object.keys(env)) {
-    const sessionMatch = key.match(sessionRegex);
-    if (sessionMatch?.[1]) {
-      hashes.add(sessionMatch[1]);
-      continue;
-    }
-
-    const settingsMatch = key.match(settingsRegex);
-    if (settingsMatch?.[1]) {
-      hashes.add(settingsMatch[1]);
-    }
-  }
-
-  return hashes;
+/** Read-only liveness proof used while the caller holds the shared continuity lock. */
+export async function getProvenLiveContinueScopeHashes(
+  workingDirectory: string,
+  alive: (pid: number) => boolean = isProcessAlive,
+): Promise<Set<string>> {
+  const document = await readRuntimeDocument(getRuntimeFilePath(workingDirectory));
+  return new Set(
+    Object.entries(document.scopes)
+      .filter(([, entry]) => alive(entry.pid))
+      .map(([scopeHash]) => scopeHash),
+  );
 }
 
 function resolveTargetScopeHash(
@@ -378,6 +364,24 @@ export function resolveContinueScopeContext(
   };
 }
 
+/**
+ * Resolve the scope seen by a process whose direct parent is `parentPid`.
+ * Script callers use this instead of recreating descriptor/hash/key semantics.
+ */
+export function resolveContinueScopeContextForParent(
+  request: ContinueScopeParentRequest,
+): ContinueScopeContext {
+  if (!Number.isInteger(request.parentPid) || request.parentPid <= 0) {
+    throw new Error('Continue scope parent PID must be a positive integer.');
+  }
+
+  return resolveContinueScopeContext(
+    request.env ?? process.env,
+    request.parentPid,
+    request.workingDirectory,
+  );
+}
+
 export async function markContinueScopeRunning(
   workingDirectory: string,
   context: ContinueScopeContext,
@@ -417,10 +421,12 @@ export async function resolveContinueScopeStatus(options: {
   const currentScope = options.currentScope || resolveContinueScopeContext(env, process.ppid, options.workingDirectory);
   const runtimeFilePath = getRuntimeFilePath(options.workingDirectory);
   const runtimeDocument = await readRuntimeDocument(runtimeFilePath);
+  const continuity = await import('./session-continuity-state.js');
+  const continuityDocument = await continuity.loadSessionContinuityDocument(options.workingDirectory);
 
   const knownHashes = new Set<string>([
     ...Object.keys(runtimeDocument.scopes),
-    ...extractKnownScopeHashesFromEnv(env),
+    ...Object.keys(continuityDocument.scopes),
     currentScope.scopeHash,
   ]);
 
@@ -434,6 +440,8 @@ export async function resolveContinueScopeStatus(options: {
     ? currentScope
     : buildContextFromHash(scopeHash, 'hash_lookup');
 
+  const storedScope = continuityDocument.scopes[scopeHash];
+  const storedSessionId = storedScope?.branches[storedScope.active]?.session_id?.trim() || null;
   const runtimeEntry = runtimeDocument.scopes[scopeHash];
   if (runtimeEntry) {
     if (isProcessAlive(runtimeEntry.pid)) {
@@ -444,7 +452,7 @@ export async function resolveContinueScopeStatus(options: {
         scopeSource: context.scopeSource,
         sessionEnvKey: context.sessionEnvKey,
         settingsEnvKey: context.settingsEnvKey,
-        sessionId: typeof env[context.sessionEnvKey] === 'string' ? env[context.sessionEnvKey]!.trim() : null,
+        sessionId: storedSessionId,
         isCurrentScope,
         pid: runtimeEntry.pid,
       };
@@ -468,18 +476,17 @@ export async function resolveContinueScopeStatus(options: {
       scopeSource: context.scopeSource,
       sessionEnvKey: context.sessionEnvKey,
       settingsEnvKey: context.settingsEnvKey,
-      sessionId: typeof env[context.sessionEnvKey] === 'string' ? env[context.sessionEnvKey]!.trim() : null,
+      sessionId: storedSessionId,
       isCurrentScope,
       pid: runtimeEntry.pid,
       reason: 'stale_runtime_marker',
     };
   }
 
-  const sessionValue = env[context.sessionEnvKey];
-  const settingsValue = env[context.settingsEnvKey];
-  const sessionId = typeof sessionValue === 'string' && sessionValue.trim() ? sessionValue.trim() : null;
+  const sessionId = storedSessionId;
+  const hasSettings = storedScope?.settings !== null && storedScope?.settings !== undefined;
 
-  if (!sessionId && (typeof settingsValue !== 'string' || !settingsValue.trim())) {
+  if (!sessionId && !hasSettings) {
     return {
       status: 'not_found',
       hash: context.shortHash,
@@ -493,8 +500,7 @@ export async function resolveContinueScopeStatus(options: {
     };
   }
 
-  const hasValidSettings = looksLikeValidSettingsSnapshot(settingsValue);
-  if (sessionId && hasValidSettings) {
+  if (sessionId && hasSettings) {
     return {
       status: 'finished',
       hash: context.shortHash,

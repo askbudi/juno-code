@@ -59,6 +59,9 @@ printf 'destination=%s|root=%s|args=%s\n' "${'$'}VIRTUAL_ENV" "${'$'}JUNO_TASK_R
 
     const baseEnv = {
       ...process.env,
+      JUNO_CONTROLLER_BRANCH: '',
+      JUNO_WORKSPACE_ENFORCEMENT: 'off',
+      JUNO_WORKSPACE_ROLE: '',
       JUNO_TASK_ROOT: '',
       VIRTUAL_ENV: '',
       JUNO_KANBAN_REGISTRY_PATH: registry,

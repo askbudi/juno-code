@@ -6,18 +6,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAIN_SESSION_BRANCH,
   SESSION_METADATA_DIRECTORY_ENV,
-  SessionBranchesCorruptStateError,
+  SessionContinuityCorruptStateError,
   assertValidSessionBranchName,
   getActiveSessionBranch,
-  getSessionBranchesFilePath,
+  getSessionContinuityFilePath,
   listSessionBranches,
-  loadSessionBranchesDocument,
+  loadSessionContinuityDocument,
   resetMainSessionBranch,
   setActiveSessionBranch,
   updateActiveSessionBranch,
   upsertClonedSessionBranch,
   validateSessionBranchName,
-} from '../session-branches.js';
+} from '../session-continuity-state.js';
 
 const tempDirs: string[] = [];
 const SCOPE_A = 'SCOPE_AAAAAAAAAAAAAAAA';
@@ -51,18 +51,18 @@ describe('session-branches', () => {
       sessionId: 'SESSION_A',
     });
 
-    expect(getSessionBranchesFilePath(workingDirectory)).toBe(
-      path.join(artifactDirectory, 'session_branches.json'),
+    expect(getSessionContinuityFilePath(workingDirectory)).toBe(
+      path.join(artifactDirectory, 'session_continuity.v2.json'),
     );
-    expect(await fs.pathExists(path.join(workingDirectory, '.juno_task', 'session_branches.json'))).toBe(false);
-    expect((await fs.readJson(path.join(artifactDirectory, 'session_branches.json'))).scopes[SCOPE_A]).toBeTruthy();
+    expect(await fs.pathExists(path.join(workingDirectory, '.juno_task', 'session_continuity.v2.json'))).toBe(false);
+    expect((await fs.readJson(path.join(artifactDirectory, 'session_continuity.v2.json'))).scopes[SCOPE_A]).toBeTruthy();
   });
 
   it('missing file initializes an empty document', async () => {
     const workingDirectory = await createTempDir();
 
-    await expect(loadSessionBranchesDocument(workingDirectory)).resolves.toEqual({
-      version: 1,
+    await expect(loadSessionContinuityDocument(workingDirectory)).resolves.toEqual({
+      version: 2,
       scopes: {},
     });
   });
@@ -77,8 +77,11 @@ describe('session-branches', () => {
       now: new Date('2026-06-27T00:00:00.000Z'),
     });
 
-    const document = await loadSessionBranchesDocument(workingDirectory);
-    expect(document.scopes[SCOPE_A]).toEqual({
+    const document = await loadSessionContinuityDocument(workingDirectory);
+    expect(document.scopes[SCOPE_A]).toMatchObject({
+      source: 'hash_lookup',
+      pinned: false,
+      settings: null,
       active: MAIN_SESSION_BRANCH,
       branches: {
         main: {
@@ -265,15 +268,15 @@ describe('session-branches', () => {
 
   it('corrupted JSON fails safe with an actionable recovery error', async () => {
     const workingDirectory = await createTempDir();
-    const statePath = getSessionBranchesFilePath(workingDirectory);
+    const statePath = getSessionContinuityFilePath(workingDirectory);
     await fs.ensureDir(path.dirname(statePath));
     await fs.writeFile(statePath, '{not-json', 'utf-8');
 
-    await expect(loadSessionBranchesDocument(workingDirectory)).rejects.toThrow(
-      SessionBranchesCorruptStateError,
+    await expect(loadSessionContinuityDocument(workingDirectory)).rejects.toThrow(
+      SessionContinuityCorruptStateError,
     );
-    await expect(loadSessionBranchesDocument(workingDirectory)).rejects.toThrow(
-      'Move or remove session_branches.json',
+    await expect(loadSessionContinuityDocument(workingDirectory)).rejects.toThrow(
+      'Move or remove session_continuity.v2.json',
     );
   });
 });

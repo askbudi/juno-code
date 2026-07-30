@@ -23,6 +23,7 @@ import type {
   ToolExecutionMetadata,
 } from '../../types/execution.js';
 import { engineLogger } from '../../cli/utils/advanced-logger.js';
+import { buildChildProcessEnvironment } from '../child-process-environment.js';
 
 // =============================================================================
 // Type Definitions
@@ -793,15 +794,14 @@ export class ShellBackend implements Backend {
       );
 
       // Prepare environment variables
-      const env: Record<string, string | undefined> = {
-        ...process.env,
+      const env = buildChildProcessEnvironment(process.env, {
         ...this.config!.environment,
-        // Pass request data as environment variables
+        // Pass resolved request data explicitly; continuity snapshots are never inherited.
         JUNO_PROJECT_PATH: String(request.arguments?.project_path ?? this.config!.workingDirectory),
         JUNO_MODEL: String(request.arguments?.model ?? ''),
         JUNO_ITERATION: String(request.arguments?.iteration ?? 1),
         JUNO_TOOL_ID: toolId,
-      };
+      });
 
       if (promptTransport.mode !== 'prompt-file') {
         env.JUNO_INSTRUCTION = promptTransport.instruction;

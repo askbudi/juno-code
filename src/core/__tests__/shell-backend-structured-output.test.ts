@@ -27,6 +27,24 @@ print(json.dumps({"type": "result", "result": "done", "usage": {"input_tokens": 
   return { servicesDir, workingDir: tempRoot };
 };
 
+const createEnvironmentBoundaryService = async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-env-boundary-'));
+  tempRoots.push(tempRoot);
+  const servicesDir = path.join(tempRoot, 'services');
+  await fs.ensureDir(servicesDir);
+  await fs.writeFile(
+    path.join(servicesDir, 'claude.py'),
+    `#!/usr/bin/env python3
+import json, os, sys
+names = sorted(name for name in os.environ if name.startswith("JUNO_CODE_LAST_"))
+resume = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else None
+print(json.dumps({"type":"result","result":json.dumps({"continuity_names":names,"config":os.environ.get("BOUNDARY_CONFIG"),"root":os.environ.get("JUNO_TASK_ROOT"),"resume":resume})}))
+`,
+    { mode: 0o755 },
+  );
+  return { servicesDir, workingDir: tempRoot };
+};
+
 const createStubTextService = async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-text-'));
   tempRoots.push(tempRoot);
@@ -214,6 +232,39 @@ describe('ShellBackend structured output', () => {
     const metadata = result.metadata as any;
     expect(metadata?.structuredOutput).toBe(true);
     expect(metadata?.rawOutput).toContain('"result": "done"');
+  });
+
+  it('filters service continuity while preserving config/routing and typed resume dispatch', async () => {
+    const { servicesDir, workingDir } = await createEnvironmentBoundaryService();
+    const backend = new ShellBackend();
+    backend.configure({
+      workingDirectory: workingDir,
+      servicesPath: servicesDir,
+      enableJsonStreaming: true,
+      environment: {
+        BOUNDARY_CONFIG: 'preserved',
+        JUNO_TASK_ROOT: '/controller',
+        JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF: 'historical',
+        JUNO_CODE_LAST_EXECUTION_SETTINGS: 'legacy',
+      },
+    });
+    await backend.initialize();
+
+    const result = await backend.execute({
+      toolName: 'claude_subagent',
+      arguments: { project_path: workingDir, resume: 'current-session' },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: { sessionId: 'test-session', iterationNumber: 1 },
+    });
+
+    const payload = JSON.parse(JSON.parse(result.content).result);
+    expect(payload).toEqual({
+      continuity_names: [],
+      config: 'preserved',
+      root: '/controller',
+      resume: 'current-session',
+    });
   });
 
   it('preserves leading whitespace for text streaming outputs', async () => {

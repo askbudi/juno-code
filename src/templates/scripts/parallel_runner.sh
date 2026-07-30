@@ -145,6 +145,25 @@ from enum import Enum
 from pathlib import Path
 
 
+_SCOPED_CONTINUITY_KEY_PREFIXES = (
+    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
+)
+_LEGACY_CONTINUITY_KEYS = {
+    "JUNO_CODE_LAST_SESSION_ID",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS",
+}
+
+
+def _child_process_environment(base):
+    """Preserve child config/routing while dropping historical continuity values."""
+    return {
+        name: value
+        for name, value in base.items()
+        if name not in _LEGACY_CONTINUITY_KEYS and not name.startswith(_SCOPED_CONTINUITY_KEY_PREFIXES)
+    }
+
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
@@ -934,9 +953,15 @@ def _resolve_env_overrides(env_args):
     return overrides
 
 
+def _sanitize_current_process_environment():
+    environment = _child_process_environment(dict(os.environ))
+    os.environ.clear()
+    os.environ.update(environment)
+
+
 def _build_process_env(extra_capture_env=None):
     """Build the environment dict for a child process."""
-    env = os.environ.copy()
+    env = _child_process_environment(dict(os.environ))
     env.update(_env_overrides)
     # Reduce buffering for python-backed subcommands so task/combined logs stream promptly.
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -972,8 +997,8 @@ def _command_popen_kwargs(spec, default_cwd):
 
 
 def _generate_env_exports():
-    """Generate shell export lines for the full process environment."""
-    merged = os.environ.copy()
+    """Generate shell export lines for the filtered process environment."""
+    merged = _child_process_environment(dict(os.environ))
     merged.update(_env_overrides)
     merged.setdefault("PYTHONUNBUFFERED", "1")
     lines = []
@@ -3964,7 +3989,7 @@ def checkpoint_after_finalization(exit_code: int) -> None:
     message = "chore(controller): checkpoint finalized parallel run state"
     if exit_code:
         message = f"chore(controller): checkpoint failed parallel run state (exit {exit_code})"
-    env = dict(os.environ)
+    env = _child_process_environment(dict(os.environ))
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     try:
         subprocess.run(
@@ -3982,6 +4007,7 @@ def checkpoint_after_finalization(exit_code: int) -> None:
 def main():
     global LOG_DIR, COMBINED_LOG, STATUS_FILE, _run_id, _run_started_at
 
+    _sanitize_current_process_environment()
     os.environ.update(resolve_controller_environment())
     warn_if_runtime_script_is_stale("parallel_runner.sh")
     args = parse_args()

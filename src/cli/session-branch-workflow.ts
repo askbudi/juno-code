@@ -1,14 +1,14 @@
 import { resolveContinueScopeContext } from '../core/continue-scope.js';
 import {
   MAIN_SESSION_BRANCH,
-  SessionBranchesError,
+  SessionContinuityStateError,
   getActiveSessionBranch,
   listSessionBranches,
   resetMainSessionBranch,
   updateActiveSessionBranch,
   upsertClonedSessionBranch,
   validateSessionBranchName,
-} from '../core/session-branches.js';
+} from '../core/session-continuity-state.js';
 import { resolveScopedContinueSessionState } from '../core/session-continuity-state.js';
 import type { ExecutionResult } from '../core/engine.js';
 import { ExecutionStatus } from '../core/engine.js';
@@ -80,7 +80,8 @@ function parseContinueSettingsSnapshot(raw: string): ContinueSettingsSnapshot | 
   if (typeof parsed.model === 'string' && parsed.model.trim()) snapshot.model = parsed.model.trim();
   const maxIterations = toNumber(parsed.maxIterations);
   if (maxIterations !== null) snapshot.maxIterations = maxIterations;
-  if (typeof parsed.thinking === 'string' && parsed.thinking.trim()) snapshot.thinking = parsed.thinking.trim();
+  if (typeof parsed.thinking === 'string' && parsed.thinking.trim())
+    snapshot.thinking = parsed.thinking.trim();
   if (typeof parsed.live === 'boolean') snapshot.live = parsed.live;
   if (typeof parsed.agents === 'string' && parsed.agents.trim()) snapshot.agents = parsed.agents;
 
@@ -101,7 +102,10 @@ function isTruthyEnvironmentFlag(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
-function applyContinueSettingsSnapshot(options: MainCommandOptions, settings: ContinueSettingsSnapshot): void {
+function applyContinueSettingsSnapshot(
+  options: MainCommandOptions,
+  settings: ContinueSettingsSnapshot,
+): void {
   if (!options.subagent) options.subagent = settings.subagent;
   if (options.model === undefined && settings.model) options.model = settings.model;
   if (options.maxIterations === undefined && settings.maxIterations !== undefined) {
@@ -109,8 +113,10 @@ function applyContinueSettingsSnapshot(options: MainCommandOptions, settings: Co
   }
   if (options.thinking === undefined && settings.thinking) options.thinking = settings.thinking;
   if (options.live === undefined && settings.live !== undefined) options.live = settings.live;
-  if (options.agents === undefined && settings.agents !== undefined) options.agents = settings.agents;
-  if (options.tools === undefined && settings.tools !== undefined) options.tools = [...settings.tools];
+  if (options.agents === undefined && settings.agents !== undefined)
+    options.agents = settings.agents;
+  if (options.tools === undefined && settings.tools !== undefined)
+    options.tools = [...settings.tools];
   if (options.allowedTools === undefined && settings.allowedTools !== undefined) {
     options.allowedTools = [...settings.allowedTools];
   }
@@ -122,20 +128,19 @@ function applyContinueSettingsSnapshot(options: MainCommandOptions, settings: Co
   }
 }
 
-function readContinueSettingsSnapshotFromEnvironment(workingDirectory: string): ContinueSettingsSnapshot | null {
-  const continueScope = resolveContinueScopeContext(process.env, process.ppid, workingDirectory);
-  const rawSettings = process.env[continueScope.settingsEnvKey];
-  return rawSettings ? parseContinueSettingsSnapshot(rawSettings) : null;
+async function readContinueSettingsSnapshot(
+  workingDirectory: string,
+): Promise<ContinueSettingsSnapshot | null> {
+  const state = await resolveScopedContinueSessionState({ workingDirectory });
+  return state.serializedSettings ? parseContinueSettingsSnapshot(state.serializedSettings) : null;
 }
 
-function applyContinueSettingsFromEnvironmentIfPresent(
+async function applyContinueSettingsIfPresent(
   options: MainCommandOptions,
   workingDirectory: string,
-): void {
-  const settings = readContinueSettingsSnapshotFromEnvironment(workingDirectory);
-  if (settings) {
-    applyContinueSettingsSnapshot(options, settings);
-  }
+): Promise<void> {
+  const settings = await readContinueSettingsSnapshot(workingDirectory);
+  if (settings) applyContinueSettingsSnapshot(options, settings);
 }
 
 async function applyContinueContextFromEnvironment(
@@ -144,22 +149,6 @@ async function applyContinueContextFromEnvironment(
   workingDirectory: string = process.cwd(),
 ): Promise<void> {
   const scopedState = await resolveScopedContinueSessionState({ workingDirectory });
-
-  if (scopedState.hasEnvActiveBranchMismatch) {
-    throw new ValidationError(
-      [
-        'Continue session mismatch for this shell context',
-        `scope ${scopedState.context.scopeHash} (${scopedState.context.scopeSource}) has env session '${scopedState.envSessionId}'`,
-        `active branch '${scopedState.activeBranch?.name}' points to session '${scopedState.activeBranchSessionId}'`,
-      ].join(': '),
-      [
-        'Inspect the shell-scoped snapshot: juno-code continue-scope --json',
-        'Inspect named session branches: juno-code branches',
-        `Switch to the intended branch or reset branch state before retrying ${action === 'clone' ? 'clone' : 'continue'}`,
-        'To bypass scoped continue resolution, resume explicitly: juno-code --resume <session-id> "your next prompt"',
-      ],
-    );
-  }
 
   const sessionId = scopedState.resolvedSessionId;
 
@@ -173,12 +162,17 @@ async function applyContinueContextFromEnvironment(
     ]);
   }
 
-  const settings = readContinueSettingsSnapshotFromEnvironment(workingDirectory);
+  const settings = scopedState.serializedSettings
+    ? parseContinueSettingsSnapshot(scopedState.serializedSettings)
+    : null;
   if (!settings) {
-    throw new ValidationError('Previous execution settings are missing or invalid for this shell context', [
-      'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
-      'Then retry: juno-code continue "your next prompt"',
-    ]);
+    throw new ValidationError(
+      'Previous execution settings are missing or invalid for this shell context',
+      [
+        'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
+        'Then retry: juno-code continue "your next prompt"',
+      ],
+    );
   }
 
   options.resume = options.resume || sessionId;
@@ -201,11 +195,16 @@ function nextGeneratedCloneBranchName(existingBranchNames: string[]): string {
   return `b${index}`;
 }
 
-async function resolveNamedCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
-  let targetName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
-  const sourceName = typeof options.cloneBranchFrom === 'string' && options.cloneBranchFrom.trim()
-    ? options.cloneBranchFrom.trim()
-    : MAIN_SESSION_BRANCH;
+async function resolveNamedCloneOptions(
+  options: MainCommandOptions,
+  workingDirectory: string,
+): Promise<void> {
+  let targetName =
+    typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
+  const sourceName =
+    typeof options.cloneBranchFrom === 'string' && options.cloneBranchFrom.trim()
+      ? options.cloneBranchFrom.trim()
+      : MAIN_SESSION_BRANCH;
   const shouldAutoNameClone =
     !targetName &&
     !options.cloneBranchFrom &&
@@ -235,17 +234,21 @@ async function resolveNamedCloneOptions(options: MainCommandOptions, workingDire
 
   const targetValidation = validateSessionBranchName(targetName, { allowMain: false });
   if (!targetValidation.valid) {
-    throw new ValidationError(`Invalid clone branch name '${targetName}': ${targetValidation.reason}`, [
-      "Choose a non-empty branch name other than 'main'",
-      'Example: juno-code clone --name C "your prompt"',
-    ]);
+    throw new ValidationError(
+      `Invalid clone branch name '${targetName}': ${targetValidation.reason}`,
+      [
+        "Choose a non-empty branch name other than 'main'",
+        'Example: juno-code clone --name C "your prompt"',
+      ],
+    );
   }
 
   const sourceValidation = validateSessionBranchName(sourceName);
   if (!sourceValidation.valid) {
-    throw new ValidationError(`Invalid source branch name '${sourceName}': ${sourceValidation.reason}`, [
-      'Use an existing branch from: juno-code branches',
-    ]);
+    throw new ValidationError(
+      `Invalid source branch name '${sourceName}': ${sourceValidation.reason}`,
+      ['Use an existing branch from: juno-code branches'],
+    );
   }
 
   if (branches.length === 0) {
@@ -277,12 +280,19 @@ async function resolveNamedCloneOptions(options: MainCommandOptions, workingDire
   options.clone = options.clone ?? true;
 }
 
-async function normalizeCloneOptions(options: MainCommandOptions, workingDirectory: string): Promise<void> {
+async function normalizeCloneOptions(
+  options: MainCommandOptions,
+  workingDirectory: string,
+): Promise<void> {
   if (options.clone === undefined) {
     return;
   }
 
-  if (typeof options.clone === 'string' && options.prompt === undefined && options.promptFile === undefined) {
+  if (
+    typeof options.clone === 'string' &&
+    options.prompt === undefined &&
+    options.promptFile === undefined
+  ) {
     options.prompt = options.clone;
   }
 
@@ -325,7 +335,7 @@ export async function prepareSessionBranchExecution(
   // Named branch clone resolves its source from the branch registry instead of the active continue snapshot,
   // but it should still inherit saved runtime settings (model, maxIterations, tools, etc.) when available.
   if (options.cloneBranchName) {
-    applyContinueSettingsFromEnvironmentIfPresent(options, config.workingDirectory);
+    await applyContinueSettingsIfPresent(options, config.workingDirectory);
   } else if (options.continueFromLatest) {
     await applyContinueContextFromEnvironment(options, 'continue', config.workingDirectory);
   }
@@ -337,7 +347,8 @@ export async function resolveSessionBranchNameForSummary(
   options: MainCommandOptions,
   config: { workingDirectory: string },
 ): Promise<string> {
-  const cloneBranchName = typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
+  const cloneBranchName =
+    typeof options.cloneBranchName === 'string' ? options.cloneBranchName.trim() : '';
   if (cloneBranchName) {
     return cloneBranchName;
   }
@@ -365,14 +376,21 @@ export async function syncSessionBranchExecutionResult(
     return;
   }
 
-  const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
-  const branches = await listSessionBranches({ workingDirectory: config.workingDirectory, scope: continueScope });
+  const continueScope = resolveContinueScopeContext(
+    process.env,
+    process.ppid,
+    config.workingDirectory,
+  );
+  const branches = await listSessionBranches({
+    workingDirectory: config.workingDirectory,
+    scope: continueScope,
+  });
 
   if (options.cloneBranchName) {
     const sourceBranchName = options.cloneBranchFrom || MAIN_SESSION_BRANCH;
     const sourceBranch = branches.find((branch) => branch.name === sourceBranchName);
     if (!sourceBranch) {
-      throw new SessionBranchesError(
+      throw new SessionContinuityStateError(
         `Cannot save cloned branch '${options.cloneBranchName}': source branch '${sourceBranchName}' is missing.`,
       );
     }
@@ -390,7 +408,8 @@ export async function syncSessionBranchExecutionResult(
 
   const isPiRun = result.request.subagent === 'pi';
   const isCloneRun = options.cloneSession === true || result.request.cloneSession === true;
-  const isNamedCloneRun = typeof options.cloneBranchName === 'string' && options.cloneBranchName.trim().length > 0;
+  const isNamedCloneRun =
+    typeof options.cloneBranchName === 'string' && options.cloneBranchName.trim().length > 0;
   const isContinueRun = options.continueFromLatest === true && !isCloneRun && !isNamedCloneRun;
   const isExplicitResumeRun =
     !isContinueRun &&
@@ -398,11 +417,7 @@ export async function syncSessionBranchExecutionResult(
     typeof options.resume === 'string' &&
     options.resume.trim().length > 0;
   const isNewRootRun =
-    isPiRun &&
-    !isContinueRun &&
-    !isExplicitResumeRun &&
-    !isCloneRun &&
-    !isNamedCloneRun;
+    isPiRun && !isContinueRun && !isExplicitResumeRun && !isCloneRun && !isNamedCloneRun;
 
   if (!isPiRun || isCloneRun) {
     return;

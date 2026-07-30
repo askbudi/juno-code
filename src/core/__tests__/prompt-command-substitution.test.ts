@@ -16,6 +16,9 @@ import {
 afterEach(() => {
   mocks.execFile.mockReset();
   delete process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS;
+  delete process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF;
+  delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+  delete process.env.PROMPT_BOUNDARY_CONFIG;
 });
 
 describe('prompt-command-substitution', () => {
@@ -113,6 +116,26 @@ describe('prompt-command-substitution', () => {
       expect(mocks.execFile).toHaveBeenCalledTimes(1);
       const call = mocks.execFile.mock.calls[0];
       expect(call?.[2]).toMatchObject({ timeout: 4321 });
+    });
+
+    it('should filter continuity while preserving arbitrary config at the substitution boundary', async () => {
+      process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical-session';
+      process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = 'legacy-settings';
+      process.env.PROMPT_BOUNDARY_CONFIG = 'preserved';
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as
+          | ((error: Error | null, stdout?: string, stderr?: string) => void)
+          | undefined;
+        callback?.(null, 'ok\n', '');
+        return {};
+      });
+
+      await resolvePromptCommandSubstitutions("Run !'true'", { workingDirectory: '/tmp' });
+
+      const environment = mocks.execFile.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv;
+      expect(environment.PROMPT_BOUNDARY_CONFIG).toBe('preserved');
+      expect(environment.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+      expect(environment.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
     });
 
     it('should execute prompt substitution commands with stdin closed to avoid shell-read hangs', async () => {
