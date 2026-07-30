@@ -1374,6 +1374,14 @@ def append_live_log(path: Path | None, text: str) -> None:
         handle.flush()
 
 
+def command_owns_actual_review_child(command: Any) -> bool:
+    try:
+        tokens = [str(part) for part in command] if isinstance(command, list) else shlex.split(str(command))
+    except ValueError:
+        return False
+    return "--actual-review-command" in tokens and any(Path(token).name == "integration_owner_preflight.py" for token in tokens)
+
+
 def execute_rendered_command(
     command: Any,
     project_root: Path,
@@ -2286,11 +2294,11 @@ def run_workflow(args: argparse.Namespace) -> int:
         env["JUNO_WORKFLOW_STEP_ID"] = step_id
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
         child_evidence_dir = out_dir / "child_steps" / step_slug
-        if not args.dry_run:
-            if child_evidence_dir.exists():
+        env.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR", None)
+        if command_owns_actual_review_child(command):
+            if not args.dry_run and child_evidence_dir.exists():
                 shutil.rmtree(child_evidence_dir)
-            child_evidence_dir.mkdir(parents=True)
-        env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
+            env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
         if live_log_path is not None:
             env["JUNO_WORKFLOW_LIVE_LOG_PATH"] = str(live_log_path)
         for receipt_id, receipt in context.get("receipts", {}).items():

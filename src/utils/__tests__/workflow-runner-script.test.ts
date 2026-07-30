@@ -61,7 +61,7 @@ fi
 }
 
 async function installFakeChildEvidenceProducer(dir: string) {
-  const script = path.join(dir, 'emit-child.py');
+  const script = path.join(dir, 'integration_owner_preflight.py');
   await fs.writeFile(script, `#!/usr/bin/env python3
 import datetime, hashlib, json, os, pathlib
 root = pathlib.Path(os.environ['JUNO_WORKFLOW_CHILD_EVIDENCE_DIR'])
@@ -527,7 +527,7 @@ summary: |
     await fs.writeJson(workflowPath, {
       schema_version: 1,
       workflow_id: 'child_evidence',
-      steps: [{ id: 'integrate', command: ['python3', producer] }],
+      steps: [{ id: 'integrate', command: ['python3', producer, '--actual-review-command', 'yy pi review'] }],
     });
 
     const interrupted = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--run-root', testDir, '--print-output', 'none'], undefined, {
@@ -561,6 +561,21 @@ summary: |
     const doctor = runWorkflow(['doctor', outDir]);
     expect(doctor.status).toBe(1);
     expect(doctor.stdout).toContain('CHILD_ARTIFACT_HASH_MISMATCH');
+  });
+
+  it('withholds child-evidence capability from unrelated workflow steps', async () => {
+    const workflowPath = path.join(testDir, 'unrelated-child-capability.json');
+    const outDir = path.join(testDir, 'unrelated-child-capability-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'unrelated_child_capability',
+      steps: [{ id: 'validate', command: ['python3', '-c', "import os; print(os.environ.get('JUNO_WORKFLOW_CHILD_EVIDENCE_DIR', 'CLEARED'))"] }],
+    });
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
+    expect(await fs.pathExists(path.join(outDir, 'child_steps', 'validate'))).toBe(false);
   });
 
   it('accepts stdin workflow via --workflow -', async () => {

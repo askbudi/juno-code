@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Receipt-gated, target-ref-scoped local integration with exact CAS updates."""
 from __future__ import annotations
-import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time
+import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, tempfile, time
 from pathlib import Path
 from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -164,8 +164,20 @@ def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,v
   if peeled!=integrated or body.strip()!=message:raise IntegrationError("feature_tag_collision")
  else:git(repo,"tag","-a",name,integrated,"-m",message)
  return name
-def child_artifact(path:Path)->dict[str,str]:
- return {"path":str(path.resolve()),"sha256":sha(path)}
+def child_artifact(path:Path,published_path:Path|None=None)->dict[str,str]:
+ return {"path":str((published_path or path).resolve()),"sha256":sha(path)}
+def publish_child_evidence(staging:Path,target:Path,evidence:dict[str,Any],integrated:str)->None:
+ if evidence.get("schema_version")!="juno_workflow_child_step.v1" or evidence.get("child_id")!="actual_target_review" or evidence.get("reviewed_target_sha")!=integrated:raise IntegrationError("actual_target_review staged evidence binding invalid")
+ artifacts=evidence.get("artifacts")
+ if not isinstance(artifacts,dict) or set(artifacts)!={"stdout","stderr","response","capture","review_receipt"}:raise IntegrationError("actual_target_review staged artifacts invalid")
+ for name,artifact in artifacts.items():
+  staged=staging/("capture.json" if name=="capture" else "review_receipt.json" if name=="review_receipt" else f"{name}.txt")
+  if not isinstance(artifact,dict) or Path(str(artifact.get("path") or "")).resolve()!=target/staged.name or not staged.is_file() or artifact.get("sha256")!=sha(staged):raise IntegrationError("actual_target_review staged artifact binding invalid")
+ expected={"stdout.txt","stderr.txt","response.txt","capture.json","review_receipt.json"}
+ if {path.name for path in staging.iterdir()}!=expected:raise IntegrationError("actual_target_review staging contains unexpected evidence")
+ event_path=staging/"actual_target_review.event.json";event_path.write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n")
+ if json.loads(event_path.read_text())!=evidence:raise IntegrationError("actual_target_review staged event validation failed")
+ os.replace(staging,target)
 def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
  value=capture.get("session_id")
  if isinstance(value,str) and value:return value
@@ -173,18 +185,24 @@ def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
   match=re.search(r"session[_ -]?id[=:]\s*([A-Za-z0-9_.:-]+)",text,re.I)
   if match:return match.group(1)
  return None
-def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float)->dict[str,Any]:
+def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float,child_root:Path|None=None)->dict[str,Any]:
  try:tokens=shlex.split(command)
  except ValueError as exc:raise IntegrationError(f"actual_target_review command is not parseable: {exc}") from exc
  if len(tokens)<2 or Path(tokens[0]).name not in {"yy","juno-code","ypl"} or tokens[1]!="pi":raise IntegrationError("actual_target_review must be a declared yy/juno-code/ypl pi execution")
  forbidden={"--resume","--continue","continue","cc"}
  if any(token in forbidden for token in tokens):raise IntegrationError("actual_target_review must use a fresh session without resume/continue")
- child_root_text=os.environ.get("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip()
- child_root=Path(child_root_text).resolve() if child_root_text else None
+ child_root_text=os.environ.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip()
+ child_root=child_root.resolve() if child_root else Path(child_root_text).resolve() if child_root_text else None
+ staging=None
  if child_root:
-  child_root.mkdir(parents=True,exist_ok=True)
- capture_path=(child_root/"capture.raw.json") if child_root else receipt_path.with_suffix(".capture.raw.json")
- env={**os.environ,"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)}
+  child_root.parent.mkdir(parents=True,exist_ok=True)
+  if child_root.exists():
+   if not child_root.is_dir() or any(child_root.iterdir()):raise IntegrationError("actual_target_review evidence target must be absent or empty")
+   child_root.rmdir()
+  staging=Path(tempfile.mkdtemp(prefix=f".{child_root.name}.staging-",dir=child_root.parent));staging.chmod(0o700)
+ capture_path=(staging/"capture.raw.json") if staging else receipt_path.with_suffix(".capture.raw.json")
+ env={key:value for key,value in os.environ.items() if key!="JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"};env.update({"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)})
+ if receipt_path.exists():receipt_path.unlink()
  started_wall=datetime.datetime.now(datetime.timezone.utc);started=time.monotonic()
  try:review_run=subprocess.run(tokens,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
  except subprocess.TimeoutExpired as exc:
@@ -206,11 +224,12 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
   semantic="accepted" if review.get("schema_version")=="juno_review.v1" and review.get("review_kind")=="actual_target" and review.get("passed") is True and review.get("reviewed_tip")==integrated and review.get("open_bugs")==[] else "rejected"
  prompt=tokens[-1] if len(tokens)>=3 and Path(tokens[0]).name in {"yy","juno-code","ypl"} else ""
  evidence={"child_id":"actual_target_review","role":"actual_target_review","invocation_mode":"fresh_session","rendered_command_sha256":hashlib.sha256(command.encode()).hexdigest(),"rendered_argv_sha256":hashlib.sha256(json.dumps(tokens,separators=(",",":"),ensure_ascii=False).encode()).hexdigest(),"rendered_prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest() if prompt else None,"started_at":started_wall.isoformat().replace("+00:00","Z"),"completed_at":completed_wall.isoformat().replace("+00:00","Z"),"duration_seconds":duration,"exit_code":review_run.returncode,"transport_status":"success" if review_run.returncode==0 else "failed","semantic_outcome":semantic,"session_id":session_id,"reviewed_target_sha":integrated}
- if child_root:
-  stdout_path=child_root/"stdout.txt";stderr_path=child_root/"stderr.txt";response_path=child_root/"response.txt";normalized_capture=child_root/"capture.json";bound_receipt=child_root/"review_receipt.json"
+ if child_root and staging:
+  stdout_path=staging/"stdout.txt";stderr_path=staging/"stderr.txt";response_path=staging/"response.txt";normalized_capture=staging/"capture.json";bound_receipt=staging/"review_receipt.json"
   stdout_path.write_text(review_run.stdout or "");stderr_path.write_text(review_run.stderr or "");response_path.write_text(response);normalized_capture.write_text(json.dumps({"session_id":session_id,"result":response,"raw_capture":capture},sort_keys=True)+"\n");bound_receipt.write_bytes(receipt_path.read_bytes() if receipt_path.is_file() else b"")
-  evidence.update({"schema_version":"juno_workflow_child_step.v1","parent_workflow_id":os.environ.get("JUNO_WORKFLOW_ID",""),"parent_run_id":os.environ.get("JUNO_WORKFLOW_RUN_ID",""),"parent_step_id":os.environ.get("JUNO_WORKFLOW_STEP_ID",""),"parent_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"artifacts":{"stdout":child_artifact(stdout_path),"stderr":child_artifact(stderr_path),"response":child_artifact(response_path),"capture":child_artifact(normalized_capture),"review_receipt":child_artifact(bound_receipt)}})
-  event_path=child_root/"actual_target_review.event.json";event_path.write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n")
+  if capture_path.exists():capture_path.unlink()
+  evidence.update({"schema_version":"juno_workflow_child_step.v1","parent_workflow_id":os.environ.get("JUNO_WORKFLOW_ID",""),"parent_run_id":os.environ.get("JUNO_WORKFLOW_RUN_ID",""),"parent_step_id":os.environ.get("JUNO_WORKFLOW_STEP_ID",""),"parent_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"artifacts":{"stdout":child_artifact(stdout_path,child_root/stdout_path.name),"stderr":child_artifact(stderr_path,child_root/stderr_path.name),"response":child_artifact(response_path,child_root/response_path.name),"capture":child_artifact(normalized_capture,child_root/normalized_capture.name),"review_receipt":child_artifact(bound_receipt,child_root/bound_receipt.name)}})
+  publish_child_evidence(staging,child_root,evidence,integrated);staging=None
   live_path=os.environ.get("JUNO_WORKFLOW_LIVE_LOG_PATH","").strip()
   if live_path:
    with Path(live_path).open("a",encoding="utf-8") as live:live.write(f"\n=== CHILD actual_target_review semantic={semantic} exit={review_run.returncode} ===\n{review_run.stdout or ''}{review_run.stderr or ''}=== END CHILD actual_target_review ===\n")
@@ -232,6 +251,7 @@ def runtime_identities(detaches:list[dict[str,Any]],repositories:list[dict[str,A
 def main(argv:list[str]|None=None)->int:
  p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--checked-out-target",choices=("detach_same_sha",));p.add_argument("--risk-tier",choices=tuple(RISK_ORDER),default="high");p.add_argument("--feature-tag",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt",type=Path);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
  a=p.parse_args(argv)
+ child_evidence_text=os.environ.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip();child_evidence_root=Path(child_evidence_text).resolve() if child_evidence_text else None
  if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
  if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
  if not 0<a.validation_timeout<=86400:p.error("--validation-timeout must be between 0 and 86400 seconds")
@@ -289,11 +309,12 @@ def main(argv:list[str]|None=None)->int:
    if git(actual_cwd,"rev-parse","HEAD")!=integrated or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):raise IntegrationError("actual target validation checkout moved or dirty")
    validations=[]
    for command in a.validation_command:
-    r=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout);validations.append({"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"exit_code":r.returncode})
+    validation_env={key:value for key,value in os.environ.items() if key!="JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"}
+    r=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout,env=validation_env);validations.append({"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"exit_code":r.returncode})
     if r.returncode:raise IntegrationError("actual_target_validation_failed")
    actual_semantic="not_required_by_effective_tier";actual_hash=None
    if actual_required:
-    child_evidence=actual_review_child(a.actual_review_command,actual_cwd,a.actual_review_receipt,integrated,a.validation_timeout)
+    child_evidence=actual_review_child(a.actual_review_command,actual_cwd,a.actual_review_receipt,integrated,a.validation_timeout,child_evidence_root)
     receipt["actual_review_child_step"]={key:value for key,value in child_evidence.items() if key not in {"artifacts"}}
     actual_semantic="performed";actual_hash=sha(a.actual_review_receipt)
    for item in a.repository:
