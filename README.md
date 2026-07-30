@@ -148,7 +148,18 @@ juno-code -b shell -s claude
 ```
 
 ### Task Tracking: Structured, Not Prose
-Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Hot current state uses safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use immutable NDJSON packs:
+Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Hot current state uses safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use immutable NDJSON packs.
+
+Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `juno-kanban project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
+
+```bash
+./.juno_task/scripts/kanban.sh --project juno-code create --body "Cross-project issue" --tags bug
+./.juno_task/scripts/kanban.sh --project juno-code list --status todo
+```
+
+The destination wrapper/runtime remains authoritative, and invalid routing never falls back to the source board. This implementation boundary matters because direct foreign-storage access could bypass destination controller, virtualenv, stdin, or write guards; real two-project tests prove exact target and stdin behavior.
+
+Normal local usage remains unchanged:
 ```bash
 # Query tasks programmatically - always parseable
 ./.juno_task/scripts/kanban.sh list --status backlog todo in_progress

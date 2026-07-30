@@ -9,6 +9,10 @@ enable-shell-directives: true
 
 All commands use `./.juno_task/scripts/kanban.sh` (wrapper around juno-kanban Python CLI).
 
+### Opt-in cross-project routing
+
+Cross-project access is disabled by default. The source `.juno_task/config.json` must set `kanbanRegistry.enabled: true` and explicitly list `allowedProjects`; environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`. Register with `juno-kanban project add ALIAS --path /absolute/project`, then route any command with `--project ALIAS`. The destination wrapper/runtime remains authoritative, and routing failures never fall back to the source board.
+
 ### Core Commands
 
 **CREATE** — Add a new task

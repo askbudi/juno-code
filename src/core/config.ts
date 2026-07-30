@@ -141,6 +141,21 @@ const GitCheckpointSchema = z
   .strict()
   .optional();
 
+const KanbanProjectAliasSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'must be a lowercase project alias');
+
+const KanbanRegistrySchema = z
+  .object({
+    enabled: z.boolean(),
+    allowedProjects: z.array(KanbanProjectAliasSchema).refine(
+      (aliases) => new Set(aliases).size === aliases.length,
+      'must not contain duplicate project aliases',
+    ),
+  })
+  .strict()
+  .optional();
+
 /**
  * Zod schema for validating JunoTaskConfig
  * Provides runtime validation with detailed error messages
@@ -250,6 +265,10 @@ export const JunoTaskConfigSchema = z
       'Allowlisted controller paths and optional read-only commit-planning agent settings',
     ),
 
+    kanbanRegistry: KanbanRegistrySchema.describe(
+      'Disabled-by-default cross-project Kanban routing and explicit alias allowlist',
+    ),
+
     // Project environment bootstrap
     envFilePath: z
       .string()
@@ -316,6 +335,12 @@ export const DEFAULT_CONFIG: JunoTaskConfig = {
   // Paths
   workingDirectory: process.cwd(),
   sessionDirectory: path.join(process.cwd(), '.juno_task'),
+
+  // Cross-project Kanban registry is deny-all unless explicitly enabled and allowlisted.
+  kanbanRegistry: {
+    enabled: false,
+    allowedProjects: [],
+  },
 
   // Project environment bootstrap
   envFilePath: '.env.juno',

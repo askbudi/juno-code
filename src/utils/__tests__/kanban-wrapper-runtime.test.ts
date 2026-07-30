@@ -64,6 +64,10 @@ if [[ "${'$'}{1:-}" == "show-env" ]]; then
   printf '%s\\n' "${'$'}{VIRTUAL_ENV:-}"
   exit 0
 fi
+if [[ "${'$'}{1:-}" == "--project" ]]; then
+  printf '%s|%s\\n' "${'$'}{JUNO_KANBAN_INVOCATION_ROOT:-}" "${'$'}*"
+  exit 0
+fi
 python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TASK_ROOT"])'
 `,
     );
@@ -134,6 +138,28 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
 
     expect(result.status, result.stderr).toBe(0);
     expect(fs.realpathSync(result.stdout.trim())).toBe(fs.realpathSync(path.join(projectRoot, '.venv_juno')));
+  });
+
+  it('normalizes --project and preserves the initialized source root', () => {
+    const result = spawnSync(
+      path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'),
+      ['list', '--project', 'destination'],
+      {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          JUNO_TASK_ROOT: '',
+          VIRTUAL_ENV: '',
+          PYTHONPATH: path.join(projectRoot, 'installed-site'),
+        },
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      `${fs.realpathSync(projectRoot)}|--project destination list`,
+    );
   });
 
   it('uses the compatible controller executable even when a neighboring source tree is present', () => {

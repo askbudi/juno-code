@@ -52,6 +52,11 @@ export interface GitCheckpointConfig {
   agent?: GitCheckpointAgentConfig;
 }
 
+export interface KanbanRegistryConfig {
+  enabled: boolean;
+  allowedProjects: string[];
+}
+
 // Progress event types
 export type ProgressEventType = 'tool_start' | 'tool_result' | 'thinking' | 'error' | 'info';
 
@@ -99,6 +104,9 @@ export interface JunoTaskConfig {
 
   // Controller-owned Git checkpoint configuration
   gitCheckpoint?: GitCheckpointConfig;
+
+  // Explicit, source-project authorization for cross-project Kanban aliases
+  kanbanRegistry?: KanbanRegistryConfig;
 
   // Project environment bootstrap
   /** Path to project env file loaded on startup (relative to workingDirectory or absolute) */

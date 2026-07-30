@@ -175,6 +175,9 @@ if [[ ! -f "$RESOLVER" ]]; then
     exit 1
 fi
 INVOCATION_CWD="$PWD"
+# Preserve the initialized source checkout before controller resolution changes
+# cwd. juno-kanban uses this only for opt-in registry policy evaluation.
+export JUNO_KANBAN_INVOCATION_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 RESOLVED_ENV=$(python3 "$RESOLVER" --cwd "$INVOCATION_CWD" --operation kanban --format shell)
 eval "$RESOLVED_ENV"
 PROJECT_ROOT="$JUNO_TASK_ROOT"
@@ -202,12 +205,12 @@ normalize_arguments() {
     local found_command=false
 
     # Known subcommands
-    local commands="create search get show update archive mark list merge ready deps order history doctor archive-search archive-pack reconcile convert rollback"
+    local commands="project create search get show update archive mark list merge ready deps order history doctor archive-search archive-pack reconcile convert rollback"
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             # Global flags that take a value
-            -f|--format|-c|--config)
+            -f|--format|-c|--config|--project)
                 if [[ -n "${2:-}" ]]; then
                     NORMALIZED_GLOBAL_FLAGS+=("$1" "$2")
                     shift 2
@@ -254,7 +257,7 @@ requires_contract_write_validation() {
     local command="${NORMALIZED_COMMAND_ARGS[0]:-}"
     local subcommand="${NORMALIZED_COMMAND_ARGS[1]:-}"
     case "$command" in
-        get|show|list|search|ready|order|history|doctor|archive-search)
+        project|get|show|list|search|ready|order|history|doctor|archive-search)
             return 1
             ;;
         deps)

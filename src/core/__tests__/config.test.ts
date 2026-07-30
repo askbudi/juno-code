@@ -60,6 +60,10 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.sessionDirectory).toBe(path.join(process.cwd(), '.juno_task'));
       expect(DEFAULT_CONFIG.envFilePath).toBe('.env.juno');
       expect(DEFAULT_CONFIG.envFileCopied).toBe(false);
+      expect(DEFAULT_CONFIG.kanbanRegistry).toEqual({
+        enabled: false,
+        allowedProjects: [],
+      });
       expect(DEFAULT_CONFIG.promptMacros).toEqual({
         enabled: true,
         order: 'before_command_substitution',
@@ -161,6 +165,35 @@ describe('Configuration Module', () => {
           gitCheckpoint: { agent: { timeoutSeconds: 601 } },
         }),
       ).toThrow(/gitCheckpoint/);
+    });
+
+    it('should accept an enabled cross-project Kanban alias allowlist', () => {
+      const config = validateConfig({
+        ...DEFAULT_CONFIG,
+        kanbanRegistry: {
+          enabled: true,
+          allowedProjects: ['juno-code', 'convert_if_chat'],
+        },
+      });
+      expect(config.kanbanRegistry).toEqual({
+        enabled: true,
+        allowedProjects: ['juno-code', 'convert_if_chat'],
+      });
+    });
+
+    it('should reject unsafe or ambiguous cross-project Kanban registry config', () => {
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        kanbanRegistry: { enabled: true, allowedProjects: ['Uppercase'] },
+      })).toThrow(/kanbanRegistry/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        kanbanRegistry: { enabled: true, allowedProjects: ['same', 'same'] },
+      })).toThrow(/kanbanRegistry/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        kanbanRegistry: { enabled: true, allowedProjects: [], allowAll: true },
+      })).toThrow(/kanbanRegistry/);
     });
 
     it('should reject invalid log level', () => {
