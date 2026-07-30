@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Receipt-gated, target-ref-scoped local integration with exact CAS updates."""
 from __future__ import annotations
-import argparse, fcntl, hashlib, json, os, re, subprocess, sys, time
+import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time
 from pathlib import Path
 from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -164,6 +164,60 @@ def tag(repo:Path,task_id:str,integrated:str,target_ref:str,candidate_hash:str,v
   if peeled!=integrated or body.strip()!=message:raise IntegrationError("feature_tag_collision")
  else:git(repo,"tag","-a",name,integrated,"-m",message)
  return name
+def child_artifact(path:Path)->dict[str,str]:
+ return {"path":str(path.resolve()),"sha256":sha(path)}
+def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
+ value=capture.get("session_id")
+ if isinstance(value,str) and value:return value
+ for text in (stdout,stderr):
+  match=re.search(r"session[_ -]?id[=:]\s*([A-Za-z0-9_.:-]+)",text,re.I)
+  if match:return match.group(1)
+ return None
+def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float)->dict[str,Any]:
+ try:tokens=shlex.split(command)
+ except ValueError as exc:raise IntegrationError(f"actual_target_review command is not parseable: {exc}") from exc
+ forbidden={"--resume","--continue","continue","cc"}
+ if any(token in forbidden for token in tokens):raise IntegrationError("actual_target_review must use a fresh session without resume/continue")
+ child_root_text=os.environ.get("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip()
+ child_root=Path(child_root_text).resolve() if child_root_text else None
+ if child_root:
+  child_root.mkdir(parents=True,exist_ok=True)
+ capture_path=(child_root/"capture.raw.json") if child_root else receipt_path.with_suffix(".capture.raw.json")
+ env={**os.environ,"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)}
+ started_wall=datetime.datetime.now(datetime.timezone.utc);started=time.monotonic()
+ try:review_run=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
+ except subprocess.TimeoutExpired as exc:
+  stdout=exc.stdout.decode() if isinstance(exc.stdout,bytes) else exc.stdout or "";stderr=exc.stderr.decode() if isinstance(exc.stderr,bytes) else exc.stderr or ""
+  review_run=subprocess.CompletedProcess(command,124,stdout,stderr+f"actual target review timed out after {timeout} seconds\n")
+ duration=round(time.monotonic()-started,3);completed_wall=datetime.datetime.now(datetime.timezone.utc)
+ capture:dict[str,Any]={}
+ if capture_path.is_file():
+  try:
+   loaded=json.loads(capture_path.read_text());capture=loaded if isinstance(loaded,dict) else {}
+  except json.JSONDecodeError:pass
+ response=str(capture.get("result") or review_run.stdout or "")
+ session_id=child_session(review_run.stdout or "",review_run.stderr or "",capture)
+ semantic="failed"
+ review:dict[str,Any]={}
+ if review_run.returncode==0 and receipt_path.is_file():
+  try:review=json.loads(receipt_path.read_text())
+  except json.JSONDecodeError:review={}
+  semantic="accepted" if review.get("schema_version")=="juno_review.v1" and review.get("review_kind")=="actual_target" and review.get("passed") is True and review.get("reviewed_tip")==integrated and review.get("open_bugs")==[] else "rejected"
+ prompt=tokens[-1] if len(tokens)>=3 and Path(tokens[0]).name in {"yy","juno-code","ypl"} else ""
+ evidence={"child_id":"actual_target_review","role":"actual_target_review","invocation_mode":"fresh_session","rendered_command_sha256":hashlib.sha256(command.encode()).hexdigest(),"rendered_argv_sha256":hashlib.sha256(json.dumps(tokens,separators=(",",":"),ensure_ascii=False).encode()).hexdigest(),"rendered_prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest() if prompt else None,"started_at":started_wall.isoformat().replace("+00:00","Z"),"completed_at":completed_wall.isoformat().replace("+00:00","Z"),"duration_seconds":duration,"exit_code":review_run.returncode,"transport_status":"success" if review_run.returncode==0 else "failed","semantic_outcome":semantic,"session_id":session_id,"reviewed_target_sha":integrated}
+ if child_root:
+  stdout_path=child_root/"stdout.txt";stderr_path=child_root/"stderr.txt";response_path=child_root/"response.txt";normalized_capture=child_root/"capture.json";bound_receipt=child_root/"review_receipt.json"
+  stdout_path.write_text(review_run.stdout or "");stderr_path.write_text(review_run.stderr or "");response_path.write_text(response);normalized_capture.write_text(json.dumps({"session_id":session_id,"result":response,"raw_capture":capture},sort_keys=True)+"\n");bound_receipt.write_bytes(receipt_path.read_bytes() if receipt_path.is_file() else b"")
+  evidence.update({"schema_version":"juno_workflow_child_step.v1","parent_workflow_id":os.environ.get("JUNO_WORKFLOW_ID",""),"parent_run_id":os.environ.get("JUNO_WORKFLOW_RUN_ID",""),"parent_step_id":os.environ.get("JUNO_WORKFLOW_STEP_ID",""),"parent_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"artifacts":{"stdout":child_artifact(stdout_path),"stderr":child_artifact(stderr_path),"response":child_artifact(response_path),"capture":child_artifact(normalized_capture),"review_receipt":child_artifact(bound_receipt)}})
+  event_path=child_root/"actual_target_review.event.json";event_path.write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n")
+  live_path=os.environ.get("JUNO_WORKFLOW_LIVE_LOG_PATH","").strip()
+  if live_path:
+   with Path(live_path).open("a",encoding="utf-8") as live:live.write(f"\n=== CHILD actual_target_review semantic={semantic} exit={review_run.returncode} ===\n{review_run.stdout or ''}{review_run.stderr or ''}=== END CHILD actual_target_review ===\n")
+ if review_run.returncode:raise IntegrationError("actual_target_review_command_failed")
+ if semantic!="accepted":raise IntegrationError("actual_target_review_PASS_required")
+ evidence["review_receipt_sha256"]=sha(receipt_path)
+ return evidence
+
 def runtime_identities(detaches:list[dict[str,Any]],repositories:list[dict[str,Any]])->list[dict[str,Any]]:
  by_name={item["name"]:item for item in repositories};result=[]
  for evidence in detaches:
@@ -238,10 +292,8 @@ def main(argv:list[str]|None=None)->int:
     if r.returncode:raise IntegrationError("actual_target_validation_failed")
    actual_semantic="not_required_by_effective_tier";actual_hash=None
    if actual_required:
-    review_run=subprocess.run(a.actual_review_command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout)
-    if review_run.returncode:raise IntegrationError("actual_target_review_command_failed")
-    review=json.loads(a.actual_review_receipt.read_text())
-    if review.get("schema_version")!="juno_review.v1" or review.get("review_kind")!="actual_target" or review.get("passed") is not True or review.get("reviewed_tip")!=integrated or review.get("open_bugs") != []:raise IntegrationError("actual_target_review_PASS_required")
+    child_evidence=actual_review_child(a.actual_review_command,actual_cwd,a.actual_review_receipt,integrated,a.validation_timeout)
+    receipt["actual_review_child_step"]={key:value for key,value in child_evidence.items() if key not in {"artifacts"}}
     actual_semantic="performed";actual_hash=sha(a.actual_review_receipt)
    for item in a.repository:
     if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target moved during validation/review")

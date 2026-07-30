@@ -323,6 +323,14 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         f"  implementation_tag: {impl_tag}",
         f"  e2e_tag: {e2e_tag}",
         f"  parent_task: {parent}",
+        "  shared_agent_contract: |",
+        "    Use the canonical controller Kanban wrapper for Kanban writes.",
+        "    Work only on the selected task and explicit TASK_ROOT.",
+        "    Follow every MUST, MUST NOT, and exact validation gate in the task body.",
+        "    Do not push, release, publish, deploy, mutate production, run excluded E2E, or clean lifecycle worktrees.",
+        "  review_contract: |",
+        "    Inspect the exact lifecycle-bound diff, tests, and typed receipts independently.",
+        "    Runner transport success is not semantic acceptance; reviewer fixes may be committed and accepted at the resulting exact tip.",
         "steps:",
         "  - id: preflight",
         "    description: Resolve selected Kanban tasks and prove E2E tag isolation",
@@ -354,7 +362,14 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             read_first = ROLE_READ_FIRST.get(str(task.get("role", "")), CONSERVATIVE_READ_FIRST)
         read_lines = "\n".join(f"        - `{path}`" for path in read_first) if read_first else "        (none explicitly supplied)"
         prior = task.get("prior_step")
-        prior_block = f"\n\n        Prior step response:\n        {{{{ steps.{prior}.response }}}}" if prior else ""
+        conversational_handoff = bool(task.get("conversational_handoff", False))
+        if conversational_handoff and not prior:
+            raise ValueError(f"task {task_id} conversational_handoff requires prior_step")
+        prior_block = (
+            f"\n\n        Deliberately declared conversational handoff:\n        {{{{ steps.{prior}.response }}}}"
+            if conversational_handoff else ""
+        )
+        role_contract = ["", "        {{ vars.review_contract }}"] if str(task.get("role", "")) == "review" else []
         terminal_guard = []
         if str(task.get("role", "")) == "review":
             terminal_guard = [
@@ -370,7 +385,10 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             "      - yy",
             "      - pi",
             "      - |",
-            f"        You are an empty-context agent for Kanban task {task_id}.",
+            f"        You are a fresh-session agent for Kanban task {task_id}.",
+            "",
+            "        {{ vars.shared_agent_contract }}",
+            *role_contract,
             "",
             "        Read first:",
             read_lines,
@@ -379,9 +397,8 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             f"        - Get task: `{kanban_wrapper} get {task_id} --compact`",
             "        - Fetch a particular related task separately only when its complete body is required.",
             "        - Mark in_progress with a response-file.",
-            "        - Follow every MUST/MUST NOT and exact validation gate in the task body.",
             "        - Mark done only when validation evidence satisfies the task; otherwise leave a clear blocker response.",
-            f"        - Do not run post-deploy E2E or use tag `{e2e_tag}`.",
+            f"        - Do not use tag `{e2e_tag}`.",
             *terminal_guard,
             "",
             f"        Parent task: {parent}",

@@ -60,6 +60,43 @@ fi
   return { binDir, executablePath };
 }
 
+async function installFakeChildEvidenceProducer(dir: string) {
+  const script = path.join(dir, 'emit-child.py');
+  await fs.writeFile(script, `#!/usr/bin/env python3
+import datetime, hashlib, json, os, pathlib
+root = pathlib.Path(os.environ['JUNO_WORKFLOW_CHILD_EVIDENCE_DIR'])
+root.mkdir(parents=True, exist_ok=True)
+def put(name, value):
+    path = root / name
+    path.write_text(value, encoding='utf-8')
+    return {'path': str(path.resolve()), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+stdout = put('stdout.txt', 'child log\\n')
+stderr = put('stderr.txt', '')
+response = put('response.txt', 'actual target accepted\\n')
+capture = put('capture.json', json.dumps({'session_id':'child-session-1','result':'actual target accepted'}) + '\\n')
+receipt_path = root / 'actual-review.json'
+receipt_path.write_text(json.dumps({'reviewed_tip':'a' * 40, 'passed':True}) + '\\n', encoding='utf-8')
+receipt = {'path': str(receipt_path.resolve()), 'sha256': hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+event = {
+ 'schema_version':'juno_workflow_child_step.v1', 'child_id':'actual_target_review',
+ 'role':'actual_target_review', 'parent_workflow_id':os.environ['JUNO_WORKFLOW_ID'],
+ 'parent_run_id':os.environ['JUNO_WORKFLOW_RUN_ID'], 'parent_step_id':os.environ['JUNO_WORKFLOW_STEP_ID'],
+ 'parent_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST'], 'invocation_mode':'fresh_session',
+ 'rendered_command_sha256':hashlib.sha256(b'yy pi review').hexdigest(),
+ 'rendered_argv_sha256':hashlib.sha256(b'argv').hexdigest(),
+ 'rendered_prompt_sha256':hashlib.sha256(b'review').hexdigest(), 'started_at':now,
+ 'completed_at':now, 'duration_seconds':0.01, 'exit_code':0, 'transport_status':'success',
+ 'semantic_outcome':'accepted', 'session_id':'child-session-1', 'reviewed_target_sha':'a' * 40,
+ 'artifacts':{'stdout':stdout,'stderr':stderr,'response':response,'capture':capture,'review_receipt':receipt}
+}
+(root / 'actual_target_review.event.json').write_text(json.dumps(event, sort_keys=True) + '\\n', encoding='utf-8')
+print('parent complete')
+`);
+  await fs.chmod(script, 0o755);
+  return script;
+}
+
 async function installFakeTopLevelPersistingJuno(dir: string, name = 'yy') {
   const binDir = path.join(dir, 'bin');
   await fs.ensureDir(binDir);
@@ -159,7 +196,7 @@ describe('workflow_runner.sh template script', () => {
         },
       ],
       steps: [
-        { id: 'pre_merge_review', command: 'true' },
+        { id: 'pre_merge_review', command: ['yy', 'pi', 'Review the exact task tip.'] },
         { id: 'candidate_review', command: 'true' },
         {
           id: 'integrate',
@@ -172,6 +209,13 @@ describe('workflow_runner.sh template script', () => {
 
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(accepted.status).toBe(0);
+
+    workflow.steps[0].command = ['yy', 'pi', '--resume', 'old-session', 'Review again.'];
+    await fs.writeJson(workflowPath, workflow);
+    const resumedReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(resumedReview.status).not.toBe(0);
+    expect(resumedReview.stderr).toMatch(/fresh session without resume/);
+    workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
 
     workflow.steps[2].command =
       'python3 .juno_task/scripts/integration_owner_preflight.py --checkpoint-controller --exec-command integrate.sh';
@@ -474,6 +518,49 @@ summary: |
     expect(manifest.dry_run).toBe(true);
     expect(manifest.steps[0].status).toBe('dry_run');
     expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toContain('status=dry_run');
+  });
+
+  it('persists typed actual-target child evidence in manifests, checkpoints, recovery, and doctor', async () => {
+    const producer = await installFakeChildEvidenceProducer(testDir);
+    const workflowPath = path.join(testDir, 'child-evidence.json');
+    const outDir = path.join(testDir, 'child-evidence-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'child_evidence',
+      steps: [{ id: 'integrate', command: ['python3', producer] }],
+    });
+
+    const interrupted = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--run-root', testDir, '--print-output', 'none'], undefined, {
+      JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest',
+    });
+    expect(interrupted.status).toBe(86);
+
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    expect(contract.completed_steps.integrate.child_steps).toHaveLength(1);
+    expect(contract.completed_steps.integrate.child_steps[0]).toMatchObject({
+      child_id: 'actual_target_review',
+      role: 'actual_target_review',
+      invocation_mode: 'fresh_session',
+      session_id: 'child-session-1',
+      semantic_outcome: 'accepted',
+      reviewed_target_sha: 'a'.repeat(40),
+    });
+
+    const recovery = runWorkflow(['recover-attempt', outDir, '--dry-run']);
+    expect(recovery.status, recovery.stderr).toBe(0);
+    expect(JSON.parse(recovery.stdout).verified_prefix_steps).toEqual(['integrate']);
+    const recovered = runWorkflow(['recover-attempt', outDir]);
+    expect(recovered.status, recovered.stderr).toBe(0);
+
+    const recoveredContract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    const recoveredManifest = await fs.readJson(recoveredContract.attempts.at(-1).manifest);
+    expect(recoveredManifest.steps[0].child_steps[0].artifacts.response.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(runWorkflow(['doctor', outDir]).status).toBe(0);
+
+    await fs.appendFile(recoveredManifest.steps[0].child_steps[0].artifacts.stdout.path, 'tamper');
+    const doctor = runWorkflow(['doctor', outDir]);
+    expect(doctor.status).toBe(1);
+    expect(doctor.stdout).toContain('CHILD_ARTIFACT_HASH_MISMATCH');
   });
 
   it('accepts stdin workflow via --workflow -', async () => {

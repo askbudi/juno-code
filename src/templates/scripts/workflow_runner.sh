@@ -666,6 +666,14 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         review_steps = [str(validation_ownership["pre_merge_review"]), str(validation_ownership["candidate_review"])]
         if any(step_indexes[step] >= step_indexes[integration_step] for step in review_steps):
             raise WorkflowError("pre_merge_review and candidate_review must precede integration_step")
+        pre_merge_step = next(step for step in steps if str(step["id"]) == review_steps[0])
+        if risk_tier in {"medium", "high", "release"} and not detect_juno_command(pre_merge_step.get("command")):
+            raise WorkflowError("medium/high/release pre_merge_review must be a dedicated yy/juno-code agent step")
+        for review_step_id in review_steps:
+            review_step = next(step for step in steps if str(step["id"]) == review_step_id)
+            review_argv = command_argv(review_step.get("command"))
+            if detect_juno_command(review_step.get("command")) and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
+                raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
         if str(validation_ownership["actual_target_review"]) != integration_step:
             raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
         integration_receipts = [
@@ -1251,6 +1259,87 @@ def read_capture_payload(capture_path: Path) -> tuple[dict[str, Any] | None, str
     if not isinstance(payload, dict):
         return None, f"capture JSON at {capture_path} must be an object"
     return payload, None
+
+
+def load_child_step_evidence(
+    child_dir: Path, workflow_id: str, run_id: str, parent_step_id: str, parent_digest: str,
+) -> list[dict[str, Any]]:
+    if not child_dir.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for event_path in sorted(child_dir.glob("*.event.json")):
+        try:
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise WorkflowError(f"child_step[{parent_step_id}]: invalid event {event_path}: {exc}") from exc
+        if not isinstance(event, dict) or event.get("schema_version") != "juno_workflow_child_step.v1":
+            raise WorkflowError(f"child_step[{parent_step_id}]: unsupported event schema")
+        child_id = str(event.get("child_id") or "")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", child_id):
+            raise WorkflowError(f"child_step[{parent_step_id}]: invalid child_id")
+        expected = {
+            "role": "actual_target_review", "parent_workflow_id": workflow_id,
+            "parent_run_id": run_id, "parent_step_id": parent_step_id,
+            "parent_step_digest": parent_digest, "invocation_mode": "fresh_session",
+        }
+        for field, value in expected.items():
+            if event.get(field) != value:
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].{field}: expected={value!r} actual={event.get(field)!r}")
+        for hash_field in ("rendered_command_sha256", "rendered_argv_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(event.get(hash_field) or "")):
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: {hash_field} missing")
+        prompt_hash = event.get("rendered_prompt_sha256")
+        if prompt_hash is not None and not re.fullmatch(r"[0-9a-f]{64}", str(prompt_hash)):
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: rendered prompt hash invalid")
+        if event.get("transport_status") not in {"success", "failed"} or event.get("semantic_outcome") not in {"accepted", "rejected", "failed"}:
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: invalid transport or semantic outcome")
+        if not isinstance(event.get("exit_code"), int) or not isinstance(event.get("duration_seconds"), (int, float)):
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: timing/exit evidence missing")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(event.get("reviewed_target_sha") or "")):
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: reviewed target SHA missing")
+        artifacts = event.get("artifacts")
+        required_artifacts = {"stdout", "stderr", "response", "capture", "review_receipt"}
+        if not isinstance(artifacts, dict) or set(artifacts) != required_artifacts:
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: exact artifact set required")
+        for artifact_id, evidence in artifacts.items():
+            if not isinstance(evidence, dict):
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].artifact[{artifact_id}]: evidence missing")
+            path = Path(str(evidence.get("path") or ""))
+            try:
+                path.resolve().relative_to(child_dir.resolve())
+            except ValueError:
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].artifact[{artifact_id}]: cross-step path")
+            if not path.is_file() or file_sha256(path) != evidence.get("sha256"):
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].artifact[{artifact_id}]: hash mismatch")
+        event["event"] = {"path": str(event_path.resolve()), "sha256": file_sha256(event_path)}
+        events.append(event)
+    ids = [str(event["child_id"]) for event in events]
+    if len(ids) != len(set(ids)):
+        raise WorkflowError(f"child_step[{parent_step_id}]: duplicate child ID")
+    return events
+
+
+def verify_persisted_child_steps(child_steps: Any, parent_step_id: str, run_dir: Path) -> None:
+    if child_steps is None:
+        return
+    if not isinstance(child_steps, list):
+        raise WorkflowError(f"child_step[{parent_step_id}]: checkpoint evidence must be a list")
+    for child in child_steps:
+        child_id = str(child.get("child_id") or "") if isinstance(child, dict) else ""
+        if not isinstance(child, dict) or child.get("schema_version") != "juno_workflow_child_step.v1":
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}]: unsupported checkpoint evidence")
+        for artifact_id, evidence in (child.get("artifacts") or {}).items():
+            path = Path(str(evidence.get("path") or ""))
+            try:
+                path.resolve().relative_to(run_dir.resolve())
+            except ValueError:
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].artifact[{artifact_id}]: cross-run path")
+            if not path.is_file() or file_sha256(path) != evidence.get("sha256"):
+                raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].artifact[{artifact_id}]: hash mismatch")
+        event_evidence = child.get("event") or {}
+        event_path = Path(str(event_evidence.get("path") or ""))
+        if not event_path.is_file() or file_sha256(event_path) != event_evidence.get("sha256"):
+            raise WorkflowError(f"child_step[{parent_step_id}/{child_id}].event: hash mismatch")
 
 
 def make_summary(workflow: dict[str, Any], context: dict[str, Any], failed_steps: list[str], dry_run: bool) -> str:
@@ -2192,8 +2281,18 @@ def run_workflow(args: argparse.Namespace) -> int:
         env, child_continue_session_before = build_command_env(
             project_root, command, capture_enabled, capture_path, f"workflow_{step_slug}", bool(args.dry_run)
         )
+        env["JUNO_WORKFLOW_ID"] = workflow_id
+        env["JUNO_WORKFLOW_RUN_ID"] = run_id
         env["JUNO_WORKFLOW_STEP_ID"] = step_id
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
+        child_evidence_dir = out_dir / "child_steps" / step_slug
+        if not args.dry_run:
+            if child_evidence_dir.exists():
+                shutil.rmtree(child_evidence_dir)
+            child_evidence_dir.mkdir(parents=True)
+        env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
+        if live_log_path is not None:
+            env["JUNO_WORKFLOW_LIVE_LOG_PATH"] = str(live_log_path)
         for receipt_id, receipt in context.get("receipts", {}).items():
             env_key = "JUNO_WORKFLOW_RECEIPT_" + re.sub(r"[^A-Za-z0-9]", "_", receipt_id).upper()
             env[env_key] = str(receipt["path"])
@@ -2270,6 +2369,20 @@ def run_workflow(args: argparse.Namespace) -> int:
             "session_id": "",
             "command_sha256": command_digest,
         }
+        child_steps: list[dict[str, Any]] = []
+        if not args.dry_run:
+            try:
+                child_steps = load_child_step_evidence(
+                    child_evidence_dir, workflow_id, run_id, step_id, command_digest
+                )
+            except WorkflowError as exc:
+                result["status"] = "failed"
+                result["failure_reason"] = str(exc)
+                result["child_evidence_error"] = str(exc)
+                stderr = stderr + ("\n" if stderr else "") + str(exc) + "\n"
+                result["stderr"] = stderr
+        if child_steps:
+            result["child_steps"] = child_steps
         if capture_enabled:
             apply_agent_session_capture(
                 result,
@@ -2349,6 +2462,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "duration_seconds": duration,
                     "artifacts": artifacts,
                     "receipts": produced_receipts,
+                    "child_steps": child_steps,
                     "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
                 }
                 run_contract.setdefault("completed_steps", {})[step_id] = checkpoint
@@ -2936,6 +3050,7 @@ def verify_checkpoint(
             receipt_contract, context, Path(str(contract["project_root"])), command_digest,
             str(evidence.get("sha256") or ""),
         )
+    verify_persisted_child_steps(checkpoint.get("child_steps", []), step_id, run_dir)
     response_path = Path(str(artifacts["response"]["path"]))
     return {
         "id": step_id,
@@ -2954,6 +3069,7 @@ def verify_checkpoint(
         "response": response_path.read_text(encoding="utf-8"),
         "recovered_from_checkpoint": True,
         "reused_from_attempt": checkpoint.get("attempt_id"),
+        "child_steps": checkpoint.get("child_steps", []),
     }
 
 
@@ -3098,6 +3214,17 @@ def doctor_findings(run_dir: Path) -> list[dict[str, str]]:
             findings.append({"level": "info", "code": "SUCCESS_STDERR_ARTIFACT", "location": location, "message": f"Successful step has stderr artifact ({stderr_size} bytes); keep it out of summaries unless debugging failures."})
         if is_agent and stdout_size == 0 and response_size == 0:
             findings.append({"level": "warn", "code": "EMPTY_AGENT_STDOUT_RESPONSE", "location": location, "message": "Agent stdout and response are empty; inspect command flags, provider output mode, and stderr artifact."})
+        for child in step.get("child_steps") or []:
+            child_id = str(child.get("child_id") or "unknown") if isinstance(child, dict) else "unknown"
+            child_artifacts = (child.get("artifacts") or {}).items() if isinstance(child, dict) else []
+            for artifact_id, evidence in child_artifacts:
+                child_path = Path(str(evidence.get("path") or ""))
+                if not child_path.is_file() or file_sha256(child_path) != evidence.get("sha256"):
+                    findings.append({"level": "error", "code": "CHILD_ARTIFACT_HASH_MISMATCH", "location": f"{location}.child_steps.{child_id}.{artifact_id}", "message": "Child-step artifact is missing or hash-drifted."})
+            event = (child.get("event") or {}) if isinstance(child, dict) else {}
+            event_path = Path(str(event.get("path") or ""))
+            if not event_path.is_file() or file_sha256(event_path) != event.get("sha256"):
+                findings.append({"level": "error", "code": "CHILD_EVENT_HASH_MISMATCH", "location": f"{location}.child_steps.{child_id}.event", "message": "Child-step event is missing or hash-drifted."})
     return findings
 
 
