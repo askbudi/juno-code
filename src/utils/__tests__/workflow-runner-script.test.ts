@@ -29,11 +29,6 @@ function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
   return runWorkflowScript(templateScript, args, input, env);
 }
 
-function continueScopeHash(descriptor: string): string {
-  return `SCOPE_${createHash('sha256').update(descriptor).digest('hex').slice(0, 16).toUpperCase()}`;
-}
-
-
 const fakeScopeResolver = `
 def resolve_scope(parent_pid, cwd):
     override = os.environ.get('JUNO_CODE_CONTINUE_SCOPE', '').strip()
@@ -58,12 +53,37 @@ def resolve_scope(parent_pid, cwd):
     scope = 'SCOPE_' + digest
     return scope
 
+def continuity_path():
+    root = pathlib.Path(os.environ.get('JUNO_CODE_SESSION_METADATA_DIRECTORY', pathlib.Path.cwd() / '.juno_task'))
+    root.mkdir(parents=True, exist_ok=True)
+    return root / 'session_continuity.v2.json'
+
+def persist_scope(scope, session_id, settings):
+    state_path = continuity_path()
+    try: document = json.loads(state_path.read_text())
+    except Exception: document = {'version': 2, 'scopes': {}}
+    now = '2026-07-30T00:00:00.000Z'
+    previous = document.setdefault('scopes', {}).get(scope, {})
+    document['scopes'][scope] = {'source':'test','createdAt':previous.get('createdAt', now),'lastUsedAt':now,'pinned':False,'settings':settings,'active':'main','branches':{'main':{'session_id':session_id,'parent':None,'updated_at':now}}}
+    state_path.write_text(json.dumps(document))
+
 def handle_scope_command():
     if len(sys.argv) < 2 or sys.argv[1] != 'continue-scope': return False
     cwd = sys.argv[sys.argv.index('--cwd') + 1]
     parent_pid = int(sys.argv[sys.argv.index('--parent-pid') + 1])
     scope = resolve_scope(parent_pid, cwd)
-    print(json.dumps({'status':'not_found','hash':scope[6:12],'fullHash':scope,'scopeSource':'test','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_' + scope,'settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_' + scope,'sessionId':None,'isCurrentScope':True,'pid':None}))
+    if '--handoff-session' in sys.argv:
+        session_id = sys.argv[sys.argv.index('--handoff-session') + 1]
+        settings = json.loads(sys.argv[sys.argv.index('--handoff-settings') + 1])
+        persist_scope(scope, session_id, settings)
+    try:
+        document = json.loads(continuity_path().read_text())
+        scopes = document.get('scopes', {})
+        entry = scopes.get(scope, {})
+        if not entry and len(scopes) == 1: entry = next(iter(scopes.values()))
+        session_id = entry.get('branches', {}).get(entry.get('active'), {}).get('session_id')
+    except Exception: session_id = None
+    print(json.dumps({'status':'finished' if session_id else 'not_found','hash':scope[6:12],'fullHash':scope,'scopeSource':'test','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_' + scope,'settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_' + scope,'sessionId':session_id,'isCurrentScope':True,'pid':None}))
     return True
 `;
 
@@ -83,6 +103,7 @@ print(f"tool={os.environ.get('JUNO_TOOL_ID', 'unset')} capture={os.environ.get('
 capture = os.environ.get('JUNO_SUBAGENT_CAPTURE_PATH')
 if capture:
     pathlib.Path(capture).write_text('{invalid json' if prompt == 'invalid' else json.dumps({'type':'result','subtype':'success','is_error':False,'result':'captured ' + prompt,'session_id':'session-' + prompt}) + '\\n')
+if prompt != 'invalid': persist_scope(resolve_scope(os.getppid(), pathlib.Path.cwd()), 'session-' + prompt, {'version':1,'subagent':'pi'})
 if prompt == 'fail': raise SystemExit(7)
 `,
   );
@@ -102,12 +123,10 @@ ${fakeScopeResolver}
 if handle_scope_command(): raise SystemExit(0)
 prompt = sys.argv[-1] if len(sys.argv) > 1 else 'empty'
 scope = resolve_scope(os.getppid(), pathlib.Path.cwd())
-env_file = pathlib.Path.cwd() / '.env.juno'
-settings = json.dumps({'version': 1, 'subagent': 'pi'}, separators=(',', ':'))
-with env_file.open('a', encoding='utf-8') as fh:
-    fh.write(f'JUNO_CODE_LAST_SESSION_ID_{scope}="session-{prompt}"\\n')
-    fh.write(f'JUNO_CODE_LAST_EXECUTION_SETTINGS_{scope}="{settings.replace(chr(34), chr(92)+chr(34))}"\\n')
+persist_scope(scope, 'session-' + prompt, {'version': 1, 'subagent': 'pi'})
 print('FINAL ' + prompt)
+print('Session ID(s):')
+print('  session-' + prompt)
 `,
   );
   await fs.chmod(executablePath, 0o755);
@@ -1058,11 +1077,8 @@ print('response with session_id=session-must-not-be-captured')
     expect(result.stdout).toContain('step 1 [first]: session-alpha');
     expect(result.stdout).toContain('step 2 [second]: session-omega');
     expect(result.stdout).toContain('handoff: step 2 [second] persisted for yy cc');
-    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    expect(envFile).toContain('session-omega');
-    expect(envFile).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
-    expect(envFile).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_');
-    expect(envFile).toContain('\\"subagent\\":\\"pi\\"');
+    expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
+    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
   });
 
   it('captures summary.command sessions and uses summary as the default yy cc handoff', async () => {
@@ -1095,9 +1111,8 @@ print('response with session_id=session-must-not-be-captured')
     expect(manifest.summary.capture_result).toBe('captured summary');
     expect(manifest.continue.step_id).toBe('summary');
     expect(manifest.continue.session_id).toBe('session-summary');
-    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    const scope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-summary-session');
-    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${scope}="session-summary"`);
+    expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
+    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
   });
 
   it('keeps default yy cc handoff on the last successful agent when summary.command fails with a session', async () => {
@@ -1152,8 +1167,8 @@ print('response with session_id=session-must-not-be-captured')
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('step 1 [agent]: session-child');
-    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    expect(envFile).toMatch(/JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}="session-child"/);
+    expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
+    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
     const manifestPath = path.join(outDir, 'manifest.json');
     expect(await fs.pathExists(manifestPath)).toBe(true);
     const manifest = await fs.readJson(manifestPath);
@@ -1191,10 +1206,8 @@ print('response with session_id=session-must-not-be-captured')
       ], undefined, { JUNO_CODE_CONTINUE_SCOPE: 'workflow-continue-from-step' });
 
     expect(result.status).toBe(0);
-    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    const overrideScope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-continue-from-step');
-    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-alpha"`);
-    expect(envFile).not.toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-omega"`);
+    expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
+    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.continue.step_id).toBe('first');
     expect(manifest.continue.session_id).toBe('session-alpha');
@@ -1225,11 +1238,9 @@ print('response with session_id=session-must-not-be-captured')
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.continue.step_id).toBe('first');
     expect(manifest.continue.session_id).toBe('session-alpha');
-    expect(manifest.continue.env_key).toContain('JUNO_CODE_LAST_SESSION_ID_SCOPE_');
-    const envFile = await fs.readFile(path.join(testDir, '.env.juno'), 'utf8');
-    const overrideScope = continueScopeHash('JUNO_CODE_CONTINUE_SCOPE:workflow-option-style-subagent');
-    expect(envFile).toContain(`JUNO_CODE_LAST_SESSION_ID_${overrideScope}="session-alpha"`);
-    expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${overrideScope}="{\\"version\\":1,\\"subagent\\":\\"pi\\"}"`);
+    expect(manifest.continue.scope_hash).toMatch(/^SCOPE_[A-F0-9]{16}$/);
+    expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
+    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
   });
 
   it('supports continue_from_step summary override when summary is not the default last successful session', async () => {

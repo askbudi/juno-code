@@ -11,6 +11,7 @@ import {
   resolveContinueScopeContextForParent,
   resolveContinueScopeStatus,
 } from '../continue-scope.js';
+import { persistContinueScopeSnapshot, resetMainSessionBranch } from '../session-continuity-state.js';
 
 const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
 const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
@@ -173,14 +174,8 @@ describe('continue-scope', () => {
       workingDirectory,
     );
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope,
-      env: {
-        [currentScope.sessionEnvKey]: 'session-json',
-        [currentScope.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'pi' }),
-      },
-    });
+    await persistContinueScopeSnapshot({ workingDirectory, context: currentScope, sessionId: 'session-json', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi' }) });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope });
 
     expect(status.status).toBe('finished');
     expect(status.hash).toBe(currentScope.shortHash);
@@ -196,16 +191,10 @@ describe('continue-scope', () => {
       [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'running-pane',
     });
 
+    await persistContinueScopeSnapshot({ workingDirectory, context, sessionId: 'session-123', serializedSettings: JSON.stringify({ version: 1, subagent: 'claude' }) });
     await markContinueScopeRunning(workingDirectory, context, process.pid);
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope: context,
-      env: {
-        [context.sessionEnvKey]: 'session-123',
-        [context.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'claude' }),
-      },
-    });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope: context });
 
     expect(status.status).toBe('running');
     expect(status.pid).toBe(process.pid);
@@ -218,14 +207,8 @@ describe('continue-scope', () => {
       [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'finished-pane',
     });
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope: context,
-      env: {
-        [context.sessionEnvKey]: 'session-finished',
-        [context.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'pi' }),
-      },
-    });
+    await persistContinueScopeSnapshot({ workingDirectory, context, sessionId: 'session-finished', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi' }) });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope: context });
 
     expect(status.status).toBe('finished');
     expect(status.sessionId).toBe('session-finished');
@@ -253,14 +236,8 @@ describe('continue-scope', () => {
       [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'invalid-pane',
     });
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope: context,
-      env: {
-        [context.sessionEnvKey]: 'session-bad',
-        [context.settingsEnvKey]: '{broken-json',
-      },
-    });
+    await resetMainSessionBranch({ workingDirectory, scope: context, sessionId: 'session-bad' });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope: context });
 
     expect(status.status).toBe('error');
     expect(status.reason).toBe('invalid_snapshot');
@@ -272,15 +249,8 @@ describe('continue-scope', () => {
       [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'lookup-pane',
     });
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope: context,
-      requestedHash: context.shortHash,
-      env: {
-        [context.sessionEnvKey]: 'session-lookup',
-        [context.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'claude' }),
-      },
-    });
+    await persistContinueScopeSnapshot({ workingDirectory, context, sessionId: 'session-lookup', serializedSettings: JSON.stringify({ version: 1, subagent: 'claude' }) });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope: context, requestedHash: context.shortHash });
 
     expect(status.status).toBe('finished');
     expect(status.fullHash).toBe(context.scopeHash);
@@ -292,17 +262,11 @@ describe('continue-scope', () => {
       [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: 'clear-pane',
     });
 
+    await persistContinueScopeSnapshot({ workingDirectory, context, sessionId: 'session-clear', serializedSettings: JSON.stringify({ version: 1, subagent: 'codex' }) });
     await markContinueScopeRunning(workingDirectory, context, process.pid);
     await clearContinueScopeRunning(workingDirectory, context);
 
-    const status = await resolveContinueScopeStatus({
-      workingDirectory,
-      currentScope: context,
-      env: {
-        [context.sessionEnvKey]: 'session-clear',
-        [context.settingsEnvKey]: JSON.stringify({ version: 1, subagent: 'codex' }),
-      },
-    });
+    const status = await resolveContinueScopeStatus({ workingDirectory, currentScope: context });
 
     expect(status.status).toBe('finished');
     expect(status.pid).toBeNull();

@@ -23,7 +23,7 @@ import {
   resolveContinueScopeContext,
 } from '../../core/continue-scope.js';
 import { persistContinueScopeSnapshot } from '../../core/session-continuity-state.js';
-import { getSessionMetadataDirectory, SessionBranchesError } from '../../core/session-branches.js';
+import { getSessionMetadataDirectory, SessionContinuityStateError } from '../../core/session-continuity-state.js';
 import { withSessionMetadataLock } from '../../core/session-metadata.js';
 import {
   getConfiguredDefaultModelForSubagent,
@@ -541,7 +541,6 @@ async function persistContinueContext(
 
     await persistContinueScopeSnapshot({
       workingDirectory: config.workingDirectory,
-      envFilePath: config.envFilePath,
       context: continueScope,
       sessionId: latestSessionId,
       serializedSettings,
@@ -2082,7 +2081,7 @@ export async function mainCommandHandler(
 
       process.exit(5);
       return;
-    } else if (error instanceof SessionBranchesError) {
+    } else if (error instanceof SessionContinuityStateError) {
       console.error(chalk.red.bold('\n❌ Branch Registry Error'));
       console.error(chalk.red(`   ${error.message}`));
       console.error(chalk.yellow('\n💡 Suggestions:'));

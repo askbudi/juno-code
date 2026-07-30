@@ -9,7 +9,6 @@ process unless a step opts into fail-fast behavior.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -854,52 +853,9 @@ def resolve_continue_scope_from_juno(
         "scope_hash": scope_hash,
         "session_env_key": session_key,
         "settings_env_key": settings_key,
+        "session_id": str(payload.get("sessionId") or ""),
+        "executable": executable,
     }
-
-
-def resolve_env_file_path(project_root: Path) -> Path:
-    config_path = project_root / ".juno_task" / "config.json"
-    env_file = ".env.juno"
-    try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        configured = config.get("envFilePath")
-        if isinstance(configured, str) and configured.strip():
-            env_file = configured.strip()
-    except Exception:
-        pass
-    candidate = Path(env_file)
-    return candidate if candidate.is_absolute() else project_root / candidate
-
-
-def shell_quote_env_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def upsert_env_variable(content: str, key: str, value: str) -> str:
-    line = f'{key}="{shell_quote_env_value(value)}"'
-    pattern = re.compile(rf"^(?:export\s+)?{re.escape(key)}=.*$", re.M)
-    if pattern.search(content):
-        return pattern.sub(line, content)
-    if not content:
-        return line + "\n"
-    return content.rstrip() + "\n" + line + "\n"
-
-
-def unquote_env_value(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        value = value[1:-1]
-        return value.replace('\\"', '"').replace('\\\\', '\\')
-    return value
-
-
-def parse_env_variables(content: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line in content.splitlines():
-        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-        if match:
-            values[match.group(1)] = unquote_env_value(match.group(2))
-    return values
 
 
 def build_continue_settings(command: Any) -> dict[str, Any] | None:
@@ -913,118 +869,13 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
     return settings
 
 
-def _update_main_session_branch_unlocked(project_root: Path, context: dict[str, str], session_id: str) -> None:
-    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
-    branches_path = metadata_root / "session_branches.json"
-    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    try:
-        document = json.loads(branches_path.read_text(encoding="utf-8")) if branches_path.exists() else {}
-        if not isinstance(document, dict):
-            document = {}
-    except Exception:
-        document = {}
-    document["version"] = 1
-    scopes = document.setdefault("scopes", {})
-    if not isinstance(scopes, dict):
-        scopes = {}
-        document["scopes"] = scopes
-    scope_entry = scopes.setdefault(context["scope_hash"], {})
-    if not isinstance(scope_entry, dict):
-        scope_entry = {}
-        scopes[context["scope_hash"]] = scope_entry
-    scope_entry["active"] = "main"
-    branches = scope_entry.setdefault("branches", {})
-    if not isinstance(branches, dict):
-        branches = {}
-        scope_entry["branches"] = branches
-    branches["main"] = {"session_id": session_id, "parent": None, "updated_at": now}
-    branches_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = branches_path.with_name(f"{branches_path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(branches_path)
-
-
-def _process_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return pid > 0
-    except PermissionError:
-        return True
-    except (ProcessLookupError, ValueError):
-        return False
-
-
-@contextlib.contextmanager
-def session_metadata_lock(metadata_root: Path, name: str):
-    lock = metadata_root / f"{name}.lock"
-    token = uuid.uuid4().hex
-    deadline = time.monotonic() + 5
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            lock.mkdir()
-            (lock / "owner.json").write_text(json.dumps({"pid": os.getpid(), "token": token}) + "\n")
-            break
-        except FileExistsError:
-            try:
-                owner = json.loads((lock / "owner.json").read_text())
-                live = _process_alive(int(owner.get("pid", 0)))
-            except Exception:
-                live = time.time() - lock.stat().st_mtime < 0.25
-            if not live:
-                quarantine = lock.with_name(f"{lock.name}.stale-{os.getpid()}-{uuid.uuid4().hex}")
-                try:
-                    lock.rename(quarantine)
-                except FileNotFoundError:
-                    continue
-                shutil.rmtree(quarantine, ignore_errors=True)
-                continue
-            if time.monotonic() >= deadline:
-                raise WorkflowError(f"timed out waiting for session metadata lock {lock}")
-            time.sleep(0.025)
-    try:
-        yield
-    finally:
-        try:
-            owner = json.loads((lock / "owner.json").read_text())
-            if owner.get("token") == token:
-                shutil.rmtree(lock)
-        except Exception:
-            pass
-
-
-def update_main_session_branch(project_root: Path, context: dict[str, str], session_id: str) -> None:
-    metadata_root = Path(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])
-    with session_metadata_lock(metadata_root, "session_branches.json"):
-        _update_main_session_branch_unlocked(project_root, context, session_id)
-
-
-def read_continue_snapshot(project_root: Path, context: dict[str, str]) -> dict[str, str] | None:
-    env_file = resolve_env_file_path(project_root)
-    if not env_file.exists():
-        return None
-    values = parse_env_variables(env_file.read_text(encoding="utf-8"))
-    session_id = values.get(context["session_env_key"], "").strip()
-    settings = values.get(context["settings_env_key"], "").strip()
-    if not session_id or not settings:
-        return None
-    try:
-        parsed_settings = json.loads(settings)
-    except Exception:
-        return None
-    if not isinstance(parsed_settings, dict):
-        return None
-    return {"session_id": session_id, "settings": settings, "env_file": str(env_file), **context}
-
-
 def read_child_continue_session(project_root: Path, command: Any) -> str | None:
     # Top-level yy/juno-code commands persist their own continue snapshot, but when
     # launched by this runner without terminal markers their PPID fallback is the
     # workflow_runner process. Adopt that child snapshot, then persist it to the
     # caller's shell scope so `workflow_runner.sh ... ; yy cc` works.
     child_context = resolve_continue_scope_from_juno(project_root, os.getpid(), command)
-    snapshot = read_continue_snapshot(project_root, child_context)
-    return snapshot["session_id"] if snapshot else None
+    return child_context["session_id"] or None
 
 
 def persist_continue_context(project_root: Path, session_id: str, command: Any) -> dict[str, str] | None:
@@ -1032,17 +883,25 @@ def persist_continue_context(project_root: Path, session_id: str, command: Any) 
     if not settings:
         return None
     context = resolve_continue_scope_from_juno(project_root, os.getppid(), command)
-    env_file = resolve_env_file_path(project_root)
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    current = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
     serialized_settings = json.dumps(settings, separators=(",", ":"))
-    current = upsert_env_variable(current, context["session_env_key"], session_id)
-    current = upsert_env_variable(current, context["settings_env_key"], serialized_settings)
-    env_file.write_text(current, encoding="utf-8")
-    update_main_session_branch(project_root, context, session_id)
-    os.environ[context["session_env_key"]] = session_id
-    os.environ[context["settings_env_key"]] = serialized_settings
-    return {**context, "env_file": str(env_file), "settings": serialized_settings}
+    completed = subprocess.run(
+        [
+            context["executable"], "continue-scope", "--json", "--cwd", str(project_root),
+            "--parent-pid", str(os.getppid()), "--handoff-session", session_id,
+            "--handoff-settings", serialized_settings,
+        ],
+        cwd=project_root,
+        env=child_process_environment(dict(os.environ)),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise WorkflowError(f"juno-code continuity handoff failed: {detail}")
+    return {**context, "metadata_file": "session_continuity.v2.json", "settings": serialized_settings}
 
 
 def select_continue_step(workflow: dict[str, Any], session_candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1081,10 +940,10 @@ def print_session_summary(session_steps: list[dict[str, Any]], persisted: dict[s
     if persisted:
         selected_label = persisted.get("selected_label")
         if selected_label:
-            print(f"  handoff: {selected_label} persisted for yy cc ({persisted['session_env_key']})")
+            print(f"  handoff: {selected_label} persisted for yy cc ({persisted['scope_hash']})")
         else:
-            print(f"  handoff: last session persisted for yy cc ({persisted['session_env_key']})")
-        print(f"  env_file: {persisted['env_file']}")
+            print(f"  handoff: last session persisted for yy cc ({persisted['scope_hash']})")
+        print(f"  metadata_file: {persisted['metadata_file']}")
 
 
 SESSION_FOOTER_TOKEN_RE = re.compile(
@@ -2291,7 +2150,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "step_index": selected_continue_step["index"],
             "step_id": selected_continue_step["id"],
             "session_id": selected_continue_step["session_id"],
-            "env_key": persisted_continue.get("session_env_key") if persisted_continue else "",
+            "scope_hash": persisted_continue.get("scope_hash") if persisted_continue else "",
         }
     elif str(workflow.get("continue_from_step") or "").strip():
         raise WorkflowError(f"continue_from_step '{workflow.get('continue_from_step')}' did not produce a session_id")

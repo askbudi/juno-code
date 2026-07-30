@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { resetMainSessionBranch, loadSessionBranchesDocument } from '../session-branches.js';
+import { resetMainSessionBranch, loadSessionContinuityDocument } from '../session-continuity-state.js';
 import {
   getSessionMetadataDirectory,
   withSessionMetadataLock,
@@ -70,7 +70,7 @@ describe('session metadata resolver', () => {
       resetMainSessionBranch({ workingDirectory: root, scope: scope('A'), sessionId: 'one' }),
       resetMainSessionBranch({ workingDirectory: root, scope: scope('B'), sessionId: 'two' }),
     ]);
-    const document = await loadSessionBranchesDocument(root);
+    const document = await loadSessionContinuityDocument(root);
     expect(Object.keys(document.scopes).sort()).toEqual([
       'SCOPE_A000000000000000', 'SCOPE_B000000000000000',
     ]);

@@ -449,18 +449,11 @@ CLI run summaries also surface these fields live in the terminal:
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
 - `Session ID(s)` entries with per-session cost when available
 
-For `juno-code continue`, the latest session context is persisted into the project env file (`.env.juno` by default) using **shell-scoped keys** so panes/tabs do not overwrite each other:
-- `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
-- `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>` (JSON runtime-settings snapshot)
+For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten for continuity.
 
-Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`.
+Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`. `JUNO_CODE_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
 
-Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Boundary-specific tests and a deterministic 2,500-pair structural fixture matter because they prove the backing filter removes inherited bytes with constant continuity overhead without exposing environment values; tests alone would not prevent another spawn path from copying the historical map.
-
-Short help text for scripts that need pane-scoped continue state:
-- Session key pattern: `JUNO_CODE_LAST_SESSION_ID_SCOPE_<HASH>`
-- Settings key pattern: `JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_<HASH>`
-- Deterministic override: set `JUNO_CODE_CONTINUE_SCOPE=<your-pane-id>` before running `juno-code` so external scripts can target a stable scope name across runs.
+Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Concurrency, malformed-document, stale-lock, routing, and deterministic 2,500-pair boundary tests matter because only the locked backing service prevents lost updates, while routing tests prove no caller silently restores the retired env/branch stores.
 
 Script endpoint for hash/status lookups:
 ```bash

@@ -10,7 +10,8 @@ import {
   resetMainSessionBranch,
   setActiveSessionBranch,
   upsertClonedSessionBranch,
-} from '../../core/session-branches.js';
+  persistContinueScopeSnapshot,
+} from '../../core/session-continuity-state.js';
 import {
   prepareSessionBranchExecution,
   syncSessionBranchExecutionResult,
@@ -19,12 +20,14 @@ import type { MainCommandOptions } from '../types.js';
 
 const tempDirs: string[] = [];
 const ORIGINAL_SCOPE = process.env.JUNO_CODE_CONTINUE_SCOPE;
+const ORIGINAL_METADATA_DIRECTORY = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
 const ORIGINAL_SESSION_ENV = new Map<string, string | undefined>();
 const ORIGINAL_SETTINGS_ENV = new Map<string, string | undefined>();
 
 async function createTempDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-branch-workflow-'));
   tempDirs.push(dir);
+  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
   return dir;
 }
 
@@ -79,6 +82,8 @@ afterEach(async () => {
   } else {
     process.env.JUNO_CODE_CONTINUE_SCOPE = ORIGINAL_SCOPE;
   }
+  if (ORIGINAL_METADATA_DIRECTORY === undefined) delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = ORIGINAL_METADATA_DIRECTORY;
   for (const [key, value] of ORIGINAL_SESSION_ENV.entries()) restoreEnvKey(key, value);
   for (const [key, value] of ORIGINAL_SETTINGS_ENV.entries()) restoreEnvKey(key, value);
   ORIGINAL_SESSION_ENV.clear();
@@ -91,38 +96,27 @@ afterEach(async () => {
 });
 
 describe('session branch workflow', () => {
-  it('fails continueFromLatest when scoped env snapshot differs from the active branch session', async () => {
+  it('routes only from canonical state and ignores superseded env branch snapshots', async () => {
     const workingDirectory = await createTempDir();
-    const scope = setScope('continue-env-branch-mismatch');
-    process.env[scope.sessionEnvKey] = 'SESSION_ENV';
-    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 5 });
+    const scope = setScope('continue-canonical-routing');
+    process.env[scope.sessionEnvKey] = 'STALE_ENV_SESSION';
+    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 99 });
     await seedBranches(workingDirectory, scope);
     await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scope, sessionId: 'SESSION_C', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 5 }) });
 
     const options = { continueFromLatest: true } as MainCommandOptions;
-    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toMatchObject({
-      name: 'ValidationError',
-      message: expect.stringContaining('Continue session mismatch for this shell context'),
-      suggestions: expect.arrayContaining([
-        expect.stringContaining('juno-code continue-scope --json'),
-        expect.stringContaining('juno-code branches'),
-      ]),
-    });
-
-    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/SESSION_ENV/);
-    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/active branch 'C'/);
-    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(/SESSION_C/);
-    await expect(prepareSessionBranchExecution(options, { workingDirectory })).rejects.toThrow(new RegExp(scope.scopeHash));
-    expect(options.resume).toBeUndefined();
+    await prepareSessionBranchExecution(options, { workingDirectory });
+    expect(options.resume).toBe('SESSION_C');
+    expect(options.maxIterations).toBe(5);
   });
 
   it('continues safely when scoped env snapshot and active branch session match', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('continue-env-branch-match');
-    process.env[scope.sessionEnvKey] = 'SESSION_C';
-    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 6 });
     await seedBranches(workingDirectory, scope);
     await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scope, sessionId: 'SESSION_C', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 6 }) });
 
     const options = { continueFromLatest: true } as MainCommandOptions;
     await prepareSessionBranchExecution(options, { workingDirectory });
@@ -134,22 +128,21 @@ describe('session branch workflow', () => {
   it('continues from only the scoped env snapshot when no named branches exist', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('continue-env-only');
-    process.env[scope.sessionEnvKey] = 'SESSION_ENV_ONLY';
-    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 4 });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scope, sessionId: 'SESSION_ONLY', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 4 }) });
 
     const options = { continueFromLatest: true } as MainCommandOptions;
     await prepareSessionBranchExecution(options, { workingDirectory });
 
-    expect(options.resume).toBe('SESSION_ENV_ONLY');
+    expect(options.resume).toBe('SESSION_ONLY');
     expect(options.maxIterations).toBe(4);
   });
 
   it('continues from only the active branch when settings exist but the env session snapshot is absent', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('continue-branch-only');
-    process.env[scope.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 8 });
     await seedBranches(workingDirectory, scope);
     await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scope, sessionId: 'SESSION_D', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 8 }) });
 
     const options = { continueFromLatest: true } as MainCommandOptions;
     await prepareSessionBranchExecution(options, { workingDirectory });
@@ -161,13 +154,13 @@ describe('session branch workflow', () => {
   it('prepares continue from the active branch in only the current shell scope so another pane cannot hijack routing', async () => {
     const workingDirectory = await createTempDir();
     const scopeA = setScope('pane-a');
-    process.env[scopeA.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 7 });
     await seedBranches(workingDirectory, scopeA);
     await setActiveSessionBranch({ workingDirectory, scope: scopeA, branchName: 'C' });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scopeA, sessionId: 'SESSION_C', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 7 }) });
 
     const scopeB = setScope('pane-b');
-    process.env[scopeB.settingsEnvKey] = JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 3 });
     await resetMainSessionBranch({ workingDirectory, scope: scopeB, sessionId: 'B_MAIN' });
+    await persistContinueScopeSnapshot({ workingDirectory, context: scopeB, sessionId: 'B_MAIN', serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 3 }) });
 
     const options = { continueFromLatest: true } as MainCommandOptions;
     await prepareSessionBranchExecution(options, { workingDirectory });
@@ -235,16 +228,14 @@ describe('session branch workflow', () => {
   it('prepares named clone with saved runtime settings while keeping the branch-selected source session', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('clone-settings-preserved');
-    process.env[scope.settingsEnvKey] = JSON.stringify({
-      version: 1,
-      subagent: 'pi',
-      model: ':gpt',
-      maxIterations: 9,
-      thinking: 'high',
-      tools: ['read', 'bash'],
-    });
     await seedBranches(workingDirectory, scope);
     await setActiveSessionBranch({ workingDirectory, scope, branchName: 'D' });
+    await persistContinueScopeSnapshot({
+      workingDirectory,
+      context: scope,
+      sessionId: 'SESSION_D',
+      serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', model: ':gpt', maxIterations: 9, thinking: 'high', tools: ['read', 'bash'] }),
+    });
 
     const options = {
       continueFromLatest: true,
@@ -265,13 +256,13 @@ describe('session branch workflow', () => {
   it('keeps explicit named clone runtime overrides ahead of saved continue-scope settings', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('clone-settings-overrides');
-    process.env[scope.settingsEnvKey] = JSON.stringify({
-      version: 1,
-      subagent: 'pi',
-      model: ':gpt',
-      maxIterations: 9,
-    });
     await seedBranches(workingDirectory, scope);
+    await persistContinueScopeSnapshot({
+      workingDirectory,
+      context: scope,
+      sessionId: 'SESSION_MAIN',
+      serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', model: ':gpt', maxIterations: 9 }),
+    });
 
     const options = {
       continueFromLatest: true,

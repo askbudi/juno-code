@@ -109,7 +109,7 @@ function isConnectionLikeError(err: unknown): boolean {
  * Global error handler for CLI operations
  */
 function handleCLIError(error: unknown, verbose: number = 0): void {
-  if (error instanceof Error && error.name.startsWith('SessionBranches')) {
+  if (error instanceof Error && error.name.startsWith('SessionContinuity')) {
     console.error(chalk.red.bold('\n❌ Branch Registry Error'));
     console.error(chalk.red(`   ${error.message}`));
     console.error(chalk.yellow('\n💡 Suggestions:'));
@@ -614,7 +614,7 @@ function setupNamedBranchCommands(program: Command): void {
       try {
         const [{ resolveContinueScopeContext }, branchesModule] = await Promise.all([
           import('../core/continue-scope.js'),
-          import('../core/session-branches.js'),
+          import('../core/session-continuity-state.js'),
         ]);
         const config = await resolveWorkingDirectory(options);
         const scope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
@@ -689,7 +689,6 @@ ${chalk.blue.bold('Behavior:')}
         const config = await resolveWorkingDirectory(options);
         const active = await persistActiveSessionBranchSelection({
           workingDirectory: config.workingDirectory,
-          envFilePath: config.envFilePath,
           branchName,
         });
         console.log(`Switched to branch ${active.name} (${active.sessionId})`);
@@ -750,6 +749,8 @@ function setupContinueScopeCommand(program: Command): void {
       'Resolve the caller scope as if this process had the given parent PID (script integrations)',
     )
     .option('--json', 'Output machine-readable JSON')
+    .option('--handoff-session <session-id>', 'Persist a workflow handoff session for the resolved caller scope')
+    .option('--handoff-settings <json>', 'Validated bounded execution settings for --handoff-session')
     .action(async (hash: string | undefined, options) => {
       try {
         const workingDirectory =
@@ -779,6 +780,22 @@ function setupContinueScopeCommand(program: Command): void {
           parentPid,
           workingDirectory: config.workingDirectory,
         });
+        if (options.handoffSession !== undefined) {
+          if (hash !== undefined) throw new Error('Workflow handoff cannot target a hash lookup; resolve the caller scope directly.');
+          if (typeof options.handoffSettings !== 'string' || !options.handoffSettings.trim()) {
+            throw new Error('--handoff-settings is required with --handoff-session.');
+          }
+          const state = await import('../core/session-continuity-state.js');
+          await state.persistContinueScopeSnapshot({
+            workingDirectory: config.workingDirectory,
+            context: currentScope,
+            sessionId: String(options.handoffSession),
+            serializedSettings: options.handoffSettings,
+          });
+        } else if (options.handoffSettings !== undefined) {
+          throw new Error('--handoff-settings requires --handoff-session.');
+        }
+
         const status = await continueScope.resolveContinueScopeStatus({
           workingDirectory: config.workingDirectory,
           ...(hash !== undefined ? { requestedHash: hash } : {}),

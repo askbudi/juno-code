@@ -31,9 +31,11 @@ import {
   getSessionMetadataDirectory,
   listSessionBranches,
   resetMainSessionBranch,
+  resolveScopedContinueSessionState,
+  persistContinueScopeSnapshot,
   updateActiveSessionBranch,
   upsertClonedSessionBranch,
-} from '../../core/session-branches.js';
+} from '../../core/session-continuity-state.js';
 
 import type {
   ExecutionRequest,
@@ -110,17 +112,30 @@ vi.mock('../../core/session.js', () => ({
   }),
 }));
 
-vi.mock('../../core/session-branches.js', () => ({
+vi.mock('../../core/session-continuity-state.js', () => ({
   MAIN_SESSION_BRANCH: 'main',
-  SessionBranchesError: class SessionBranchesError extends Error {
+  SessionContinuityStateError: class SessionContinuityStateError extends Error {
     constructor(message: string) {
       super(message);
-      this.name = 'SessionBranchesError';
+      this.name = 'SessionContinuityStateError';
     }
   },
   getSessionMetadataDirectory: vi.fn().mockImplementation((workingDirectory: string) =>
     process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`),
   getActiveSessionBranch: vi.fn().mockResolvedValue(null),
+  resolveScopedContinueSessionState: vi.fn().mockImplementation(async () => {
+    const sessionKey = Object.keys(process.env).find((key) => key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'));
+    const settingsKey = sessionKey?.replace('JUNO_CODE_LAST_SESSION_ID_', 'JUNO_CODE_LAST_EXECUTION_SETTINGS_');
+    const resolvedSessionId = sessionKey ? process.env[sessionKey]?.trim() || '' : '';
+    return {
+      context: { scopeHash: sessionKey?.slice('JUNO_CODE_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
+      activeBranch: null,
+      resolvedSessionId,
+      settings: settingsKey && process.env[settingsKey] ? JSON.parse(process.env[settingsKey]!) : null,
+      serializedSettings: settingsKey ? process.env[settingsKey] || null : null,
+    };
+  }),
+  persistContinueScopeSnapshot: vi.fn().mockResolvedValue(undefined),
   listSessionBranches: vi.fn().mockResolvedValue([]),
   resetMainSessionBranch: vi.fn().mockResolvedValue(undefined),
   updateActiveSessionBranch: vi.fn().mockResolvedValue(undefined),
@@ -261,6 +276,18 @@ describe('Main Command', () => {
     vi.mocked(getSessionMetadataDirectory).mockImplementation((workingDirectory: string) =>
       process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`);
     vi.mocked(getActiveSessionBranch).mockResolvedValue(null as any);
+    vi.mocked(resolveScopedContinueSessionState).mockImplementation(async () => {
+      const sessionKey = Object.keys(process.env).find((key) => key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'));
+      const settingsKey = sessionKey?.replace('JUNO_CODE_LAST_SESSION_ID_', 'JUNO_CODE_LAST_EXECUTION_SETTINGS_');
+      return {
+        context: { scopeHash: sessionKey?.slice('JUNO_CODE_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
+        activeBranch: null,
+        resolvedSessionId: sessionKey ? process.env[sessionKey]?.trim() || '' : '',
+        settings: settingsKey && process.env[settingsKey] ? JSON.parse(process.env[settingsKey]!) : null,
+        serializedSettings: settingsKey ? process.env[settingsKey] || null : null,
+      } as any;
+    });
+    vi.mocked(persistContinueScopeSnapshot).mockResolvedValue(undefined as any);
     vi.mocked(listSessionBranches).mockResolvedValue([] as any);
     vi.mocked(resetMainSessionBranch).mockResolvedValue(undefined as any);
     vi.mocked(updateActiveSessionBranch).mockResolvedValue(undefined as any);
@@ -1883,18 +1910,12 @@ describe('Main Command', () => {
           mockCommand,
         );
 
-        const envWriteCall = vi.mocked(fs.writeFile).mock.calls.at(-1);
-        expect(envWriteCall?.[0]).toBe('/test/dir/.env.juno');
-
-        const envContent = String(envWriteCall?.[1]);
-        expect(envContent).toMatch(/JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}="session-continue-123"/);
-        expect(envContent).toMatch(/JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_[A-F0-9]{16}="/);
-
-        const persistedSessionKeys = Object.keys(process.env).filter((key) =>
-          key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'),
-        );
-        expect(persistedSessionKeys).toHaveLength(1);
-        expect(process.env[persistedSessionKeys[0] || '']).toBe('session-continue-123');
+        expect(persistContinueScopeSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+          workingDirectory: '/test/dir',
+          sessionId: 'session-continue-123',
+          serializedSettings: expect.stringContaining('"subagent":"codex"'),
+        }));
+        expect(fs.writeFile).not.toHaveBeenCalledWith('/test/dir/.env.juno', expect.anything(), expect.anything());
       });
 
       it('should hydrate resume and runtime options from scoped env snapshot when continueFromLatest is set', async () => {
@@ -2428,9 +2449,9 @@ describe('Main Command', () => {
             cloneFromSession: 'source-session-scope',
           }),
         );
-        const envContent = String(vi.mocked(fs.writeFile).mock.calls.at(-1)?.[1]);
-        expect(envContent).toContain('clone-session-002');
-        expect(envContent).not.toContain('source-session-scope');
+        expect(persistContinueScopeSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: 'clone-session-002',
+        }));
       });
 
       it('should clone --name C from main and store the returned session without switching active branch or poisoning active continue env', async () => {
@@ -2701,6 +2722,13 @@ describe('Main Command', () => {
         });
 
         process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-b';
+        vi.mocked(resolveScopedContinueSessionState).mockResolvedValueOnce({
+          context: { scopeHash: 'SCOPE_B000000000000000', scopeSource: 'test' },
+          activeBranch: null,
+          resolvedSessionId: '',
+          settings: null,
+          serializedSettings: null,
+        } as any);
 
         await mainCommandHandler(
           [],
@@ -3752,12 +3780,20 @@ describe('Verbose/Quiet Output Modes', () => {
       subagent: 'pi',
       maxIterations: 1,
     });
-    vi.mocked(getActiveSessionBranch).mockResolvedValue({
+    const activeBranch = {
       name: 'early_reflect',
       sessionId: 'SESSION_EARLY',
       parent: 'main',
       sourceSessionId: 'SESSION_MAIN',
       updatedAt: '2026-06-29T00:00:00.000Z',
+    } as any;
+    vi.mocked(getActiveSessionBranch).mockResolvedValue(activeBranch);
+    vi.mocked(resolveScopedContinueSessionState).mockResolvedValue({
+      context: { scopeHash, scopeSource: 'test' },
+      activeBranch,
+      resolvedSessionId: 'SESSION_EARLY',
+      settings: { version: 1, subagent: 'pi', maxIterations: 1 },
+      serializedSettings: JSON.stringify({ version: 1, subagent: 'pi', maxIterations: 1 }),
     } as any);
 
     const options: MainCommandOptions = {

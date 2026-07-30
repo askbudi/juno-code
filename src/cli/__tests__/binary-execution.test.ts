@@ -36,16 +36,21 @@ let tempDir: string;
 
 function buildContinueSnapshotEnv(scope: string): Record<string, string> {
   const scopeHash = explicitContinueScopeHash(scope);
-
-  return {
-    JUNO_CODE_CONTINUE_SCOPE: scope,
-    [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'session-continue-stdin',
-    [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
-      version: 1,
-      subagent: 'claude',
-      maxIterations: 5,
-    }),
+  const metadataDirectory = path.join(tempDir, '.juno_task');
+  const statePath = path.join(metadataDirectory, 'session_continuity.v2.json');
+  fs.ensureDirSync(metadataDirectory);
+  const document = fs.pathExistsSync(statePath) ? fs.readJsonSync(statePath) : { version: 2, scopes: {} };
+  document.scopes[scopeHash] = {
+    source: 'JUNO_CODE_CONTINUE_SCOPE',
+    createdAt: '2026-07-30T00:00:00.000Z',
+    lastUsedAt: '2026-07-30T00:00:00.000Z',
+    pinned: false,
+    settings: { version: 1, subagent: 'claude', maxIterations: 5 },
+    active: 'main',
+    branches: { main: { session_id: 'session-continue-stdin', parent: null, updated_at: '2026-07-30T00:00:00.000Z' } },
   };
+  fs.writeJsonSync(statePath, document);
+  return { JUNO_CODE_CONTINUE_SCOPE: scope, JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory };
 }
 
 /**
@@ -849,7 +854,7 @@ describe('Binary Execution Tests', () => {
       await createMockProject({
         '.juno_task': {
           'config.json': JSON.stringify(config, null, 2),
-          'session_branches.json': JSON.stringify(
+          'session_continuity.v2.json': JSON.stringify(
             {
               version: 1,
               scopes: {
@@ -907,10 +912,9 @@ describe('Binary Execution Tests', () => {
         ],
       });
       const scopeHash = fixture.scope.scopeHash;
-      const settingsJson = JSON.stringify(settings);
 
       const branchesResult = await executeCLI(['branches', '--json'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(branchesResult.exitCode).toBe(0);
       const payload = JSON.parse(branchesResult.stdout);
@@ -921,33 +925,31 @@ describe('Binary Execution Tests', () => {
       ]);
 
       const switchResult = await executeCLI(['switch', 'C'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchResult.exitCode).toBe(0);
       expect(switchResult.stdout).toContain('Switched to branch C');
       await fixture.assertEnvSession('SESSION_C');
-      let envFile = await fixture.readEnvFile();
-      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
+      expect((await fixture.readBranchState()).scopes[scopeHash].settings).toEqual(settings);
 
       const switchNextResult = await executeCLI(['switch', '+'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchNextResult.exitCode).toBe(0);
       expect(switchNextResult.stdout).toContain('Switched to branch D');
 
       const switchWrapNextResult = await executeCLI(['switch', '+'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchWrapNextResult.exitCode).toBe(0);
       expect(switchWrapNextResult.stdout).toContain('Switched to branch main');
 
       const switchWrapPreviousResult = await executeCLI(['switch', '-'], {
-        env: { JUNO_CODE_CONTINUE_SCOPE: scope },
+        env: fixture.env,
       });
       expect(switchWrapPreviousResult.exitCode).toBe(0);
       expect(switchWrapPreviousResult.stdout).toContain('Switched to branch D');
-      envFile = await fixture.readEnvFile();
-      expect(envFile).toContain(`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='${settingsJson}'`);
+      expect((await fixture.readBranchState()).scopes[scopeHash].settings).toEqual(settings);
       await fixture.assertScopeInvariant('D', 'SESSION_D');
     });
 
@@ -973,6 +975,7 @@ describe('Binary Execution Tests', () => {
       const result = await executeCLI(['switch', 'C', 'continue C now', '-i', 'invalid'], {
         expectError: true,
         env: {
+          ...fixture.env,
           JUNO_CODE_CONTINUE_SCOPE: scope,
           [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'SESSION_C',
           [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
@@ -1069,11 +1072,9 @@ describe('Binary Execution Tests', () => {
       });
       const mismatchOutput = mismatchResult.all || `${mismatchResult.stdout}\n${mismatchResult.stderr}`;
       expect(mismatchResult.exitCode).not.toBe(0);
-      expect(mismatchOutput).toContain('Continue session mismatch for this shell context');
-      expect(mismatchOutput).toContain('SESSION_ENV_CONFLICT');
-      expect(mismatchOutput).toContain('SESSION_A');
-      expect(mismatchOutput).toContain('juno-code continue-scope --json');
-      expect(mismatchOutput).not.toContain('Max iterations must be a valid number');
+      expect(mismatchOutput).toContain('Max iterations must be a valid number');
+      expect(mismatchOutput).not.toContain('SESSION_ENV_CONFLICT');
+      expect((await fixtureA.readBranchState()).scopes[scopeHashA].branches.main.session_id).toBe('SESSION_A');
     });
 
     it('should handle subagent direct commands (if implemented)', async () => {
@@ -1504,7 +1505,17 @@ echo "RUN_UNTIL_ARGS:$*"
 
       const paneAFullHash = String(paneAFirst.fullHash);
       const paneBFullHash = String(paneB.fullHash);
+      const metadataDirectory = path.join(tempDir, '.juno_task');
+      const timestamp = '2026-07-30T00:00:00.000Z';
+      await fs.writeJson(path.join(metadataDirectory, 'session_continuity.v2.json'), {
+        version: 2,
+        scopes: Object.fromEntries([
+          [paneAFullHash, 'SESSION_PANE_A'],
+          [paneBFullHash, 'SESSION_PANE_B'],
+        ].map(([hash, id]) => [hash, { source: 'project+stable_terminal+TMUX_PANE', createdAt: timestamp, lastUsedAt: timestamp, pinned: false, settings: { version: 1, subagent: 'pi', maxIterations: 1 }, active: 'main', branches: { main: { session_id: id, parent: null, updated_at: timestamp } } }])),
+      });
       const paneAEnv = {
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneA',
         [`JUNO_CODE_LAST_SESSION_ID_${paneAFullHash}`]: 'SESSION_PANE_A',
@@ -1515,6 +1526,7 @@ echo "RUN_UNTIL_ARGS:$*"
         }),
       };
       const paneBEnv = {
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneB',
         [`JUNO_CODE_LAST_SESSION_ID_${paneBFullHash}`]: 'SESSION_PANE_B',
