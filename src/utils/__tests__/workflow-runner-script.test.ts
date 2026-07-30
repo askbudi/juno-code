@@ -34,26 +34,56 @@ function continueScopeHash(descriptor: string): string {
 }
 
 
+const fakeScopeResolver = `
+def resolve_scope(parent_pid, cwd):
+    override = os.environ.get('JUNO_CODE_CONTINUE_SCOPE', '').strip()
+    if override:
+        descriptor = 'JUNO_CODE_CONTINUE_SCOPE:' + override
+    else:
+        project = str(pathlib.Path(cwd).resolve())
+        marker = next((f'{key}:{os.environ[key].strip()}' for key in ['TMUX_PANE','WEZTERM_PANE','KITTY_WINDOW_ID','KITTY_PID','TERM_SESSION_ID','WT_SESSION','ZELLIJ_PANE_ID','STY','WINDOWID','SSH_TTY'] if os.environ.get(key, '').strip()), None)
+        if marker:
+            descriptor = '\\n'.join(['PROJECT:' + project, 'STABLE_TERMINAL:' + marker])
+        else:
+            lineage, current = [], parent_pid
+            for _ in range(8):
+                if not current or current <= 0 or current in lineage: break
+                lineage.append(current)
+                try:
+                    out = subprocess.run(['ps', '-o', 'ppid=', '-p', str(current)], text=True, capture_output=True, timeout=0.5, check=False).stdout.strip()
+                    current = int(out) if out else 0
+                except Exception: current = 0
+            descriptor = '\\n'.join(['PROJECT:' + project, 'SHELL_LINEAGE:' + ('>'.join(map(str, lineage)) if lineage else str(parent_pid))])
+    digest = hashlib.sha256(descriptor.encode()).hexdigest()[:16].upper()
+    scope = 'SCOPE_' + digest
+    return scope
+
+def handle_scope_command():
+    if len(sys.argv) < 2 or sys.argv[1] != 'continue-scope': return False
+    cwd = sys.argv[sys.argv.index('--cwd') + 1]
+    parent_pid = int(sys.argv[sys.argv.index('--parent-pid') + 1])
+    scope = resolve_scope(parent_pid, cwd)
+    print(json.dumps({'status':'not_found','hash':scope[6:12],'fullHash':scope,'scopeSource':'test','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_' + scope,'settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_' + scope,'sessionId':None,'isCurrentScope':True,'pid':None}))
+    return True
+`;
+
 async function installFakeJunoExecutable(dir: string, name = 'yy') {
   const binDir = path.join(dir, 'bin');
   await fs.ensureDir(binDir);
   const executablePath = path.join(binDir, name);
   await fs.writeFile(
     executablePath,
-    `#!/usr/bin/env sh
-if [ "\${1:-}" = "--quiet" ]; then shift; fi
-printf 'tool=%s capture=%s\\n' "\${JUNO_TOOL_ID-unset}" "\${JUNO_SUBAGENT_CAPTURE_PATH-unset}"
-if [ -n "\${JUNO_SUBAGENT_CAPTURE_PATH:-}" ]; then
-  prompt="\${3:-$2}"
-  if [ "$prompt" = "invalid" ]; then
-    printf '{invalid json' > "$JUNO_SUBAGENT_CAPTURE_PATH"
-  else
-    printf '{"type":"result","subtype":"success","is_error":false,"result":"captured %s","session_id":"session-%s"}\n' "$prompt" "$prompt" > "$JUNO_SUBAGENT_CAPTURE_PATH"
-  fi
-fi
-if [ "\${prompt:-}" = "fail" ]; then
-  exit 7
-fi
+    `#!/usr/bin/env python3
+import hashlib, json, os, pathlib, subprocess, sys
+${fakeScopeResolver}
+if handle_scope_command(): raise SystemExit(0)
+if len(sys.argv) > 1 and sys.argv[1] == '--quiet': sys.argv.pop(1)
+prompt = sys.argv[3] if len(sys.argv) > 3 else sys.argv[2]
+print(f"tool={os.environ.get('JUNO_TOOL_ID', 'unset')} capture={os.environ.get('JUNO_SUBAGENT_CAPTURE_PATH', 'unset')}")
+capture = os.environ.get('JUNO_SUBAGENT_CAPTURE_PATH')
+if capture:
+    pathlib.Path(capture).write_text('{invalid json' if prompt == 'invalid' else json.dumps({'type':'result','subtype':'success','is_error':False,'result':'captured ' + prompt,'session_id':'session-' + prompt}) + '\\n')
+if prompt == 'fail': raise SystemExit(7)
 `,
   );
   await fs.chmod(executablePath, 0o755);
@@ -67,26 +97,11 @@ async function installFakeTopLevelPersistingJuno(dir: string, name = 'yy') {
   await fs.writeFile(
     executablePath,
     `#!/usr/bin/env python3
-import hashlib, json, os, pathlib, sys
+import hashlib, json, os, pathlib, subprocess, sys
+${fakeScopeResolver}
+if handle_scope_command(): raise SystemExit(0)
 prompt = sys.argv[-1] if len(sys.argv) > 1 else 'empty'
-descriptor = os.environ.get('JUNO_CODE_CONTINUE_SCOPE')
-if descriptor:
-    descriptor = 'JUNO_CODE_CONTINUE_SCOPE:' + descriptor.strip()
-else:
-    lineage = []
-    current = os.getppid()
-    for _ in range(8):
-        if not current or current <= 0 or current in lineage:
-            break
-        lineage.append(current)
-        try:
-            import subprocess
-            out = subprocess.run(['ps', '-o', 'ppid=', '-p', str(current)], text=True, capture_output=True, timeout=0.5, check=False).stdout.strip()
-            current = int(out) if out else 0
-        except Exception:
-            current = 0
-    descriptor = '\\n'.join(['PROJECT:' + str(pathlib.Path.cwd().resolve()), 'SHELL_LINEAGE:' + ('>'.join(map(str, lineage)) if lineage else str(os.getppid())), 'TERMINAL:none'])
-scope = 'SCOPE_' + hashlib.sha256(descriptor.encode()).hexdigest()[:16].upper()
+scope = resolve_scope(os.getppid(), pathlib.Path.cwd())
 env_file = pathlib.Path.cwd() / '.env.juno'
 settings = json.dumps({'version': 1, 'subagent': 'pi'}, separators=(',', ':'))
 with env_file.open('a', encoding='utf-8') as fh:
@@ -134,6 +149,13 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const templateContent = await fs.readFile(templateScript, 'utf8');
     expect(templateContent).toBe(await fs.readFile(runtimeScript, 'utf8'));
     expect(templateContent).not.toContain('_dt.UTC');
+    expect(templateContent).not.toContain('def canonicalize_working_directory');
+    expect(templateContent).not.toContain('def resolve_parent_pid');
+    expect(templateContent).not.toContain('def build_parent_shell_lineage');
+    expect(templateContent).not.toContain('def collect_terminal_scope_markers');
+    expect(templateContent).not.toContain('def resolve_continue_scope_context');
+    expect(templateContent).toContain('continue-scope');
+    expect(templateContent).toContain('--parent-pid');
     expect(templateContent).toContain('integration_owner_preflight.py integrate');
     expect(templateContent).toContain('--candidate-receipt');
     expect(templateContent).toContain('--risk-tier');
@@ -909,6 +931,7 @@ exit 0
     await fs.writeFile(
       executablePath,
       `#!/usr/bin/env sh
+if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
 echo 'VERBOSE INTERNAL LOG LINE'
 printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AGENT_RESPONSE","session_id":"session-final"}\n' > "$JUNO_SUBAGENT_CAPTURE_PATH"
 `,
@@ -944,6 +967,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     await fs.writeFile(
       executablePath,
       `#!/usr/bin/env sh
+if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
 printf 'footer response\\n'
 printf 'debug cost: $0.999999 before footer\\n' >&2
 printf '🔑 Session ID(s):\\n' >&2

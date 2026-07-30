@@ -8,6 +8,7 @@ import {
   clearContinueScopeRunning,
   markContinueScopeRunning,
   resolveContinueScopeContext,
+  resolveContinueScopeContextForParent,
   resolveContinueScopeStatus,
 } from '../continue-scope.js';
 
@@ -44,6 +45,31 @@ describe('continue-scope', () => {
     expect(context.shortHash).toMatch(/^[A-F0-9]{6}$/);
     expect(context.sessionEnvKey).toBe(`${CONTINUE_SESSION_ENV_KEY_BASE}_${context.scopeHash}`);
     expect(context.settingsEnvKey).toBe(`${CONTINUE_SETTINGS_ENV_KEY_BASE}_${context.scopeHash}`);
+  });
+
+  it('exposes an explicit script-facing parent scope resolver', async () => {
+    const workingDirectory = await createTempDir();
+    const env = { TMUX_PANE: '%caller', TERM_SESSION_ID: 'secondary' };
+
+    const scriptScope = resolveContinueScopeContextForParent({
+      env,
+      parentPid: 8123,
+      workingDirectory,
+    });
+    const directScope = resolveContinueScopeContext(env, 8123, workingDirectory);
+
+    expect(scriptScope).toEqual(directScope);
+    expect(scriptScope.scopeSource).toBe('project+stable_terminal+TMUX_PANE');
+  });
+
+  it('rejects invalid script-facing parent pids instead of silently changing scope', async () => {
+    const workingDirectory = await createTempDir();
+
+    expect(() => resolveContinueScopeContextForParent({
+      env: {},
+      parentPid: 0,
+      workingDirectory,
+    })).toThrow('parent PID must be a positive integer');
   });
 
   it('keeps same terminal marker isolated across different project roots', async () => {

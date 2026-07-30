@@ -1346,6 +1346,27 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(payload.sessionId).toBe('session-continue-stdin');
     });
 
+    it('should expose caller/parent scope resolution for script integrations', async () => {
+      const withoutTerminalMarkers = {
+        TMUX_PANE: '', WEZTERM_PANE: '', KITTY_WINDOW_ID: '', KITTY_PID: '',
+        TERM_SESSION_ID: '', WT_SESSION: '', ZELLIJ_PANE_ID: '', STY: '',
+        WINDOWID: '', SSH_TTY: '',
+      };
+      const first = await executeCLI(['continue-scope', '--json', '--parent-pid', '8123'], {
+        env: withoutTerminalMarkers,
+      });
+      const second = await executeCLI(['continue-scope', '--json', '--parent-pid', '8123'], {
+        env: withoutTerminalMarkers,
+      });
+      const isolated = await executeCLI(['continue-scope', '--json', '--parent-pid', '8124'], {
+        env: withoutTerminalMarkers,
+      });
+
+      expect(first.exitCode).toBe(0);
+      expect(JSON.parse(first.stdout).fullHash).toBe(JSON.parse(second.stdout).fullHash);
+      expect(JSON.parse(first.stdout).fullHash).not.toBe(JSON.parse(isolated.stdout).fullHash);
+    });
+
     it('should resolve continue scope status by short hash', async () => {
       const env = buildContinueSnapshotEnv('binary-continue-scope-short-hash');
       const currentScopeResult = await executeCLI(['continue-scope', '--json'], { env });
@@ -1369,6 +1390,7 @@ echo "RUN_UNTIL_ARGS:$*"
         [
           '#!/usr/bin/env bash',
           'set -euo pipefail',
+          `if [ "\${1:-}" = "continue-scope" ]; then exec node ${JSON.stringify(BINARY_MJS)} "$@"; fi`,
           'printf \'workflow fake agent response\\n\'',
           'printf \'{"session_id":"session-workflow-handoff"}\\n\'',
         ].join('\n') + '\n',

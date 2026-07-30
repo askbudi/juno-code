@@ -464,11 +464,12 @@ Short help text for scripts that need pane-scoped continue state:
 
 Script endpoint for hash/status lookups:
 ```bash
-juno-code continue-scope --json          # current scope hash + status
-juno-code continue-scope A1B2C3 --json   # lookup by short hash prefix (5-6 chars)
+juno-code continue-scope --json                    # current scope hash + status
+juno-code continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
+juno-code continue-scope --json --parent-pid 1234  # scope seen by a child of PID 1234
 ```
 
-`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`.
+`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`. Script runners use `--parent-pid` for caller/child handoff scopes; descriptor selection, hashing, and environment-key generation remain owned exclusively by TypeScript rather than being mirrored in runner code.
 
 ### Pi Session Cloning and Named Branches
 

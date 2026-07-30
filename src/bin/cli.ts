@@ -745,6 +745,10 @@ function setupContinueScopeCommand(program: Command): void {
     .description('Show continue scope hash and status (running, finished, not_found, error)')
     .argument('[hash]', 'Optional hash (5-6 char prefix or full SCOPE_<HASH>)')
     .option('-w, --cwd <path>', 'Working directory')
+    .option(
+      '--parent-pid <pid>',
+      'Resolve the caller scope as if this process had the given parent PID (script integrations)',
+    )
     .option('--json', 'Output machine-readable JSON')
     .action(async (hash: string | undefined, options) => {
       try {
@@ -768,7 +772,13 @@ function setupContinueScopeCommand(program: Command): void {
           },
         });
 
-        const currentScope = continueScope.resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
+        const parentPid =
+          options.parentPid === undefined ? process.ppid : Number(options.parentPid);
+        const currentScope = continueScope.resolveContinueScopeContextForParent({
+          env: process.env,
+          parentPid,
+          workingDirectory: config.workingDirectory,
+        });
         const status = await continueScope.resolveContinueScopeStatus({
           workingDirectory: config.workingDirectory,
           ...(hash !== undefined ? { requestedHash: hash } : {}),

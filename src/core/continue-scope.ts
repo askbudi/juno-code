@@ -53,6 +53,12 @@ export interface ContinueScopeContext {
   settingsEnvKey: string;
 }
 
+export interface ContinueScopeParentRequest {
+  env?: NodeJS.ProcessEnv;
+  parentPid: number;
+  workingDirectory: string;
+}
+
 export type ContinueScopeStatus = 'running' | 'finished' | 'not_found' | 'error';
 
 export interface ContinueScopeStatusResult {
@@ -376,6 +382,24 @@ export function resolveContinueScopeContext(
     sessionEnvKey: `${CONTINUE_SESSION_ENV_KEY_BASE}_${hashes.scopeHash}`,
     settingsEnvKey: `${CONTINUE_SETTINGS_ENV_KEY_BASE}_${hashes.scopeHash}`,
   };
+}
+
+/**
+ * Resolve the scope seen by a process whose direct parent is `parentPid`.
+ * Script callers use this instead of recreating descriptor/hash/key semantics.
+ */
+export function resolveContinueScopeContextForParent(
+  request: ContinueScopeParentRequest,
+): ContinueScopeContext {
+  if (!Number.isInteger(request.parentPid) || request.parentPid <= 0) {
+    throw new Error('Continue scope parent PID must be a positive integer.');
+  }
+
+  return resolveContinueScopeContext(
+    request.env ?? process.env,
+    request.parentPid,
+    request.workingDirectory,
+  );
 }
 
 export async function markContinueScopeRunning(
