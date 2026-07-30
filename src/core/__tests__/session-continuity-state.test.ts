@@ -167,7 +167,7 @@ describe('session continuity state service', () => {
   it('pins and unpins without treating the owner control as scope use', async () => {
     const root = await temporaryRoot();
     const scope = context(root, 'pin-control');
-    const at = new Date('2026-01-01T00:00:00.000Z');
+    const at = new Date();
     await resetMainSessionBranch({ workingDirectory: root, scope, sessionId: 'MAIN', now: at });
     await setContinueScopePinned({ workingDirectory: root, scope, pinned: true });
     expect((await loadSessionContinuityDocument(root)).scopes[scope.scopeHash]).toMatchObject({

@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 
 export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
+/** One lock shared by continuity state, runtime liveness markers, migration, and retention. */
+export const SESSION_CONTINUITY_SHARED_LOCK_NAME = 'session_continuity.v2.json';
 const LOCK_RETRY_MS = 25;
 const LOCK_TIMEOUT_MS = 5_000;
 

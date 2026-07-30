@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 
 import {
   getSessionMetadataDirectory,
+  SESSION_CONTINUITY_SHARED_LOCK_NAME,
   withSessionMetadataLock,
   writeSessionMetadataFileAtomic,
 } from './session-metadata.js';
@@ -235,7 +236,7 @@ async function mutateRuntimeDocument<T>(
   mutation: (document: ContinueScopeRuntimeDocument, runtimeFilePath: string) => Promise<T>,
 ): Promise<T> {
   const metadataDirectory = getSessionMetadataDirectory(workingDirectory);
-  return withSessionMetadataLock(metadataDirectory, CONTINUE_SCOPE_RUNTIME_FILE_NAME, async () => {
+  return withSessionMetadataLock(metadataDirectory, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
     const runtimeFilePath = getRuntimeFilePath(workingDirectory);
     const document = await readRuntimeDocument(runtimeFilePath);
     return mutation(document, runtimeFilePath);
@@ -257,6 +258,19 @@ function isProcessAlive(pid: number): boolean {
     }
     return false;
   }
+}
+
+/** Read-only liveness proof used while the caller holds the shared continuity lock. */
+export async function getProvenLiveContinueScopeHashes(
+  workingDirectory: string,
+  alive: (pid: number) => boolean = isProcessAlive,
+): Promise<Set<string>> {
+  const document = await readRuntimeDocument(getRuntimeFilePath(workingDirectory));
+  return new Set(
+    Object.entries(document.scopes)
+      .filter(([, entry]) => alive(entry.pid))
+      .map(([scopeHash]) => scopeHash),
+  );
 }
 
 function resolveTargetScopeHash(

@@ -2,9 +2,13 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 
 import type { ContinueScopeContext } from './continue-scope.js';
-import { resolveContinueScopeContext } from './continue-scope.js';
+import {
+  getProvenLiveContinueScopeHashes,
+  resolveContinueScopeContext,
+} from './continue-scope.js';
 import {
   getSessionMetadataDirectory,
+  SESSION_CONTINUITY_SHARED_LOCK_NAME,
   withSessionMetadataLock,
   writeSessionMetadataFileAtomic,
 } from './session-metadata.js';
@@ -16,6 +20,9 @@ export const SESSION_CONTINUITY_VERSION = 2;
 export const MAIN_SESSION_BRANCH = 'main';
 export const MAX_CONTINUE_SETTINGS_BYTES = 16 * 1024;
 export const MAX_CONTINUE_SETTING_ARRAY_ITEMS = 128;
+export const CONTINUITY_SCOPE_TTL_DAYS = 30;
+export const CONTINUITY_INACTIVE_SCOPE_LIMIT = 128;
+const CONTINUITY_SCOPE_TTL_MS = CONTINUITY_SCOPE_TTL_DAYS * 24 * 60 * 60 * 1_000;
 
 const CONTINUE_SCOPE_FULL_HASH_PATTERN = /^SCOPE_[A-F0-9]{16}$/;
 const VALID_SUBAGENTS = new Set(['claude', 'cursor', 'codex', 'gemini', 'pi']);
@@ -95,6 +102,8 @@ export interface SessionContinuityStateContext {
   workingDirectory: string;
   context?: ContinueScopeContext;
   env?: NodeJS.ProcessEnv;
+  /** Deterministic clock injection for retention and last-used tests. */
+  now?: Date;
 }
 export interface ScopedContinueSessionState {
   context: ContinueScopeContext;
@@ -112,6 +121,22 @@ export interface PersistContinueScopeSnapshotOptions {
 }
 export interface PersistActiveSessionBranchSelectionOptions extends SessionContinuityStateContext {
   branchName: string;
+}
+
+export interface ContinuityRetentionResult {
+  expired: number;
+  lru: number;
+  retainedInactive: number;
+  protected: { current: number; live: number; pinned: number; named: number };
+  protectedOverflow: boolean;
+}
+export interface ApplySessionContinuityRetentionOptions {
+  workingDirectory: string;
+  currentScopeHash: string;
+  now?: Date;
+  /** Tests and callers already holding the shared lock may supply a proven snapshot. */
+  provenLiveScopeHashes?: ReadonlySet<string>;
+  warn?: (message: string) => void;
 }
 
 function iso(value: unknown, label: string): string {
@@ -316,15 +341,98 @@ async function writeUnlocked(
     `${JSON.stringify(document, null, 2)}\n`,
   );
 }
+function applyRetentionToDocument(
+  document: SessionContinuityDocument,
+  options: {
+    currentScopeHash: string;
+    now: Date;
+    provenLiveScopeHashes: ReadonlySet<string>;
+    warn: (message: string) => void;
+  },
+): ContinuityRetentionResult {
+  const protectedCounts = { current: 0, live: 0, pinned: 0, named: 0 };
+  const inactive: Array<[string, SessionContinuityScope]> = [];
+
+  for (const entry of Object.entries(document.scopes)) {
+    const [hash, scope] = entry;
+    if (hash === options.currentScopeHash) protectedCounts.current += 1;
+    else if (options.provenLiveScopeHashes.has(hash)) protectedCounts.live += 1;
+    else if (scope.pinned) protectedCounts.pinned += 1;
+    else if (Object.keys(scope.branches).some((name) => name !== MAIN_SESSION_BRANCH))
+      protectedCounts.named += 1;
+    else inactive.push(entry);
+  }
+
+  const cutoff = options.now.getTime() - CONTINUITY_SCOPE_TTL_MS;
+  let expired = 0;
+  const ttlRetained: Array<[string, SessionContinuityScope]> = [];
+  for (const entry of inactive) {
+    if (Date.parse(entry[1].lastUsedAt) < cutoff) {
+      delete document.scopes[entry[0]];
+      expired += 1;
+    } else ttlRetained.push(entry);
+  }
+
+  ttlRetained.sort(
+    (a, b) =>
+      Date.parse(b[1].lastUsedAt) - Date.parse(a[1].lastUsedAt) || a[0].localeCompare(b[0]),
+  );
+  const lruEntries = ttlRetained.slice(CONTINUITY_INACTIVE_SCOPE_LIMIT);
+  for (const [hash] of lruEntries) delete document.scopes[hash];
+
+  const protectedTotal = Object.values(protectedCounts).reduce((sum, count) => sum + count, 0);
+  const protectedOverflow = protectedTotal > CONTINUITY_INACTIVE_SCOPE_LIMIT;
+  if (protectedOverflow) {
+    options.warn(
+      `Continuity retention warning: protected count ${protectedTotal} exceeds limit ${CONTINUITY_INACTIVE_SCOPE_LIMIT}; retaining protected metadata.`,
+    );
+  }
+  return {
+    expired,
+    lru: lruEntries.length,
+    retainedInactive: Math.min(ttlRetained.length, CONTINUITY_INACTIVE_SCOPE_LIMIT),
+    protected: protectedCounts,
+    protectedOverflow,
+  };
+}
+
 async function mutate<T>(
   workingDirectory: string,
+  currentScopeHash: string,
+  now: Date | undefined,
   fn: (document: SessionContinuityDocument) => T | Promise<T>,
 ): Promise<T> {
   const metadata = getSessionMetadataDirectory(workingDirectory);
-  return withSessionMetadataLock(metadata, SESSION_CONTINUITY_FILE_NAME, async () => {
+  return withSessionMetadataLock(metadata, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
     const document = await loadSessionContinuityDocument(workingDirectory);
     const result = await fn(document);
+    applyRetentionToDocument(document, {
+      currentScopeHash,
+      now: now ?? new Date(),
+      provenLiveScopeHashes: await getProvenLiveContinueScopeHashes(workingDirectory),
+      warn: (message) => console.warn(message),
+    });
     await writeUnlocked(workingDirectory, document);
+    return result;
+  });
+}
+
+export async function applySessionContinuityRetention(
+  options: ApplySessionContinuityRetentionOptions,
+): Promise<ContinuityRetentionResult> {
+  const currentScopeHash = normalizeScopeHash(options.currentScopeHash);
+  const metadata = getSessionMetadataDirectory(options.workingDirectory);
+  return withSessionMetadataLock(metadata, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
+    const document = await loadSessionContinuityDocument(options.workingDirectory);
+    const result = applyRetentionToDocument(document, {
+      currentScopeHash,
+      now: options.now ?? new Date(),
+      provenLiveScopeHashes:
+        options.provenLiveScopeHashes ??
+        (await getProvenLiveContinueScopeHashes(options.workingDirectory)),
+      warn: options.warn ?? ((message) => console.warn(message)),
+    });
+    await writeUnlocked(options.workingDirectory, document);
     return result;
   });
 }
@@ -371,7 +479,7 @@ export async function persistContinueScopeSnapshot(
     options.serializedSettings === undefined
       ? undefined
       : parseContinueSettingsSnapshot(options.serializedSettings);
-  await mutate(options.workingDirectory, (document) => {
+  await mutate(options.workingDirectory, options.context.scopeHash, options.now, (document) => {
     const scope = ensureScope(document, options.context, at, id);
     const active = scope.branches[scope.active];
     if (!active)
@@ -390,7 +498,7 @@ export async function resolveScopedContinueSessionState(
   options: SessionContinuityStateContext,
 ): Promise<ScopedContinueSessionState> {
   const context = resolveContext(options);
-  return mutate(options.workingDirectory, (document) => {
+  return mutate(options.workingDirectory, context.scopeHash, options.now, (document) => {
     const scope = document.scopes[context.scopeHash];
     if (!scope)
       return {
@@ -405,7 +513,7 @@ export async function resolveScopedContinueSessionState(
       throw new SessionContinuityStateError(
         `Active branch '${scope.active}' is missing for continue scope ${context.scopeHash}.`,
       );
-    scope.lastUsedAt = nowIso();
+    scope.lastUsedAt = nowIso(options.now);
     const activeBranch = toListed(scope.active, scope.active, entry);
     delete (activeBranch as Partial<ListedSessionBranch>).active;
     return {
@@ -427,7 +535,7 @@ export async function resetMainSessionBranch(options: {
   const hash = normalizeScopeHash(options.scope);
   const id = sessionId(options.sessionId, MAIN_SESSION_BRANCH);
   const at = nowIso(options.now);
-  return mutate(options.workingDirectory, (document) => {
+  return mutate(options.workingDirectory, hash, options.now, (document) => {
     const previous = document.scopes[hash];
     const next: SessionContinuityScope = {
       source: scopeSource(options.scope),
@@ -488,7 +596,7 @@ export async function setActiveSessionBranch(options: {
 }): Promise<ActiveSessionBranch> {
   const hash = normalizeScopeHash(options.scope);
   const name = assertValidSessionBranchName(options.branchName);
-  return mutate(options.workingDirectory, (doc) => {
+  return mutate(options.workingDirectory, hash, undefined, (doc) => {
     const scope = doc.scopes[hash];
     if (!scope)
       throw new SessionContinuityStateError(
@@ -526,7 +634,7 @@ export async function upsertClonedSessionBranch(options: {
   const id = sessionId(options.sessionId, name);
   const source = sessionId(options.sourceSessionId, 'source');
   const at = nowIso(options.now);
-  return mutate(options.workingDirectory, (doc) => {
+  return mutate(options.workingDirectory, hash, options.now, (doc) => {
     const scope = doc.scopes[hash];
     if (!scope)
       throw new SessionContinuityStateError(
@@ -551,7 +659,7 @@ export async function updateActiveSessionBranch(options: {
   const hash = normalizeScopeHash(options.scope);
   const id = sessionId(options.sessionId, 'active branch');
   const at = nowIso(options.now);
-  return mutate(options.workingDirectory, (doc) => {
+  return mutate(options.workingDirectory, hash, options.now, (doc) => {
     const scope = doc.scopes[hash];
     if (!scope)
       throw new SessionContinuityStateError(
@@ -607,7 +715,12 @@ export async function setContinueScopePinned(options: {
   pinned: boolean;
 }): Promise<void> {
   const hash = normalizeScopeHash(options.scope);
-  await mutate(options.workingDirectory, (doc) => {
+  const currentScopeHash = resolveContinueScopeContext(
+    process.env,
+    process.ppid,
+    options.workingDirectory,
+  ).scopeHash;
+  await mutate(options.workingDirectory, currentScopeHash, undefined, (doc) => {
     const scope = doc.scopes[hash];
     if (!scope) throw new SessionContinuityStateError(`Unknown continue scope ${hash}.`);
     scope.pinned = options.pinned;

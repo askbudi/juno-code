@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveContinueScopeContext } from '../../core/continue-scope.js';
 import { ExecutionStatus, type ExecutionResult } from '../../core/engine.js';
 import {
+  applySessionContinuityRetention,
   listSessionBranches,
+  loadSessionContinuityDocument,
   resetMainSessionBranch,
   setActiveSessionBranch,
   upsertClonedSessionBranch,
@@ -320,6 +322,30 @@ describe('session branch workflow', () => {
     ]);
   });
 
+  it('keeps explicit resume available after implicit metadata expires without using another scope', async () => {
+    const workingDirectory = await createTempDir();
+    const expired = setScope('expired-implicit');
+    await resetMainSessionBranch({
+      workingDirectory,
+      scope: expired,
+      sessionId: 'EXPIRED_IMPLICIT',
+      now: new Date('2026-06-01T00:00:00.000Z'),
+    });
+    const current = setScope('explicit-recovery');
+    await applySessionContinuityRetention({
+      workingDirectory,
+      currentScopeHash: current.scopeHash,
+      now: new Date('2026-07-30T00:00:00.000Z'),
+      provenLiveScopeHashes: new Set(),
+    });
+
+    const options = { resume: 'OWNER_SELECTED', prompt: 'recover' } as MainCommandOptions;
+    await prepareSessionBranchExecution(options, { workingDirectory });
+
+    expect(options.resume).toBe('OWNER_SELECTED');
+    expect((await loadSessionContinuityDocument(workingDirectory)).scopes[expired.scopeHash]).toBeUndefined();
+  });
+
   it('syncs explicit --resume without clone by resetting stale branches so a new topic cannot inherit C or D', async () => {
     const workingDirectory = await createTempDir();
     const scope = setScope('explicit-resume-resets');
@@ -365,7 +391,7 @@ describe('session branch workflow', () => {
     await setActiveSessionBranch({ workingDirectory, scope, branchName: 'C' });
 
     await syncSessionBranchExecutionResult(
-      completedPiResult(),
+      { ...completedPiResult(), status: ExecutionStatus.FAILED },
       { workingDirectory },
       { continueFromLatest: true, resume: 'SESSION_C' } as MainCommandOptions,
       undefined,

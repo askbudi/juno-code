@@ -6,13 +6,19 @@ import fs from 'fs-extra';
 import type { ContinueScopeContext } from './continue-scope.js';
 import { resolveContinueScopeContext } from './continue-scope.js';
 import {
+  CONTINUITY_INACTIVE_SCOPE_LIMIT,
+  CONTINUITY_SCOPE_TTL_DAYS,
   getSessionContinuityFilePath,
   loadSessionContinuityDocument,
   parseContinueSettingsSnapshot,
   type SessionContinuityDocument,
   type SessionContinuityScope,
 } from './session-continuity-state.js';
-import { getSessionMetadataDirectory, withSessionMetadataLock } from './session-metadata.js';
+import {
+  getSessionMetadataDirectory,
+  SESSION_CONTINUITY_SHARED_LOCK_NAME,
+  withSessionMetadataLock,
+} from './session-metadata.js';
 
 const PLAN_VERSION = 1;
 const RECEIPT_VERSION = 1;
@@ -23,8 +29,8 @@ const SETTINGS_PREFIX = 'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_';
 const LEGACY_SESSION = 'JUNO_CODE_LAST_SESSION_ID';
 const LEGACY_SETTINGS = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
 const SCOPE = /^SCOPE_[A-F0-9]{16}$/;
-const TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_INACTIVE = 128;
+const TTL_MS = CONTINUITY_SCOPE_TTL_DAYS * 24 * 60 * 60 * 1000;
+const MAX_INACTIVE = CONTINUITY_INACTIVE_SCOPE_LIMIT;
 
 type Kind = 'session' | 'settings';
 interface Assignment {
@@ -636,7 +642,7 @@ export async function applyContinuityMigrationPlan(options: {
   const plan = JSON.parse(rawPlan.toString('utf8')) as unknown;
   assertPlan(plan, root);
   const metadataDirectory = getSessionMetadataDirectory(root);
-  return withSessionMetadataLock(metadataDirectory, 'session_continuity.v2.json', async () => {
+  return withSessionMetadataLock(metadataDirectory, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
     const files = await Promise.all((await envPaths(root)).map(parseEnv));
     assertSafe(files);
     if (
@@ -781,7 +787,7 @@ export async function rollbackContinuityMigration(options: {
   }
   await withSessionMetadataLock(
     getSessionMetadataDirectory(root),
-    'session_continuity.v2.json',
+    SESSION_CONTINUITY_SHARED_LOCK_NAME,
     async () => {
       for (const item of [...receipt.files, receipt.metadata])
         if ((await currentDigest(item.path)) !== item.afterSha256)

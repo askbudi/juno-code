@@ -152,6 +152,7 @@ vi.mock('../../core/session-continuity-state.js', () => ({
 
 vi.mock('../../core/session-metadata.js', () => ({
   SESSION_METADATA_DIRECTORY_ENV: 'JUNO_CODE_SESSION_METADATA_DIRECTORY',
+  SESSION_CONTINUITY_SHARED_LOCK_NAME: 'session_continuity.v2.json',
   getSessionMetadataDirectory: (workingDirectory: string) =>
     process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`,
   withSessionMetadataLock: async (_directory: string, _name: string, operation: () => Promise<unknown>) => operation(),

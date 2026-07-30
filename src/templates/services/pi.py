@@ -2530,6 +2530,24 @@ Model shorthands:
         return None
 
     @staticmethod
+    def _missing_session_recovery_message(message: str) -> str:
+        """Redact missing-session provider details and give scope-safe recovery guidance."""
+        lowered = message.lower()
+        missing = (
+            "session not found" in lowered
+            or "no session found" in lowered
+            or "unknown session" in lowered
+            or ("session" in lowered and "does not exist" in lowered)
+        )
+        if not missing:
+            return message
+        return (
+            "Pi session is unavailable. Continuity metadata was preserved. "
+            "Resume an existing session with --resume <session-id> or start a new run; "
+            "automatic continuation never falls back to another scope."
+        )
+
+    @staticmethod
     def _extract_error_message_from_event(event: dict) -> Optional[str]:
         """Extract a human-readable message from Pi/Codex error event shapes."""
         if not isinstance(event, dict):
@@ -2539,7 +2557,7 @@ Model shorthands:
         if event_type == "auto_retry_end" and event.get("success") is False:
             final_error = event.get("finalError")
             if isinstance(final_error, str) and final_error.strip():
-                return final_error.strip()
+                return PiService._missing_session_recovery_message(final_error.strip())
             return "Auto-retry failed after maximum attempts"
 
         if not PiService._is_error_result_event(event):
@@ -2567,7 +2585,7 @@ Model shorthands:
         for key in ("error", "message", "errorMessage", "result"):
             extracted = _stringify_error(event.get(key))
             if extracted:
-                return extracted
+                return PiService._missing_session_recovery_message(extracted)
 
         return "Unknown Pi error"
 
@@ -2603,6 +2621,9 @@ Model shorthands:
                 pass
 
         lowered = text.lower()
+        recovered = PiService._missing_session_recovery_message(text)
+        if recovered != text:
+            return recovered
 
         # Sometimes progress spinners and carriage updates prefix the same line.
         # Detect embedded `Error: Codex error:` signatures even when not line-start.
