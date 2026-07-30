@@ -1212,6 +1212,24 @@ def append_live_log(path: Path | None, text: str) -> None:
         handle.flush()
 
 
+def command_owns_actual_review_child(command: Any) -> bool:
+    # The capability must be attached to the directly executed owner, never to
+    # a shell that can inspect it before dispatch or to an unrelated command
+    # that merely mentions the owner's flags in its arguments.
+    if not isinstance(command, list):
+        return False
+    tokens = [str(part) for part in command]
+    if not tokens:
+        return False
+    script_index = 0
+    if Path(tokens[0]).name != "integration_owner_preflight.py":
+        if Path(tokens[0]).name not in {"python", "python3"} or len(tokens) < 2 or Path(tokens[1]).name != "integration_owner_preflight.py":
+            return False
+        script_index = 1
+    owner_args = tokens[script_index + 1 :]
+    return bool(owner_args) and owner_args[0] == "integrate" and "--actual-review-command" in owner_args and "--actual-review-receipt" in owner_args
+
+
 def execute_rendered_command(
     command: Any,
     project_root: Path,
@@ -2126,11 +2144,11 @@ def run_workflow(args: argparse.Namespace) -> int:
         env["JUNO_WORKFLOW_STEP_ID"] = step_id
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
         child_evidence_dir = out_dir / "child_steps" / step_slug
-        if not args.dry_run:
-            if child_evidence_dir.exists():
+        env.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR", None)
+        if command_owns_actual_review_child(command):
+            if not args.dry_run and child_evidence_dir.exists():
                 shutil.rmtree(child_evidence_dir)
-            child_evidence_dir.mkdir(parents=True)
-        env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
+            env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
         if live_log_path is not None:
             env["JUNO_WORKFLOW_LIVE_LOG_PATH"] = str(live_log_path)
         for receipt_id, receipt in context.get("receipts", {}).items():
