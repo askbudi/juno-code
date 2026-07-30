@@ -177,7 +177,7 @@ def checkout_policy(path: Path) -> dict[str, Any]:
             "sparse_file_sha256": hashlib.sha256(sparse_bytes).hexdigest() if sparse_bytes else None,
             "materialized_tracked_paths": materialized, "unexpected_materialized_paths": unexpected,
             "consistent": enabled_valid and cone_valid and sparse_index_valid and cone is False
-                          and sparse_index is not True and patterns_valid and selected is not None
+                          and sparse_index is False and patterns_valid and selected is not None
                           and skipped == expected_skipped and not unexpected}
 
 def configure_sparse_checkout(path: Path, paths: list[str], base: str) -> None:
