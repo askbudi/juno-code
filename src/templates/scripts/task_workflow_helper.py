@@ -21,6 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from workflow_run_evidence import WorkflowRunEvidenceError, resolve_workflow_manifest
+
 ROOT = Path(__file__).resolve().parents[2]
 MAX_TAG_LEN = 50
 TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -759,17 +764,27 @@ def classify_dirty_tree(status: str, owned_paths: Iterable[str], baseline_paths:
 
 
 def workflow_packet(run_dir: Path, task_ids: Iterable[str], e2e_tag: str | None = None, task_set_manifest: Path | None = None) -> dict[str, Any]:
-    manifest_path = run_dir / "manifest.json"
+    run_dir = run_dir.resolve()
     summary_path = run_dir / "summary.md"
-    packet: dict[str, Any] = {"run_dir": str(run_dir), "manifest_exists": manifest_path.exists(), "summary_exists": summary_path.exists()}
-    if manifest_path.exists():
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        packet["workflow_id"] = data.get("workflow_id")
-        packet["run_id"] = data.get("run_id")
-        packet["steps"] = [
+    try:
+        resolved = resolve_workflow_manifest(run_dir)
+    except WorkflowRunEvidenceError as exc:
+        raise FinalizeReviewError(f"cannot resolve workflow run manifest: {exc}") from exc
+    data = resolved.payload
+    packet: dict[str, Any] = {
+        "run_dir": str(run_dir),
+        "manifest_exists": True,
+        "summary_exists": summary_path.exists(),
+        "manifest_path": str(resolved.path),
+        "manifest_sha256": resolved.sha256,
+        "manifest_source": resolved.source,
+        "workflow_id": data.get("workflow_id"),
+        "run_id": data.get("run_id"),
+        "steps": [
             {"id": s.get("id"), "status": s.get("status"), "exit_code": s.get("exit_code"), "response_path": s.get("response_path")}
             for s in data.get("steps", [])
-        ]
+        ],
+    }
     owned_paths: list[str] = []
     baseline_paths: list[str] = []
     kanban_wrapper = "./.juno_task/scripts/kanban.sh"
@@ -819,8 +834,10 @@ def finalize_review(run_dir: Path, manifest_path: Path) -> dict[str, Path]:
     manifest_path = manifest_path.resolve()
     if not run_dir.is_dir():
         raise FinalizeReviewError(f"run directory does not exist: {run_dir}")
-    if not (run_dir / "manifest.json").is_file():
-        raise FinalizeReviewError(f"run manifest does not exist: {run_dir / 'manifest.json'}")
+    try:
+        resolved_run_manifest = resolve_workflow_manifest(run_dir)
+    except WorkflowRunEvidenceError as exc:
+        raise FinalizeReviewError(f"cannot resolve workflow run manifest: {exc}") from exc
     if not manifest_path.is_file():
         raise FinalizeReviewError(f"task-set manifest does not exist: {manifest_path}")
     try:
@@ -884,6 +901,9 @@ def finalize_review(run_dir: Path, manifest_path: Path) -> dict[str, Path]:
         "human_acceptance_required": True,
         "inputs": {
             "run_dir": str(run_dir),
+            "workflow_manifest": str(resolved_run_manifest.path),
+            "workflow_manifest_sha256": resolved_run_manifest.sha256,
+            "workflow_manifest_source": resolved_run_manifest.source,
             "task_set_manifest": str(manifest_path),
             "task_ids": task_ids,
             "e2e_tag": e2e_tag,
@@ -997,10 +1017,14 @@ def main(argv: list[str]) -> int:
             return 1
     elif args.cmd == "workflow-review-packet":
         task_ids = [x.strip() for x in args.tasks.split(",") if x.strip()]
-        packet = workflow_packet(
-            Path(args.run_dir), task_ids, args.e2e_tag or None,
-            Path(args.manifest).resolve() if args.manifest else None,
-        )
+        try:
+            packet = workflow_packet(
+                Path(args.run_dir), task_ids, args.e2e_tag or None,
+                Path(args.manifest).resolve() if args.manifest else None,
+            )
+        except FinalizeReviewError as exc:
+            print(f"FAIL: {exc}", file=sys.stderr)
+            return 1
         if args.output:
             output = Path(args.output).resolve()
             atomic_write_json(output, packet)

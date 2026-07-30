@@ -41,7 +41,9 @@ Before implementation, keep the task worktree at the exact owner-approved base a
 
 `integration_candidate.py plan` requires a `pre_merge` PASS receipt, exact base/target/task identities, expected paths, no open bugs, and a PDR matrix whose values are all `PASS`. It records task, target, overlap, and candidate path classes.
 
-`build` leaves a linear candidate at the reviewed task tip. If the target advanced, it creates an isolated candidate at the exact target and merges the reviewed tip with `--no-ff`; the resulting parents must be exactly target then task. Candidate construction never updates the official target. Conflicts are preserved for diagnosis. Candidate commands are timeout-bounded.
+`build` leaves a linear candidate at the reviewed task tip. If the target advanced, it creates an isolated candidate at the exact target and merges the reviewed tip with `--no-ff`; the resulting parents must be exactly target then task. Candidate construction never updates the official target. Conflicts are preserved for diagnosis. Candidate commands are timeout-bounded. A fresh candidate does not inherit ignored dependencies or hydrated submodules from the task worktree: make the validation-command sequence self-contained with deterministic bootstrap before tests, and never copy dependency directories into the candidate.
+
+Every candidate validation writes immutable stdout/stderr sidecars and hash-bound metadata. A nonzero exit or timeout writes a typed `build_failed` receipt to `--output` with the exact validation index, command hash, cwd, outcome, and artifact identities before returning nonzero, so diagnosis never depends on terminal scrollback.
 
 `verify` reuses the immutable `pre_merge` review when the candidate SHA equals the reviewed tip and records `candidate_semantic_review_source=pre_merge` plus `candidate_bytes_changed_by_composition=false`. A both-parent/composed candidate requires a separate exact `candidate` PASS receipt. Target movement means rebuild **and re-review**.
 

@@ -26,6 +26,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from workflow_run_evidence import WorkflowRunEvidenceError, resolve_workflow_manifest
+
 
 JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
 TEMPLATE_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
@@ -1697,22 +1702,14 @@ def validate_receipt_file(
 def latest_contract_manifest(
     parent_contract: dict[str, Any], parent_dir: Path, require_hash: bool = False
 ) -> Path:
-    attempts = parent_contract.get("attempts") or []
-    if attempts:
-        attempt = attempts[-1]
-        candidate = Path(str(attempt.get("manifest") or ""))
-        if not candidate.is_file():
-            raise WorkflowError(f"amendment newest parent manifest is missing: {candidate}")
-        expected_hash = str(attempt.get("manifest_sha256") or "")
-        if require_hash and not expected_hash:
-            raise WorkflowError(f"amendment parent manifest is not hash-bound: {candidate}")
-        if expected_hash and file_sha256(candidate) != expected_hash:
-            raise WorkflowError(f"amendment parent manifest hash mismatch: {candidate}")
-        return candidate
-    candidate = parent_dir / "manifest.json"
-    if candidate.is_file() and not require_hash:
-        return candidate
-    raise WorkflowError(f"amendment parent has no hash-bound readable manifest: {parent_dir}")
+    del parent_contract  # The shared resolver reloads the on-disk contract as the evidence source of truth.
+    try:
+        resolved = resolve_workflow_manifest(parent_dir)
+    except WorkflowRunEvidenceError as exc:
+        raise WorkflowError(str(exc)) from exc
+    if require_hash and resolved.source != "run_contract_latest_attempt":
+        raise WorkflowError(f"amendment parent has no hash-bound readable manifest: {parent_dir}")
+    return resolved.path
 
 
 def materialize_inherited_receipt(
@@ -3067,18 +3064,14 @@ def command_has_quiet(command: Any) -> bool:
 def doctor_findings(run_dir: Path) -> list[dict[str, str]]:
     manifest_path = run_dir / "manifest.json"
     findings: list[dict[str, str]] = []
-    contract_path = run_dir / "run_contract.json"
-    if contract_path.is_file():
-        try:
-            manifest_path = latest_contract_manifest(load_json_object(contract_path, "run contract"), run_dir)
-        except WorkflowError as exc:
-            return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": str(exc)}]
-    if not manifest_path.exists():
-        return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": "no hash-bound manifest found for run directory."}]
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return [{"level": "error", "code": "INVALID_MANIFEST", "location": str(manifest_path), "message": f"Cannot parse manifest.json: {exc}"}]
+        resolved = resolve_workflow_manifest(run_dir)
+        manifest_path = resolved.path
+        manifest = resolved.payload
+    except WorkflowRunEvidenceError as exc:
+        message = str(exc)
+        code = "INVALID_MANIFEST" if message.startswith("cannot parse") or "must be a JSON object" in message else "MISSING_MANIFEST"
+        return [{"level": "error", "code": code, "location": str(manifest_path), "message": message}]
     steps = manifest.get("steps")
     if not isinstance(steps, list):
         return [{"level": "error", "code": "INVALID_MANIFEST_STEPS", "location": str(manifest_path), "message": "manifest.steps must be a list."}]

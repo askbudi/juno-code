@@ -77,6 +77,12 @@
       "destination": ".juno_task/scripts/task_workflow_helper.py",
       "installClass": "script",
       "type": "script"
+    },
+    {
+      "source": "scripts/workflow_run_evidence.py",
+      "destination": ".juno_task/scripts/workflow_run_evidence.py",
+      "installClass": "script",
+      "type": "script"
     }
   ]
 }

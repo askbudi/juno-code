@@ -69,6 +69,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('integration_candidate.py');
       expect(missing).toContain('worktree_lifecycle.py');
       expect(missing).toContain('task_workflow_helper.py');
+      expect(missing).toContain('workflow_run_evidence.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -174,6 +175,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'task_workflow_helper.py'),
         '#!/usr/bin/env python3\nprint("task set")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_run_evidence.py'),
+        '#!/usr/bin/env python3\nprint("workflow evidence")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -262,6 +267,7 @@ describe('ScriptInstaller', () => {
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'worktree_lifecycle.py', installed: false },
         { name: 'task_workflow_helper.py', installed: false },
+        { name: 'workflow_run_evidence.py', installed: false },
       ]);
     });
 
@@ -367,6 +373,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'task_workflow_helper.py'),
         '#!/usr/bin/env python3\nprint("task set")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'workflow_run_evidence.py'),
+        '#!/usr/bin/env python3\nprint("workflow evidence")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -402,6 +412,7 @@ describe('ScriptInstaller', () => {
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'worktree_lifecycle.py', installed: true },
         { name: 'task_workflow_helper.py', installed: true },
+        { name: 'workflow_run_evidence.py', installed: true },
       ]);
     });
   });
@@ -639,6 +650,15 @@ describe('ScriptInstaller', () => {
         'utf8',
       );
       expect(installedTaskHelper).toBe(packageTaskHelper);
+      const installedEvidenceHelper = await fs.readFile(
+        path.join(testDir, '.juno_task/scripts/workflow_run_evidence.py'),
+        'utf8',
+      );
+      const packageEvidenceHelper = await fs.readFile(
+        path.resolve(process.cwd(), 'src/templates/scripts/workflow_run_evidence.py'),
+        'utf8',
+      );
+      expect(installedEvidenceHelper).toBe(packageEvidenceHelper);
     });
 
     it('does not mix a new lifecycle script generation with customized guidance', async () => {

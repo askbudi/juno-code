@@ -39,6 +39,25 @@ def write(path:Path,payload:dict[str,Any])->None:
       os.replace(temporary,path)
     finally: temporary.unlink(missing_ok=True)
 
+def write_blob(path:Path,value:str)->dict[str,Any]:
+    encoded=value.encode("utf-8",errors="replace");path=path.resolve()
+    if path.exists():
+      if path.read_bytes()!=encoded:raise CandidateError(f"immutable validation artifact collision: {path}")
+    else:
+      path.parent.mkdir(parents=True,exist_ok=True)
+      temporary=path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+      try:
+       with temporary.open("wb") as handle:
+        handle.write(encoded);handle.flush();os.fsync(handle.fileno())
+       os.replace(temporary,path)
+      finally:temporary.unlink(missing_ok=True)
+    return {"path":str(path),"sha256":hashlib.sha256(encoded).hexdigest(),"bytes":len(encoded)}
+
+def output_text(value:Any)->str:
+    if value is None:return ""
+    if isinstance(value,bytes):return value.decode("utf-8",errors="replace")
+    return str(value)
+
 def target_preflight(args:argparse.Namespace)->dict[str,Any]:
     repo=args.repository.resolve();target_ref=full_ref(args.target_ref)
     common_raw=git(repo,"rev-parse","--path-format=absolute","--git-common-dir")
@@ -114,17 +133,33 @@ def build(args:argparse.Namespace)->dict[str,Any]:
       expected=plan_data["expected_paths"]
       unexpected=sorted(path for path in candidate_paths if expected and not any(path==prefix or path.startswith(prefix.rstrip("/")+"/") for prefix in expected))
       if unexpected:raise CandidateError("unexpected candidate paths: "+",".join(unexpected))
-      validations=[]
-      for command in args.validation_command:
-        result=subprocess.run(command,shell=True,cwd=work,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=args.validation_timeout)
-        validations.append({"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"exit_code":result.returncode})
-        if result.returncode:raise CandidateError("candidate_validation_failed")
+      validations=[];artifacts=args.output.resolve().parent/f"{args.output.name}.artifacts"
+      for index,command in enumerate(args.validation_command,start=1):
+        timed_out=False
+        try:
+          result=subprocess.run(command,shell=True,cwd=work,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=args.validation_timeout)
+          exit_code=result.returncode;stdout=output_text(result.stdout);stderr=output_text(result.stderr)
+        except subprocess.TimeoutExpired as exc:
+          timed_out=True;exit_code=None;stdout=output_text(exc.stdout);stderr=output_text(exc.stderr)
+        stdout_artifact=write_blob(artifacts/f"validation-{index:03d}.stdout.txt",stdout)
+        stderr_artifact=write_blob(artifacts/f"validation-{index:03d}.stderr.txt",stderr)
+        validation={"index":index,"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"cwd":str(work.resolve()),
+          "exit_code":exit_code,"timed_out":timed_out,"stdout":stdout_artifact,"stderr":stderr_artifact}
+        validations.append(validation)
+        if timed_out or exit_code:
+          failure={"code":"candidate_validation_timeout" if timed_out else "candidate_validation_failed","validation_index":index,
+            "command_sha256":validation["command_sha256"],"exit_code":exit_code,"timed_out":timed_out}
+          failed={**plan_data,"operation":"build_failed","candidate_sha":candidate,"candidate_path":str(candidate_path),
+            "candidate_paths":candidate_paths,"candidate_bytes_changed_by_composition":candidate!=plan_data["reviewed_tip"],
+            "validation":validations,"failure":failure,"eligible":False,"plan_sha256":hashlib.sha256(args.plan.read_bytes()).hexdigest()}
+          write(args.output,failed)
+          raise CandidateError(f"{failure['code']}: validation_index={index}; receipt={args.output.resolve()}")
       payload={**plan_data,"operation":"build","candidate_sha":candidate,"candidate_path":str(candidate_path) if candidate_path else None,
        "candidate_paths":candidate_paths,"candidate_bytes_changed_by_composition":candidate != plan_data["reviewed_tip"],
        "validation":validations,"eligible":False,"plan_sha256":hashlib.sha256(args.plan.read_bytes()).hexdigest()}
       write(args.output,payload);return payload
     except Exception:
-      # Conflicted candidate is preserved for diagnosis as required.
+      # Conflicted or failed candidates and their typed evidence are preserved for diagnosis.
       raise
 
 def verify(args:argparse.Namespace)->dict[str,Any]:

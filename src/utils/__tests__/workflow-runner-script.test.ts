@@ -201,6 +201,10 @@ describe('workflow_runner.sh template script', () => {
     const staleScript = path.join(testDir, 'workflow_runner.sh');
     await fs.ensureDir(templateDir);
     await fs.copyFile(templateScript, path.join(templateDir, 'workflow_runner.sh'));
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/workflow_run_evidence.py'),
+      path.join(testDir, 'workflow_run_evidence.py'),
+    );
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runWorkflowScript(staleScript, ['--help'], undefined, {
@@ -238,6 +242,10 @@ describe('workflow_runner.sh template script', () => {
     const staleScript = path.join(testDir, 'workflow_runner_skip.sh');
     await fs.ensureDir(templateDir);
     await fs.copyFile(templateScript, path.join(templateDir, 'workflow_runner.sh'));
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/workflow_run_evidence.py'),
+      path.join(testDir, 'workflow_run_evidence.py'),
+    );
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runWorkflowScript(staleScript, ['--help'], undefined, {
@@ -1574,7 +1582,7 @@ print('response with session_id=session-must-not-be-captured')
       '--amends-run', parentOut, '--from-step', 'suffix', '--print-output', 'none',
     ]);
     expect(rejected.status).not.toBe(0);
-    expect(rejected.stderr).toContain('newest parent manifest is missing');
+    expect(rejected.stderr).toContain('newest workflow attempt manifest is missing');
   });
 
   it('binds the newest parent attempt ID to its hash-bound manifest', async () => {
@@ -1879,6 +1887,10 @@ print('response with session_id=session-must-not-be-captured')
     const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
     expect(contract.attempts.at(-1).status).toBe('interrupted');
     expect(contract.attempts.at(-1).recovery_reason).toBe('recovered_from_step_checkpoints');
+    expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
+    const doctor = runWorkflow(['doctor', '--json', outDir]);
+    expect(doctor.status).toBe(0);
+    expect(JSON.parse(doctor.stdout).status).toBe('ok');
 
     const resumed = runWorkflow([
       '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir,
