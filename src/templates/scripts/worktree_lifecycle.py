@@ -10,10 +10,11 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA = "juno_worktree_lifecycle.v3"
+SCHEMA = "juno_worktree_lifecycle.v4"
+SPARSE_POLICY_HEADER = "# juno-worktree-lifecycle sparse-v1"
 DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS = 5
 MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS = 60
 
@@ -85,6 +86,72 @@ def measure_capacity(path: Path) -> dict[str, Any]:
     except OSError as exc:
         return {"available": False, "error": type(exc).__name__}
 
+def normalize_sparse_paths(values: list[str]) -> list[str]:
+    normalized: set[str] = set()
+    for value in values:
+        candidate = value.strip().replace(os.sep, "/")
+        path = PurePosixPath(candidate)
+        if (not candidate or candidate != path.as_posix() or path.is_absolute() or candidate in {".", ".git"}
+                or ".." in path.parts or ".git" in path.parts or "\\" in candidate
+                or any(character in candidate for character in "*?[") or candidate.startswith(("!", "#"))):
+            raise LifecycleError(f"invalid_sparse_path: {value!r}")
+        normalized.add(candidate.rstrip("/"))
+    return sorted(normalized)
+
+def sparse_patterns(paths: list[str]) -> list[str]:
+    patterns = [SPARSE_POLICY_HEADER]
+    for path in paths:
+        patterns.extend((f"/{path}", f"/{path}/**"))
+    return patterns
+
+def parse_sparse_patterns(patterns: list[str]) -> list[str] | None:
+    if not patterns or patterns[0] != SPARSE_POLICY_HEADER or (len(patterns) - 1) % 2:
+        return None
+    paths: list[str] = []
+    for index in range(1, len(patterns), 2):
+        exact, recursive = patterns[index:index + 2]
+        if not exact.startswith("/") or exact.endswith("/**") or recursive != exact + "/**":
+            return None
+        paths.append(exact[1:])
+    try:
+        return normalize_sparse_paths(paths) if paths == sorted(set(paths)) else None
+    except LifecycleError:
+        return None
+
+def materialized_tracked_paths(path: Path) -> list[str]:
+    return [tracked for tracked in git(path, "ls-files").splitlines()
+            if os.path.lexists(path / tracked)]
+
+def path_is_selected(tracked: str, selected: list[str]) -> bool:
+    return any(tracked == prefix or tracked.startswith(prefix + "/") for prefix in selected)
+
+def checkout_policy(path: Path) -> dict[str, Any]:
+    enabled = git(path, "config", "--bool", "core.sparseCheckout", check=False) == "true"
+    cone = git(path, "config", "--bool", "core.sparseCheckoutCone", check=False) == "true"
+    if not enabled:
+        return {"mode": "full", "style": None, "enabled": False, "cone": cone,
+                "paths": [], "patterns": [], "materialized_tracked_paths": [],
+                "unexpected_materialized_paths": [], "consistent": not cone}
+    sparse_file = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"))
+    patterns = sparse_file.read_text(encoding="utf-8").splitlines() if sparse_file.is_file() else []
+    selected = parse_sparse_patterns(patterns)
+    materialized = materialized_tracked_paths(path)
+    unexpected = materialized if selected is None else [item for item in materialized if not path_is_selected(item, selected)]
+    return {"mode": "sparse", "style": "non-cone", "enabled": enabled, "cone": cone,
+            "paths": [] if selected is None else selected, "patterns": patterns,
+            "sparse_file_sha256": hashlib.sha256(sparse_file.read_bytes()).hexdigest() if sparse_file.is_file() else None,
+            "materialized_tracked_paths": materialized, "unexpected_materialized_paths": unexpected,
+            "consistent": not cone and selected is not None and not unexpected}
+
+def configure_sparse_checkout(path: Path, paths: list[str]) -> None:
+    patterns = sparse_patterns(paths)
+    result = subprocess.run(["git", "-C", str(path), "sparse-checkout", "set", "--no-cone", "--stdin"],
+                            input="\n".join(patterns) + "\n", text=True, capture_output=True,
+                            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    if result.returncode:
+        raise LifecycleError(f"git sparse-checkout set failed: {result.stderr.strip()}")
+    git(path, "reset", "--hard", "HEAD")
+
 def create(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); root, common = identity(repo)
     target_ref = full_ref(args.target_ref)
@@ -99,6 +166,13 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         base = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
     if args.expected_base and base != args.expected_base: raise LifecycleError(f"base_mismatch expected={args.expected_base} actual={base}")
     path = args.path.resolve(); branch = branch_ref(args.branch_ref)
+    if args.sparse_tooling_path and not args.sparse:
+        raise LifecycleError("--sparse-tooling-path requires --sparse")
+    expected_paths = normalize_sparse_paths(args.expected_path) if args.sparse else sorted(set(args.expected_path))
+    sparse_tooling_paths = normalize_sparse_paths(args.sparse_tooling_path) if args.sparse else []
+    requested_sparse_paths = sorted(set(expected_paths) | set(sparse_tooling_paths))
+    if args.sparse and not requested_sparse_paths:
+        raise LifecycleError("--sparse requires at least one --expected-path or --sparse-tooling-path")
     capacity = measure_capacity(path)
     if args.hard_min_free_bytes is not None and args.hard_min_free_bytes < 0:
         raise LifecycleError("--hard-min-free-bytes must be non-negative")
@@ -110,15 +184,28 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         row = matches[0]
         if row.get("branch") != branch or row.get("HEAD") != base: raise LifecycleError("existing_worktree_identity_mismatch")
         if status(path): raise LifecycleError("existing_worktree_dirty")
+        policy = checkout_policy(path)
+        requested_mode = "sparse" if args.sparse else "full"
+        if (not policy["consistent"] or policy["mode"] != requested_mode
+                or (args.sparse and policy["paths"] != requested_sparse_paths)):
+            raise LifecycleError("existing_worktree_checkout_policy_mismatch")
         outcome = "verified_existing"
     else:
         if path.exists(): raise LifecycleError("worktree_path_collision")
-        if git(repo, "show-ref", "--verify", "--quiet", branch, check=False): raise LifecycleError("branch_ref_collision")
-        git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
+        if run_returncode(repo, "show-ref", "--verify", "--quiet", branch) == 0: raise LifecycleError("branch_ref_collision")
+        if args.sparse:
+            git(repo, "worktree", "add", "--no-checkout", "-b", branch.removeprefix("refs/heads/"), str(path), base)
+            configure_sparse_checkout(path, requested_sparse_paths)
+        else:
+            git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
+        policy = checkout_policy(path)
+        if not policy["consistent"] or policy["mode"] != ("sparse" if args.sparse else "full"):
+            raise LifecycleError("created_worktree_checkout_policy_mismatch")
         outcome = "created"
     payload = {"schema_version": SCHEMA, "operation": "create", "outcome": outcome, "repository_root": str(root),
                "git_common_dir": str(common), "target_ref": target_ref, "base_sha": base, "task_id": args.task_id,
-               "branch_ref": branch, "worktree": str(path), "expected_paths": sorted(set(args.expected_path)),
+               "branch_ref": branch, "worktree": str(path), "expected_paths": expected_paths,
+               "sparse_tooling_paths": sparse_tooling_paths, "checkout_policy": policy,
                "validation_commands": args.validation_command, "cleanup_owner": args.cleanup_owner,
                "capacity": capacity, "clean": status(path) == ""}
     write_receipt(args.output, payload); return payload
@@ -133,19 +220,23 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     try: actual_path = display_path.resolve(strict=True)
     except OSError: actual_path = None; refusals.append("path_missing_or_dangling")
     actual: dict[str, Any] = {"head": None, "branch_ref": None, "clean": False,
-                              "worktree": None if actual_path is None else str(actual_path), "git_common_dir": None}
+                              "worktree": None if actual_path is None else str(actual_path), "git_common_dir": None,
+                              "checkout_policy": None}
     if expected_path is not None and actual_path is not None:
         if expected_path != actual_path: refusals.append("canonical_path_mismatch")
         try:
             root, common = identity(actual_path)
             actual.update({"head": git(actual_path, "rev-parse", "HEAD"),
                            "branch_ref": git(actual_path, "symbolic-ref", "-q", "HEAD", check=False),
-                           "clean": status(actual_path) == "", "worktree": str(root), "git_common_dir": str(common)})
+                           "clean": status(actual_path) == "", "worktree": str(root), "git_common_dir": str(common),
+                           "checkout_policy": checkout_policy(actual_path)})
             if root != actual_path: refusals.append("path_is_not_worktree_root")
             if actual["head"] != receipt["base_sha"]: refusals.append("unexpected_head")
             if actual["branch_ref"] != receipt["branch_ref"]: refusals.append("unexpected_branch")
             if not actual["clean"]: refusals.append("dirty")
             if actual["git_common_dir"] != receipt["git_common_dir"]: refusals.append("git_common_dir_mismatch")
+            if actual["checkout_policy"] != receipt.get("checkout_policy"): refusals.append("checkout_policy_mismatch")
+            if not actual["checkout_policy"]["consistent"]: refusals.append("checkout_policy_inconsistent")
             if display_path.resolve(strict=True) != actual_path: refusals.append("canonical_path_resolution_changed")
         except LifecycleError: refusals.append("path_is_not_registered_git_worktree")
     passed = not refusals
@@ -309,9 +400,11 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     for row in listed(repo):
         path = Path(row["worktree"]); exists = path.exists(); dirt = None if not exists else status(path)
         reachable = target_exists and run_returncode(repo, "merge-base", "--is-ancestor", row["HEAD"], target) == 0
+        policy = checkout_policy(path) if exists else None
         rows.append({**row, "exists": exists, "clean": dirt == "" if dirt is not None else False,
-                     "reachable_from_target": reachable,
-                     "cleanup_eligible": exists and dirt == "" and reachable and "locked" not in row and "prunable" not in row})
+                     "reachable_from_target": reachable, "checkout_policy": policy,
+                     "cleanup_eligible": exists and dirt == "" and reachable and policy is not None and policy["consistent"]
+                                         and "locked" not in row and "prunable" not in row})
     payload = {"schema_version": SCHEMA, "operation": "audit", "repository": str(repo), "target_ref": target,
                "target_exists": target_exists, "worktrees": rows,
                "prune_dry_run": git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()}
@@ -372,7 +465,7 @@ def release_target(args: argparse.Namespace) -> dict[str, Any]:
 
 def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
-    expected = args.expected_head
+    expected = args.expected_head; policy: dict[str, Any] | None = None
     refusals: list[str] = []; deinitialized: list[dict[str, Any]] = []; admins_to_remove: list[Path] = []
     activity_evidence: dict[str, Any] = {
         "probe_status": "not_run", "blocking": True,
@@ -395,6 +488,8 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     elif not path.exists() and run_returncode(repo, "merge-base", "--is-ancestor", expected, target):
         refusals.append("unreachable_from_target")
     elif path.exists():
+        policy = checkout_policy(path)
+        if not policy["consistent"]: refusals.append("checkout_policy_inconsistent")
         if lock_path(path).exists(): refusals.append("index_lock_present")
         if status(path): refusals.append("dirty")
         if git(path, "rev-parse", "HEAD") != expected: refusals.append("unexpected_head")
@@ -473,7 +568,8 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     inventory = listed(repo); prune = git(repo, "worktree", "prune", "--dry-run", "--verbose", check=False).splitlines()
     payload = {"schema_version": SCHEMA, "operation": "cleanup", "passed": removed and not refusals,
                "removed": removed, "already_removed": already_removed, "refusals": refusals, "worktree": str(path), "expected_head": expected,
-               "target_ref": target, "branch_ref": branch, "activity_evidence": activity_evidence, "deinitialized_submodules": deinitialized,
+               "target_ref": target, "branch_ref": branch, "checkout_policy": policy if path.exists() or not already_removed else None,
+               "activity_evidence": activity_evidence, "deinitialized_submodules": deinitialized,
                "removed_admin_paths": removed_admin_paths, "inventory": inventory, "prune_dry_run": prune}
     write_receipt(args.output, payload)
     if refusals: raise LifecycleError("cleanup_refused: " + ",".join(refusals))
@@ -485,6 +581,8 @@ def parser() -> argparse.ArgumentParser:
     create_p.add_argument("--repository", type=Path, required=True); create_p.add_argument("--target-ref", required=True); create_p.add_argument("--expected-base")
     create_p.add_argument("--fetch"); create_p.add_argument("--path", type=Path, required=True); create_p.add_argument("--branch-ref", required=True)
     create_p.add_argument("--task-id", required=True); create_p.add_argument("--expected-path", action="append", default=[]); create_p.add_argument("--validation-command", action="append", default=[])
+    create_p.add_argument("--sparse", action="store_true", help="materialize only explicit expected and sparse-tooling paths using canonical non-cone patterns")
+    create_p.add_argument("--sparse-tooling-path", action="append", default=[], metavar="RELATIVE_PATH")
     create_p.add_argument("--cleanup-owner", required=True); create_p.add_argument("--hard-min-free-bytes", type=int); create_p.add_argument("--output", type=Path, required=True)
     verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--path", type=Path); verify_p.add_argument("--output", type=Path, required=True)
     audit_p = sub.add_parser("audit", allow_abbrev=False); audit_p.set_defaults(func=audit); audit_p.add_argument("--repository", type=Path, required=True); audit_p.add_argument("--target-ref", required=True); audit_p.add_argument("--output", type=Path, required=True)
