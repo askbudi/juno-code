@@ -798,7 +798,7 @@ def workflow_packet(run_dir: Path, task_ids: Iterable[str], e2e_tag: str | None 
         "workflow_id": data.get("workflow_id"),
         "run_id": data.get("run_id"),
         "steps": [
-            {"id": s.get("id"), "status": s.get("status"), "exit_code": s.get("exit_code"), "response_path": s.get("response_path")}
+            {"id": s.get("id"), "status": s.get("status"), "exit_code": s.get("exit_code"), "response_path": s.get("response_path"), "child_steps": s.get("child_steps", [])}
             for s in data.get("steps", [])
         ],
     }

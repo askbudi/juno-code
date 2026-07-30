@@ -176,6 +176,7 @@ def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
 def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float)->dict[str,Any]:
  try:tokens=shlex.split(command)
  except ValueError as exc:raise IntegrationError(f"actual_target_review command is not parseable: {exc}") from exc
+ if len(tokens)<2 or Path(tokens[0]).name not in {"yy","juno-code","ypl"} or tokens[1]!="pi":raise IntegrationError("actual_target_review must be a declared yy/juno-code/ypl pi execution")
  forbidden={"--resume","--continue","continue","cc"}
  if any(token in forbidden for token in tokens):raise IntegrationError("actual_target_review must use a fresh session without resume/continue")
  child_root_text=os.environ.get("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip()
@@ -185,7 +186,7 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
  capture_path=(child_root/"capture.raw.json") if child_root else receipt_path.with_suffix(".capture.raw.json")
  env={**os.environ,"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)}
  started_wall=datetime.datetime.now(datetime.timezone.utc);started=time.monotonic()
- try:review_run=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
+ try:review_run=subprocess.run(tokens,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
  except subprocess.TimeoutExpired as exc:
   stdout=exc.stdout.decode() if isinstance(exc.stdout,bytes) else exc.stdout or "";stderr=exc.stderr.decode() if isinstance(exc.stderr,bytes) else exc.stderr or ""
   review_run=subprocess.CompletedProcess(command,124,stdout,stderr+f"actual target review timed out after {timeout} seconds\n")
