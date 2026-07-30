@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Plan, build, and verify immutable reviewed integration candidates."""
 from __future__ import annotations
-import argparse, hashlib, json, os, subprocess, sys
+import argparse, datetime as dt, hashlib, json, os, subprocess, sys, uuid
 from pathlib import Path
 from typing import Any
 SCHEMA = "juno_integration_candidate.v2"
+TARGET_PREFLIGHT_SCHEMA = "juno_integration_target_preflight.v1"
 class CandidateError(Exception): pass
 
 def run(repo: Path, *args: str, check: bool=True) -> subprocess.CompletedProcess[str]:
@@ -27,14 +28,54 @@ def load_pass(path:Path,kind:str,tip:str|None=None)->dict[str,Any]:
 def paths(repo:Path,old:str,new:str)->list[str]: return sorted(set(git(repo,"diff","--name-only",old,new).splitlines()))
 def write(path:Path,payload:dict[str,Any])->None:
     encoded=json.dumps(payload,indent=2,sort_keys=True)+"\n"; path=path.resolve()
-    if path.exists() and path.read_text()!=encoded: raise CandidateError(f"immutable receipt collision: {path}")
-    path.parent.mkdir(parents=True,exist_ok=True); path.write_text(encoded)
+    if path.exists():
+      if path.read_text()!=encoded: raise CandidateError(f"immutable receipt collision: {path}")
+      return
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temporary=path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+      with temporary.open("w",encoding="utf-8") as handle:
+       handle.write(encoded);handle.flush();os.fsync(handle.fileno())
+      os.replace(temporary,path)
+    finally: temporary.unlink(missing_ok=True)
+
+def target_preflight(args:argparse.Namespace)->dict[str,Any]:
+    repo=args.repository.resolve();target_ref=full_ref(args.target_ref)
+    common_raw=git(repo,"rev-parse","--path-format=absolute","--git-common-dir")
+    common_dir=Path(common_raw).resolve()
+    approved_result=run(repo,"rev-parse",f"{args.approved_base}^{{commit}}",check=False)
+    if approved_result.returncode:
+      raise CandidateError("approved base is not a readable commit")
+    approved=approved_result.stdout.strip()
+    target_result=run(repo,"rev-parse","--verify",f"{target_ref}^{{commit}}",check=False)
+    observed=target_result.stdout.strip() if target_result.returncode==0 else None
+    if observed is None:
+      classification="missing_target";ancestry=False;safe_action="refuse_missing_target"
+    elif observed==approved:
+      classification="exact";ancestry=True;safe_action="continue_exact_base_policy"
+    elif run(repo,"merge-base","--is-ancestor",approved,observed,check=False).returncode==0:
+      classification="advanced_descendant";ancestry=True;safe_action="snapshot_then_rebuild_and_rereview"
+    else:
+      classification="invalid_rewind_or_divergence";ancestry=False;safe_action="refuse_history_change"
+    payload={
+      "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",
+      "repository":str(repo),"git_common_dir":str(common_dir),"target_ref":target_ref,
+      "approved_base":approved,"observed_target_sha":observed,"classification":classification,
+      "approved_base_is_ancestor":ancestry,"safe_next_action":safe_action,
+      "passed":classification in {"exact","advanced_descendant"},
+      "producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST", ""),
+      "observed_at":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
+    }
+    write(args.output,payload)
+    if not payload["passed"]: raise CandidateError(classification)
+    return payload
 
 def plan(args:argparse.Namespace)->dict[str,Any]:
     repo=args.repository.resolve(); target_ref=full_ref(args.target_ref); target=git(repo,"rev-parse",f"{target_ref}^{{commit}}")
     tip=git(repo,"rev-parse",f"{args.reviewed_tip}^{{commit}}"); base=git(repo,"rev-parse",f"{args.base_sha}^{{commit}}")
     load_pass(args.premerge_review,"pre_merge",tip)
     if run(repo,"merge-base","--is-ancestor",base,tip,check=False).returncode: raise CandidateError("reviewed tip does not descend from base")
+    if run(repo,"merge-base","--is-ancestor",base,target,check=False).returncode: raise CandidateError("invalid_rewind_or_divergence")
     task_paths=paths(repo,base,tip); target_paths=paths(repo,base,target)
     expected=sorted(set(args.expected_path)); unexpected=sorted(path for path in task_paths if expected and not any(path==prefix or path.startswith(prefix.rstrip("/")+"/") for prefix in expected))
     if unexpected: raise CandidateError("unexpected task paths: "+",".join(unexpected))
@@ -107,12 +148,19 @@ def verify(args:argparse.Namespace)->dict[str,Any]:
     candidate_path=Path(candidate.get("candidate_path") or "")
     if not candidate.get("candidate_path") or git(candidate_path,"rev-parse","HEAD")!=tip or git(candidate_path,"status","--porcelain=v2","--untracked-files=all"):
       raise CandidateError("moved_or_dirty_candidate")
+    if candidate.get("strategy")=="merge_both_parents":
+      parents=git(candidate_path,"show","-s","--format=%P",tip).split()
+      if parents != [candidate["expected_target_sha"],candidate["reviewed_tip"]]: raise CandidateError("candidate_parent_identity_mismatch")
+    elif tip != candidate.get("reviewed_tip"):
+      raise CandidateError("direct_candidate_identity_mismatch")
     payload={**candidate,"operation":"verify","eligible":True,"candidate_receipt_sha256":hashlib.sha256(args.candidate.read_bytes()).hexdigest(),
              "candidate_semantic_review_source":review_source,"candidate_review_sha256":review_hash}
     write(args.output,payload);return payload
 
 def parser()->argparse.ArgumentParser:
  p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);s=p.add_subparsers(dest="command",required=True)
+ q=s.add_parser("target-preflight",allow_abbrev=False);q.set_defaults(func=target_preflight)
+ q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--approved-base",required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("plan",allow_abbrev=False);q.set_defaults(func=plan)
  q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path,required=True);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("build",allow_abbrev=False);q.set_defaults(func=build);q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path,required=True);q.add_argument("--validation-command",action="append",required=True);q.add_argument("--validation-timeout",type=float,default=1800);q.add_argument("--output",type=Path,required=True)
@@ -120,6 +168,6 @@ def parser()->argparse.ArgumentParser:
  return p
 def main(argv:list[str]|None=None)->int:
  try:
-  a=parser().parse_args(argv);v=a.func(a);print(json.dumps({"schema_version":SCHEMA,"operation":v["operation"],"candidate_sha":v.get("candidate_sha"),"eligible":v.get("eligible",False)},sort_keys=True));return 0
+  a=parser().parse_args(argv);v=a.func(a);print(json.dumps({"schema_version":v.get("schema_version",SCHEMA),"operation":v["operation"],"candidate_sha":v.get("candidate_sha"),"eligible":v.get("eligible",False),"classification":v.get("classification")},sort_keys=True));return 0
  except (CandidateError,OSError,json.JSONDecodeError,subprocess.TimeoutExpired) as e:print(f"integration_candidate: error: {e}",file=sys.stderr);return 2
 if __name__=="__main__":raise SystemExit(main())
