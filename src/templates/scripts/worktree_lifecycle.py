@@ -9,10 +9,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "juno_worktree_lifecycle.v3"
+DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS = 5
+MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS = 60
 
 class LifecycleError(Exception): pass
 
@@ -154,18 +157,36 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     if not passed: raise LifecycleError("worktree_verification_refused: " + ",".join(refusals))
     return payload
 
-def cleanup_activity(path: Path) -> dict[str, Any]:
+def validate_activity_probe_timeout(value: int) -> int:
+    if value < 1 or value > MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS:
+        raise LifecycleError(
+            "activity_probe_timeout_out_of_bounds "
+            f"minimum=1 maximum={MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS} observed={value}"
+        )
+    return value
+
+def cleanup_activity(path: Path, timeout_seconds: int = DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS) -> dict[str, Any]:
+    timeout_seconds = validate_activity_probe_timeout(timeout_seconds)
+    command = ["lsof", "-n", "-P", "+D", str(path)]
+    started = time.monotonic()
+    evidence: dict[str, Any] = {
+        "command": command, "timeout_seconds": timeout_seconds,
+        "maximum_timeout_seconds": MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS,
+    }
     try:
-        result = subprocess.run(["lsof", "-n", "-P", "+D", str(path)], text=True, capture_output=True,
-                                stdin=subprocess.DEVNULL, timeout=5)
+        result = subprocess.run(command, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                                timeout=timeout_seconds)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return {"probe_status": "unknown", "blocking": True, "error": type(exc).__name__}
+        return {**evidence, "probe_status": "unknown", "blocking": True, "error": type(exc).__name__,
+                "elapsed_seconds": round(time.monotonic() - started, 6)}
+    evidence["elapsed_seconds"] = round(time.monotonic() - started, 6)
     if result.returncode == 0:
-        return {"probe_status": "active", "blocking": True, "returncode": 0,
+        return {**evidence, "probe_status": "active", "blocking": True, "returncode": 0,
                 "observed_lines": result.stdout.splitlines()[:100]}
     if result.returncode == 1:  # lsof's documented no-match result
-        return {"probe_status": "none", "blocking": False, "returncode": 1, "observed_lines": []}
-    return {"probe_status": "unknown", "blocking": True, "returncode": result.returncode,
+        return {**evidence, "probe_status": "none", "blocking": False, "returncode": 1,
+                "observed_lines": []}
+    return {**evidence, "probe_status": "unknown", "blocking": True, "returncode": result.returncode,
             "error": "lsof_probe_failed", "stderr": result.stderr.splitlines()[:20],
             "observed_lines": result.stdout.splitlines()[:100]}
 
@@ -353,7 +374,17 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); path = args.path.resolve(); target = full_ref(args.target_ref); branch = branch_ref(args.branch_ref, allow_detached=True)
     expected = args.expected_head
     refusals: list[str] = []; deinitialized: list[dict[str, Any]] = []; admins_to_remove: list[Path] = []
-    activity_evidence: dict[str, Any] = {"probe_status": "not_run", "blocking": False}
+    activity_evidence: dict[str, Any] = {
+        "probe_status": "not_run", "blocking": True,
+        "timeout_seconds": args.activity_probe_timeout_seconds,
+        "maximum_timeout_seconds": MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS,
+    }
+    try:
+        activity_probe_timeout = validate_activity_probe_timeout(args.activity_probe_timeout_seconds)
+    except LifecycleError as exc:
+        activity_probe_timeout = None
+        activity_evidence["error"] = str(exc)
+        refusals.append("activity_probe_timeout_out_of_bounds")
     approved = dict(args.deinitialized_submodule)
     if len(approved) != len(args.deinitialized_submodule): refusals.append("duplicate_deinitialized_submodule_path")
     if args.delete_branch and branch == "DETACHED": refusals.append("detached_has_no_branch")
@@ -418,9 +449,10 @@ def cleanup(args: argparse.Namespace) -> dict[str, Any]:
                                   "approved_git_dir": str(approved_git_dir), "containing_refs": containing_refs,
                                   "reachable": object_exists and bool(containing_refs)})
             admins_to_remove.append(admin)
-        activity_evidence = cleanup_activity(path)
-        if activity_evidence["blocking"]:
-            refusals.append("process_probe_unknown" if activity_evidence["probe_status"] == "unknown" else "active_process")
+        if activity_probe_timeout is not None:
+            activity_evidence = cleanup_activity(path, activity_probe_timeout)
+            if activity_evidence["blocking"]:
+                refusals.append("process_probe_unknown" if activity_evidence["probe_status"] == "unknown" else "active_process")
     removed = already_removed; removed_admin_paths: list[str] = []
     if not refusals and not already_removed:
         for admin in admins_to_remove:
@@ -464,6 +496,8 @@ def parser() -> argparse.ArgumentParser:
     clean_p = sub.add_parser("cleanup", allow_abbrev=False); clean_p.set_defaults(func=cleanup)
     for name in ("repository", "path", "output"): clean_p.add_argument(f"--{name}", type=Path, required=True)
     clean_p.add_argument("--target-ref", required=True); clean_p.add_argument("--branch-ref", required=True); clean_p.add_argument("--expected-head", required=True); clean_p.add_argument("--delete-branch", action="store_true")
+    clean_p.add_argument("--activity-probe-timeout-seconds", type=int, default=DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS,
+                         help=f"bounded lsof +D timeout (default: {DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS}; maximum: {MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS})")
     clean_p.add_argument("--deinitialized-submodule", action="append", type=submodule_repository, default=[], metavar="RELATIVE_PATH=APPROVED_REPOSITORY")
     return root
 
