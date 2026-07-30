@@ -134,8 +134,9 @@ def skip_worktree_paths(path: Path) -> list[str]:
     return sorted(record[2:].decode(errors="surrogateescape") for record in git_nul_records(path, "ls-files", "-t", "-z")
                   if record.startswith(b"S "))
 
-def config_bool(path: Path, key: str) -> tuple[bool | None, bool]:
-    result = subprocess.run(["git", "-C", str(path), "config", "--bool", "--get", key], text=True,
+def config_bool(path: Path, key: str, *, worktree: bool = False) -> tuple[bool | None, bool]:
+    scope = ["--worktree"] if worktree else []
+    result = subprocess.run(["git", "-C", str(path), "config", *scope, "--bool", "--get", key], text=True,
                             capture_output=True, stdin=subprocess.DEVNULL,
                             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     if result.returncode == 1:
@@ -152,11 +153,18 @@ def checkout_policy(path: Path) -> dict[str, Any]:
     enabled, enabled_valid = config_bool(path, "core.sparseCheckout")
     cone, cone_valid = config_bool(path, "core.sparseCheckoutCone")
     sparse_index, sparse_index_valid = config_bool(path, "index.sparse")
+    scoped_enabled, scoped_enabled_valid = config_bool(path, "core.sparseCheckout", worktree=True)
+    scoped_cone, scoped_cone_valid = config_bool(path, "core.sparseCheckoutCone", worktree=True)
+    scoped_sparse_index, scoped_sparse_index_valid = config_bool(path, "index.sparse", worktree=True)
+    worktree_config = {"core.sparseCheckout": scoped_enabled, "core.sparseCheckoutCone": scoped_cone,
+                       "index.sparse": scoped_sparse_index,
+                       "valid": scoped_enabled_valid and scoped_cone_valid and scoped_sparse_index_valid}
     skipped = skip_worktree_paths(path)
     if enabled is not True:
         consistent = enabled_valid and cone_valid and sparse_index_valid and cone is not True and sparse_index is not True and not skipped
         return {"mode": "full", "style": None, "enabled": enabled, "cone": cone, "sparse_index": sparse_index,
-                "config_valid": enabled_valid and cone_valid and sparse_index_valid, "skip_worktree_paths": skipped,
+                "config_valid": enabled_valid and cone_valid and sparse_index_valid, "worktree_config": worktree_config,
+                "skip_worktree_paths": skipped,
                 "expected_skip_worktree_paths": [], "paths": [], "patterns": [], "materialized_tracked_paths": [],
                 "unexpected_materialized_paths": [], "consistent": consistent}
     sparse_file = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"))
@@ -171,13 +179,15 @@ def checkout_policy(path: Path) -> dict[str, Any]:
     materialized = materialized_tracked_paths(path)
     unexpected = materialized if selected is None else [item for item in materialized if not path_is_selected(item, selected)]
     return {"mode": "sparse", "style": "non-cone", "enabled": enabled, "cone": cone, "sparse_index": sparse_index,
-            "config_valid": enabled_valid and cone_valid and sparse_index_valid, "patterns_valid_utf8": patterns_valid,
+            "config_valid": enabled_valid and cone_valid and sparse_index_valid, "worktree_config": worktree_config,
+            "patterns_valid_utf8": patterns_valid,
             "skip_worktree_paths": skipped, "expected_skip_worktree_paths": expected_skipped,
             "paths": [] if selected is None else selected, "patterns": patterns,
             "sparse_file_sha256": hashlib.sha256(sparse_bytes).hexdigest() if sparse_bytes else None,
             "materialized_tracked_paths": materialized, "unexpected_materialized_paths": unexpected,
-            "consistent": enabled_valid and cone_valid and sparse_index_valid and cone is False
-                          and sparse_index is False and patterns_valid and selected is not None
+            "consistent": enabled_valid and cone_valid and sparse_index_valid and worktree_config["valid"]
+                          and scoped_enabled is True and scoped_cone is False and scoped_sparse_index is False
+                          and cone is False and sparse_index is False and patterns_valid and selected is not None
                           and skipped == expected_skipped and not unexpected}
 
 def configure_sparse_checkout(path: Path, paths: list[str], base: str) -> None:
