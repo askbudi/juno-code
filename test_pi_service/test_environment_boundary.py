@@ -15,6 +15,8 @@ def test_service_entrypoints_scrub_continuity_without_dropping_config(module):
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(SERVICES)
     environment["JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF"] = "not-printed"
+    environment["JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix"] = "not-printed"
+    environment["JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_"] = "not-printed"
     environment["JUNO_CODE_LAST_EXECUTION_SETTINGS"] = "not-printed"
     environment["JUNO_TASK_ROOT"] = "/controller"
     environment["BOUNDARY_CONFIG"] = "preserved"

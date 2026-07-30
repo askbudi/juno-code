@@ -145,8 +145,9 @@ from enum import Enum
 from pathlib import Path
 
 
-_SCOPED_CONTINUITY_KEY_RE = re.compile(
-    r"^JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)_SCOPE_[A-F0-9]{16}$"
+_SCOPED_CONTINUITY_KEY_PREFIXES = (
+    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
 )
 _LEGACY_CONTINUITY_KEYS = {
     "JUNO_CODE_LAST_SESSION_ID",
@@ -159,7 +160,7 @@ def _child_process_environment(base):
     return {
         name: value
         for name, value in base.items()
-        if name not in _LEGACY_CONTINUITY_KEYS and not _SCOPED_CONTINUITY_KEY_RE.fullmatch(name)
+        if name not in _LEGACY_CONTINUITY_KEYS and not name.startswith(_SCOPED_CONTINUITY_KEY_PREFIXES)
     }
 
 

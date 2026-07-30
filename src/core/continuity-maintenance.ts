@@ -44,6 +44,7 @@ interface Assignment {
 }
 interface ParsedEnv {
   filePath: string;
+  exists: boolean;
   bytes: Buffer;
   sha256: string;
   mode: number;
@@ -57,6 +58,7 @@ interface ParsedEnv {
 }
 export interface ContinuityFileInventory {
   path: string;
+  exists: boolean;
   bytes: number;
   sha256: string;
   keys: number;
@@ -107,6 +109,7 @@ export interface ContinuityMigrationPlan {
   currentScope: string;
   files: PlanFile[];
   metadata: { path: string; exists: boolean; sha256: string | null };
+  runtime: { path: string; exists: boolean; sha256: string | null };
   keepScopes: string[];
   projected: ContinuityInventory['projected'];
   policy: { ttlDays: 30; maxInactiveScopes: 128 };
@@ -139,18 +142,34 @@ function cleanRoot(candidate: string): string {
   return path.resolve(candidate);
 }
 function decodeValue(raw: string): string {
-  const value = raw.trim();
-  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+  const value = raw.trimStart();
+  if (value.startsWith("'")) {
+    const match = /^'([^']*)'\s*(?:#.*)?$/.exec(value);
+    if (!match) throw new Error('malformed single-quoted continuity value');
+    return match[1]!;
+  }
+  if (value.startsWith('"')) {
+    let closing = -1;
+    for (let index = 1; index < value.length; index++) {
+      if (value[index] !== '"') continue;
+      let escapes = 0;
+      for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor--) escapes++;
+      if (escapes % 2 === 0) {
+        closing = index;
+        break;
+      }
+    }
+    if (closing < 0 || !/^\s*(?:#.*)?$/.test(value.slice(closing + 1)))
+      throw new Error('malformed double-quoted continuity value');
     return value
-      .slice(1, -1)
+      .slice(1, closing)
       .replace(/\\n/g, '\n')
       .replace(/\\r/g, '\r')
       .replace(/\\t/g, '\t')
       .replace(/\\"/g, '"')
       .replace(/\\\\/g, '\\');
   }
-  return value.replace(/\s+#.*$/, '');
+  return value.trimEnd().replace(/\s+#.*$/, '');
 }
 function identify(key: string): { kind: Kind; scopeHash: string | null } | null {
   if (key === LEGACY_SESSION) return { kind: 'session', scopeHash: null };
@@ -191,11 +210,13 @@ function lines(bytes: Buffer): Array<{ raw: Buffer; offset: number }> {
 async function parseEnv(filePath: string): Promise<ParsedEnv> {
   let bytes: Buffer;
   let stat;
+  let exists = true;
   try {
     bytes = await fs.readFile(filePath);
     stat = await fs.stat(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    exists = false;
     bytes = Buffer.alloc(0);
     stat = { mode: 0o600, mtime: new Date(0) };
   }
@@ -221,10 +242,17 @@ async function parseEnv(filePath: string): Promise<ParsedEnv> {
       if (continuityLike(key)) malformedLines++;
       continue;
     }
+    let value: string;
+    try {
+      value = decodeValue(match[2]!);
+    } catch {
+      malformedLines++;
+      continue;
+    }
     assignments.push({
       key,
       ...identity,
-      value: decodeValue(match[2]!),
+      value,
       raw: line.raw,
       offset: line.offset,
       length: line.raw.length,
@@ -242,6 +270,7 @@ async function parseEnv(filePath: string): Promise<ParsedEnv> {
   const completePairs = [...pairs.values()].filter((pair) => pair.size === 2).length;
   return {
     filePath,
+    exists,
     bytes,
     sha256: digest(bytes),
     mode: stat.mode & 0o777,
@@ -274,6 +303,7 @@ async function envPaths(root: string): Promise<string[]> {
 function fileInventory(file: ParsedEnv): ContinuityFileInventory {
   return {
     path: file.filePath,
+    exists: file.exists,
     bytes: file.bytes.length,
     sha256: file.sha256,
     keys: file.assignmentKeys,
@@ -371,11 +401,30 @@ function processIsAlive(pid: unknown): boolean {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
+function runtimePath(root: string): string {
+  return path.join(getSessionMetadataDirectory(root), 'continue_scope_runtime.json');
+}
+async function runtimeSnapshot(root: string): Promise<{
+  path: string;
+  exists: boolean;
+  sha256: string | null;
+}> {
+  const filePath = runtimePath(root);
+  try {
+    const bytes = await fs.readFile(filePath);
+    return { path: filePath, exists: true, sha256: digest(bytes) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { path: filePath, exists: false, sha256: null };
+    throw error;
+  }
+}
 async function liveScopes(root: string): Promise<Set<string>> {
   try {
-    const value = (await fs.readJson(
-      path.join(getSessionMetadataDirectory(root), 'continue_scope_runtime.json'),
-    )) as { version?: unknown; scopes?: Record<string, { pid?: unknown }> };
+    const value = (await fs.readJson(runtimePath(root))) as {
+      version?: unknown;
+      scopes?: Record<string, { pid?: unknown }>;
+    };
     if (value.version !== 1 || !value.scopes || typeof value.scopes !== 'object') return new Set();
     return new Set(
       Object.entries(value.scopes)
@@ -526,37 +575,37 @@ export async function createContinuityMigrationPlan(options: {
   now?: Date;
 }): Promise<ContinuityMigrationPlan> {
   const root = cleanRoot(options.workingDirectory);
-  const files = await Promise.all((await envPaths(root)).map(parseEnv));
-  assertSafe(files);
-  const metadata = await metadataSnapshot(root);
-  const now = options.now ?? new Date();
-  const projection = await project(
-    root,
-    files,
-    metadata.document,
-    currentContext(root, options.context),
-    now,
-  );
-  const plan: ContinuityMigrationPlan = {
-    version: 1,
-    kind: 'juno-continuity-reviewed-plan',
-    createdAt: now.toISOString(),
-    workingDirectory: root,
-    currentScope: currentContext(root, options.context).scopeHash,
-    files: files.map((file) => ({ ...fileInventory(file), mode: file.mode, mtime: file.mtime })),
-    metadata: { path: metadata.path, exists: metadata.bytes !== null, sha256: metadata.sha256 },
-    keepScopes: projection.keepScopes,
-    projected: {
-      removedAssignments: files.reduce((n, file) => n + file.assignments.length, 0),
-      importedScopes: projection.importedScopes,
-      expiredScopes: projection.expiredScopes,
-      lruScopes: projection.lruScopes,
-      protectedScopes: projection.protectedScopes,
-    },
-    policy: { ttlDays: 30, maxInactiveScopes: 128 },
-  };
-  await writePrivateJson(path.resolve(options.planPath), plan);
-  return plan;
+  const metadataDirectory = getSessionMetadataDirectory(root);
+  return withSessionMetadataLock(metadataDirectory, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
+    const files = await Promise.all((await envPaths(root)).map(parseEnv));
+    assertSafe(files);
+    const metadata = await metadataSnapshot(root);
+    const now = options.now ?? new Date();
+    const context = currentContext(root, options.context);
+    const projection = await project(root, files, metadata.document, context, now);
+    const runtime = await runtimeSnapshot(root);
+    const plan: ContinuityMigrationPlan = {
+      version: 1,
+      kind: 'juno-continuity-reviewed-plan',
+      createdAt: now.toISOString(),
+      workingDirectory: root,
+      currentScope: context.scopeHash,
+      files: files.map((file) => ({ ...fileInventory(file), mode: file.mode, mtime: file.mtime })),
+      metadata: { path: metadata.path, exists: metadata.bytes !== null, sha256: metadata.sha256 },
+      runtime,
+      keepScopes: projection.keepScopes,
+      projected: {
+        removedAssignments: files.reduce((n, file) => n + file.assignments.length, 0),
+        importedScopes: projection.importedScopes,
+        expiredScopes: projection.expiredScopes,
+        lruScopes: projection.lruScopes,
+        protectedScopes: projection.protectedScopes,
+      },
+      policy: { ttlDays: 30, maxInactiveScopes: 128 },
+    };
+    await writePrivateJson(path.resolve(options.planPath), plan);
+    return plan;
+  });
 }
 function assertPlan(value: unknown, root: string): asserts value is ContinuityMigrationPlan {
   const plan = value as Partial<ContinuityMigrationPlan>;
@@ -567,7 +616,13 @@ function assertPlan(value: unknown, root: string): asserts value is ContinuityMi
     plan.workingDirectory !== root ||
     !Array.isArray(plan.files) ||
     !Array.isArray(plan.keepScopes) ||
-    !SCOPE.test(plan.currentScope || '')
+    !plan.runtime ||
+    typeof plan.runtime.path !== 'string' ||
+    (plan.runtime.sha256 !== null && !/^[a-f0-9]{64}$/.test(plan.runtime.sha256)) ||
+    !SCOPE.test(plan.currentScope || '') ||
+    !plan.keepScopes.every((scope) => typeof scope === 'string' && SCOPE.test(scope)) ||
+    plan.policy?.ttlDays !== 30 ||
+    plan.policy?.maxInactiveScopes !== 128
   )
     throw new Error('Invalid or ambiguous continuity reviewed plan.');
 }
@@ -636,6 +691,7 @@ async function backup(
 export async function applyContinuityMigrationPlan(options: {
   workingDirectory: string;
   planPath: string;
+  context?: ContinueScopeContext;
 }): Promise<{ receiptPath: string }> {
   const root = cleanRoot(options.workingDirectory);
   const rawPlan = await fs.readFile(path.resolve(options.planPath));
@@ -643,13 +699,25 @@ export async function applyContinuityMigrationPlan(options: {
   assertPlan(plan, root);
   const metadataDirectory = getSessionMetadataDirectory(root);
   return withSessionMetadataLock(metadataDirectory, SESSION_CONTINUITY_SHARED_LOCK_NAME, async () => {
+    const applyContext = currentContext(root, options.context);
+    if (applyContext.scopeHash !== plan.currentScope)
+      throw new Error('Reviewed continuity plan is stale: the current scope changed.');
+    const runtime = await runtimeSnapshot(root);
+    if (
+      runtime.path !== plan.runtime.path ||
+      runtime.exists !== plan.runtime.exists ||
+      runtime.sha256 !== plan.runtime.sha256
+    )
+      throw new Error('Reviewed continuity plan is stale: live scope evidence changed.');
     const files = await Promise.all((await envPaths(root)).map(parseEnv));
     assertSafe(files);
     if (
       files.length !== plan.files.length ||
       files.some(
         (file, index) =>
-          file.filePath !== plan.files[index]?.path || file.sha256 !== plan.files[index]?.sha256,
+          file.filePath !== plan.files[index]?.path ||
+          file.exists !== plan.files[index]?.exists ||
+          file.sha256 !== plan.files[index]?.sha256,
       )
     )
       throw new Error('Reviewed continuity plan is stale: an env file changed.');
@@ -669,11 +737,15 @@ export async function applyContinuityMigrationPlan(options: {
       const file = files[index]!;
       const backupPath = path.join(directory, `env-${index}.bak`);
       const saved = await backup(file.filePath, backupPath);
-      if (!saved.bytes || digest(saved.bytes) !== file.sha256)
+      if (
+        (saved.bytes !== null) !== file.exists ||
+        (saved.bytes !== null && digest(saved.bytes) !== file.sha256)
+      )
         throw new Error(
           `Reviewed continuity plan is stale: ${file.filePath} changed while backups were created.`,
         );
-      backups.push({ path: backupPath, sha256: digest(saved.bytes) });
+      if (saved.bytes !== null)
+        backups.push({ path: backupPath, sha256: digest(saved.bytes) });
       receiptFiles.push({
         path: file.filePath,
         beforeSha256: file.sha256,
@@ -716,14 +788,23 @@ export async function applyContinuityMigrationPlan(options: {
     const receiptPath = path.join(directory, 'receipt.json');
     // Persist the rollback contract before the first destructive write.
     await writePrivateJson(receiptPath, receipt);
-    await atomicWrite(beforeMetadata.path, metadataBytes, savedMetadata.mode || 0o600);
-    await loadSessionContinuityDocument(root);
-    for (const file of files) {
-      if ((await currentDigest(file.filePath)) !== file.sha256)
-        throw new Error(
-          `Env file changed concurrently: ${file.filePath}; refusing to overwrite it.`,
-        );
-      await atomicWrite(file.filePath, withoutContinuity(file), file.mode || 0o600);
+    try {
+      await atomicWrite(beforeMetadata.path, metadataBytes, savedMetadata.mode || 0o600);
+      await loadSessionContinuityDocument(root);
+      for (const file of files) {
+        const expectedDigest = file.exists ? file.sha256 : null;
+        if ((await currentDigest(file.filePath)) !== expectedDigest)
+          throw new Error(
+            `Env file changed concurrently: ${file.filePath}; refusing to overwrite it.`,
+          );
+        if (file.exists)
+          await atomicWrite(file.filePath, withoutContinuity(file), file.mode || 0o600);
+      }
+    } catch (error) {
+      throw new Error(
+        `Continuity apply stopped after its rollback receipt was written at ${receiptPath}. ` +
+          `Run continuity rollback with that receipt after resolving the write failure. ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     return { receiptPath };
   });
@@ -789,9 +870,12 @@ export async function rollbackContinuityMigration(options: {
     getSessionMetadataDirectory(root),
     SESSION_CONTINUITY_SHARED_LOCK_NAME,
     async () => {
-      for (const item of [...receipt.files, receipt.metadata])
-        if ((await currentDigest(item.path)) !== item.afterSha256)
+      for (const item of [...receipt.files, receipt.metadata]) {
+        const observed = await currentDigest(item.path);
+        const before = item.existed ? item.beforeSha256 : null;
+        if (observed !== item.afterSha256 && observed !== before)
           throw new Error(`File changed since continuity apply: ${item.path}; refusing rollback.`);
+      }
       await restore(receipt.metadata);
       for (const item of receipt.files) await restore(item);
     },

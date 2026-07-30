@@ -6,11 +6,13 @@ import {
 } from '../child-process-environment.js';
 
 describe('child process environment boundary', () => {
-  it('recognizes only legacy and scoped continuity keys', () => {
+  it('recognizes legacy keys and the complete reserved scoped namespaces', () => {
     expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_SESSION_ID')).toBe(true);
     expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_EXECUTION_SETTINGS')).toBe(true);
     expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF')).toBe(true);
     expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF')).toBe(true);
+    expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_SESSION_ID_SCOPE_lowercase')).toBe(true);
+    expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_')).toBe(true);
     expect(isContinuityEnvironmentKey('JUNO_CODE_CONTINUE_SCOPE')).toBe(false);
     expect(isContinuityEnvironmentKey('JUNO_CODE_LAST_SESSION_ID_BACKUP')).toBe(false);
   });
@@ -27,6 +29,7 @@ describe('child process environment boundary', () => {
         JUNO_CODE_CONTINUE_SCOPE: 'pinned-scope',
         JUNO_CODE_LAST_SESSION_ID: 'legacy',
         JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF: 'historical',
+        JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix: 'historical-malformed',
       },
       {
         DISPATCH_ONLY: 'current',

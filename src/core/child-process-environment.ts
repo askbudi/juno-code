@@ -11,11 +11,16 @@ const LEGACY_CONTINUITY_KEYS = new Set([
   'JUNO_CODE_LAST_SESSION_ID',
   'JUNO_CODE_LAST_EXECUTION_SETTINGS',
 ]);
-const SCOPED_CONTINUITY_KEY =
-  /^JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)_SCOPE_[A-F0-9]{16}$/;
+const SCOPED_CONTINUITY_KEY_PREFIXES = [
+  'JUNO_CODE_LAST_SESSION_ID_SCOPE_',
+  'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_',
+] as const;
 
 export function isContinuityEnvironmentKey(name: string): boolean {
-  return LEGACY_CONTINUITY_KEYS.has(name) || SCOPED_CONTINUITY_KEY.test(name);
+  return (
+    LEGACY_CONTINUITY_KEYS.has(name) ||
+    SCOPED_CONTINUITY_KEY_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
 }
 
 export function buildChildProcessEnvironment(

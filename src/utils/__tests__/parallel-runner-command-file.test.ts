@@ -90,6 +90,7 @@ import importlib.machinery, json, os
 mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
 os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF'] = 'historical'
 os.environ['JUNO_CODE_LAST_EXECUTION_SETTINGS'] = 'legacy'
+os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix'] = 'historical-malformed'
 os.environ['JUNO_TASK_ROOT'] = '/controller'
 os.environ['ARBITRARY_CONFIG'] = 'preserved'
 env = mod._build_process_env({'JUNO_MODEL': 'current'})

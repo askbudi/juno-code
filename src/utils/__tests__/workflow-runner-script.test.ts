@@ -141,6 +141,8 @@ import importlib.machinery, json
 mod = importlib.machinery.SourceFileLoader('workflow_runner', ${JSON.stringify(script)}).load_module()
 env = mod.child_process_environment({
   'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF': 'historical',
+  'JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix': 'historical-malformed',
+  'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_': 'historical-empty-suffix',
   'JUNO_CODE_LAST_EXECUTION_SETTINGS': 'legacy',
   'JUNO_TASK_ROOT': '/controller',
   'ARBITRARY_CONFIG': 'preserved',
@@ -1050,6 +1052,36 @@ print('response with session_id=session-must-not-be-captured')
     expect(manifest.steps[0].capture_enabled).toBe(false);
     expect(manifest.steps[0].session_id).toBe('');
     expect(manifest.continue).toBeUndefined();
+  });
+
+  it('uses yy rather than dispatching ypl for continue-scope control calls', async () => {
+    const { binDir } = await installFakeJunoExecutable(testDir, 'yy');
+    const yplPath = path.join(binDir, 'ypl');
+    const controlMarker = path.join(testDir, 'ypl-control-dispatch.txt');
+    await fs.writeFile(
+      yplPath,
+      `#!/usr/bin/env sh
+if [ "\${1:-}" = "continue-scope" ]; then printf 'unexpected-control-dispatch' > ${JSON.stringify(controlMarker)}; exit 91; fi
+exec "$(dirname "$0")/yy" pi --live "$@"
+`,
+    );
+    await fs.chmod(yplPath, 0o755);
+    const workflowPath = path.join(testDir, 'ypl-control-boundary.json');
+    const outDir = path.join(testDir, 'ypl-control-boundary-out');
+    await fs.writeJson(workflowPath, {
+      name: 'ypl-control-boundary',
+      steps: [{ id: 'agent', command: [yplPath, 'prompt'] }],
+    });
+
+    const result = runWorkflow(
+      ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
+      undefined,
+      { PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
+    );
+
+    expect(result.status).toBe(0);
+    expect(await fs.pathExists(controlMarker)).toBe(false);
+    expect(result.stdout).toContain('persisted for yy cc');
   });
 
   it('prints juno step session ids and persists the last one for yy cc continue', async () => {

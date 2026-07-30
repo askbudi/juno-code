@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Mapping
 
-_SCOPED_CONTINUITY_KEY = re.compile(
-    r"^JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)_SCOPE_[A-F0-9]{16}$"
+_SCOPED_CONTINUITY_KEY_PREFIXES = (
+    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
 )
 _LEGACY_CONTINUITY_KEYS = frozenset(
     {"JUNO_CODE_LAST_SESSION_ID", "JUNO_CODE_LAST_EXECUTION_SETTINGS"}
@@ -16,7 +16,7 @@ _LEGACY_CONTINUITY_KEYS = frozenset(
 
 
 def is_continuity_environment_key(name: str) -> bool:
-    return name in _LEGACY_CONTINUITY_KEYS or _SCOPED_CONTINUITY_KEY.fullmatch(name) is not None
+    return name in _LEGACY_CONTINUITY_KEYS or name.startswith(_SCOPED_CONTINUITY_KEY_PREFIXES)
 
 
 def child_process_environment(

@@ -30,6 +30,7 @@ import { resolvePromptCommandSubstitutions } from './prompt-command-substitution
 import { resolvePromptMacros } from './prompt-macro-resolver.js';
 import { getPromptMacroDictionary } from './config.js';
 import { resolveController } from '../utils/controller-resolver.js';
+import { buildChildProcessEnvironment } from './child-process-environment.js';
 
 // =============================================================================
 // Type Definitions
@@ -727,12 +728,11 @@ export class ExecutionEngine extends EventEmitter {
       timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout || 43200000,
       enableJsonStreaming: true,
       outputRawJson: this.engineConfig.config.verbose >= 1,
-      environment: {
-        ...process.env,
+      environment: buildChildProcessEnvironment(process.env, {
         JUNO_TASK_ROOT: controller.path,
         JUNO_CONTROLLER_SOURCE: controller.source,
         JUNO_WORKSPACE_ROLE: controller.role,
-      },
+      }),
       sessionId: request.requestId,
     });
 
@@ -1116,10 +1116,9 @@ export class ExecutionEngine extends EventEmitter {
       const applyCommandSubstitutions = async (input: string): Promise<string> =>
         resolvePromptCommandSubstitutions(input, {
           workingDirectory: context.request.workingDirectory,
-          environment: {
-            ...process.env,
+          environment: buildChildProcessEnvironment(process.env, {
             JUNO_TASK_ROOT: resolveController(context.request.workingDirectory, 'orchestration').path,
-          },
+          }),
         });
 
       const resolvedInstruction =

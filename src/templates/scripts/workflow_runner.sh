@@ -33,8 +33,9 @@ STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
 STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
 TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
-SCOPED_CONTINUITY_KEY_RE = re.compile(
-    r"^JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)_SCOPE_[A-F0-9]{16}$"
+SCOPED_CONTINUITY_KEY_PREFIXES = (
+    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
 )
 LEGACY_CONTINUITY_KEYS = {
     "JUNO_CODE_LAST_SESSION_ID",
@@ -47,7 +48,7 @@ def child_process_environment(base: dict[str, str]) -> dict[str, str]:
     return {
         name: value
         for name, value in base.items()
-        if name not in LEGACY_CONTINUITY_KEYS and not SCOPED_CONTINUITY_KEY_RE.fullmatch(name)
+        if name not in LEGACY_CONTINUITY_KEYS and not name.startswith(SCOPED_CONTINUITY_KEY_PREFIXES)
     }
 
 
@@ -808,11 +809,12 @@ def resolve_continue_scope_from_juno(
 ) -> dict[str, str]:
     """Ask the selected Juno executable for its TypeScript-owned scope identity."""
     parts = command_argv(command)
-    executable = parts[0] if parts and Path(parts[0]).name in JUNO_COMMANDS else None
+    executable = parts[0] if parts and Path(parts[0]).name in {"yy", "juno-code"} else None
     if not executable:
-        executable = next((path for name in ("yy", "juno-code", "ypl") if (path := shutil.which(name))), None)
+        # ypl is a prompt shortcut (`juno-code pi --live`), not a control-command API.
+        executable = next((path for name in ("yy", "juno-code") if (path := shutil.which(name))), None)
     if not executable:
-        raise WorkflowError("cannot resolve continue scope: yy/juno-code/ypl was not found")
+        raise WorkflowError("cannot resolve continue scope: yy or juno-code was not found")
 
     completed = subprocess.run(
         [

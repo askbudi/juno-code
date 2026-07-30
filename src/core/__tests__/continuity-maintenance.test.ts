@@ -76,7 +76,7 @@ describe('continuity maintenance', () => {
     expect(JSON.stringify(plan)).not.toContain('SESSION_SECRET');
     expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(original);
 
-    const result = await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
+    const result = await applyContinuityMigrationPlan({ workingDirectory: root, planPath, context: current });
     expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(
       Buffer.from(`# keep\r\nTOKEN = "s3cr3t"\r\n\r\nTAIL=' exact '`),
     );
@@ -119,6 +119,17 @@ describe('continuity maintenance', () => {
       'JUNO_CODE_LAST_SESSION_ID_SCOPE_NOT_A_HASH=x\n',
     );
     await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
+
+    await fs.writeFile(
+      path.join(root, '.env.custom'),
+      'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF="unterminated\n',
+    );
+    await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
+    await fs.writeFile(
+      path.join(root, '.env.custom'),
+      "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF='unterminated\n",
+    );
+    await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
   });
 
   it('rewrites both default and custom env files while preserving each non-continuity byte stream', async () => {
@@ -146,6 +157,38 @@ describe('continuity maintenance', () => {
     );
   });
 
+  it('migrates custom-only state while preserving absent env paths as absent', async () => {
+    const { root } = await fixture();
+    const scope = 'SCOPE_0123456789ABCDEF';
+    const defaultPath = path.join(root, '.env.juno');
+    const customPath = path.join(root, '.env.custom');
+    await fs.writeJson(path.join(root, '.juno_task', 'config.json'), {
+      envFilePath: '.env.custom',
+      envFileCopied: true,
+    });
+    await fs.writeFile(customPath, `${legacy(scope)}CUSTOM=kept\n`);
+    const planPath = path.join(root, 'custom-only-plan.json');
+    const plan = await createContinuityMigrationPlan({ workingDirectory: root, planPath });
+    expect(plan.files.map((file) => ({ path: path.basename(file.path), exists: file.exists }))).toEqual([
+      { path: '.env.juno', exists: false },
+      { path: '.env.custom', exists: true },
+    ]);
+    const { receiptPath } = await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
+    expect(await fs.pathExists(defaultPath)).toBe(false);
+    expect(await fs.readFile(customPath, 'utf8')).toBe('CUSTOM=kept\n');
+    await rollbackContinuityMigration({ workingDirectory: root, receiptPath });
+    expect(await fs.pathExists(defaultPath)).toBe(false);
+    expect(await fs.readFile(customPath, 'utf8')).toBe(`${legacy(scope)}CUSTOM=kept\n`);
+
+    await fs.remove(customPath);
+    await fs.writeFile(defaultPath, `${legacy(scope)}DEFAULT=kept\n`);
+    const defaultPlanPath = path.join(root, 'default-only-plan.json');
+    await createContinuityMigrationPlan({ workingDirectory: root, planPath: defaultPlanPath });
+    await applyContinuityMigrationPlan({ workingDirectory: root, planPath: defaultPlanPath });
+    expect(await fs.readFile(defaultPath, 'utf8')).toBe('DEFAULT=kept\n');
+    expect(await fs.pathExists(customPath)).toBe(false);
+  });
+
   it('rejects stale plans and rollback after concurrent changes', async () => {
     const { root } = await fixture();
     const scope = 'SCOPE_0123456789ABCDEF';
@@ -167,6 +210,74 @@ describe('continuity maintenance', () => {
     await fs.appendFile(envPath, 'SAFE=concurrent\n');
     await expect(
       rollbackContinuityMigration({ workingDirectory: root, receiptPath }),
+    ).rejects.toThrow(/changed/i);
+  });
+
+  it('rejects plans when live-scope evidence or the invoking current scope changes', async () => {
+    const { root, metadata } = await fixture();
+    const plannedContext = resolveContinueScopeContext(
+      { JUNO_CODE_CONTINUE_SCOPE: 'planned-scope' },
+      1,
+      root,
+    );
+    await fs.writeFile(path.join(root, '.env.juno'), legacy(plannedContext.scopeHash));
+    const planPath = path.join(root, 'live-plan.json');
+    await createContinuityMigrationPlan({
+      workingDirectory: root,
+      planPath,
+      context: plannedContext,
+    });
+
+    await fs.writeJson(path.join(metadata, 'continue_scope_runtime.json'), {
+      version: 1,
+      scopes: { [plannedContext.scopeHash]: { pid: process.pid, startedAt: new Date().toISOString() } },
+    });
+    await expect(
+      applyContinuityMigrationPlan({ workingDirectory: root, planPath, context: plannedContext }),
+    ).rejects.toThrow(/live scope evidence changed/i);
+
+    await fs.remove(path.join(metadata, 'continue_scope_runtime.json'));
+    const otherContext = resolveContinueScopeContext(
+      { JUNO_CODE_CONTINUE_SCOPE: 'other-scope' },
+      1,
+      root,
+    );
+    await expect(
+      applyContinuityMigrationPlan({ workingDirectory: root, planPath, context: otherContext }),
+    ).rejects.toThrow(/current scope changed/i);
+    expect(await fs.readFile(path.join(root, '.env.juno'), 'utf8')).toContain(
+      'JUNO_CODE_LAST_SESSION_ID_SCOPE_',
+    );
+  });
+
+  it('rolls back a receipt-bound partial apply while rejecting unknown mixed state', async () => {
+    const { root } = await fixture();
+    const scope = 'SCOPE_0123456789ABCDEF';
+    await fs.writeJson(path.join(root, '.juno_task', 'config.json'), {
+      envFilePath: '.env.custom',
+      envFileCopied: true,
+    });
+    const defaultPath = path.join(root, '.env.juno');
+    const customPath = path.join(root, '.env.custom');
+    await fs.writeFile(defaultPath, `${legacy(scope)}DEFAULT=before\n`);
+    await fs.writeFile(customPath, `${legacy(scope)}CUSTOM=before\n`);
+    const planPath = path.join(root, 'partial-plan.json');
+    await createContinuityMigrationPlan({ workingDirectory: root, planPath });
+    const { receiptPath } = await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
+    const receipt = await fs.readJson(receiptPath);
+
+    // Model an interrupted apply: one env reached after-state while one remains exact before-state.
+    await fs.copy(receipt.files[1].backupPath, customPath);
+    await rollbackContinuityMigration({ workingDirectory: root, receiptPath });
+    expect(await fs.readFile(defaultPath)).toEqual(await fs.readFile(receipt.files[0].backupPath));
+    expect(await fs.readFile(customPath)).toEqual(await fs.readFile(receipt.files[1].backupPath));
+    expect(await fs.pathExists(getSessionContinuityFilePath(root))).toBe(false);
+
+    await createContinuityMigrationPlan({ workingDirectory: root, planPath });
+    const appliedAgain = await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
+    await fs.writeFile(customPath, 'UNKNOWN=third-party\n');
+    await expect(
+      rollbackContinuityMigration({ workingDirectory: root, receiptPath: appliedAgain.receiptPath }),
     ).rejects.toThrow(/changed/i);
   });
 

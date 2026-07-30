@@ -17,6 +17,7 @@ import { getDefaultModelForSubagent } from '../../core/subagent-models.js';
 import type { InitCommandOptions } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
 import { ValidationError } from '../types.js';
+import { buildChildProcessEnvironment } from '../../core/child-process-environment.js';
 
 /** Simple key-value variables for template interpolation */
 interface InitVariables {
@@ -751,10 +752,9 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
         // Also pin JUNO_TASK_ROOT for juno-kanban so fresh projects cannot inherit a
         // stale task root from the parent shell and write tasks/config elsewhere.
         const projectRoot = this.context.targetDirectory;
-        const installEnvironment: NodeJS.ProcessEnv = {
-          ...process.env,
+        const installEnvironment = buildChildProcessEnvironment(process.env, {
           JUNO_TASK_ROOT: projectRoot,
-        };
+        });
         // init always provisions/selects the target project's runtime. An invoking
         // alias or unrelated activated project must not make install_requirements
         // treat its .venv_juno as the new controller's environment.
