@@ -613,6 +613,8 @@ describe('Main Command', () => {
       });
 
       it('should expand ##task-id prompt references with kanban task payloads', async () => {
+        process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical';
+        process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = 'legacy';
         vi.mocked(fs.pathExists)
           .mockResolvedValueOnce(false as any)
           .mockResolvedValueOnce(true as any);
@@ -656,6 +658,10 @@ describe('Main Command', () => {
           expect.objectContaining({ cwd: '/test/dir' }),
           expect.any(Function),
         );
+        const kanbanEnvironment = vi.mocked(childProcess.execFile).mock.calls[0]?.[2]?.env;
+        expect(kanbanEnvironment?.JUNO_TASK_ROOT).toBe('/test/dir');
+        expect(kanbanEnvironment?.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+        expect(kanbanEnvironment?.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
 
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { existsSync as requireExists } from 'node:fs';
+import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
 
 export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 'session-write';
 
@@ -42,7 +43,7 @@ export function resolveController(
   }
   const output = execFileSync('python3', [resolver, '--cwd', workingDirectory, '--operation', operation], {
     cwd: workingDirectory,
-    env: process.env,
+    env: buildChildProcessEnvironment(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   });
@@ -54,10 +55,9 @@ export function controllerEnvironment(
   operation: ControllerOperation = 'orchestration',
 ): NodeJS.ProcessEnv {
   const resolution = resolveController(workingDirectory, operation);
-  return {
-    ...process.env,
+  return buildChildProcessEnvironment(process.env, {
     JUNO_TASK_ROOT: resolution.path,
     JUNO_CONTROLLER_SOURCE: resolution.source,
     JUNO_WORKSPACE_ROLE: resolution.role,
-  };
+  });
 }

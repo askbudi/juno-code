@@ -49,6 +49,28 @@ STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
 STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
 TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
+SCOPED_CONTINUITY_KEY_RE = re.compile(
+    r"^JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)_SCOPE_[A-F0-9]{16}$"
+)
+LEGACY_CONTINUITY_KEYS = {
+    "JUNO_CODE_LAST_SESSION_ID",
+    "JUNO_CODE_LAST_EXECUTION_SETTINGS",
+}
+
+
+def child_process_environment(base: dict[str, str]) -> dict[str, str]:
+    """Preserve child config/routing while dropping historical continuity values."""
+    return {
+        name: value
+        for name, value in base.items()
+        if name not in LEGACY_CONTINUITY_KEYS and not SCOPED_CONTINUITY_KEY_RE.fullmatch(name)
+    }
+
+
+def sanitize_current_process_environment() -> None:
+    environment = child_process_environment(dict(os.environ))
+    os.environ.clear()
+    os.environ.update(environment)
 
 
 def ensure_controller_python_environment(controller_env: dict[str, str]) -> None:
@@ -1342,7 +1364,7 @@ def build_command_env(
     tool_id: str,
     dry_run: bool,
 ) -> tuple[dict[str, str], str | None]:
-    env = os.environ.copy()
+    env = child_process_environment(dict(os.environ))
     is_juno_command = detect_juno_command(command)
     if is_juno_command:
         metadata_dir = capture_path.parent / "session_metadata"
@@ -2941,7 +2963,7 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
     message = f"chore(controller): checkpoint finalized {owner} state"
     if exit_code:
         message = f"chore(controller): checkpoint failed {owner} state (exit {exit_code})"
-    env = dict(os.environ)
+    env = child_process_environment(dict(os.environ))
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     try:
         subprocess.run(
@@ -2957,6 +2979,7 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    sanitize_current_process_environment()
     controller_env = resolve_controller_environment()
     try:
         ensure_controller_python_environment(controller_env)

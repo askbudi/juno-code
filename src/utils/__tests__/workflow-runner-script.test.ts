@@ -100,6 +100,24 @@ print('FINAL ' + prompt)
 }
 
 describe('workflow_runner.sh template script', () => {
+  it('filters continuity from workflow child environments without dropping routing/config', () => {
+    for (const script of [templateScript, runtimeScript]) {
+      const code = `
+import importlib.machinery, json
+mod = importlib.machinery.SourceFileLoader('workflow_runner', ${JSON.stringify(script)}).load_module()
+env = mod.child_process_environment({
+  'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF': 'historical',
+  'JUNO_CODE_LAST_EXECUTION_SETTINGS': 'legacy',
+  'JUNO_TASK_ROOT': '/controller',
+  'ARBITRARY_CONFIG': 'preserved',
+})
+print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG')}))
+`;
+      const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual({ continuity: [], root: '/controller', config: 'preserved' });
+    }
+  });
   let testDir: string;
 
   beforeEach(async () => {

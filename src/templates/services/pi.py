@@ -17,6 +17,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, TextIO, Tuple
 
+from environment_boundary import sanitize_current_process_environment
+
+sanitize_current_process_environment()
+
 
 DEFAULT_PROMPT_ARG_MAX_BYTES = 64 * 1024
 # Live mode still needs a short argv prompt that tells the operator/model where

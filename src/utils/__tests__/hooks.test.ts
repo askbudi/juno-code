@@ -388,7 +388,11 @@ describe('hooks', () => {
       } as any);
 
       await executeHook('START_RUN', customEnvHooks, mockContext, {
-        env: { CUSTOM_VAR: 'custom-value' },
+        env: {
+          CUSTOM_VAR: 'custom-value',
+          JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF: 'historical-session',
+          JUNO_CODE_LAST_EXECUTION_SETTINGS: 'legacy-settings',
+        },
       });
 
       expect(mockedExeca).toHaveBeenCalledWith(
@@ -400,6 +404,9 @@ describe('hooks', () => {
           }),
         }),
       );
+      const childEnvironment = mockedExeca.mock.calls[0]?.[1]?.env;
+      expect(childEnvironment?.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+      expect(childEnvironment?.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
     });
 
     it('should stop execution on error when continueOnError is false', async () => {
