@@ -13,7 +13,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA = "juno_worktree_lifecycle.v4"
+SCHEMA = "juno_worktree_lifecycle.v5"
 SPARSE_POLICY_HEADER = "# juno-worktree-lifecycle sparse-v1"
 DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS = 5
 MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS = 60
@@ -134,6 +134,10 @@ def skip_worktree_paths(path: Path) -> list[str]:
     return sorted(record[2:].decode(errors="surrogateescape") for record in git_nul_records(path, "ls-files", "-t", "-z")
                   if record.startswith(b"S "))
 
+def path_set_evidence(paths: list[str]) -> dict[str, Any]:
+    encoded = b"\0".join(path.encode(errors="surrogateescape") for path in paths)
+    return {"count": len(paths), "sha256": hashlib.sha256(encoded).hexdigest()}
+
 def config_bool(path: Path, key: str, *, worktree: bool = False) -> tuple[bool | None, bool]:
     scope = ["--worktree"] if worktree else []
     result = subprocess.run(["git", "-C", str(path), "config", *scope, "--bool", "--get", key], text=True,
@@ -164,8 +168,8 @@ def checkout_policy(path: Path) -> dict[str, Any]:
         consistent = enabled_valid and cone_valid and sparse_index_valid and cone is not True and sparse_index is not True and not skipped
         return {"mode": "full", "style": None, "enabled": enabled, "cone": cone, "sparse_index": sparse_index,
                 "config_valid": enabled_valid and cone_valid and sparse_index_valid, "worktree_config": worktree_config,
-                "skip_worktree_paths": skipped,
-                "expected_skip_worktree_paths": [], "paths": [], "patterns": [], "materialized_tracked_paths": [],
+                "skip_worktree": path_set_evidence(skipped),
+                "expected_skip_worktree": path_set_evidence([]), "paths": [], "patterns": [], "materialized_tracked_paths": [],
                 "unexpected_materialized_paths": [], "consistent": consistent}
     sparse_file = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"))
     sparse_bytes = sparse_file.read_bytes() if sparse_file.is_file() else b""
@@ -181,7 +185,7 @@ def checkout_policy(path: Path) -> dict[str, Any]:
     return {"mode": "sparse", "style": "non-cone", "enabled": enabled, "cone": cone, "sparse_index": sparse_index,
             "config_valid": enabled_valid and cone_valid and sparse_index_valid, "worktree_config": worktree_config,
             "patterns_valid_utf8": patterns_valid,
-            "skip_worktree_paths": skipped, "expected_skip_worktree_paths": expected_skipped,
+            "skip_worktree": path_set_evidence(skipped), "expected_skip_worktree": path_set_evidence(expected_skipped),
             "paths": [] if selected is None else selected, "patterns": patterns,
             "sparse_file_sha256": hashlib.sha256(sparse_bytes).hexdigest() if sparse_bytes else None,
             "materialized_tracked_paths": materialized, "unexpected_materialized_paths": unexpected,
