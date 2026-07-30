@@ -1375,11 +1375,21 @@ def append_live_log(path: Path | None, text: str) -> None:
 
 
 def command_owns_actual_review_child(command: Any) -> bool:
-    try:
-        tokens = [str(part) for part in command] if isinstance(command, list) else shlex.split(str(command))
-    except ValueError:
+    # The capability must be attached to the directly executed owner, never to
+    # a shell that can inspect it before dispatch or to an unrelated command
+    # that merely mentions the owner's flags in its arguments.
+    if not isinstance(command, list):
         return False
-    return "--actual-review-command" in tokens and any(Path(token).name == "integration_owner_preflight.py" for token in tokens)
+    tokens = [str(part) for part in command]
+    if not tokens:
+        return False
+    script_index = 0
+    if Path(tokens[0]).name != "integration_owner_preflight.py":
+        if Path(tokens[0]).name not in {"python", "python3"} or len(tokens) < 2 or Path(tokens[1]).name != "integration_owner_preflight.py":
+            return False
+        script_index = 1
+    owner_args = tokens[script_index + 1 :]
+    return bool(owner_args) and owner_args[0] == "integrate" and "--actual-review-command" in owner_args and "--actual-review-receipt" in owner_args
 
 
 def execute_rendered_command(

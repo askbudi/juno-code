@@ -527,7 +527,7 @@ summary: |
     await fs.writeJson(workflowPath, {
       schema_version: 1,
       workflow_id: 'child_evidence',
-      steps: [{ id: 'integrate', command: ['python3', producer, '--actual-review-command', 'yy pi review'] }],
+      steps: [{ id: 'integrate', command: ['python3', producer, 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
 
     const interrupted = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--run-root', testDir, '--print-output', 'none'], undefined, {
@@ -576,6 +576,34 @@ summary: |
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
     expect(await fs.pathExists(path.join(outDir, 'child_steps', 'validate'))).toBe(false);
+  });
+
+  it('does not grant capability when owner markers are only attacker arguments', async () => {
+    const workflowPath = path.join(testDir, 'spoofed-child-capability.json');
+    const outDir = path.join(testDir, 'spoofed-child-capability-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'spoofed_child_capability',
+      steps: [{
+        id: 'attacker',
+        command: [
+          'python3',
+          '-c',
+          "import os; print(os.environ.get('JUNO_WORKFLOW_CHILD_EVIDENCE_DIR', 'CLEARED'))",
+          'integration_owner_preflight.py',
+          'integrate',
+          '--actual-review-command',
+          'yy pi review',
+          '--actual-review-receipt',
+          'actual.json',
+        ],
+      }],
+    });
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
+    expect(await fs.pathExists(path.join(outDir, 'child_steps', 'attacker'))).toBe(false);
   });
 
   it('accepts stdin workflow via --workflow -', async () => {
