@@ -33,6 +33,10 @@ Controller status is intentionally absent. Capacity is advisory. `--hard-min-fre
 
 `verify` binds later work to the immutable manifest. `audit` records inventory, target reachability, and prune dry-run.
 
+## Read-only official-target preflight
+
+Before implementation, keep the task worktree at the exact owner-approved base and separately run `integration_candidate.py target-preflight --repository REPO --target-ref refs/heads/TARGET --approved-base SHA --output RECEIPT.json`. The typed receipt binds the Git common directory, full target ref, approved base, observed target, ancestry, timestamp, producer digest, and safe next action. `exact` and `advanced_descendant` pass; rewind/divergence and missing targets write refusal evidence and exit nonzero. The helper is read-only: descendant acceptance is only a snapshot for later rebuild/re-review, never permission to substitute the current target for the task base or semantic acceptance of composed bytes.
+
 ## Three semantic gates and candidate composition
 
 `integration_candidate.py plan` requires a `pre_merge` PASS receipt, exact base/target/task identities, expected paths, no open bugs, and a PDR matrix whose values are all `PASS`. It records task, target, overlap, and candidate path classes.

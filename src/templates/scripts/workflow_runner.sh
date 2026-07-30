@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import errno
 import hashlib
 import json
 import os
@@ -1155,8 +1156,52 @@ def extract_session_id(stdout: str, stderr: str) -> str | None:
 
 
 def write_text(path: Path, text: str) -> None:
+    """Atomically persist one artifact in its destination directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError as exc:
+            # Some filesystems do not support directory fsync; storage exhaustion
+            # and other persistence failures must still fail closed.
+            if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EBADF}:
+                raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def remove_persisted_marker(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EBADF}:
+            raise
+
+
+def inject_interruption(point: str) -> None:
+    """Deterministic failure injection used by the adversarial persistence tests."""
+    requested = os.environ.get("JUNO_WORKFLOW_TEST_INTERRUPT_AT", "")
+    if requested != point:
+        return
+    mode = os.environ.get("JUNO_WORKFLOW_TEST_INTERRUPT_MODE", "exit")
+    if mode == "enospc":
+        raise OSError(errno.ENOSPC, f"injected ENOSPC at {point}")
+    os._exit(86)
 
 
 def parse_vars(values: list[str]) -> dict[str, str]:
@@ -1240,19 +1285,11 @@ def execute_rendered_command(
     project_root: Path,
     env: dict[str, str],
     live_log_path: Path | None = None,
+    activity: dict[str, Any] | None = None,
+    active_marker: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv: Any = [str(part) for part in command] if isinstance(command, list) else str(command)
     shell = not isinstance(command, list)
-    if live_log_path is None:
-        return subprocess.run(
-            argv,
-            shell=shell,
-            cwd=str(project_root),
-            text=True,
-            capture_output=True,
-            env=env,
-        )
-
     proc = subprocess.Popen(
         argv,
         shell=shell,
@@ -1262,7 +1299,15 @@ def execute_rendered_command(
         stderr=subprocess.PIPE,
         env=env,
         bufsize=1,
+        start_new_session=True,
     )
+    if activity is not None and active_marker is not None:
+        activity.update({"child_pid": proc.pid, "process_group_id": proc.pid})
+        write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
+    if live_log_path is None:
+        stdout, stderr = proc.communicate()
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
     log_lock = threading.Lock()
@@ -1551,7 +1596,11 @@ def build_run_contract(
         "schema_version": RUN_CONTRACT_SCHEMA,
         "workflow_id": context["workflow_id"],
         "workflow_source_sha256": sha256_bytes(workflow_text.encode("utf-8")),
+        "workflow_source_path": str(context.get("workflow_source_path") or ""),
+        "project_root": str(project_root.resolve()),
+        "resolved_vars": context["vars"],
         "resolved_vars_sha256": canonical_sha256(context["vars"]),
+        "step_order": [str(step["id"]) for step in workflow["steps"]],
         "steps": {
             str(step["id"]): {
                 "template_sha256": canonical_sha256(step["command"]),
@@ -1562,6 +1611,10 @@ def build_run_contract(
         "frozen_inputs": frozen_inputs,
         "receipt_contracts": receipts,
         "receipt_contracts_sha256": canonical_sha256(receipts),
+        "resolved_receipt_paths": {
+            receipt_id: str(receipt_path(contract, context, project_root).resolve())
+            for receipt_id, contract in receipts.items()
+        },
         "terminal_gate": str(workflow.get("terminal_gate") or ""),
         "validation_ownership": workflow.get("validation_ownership") or {},
         "workflow_class": str(workflow.get("workflow_class") or ""),
@@ -1846,10 +1899,12 @@ def run_workflow(args: argparse.Namespace) -> int:
     if args.workflow == "-":
         workflow_text = sys.stdin.read()
         workflow_dir = project_root
+        workflow_source_path = ""
     else:
         workflow_path = Path(args.workflow).resolve()
         workflow_text = workflow_path.read_text(encoding="utf-8")
         workflow_dir = workflow_path.parent
+        workflow_source_path = str(workflow_path)
     workflow = parse_yaml_like(workflow_text)
     validate_workflow(workflow)
 
@@ -1872,6 +1927,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         "run_id": run_id,
         "workflow_id": workflow_id,
         "workflow_dir": str(workflow_dir),
+        "workflow_source_path": workflow_source_path,
         "repo_root": str(project_root),
         "project_root": str(project_root),
         "out_dir": str(out_dir),
@@ -1937,8 +1993,16 @@ def run_workflow(args: argparse.Namespace) -> int:
     if is_resume:
         frozen_contract = load_json_object(run_contract_path, "run contract")
         verify_run_contract(frozen_contract, current_contract)
-        previous_manifest = load_json_object(out_dir / "manifest.json", "previous workflow manifest")
+        previous_manifest_path = latest_contract_manifest(frozen_contract, out_dir)
+        previous_manifest = load_json_object(previous_manifest_path, "previous workflow manifest")
         run_contract = frozen_contract
+        recovery = previous_manifest.get("recovery") or {}
+        if recovery:
+            required_index = int(recovery.get("first_invalid_step_index", -1))
+            if start_index != required_index:
+                raise WorkflowError(
+                    f"recovered_attempt requires --from-step index {required_index}; requested {start_index}"
+                )
     else:
         if run_contract_path.exists():
             raise WorkflowError(
@@ -2161,16 +2225,31 @@ def run_workflow(args: argparse.Namespace) -> int:
             exit_code = 1
             status = "failed"
         else:
-            proc = execute_rendered_command(command, project_root, env, live_log_path)
+            active_marker = out_dir / "active_step.json"
+            activity = {
+                "schema_version": "juno_workflow_active_step.v1",
+                "workflow_id": workflow_id,
+                "attempt_id": run_id,
+                "step_id": step_id,
+                "step_index": index - 1,
+                "command_sha256": command_digest,
+                "runner_pid": os.getpid(),
+                "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
+            inject_interruption("command_started")
+            proc = execute_rendered_command(command, project_root, env, live_log_path, activity, active_marker)
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
             exit_code = int(proc.returncode)
             status = "success" if exit_code == 0 else "failed"
+            inject_interruption("command_success_before_artifacts")
         duration = round(time.monotonic() - started, 3)
         write_text(stdout_path, stdout)
         write_text(stderr_path, stderr)
         write_text(legacy_step_dir / "stdout.txt", stdout)
         write_text(legacy_step_dir / "stderr.txt", stderr)
+        inject_interruption("artifacts_before_checkpoint")
         response = stdout
         result: dict[str, Any] = {
             "id": step_id,
@@ -2205,32 +2284,13 @@ def run_workflow(args: argparse.Namespace) -> int:
                 bool(args.dry_run),
                 use_capture_result_as_response=True,
             )
+            inject_interruption("capture_before_checkpoint")
         apply_semantic_outcome_contract(step, result, bool(args.dry_run))
         status = str(result.get("status", status))
         if is_juno_command and not args.dry_run and status == "success" and not str(result.get("response", "")).strip():
             status = "failed"
             result["status"] = status
             result["failure_reason"] = "empty response from detected agent command"
-        if status == "success" and not args.dry_run:
-            try:
-                produced_receipts: dict[str, Any] = {}
-                for contract in receipts_by_producer.get(step_id, []):
-                    produced_receipts[contract["id"]] = validate_receipt_file(
-                        contract, context, project_root, command_digest
-                    )
-                run_contract.setdefault("completed_steps", {})[step_id] = {
-                    "attempt_id": run_id,
-                    "command_sha256": command_digest,
-                    "status": "success",
-                    "receipts": produced_receipts,
-                }
-                write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
-            except WorkflowError as exc:
-                status = "failed"
-                result["status"] = "failed"
-                result["failure_reason"] = str(exc)
-                stderr = (stderr + ("\n" if stderr else "") + str(exc) + "\n")
-                result["stderr"] = stderr
         if status == "failed" and exit_code == 0:
             exit_code = 1
             result["exit_code"] = 1
@@ -2253,6 +2313,61 @@ def run_workflow(args: argparse.Namespace) -> int:
             })
         write_text(response_path, str(result.get("response", "")))
         write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
+        if status == "success" and not args.dry_run:
+            try:
+                if 'activity' in locals() and process_group_is_active(int(activity.get("process_group_id") or 0)):
+                    raise WorkflowError(f"step[{step_id}]: command process group remains active after command exit")
+                produced_receipts: dict[str, Any] = {}
+                for contract in receipts_by_producer.get(step_id, []):
+                    produced_receipts[contract["id"]] = validate_receipt_file(
+                        contract, context, project_root, command_digest
+                    )
+                artifacts = {
+                    "stdout": {"path": str(stdout_path.resolve()), "sha256": file_sha256(stdout_path)},
+                    "stderr": {"path": str(stderr_path.resolve()), "sha256": file_sha256(stderr_path)},
+                    "response": {"path": str(response_path.resolve()), "sha256": file_sha256(response_path)},
+                }
+                if capture_enabled:
+                    if not capture_path.is_file():
+                        raise WorkflowError(f"step[{step_id}].capture: required capture artifact missing")
+                    artifacts["capture"] = {
+                        "path": str(capture_path.resolve()), "sha256": file_sha256(capture_path)
+                    }
+                checkpoint = {
+                    "checkpoint_schema": "juno_workflow_step_checkpoint.v1",
+                    "checkpoint_complete": True,
+                    "workflow_id": workflow_id,
+                    "run_directory": str(out_dir.resolve()),
+                    "attempt_id": run_id,
+                    "step_id": step_id,
+                    "step_index": index - 1,
+                    "command": command,
+                    "command_sha256": command_digest,
+                    "status": "success",
+                    "semantic_outcome": str(result.get("semantic_outcome") or "completed"),
+                    "transport_status": str(result.get("transport_status") or "success"),
+                    "exit_code": int(result.get("exit_code") or 0),
+                    "started_at": activity.get("started_at") if 'activity' in locals() else "",
+                    "completed_at": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "duration_seconds": duration,
+                    "artifacts": artifacts,
+                    "receipts": produced_receipts,
+                    "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
+                }
+                run_contract.setdefault("completed_steps", {})[step_id] = checkpoint
+                write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
+                inject_interruption("checkpoint_before_terminal_manifest")
+                remove_persisted_marker(out_dir / "active_step.json")
+            except (WorkflowError, OSError) as exc:
+                status = "failed"
+                result["status"] = "failed"
+                result["failure_reason"] = str(exc)
+                stderr = (stderr + ("\n" if stderr else "") + str(exc) + "\n")
+                result["stderr"] = stderr
+                write_text(stderr_path, stderr)
+                write_text(legacy_step_dir / "stderr.txt", stderr)
+        elif not args.dry_run:
+            remove_persisted_marker(out_dir / "active_step.json")
         if args.print_step_stdout:
             response_text = str(result.get("response", ""))
             print(step_separator("RESPONSE", index, step_id))
@@ -2347,10 +2462,10 @@ def run_workflow(args: argparse.Namespace) -> int:
         manifest["summary"]["stdout"] = summary_stdout
     if summary_stderr:
         manifest["summary"]["stderr"] = summary_stderr
-    write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-    write_text(out_dir / "manifest.yaml", workflow_to_yaml(manifest) + "\n")
+    inject_interruption("summary_before_attempt_manifest")
     archive_attempt(out_dir, manifest)
     archived_manifest = out_dir / "attempts" / run_id / "manifest.json"
+    inject_interruption("attempt_manifest_before_record")
     run_contract.setdefault("attempts", []).append(
         {
             "attempt_id": run_id,
@@ -2362,6 +2477,9 @@ def run_workflow(args: argparse.Namespace) -> int:
         }
     )
     write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
+    inject_interruption("attempt_record_before_root_manifest")
+    write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    write_text(out_dir / "manifest.yaml", workflow_to_yaml(manifest) + "\n")
 
     output = selected_final_output(args.print_output, context, summary)
     if output:
@@ -2710,6 +2828,228 @@ Examples:
     return 0 if not findings else 1
 
 
+def process_group_is_active(process_group_id: int) -> bool:
+    if process_group_id <= 0:
+        return True
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+
+
+def recovery_context(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    variables = contract.get("resolved_vars")
+    if not isinstance(variables, dict) or canonical_sha256(variables) != contract.get("resolved_vars_sha256"):
+        raise WorkflowError("recovery_contract[resolved_vars]: snapshot missing or hash mismatch")
+    context: dict[str, Any] = {
+        "workflow_id": contract.get("workflow_id"),
+        "out_dir": str(run_dir),
+        "repo_root": str(contract.get("project_root") or ""),
+        "project_root": str(contract.get("project_root") or ""),
+        "vars": variables,
+        "steps": {},
+        "workflow": {"id": contract.get("workflow_id"), "out_dir": str(run_dir)},
+    }
+    context.update({key: value for key, value in variables.items() if isinstance(key, str)})
+    return context
+
+
+def verify_recovery_contract(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    if contract.get("schema_version") != RUN_CONTRACT_SCHEMA:
+        raise WorkflowError(f"recovery contract has unsupported schema: {contract.get('schema_version')!r}")
+    if Path(str(contract.get("project_root") or "")).resolve() == Path("").resolve():
+        raise WorkflowError("recovery_contract[project_root]: missing")
+    source_text = str(contract.get("workflow_source_path") or "")
+    if not source_text:
+        raise WorkflowError("recovery requires a path-backed workflow source; stdin-only legacy runs are not recoverable")
+    source = Path(source_text)
+    if not source.is_file() or file_sha256(source) != contract.get("workflow_source_sha256"):
+        raise WorkflowError("recovery_contract[workflow_source_sha256]: workflow source missing or drifted")
+    if canonical_sha256(contract.get("receipt_contracts") or {}) != contract.get("receipt_contracts_sha256"):
+        raise WorkflowError("recovery_contract[receipt_contracts_sha256]: receipt declarations drifted")
+    for frozen in contract.get("frozen_inputs") or []:
+        path = Path(str(frozen.get("path") or ""))
+        expected = frozen.get("sha256")
+        if bool(frozen.get("required", True)) and not path.is_file():
+            raise WorkflowError(f"recovery frozen_input[{frozen.get('id')}]: required file missing")
+        actual = file_sha256(path) if path.is_file() else None
+        if actual != expected:
+            raise WorkflowError(f"recovery frozen_input[{frozen.get('id')}]: artifact hash mismatch")
+    marker = run_dir / "active_step.json"
+    if marker.exists():
+        active = load_json_object(marker, "active step marker")
+        process_group = int(active.get("process_group_id") or 0)
+        if not process_group or process_group_is_active(process_group):
+            raise WorkflowError(
+                f"recovery refused: step {active.get('step_id')!r} is active or its process state is ambiguous"
+            )
+    return recovery_context(contract, run_dir)
+
+
+def verify_checkpoint(
+    checkpoint: dict[str, Any], step_id: str, index: int, contract: dict[str, Any],
+    context: dict[str, Any], run_dir: Path,
+) -> dict[str, Any]:
+    if checkpoint.get("checkpoint_schema") != "juno_workflow_step_checkpoint.v1" or checkpoint.get("checkpoint_complete") is not True:
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: incomplete or unsupported")
+    expected = {
+        "workflow_id": contract.get("workflow_id"), "run_directory": str(run_dir.resolve()),
+        "step_id": step_id, "step_index": index, "status": "success", "exit_code": 0,
+        "receipt_contracts_sha256": contract.get("receipt_contracts_sha256"),
+    }
+    for field, value in expected.items():
+        if checkpoint.get(field) != value:
+            raise WorkflowError(
+                f"recovery checkpoint[{step_id}].{field}: expected={value!r} actual={checkpoint.get(field)!r}"
+            )
+    command_digest = str(checkpoint.get("command_sha256") or "")
+    if not command_digest or canonical_sha256(checkpoint.get("command")) != command_digest:
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: rendered command digest mismatch")
+    artifacts = checkpoint.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: artifact evidence missing")
+    for artifact_id in ("stdout", "stderr", "response"):
+        evidence = artifacts.get(artifact_id)
+        if not isinstance(evidence, dict):
+            raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: evidence missing")
+        path = Path(str(evidence.get("path") or ""))
+        try:
+            path.resolve().relative_to(run_dir.resolve())
+        except ValueError:
+            raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: cross-run path")
+        if not path.is_file() or file_sha256(path) != evidence.get("sha256"):
+            raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: hash mismatch")
+    declared = contract.get("receipt_contracts") or {}
+    produced = {rid: value for rid, value in declared.items() if value.get("producer") == step_id}
+    evidence_map = checkpoint.get("receipts") or {}
+    if set(evidence_map) != set(produced):
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: declared receipt set mismatch")
+    for receipt_id, receipt_contract in produced.items():
+        evidence = evidence_map[receipt_id]
+        path = Path(str(evidence.get("path") or ""))
+        expected_path = Path(str((contract.get("resolved_receipt_paths") or {}).get(receipt_id) or "")).resolve()
+        if not str((contract.get("resolved_receipt_paths") or {}).get(receipt_id) or "") or path.resolve() != expected_path:
+            raise WorkflowError(f"recovery checkpoint[{step_id}].receipt[{receipt_id}]: path mismatch")
+        validate_receipt_file(
+            receipt_contract, context, Path(str(contract["project_root"])), command_digest,
+            str(evidence.get("sha256") or ""),
+        )
+    response_path = Path(str(artifacts["response"]["path"]))
+    return {
+        "id": step_id,
+        "command": checkpoint["command"],
+        "command_preview": command_preview(checkpoint["command"]),
+        "command_sha256": command_digest,
+        "status": "success",
+        "exit_code": 0,
+        "transport_status": checkpoint.get("transport_status", "success"),
+        "transport_exit_code": 0,
+        "duration_seconds": checkpoint.get("duration_seconds", 0),
+        "semantic_outcome": checkpoint.get("semantic_outcome", "completed"),
+        "stdout_path": artifacts["stdout"]["path"],
+        "stderr_path": artifacts["stderr"]["path"],
+        "response_path": artifacts["response"]["path"],
+        "response": response_path.read_text(encoding="utf-8"),
+        "recovered_from_checkpoint": True,
+        "reused_from_attempt": checkpoint.get("attempt_id"),
+    }
+
+
+def recover_attempt(run_dir: Path, dry_run: bool) -> dict[str, Any]:
+    run_dir = run_dir.resolve()
+    contract_path = run_dir / "run_contract.json"
+    contract = load_json_object(contract_path, "run contract")
+    context = verify_recovery_contract(contract, run_dir)
+    order = contract.get("step_order")
+    if not isinstance(order, list) or not order or len(set(order)) != len(order):
+        raise WorkflowError("recovery_contract[step_order]: missing, empty, or duplicate")
+    completed = contract.get("completed_steps") or {}
+    unknown = sorted(set(completed) - set(order))
+    if unknown:
+        raise WorkflowError(f"recovery completed_steps contains unknown steps: {unknown}")
+    verified: list[dict[str, Any]] = []
+    first_invalid = len(order)
+    missing_seen = False
+    for index, raw_id in enumerate(order):
+        step_id = str(raw_id)
+        checkpoint = completed.get(step_id)
+        if checkpoint is None:
+            missing_seen = True
+            first_invalid = min(first_invalid, index)
+            continue
+        if missing_seen:
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: non-contiguous successful evidence")
+        verified.append(verify_checkpoint(checkpoint, step_id, index, contract, context, run_dir))
+    latest_attempts = contract.get("attempts") or []
+    if latest_attempts and str(latest_attempts[-1].get("status")) in {"success", "failed"}:
+        raise WorkflowError("recovery refused: latest attempt already has terminal hash-bound metadata")
+    recovery_id = _dt.datetime.now(_dt.timezone.utc).strftime("recovery_%Y%m%d_%H%M%S_%fZ")
+    first_invalid_id = str(order[first_invalid]) if first_invalid < len(order) else None
+    manifest = {
+        "schema_version": "1.0",
+        "workflow_id": contract.get("workflow_id"),
+        "run_id": recovery_id,
+        "out_dir": str(run_dir),
+        "repo_root": contract.get("project_root"),
+        "steps": verified,
+        "failed_steps": [],
+        "status": "interrupted",
+        "semantic_status": "interrupted",
+        "terminal_gate": contract.get("terminal_gate") or None,
+        "recovery": {
+            "reason": "recovered_from_step_checkpoints",
+            "verified_prefix_steps": [step["id"] for step in verified],
+            "first_invalid_step": first_invalid_id,
+            "first_invalid_step_index": first_invalid,
+            "semantic_completion_inferred": False,
+        },
+    }
+    result = {
+        "status": "recoverable",
+        "run_dir": str(run_dir),
+        "verified_prefix_steps": [step["id"] for step in verified],
+        "first_invalid_step": first_invalid_id,
+        "first_invalid_step_index": first_invalid,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return result
+    archive_attempt(run_dir, manifest)
+    archived = run_dir / "attempts" / recovery_id / "manifest.json"
+    contract.setdefault("attempts", []).append({
+        "attempt_id": recovery_id,
+        "from_step": None,
+        "status": "interrupted",
+        "semantic_status": "interrupted",
+        "recovery_reason": "recovered_from_step_checkpoints",
+        "first_invalid_step": first_invalid_id,
+        "first_invalid_step_index": first_invalid,
+        "manifest": str(archived.resolve()),
+        "manifest_sha256": file_sha256(archived),
+    })
+    write_text(contract_path, json.dumps(contract, indent=2, ensure_ascii=False) + "\n")
+    result.update({"status": "recovered", "manifest": str(archived.resolve())})
+    return result
+
+
+def run_recover_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="workflow_runner.sh recover-attempt",
+        description="Recover a non-active interrupted attempt from complete hash-bound step checkpoints.",
+    )
+    parser.add_argument("run_dir", help="Workflow run directory containing run_contract.json")
+    parser.add_argument("--dry-run", action="store_true", help="Verify and report without appending recovery evidence")
+    args = parser.parse_args(argv)
+    result = recover_attempt(Path(args.run_dir), bool(args.dry_run))
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def file_size(path_text: str | None) -> int | None:
     if not path_text:
         return None
@@ -2727,8 +3067,14 @@ def command_has_quiet(command: Any) -> bool:
 def doctor_findings(run_dir: Path) -> list[dict[str, str]]:
     manifest_path = run_dir / "manifest.json"
     findings: list[dict[str, str]] = []
+    contract_path = run_dir / "run_contract.json"
+    if contract_path.is_file():
+        try:
+            manifest_path = latest_contract_manifest(load_json_object(contract_path, "run contract"), run_dir)
+        except WorkflowError as exc:
+            return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": str(exc)}]
     if not manifest_path.exists():
-        return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": "manifest.json not found in run directory."}]
+        return [{"level": "error", "code": "MISSING_MANIFEST", "location": str(manifest_path), "message": "no hash-bound manifest found for run directory."}]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -2825,9 +3171,11 @@ def build_parser() -> argparse.ArgumentParser:
   Set top-level continue_from_step: <step-id-or-name-or-summary> to persist a specific agent command;
   explicit continue_from_step is strict and fails if that command has no session id.
   Disable capture env per step/summary command with capture_session: false (or capture: false).
-  Each run directory owns an immutable run_contract.json. --from-step verifies the
-  original workflow, variables, commands, frozen_inputs, typed receipts, and reused
-  predecessor artifacts. A harness-only correction uses a fresh out-dir,
+  Each run directory owns the checkpoint and attempt index in run_contract.json.
+  Successful steps become reusable only after all declared artifacts and receipts are
+  atomically hash-bound. recover-attempt refuses active, partial, non-contiguous, or
+  drifted evidence and never infers semantic success. --from-step verifies the original
+  workflow, variables, commands, frozen_inputs, typed receipts, and reused artifacts. A harness-only correction uses a fresh out-dir,
   amendment_mode: harness_only_validation, --amends-run PRIOR_RUN, and optionally
   --from-step STEP to revalidate/import the successful prefix before executing only
   the requested suffix. Failed or changed predecessor steps are never reused.
@@ -2840,7 +3188,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 Helper commands:
   workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns
-  workflow_runner.sh doctor RUN_DIR                    # inspect manifest/artifacts from a run
+  workflow_runner.sh recover-attempt RUN_DIR [--dry-run] # append fail-closed interrupted-attempt evidence
+  workflow_runner.sh doctor RUN_DIR                    # inspect latest hash-bound manifest/artifacts
   workflow_runner.sh dr RUN_DIR                        # short alias for doctor
 
 Example boilerplates (written only when explicitly requested):
@@ -2873,7 +3222,7 @@ Example boilerplates (written only when explicitly requested):
     parser.add_argument("--amends-run", help="Start a fresh harness-only run linked to a prior run; combine with --from-step to revalidate/import its successful prefix")
     parser.add_argument("--print-step-stdout", dest="print_step_stdout", action="store_true", default=True, help="Print each step response/stdout as it completes (default); successful stderr stays in artifacts")
     parser.add_argument("--no-print-step-stdout", dest="print_step_stdout", action="store_false", help="Do not echo per-step response/stdout to the console; artifacts are still written")
-    parser.add_argument("--tmux", action="store_true", help="Create a dedicated detached tmux observer that follows live step stdout/stderr and remains available for review")
+    parser.add_argument("--tmux", action="store_true", help="Create a detached observer only; the producer remains attached to this foreground command")
     parser.add_argument("--tmux-session", help="Observer session name (requires --tmux; default is derived from workflow/run id)")
     parser.add_argument(
         "--print-output",
@@ -2976,6 +3325,12 @@ def main(argv: list[str] | None = None) -> int:
             return run_doctor_command(argv[1:])
         except WorkflowError as exc:
             print(f"workflow_runner.sh doctor: error: {exc}", file=sys.stderr)
+            return 2
+    if argv and argv[0] == "recover-attempt":
+        try:
+            return run_recover_command(argv[1:])
+        except (WorkflowError, OSError) as exc:
+            print(f"workflow_runner.sh recover-attempt: error: {exc}", file=sys.stderr)
             return 2
     parser = build_parser()
     args = parser.parse_args(argv)

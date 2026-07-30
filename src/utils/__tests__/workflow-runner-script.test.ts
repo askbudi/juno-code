@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const repoRoot = path.resolve(process.cwd(), '..');
@@ -271,6 +271,9 @@ describe('workflow_runner.sh template script', () => {
     expect(result.stdout).toContain('parallel-kanban-review');
     expect(result.stdout).toContain('workflow_runner.sh lint --workflow WORKFLOW.yaml');
     expect(result.stdout).toContain('workflow_runner.sh doctor RUN_DIR');
+    expect(result.stdout).toContain('workflow_runner.sh recover-attempt RUN_DIR');
+    expect(result.stdout).toContain('detached observer only; the producer remains');
+    expect(result.stdout).toContain('attached to this foreground command');
     expect(result.stdout).toContain('fail_workflow: true');
     expect(result.stdout).toContain('juno-code, yy, and ypl');
     expect(result.stdout).toContain('capture_session: false');
@@ -1842,6 +1845,181 @@ print('response with session_id=session-must-not-be-captured')
     });
     const result = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(result.status).toBe(0);
+  });
+
+  it('recovers a complete checkpoint without rerunning the successful prefix', async () => {
+    const workflowPath = path.join(testDir, 'recover-complete.json');
+    const outDir = path.join(testDir, 'recover-complete-out');
+    const prefixMarker = path.join(testDir, 'prefix-count.txt');
+    const suffixMarker = path.join(testDir, 'suffix-count.txt');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'recover-complete',
+      steps: [
+        { id: 'prefix', command: ['bash', '-lc', `printf x >> ${JSON.stringify(prefixMarker)}; printf prefix`] },
+        { id: 'suffix', command: ['bash', '-lc', `printf y >> ${JSON.stringify(suffixMarker)}; printf suffix`] },
+      ],
+    });
+    const interrupted = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ], undefined, { JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest' });
+    expect(interrupted.status).toBe(86);
+    expect(await fs.readFile(prefixMarker, 'utf8')).toBe('x');
+    expect(await fs.pathExists(suffixMarker)).toBe(false);
+    expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
+
+    const dry = runWorkflow(['recover-attempt', outDir, '--dry-run']);
+    expect(dry.status).toBe(0);
+    expect(JSON.parse(dry.stdout).verified_prefix_steps).toEqual(['prefix']);
+    expect((await fs.readJson(path.join(outDir, 'run_contract.json'))).attempts).toHaveLength(0);
+    const recovered = runWorkflow(['recover-attempt', outDir]);
+    expect(recovered.status).toBe(0);
+    const recovery = JSON.parse(recovered.stdout);
+    expect(recovery.first_invalid_step).toBe('suffix');
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    expect(contract.attempts.at(-1).status).toBe('interrupted');
+    expect(contract.attempts.at(-1).recovery_reason).toBe('recovered_from_step_checkpoints');
+
+    const resumed = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir,
+      '--from-step', 'suffix', '--print-output', 'none',
+    ]);
+    expect(resumed.status).toBe(0);
+    expect(await fs.readFile(prefixMarker, 'utf8')).toBe('x');
+    expect(await fs.readFile(suffixMarker, 'utf8')).toBe('y');
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].status).toBe('reused_verified');
+  });
+
+  it.each([
+    'command_success_before_artifacts',
+    'artifacts_before_checkpoint',
+  ])('never reuses incomplete evidence interrupted at %s', async (point) => {
+    const workflowPath = path.join(testDir, `${point}.json`);
+    const outDir = path.join(testDir, `${point}-out`);
+    const markerPath = path.join(testDir, `${point}-count.txt`);
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: `incomplete-${point}`,
+      steps: [{ id: 'write', command: ['bash', '-lc', `printf x >> ${JSON.stringify(markerPath)}`] }],
+    });
+    expect(runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ], undefined, { JUNO_WORKFLOW_TEST_INTERRUPT_AT: point }).status).toBe(86);
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    expect(contract.completed_steps).toEqual({});
+    const recovered = runWorkflow(['recover-attempt', outDir]);
+    expect(recovered.status).toBe(0);
+    expect(JSON.parse(recovered.stdout).verified_prefix_steps).toEqual([]);
+  });
+
+  it.each([
+    'summary_before_attempt_manifest',
+    'attempt_manifest_before_record',
+    'attempt_record_before_root_manifest',
+  ])('recovers or consumes hash-bound metadata across terminal write boundary %s', async (point) => {
+    const workflowPath = path.join(testDir, `${point}.json`);
+    const outDir = path.join(testDir, `${point}-out`);
+    await fs.writeJson(workflowPath, {
+      schema_version: 1, workflow_id: `terminal-${point}`,
+      steps: [{ id: 'only', command: ['bash', '-lc', 'printf complete'] }],
+    });
+    expect(runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ], undefined, { JUNO_WORKFLOW_TEST_INTERRUPT_AT: point }).status).toBe(86);
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    if (point === 'attempt_record_before_root_manifest') {
+      expect(contract.attempts).toHaveLength(1);
+      expect(runWorkflow(['doctor', outDir]).status).toBe(0);
+      expect(runWorkflow(['recover-attempt', outDir]).status).not.toBe(0);
+    } else {
+      expect(contract.attempts).toHaveLength(0);
+      expect(runWorkflow(['recover-attempt', outDir]).status).toBe(0);
+    }
+  });
+
+  it('fails recovery closed for artifact, workflow, variable, frozen-input, and receipt drift', async () => {
+    const workflowPath = path.join(testDir, 'recovery-drift.json');
+    const frozenPath = path.join(testDir, 'frozen.txt');
+    const receiptPath = path.join(testDir, 'recovery-receipt.json');
+    const outDir = path.join(testDir, 'recovery-drift-out');
+    await fs.writeFile(frozenPath, 'frozen');
+    const producerCode = `import json,os,pathlib; pathlib.Path(${JSON.stringify(receiptPath)}).write_text(json.dumps({'schema_version':'fixture.v1','producer_step_digest':os.environ['JUNO_WORKFLOW_STEP_DIGEST']})); print('complete',end='')`;
+    await fs.writeJson(workflowPath, {
+      schema_version: 1, workflow_id: 'recovery-drift', vars: { mode: 'approved' },
+      frozen_inputs: [{ id: 'input', path: frozenPath }],
+      receipts: [{ id: 'evidence', producer: 'only', path: receiptPath, schema_version: 'fixture.v1', required_fields: ['producer_step_digest'] }],
+      steps: [{ id: 'only', command: ['python3', '-c', producerCode] }],
+    });
+    expect(runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir,
+      '--print-output', 'none',
+    ], undefined, { JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest' }).status).toBe(86);
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    await fs.writeFile(contract.completed_steps.only.artifacts.stdout.path, 'tampered');
+    let rejected = runWorkflow(['recover-attempt', outDir]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('hash mismatch');
+    await fs.writeFile(contract.completed_steps.only.artifacts.stdout.path, 'complete');
+    const receipt = await fs.readJson(receiptPath);
+    receipt.tampered = true;
+    await fs.writeJson(receiptPath, receipt);
+    rejected = runWorkflow(['recover-attempt', outDir]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('artifact_sha256');
+    delete receipt.tampered;
+    await fs.writeFile(receiptPath, JSON.stringify(receipt));
+    await fs.writeFile(frozenPath, 'changed');
+    rejected = runWorkflow(['recover-attempt', outDir]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('frozen_input');
+    await fs.writeFile(frozenPath, 'frozen');
+    const workflow = await fs.readJson(workflowPath);
+    workflow.vars.mode = 'drifted';
+    await fs.writeJson(workflowPath, workflow);
+    rejected = runWorkflow(['recover-attempt', outDir]);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('workflow source');
+  });
+
+  it('refuses recovery while a signalled caller leaves a step process active', async () => {
+    const workflowPath = path.join(testDir, 'active-recovery.json');
+    const outDir = path.join(testDir, 'active-recovery-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1, workflow_id: 'active-recovery',
+      steps: [{ id: 'active', command: ['bash', '-lc', 'sleep 30'] }],
+    });
+    const child = spawn('python3', [templateScript, '--workflow', workflowPath, '--project-root', testDir,
+      '--out-dir', outDir, '--print-output', 'none'], { cwd: repoRoot, env: process.env, stdio: 'ignore' });
+    const activePath = path.join(outDir, 'active_step.json');
+    for (let index = 0; index < 100 && !(await fs.pathExists(activePath)); index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const active = await fs.readJson(activePath);
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.once('exit', resolve));
+    const refused = runWorkflow(['recover-attempt', outDir]);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('active or its process state is ambiguous');
+    try { process.kill(-active.process_group_id, 'SIGTERM'); } catch {}
+  });
+
+  it('fails ENOSPC capture persistence without creating a reusable checkpoint', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const workflowPath = path.join(testDir, 'enospc.json');
+    const outDir = path.join(testDir, 'enospc-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1, workflow_id: 'enospc',
+      steps: [{ id: 'only', command: [executablePath, 'pi', 'capture'] }],
+    });
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ], undefined, {
+      JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'capture_before_checkpoint',
+      JUNO_WORKFLOW_TEST_INTERRUPT_MODE: 'enospc',
+    });
+    expect(result.status).not.toBe(0);
+    expect((await fs.readJson(path.join(outDir, 'run_contract.json'))).completed_steps).toEqual({});
   });
 
   it('separates semantic terminal failure from successful transport', async () => {
