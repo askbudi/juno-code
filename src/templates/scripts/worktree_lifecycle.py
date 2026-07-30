@@ -89,9 +89,9 @@ def measure_capacity(path: Path) -> dict[str, Any]:
 def normalize_sparse_paths(values: list[str]) -> list[str]:
     normalized: set[str] = set()
     for value in values:
-        candidate = value.strip().replace(os.sep, "/")
+        candidate = value.replace(os.sep, "/")
         path = PurePosixPath(candidate)
-        if (not candidate or candidate != path.as_posix() or path.is_absolute() or candidate in {".", ".git"}
+        if (not candidate or value != value.strip() or candidate != path.as_posix() or path.is_absolute() or candidate in {".", ".git"}
                 or ".." in path.parts or ".git" in path.parts or "\\" in candidate
                 or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
                 or any(character in candidate for character in "*?[") or candidate.startswith(("!", "#"))):
@@ -130,8 +130,9 @@ def materialized_tracked_paths(path: Path) -> list[str]:
     tracked_paths = [record.decode(errors="surrogateescape") for record in git_nul_records(path, "ls-files", "-z")]
     return [tracked for tracked in tracked_paths if os.path.lexists(path / tracked)]
 
-def index_has_skip_worktree(path: Path) -> bool:
-    return any(record.startswith(b"S ") for record in git_nul_records(path, "ls-files", "-t", "-z"))
+def skip_worktree_paths(path: Path) -> list[str]:
+    return sorted(record[2:].decode(errors="surrogateescape") for record in git_nul_records(path, "ls-files", "-t", "-z")
+                  if record.startswith(b"S "))
 
 def config_bool(path: Path, key: str) -> tuple[bool | None, bool]:
     result = subprocess.run(["git", "-C", str(path), "config", "--bool", "--get", key], text=True,
@@ -150,34 +151,41 @@ def path_is_selected(tracked: str, selected: list[str]) -> bool:
 def checkout_policy(path: Path) -> dict[str, Any]:
     enabled, enabled_valid = config_bool(path, "core.sparseCheckout")
     cone, cone_valid = config_bool(path, "core.sparseCheckoutCone")
-    skip_worktree = index_has_skip_worktree(path)
+    skipped = skip_worktree_paths(path)
     if enabled is not True:
-        consistent = enabled_valid and cone_valid and cone is not True and not skip_worktree
+        consistent = enabled_valid and cone_valid and cone is not True and not skipped
         return {"mode": "full", "style": None, "enabled": enabled, "cone": cone,
-                "config_valid": enabled_valid and cone_valid, "index_has_skip_worktree": skip_worktree,
-                "paths": [], "patterns": [], "materialized_tracked_paths": [],
+                "config_valid": enabled_valid and cone_valid, "skip_worktree_paths": skipped,
+                "expected_skip_worktree_paths": [], "paths": [], "patterns": [], "materialized_tracked_paths": [],
                 "unexpected_materialized_paths": [], "consistent": consistent}
     sparse_file = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"))
-    patterns = sparse_file.read_text(encoding="utf-8").splitlines() if sparse_file.is_file() else []
-    selected = parse_sparse_patterns(patterns)
+    sparse_bytes = sparse_file.read_bytes() if sparse_file.is_file() else b""
+    try:
+        patterns = sparse_bytes.decode("utf-8").splitlines(); patterns_valid = True
+    except UnicodeDecodeError:
+        patterns = []; patterns_valid = False
+    selected = parse_sparse_patterns(patterns) if patterns_valid else None
+    tracked = [record.decode(errors="surrogateescape") for record in git_nul_records(path, "ls-files", "-z")]
+    expected_skipped = [] if selected is None else sorted(item for item in tracked if not path_is_selected(item, selected))
     materialized = materialized_tracked_paths(path)
     unexpected = materialized if selected is None else [item for item in materialized if not path_is_selected(item, selected)]
     return {"mode": "sparse", "style": "non-cone", "enabled": enabled, "cone": cone,
-            "config_valid": enabled_valid and cone_valid, "index_has_skip_worktree": skip_worktree,
+            "config_valid": enabled_valid and cone_valid, "patterns_valid_utf8": patterns_valid,
+            "skip_worktree_paths": skipped, "expected_skip_worktree_paths": expected_skipped,
             "paths": [] if selected is None else selected, "patterns": patterns,
-            "sparse_file_sha256": hashlib.sha256(sparse_file.read_bytes()).hexdigest() if sparse_file.is_file() else None,
+            "sparse_file_sha256": hashlib.sha256(sparse_bytes).hexdigest() if sparse_bytes else None,
             "materialized_tracked_paths": materialized, "unexpected_materialized_paths": unexpected,
-            "consistent": enabled_valid and cone_valid and cone is False
-                          and selected is not None and not unexpected}
+            "consistent": enabled_valid and cone_valid and cone is False and patterns_valid
+                          and selected is not None and skipped == expected_skipped and not unexpected}
 
-def configure_sparse_checkout(path: Path, paths: list[str]) -> None:
+def configure_sparse_checkout(path: Path, paths: list[str], base: str) -> None:
     patterns = sparse_patterns(paths)
     result = subprocess.run(["git", "-C", str(path), "sparse-checkout", "set", "--no-cone", "--stdin"],
                             input="\n".join(patterns) + "\n", text=True, capture_output=True,
                             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     if result.returncode:
         raise LifecycleError(f"git sparse-checkout set failed: {result.stderr.strip()}")
-    git(path, "reset", "--hard", "HEAD")
+    git(path, "reset", "--hard", base)
 
 def rollback_failed_create(repo: Path, path: Path, branch: str, base: str) -> dict[str, Any]:
     registration = [row for row in listed(repo) if Path(row["worktree"]).resolve() == path]
@@ -196,6 +204,7 @@ def rollback_failed_create(repo: Path, path: Path, branch: str, base: str) -> di
 def create(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repository.resolve(); root, common = identity(repo)
     target_ref = full_ref(args.target_ref)
+    target_sha_at_create = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}")
     if args.fetch:
         remote, separator, ref = args.fetch.partition(",")
         if not separator or not remote or not ref: raise LifecycleError("--fetch must be REMOTE,REF")
@@ -237,18 +246,24 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         try:
             if args.sparse:
                 git(repo, "worktree", "add", "--no-checkout", "-b", branch.removeprefix("refs/heads/"), str(path), base)
-                configure_sparse_checkout(path, requested_sparse_paths)
+                configure_sparse_checkout(path, requested_sparse_paths, base)
             else:
                 git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
             policy = checkout_policy(path)
-            if not policy["consistent"] or policy["mode"] != ("sparse" if args.sparse else "full"):
-                raise LifecycleError("created_worktree_checkout_policy_mismatch")
+            actual_head = git(path, "rev-parse", "HEAD")
+            actual_branch = git(path, "symbolic-ref", "-q", "HEAD", check=False)
+            actual_target = git(repo, "rev-parse", "--verify", f"{target_ref}^{{commit}}", check=False)
+            if (actual_head != base or actual_branch != branch or actual_target != target_sha_at_create
+                    or not policy["consistent"] or policy["mode"] != ("sparse" if args.sparse else "full")
+                    or (args.sparse and policy["paths"] != requested_sparse_paths)):
+                raise LifecycleError("created_worktree_identity_or_checkout_policy_mismatch")
         except (LifecycleError, OSError) as exc:
             rollback = rollback_failed_create(repo, path, branch, base)
             raise LifecycleError(f"create_failed: {exc}; rollback={json.dumps(rollback, sort_keys=True)}") from exc
         outcome = "created"
     payload = {"schema_version": SCHEMA, "operation": "create", "outcome": outcome, "repository_root": str(root),
-               "git_common_dir": str(common), "target_ref": target_ref, "base_sha": base, "task_id": args.task_id,
+               "git_common_dir": str(common), "target_ref": target_ref, "target_sha_at_create": target_sha_at_create,
+               "base_sha": base, "task_id": args.task_id,
                "branch_ref": branch, "worktree": str(path), "expected_paths": expected_paths,
                "sparse_tooling_paths": sparse_tooling_paths, "checkout_policy": policy,
                "validation_commands": args.validation_command, "cleanup_owner": args.cleanup_owner,
@@ -279,7 +294,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             if root != actual_path: refusals.append("path_is_not_worktree_root")
             if actual["head"] != receipt["base_sha"]: refusals.append("unexpected_head")
             if actual["branch_ref"] != receipt["branch_ref"]: refusals.append("unexpected_branch")
-            if actual["target_sha"] != receipt["base_sha"]: refusals.append("target_ref_moved_or_missing")
+            if actual["target_sha"] != receipt["target_sha_at_create"]: refusals.append("target_ref_moved_or_missing")
             if not actual["clean"]: refusals.append("dirty")
             if actual["git_common_dir"] != receipt["git_common_dir"]: refusals.append("git_common_dir_mismatch")
             if actual["checkout_policy"] != receipt.get("checkout_policy"): refusals.append("checkout_policy_mismatch")
