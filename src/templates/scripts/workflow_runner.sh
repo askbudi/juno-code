@@ -1233,9 +1233,9 @@ def command_owns_actual_review_child(command: Any, project_root: Path) -> bool:
         script_index = 1
     candidate = Path(tokens[script_index])
     if not candidate.is_absolute():
-        return False
+        candidate = project_root / candidate
     try:
-        if not candidate.is_absolute() or candidate != canonical_owner or candidate.is_symlink() or candidate.resolve(strict=True) != canonical_owner:
+        if candidate != canonical_owner or candidate.is_symlink() or candidate.resolve(strict=True) != canonical_owner:
             return False
     except OSError:
         return False

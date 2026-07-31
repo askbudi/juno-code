@@ -717,6 +717,28 @@ summary: |
     expect(await fs.pathExists(path.join(outDir, 'child_steps', 'attacker'))).toBe(false);
   });
 
+  it('grants child-evidence capability to the exact project-relative canonical owner path', async () => {
+    const projectRoot = path.join(testDir, 'relative-owner-project');
+    const managedScripts = path.join(projectRoot, '.juno_task', 'scripts');
+    await fs.ensureDir(managedScripts);
+    const managedRunner = path.join(managedScripts, 'workflow_runner.sh');
+    await fs.copy(templateScript, managedRunner);
+    await fs.copy(path.join(path.dirname(templateScript), 'workflow_run_evidence.py'), path.join(managedScripts, 'workflow_run_evidence.py'));
+    await installFakeChildEvidenceProducer(managedScripts);
+    const workflowPath = path.join(testDir, 'relative-owner-child-capability.json');
+    const outDir = path.join(testDir, 'relative-owner-child-capability-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'relative_owner_child_capability',
+      steps: [{ id: 'integrate', command: ['.juno_task/scripts/integration_owner_preflight.py', 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
+    });
+    const result = runWorkflowScript(managedRunner, ['--project-root', projectRoot, '--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
+    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].child_steps).toHaveLength(1);
+    expect(manifest.steps[0].child_steps[0].semantic_outcome).toBe('accepted');
+  });
+
   it('withholds child-evidence capability from lexical aliases of the canonical owner path', async () => {
     let managedScripts = path.join(testDir, 'managed-alias-scripts');
     await fs.ensureDir(managedScripts);
