@@ -1212,20 +1212,30 @@ def append_live_log(path: Path | None, text: str) -> None:
         handle.flush()
 
 
-def command_owns_actual_review_child(command: Any) -> bool:
-    # The capability must be attached to the directly executed owner, never to
-    # a shell that can inspect it before dispatch or to an unrelated command
-    # that merely mentions the owner's flags in its arguments.
+def command_owns_actual_review_child(command: Any, project_root: Path) -> bool:
+    # Bind the capability to the canonical managed owner script beside this
+    # runner. A matching basename, symlink, copy, or alternate interpreter is
+    # not an owner identity.
     if not isinstance(command, list):
         return False
     tokens = [str(part) for part in command]
     if not tokens:
         return False
+    canonical_owner = SCRIPT_DIR / "integration_owner_preflight.py"
     script_index = 0
-    if Path(tokens[0]).name != "integration_owner_preflight.py":
-        if Path(tokens[0]).name not in {"python", "python3"} or len(tokens) < 2 or Path(tokens[1]).name != "integration_owner_preflight.py":
+    if len(tokens) >= 2 and Path(tokens[0]).name in {"python", "python3"}:
+        interpreter = shutil.which(tokens[0])
+        if interpreter is None or Path(interpreter).resolve() != Path(sys.executable).resolve():
             return False
         script_index = 1
+    candidate = Path(tokens[script_index])
+    if not candidate.is_absolute():
+        return False
+    try:
+        if not candidate.is_absolute() or candidate != canonical_owner or candidate.is_symlink() or candidate.resolve(strict=True) != canonical_owner:
+            return False
+    except OSError:
+        return False
     owner_args = tokens[script_index + 1 :]
     return bool(owner_args) and owner_args[0] == "integrate" and "--actual-review-command" in owner_args and "--actual-review-receipt" in owner_args
 
@@ -2145,7 +2155,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
         child_evidence_dir = out_dir / "child_steps" / step_slug
         env.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR", None)
-        if command_owns_actual_review_child(command):
+        if command_owns_actual_review_child(command, project_root):
             if not args.dry_run and child_evidence_dir.exists():
                 shutil.rmtree(child_evidence_dir)
             env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
