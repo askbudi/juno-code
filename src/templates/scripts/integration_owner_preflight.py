@@ -178,11 +178,13 @@ def publish_child_evidence(staging:Path,target:Path,evidence:dict[str,Any],integ
  event_path=staging/"actual_target_review.event.json";event_path.write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n")
  if json.loads(event_path.read_text())!=evidence:raise IntegrationError("actual_target_review staged event validation failed")
  os.replace(staging,target)
+SESSION_TOKEN=r"[A-Za-z0-9](?:[A-Za-z0-9_.:-]*[A-Za-z0-9])?"
+SESSION_SUMMARY_RE=re.compile(rf"^[ \t]*(?:🔑[ \t]*)?(?:session_id[ \t]*=|session[ \t]+id(?:\(s\))?[ \t]*:)[ \t]*(?:\r?\n[ \t]+)?({SESSION_TOKEN})(?![A-Za-z0-9_.:-])(?=[ \t]*(?:(?:cost[ \t]*:.*)?\r?$))",re.I|re.M)
 def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
  value=capture.get("session_id")
- if isinstance(value,str) and value:return value
+ if isinstance(value,str) and value.strip():return value.strip()
  for text in (stdout,stderr):
-  match=re.search(r"session[_ -]?id[=:]\s*([A-Za-z0-9_.:-]+)",text,re.I)
+  match=SESSION_SUMMARY_RE.search(text)
   if match:return match.group(1)
  return None
 def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float,child_root:Path|None=None)->dict[str,Any]:
@@ -222,6 +224,8 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
   try:review=json.loads(receipt_path.read_text())
   except json.JSONDecodeError:review={}
   semantic="accepted" if review.get("schema_version")=="juno_review.v1" and review.get("review_kind")=="actual_target" and review.get("passed") is True and review.get("reviewed_tip")==integrated and review.get("open_bugs")==[] else "rejected"
+ missing_session=semantic=="accepted" and not session_id
+ if missing_session:semantic="rejected"
  prompt=tokens[-1] if len(tokens)>=3 and Path(tokens[0]).name in {"yy","juno-code","ypl"} else ""
  evidence={"child_id":"actual_target_review","role":"actual_target_review","invocation_mode":"fresh_session","rendered_command_sha256":hashlib.sha256(command.encode()).hexdigest(),"rendered_argv_sha256":hashlib.sha256(json.dumps(tokens,separators=(",",":"),ensure_ascii=False).encode()).hexdigest(),"rendered_prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest() if prompt else None,"started_at":started_wall.isoformat().replace("+00:00","Z"),"completed_at":completed_wall.isoformat().replace("+00:00","Z"),"duration_seconds":duration,"exit_code":review_run.returncode,"transport_status":"success" if review_run.returncode==0 else "failed","semantic_outcome":semantic,"session_id":session_id,"reviewed_target_sha":integrated}
  if child_root and staging:
@@ -234,6 +238,7 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
   if live_path:
    with Path(live_path).open("a",encoding="utf-8") as live:live.write(f"\n=== CHILD actual_target_review semantic={semantic} exit={review_run.returncode} ===\n{review_run.stdout or ''}{review_run.stderr or ''}=== END CHILD actual_target_review ===\n")
  if review_run.returncode:raise IntegrationError("actual_target_review_command_failed")
+ if missing_session:raise IntegrationError("actual_target_review session identity required")
  if semantic!="accepted":raise IntegrationError("actual_target_review_PASS_required")
  evidence["review_receipt_sha256"]=sha(receipt_path)
  return evidence
