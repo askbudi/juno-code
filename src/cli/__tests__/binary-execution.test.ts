@@ -17,6 +17,7 @@ import { execa, type ExecaReturnValue } from 'execa';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
   createSessionContinuityConfig,
   createSessionContinuityFixture,
@@ -234,6 +235,87 @@ describe('Binary Execution Tests', () => {
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
     });
 
+    it('keeps an exact linked task worktree byte-clean before agent dispatch', async () => {
+      const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-bootstrap-clean-'));
+      const controller = path.join(sandbox, 'controller');
+      const task = path.join(sandbox, 'task');
+      const git = (cwd: string, args: string[]) =>
+        execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+      try {
+        await fs.ensureDir(path.join(controller, '.juno_task', 'scripts'));
+        await fs.ensureDir(path.join(controller, '.agents', 'skills', 'fixture'));
+        await fs.ensureDir(path.join(controller, '.claude', 'skills', 'fixture'));
+        await fs.ensureDir(path.join(controller, '.pi', 'skills', 'fixture'));
+        await fs.copy(
+          path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
+          path.join(controller, '.juno_task/scripts/controller_resolver.py'),
+        );
+        await fs.copy(
+          path.join(PROJECT_ROOT, 'src/templates/scripts/bootstrap.sh'),
+          path.join(controller, '.juno_task/scripts/bootstrap.sh'),
+        );
+        await fs.writeFile(
+          path.join(controller, '.juno_task/scripts/install_requirements.sh'),
+          '#!/usr/bin/env bash\nexit 97\n',
+        );
+        await fs.writeFile(path.join(controller, '.juno_task/scripts/workflow_runner.sh'), 'tracked candidate workflow bytes\n');
+        await fs.writeFile(path.join(controller, '.agents/skills/fixture/SKILL.md'), 'tracked candidate agent skill bytes\n');
+        await fs.writeFile(path.join(controller, '.claude/skills/fixture/SKILL.md'), 'tracked candidate claude skill bytes\n');
+        await fs.writeFile(path.join(controller, '.pi/skills/fixture/SKILL.md'), 'tracked candidate pi skill bytes\n');
+        await fs.writeJson(path.join(controller, '.juno_task/config.json'), {});
+        await fs.writeFile(path.join(controller, '.gitignore'), '.venv_juno/\n');
+        git(controller, ['init', '-b', 'controller-branch']);
+        git(controller, ['config', 'user.email', 'test@example.invalid']);
+        git(controller, ['config', 'user.name', 'Test']);
+        git(controller, ['add', '.']);
+        git(controller, ['commit', '-m', 'exact candidate fixture']);
+        git(controller, ['worktree', 'add', '-b', 'review-task', task]);
+        git(task, ['config', '--local', 'juno.controller.path', controller]);
+        git(task, ['config', '--local', 'juno.controller.branch', 'controller-branch']);
+
+        const venvBin = path.join(task, '.venv_juno', 'bin');
+        await fs.ensureDir(venvBin);
+        await fs.writeFile(
+          path.join(venvBin, 'activate'),
+          `export VIRTUAL_ENV=${JSON.stringify(path.join(task, '.venv_juno'))}\n`,
+        );
+        const status = () =>
+          execFileSync(
+            'git',
+            ['-C', task, 'status', '--porcelain=v2', '-z', '--untracked-files=all'],
+          );
+        const before = status();
+        expect(before.byteLength).toBe(0);
+
+        // Use the shipped shell binary, not an imported handler. Invalid
+        // iteration input stops immediately after startup, before Pi dispatch.
+        const result = await execa(
+          path.join(PROJECT_ROOT, 'dist/bin/juno-code.sh'),
+          ['pi', '-p', 'review exact candidate', '-i', 'invalid'],
+          {
+            cwd: task,
+            reject: false,
+            env: {
+              ...process.env,
+              CI: '1',
+              NO_COLOR: '1',
+              JUNO_TASK_ROOT: controller,
+              JUNO_CONTROLLER_BRANCH: 'controller-branch',
+              JUNO_WORKSPACE_ROLE: 'controller',
+              JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(sandbox, 'metadata'),
+            },
+          },
+        );
+        expect(result.exitCode).not.toBe(0);
+        const after = status();
+        expect(after.toString('utf8')).toBe(before.toString('utf8'));
+        expect(await fs.pathExists(path.join(task, '.juno_task/managed-assets.json'))).toBe(false);
+        expect(await fs.pathExists(path.join(task, '.juno_task/managed-conflicts'))).toBe(false);
+      } finally {
+        await fs.remove(sandbox);
+      }
+    });
+
     it('should honor nested-command --cwd when installing managed prompts and macros', async () => {
       const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-managed-cwd-'));
       try {
@@ -269,6 +351,10 @@ describe('Binary Execution Tests', () => {
       const records = path.join(tempDir, 'backlog.ndjson');
       const helper = path.join(tempDir, 'guard_helper.py');
       await fs.ensureDir(scriptsDir);
+      await fs.copy(
+        path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
+        path.join(scriptsDir, 'controller_resolver.py'),
+      );
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho UNGUARDED\n');
       await fs.writeFile(records, '{"id":"one","status":"todo"}\n');
       await fs.writeFile(
@@ -291,7 +377,9 @@ describe('Binary Execution Tests', () => {
         ].join('\n'),
       );
 
-      const startup = await executeCLI(['--help']);
+      const startup = await executeCLI(['--help'], {
+        env: { JUNO_TASK_ROOT: tempDir, JUNO_WORKSPACE_ROLE: 'controller' },
+      });
       expect(startup.exitCode).toBe(0);
       const wrapper = path.join(scriptsDir, 'kanban.sh');
       const installed = await fs.readFile(wrapper, 'utf8');

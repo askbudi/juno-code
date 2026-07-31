@@ -853,6 +853,27 @@ logLevel: info
       expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(true);
     });
 
+    it('loads existing task env without migrating any project bytes in read-only bootstrap mode', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, { defaultSubagent: 'pi' });
+      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_LOG_LEVEL=debug\n');
+      const beforeConfig = await fs.readFile(configPath);
+      const beforeEnv = await fs.readFile(path.join(tempDir, '.env.juno'));
+
+      process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = '0';
+      try {
+        const config = await loadConfig({ baseDir: tempDir });
+        expect(config.defaultSubagent).toBe('pi');
+        expect(config.logLevel).toBe('debug');
+        expect(await fs.readFile(configPath)).toEqual(beforeConfig);
+        expect(await fs.readFile(path.join(tempDir, '.env.juno'))).toEqual(beforeEnv);
+        expect(await fs.pathExists(path.join(tempDir, '.env.custom'))).toBe(false);
+      } finally {
+        delete process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES;
+      }
+    });
+
     it('should load env values from .env.juno before reading environment mapping', async () => {
       await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_DEFAULT_MAX_ITERATIONS=12\n');
 

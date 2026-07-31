@@ -1038,8 +1038,13 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
   const configPath = path.join(baseDir, PROJECT_CONFIG_FILE);
   const defaultEnvPath = resolvePath(DEFAULT_PROJECT_ENV_FILE, baseDir);
 
-  // Always ensure root .env.juno exists
-  await fs.ensureFile(defaultEnvPath);
+  const allowProjectWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
+
+  // Agent startup in task/candidate worktrees is read-only. Controller startup
+  // and direct loadConfig callers retain normal initialization by default.
+  if (allowProjectWrites) {
+    await fs.ensureFile(defaultEnvPath);
+  }
 
   let existingConfig: Record<string, unknown> | null = null;
 
@@ -1068,7 +1073,7 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
   if (configuredEnvPath !== defaultEnvPath) {
     const configuredExists = await fs.pathExists(configuredEnvPath);
 
-    if (!configuredExists) {
+    if (!configuredExists && allowProjectWrites) {
       await fs.ensureDir(path.dirname(configuredEnvPath));
       if (!envFileCopied) {
         await fsPromises.copyFile(defaultEnvPath, configuredEnvPath);
@@ -1077,13 +1082,14 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
       }
     }
 
-    if (!envFileCopied) {
+    if (allowProjectWrites && !envFileCopied) {
       envFileCopied = true;
       needsConfigUpdate = true;
     }
   }
 
   if (
+    allowProjectWrites &&
     existingConfig &&
     (needsConfigUpdate ||
       typeof existingConfig.envFilePath !== 'string' ||
@@ -1097,9 +1103,12 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
     await fs.writeJson(configPath, updatedConfig, { spaces: 2 });
   }
 
-  // Load default env first, then custom env to allow override semantics.
-  await loadEnvFileIntoProcess(defaultEnvPath);
-  if (configuredEnvPath !== defaultEnvPath) {
+  // Load existing env files in both modes; read-only startup merely refuses to
+  // manufacture or migrate them.
+  if (await fs.pathExists(defaultEnvPath)) {
+    await loadEnvFileIntoProcess(defaultEnvPath);
+  }
+  if (configuredEnvPath !== defaultEnvPath && (await fs.pathExists(configuredEnvPath))) {
     await loadEnvFileIntoProcess(configuredEnvPath);
   }
 }
@@ -1301,10 +1310,16 @@ export async function loadConfig(
 ): Promise<JunoTaskConfig> {
   const { baseDir = process.cwd(), configFile, cliConfig } = options;
 
-  // Ensure hooks configuration exists in project config (auto-migration)
-  await ensureHooksConfig(baseDir);
+  const allowProjectWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
 
-  // Ensure .env.juno/custom env exists and load env vars before config env precedence is evaluated.
+  // Ensure hooks configuration exists in project config (auto-migration) only
+  // where resolver-confirmed startup policy permits project writes.
+  if (allowProjectWrites) {
+    await ensureHooksConfig(baseDir);
+  }
+
+  // Load project env in every workspace, but create/migrate files only when the
+  // same startup policy permits writes.
   await ensureAndLoadProjectEnv(baseDir);
 
   const loader = new ConfigLoader(baseDir);

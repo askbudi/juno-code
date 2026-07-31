@@ -7,6 +7,8 @@ export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 's
 
 export interface ControllerResolution {
   path: string;
+  current_root: string;
+  resolver: 'installed' | 'missing';
   source: 'environment' | 'registration' | 'current-root';
   expected_branch: string | null;
   actual_branch: string | null;
@@ -29,8 +31,11 @@ export function resolveController(
     resolver = path.join(search, '.juno_task', 'scripts', 'controller_resolver.py');
   }
   if (!requireExists(resolver)) {
+    const currentRoot = path.resolve(workingDirectory);
     return {
-      path: path.resolve(workingDirectory),
+      path: currentRoot,
+      current_root: currentRoot,
+      resolver: 'missing',
       source: 'current-root',
       expected_branch: null,
       actual_branch: null,
@@ -48,6 +53,36 @@ export function resolveController(
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   return JSON.parse(output) as ControllerResolution;
+}
+
+export interface AutomaticProjectBootstrapPolicy {
+  allowed: boolean;
+  resolution: ControllerResolution;
+  reason: 'controller' | 'resolver-missing' | 'non-controller-worktree';
+}
+
+/**
+ * Resolve whether implicit CLI startup may rewrite project-owned assets.
+ *
+ * The installed resolver is the single source of workspace identity. Startup
+ * writes are allowed only in the exact resolved controller root. Task,
+ * candidate, and integration-owner worktrees stay read-only until a user runs
+ * an explicit scripts update command. Resolver failures are intentionally not
+ * caught: invalid registration must stop startup before agent dispatch.
+ */
+export function resolveAutomaticProjectBootstrap(
+  workingDirectory: string,
+): AutomaticProjectBootstrapPolicy {
+  const resolution = resolveController(workingDirectory, 'diagnostic');
+  if (resolution.resolver !== 'installed') {
+    return { allowed: false, resolution, reason: 'resolver-missing' };
+  }
+  const controllerRoot = path.resolve(resolution.path);
+  const currentRoot = path.resolve(resolution.current_root);
+  if (resolution.role !== 'controller' || controllerRoot !== currentRoot) {
+    return { allowed: false, resolution, reason: 'non-controller-worktree' };
+  }
+  return { allowed: true, resolution, reason: 'controller' };
 }
 
 export function controllerEnvironment(

@@ -64,7 +64,8 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         "controller" if controller == current_root else "task"
     )
     result: dict[str, object] = {
-        "path": str(controller), "source": source, "expected_branch": expected_branch,
+        "path": str(controller), "current_root": str(current_root), "resolver": "installed",
+        "source": source, "expected_branch": expected_branch,
         "actual_branch": None, "role": role, "enforcement": enforcement,
         "operation": operation, "valid": True, "diagnostics": [],
     }

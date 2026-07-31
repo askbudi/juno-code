@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveAutomaticProjectBootstrap } from '../controller-resolver.js';
 
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
@@ -49,6 +50,7 @@ describe('canonical controller resolver', () => {
     git(controller, 'add', '.juno_task');
     git(controller, 'commit', '-m', 'fixture');
     git(controller, 'worktree', 'add', '-b', 'feature-task', task);
+    task = await fs.realpath(task);
     git(task, 'config', '--local', 'juno.controller.path', controller);
     git(task, 'config', '--local', 'juno.controller.branch', 'controller-branch');
   });
@@ -58,7 +60,38 @@ describe('canonical controller resolver', () => {
   it('resolves a registered controller across a real linked worktree with spaces', () => {
     const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
+    expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
+  });
+
+  it('allows implicit bootstrap only in the resolved controller and preserves resolver failure truth', () => {
+    const names = ['JUNO_TASK_ROOT', 'JUNO_CONTROLLER_BRANCH', 'JUNO_WORKSPACE_ROLE', 'JUNO_WORKSPACE_ENFORCEMENT'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      for (const name of names) process.env[name] = '';
+      expect(resolveAutomaticProjectBootstrap(controller)).toMatchObject({
+        allowed: true,
+        reason: 'controller',
+        resolution: { current_root: controller, role: 'controller' },
+      });
+
+      // A controller role inherited by a task launch cannot authorize writes to
+      // the task worktree: exact controller/root identity is also required.
+      process.env.JUNO_WORKSPACE_ROLE = 'controller';
+      expect(resolveAutomaticProjectBootstrap(task)).toMatchObject({
+        allowed: false,
+        reason: 'non-controller-worktree',
+        resolution: { current_root: task, path: controller },
+      });
+
+      git(task, 'config', '--local', 'juno.controller.path', path.join(sandbox, 'missing-controller'));
+      expect(() => resolveAutomaticProjectBootstrap(task)).toThrow();
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it('gives an explicit linked root priority and never falls back from invalid or unrelated roots', async () => {

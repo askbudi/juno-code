@@ -65,12 +65,9 @@ main() {
         # 3. Activate venv if needed
         # 4. Execute the command we pass to it
 
-        # Make sure bootstrap script is executable
-        chmod +x "$BOOTSTRAP_SCRIPT" 2>/dev/null || true
-
-        # Delegate to bootstrap.sh with node CLI as the command to execute
-        # Bootstrap will setup environment then exec our CLI
-        exec "$BOOTSTRAP_SCRIPT" node "$CLI_ENTRYPOINT" "$@"
+        # Execute through bash instead of chmodding a tracked managed script.
+        # Agent bootstrap must not alter exact task/candidate worktree bytes.
+        exec bash "$BOOTSTRAP_SCRIPT" node "$CLI_ENTRYPOINT" "$@"
     else
         # Not initialized or bootstrap missing - run CLI directly
         # This allows 'juno-code init' to work without bootstrap

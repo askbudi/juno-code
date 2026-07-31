@@ -15,6 +15,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
+import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -1775,6 +1776,21 @@ async function main(): Promise<void> {
     (arg) => arg === '--version' || arg === '-V',
   );
   const isForceUpdate = process.argv.includes('--force-update');
+  const cliArgs = process.argv.slice(2);
+  const isExplicitProjectAssetUpdate =
+    isForceUpdate ||
+    cliArgs[0] === 'install-scripts' ||
+    (cliArgs[0] === 'scripts' && cliArgs[1] === 'update');
+  // Implicit startup writes require resolver-confirmed controller identity. Do
+  // this once, before any project installer, and let invalid registration fail
+  // closed before command parsing or agent dispatch. Explicit update commands
+  // retain their documented authority in every initialized workspace.
+  const mayAutoUpdateProjectAssets =
+    !isReadOnlyVersionRequest &&
+    (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
+  // Config/env bootstrap consumes the same decision; do not let a later config
+  // load reintroduce project writes after installers were correctly skipped.
+  process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = mayAutoUpdateProjectAssets ? '1' : '0';
 
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
@@ -1818,7 +1834,7 @@ async function main(): Promise<void> {
   // If --force-update flag is present, force reinstall all scripts and bypass Python dependency cache
 
   try {
-    if (!isReadOnlyVersionRequest) {
+    if (mayAutoUpdateProjectAssets) {
       const { ScriptInstaller } = await import('../utils/script-installer.js');
 
     if (isForceUpdate) {
@@ -1849,7 +1865,7 @@ async function main(): Promise<void> {
   // Auto-update agent skill files in .agents/skills/ and .claude/skills/
   // Skills are installed for ALL agents regardless of which subagent is selected
   try {
-    if (!isReadOnlyVersionRequest) {
+    if (mayAutoUpdateProjectAssets) {
       const { SkillInstaller } = await import('../utils/skill-installer.js');
 
     if (isForceUpdate) {

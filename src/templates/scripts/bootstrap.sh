@@ -133,10 +133,7 @@ ensure_python_environment() {
         return 1
     fi
 
-    # Make sure the script is executable
-    chmod +x "$INSTALL_SCRIPT"
-
-    # Run the install script
+    # Execute through bash; never chmod a tracked managed script during startup.
     if bash "$INSTALL_SCRIPT"; then
         log_success "Python environment setup completed successfully"
 
