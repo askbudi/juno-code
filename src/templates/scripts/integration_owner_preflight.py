@@ -201,7 +201,7 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
    child_root.rmdir()
   staging=Path(tempfile.mkdtemp(prefix=f".{child_root.name}.staging-",dir=child_root.parent));staging.chmod(0o700)
  capture_path=(staging/"capture.raw.json") if staging else receipt_path.with_suffix(".capture.raw.json")
- env={key:value for key,value in os.environ.items() if key!="JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"};env.update({"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)})
+ env={key:value for key,value in os.environ.items() if key not in {"JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","JUNO_WORKFLOW_DIRECT_OWNER"}};env.update({"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)})
  if receipt_path.exists():receipt_path.unlink()
  started_wall=datetime.datetime.now(datetime.timezone.utc);started=time.monotonic()
  try:review_run=subprocess.run(tokens,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
@@ -256,7 +256,7 @@ def main(argv:list[str]|None=None)->int:
  if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
  if not 0<a.validation_timeout<=86400:p.error("--validation-timeout must be between 0 and 86400 seconds")
  if a.output.resolve().exists():print(f"integration_owner_preflight: error: immutable receipt collision: {a.output.resolve()}",file=sys.stderr);return 2
- receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"running","task_id":a.task_id,"updates":[],"feature_tag":None};detaches=[]
+ receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"running","task_id":a.task_id,"producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"updates":[],"feature_tag":None};detaches=[]
  try:
   if len(a.candidate_receipt)!=len(a.repository):raise IntegrationError("one --candidate-receipt is required per --repository")
   candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
@@ -270,6 +270,8 @@ def main(argv:list[str]|None=None)->int:
   actual_required=effective in {"high","release"}
   receipt.update({"repositories":plan,"candidate_receipt_sha256":candidate_hash,"topology":topology,"declared_risk_tier":a.risk_tier,"effective_risk_tier":effective,"risk_escalation_reasons":reasons})
   if actual_required and (not a.actual_review_command or not a.actual_review_receipt):raise IntegrationError("actual_target semantic review required by effective risk tier")
+  workflow_owned=os.environ.get("JUNO_WORKFLOW_DIRECT_OWNER","").strip()=="integration_owner_preflight.v1"
+  if actual_required and workflow_owned and child_evidence_root is None:raise IntegrationError("workflow-owned high-risk integration requires JUNO_WORKFLOW_CHILD_EVIDENCE_DIR")
   resumed,prior_detaches=load_resume(a.resume_receipt,a.task_id,plan) if a.resume_receipt else (set(),[])
   detaches.extend(prior_detaches)
   if a.resume_receipt:receipt["resume_receipt_sha256"]=sha(a.resume_receipt)
@@ -309,7 +311,7 @@ def main(argv:list[str]|None=None)->int:
    if git(actual_cwd,"rev-parse","HEAD")!=integrated or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):raise IntegrationError("actual target validation checkout moved or dirty")
    validations=[]
    for command in a.validation_command:
-    validation_env={key:value for key,value in os.environ.items() if key!="JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"}
+    validation_env={key:value for key,value in os.environ.items() if key not in {"JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","JUNO_WORKFLOW_DIRECT_OWNER"}}
     r=subprocess.run(command,shell=True,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=a.validation_timeout,env=validation_env);validations.append({"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"exit_code":r.returncode})
     if r.returncode:raise IntegrationError("actual_target_validation_failed")
    actual_semantic="not_required_by_effective_tier";actual_hash=None

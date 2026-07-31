@@ -73,7 +73,7 @@ Do not convert Kanban, copy controller-private state into the task worktree, glo
 1. Produce an independent `pre_merge` PASS receipt bound to the migration manifest/PDR, complete diff, expected paths, commits, validations, and open-bug set.
 2. Run `integration_candidate.py plan` and `build`. Use the reviewed task tip directly only when the target remains its ancestor; otherwise build a both-parent candidate at the exact current target. Conflicts preserve evidence.
 3. Run deterministic candidate verification. Direct candidates reuse pre-merge review; composed candidates require a `candidate` PASS receipt. Target movement requires rebuild and re-review.
-4. Run `integration_owner_preflight.py integrate` with declared risk and explicit `--checked-out-target detach_same_sha`. It preserves active processes, performs expected-SHA CAS, and always validates the actual target; effective high/release also requires semantic actual review.
+4. Run `integration_owner_preflight.py integrate` as the directly executed owner in an argv-list workflow command (optionally prefixed by `python3`), with declared risk and explicit `--checked-out-target detach_same_sha`; never use a shell string or wrapper. It preserves active processes, performs expected-SHA CAS, and always validates the actual target; effective high/release also requires semantic actual review.
 5. For nested repositories, integrate child targets before the root and bind child candidate SHAs to root gitlinks. A later failure is truthful `partial_local_integration`; never rewind or claim success.
 6. Require an integrated receipt. High/release requires a local `juno-feature/<task>/<sha>` tag; low/medium tagging is opt-in. Report the local target separately from the remote.
 
