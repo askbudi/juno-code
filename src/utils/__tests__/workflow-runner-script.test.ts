@@ -214,10 +214,10 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).not.toContain('def resolve_continue_scope_context');
     expect(templateContent).toContain('continue-scope');
     expect(templateContent).toContain('--parent-pid');
-    expect(templateContent).toContain('integration_owner_preflight.py integrate');
+    expect(templateContent).toContain('directly executed argv-list');
     expect(templateContent).toContain('--candidate-receipt');
     expect(templateContent).toContain('--risk-tier');
-    expect(templateContent).toContain('--checked-out-target detach_same_sha');
+    expect(templateContent).toContain('detach_same_sha');
     expect(templateContent).toContain('feature_tag_policy');
     expect(templateContent).toContain('git_common_dir_and_target_ref');
     expect(templateContent).toContain('rebuild_and_rereview');
@@ -228,7 +228,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
 
   it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
     const workflowPath = path.join(testDir, 'local-integration.json');
-    const workflow = {
+    const workflow: any = {
       schema_version: 2,
       workflow_id: 'local_integration_contract',
       workflow_class: 'local_integration',
@@ -261,8 +261,21 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
         { id: 'candidate_review', command: 'true' },
         {
           id: 'integrate',
-          command:
-            'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --risk-tier high --checked-out-target detach_same_sha --actual-review-command review.sh --actual-review-receipt actual.json',
+          command: [
+            'python3',
+            '.juno_task/scripts/integration_owner_preflight.py',
+            'integrate',
+            '--candidate-receipt',
+            'candidate.json',
+            '--risk-tier',
+            'high',
+            '--checked-out-target',
+            'detach_same_sha',
+            '--actual-review-command',
+            'yy pi review',
+            '--actual-review-receipt',
+            'actual.json',
+          ],
         },
       ],
     };
@@ -283,10 +296,21 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const retired = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(retired.status).not.toBe(0);
-    expect(retired.stderr).toMatch(/eligible candidate.*target-ref CAS/);
+    expect(retired.stderr).toMatch(/directly executed argv-list/);
 
     workflow.steps[2].command =
-      'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --risk-tier high --checked-out-target detach_same_sha --actual-review-command review.sh --actual-review-receipt actual.json';
+      'python3 .juno_task/scripts/integration_owner_preflight.py integrate --candidate-receipt candidate.json --risk-tier high --checked-out-target detach_same_sha --actual-review-command "yy pi review" --actual-review-receipt actual.json';
+    await fs.writeJson(workflowPath, workflow);
+    const shellOwner = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(shellOwner.status).not.toBe(0);
+    expect(shellOwner.stderr).toMatch(/directly executed argv-list/);
+
+    workflow.steps[2].command = [
+      'python3', '.juno_task/scripts/integration_owner_preflight.py', 'integrate',
+      '--candidate-receipt', 'candidate.json', '--risk-tier', 'high',
+      '--checked-out-target', 'detach_same_sha', '--actual-review-command', 'yy pi review',
+      '--actual-review-receipt', 'actual.json',
+    ];
     workflow.schema_version = 1;
     await fs.writeJson(workflowPath, workflow);
     const legacySchema = runWorkflow(['lint', '--workflow', workflowPath]);

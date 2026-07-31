@@ -656,19 +656,22 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         integration_step = str(workflow.get("integration_step") or "").strip()
         if integration_step not in step_indexes:
             raise WorkflowError("local_integration workflow requires a valid integration_step")
-        integration_command_text = json.dumps(
-            next(step["command"] for step in steps if step["id"] == integration_step), ensure_ascii=False
-        )
-        required_integration_tokens = (
-            "integration_owner_preflight.py integrate",
-            "--candidate-receipt",
-            "--risk-tier",
-            "--checked-out-target detach_same_sha",
-        )
-        if any(token not in integration_command_text for token in required_integration_tokens):
+        integration_command = next(step["command"] for step in steps if step["id"] == integration_step)
+        integration_argv = command_argv(integration_command)
+        direct_owner = False
+        if isinstance(integration_command, list) and integration_argv:
+            script_index = 0
+            if Path(integration_argv[0]).name != "integration_owner_preflight.py":
+                if Path(integration_argv[0]).name in {"python", "python3"} and len(integration_argv) > 1 and Path(integration_argv[1]).name == "integration_owner_preflight.py":
+                    script_index = 1
+                else:
+                    script_index = -1
+            direct_owner = script_index >= 0 and len(integration_argv) > script_index + 1 and integration_argv[script_index + 1] == "integrate"
+        required_integration_tokens = ("--candidate-receipt", "--risk-tier", "--checked-out-target")
+        if not direct_owner or any(token not in integration_argv for token in required_integration_tokens) or "detach_same_sha" not in integration_argv:
             raise WorkflowError(
-                f"local_integration integration_step {integration_step} must drain an eligible candidate through "
-                "target-ref CAS and actual-target review"
+                f"local_integration integration_step {integration_step} must be a directly executed argv-list "
+                "integration_owner_preflight.py owner that drains an eligible candidate through target-ref CAS and actual-target review"
             )
         review_steps = [str(validation_ownership["pre_merge_review"]), str(validation_ownership["candidate_review"])]
         if any(step_indexes[step] >= step_indexes[integration_step] for step in review_steps):
@@ -2155,10 +2158,12 @@ def run_workflow(args: argparse.Namespace) -> int:
         env["JUNO_WORKFLOW_STEP_DIGEST"] = command_digest
         child_evidence_dir = out_dir / "child_steps" / step_slug
         env.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR", None)
+        env.pop("JUNO_WORKFLOW_DIRECT_OWNER", None)
         if command_owns_actual_review_child(command, project_root):
             if not args.dry_run and child_evidence_dir.exists():
                 shutil.rmtree(child_evidence_dir)
             env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
+            env["JUNO_WORKFLOW_DIRECT_OWNER"] = "integration_owner_preflight.v1"
         if live_log_path is not None:
             env["JUNO_WORKFLOW_LIVE_LOG_PATH"] = str(live_log_path)
         for receipt_id, receipt in context.get("receipts", {}).items():
