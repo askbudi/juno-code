@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
-const REQUIRED_PACKAGES = ['juno-kanban', 'requests', 'python-dotenv', 'slack_sdk'];
+const REQUIRED_PACKAGES = ['juno-kanban', 'requests', 'python-dotenv', 'slack_sdk', 'PyYAML'];
 
 describe('install_requirements.sh cached dependency flow', { timeout: 120_000 }, () => {
   let tempDir: string;
@@ -404,7 +404,7 @@ exit 2
     expect(combinedOutput).toContain('Upgrading packages: juno-kanban');
     expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf-8')).toBe('2.0.5');
     expect(await lineCount(metadataLogPath)).toBe(2);
-    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await lineCount(curlLogPath)).toBe(REQUIRED_PACKAGES.length);
     const cache = await fs.readFile(path.join(tempDir, '.juno_task', '.version_check_cache'), 'utf-8');
     expect(cache).toContain('format=2');
     expect(cache).toContain('policy.juno-kanban=>=2.0.5,<3.0.0');
@@ -440,7 +440,7 @@ exit 2
 
     await fs.writeFile(path.join(tempDir, '.juno_task', '.version_check_failure'), 'failed_at=0\n');
     expect(runScript().status).toBe(0);
-    expect(await lineCount(curlLogPath)).toBe(5);
+    expect(await lineCount(curlLogPath)).toBe(1 + REQUIRED_PACKAGES.length);
   });
 
   it('serializes concurrent stale invocations so only one performs PyPI requests', async () => {
@@ -459,7 +459,7 @@ exit 2
 
     const statuses = await Promise.all([runConcurrent(), runConcurrent()]);
     expect(statuses).toEqual([0, 0]);
-    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await lineCount(curlLogPath)).toBe(REQUIRED_PACKAGES.length);
     expect(await fs.pathExists(path.join(tempDir, '.juno_task', '.version_check_lock'))).toBe(false);
   });
 
@@ -477,7 +477,7 @@ exit 2
 
     const result = runScript();
     expect(result.status).toBe(0);
-    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await lineCount(curlLogPath)).toBe(REQUIRED_PACKAGES.length);
     expect(await fs.readFile(path.join(installedDir, 'juno-kanban'), 'utf8')).toBe('2.0.5');
     expect(await fs.readFile(cachePath, 'utf8')).toContain('policy.juno-kanban=>=2.0.5,<3.0.0');
   });
@@ -487,7 +487,7 @@ exit 2
     await writeSuccessCache(Math.floor(Date.now() / 1000), REQUIRED_PACKAGES.slice(0, 3));
 
     expect(runScript().status).toBe(0);
-    expect(await lineCount(curlLogPath)).toBe(4);
+    expect(await lineCount(curlLogPath)).toBe(REQUIRED_PACKAGES.length);
     const cache = await fs.readFile(path.join(tempDir, '.juno_task', '.version_check_cache'), 'utf-8');
     expect(cache).toContain(`packages=${REQUIRED_PACKAGES.join(',')}`);
   });

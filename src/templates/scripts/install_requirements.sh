@@ -13,7 +13,7 @@
 #    - If inside venv: installs into venv
 #    - If externally managed Python detected: uses pipx or creates temporary venv
 #    - If outside venv (non-managed): uses --system flag for system-wide installation
-# 6. Installs required packages: juno-kanban
+# 6. Installs the Juno CLI and script runtime dependencies, including PyYAML
 # 7. Reports if requirements are already satisfied
 #
 # Usage: ./install_requirements.sh
@@ -54,14 +54,15 @@ NC='\033[0m' # No Color
 # Required packages
 # Note: requests and python-dotenv are required by github.py
 # slack_sdk is required by Slack integration scripts (slack_fetch.py, slack_respond.py)
-REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk")
+# PyYAML is required for advanced workflow_runner contracts.
+REQUIRED_PACKAGES=("juno-kanban" "requests" "python-dotenv" "slack_sdk" "PyYAML")
 JUNO_KANBAN_MIN_VERSION="2.0.5"
 JUNO_KANBAN_COMPAT_RANGE=">=${JUNO_KANBAN_MIN_VERSION},<3.0.0"
 JUNO_KANBAN_REQUIREMENT="juno-kanban${JUNO_KANBAN_COMPAT_RANGE}"
 VERSION_CHECK_CACHE_FORMAT="2"
 
 # pipx is suitable only for app-style packages that expose console entry points.
-# Installing pure libraries (e.g. requests/python-dotenv/slack_sdk) via pipx fails
+# Installing pure libraries (e.g. requests/python-dotenv/slack_sdk/PyYAML) via pipx fails
 # with "No apps associated" and breaks requirements bootstrapping.
 PIPX_COMPATIBLE_PACKAGES=("juno-kanban")
 

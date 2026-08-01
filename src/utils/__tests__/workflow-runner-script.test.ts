@@ -366,6 +366,85 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     );
   });
 
+  it('provisions a missing controller venv and preserves activation, argv, and stdin across re-exec', async () => {
+    const controller = path.join(testDir, 'controller');
+    const scriptsDir = path.join(controller, '.juno_task', 'scripts');
+    const installerLog = path.join(testDir, 'installer.log');
+    await fs.ensureDir(scriptsDir);
+    await fs.writeFile(
+      path.join(scriptsDir, 'install_requirements.sh'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$PWD" == "$EXPECTED_CONTROLLER" ]]
+if IFS= read -r unexpected; then
+  echo "installer consumed stdin: $unexpected" >&2
+  exit 41
+fi
+mkdir -p .venv_juno/bin
+cp "$REAL_PYTHON" .venv_juno/bin/python
+chmod +x .venv_juno/bin/python
+printf '%s\n' "$PWD" > "$INSTALLER_LOG"
+`,
+      { mode: 0o755 },
+    );
+
+    const harness = `
+import importlib.machinery, importlib.util, json, os, pathlib, sys
+script, controller = sys.argv[1:]
+loader = importlib.machinery.SourceFileLoader("workflow_runner_under_test", script)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+os.environ["VIRTUAL_ENV"] = "/foreign/project/.venv_juno"
+os.environ["PYTHONHOME"] = "/foreign/python-home"
+os.environ["PATH"] = "/foreign/project/.venv_juno/bin:" + os.environ.get("PATH", "")
+module.sys.argv = [script, "lint", "--workflow", "-"]
+def capture_exec(executable, argv, env):
+    print(json.dumps({
+        "executable": executable,
+        "argv": argv,
+        "virtual_env": env.get("VIRTUAL_ENV"),
+        "path_head": env.get("PATH", "").split(os.pathsep)[0],
+        "has_pythonhome": "PYTHONHOME" in env,
+        "stdin": sys.stdin.read(),
+    }))
+    raise SystemExit(0)
+module.os.execve = capture_exec
+module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO_CONTROLLER_SOURCE": "test"})
+`;
+    const input = 'schema_version: 1\nworkflow_id: stdin-preserved\n';
+    const result = spawnSync('python3', ['-c', harness, templateScript, controller], {
+      cwd: repoRoot,
+      input,
+      encoding: 'utf8',
+      timeout: WORKFLOW_CHILD_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        EXPECTED_CONTROLLER: controller,
+        INSTALLER_LOG: installerLog,
+        REAL_PYTHON: spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim(),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}');
+    const canonicalController = await fs.realpath(controller);
+    const expectedVenv = path.join(canonicalController, '.venv_juno');
+    expect(await fs.readFile(installerLog, 'utf8')).toBe(`${canonicalController}\n`);
+    expect(payload.executable).toBe(path.join(expectedVenv, 'bin', 'python'));
+    expect(payload.argv).toEqual([
+      path.join(expectedVenv, 'bin', 'python'),
+      await fs.realpath(templateScript),
+      'lint',
+      '--workflow',
+      '-',
+    ]);
+    expect(payload.virtual_env).toBe(expectedVenv);
+    expect(payload.path_head).toBe(path.join(expectedVenv, 'bin'));
+    expect(payload.has_pythonhome).toBe(false);
+    expect(payload.stdin).toBe(input);
+  });
+
   it('allows workflow stale-runtime warnings to be disabled', async () => {
     const templateDir = path.join(testDir, 'templates');
     const staleScript = path.join(testDir, 'workflow_runner_skip.sh');
