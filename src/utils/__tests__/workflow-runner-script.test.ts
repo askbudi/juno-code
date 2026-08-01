@@ -376,6 +376,11 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       `#!/usr/bin/env bash
 set -euo pipefail
 [[ "$PWD" == "$EXPECTED_CONTROLLER" ]]
+[[ -z "${'${VIRTUAL_ENV:-}'}" ]]
+[[ -z "${'${CONDA_PREFIX:-}'}" ]]
+[[ -z "${'${CONDA_DEFAULT_ENV:-}'}" ]]
+[[ -z "${'${PYTHONHOME:-}'}" ]]
+[[ ":$PATH:" != *":/foreign/project/.venv_juno/bin:"* ]]
 if IFS= read -r unexpected; then
   echo "installer consumed stdin: $unexpected" >&2
   exit 41
@@ -396,8 +401,10 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 module = importlib.util.module_from_spec(spec)
 loader.exec_module(module)
 os.environ["VIRTUAL_ENV"] = "/foreign/project/.venv_juno"
+os.environ["CONDA_PREFIX"] = "/foreign/conda"
+os.environ["CONDA_DEFAULT_ENV"] = "foreign"
 os.environ["PYTHONHOME"] = "/foreign/python-home"
-os.environ["PATH"] = "/foreign/project/.venv_juno/bin:" + os.environ.get("PATH", "")
+os.environ["PATH"] = "/foreign/project/.venv_juno/bin:/foreign/conda/bin:" + os.environ.get("PATH", "")
 module.sys.argv = [script, "lint", "--workflow", "-"]
 def capture_exec(executable, argv, env):
     print(json.dumps({

@@ -75,8 +75,28 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
             raise WorkflowError(
                 f"controller Python environment is missing ({python}) and installer was not found ({installer})"
             )
+        installer_env = dict(os.environ)
+        installer_env.update(controller_env)
+        inherited_venv = installer_env.pop("VIRTUAL_ENV", "").strip()
+        inherited_conda = installer_env.pop("CONDA_PREFIX", "").strip()
+        installer_env.pop("CONDA_DEFAULT_ENV", None)
+        installer_env.pop("PYTHONHOME", None)
+        foreign_bins = {
+            str(Path(value).expanduser().resolve() / "bin")
+            for value in (inherited_venv, inherited_conda)
+            if value
+        }
+        installer_env["PATH"] = os.pathsep.join(
+            part
+            for part in installer_env.get("PATH", "").split(os.pathsep)
+            if not part or str(Path(part).expanduser().resolve()) not in foreign_bins
+        )
         completed = subprocess.run(
-            ["bash", str(installer)], cwd=root, stdin=subprocess.DEVNULL, check=False
+            ["bash", str(installer)],
+            cwd=root,
+            env=installer_env,
+            stdin=subprocess.DEVNULL,
+            check=False,
         )
         if completed.returncode != 0 or not python.is_file():
             raise WorkflowError(f"failed to create controller Python environment: {venv}")
