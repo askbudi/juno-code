@@ -63,6 +63,12 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('a merely compatible but older installed v2 is stale');
+    expect(
+      await fs.readFile(path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'), 'utf8'),
+    ).toContain('Never use bare `pi`');
+    expect(
+      await fs.readFile(path.join(projectDir, '.juno_task/wiki/parallel_runner_and_spec_review.md'), 'utf8'),
+    ).toContain('Reviewer launcher identity');
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);

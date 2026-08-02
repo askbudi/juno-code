@@ -9,6 +9,12 @@
       "macro": "clean_worktree"
     },
     {
+      "source": "prompts/review_commit_parallel_runner.md",
+      "destination": ".juno_task/prompts/review_commit_parallel_runner.md",
+      "installClass": "project",
+      "type": "prompt"
+    },
+    {
       "source": "prompts/new_task_workflow.md",
       "destination": ".juno_task/prompts/new_task_workflow.md",
       "installClass": "project",
@@ -39,6 +45,12 @@
     {
       "source": "wiki/git_worktree_lifecycle.md",
       "destination": ".juno_task/wiki/git_worktree_lifecycle.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/parallel_runner_and_spec_review.md",
+      "destination": ".juno_task/wiki/parallel_runner_and_spec_review.md",
       "installClass": "project",
       "type": "wiki"
     },
