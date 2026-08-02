@@ -294,13 +294,21 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const unapprovedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(unapprovedOverride.status).not.toBe(0);
-    expect(unapprovedOverride.stderr).toMatch(/provider_model_override_authorization/);
+    expect(unapprovedOverride.stderr).toMatch(/explicit override --provider is forbidden/);
 
-    workflow.steps[0].provider_model_override_authorization = 'owner-approved compatibility review';
+    workflow.steps[0].provider_model_override_authorization = 'self-asserted authorization must not bypass policy';
     await fs.writeJson(workflowPath, workflow);
-    const approvedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
-    expect(approvedOverride.status).toBe(0);
+    const claimedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(claimedOverride.status).not.toBe(0);
     delete workflow.steps[0].provider_model_override_authorization;
+    workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
+
+    workflow.steps[1].command = ['codex', 'Review through a direct provider CLI.'];
+    await fs.writeJson(workflowPath, workflow);
+    const directProviderReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(directProviderReview.status).not.toBe(0);
+    expect(directProviderReview.stderr).toMatch(/must launch through yy pi, not direct agent CLI codex/);
+    workflow.steps[1].command = 'true';
 
     workflow.steps[0].command = ['yy', 'codex', 'Review through the wrong Juno subagent.'];
     await fs.writeJson(workflowPath, workflow);
@@ -320,12 +328,12 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const unapprovedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(unapprovedActualOverride.status).not.toBe(0);
-    expect(unapprovedActualOverride.stderr).toMatch(/provider_model_override_authorization/);
+    expect(unapprovedActualOverride.stderr).toMatch(/explicit override --model is forbidden/);
 
-    workflow.steps[2].provider_model_override_authorization = 'owner-approved compatibility review';
+    workflow.steps[2].provider_model_override_authorization = 'self-asserted authorization must not bypass policy';
     await fs.writeJson(workflowPath, workflow);
-    const approvedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
-    expect(approvedActualOverride.status).toBe(0);
+    const claimedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(claimedActualOverride.status).not.toBe(0);
     delete workflow.steps[2].provider_model_override_authorization;
     workflow.steps[2].command[actualReviewIndex] = 'yy pi review';
 

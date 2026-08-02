@@ -714,11 +714,7 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         if "--actual-review-command" in integration_argv:
             actual_index = integration_argv.index("--actual-review-command")
             actual_command = integration_argv[actual_index + 1] if actual_index + 1 < len(integration_argv) else ""
-            integration_step_contract = next(step for step in steps if str(step["id"]) == integration_step)
-            actual_step = {
-                "command": actual_command,
-                "provider_model_override_authorization": integration_step_contract.get("provider_model_override_authorization"),
-            }
+            actual_step = {"command": actual_command}
             if not is_canonical_yy_pi_command(actual_command):
                 raise WorkflowError("actual_target_review must launch through yy pi")
             validate_pi_launch_policy(actual_step, context="actual_target_review")
@@ -847,9 +843,17 @@ def juno_subagent_name(command: Any) -> str | None:
     return None
 
 
-def is_bare_pi_command(command: Any) -> bool:
+DIRECT_AGENT_EXECUTABLES = {"pi", "codex", "claude", "gemini", "cursor"}
+
+
+def direct_agent_executable(command: Any) -> str | None:
     parts = command_argv(command)
-    return bool(parts) and Path(parts[0]).name == "pi"
+    executable = Path(parts[0]).name if parts else ""
+    return executable if executable in DIRECT_AGENT_EXECUTABLES else None
+
+
+def is_bare_pi_command(command: Any) -> bool:
+    return direct_agent_executable(command) == "pi"
 
 
 def is_canonical_yy_pi_command(command: Any) -> bool:
@@ -867,13 +871,15 @@ def pi_provider_model_override_tokens(command: Any) -> list[str]:
 
 def validate_pi_launch_policy(step: dict[str, Any], *, context: str) -> None:
     command = step.get("command")
-    if is_bare_pi_command(command):
+    direct = direct_agent_executable(command)
+    if direct == "pi":
         raise WorkflowError(f"{context} must launch through yy pi, not bare pi")
+    if direct:
+        raise WorkflowError(f"{context} must launch through yy pi, not direct agent CLI {direct}")
     overrides = pi_provider_model_override_tokens(command) if is_canonical_yy_pi_command(command) else []
-    if overrides and not str(step.get("provider_model_override_authorization") or "").strip():
+    if overrides:
         raise WorkflowError(
-            f"{context} must inherit the project provider/model; override {overrides[0]} requires "
-            "provider_model_override_authorization"
+            f"{context} must inherit the project provider/model; explicit override {overrides[0]} is forbidden"
         )
 
 
