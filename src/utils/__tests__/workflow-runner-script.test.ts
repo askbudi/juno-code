@@ -217,6 +217,19 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.ensureDir(fixtureBin);
     const pythonExecutable = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
     await fs.symlink(pythonExecutable, path.join(fixtureBin, 'python'));
+    const pythonVersion = spawnSync(pythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    await fs.writeFile(
+      path.join(workflowFixtureController, '.venv_juno', 'pyvenv.cfg'),
+      `home = ${path.dirname(await fs.realpath(pythonExecutable))}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
+    );
+    const yamlPackage = spawnSync(pythonExecutable, ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const managedSitePackages = path.join(workflowFixtureController, '.venv_juno', 'lib', `python${pythonVersion}`, 'site-packages');
+    await fs.ensureDir(managedSitePackages);
+    await fs.copy(yamlPackage, path.join(managedSitePackages, 'yaml'));
     spawnSync('git', ['init', '-b', 'fixture-controller'], {
       cwd: workflowFixtureController,
       encoding: 'utf8',
@@ -309,7 +322,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
 
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
-    expect(accepted.status).toBe(0);
+    expect(accepted.status, accepted.stderr).toBe(0);
 
     workflow.steps[0].command = ['pi', '-p', 'Review outside Juno.'];
     await fs.writeJson(workflowPath, workflow);
@@ -480,6 +493,78 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     );
   });
 
+  it('re-execs when ambient and managed Python resolve alike but only the managed prefix has PyYAML', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const venv = path.join(controller, '.venv_juno');
+    const python = path.join(venv, 'bin', 'python');
+    const pythonVersion = spawnSync(python, ['-c', 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    await fs.writeFile(
+      path.join(venv, 'pyvenv.cfg'),
+      `home = ${path.dirname(await fs.realpath(python))}\ninclude-system-site-packages = false\nversion = ${pythonVersion.slice(6)}\n`,
+    );
+
+    const input = `schema_version: 2
+workflow_id: managed_prefix_stdin
+steps:
+  - id: noop
+    command:
+      - printf
+      - |
+        stdin and argv preserved
+summary:
+  command:
+    - printf
+    - done
+`;
+    const result = spawnSync('python3', ['-S', templateScript, 'lint', '--workflow', '-'], {
+      cwd: controller,
+      input,
+      encoding: 'utf8',
+      timeout: WORKFLOW_CHILD_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: controller,
+        JUNO_WORKSPACE_ROLE: 'controller',
+        JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(controller, '.test-metadata'),
+        JUNO_DEBUG: 'true',
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(await fs.realpath(python)).toBe(await fs.realpath(spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim()));
+    expect(result.stderr).toContain(`[DEBUG] workflow_runner.sh Python runtime: ${python}`);
+    expect(result.stderr).toContain(`prefix: ${venv}`);
+    expect(result.stderr).toContain(`PyYAML:`);
+    expect(result.stdout).toContain('Workflow lint');
+    expect(result.stdout).toContain('OK: no issues found');
+  });
+
+  it('fails actionably rather than looping when re-exec does not establish the managed prefix', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const venv = path.join(controller, '.venv_juno');
+    const result = spawnSync('python3', ['-S', templateScript, '--help'], {
+      cwd: controller,
+      encoding: 'utf8',
+      timeout: WORKFLOW_CHILD_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: controller,
+        JUNO_WORKSPACE_ROLE: 'controller',
+        JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+        JUNO_WORKFLOW_PYTHON_REEXEC: venv,
+      },
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('controller Python re-exec did not establish the managed environment');
+    expect(result.stderr).toContain(`expected prefix ${venv}`);
+    expect(result.stderr).toContain('active prefix');
+    expect(result.stderr).toContain('PyYAML unavailable');
+  });
+
   it('provisions a missing controller venv and preserves activation, argv, and stdin across re-exec', async () => {
     const controller = path.join(testDir, 'provision-controller');
     const scriptsDir = path.join(controller, '.juno_task', 'scripts');
@@ -525,7 +610,9 @@ def capture_exec(executable, argv, env):
         "executable": executable,
         "argv": argv,
         "virtual_env": env.get("VIRTUAL_ENV"),
+        "path": env.get("PATH", ""),
         "path_head": env.get("PATH", "").split(os.pathsep)[0],
+        "has_conda": "CONDA_PREFIX" in env or "CONDA_DEFAULT_ENV" in env,
         "has_pythonhome": "PYTHONHOME" in env,
         "stdin": sys.stdin.read(),
     }))
@@ -544,6 +631,9 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
         EXPECTED_CONTROLLER: controller,
         INSTALLER_LOG: installerLog,
         REAL_PYTHON: spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim(),
+        PYTHONPATH: spawnSync('python3', ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent.parent)'], {
+          encoding: 'utf8',
+        }).stdout.trim(),
       },
     });
 
@@ -562,6 +652,9 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     ]);
     expect(payload.virtual_env).toBe(expectedVenv);
     expect(payload.path_head).toBe(path.join(expectedVenv, 'bin'));
+    expect(payload.path).not.toContain('/foreign/project/.venv_juno/bin');
+    expect(payload.path).not.toContain('/foreign/conda/bin');
+    expect(payload.has_conda).toBe(false);
     expect(payload.has_pythonhome).toBe(false);
     expect(payload.stdin).toBe(input);
   });
@@ -2601,7 +2694,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(manifest.status).toBe('success');
   });
 
-  it('fails explicitly when advanced YAML is used without Python PyYAML', async () => {
+  it('does not weaken advanced YAML contracts when the ambient interpreter omits site-packages', async () => {
     const workflowPath = path.join(testDir, 'advanced-without-pyyaml.yaml');
     await fs.writeFile(
       workflowPath,
@@ -2628,6 +2721,6 @@ steps:
       },
     });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('advanced workflow contracts require Python PyYAML or JSON input');
+    expect(result.stderr).toContain('required_fields must include producer_step_digest');
   });
 });

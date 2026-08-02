@@ -69,56 +69,133 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
     root = Path(controller_env["JUNO_TASK_ROOT"]).resolve()
     venv = root / ".venv_juno"
     python = venv / "bin" / "python"
-    if not python.is_file():
-        installer = root / ".juno_task" / "scripts" / "install_requirements.sh"
+    installer = root / ".juno_task" / "scripts" / "install_requirements.sh"
+    reexec_key = "JUNO_WORKFLOW_PYTHON_REEXEC"
+
+    installer_env = dict(os.environ)
+    installer_env.update(controller_env)
+    inherited_venv = installer_env.pop("VIRTUAL_ENV", "").strip()
+    inherited_conda = installer_env.pop("CONDA_PREFIX", "").strip()
+    installer_env.pop("CONDA_DEFAULT_ENV", None)
+    installer_env.pop("PYTHONHOME", None)
+    foreign_bins = {
+        str(Path(value).expanduser().resolve() / "bin")
+        for value in (inherited_venv, inherited_conda)
+        if value
+    }
+    installer_env["PATH"] = os.pathsep.join(
+        part
+        for part in installer_env.get("PATH", "").split(os.pathsep)
+        if not part or str(Path(part).expanduser().resolve()) not in foreign_bins
+    )
+
+    def provision() -> None:
         if not installer.is_file():
             raise WorkflowError(
-                f"controller Python environment is missing ({python}) and installer was not found ({installer})"
+                f"controller Python environment is incomplete ({python}) and installer was not found ({installer})"
             )
-        installer_env = dict(os.environ)
-        installer_env.update(controller_env)
-        inherited_venv = installer_env.pop("VIRTUAL_ENV", "").strip()
-        inherited_conda = installer_env.pop("CONDA_PREFIX", "").strip()
-        installer_env.pop("CONDA_DEFAULT_ENV", None)
-        installer_env.pop("PYTHONHOME", None)
-        foreign_bins = {
-            str(Path(value).expanduser().resolve() / "bin")
-            for value in (inherited_venv, inherited_conda)
-            if value
-        }
-        installer_env["PATH"] = os.pathsep.join(
-            part
-            for part in installer_env.get("PATH", "").split(os.pathsep)
-            if not part or str(Path(part).expanduser().resolve()) not in foreign_bins
-        )
-        completed = subprocess.run(
-            ["bash", str(installer)],
+        try:
+            completed = subprocess.run(
+                ["bash", str(installer)],
+                cwd=root,
+                env=installer_env,
+                stdin=subprocess.DEVNULL,
+                check=False,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise WorkflowError(f"timed out provisioning controller Python environment after 300s: {venv}") from exc
+        if completed.returncode != 0 or not python.is_file():
+            raise WorkflowError(f"failed to create controller Python environment: {venv}")
+
+    if not python.is_file():
+        provision()
+
+    capability_probe = "import yaml; assert callable(getattr(yaml, 'safe_load', None))"
+    try:
+        probe = subprocess.run(
+            [str(python), "-c", capability_probe],
             cwd=root,
             env=installer_env,
             stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
             check=False,
+            timeout=30,
         )
-        if completed.returncode != 0 or not python.is_file():
-            raise WorkflowError(f"failed to create controller Python environment: {venv}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorkflowError(f"could not verify PyYAML in controller Python environment ({python}): {exc}") from exc
+    if probe.returncode != 0:
+        provision()
+        try:
+            probe = subprocess.run(
+                [str(python), "-c", capability_probe],
+                cwd=root,
+                env=installer_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkflowError(f"could not verify PyYAML after provisioning ({python}): {exc}") from exc
+        if probe.returncode != 0:
+            detail = probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else "PyYAML import failed"
+            raise WorkflowError(f"controller Python environment lacks required PyYAML capability ({python}): {detail}")
 
     env = dict(os.environ)
     env.update(controller_env)
     env["VIRTUAL_ENV"] = str(venv)
     env["PATH"] = os.pathsep.join(
-        [str(venv / "bin"), *[part for part in env.get("PATH", "").split(os.pathsep) if part != str(venv / "bin")]]
+        [
+            str(venv / "bin"),
+            *[
+                part
+                for part in env.get("PATH", "").split(os.pathsep)
+                if part != str(venv / "bin")
+                and (not part or str(Path(part).expanduser().resolve()) not in foreign_bins)
+            ],
+        ]
     )
+    env.pop("CONDA_PREFIX", None)
+    env.pop("CONDA_DEFAULT_ENV", None)
     env.pop("PYTHONHOME", None)
-    os.environ.clear()
-    os.environ.update(env)
 
     try:
-        already_selected = Path(sys.executable).resolve() == python.resolve()
+        active_prefix = Path(sys.prefix).resolve()
+        prefix_selected = active_prefix == venv.resolve()
     except OSError:
-        already_selected = False
-    if os.environ.get("JUNO_DEBUG", "false") == "true":
-        print(f"[DEBUG] workflow_runner.sh Python runtime: {python}", file=sys.stderr)
-    if not already_selected:
+        active_prefix = Path(sys.prefix)
+        prefix_selected = False
+    yaml_origin = "unavailable"
+    capability_selected = False
+    try:
+        import yaml
+        capability_selected = callable(getattr(yaml, "safe_load", None))
+        yaml_origin = str(getattr(yaml, "__file__", None) or "built-in")
+    except (ImportError, OSError) as exc:
+        yaml_origin = f"unavailable ({exc})"
+
+    if not prefix_selected or not capability_selected:
+        if env.get(reexec_key) == str(venv):
+            raise WorkflowError(
+                "controller Python re-exec did not establish the managed environment: "
+                f"expected prefix {venv}, active prefix {active_prefix}, PyYAML {yaml_origin}"
+            )
+        env[reexec_key] = str(venv)
         os.execve(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+    env.pop(reexec_key, None)
+    os.environ.clear()
+    os.environ.update(env)
+    if os.environ.get("JUNO_DEBUG", "false") == "true":
+        print(
+            f"[DEBUG] workflow_runner.sh Python runtime: {python}; prefix: {active_prefix}; PyYAML: {yaml_origin}",
+            file=sys.stderr,
+        )
 
 
 def _display_path(path: Path) -> str:
