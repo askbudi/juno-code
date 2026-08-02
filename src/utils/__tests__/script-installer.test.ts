@@ -13,11 +13,24 @@ import { ManagedProjectAssets } from '../managed-project-assets.js';
 
 describe('ScriptInstaller', () => {
   let testDir: string;
+  let fixtureController: string;
 
   beforeEach(async () => {
-    // Create temporary test directory
-    testDir = path.join(os.tmpdir(), `script-installer-test-${Date.now()}`);
-    await fs.ensureDir(testDir);
+    // Create temporary test directory and a strict fixture-owned controller so
+    // runner finalization can never discover the repository hosting the suite.
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'script-installer-test-'));
+    fixtureController = path.join(testDir, 'controller');
+    const scripts = path.join(fixtureController, '.juno_task', 'scripts');
+    const bin = path.join(fixtureController, '.venv_juno', 'bin');
+    await fs.ensureDir(scripts);
+    await fs.ensureDir(bin);
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
+      path.join(scripts, 'controller_resolver.py'),
+    );
+    const python = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    await fs.symlink(python, path.join(bin, 'python'));
+    spawnSync('git', ['init', '-b', 'fixture-controller'], { cwd: fixtureController, encoding: 'utf8' });
   });
 
   afterEach(async () => {
@@ -443,20 +456,20 @@ describe('ScriptInstaller', () => {
       );
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
-      const repositoryRoot = path.resolve(process.cwd(), '..');
-      const currentBranch = spawnSync('git', ['-C', repositoryRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(
         'python3',
         [scriptPath, '--commands-file', commandsFile, '--parallel', '2', '--output-dir', outputDir],
         {
-          cwd: testDir,
+          cwd: fixtureController,
           encoding: 'utf8',
           timeout: 30000,
           env: {
             ...process.env,
-            JUNO_TASK_ROOT: repositoryRoot,
+            JUNO_TASK_ROOT: fixtureController,
             JUNO_WORKSPACE_ROLE: 'controller',
-            JUNO_CONTROLLER_BRANCH: currentBranch,
+            JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+            JUNO_CONTROLLER_BRANCH: 'fixture-controller',
+            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
           },
         },
       );
@@ -493,20 +506,20 @@ describe('ScriptInstaller', () => {
       );
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
-      const repositoryRoot = path.resolve(process.cwd(), '..');
-      const currentBranch = spawnSync('git', ['-C', repositoryRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(
         'python3',
         [scriptPath, '--commands-file', commandsFile, '--parallel', '1'],
         {
-          cwd: testDir,
+          cwd: fixtureController,
           encoding: 'utf8',
           timeout: 30000,
           env: {
             ...process.env,
-            JUNO_TASK_ROOT: repositoryRoot,
+            JUNO_TASK_ROOT: fixtureController,
             JUNO_WORKSPACE_ROLE: 'controller',
-            JUNO_CONTROLLER_BRANCH: currentBranch,
+            JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+            JUNO_CONTROLLER_BRANCH: 'fixture-controller',
+            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
           },
         },
       );

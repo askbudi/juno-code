@@ -9,6 +9,7 @@ export interface GitMutationSnapshot {
   head: string;
   indexSha256: string;
   indexEntriesSha256: string;
+  indexPathMetadata: Record<string, string>;
   status: string;
   statusPaths: string[];
   trackedFiles: Record<string, string>;
@@ -33,6 +34,23 @@ export function captureGitMutationSnapshot(identity: string, candidateRoot: stri
   const indexPath = path.resolve(root, indexPathText);
   const trackedFiles: Record<string, string> = {};
   const names = git(root, ['ls-files', '-z']).split('\0').filter(Boolean).sort();
+  const indexPathMetadata: Record<string, string> = {};
+  const debug = git(root, ['ls-files', '--debug', '-z']);
+  let debugOffset = 0;
+  for (const [index, name] of names.entries()) {
+    const marker = `${name}\0`;
+    if (!debug.startsWith(marker, debugOffset)) {
+      throw new Error(`Juno test mutation sentinel could not map index metadata for ${name}`);
+    }
+    const metadataStart = debugOffset + marker.length;
+    const nextMarker = index + 1 < names.length ? `\n${names[index + 1]}\0` : undefined;
+    const metadataEnd = nextMarker ? debug.indexOf(nextMarker, metadataStart) + 1 : debug.length;
+    if (nextMarker && metadataEnd === 0) {
+      throw new Error(`Juno test mutation sentinel could not find index metadata boundary after ${name}`);
+    }
+    indexPathMetadata[name] = sha256(debug.slice(metadataStart, metadataEnd));
+    debugOffset = metadataEnd;
+  }
   for (const name of names) {
     const file = path.join(root, name);
     // A missing tracked path is part of the protected state too.
@@ -46,6 +64,7 @@ export function captureGitMutationSnapshot(identity: string, candidateRoot: stri
     head: git(root, ['rev-parse', 'HEAD']).trim(),
     indexSha256: fs.existsSync(indexPath) ? sha256(fs.readFileSync(indexPath)) : '<missing>',
     indexEntriesSha256: sha256(git(root, ['ls-files', '--stage', '-z'])),
+    indexPathMetadata,
     status: git(root, ['status', '--porcelain=v2', '--untracked-files=all']),
     statusPaths: [
       ...git(root, ['diff', '--name-only', '-z', 'HEAD']).split('\0'),
@@ -61,6 +80,12 @@ export function changedGitMutationPaths(before: GitMutationSnapshot, after: GitM
   if (before.head !== after.head) changed.add('<HEAD>');
   if (before.indexSha256 !== after.indexSha256 || before.indexEntriesSha256 !== after.indexEntriesSha256) {
     changed.add('<index>');
+    for (const name of new Set([
+      ...Object.keys(before.indexPathMetadata),
+      ...Object.keys(after.indexPathMetadata),
+    ])) {
+      if (before.indexPathMetadata[name] !== after.indexPathMetadata[name]) changed.add(name);
+    }
   }
   if (before.status !== after.status) {
     changed.add('<status>');

@@ -8,6 +8,8 @@ const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanba
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const policyTemplate = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
 const kanbanSource = path.resolve(process.cwd(), '..', 'juno_kanban', 'src');
+// This package-boundary test requires an explicitly hydrated sibling checkout.
+const crossProjectIntegrationIt = process.env.JUNO_CODE_CROSS_PROJECT_KANBAN_INTEGRATION === '1' ? it : it.skip;
 
 describe('cross-project Kanban wrapper routing', () => {
   let sandbox = '';
@@ -33,7 +35,7 @@ describe('cross-project Kanban wrapper routing', () => {
     await fs.chmod(path.join(bin, 'juno-kanban'), 0o755);
   }
 
-  it('uses the destination wrapper and venv while preserving exact stdin', async () => {
+  crossProjectIntegrationIt('uses the destination wrapper and venv while preserving exact stdin', async () => {
     sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'cross-project-kanban-'));
     const source = path.join(sandbox, 'source project');
     const destination = path.join(sandbox, 'destination project');

@@ -38,6 +38,31 @@ describe('full-suite Git mutation sentinel', () => {
     expect(() => assertGitMutationSnapshotsUnchanged([before], [after])).not.toThrow();
   });
 
+  it('names the exact path when only index stat bytes change', async () => {
+    const root = await repositoryFixture();
+    const protectedPath = path.join(root, 'protected', 'managed-script.sh');
+    const before = captureGitMutationSnapshot('fixture-controller', root);
+
+    // Refresh only this entry's cached stat data. Content, HEAD, logical index
+    // entries, and porcelain status remain byte-for-byte equivalent.
+    const future = new Date(Date.now() + 5_000);
+    await fs.utimes(protectedPath, future, future);
+    git(root, 'update-index', '--refresh');
+    const after = captureGitMutationSnapshot('fixture-controller', root);
+
+    expect(after.status).toBe(before.status);
+    expect(after.trackedFiles).toEqual(before.trackedFiles);
+    expect(after.indexEntriesSha256).toBe(before.indexEntriesSha256);
+    expect(after.indexSha256).not.toBe(before.indexSha256);
+    expect(() => assertGitMutationSnapshotsUnchanged([before], [after])).toThrowError(
+      expect.objectContaining({
+        message: expect.stringContaining(
+          `fixture-controller (${await fs.realpath(root)}): <index>, protected/managed-script.sh`,
+        ),
+      }),
+    );
+  });
+
   it('refuses an intentional mutation with the exact identity and paths without restoring evidence', async () => {
     const root = await repositoryFixture();
     const protectedPath = path.join(root, 'protected', 'managed-script.sh');

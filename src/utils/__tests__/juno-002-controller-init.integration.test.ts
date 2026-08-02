@@ -9,6 +9,7 @@ const codeRoot = path.resolve(process.cwd());
 const repositoryRoot = path.resolve(codeRoot, '..');
 const tool = path.join(codeRoot, 'scripts/juno-002-source-toolchain.sh');
 const tempDirs: string[] = [];
+const realGitIntegrationIt = process.env.JUNO_CODE_REAL_GIT_INTEGRATION === '1' ? it : it.skip;
 
 function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
   return spawnSync(command, args, {
@@ -53,7 +54,7 @@ afterEach(async () => {
 });
 
 describe('isolated Juno 2 controller initialization', () => {
-  it('source install -> alias init -> linked wrapper mutates only controller Kanban 2 storage', { timeout: 300_000 }, async () => {
+  realGitIntegrationIt('source install -> alias init -> linked wrapper mutates only controller Kanban 2 storage', { timeout: 300_000 }, async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-002-controller-init-'));
     tempDirs.push(temp);
     const state = path.join(temp, 'toolchain');
