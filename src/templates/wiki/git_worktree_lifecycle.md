@@ -47,6 +47,8 @@ Every candidate validation writes immutable stdout/stderr sidecars and hash-boun
 
 `verify` reuses the immutable `pre_merge` review when the candidate SHA equals the reviewed tip and records `candidate_semantic_review_source=pre_merge` plus `candidate_bytes_changed_by_composition=false`. A both-parent/composed candidate requires a separate exact `candidate` PASS receipt. Target movement means rebuild **and re-review**.
 
+If Git preserves an unresolved submodule/gitlink conflict, do not guess a child SHA inside that failed candidate. Preserve its evidence, create a fresh task successor from the exact current root target, reapply only independently reviewed owned blobs/commits, bind the exact reviewed child candidate gitlink, and obtain a fresh pre-merge review of the successor before planning a direct candidate. Record the successor as a reviewed replacement rather than claiming ancestry from the superseded root tip. Cleanup remains ancestry-gated; preserve superseded non-ancestor worktrees instead of forcing removal.
+
 ## Target-ref channels
 
 `integration_owner_preflight.py integrate` is the only local target mutation authority. It accepts `--risk-tier low|medium|high|release` (omission defaults high) and explicit `--checked-out-target detach_same_sha` (omission refuses an attached target). Each repository argument is:
