@@ -308,7 +308,24 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const directProviderReview = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(directProviderReview.status).not.toBe(0);
     expect(directProviderReview.stderr).toMatch(/must launch through yy pi, not direct agent CLI codex/);
+
+    workflow.steps[1].command = ['env', 'REVIEW_MODE=1', 'codex', 'Wrapped provider review.'];
+    await fs.writeJson(workflowPath, workflow);
+    const wrappedProviderReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(wrappedProviderReview.status).not.toBe(0);
+    expect(wrappedProviderReview.stderr).toMatch(/must launch through yy pi, not direct agent CLI codex/);
+
     workflow.steps[1].command = 'true';
+    workflow.steps[0].command = ['env', 'yy', 'pi', '--provider', 'openai-codex', 'Wrapped override.'];
+    await fs.writeJson(workflowPath, workflow);
+    const wrappedProviderOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(wrappedProviderOverride.status).not.toBe(0);
+    expect(wrappedProviderOverride.stderr).toMatch(/explicit override --provider is forbidden/);
+
+    workflow.steps[0].command = ['env', '-i', 'yy', 'pi', 'Review with defaults.'];
+    await fs.writeJson(workflowPath, workflow);
+    const wrappedDefault = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(wrappedDefault.status).toBe(0);
 
     workflow.steps[0].command = ['yy', 'codex', 'Review through the wrong Juno subagent.'];
     await fs.writeJson(workflowPath, workflow);

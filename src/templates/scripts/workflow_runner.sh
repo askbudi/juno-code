@@ -706,10 +706,11 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             raise WorkflowError("medium/high/release pre_merge_review must be a dedicated yy pi agent step")
         for review_step_id in review_steps:
             review_step = next(step for step in steps if str(step["id"]) == review_step_id)
-            review_argv = command_argv(review_step.get("command"))
-            if detect_juno_command(review_step.get("command")) and not is_canonical_yy_pi_command(review_step.get("command")):
+            review_argv = effective_command_argv(review_step.get("command"))
+            candidate_noop = review_step_id == review_steps[1] and review_argv == ["true"]
+            if not candidate_noop and not is_canonical_yy_pi_command(review_step.get("command")):
                 raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
-            if detect_juno_command(review_step.get("command")) and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
+            if not candidate_noop and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
                 raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
         if "--actual-review-command" in integration_argv:
             actual_index = integration_argv.index("--actual-review-command")
@@ -844,10 +845,46 @@ def juno_subagent_name(command: Any) -> str | None:
 
 
 DIRECT_AGENT_EXECUTABLES = {"pi", "codex", "claude", "gemini", "cursor"}
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
+
+
+def effective_command_argv(command: Any) -> list[str]:
+    parts = command_argv(command)
+    for _ in range(4):
+        if not parts or Path(parts[0]).name != "env":
+            return parts
+        index = 1
+        while index < len(parts):
+            part = parts[index]
+            if part == "--":
+                parts = parts[index + 1:]
+                break
+            if part in {"-i", "--ignore-environment"} or ENV_ASSIGNMENT_RE.fullmatch(part):
+                index += 1
+                continue
+            if part in {"-u", "--unset"}:
+                index += 2
+                continue
+            if part.startswith("--unset="):
+                index += 1
+                continue
+            if part in {"-S", "--split-string"} and index + 1 < len(parts):
+                try:
+                    parts = shlex.split(parts[index + 1], posix=True) + parts[index + 2:]
+                except ValueError:
+                    return []
+                break
+            if part.startswith("-"):
+                return []
+            parts = parts[index:]
+            break
+        else:
+            return []
+    return []
 
 
 def direct_agent_executable(command: Any) -> str | None:
-    parts = command_argv(command)
+    parts = effective_command_argv(command)
     executable = Path(parts[0]).name if parts else ""
     return executable if executable in DIRECT_AGENT_EXECUTABLES else None
 
@@ -857,12 +894,12 @@ def is_bare_pi_command(command: Any) -> bool:
 
 
 def is_canonical_yy_pi_command(command: Any) -> bool:
-    parts = command_argv(command)
-    return bool(parts) and Path(parts[0]).name == "yy" and juno_subagent_name(command) == "pi"
+    parts = effective_command_argv(command)
+    return bool(parts) and Path(parts[0]).name == "yy" and juno_subagent_name(parts) == "pi"
 
 
 def pi_provider_model_override_tokens(command: Any) -> list[str]:
-    parts = command_argv(command)
+    parts = effective_command_argv(command)
     return [
         part for part in parts
         if part in {"--provider", "-m", "--model"} or part.startswith(("--provider=", "--model="))
