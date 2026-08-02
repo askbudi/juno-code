@@ -315,7 +315,25 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(wrappedProviderReview.status).not.toBe(0);
     expect(wrappedProviderReview.stderr).toMatch(/must launch through yy pi, not direct agent CLI codex/);
 
+    workflow.steps[1].command = ['env', '-P', '/usr/local/bin:/usr/bin', 'codex', 'Path-wrapped provider review.'];
+    await fs.writeJson(workflowPath, workflow);
+    const pathWrappedProviderReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(pathWrappedProviderReview.status).not.toBe(0);
+    expect(pathWrappedProviderReview.stderr).toMatch(/must launch through yy pi, not direct agent CLI codex/);
+
     workflow.steps[1].command = 'true';
+    workflow.steps[0].command = ['env', '-P', '/usr/local/bin:/usr/bin', 'yy', 'pi', '--model', ':sol', 'Path-wrapped override.'];
+    await fs.writeJson(workflowPath, workflow);
+    const pathWrappedModelOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(pathWrappedModelOverride.status).not.toBe(0);
+    expect(pathWrappedModelOverride.stderr).toMatch(/explicit override --model is forbidden/);
+
+    workflow.steps[0].command = ['env', '--unknown-env-option', 'yy', 'pi', 'Ambiguous wrapper.'];
+    await fs.writeJson(workflowPath, workflow);
+    const unknownEnvWrapper = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(unknownEnvWrapper.status).not.toBe(0);
+    expect(unknownEnvWrapper.stderr).toMatch(/unsupported env wrapper/);
+
     workflow.steps[0].command = ['env', 'yy', 'pi', '--provider', 'openai-codex', 'Wrapped override.'];
     await fs.writeJson(workflowPath, workflow);
     const wrappedProviderOverride = runWorkflow(['lint', '--workflow', workflowPath]);

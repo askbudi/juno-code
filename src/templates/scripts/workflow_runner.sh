@@ -862,10 +862,10 @@ def effective_command_argv(command: Any) -> list[str]:
             if part in {"-i", "--ignore-environment"} or ENV_ASSIGNMENT_RE.fullmatch(part):
                 index += 1
                 continue
-            if part in {"-u", "--unset"}:
+            if part in {"-u", "--unset", "-P", "-C", "--chdir"}:
                 index += 2
                 continue
-            if part.startswith("--unset="):
+            if part.startswith(("--unset=", "--chdir=")):
                 index += 1
                 continue
             if part in {"-S", "--split-string"} and index + 1 < len(parts):
@@ -908,6 +908,10 @@ def pi_provider_model_override_tokens(command: Any) -> list[str]:
 
 def validate_pi_launch_policy(step: dict[str, Any], *, context: str) -> None:
     command = step.get("command")
+    raw_parts = command_argv(command)
+    effective_parts = effective_command_argv(command)
+    if raw_parts and Path(raw_parts[0]).name == "env" and not effective_parts:
+        raise WorkflowError(f"{context} uses an unsupported env wrapper; launch directly through yy pi")
     direct = direct_agent_executable(command)
     if direct == "pi":
         raise WorkflowError(f"{context} must launch through yy pi, not bare pi")
