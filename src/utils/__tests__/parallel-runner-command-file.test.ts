@@ -7,13 +7,22 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/parallel_runner.sh');
+let parallelFixtureController: string | undefined;
 
 function runParallelScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  if (!parallelFixtureController) throw new Error('parallel subprocess fixture controller is not initialized');
   return spawnSync('python3', [scriptPath, ...args], {
     input,
-    cwd: repoRoot,
+    cwd: parallelFixtureController,
     encoding: 'utf8',
-    env: env ? { ...process.env, ...env } : process.env,
+    env: {
+      ...process.env,
+      JUNO_TASK_ROOT: parallelFixtureController,
+      JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(parallelFixtureController, '.test-metadata'),
+      ...env,
+    },
   });
 }
 
@@ -26,9 +35,22 @@ describe('parallel_runner.sh command file foundation', () => {
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'parallel-runner-commands-test-'));
+    parallelFixtureController = path.join(testDir, 'controller');
+    const scripts = path.join(parallelFixtureController, '.juno_task', 'scripts');
+    const bin = path.join(parallelFixtureController, '.venv_juno', 'bin');
+    await fs.ensureDir(scripts);
+    await fs.ensureDir(bin);
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
+      path.join(scripts, 'controller_resolver.py'),
+    );
+    const python = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    await fs.symlink(python, path.join(bin, 'python'));
+    spawnSync('git', ['init', '-b', 'fixture-controller'], { cwd: parallelFixtureController, encoding: 'utf8' });
   });
 
   afterEach(async () => {
+    parallelFixtureController = undefined;
     await fs.remove(testDir);
   });
 
@@ -209,9 +231,13 @@ mod.run_tmux_mode = fake_run
 mod.main()
 print(json.dumps(captured))
 `;
-    const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf-8' });
+    const result = spawnSync('python3', ['-c', code], {
+      cwd: parallelFixtureController,
+      encoding: 'utf-8',
+      env: { ...process.env, JUNO_TASK_ROOT: parallelFixtureController },
+    });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout.trim().split('\n').at(-1)!)).toEqual({ attach: false });
   });
 
@@ -379,16 +405,13 @@ commands:
       }],
     });
 
-    const currentBranch = spawnSync('git', ['-C', repoRoot, 'branch', '--show-current'], { encoding: 'utf8' }).stdout.trim();
+    const controller = await fs.realpath(parallelFixtureController!);
     const result = runParallelScript(templateScript, ['--commands-file', target], undefined, {
-      JUNO_TASK_ROOT: repoRoot,
-      JUNO_WORKSPACE_ROLE: 'controller',
-      JUNO_WORKSPACE_ENFORCEMENT: 'off',
-      JUNO_CONTROLLER_BRANCH: currentBranch,
+      JUNO_CONTROLLER_BRANCH: 'fixture-controller',
       JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
     });
     expect(result.status).toBe(0);
-    expect(await fs.readJson(evidence)).toEqual({ task_root: repoRoot, metadata });
+    expect(await fs.readJson(evidence)).toEqual({ task_root: controller, metadata });
   });
 
   it('validates ids, uniqueness, command shape, env shape, and timeout in lint mode', async () => {

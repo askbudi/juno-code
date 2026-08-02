@@ -9,6 +9,7 @@ const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner.sh');
 const WORKFLOW_CHILD_TIMEOUT_MS = 30_000;
+let workflowFixtureController: string | undefined;
 
 // This process-heavy file runs real Python/Git subprocesses. Keep the larger
 // budget file-scoped while every child remains independently bounded above.
@@ -16,12 +17,22 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 });
 afterAll(() => vi.resetConfig());
 
 function runWorkflowScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
+  if (!workflowFixtureController) throw new Error('workflow subprocess fixture controller is not initialized');
   return spawnSync('python3', [scriptPath, ...args], {
     input,
-    cwd: repoRoot,
+    // Never let a default workflow subprocess discover the real task/controller
+    // checkout. Dedicated integration fixtures still use real Git explicitly.
+    cwd: workflowFixtureController,
     encoding: 'utf8',
     timeout: WORKFLOW_CHILD_TIMEOUT_MS,
-    env: env ? { ...process.env, ...env } : process.env,
+    env: {
+      ...process.env,
+      JUNO_TASK_ROOT: workflowFixtureController,
+      JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController, '.test-metadata'),
+      ...env,
+    },
   });
 }
 
@@ -195,9 +206,25 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-runner-test-'));
+    workflowFixtureController = path.join(testDir, 'controller');
+    const fixtureScripts = path.join(workflowFixtureController, '.juno_task', 'scripts');
+    await fs.ensureDir(fixtureScripts);
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
+      path.join(fixtureScripts, 'controller_resolver.py'),
+    );
+    const fixtureBin = path.join(workflowFixtureController, '.venv_juno', 'bin');
+    await fs.ensureDir(fixtureBin);
+    const pythonExecutable = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    await fs.symlink(pythonExecutable, path.join(fixtureBin, 'python'));
+    spawnSync('git', ['init', '-b', 'fixture-controller'], {
+      cwd: workflowFixtureController,
+      encoding: 'utf8',
+    });
   }, 30_000);
 
   afterEach(async () => {
+    workflowFixtureController = undefined;
     await fs.remove(testDir);
   }, 30_000);
 
@@ -428,7 +455,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain('workflow_runner.sh: warning: this runtime script differs from the installed juno-code template.');
     expect(result.stderr).toContain(`installed template: ${await fs.realpath(path.join(templateDir, 'workflow_runner.sh'))}`);
     expect(result.stderr).toContain('update with: yy scripts update --force');
@@ -448,14 +475,13 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     });
 
     expect(result.status).toBe(0);
-    const controllerRoot = process.env.JUNO_TASK_ROOT ? path.resolve(process.env.JUNO_TASK_ROOT) : repoRoot;
     expect(result.stderr).toContain(
-      `[DEBUG] workflow_runner.sh Python runtime: ${path.join(controllerRoot, '.venv_juno', 'bin', 'python')}`,
+      `[DEBUG] workflow_runner.sh Python runtime: ${path.join(await fs.realpath(workflowFixtureController!), '.venv_juno', 'bin', 'python')}`,
     );
   });
 
   it('provisions a missing controller venv and preserves activation, argv, and stdin across re-exec', async () => {
-    const controller = path.join(testDir, 'controller');
+    const controller = path.join(testDir, 'provision-controller');
     const scriptsDir = path.join(controller, '.juno_task', 'scripts');
     const installerLog = path.join(testDir, 'installer.log');
     await fs.ensureDir(scriptsDir);
@@ -1037,7 +1063,7 @@ summary: |
     expect(result.stdout).toContain('status=success exit=0 stdout=hello override');
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.workflow_id).toBe('context-run');
-    expect(manifest.repo_root).toBe(repoRoot);
+    expect(manifest.repo_root).toBe(await fs.realpath(workflowFixtureController!));
     expect(await fs.pathExists(path.join(outDir, '001_first.stdout.txt'))).toBe(true);
     expect(await fs.pathExists(path.join(outDir, 'summary.stdout.txt'))).toBe(true);
     expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toContain('workflow=context-run');
@@ -2488,7 +2514,15 @@ exec "$(dirname "$0")/yy" pi --live "$@"
       steps: [{ id: 'active', command: ['bash', '-lc', 'sleep 30'] }],
     });
     const child = spawn('python3', [templateScript, '--workflow', workflowPath, '--project-root', testDir,
-      '--out-dir', outDir, '--print-output', 'none'], { cwd: repoRoot, env: process.env, stdio: 'ignore' });
+      '--out-dir', outDir, '--print-output', 'none'], {
+      cwd: workflowFixtureController,
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: workflowFixtureController,
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
+      },
+      stdio: 'ignore',
+    });
     const activePath = path.join(outDir, 'active_step.json');
     for (let index = 0; index < 100 && !(await fs.pathExists(activePath)); index += 1) {
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2585,8 +2619,13 @@ steps:
     );
 
     const result = spawnSync('python3', ['-S', templateScript, 'lint', '--workflow', workflowPath], {
-      cwd: repoRoot,
+      cwd: workflowFixtureController,
       encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: workflowFixtureController,
+        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
+      },
     });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('advanced workflow contracts require Python PyYAML or JSON input');

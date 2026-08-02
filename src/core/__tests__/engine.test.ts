@@ -113,7 +113,7 @@ const createMockConfig = (): JunoTaskConfig => ({
   onHourlyLimit: 'raise',
   interactive: false,
   headlessMode: true,
-  workingDirectory: process.cwd(),
+  workingDirectory: process.env.JUNO_TASK_ROOT || process.cwd(),
   sessionDirectory: '/tmp/juno-test-sessions',
   skipHooks: true,
 });
@@ -124,7 +124,7 @@ function makeRequest(overrides?: Partial<ExecutionRequest>): ExecutionRequest {
     instruction: 'Test instruction',
     subagent: 'claude',
     backend: 'shell',
-    workingDirectory: process.cwd(),
+    workingDirectory: process.env.JUNO_TASK_ROOT || process.cwd(),
     maxIterations: 1,
     ...overrides,
   } as ExecutionRequest;

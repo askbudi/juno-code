@@ -30,9 +30,14 @@ describe('target-ref integration channel', () => {
     expect(source).not.toContain('other_write_capable_processes');
   });
 
-  it('passes the real Git candidate/CAS/tag/stale-ref suite', () => {
-    execFileSync('python3', [
-      path.join(root, '.juno_task/scripts/tests/test_integration_concurrency.py'),
-    ], { stdio: 'pipe' });
-  });
+  it.skipIf(process.env.JUNO_CODE_REAL_GIT_INTEGRATION !== '1')(
+    'passes the opt-in real Git candidate/CAS/tag/stale-ref suite',
+    () => {
+      // The suite sentinel protects external checkouts; this explicit opt-in
+      // retains unmocked lifecycle coverage for a dedicated isolated run.
+      execFileSync('python3', [
+        path.join(root, '.juno_task/scripts/tests/test_integration_concurrency.py'),
+      ], { stdio: 'pipe' });
+    },
+  );
 });

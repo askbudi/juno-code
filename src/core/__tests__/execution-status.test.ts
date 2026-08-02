@@ -52,7 +52,7 @@ const createConfig = (): JunoTaskConfig => ({
   execution: {
     maxIterations: 10,
     timeout: 300000,
-    workingDirectory: process.cwd(),
+    workingDirectory: process.env.JUNO_TASK_ROOT || process.cwd(),
     parallelism: 1,
   },
   ai: { model: 'test', temperature: 0.1, maxTokens: 4096 },
@@ -63,7 +63,7 @@ const createRequest = (overrides: Partial<ExecutionRequest> = {}): ExecutionRequ
   requestId: 'test-req-1',
   instruction: 'Test instruction',
   subagent: 'pi',
-  workingDirectory: process.cwd(),
+  workingDirectory: process.env.JUNO_TASK_ROOT || process.cwd(),
   maxIterations: 1,
   ...overrides,
 });
