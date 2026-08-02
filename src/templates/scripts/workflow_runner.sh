@@ -64,6 +64,49 @@ def sanitize_current_process_environment() -> None:
     os.environ.update(environment)
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _managed_site_package_paths(venv: Path) -> list[Path]:
+    """Return active import paths that are actual site-package paths inside venv."""
+    managed: list[Path] = []
+    for value in sys.path:
+        if not value:
+            continue
+        try:
+            candidate = Path(value).resolve()
+        except OSError:
+            continue
+        if candidate.name in {"site-packages", "dist-packages"} and _is_within(candidate, venv):
+            managed.append(candidate)
+    return managed
+
+
+def _managed_yaml_module() -> tuple[Any | None, str]:
+    """Use PyYAML only when it originates in the active managed environment."""
+    try:
+        active_venv = Path(sys.prefix).resolve()
+        managed_sites = _managed_site_package_paths(active_venv)
+        import yaml  # type: ignore
+
+        origin_value = getattr(yaml, "__file__", None)
+        if not origin_value:
+            return None, "unavailable (module has no file origin)"
+        origin = Path(origin_value).resolve()
+        if not any(_is_within(origin, site) for site in managed_sites):
+            return None, f"unavailable (unmanaged module origin {origin})"
+        if not callable(getattr(yaml, "safe_load", None)):
+            return None, f"unavailable (safe_load missing at {origin})"
+        return yaml, str(origin)
+    except Exception as exc:
+        return None, f"unavailable ({exc})"
+
+
 def ensure_controller_python_environment(controller_env: dict[str, str]) -> None:
     """Run under the controller's .venv_juno, matching the Kanban launcher contract."""
     root = Path(controller_env["JUNO_TASK_ROOT"]).resolve()
@@ -74,10 +117,12 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
 
     installer_env = dict(os.environ)
     installer_env.update(controller_env)
+    inherited_pythonpath = bool(installer_env.get("PYTHONPATH", "").strip())
     inherited_venv = installer_env.pop("VIRTUAL_ENV", "").strip()
     inherited_conda = installer_env.pop("CONDA_PREFIX", "").strip()
     installer_env.pop("CONDA_DEFAULT_ENV", None)
     installer_env.pop("PYTHONHOME", None)
+    installer_env.pop("PYTHONPATH", None)
     foreign_bins = {
         str(Path(value).expanduser().resolve() / "bin")
         for value in (inherited_venv, inherited_conda)
@@ -111,41 +156,6 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
     if not python.is_file():
         provision()
 
-    capability_probe = "import yaml; assert callable(getattr(yaml, 'safe_load', None))"
-    try:
-        probe = subprocess.run(
-            [str(python), "-c", capability_probe],
-            cwd=root,
-            env=installer_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise WorkflowError(f"could not verify PyYAML in controller Python environment ({python}): {exc}") from exc
-    if probe.returncode != 0:
-        provision()
-        try:
-            probe = subprocess.run(
-                [str(python), "-c", capability_probe],
-                cwd=root,
-                env=installer_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise WorkflowError(f"could not verify PyYAML after provisioning ({python}): {exc}") from exc
-        if probe.returncode != 0:
-            detail = probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else "PyYAML import failed"
-            raise WorkflowError(f"controller Python environment lacks required PyYAML capability ({python}): {detail}")
-
     env = dict(os.environ)
     env.update(controller_env)
     env["VIRTUAL_ENV"] = str(venv)
@@ -163,6 +173,7 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
     env.pop("CONDA_PREFIX", None)
     env.pop("CONDA_DEFAULT_ENV", None)
     env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
 
     try:
         active_prefix = Path(sys.prefix).resolve()
@@ -170,30 +181,29 @@ def ensure_controller_python_environment(controller_env: dict[str, str]) -> None
     except OSError:
         active_prefix = Path(sys.prefix)
         prefix_selected = False
-    yaml_origin = "unavailable"
-    capability_selected = False
-    try:
-        import yaml
-        capability_selected = callable(getattr(yaml, "safe_load", None))
-        yaml_origin = str(getattr(yaml, "__file__", None) or "built-in")
-    except (ImportError, OSError) as exc:
-        yaml_origin = f"unavailable ({exc})"
+    managed_sites = _managed_site_package_paths(venv)
+    # A selected prefix is insufficient when PYTHONPATH already changed this
+    # process's sys.path; only a clean re-exec can remove those import entries.
+    environment_selected = prefix_selected and bool(managed_sites) and not inherited_pythonpath
+    reexec_marker = f"{os.getpid()}:{venv}"
 
-    if not prefix_selected or not capability_selected:
-        if env.get(reexec_key) == str(venv):
+    if not environment_selected:
+        if env.get(reexec_key) == reexec_marker:
             raise WorkflowError(
                 "controller Python re-exec did not establish the managed environment: "
-                f"expected prefix {venv}, active prefix {active_prefix}, PyYAML {yaml_origin}"
+                f"expected prefix {venv}, active prefix {active_prefix}, managed site-packages {managed_sites or 'missing'}"
             )
-        env[reexec_key] = str(venv)
+        env[reexec_key] = reexec_marker
         os.execve(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
 
+    _, yaml_origin = _managed_yaml_module()
     env.pop(reexec_key, None)
     os.environ.clear()
     os.environ.update(env)
     if os.environ.get("JUNO_DEBUG", "false") == "true":
         print(
-            f"[DEBUG] workflow_runner.sh Python runtime: {python}; prefix: {active_prefix}; PyYAML: {yaml_origin}",
+            f"[DEBUG] workflow_runner.sh Python runtime: {python}; prefix: {active_prefix}; "
+            f"site-packages: {managed_sites}; PyYAML: {yaml_origin}",
             file=sys.stderr,
         )
 
@@ -496,17 +506,15 @@ def parse_yaml_like(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    try:
-        import yaml  # type: ignore
-
-        loaded = yaml.safe_load(text)
-        if not isinstance(loaded, dict):
-            raise WorkflowError("workflow must be a YAML mapping")
-        return loaded
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover - exact PyYAML error varies
-        raise WorkflowError(f"failed to parse workflow YAML: {exc}") from exc
+    yaml, _ = _managed_yaml_module()
+    if yaml is not None:
+        try:
+            loaded = yaml.safe_load(text)
+            if not isinstance(loaded, dict):
+                raise WorkflowError("workflow must be a YAML mapping")
+            return loaded
+        except Exception as exc:  # pragma: no cover - exact PyYAML error varies
+            raise WorkflowError(f"failed to parse workflow YAML: {exc}") from exc
 
     advanced_yaml_keys = sorted(
         set(

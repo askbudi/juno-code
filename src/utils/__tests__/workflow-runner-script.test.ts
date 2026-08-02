@@ -542,7 +542,7 @@ summary:
     expect(result.stdout).toContain('OK: no issues found');
   });
 
-  it('fails actionably rather than looping when re-exec does not establish the managed prefix', async () => {
+  it('ignores an inherited plain-target re-exec marker', async () => {
     const controller = await fs.realpath(workflowFixtureController!);
     const venv = path.join(controller, '.venv_juno');
     const result = spawnSync('python3', ['-S', templateScript, '--help'], {
@@ -558,11 +558,35 @@ summary:
       },
     });
 
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Run an ordered YAML workflow');
+  });
+
+  it('fails actionably after a genuine same-process re-exec does not establish the managed prefix', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const venv = path.join(controller, '.venv_juno');
+    const python = path.join(venv, 'bin', 'python');
+    const ambientPython = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    await fs.remove(python);
+    await fs.writeFile(python, `#!/usr/bin/env bash\nexec ${JSON.stringify(ambientPython)} -S "$@"\n`, { mode: 0o755 });
+
+    const result = spawnSync('python3', ['-S', templateScript, '--help'], {
+      cwd: controller,
+      encoding: 'utf8',
+      timeout: WORKFLOW_CHILD_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: controller,
+        JUNO_WORKSPACE_ROLE: 'controller',
+        JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      },
+    });
+
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('controller Python re-exec did not establish the managed environment');
     expect(result.stderr).toContain(`expected prefix ${venv}`);
     expect(result.stderr).toContain('active prefix');
-    expect(result.stderr).toContain('PyYAML unavailable');
+    expect(result.stderr).toContain('managed site-packages');
   });
 
   it('provisions a missing controller venv and preserves activation, argv, and stdin across re-exec', async () => {
@@ -579,6 +603,7 @@ set -euo pipefail
 [[ -z "${'${CONDA_PREFIX:-}'}" ]]
 [[ -z "${'${CONDA_DEFAULT_ENV:-}'}" ]]
 [[ -z "${'${PYTHONHOME:-}'}" ]]
+[[ -z "${'${PYTHONPATH:-}'}" ]]
 [[ ":$PATH:" != *":/foreign/project/.venv_juno/bin:"* ]]
 if IFS= read -r unexpected; then
   echo "installer consumed stdin: $unexpected" >&2
@@ -614,6 +639,7 @@ def capture_exec(executable, argv, env):
         "path_head": env.get("PATH", "").split(os.pathsep)[0],
         "has_conda": "CONDA_PREFIX" in env or "CONDA_DEFAULT_ENV" in env,
         "has_pythonhome": "PYTHONHOME" in env,
+        "has_pythonpath": "PYTHONPATH" in env,
         "stdin": sys.stdin.read(),
     }))
     raise SystemExit(0)
@@ -656,7 +682,35 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     expect(payload.path).not.toContain('/foreign/conda/bin');
     expect(payload.has_conda).toBe(false);
     expect(payload.has_pythonhome).toBe(false);
+    expect(payload.has_pythonpath).toBe(false);
     expect(payload.stdin).toBe(input);
+  });
+
+  it('does not let hostile PYTHONPATH modules satisfy or replace managed PyYAML', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const hostilePath = path.join(testDir, 'hostile-pythonpath');
+    await fs.ensureDir(hostilePath);
+    await fs.writeFile(path.join(hostilePath, 'yaml.py'), 'raise RuntimeError("hostile yaml imported")\n');
+    const workflowPath = path.join(testDir, 'hostile-pythonpath.yaml');
+    await fs.writeFile(workflowPath, 'schema_version: 1\nworkflow_id: hostile_path\nsteps:\n  - id: noop\n    command: true\n');
+
+    const managedPython = path.join(controller, '.venv_juno', 'bin', 'python');
+    const result = spawnSync(managedPython, [templateScript, 'lint', '--workflow', workflowPath], {
+      cwd: controller,
+      encoding: 'utf8',
+      timeout: WORKFLOW_CHILD_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        PYTHONPATH: hostilePath,
+        JUNO_TASK_ROOT: controller,
+        JUNO_WORKSPACE_ROLE: 'controller',
+        JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('OK: no issues found');
+    expect(result.stderr).not.toContain('hostile yaml imported');
   });
 
   it('allows workflow stale-runtime warnings to be disabled', async () => {
@@ -723,7 +777,11 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     expect(doctorHelp.stdout).toContain('workflow_runner.sh dr');
   });
 
-  it('fallback-parses literal blocks in command and summary.command lists', async () => {
+  it('fallback-parses literal blocks in command and summary.command lists without PyYAML', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const managedLib = path.join(controller, '.venv_juno', 'lib');
+    const yamlDirectories = (await fs.readdir(managedLib)).map((version) => path.join(managedLib, version, 'site-packages', 'yaml'));
+    await Promise.all(yamlDirectories.map((directory) => fs.remove(directory)));
     const workflowPath = path.join(testDir, 'literal-command-lists.yaml');
     await fs.writeFile(
       workflowPath,
@@ -745,9 +803,12 @@ summary:
 `,
     );
 
-    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+    const hostilePath = path.join(testDir, 'fallback-hostile-pythonpath');
+    await fs.ensureDir(hostilePath);
+    await fs.writeFile(path.join(hostilePath, 'yaml.py'), 'raise RuntimeError("fallback imported hostile yaml")\n');
+    const result = runWorkflow(['lint', '--workflow', workflowPath], undefined, { PYTHONPATH: hostilePath });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('OK: no issues found');
   });
 
