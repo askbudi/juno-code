@@ -48,13 +48,16 @@ describe('Juno 2 shipped guidance', () => {
   it('keeps aliases, compatibility, controller routing, and rollback boundaries aligned', async () => {
     const repositoryRoot = path.resolve(process.cwd(), '..');
     const read = (relative: string) => fs.readFile(path.join(repositoryRoot, relative), 'utf8');
-    const [rootReadme, codeReadme, policyText, newTask, runWorkflow, cleanWorktree] = await Promise.all([
+    const [rootReadme, codeReadme, policyText, newTask, runWorkflow, cleanWorktree, parallelReview, reviewPrompt, agents] = await Promise.all([
       read('README.md'),
       read('juno-code/README.md'),
       read('juno-code/src/templates/scripts/juno-toolchain-policy.sh'),
       read('.juno_task/prompts/new_task_workflow.md'),
       read('.juno_task/prompts/run_workflow.md'),
       read('.juno_task/prompts/clean_worktree.md'),
+      read('.juno_task/wiki/parallel_runner_and_spec_review.md'),
+      read('.juno_task/prompts/review_commit_parallel_runner.md'),
+      read('AGENTS.md'),
     ]);
 
     for (const documentation of [rootReadme, codeReadme]) {
@@ -73,6 +76,11 @@ describe('Juno 2 shipped guidance', () => {
       expect(prompt).toContain('controller');
       expect(prompt).toContain('TASK_ROOT');
       expect(prompt).toMatch(/never (switches|silently switch)|never clean or switch/i);
+    }
+    for (const guidance of [cleanWorktree, parallelReview, reviewPrompt, agents]) {
+      expect(guidance).toContain('yy pi');
+      expect(guidance).toMatch(/bare `pi`|bare pi/i);
+      expect(guidance).toMatch(/provider\/model|provider and model/);
     }
 
     const skillPaths = [

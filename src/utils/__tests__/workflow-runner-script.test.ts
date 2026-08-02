@@ -284,6 +284,51 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(accepted.status).toBe(0);
 
+    workflow.steps[0].command = ['pi', '-p', 'Review outside Juno.'];
+    await fs.writeJson(workflowPath, workflow);
+    const barePi = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(barePi.status).not.toBe(0);
+    expect(barePi.stderr).toMatch(/must launch through yy pi, not bare pi/);
+
+    workflow.steps[0].command = ['yy', 'pi', '--provider', 'openai-codex', 'Review with override.'];
+    await fs.writeJson(workflowPath, workflow);
+    const unapprovedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(unapprovedOverride.status).not.toBe(0);
+    expect(unapprovedOverride.stderr).toMatch(/provider_model_override_authorization/);
+
+    workflow.steps[0].provider_model_override_authorization = 'owner-approved compatibility review';
+    await fs.writeJson(workflowPath, workflow);
+    const approvedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(approvedOverride.status).toBe(0);
+    delete workflow.steps[0].provider_model_override_authorization;
+
+    workflow.steps[0].command = ['yy', 'codex', 'Review through the wrong Juno subagent.'];
+    await fs.writeJson(workflowPath, workflow);
+    const nonPiReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(nonPiReview.status).not.toBe(0);
+    expect(nonPiReview.stderr).toMatch(/dedicated yy pi agent step/);
+
+    workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
+    const actualReviewIndex = workflow.steps[2].command.indexOf('--actual-review-command') + 1;
+    workflow.steps[2].command[actualReviewIndex] = 'pi -p "Review outside Juno"';
+    await fs.writeJson(workflowPath, workflow);
+    const bareActualReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(bareActualReview.status).not.toBe(0);
+    expect(bareActualReview.stderr).toMatch(/actual_target_review must launch through yy pi/);
+
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi --model :sol "Review with override"';
+    await fs.writeJson(workflowPath, workflow);
+    const unapprovedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(unapprovedActualOverride.status).not.toBe(0);
+    expect(unapprovedActualOverride.stderr).toMatch(/provider_model_override_authorization/);
+
+    workflow.steps[2].provider_model_override_authorization = 'owner-approved compatibility review';
+    await fs.writeJson(workflowPath, workflow);
+    const approvedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(approvedActualOverride.status).toBe(0);
+    delete workflow.steps[2].provider_model_override_authorization;
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi review';
+
     workflow.steps[0].command = ['yy', 'pi', '--resume', 'old-session', 'Review again.'];
     await fs.writeJson(workflowPath, workflow);
     const resumedReview = runWorkflow(['lint', '--workflow', workflowPath]);

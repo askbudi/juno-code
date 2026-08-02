@@ -627,6 +627,11 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
     if continue_from_step == "summary" and not summary_has_command:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
+    for step in steps:
+        validate_pi_launch_policy(step, context=f"step {step['id']}")
+    if summary_has_command:
+        validate_pi_launch_policy(summary, context="summary")
+
     receipts = normalize_receipt_contracts(workflow)
     for receipt_id, contract in receipts.items():
         producer = contract["producer"]
@@ -697,13 +702,26 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         if any(step_indexes[step] >= step_indexes[integration_step] for step in review_steps):
             raise WorkflowError("pre_merge_review and candidate_review must precede integration_step")
         pre_merge_step = next(step for step in steps if str(step["id"]) == review_steps[0])
-        if risk_tier in {"medium", "high", "release"} and not detect_juno_command(pre_merge_step.get("command")):
-            raise WorkflowError("medium/high/release pre_merge_review must be a dedicated yy/juno-code agent step")
+        if risk_tier in {"medium", "high", "release"} and not is_canonical_yy_pi_command(pre_merge_step.get("command")):
+            raise WorkflowError("medium/high/release pre_merge_review must be a dedicated yy pi agent step")
         for review_step_id in review_steps:
             review_step = next(step for step in steps if str(step["id"]) == review_step_id)
             review_argv = command_argv(review_step.get("command"))
+            if detect_juno_command(review_step.get("command")) and not is_canonical_yy_pi_command(review_step.get("command")):
+                raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
             if detect_juno_command(review_step.get("command")) and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
                 raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
+        if "--actual-review-command" in integration_argv:
+            actual_index = integration_argv.index("--actual-review-command")
+            actual_command = integration_argv[actual_index + 1] if actual_index + 1 < len(integration_argv) else ""
+            integration_step_contract = next(step for step in steps if str(step["id"]) == integration_step)
+            actual_step = {
+                "command": actual_command,
+                "provider_model_override_authorization": integration_step_contract.get("provider_model_override_authorization"),
+            }
+            if not is_canonical_yy_pi_command(actual_command):
+                raise WorkflowError("actual_target_review must launch through yy pi")
+            validate_pi_launch_policy(actual_step, context="actual_target_review")
         if str(validation_ownership["actual_target_review"]) != integration_step:
             raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
         integration_receipts = [
@@ -827,6 +845,36 @@ def juno_subagent_name(command: Any) -> str | None:
             return part.split("=", 1)[1] or None
         return part if part in {"pi", "claude", "codex", "gemini", "cursor"} else None
     return None
+
+
+def is_bare_pi_command(command: Any) -> bool:
+    parts = command_argv(command)
+    return bool(parts) and Path(parts[0]).name == "pi"
+
+
+def is_canonical_yy_pi_command(command: Any) -> bool:
+    parts = command_argv(command)
+    return bool(parts) and Path(parts[0]).name == "yy" and juno_subagent_name(command) == "pi"
+
+
+def pi_provider_model_override_tokens(command: Any) -> list[str]:
+    parts = command_argv(command)
+    return [
+        part for part in parts
+        if part in {"--provider", "-m", "--model"} or part.startswith(("--provider=", "--model="))
+    ]
+
+
+def validate_pi_launch_policy(step: dict[str, Any], *, context: str) -> None:
+    command = step.get("command")
+    if is_bare_pi_command(command):
+        raise WorkflowError(f"{context} must launch through yy pi, not bare pi")
+    overrides = pi_provider_model_override_tokens(command) if is_canonical_yy_pi_command(command) else []
+    if overrides and not str(step.get("provider_model_override_authorization") or "").strip():
+        raise WorkflowError(
+            f"{context} must inherit the project provider/model; override {overrides[0]} requires "
+            "provider_model_override_authorization"
+        )
 
 
 def extract_model_from_command(command: Any) -> str | None:
