@@ -32,9 +32,11 @@ export function captureGitMutationSnapshot(identity: string, candidateRoot: stri
   const root = fs.realpathSync(git(candidateRoot, ['rev-parse', '--show-toplevel']).trim());
   const indexPathText = git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index']).trim();
   const indexPath = path.resolve(root, indexPathText);
-  const trackedFiles: Record<string, string> = {};
+  // Null-prototype maps preserve every valid Git path, including JavaScript
+  // object metakeys such as `__proto__`, as ordinary own properties.
+  const trackedFiles = Object.create(null) as Record<string, string>;
   const names = git(root, ['ls-files', '-z']).split('\0').filter(Boolean).sort();
-  const indexPathMetadata: Record<string, string> = {};
+  const indexPathMetadata = Object.create(null) as Record<string, string>;
   const debug = git(root, ['ls-files', '--debug', '-z']);
   let debugOffset = 0;
   for (const [index, name] of names.entries()) {
