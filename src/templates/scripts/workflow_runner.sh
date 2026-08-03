@@ -1640,6 +1640,38 @@ def canonical_admitted_task_root(declared_path: str) -> Path:
     return canonical
 
 
+def current_persisted_task_authority(root: Path, admitted: dict[str, Any]) -> dict[str, Any]:
+    """Re-resolve checkout authority at the final generated-write boundary."""
+    resolver = Path(__file__).resolve().with_name("controller_resolver.py")
+    if not resolver.is_file():
+        raise WorkflowError("generated edit dispatch authority resolver is unavailable")
+    resolver_env = dict(os.environ)
+    # The runner exports its orchestration workspace role. It is assertion-only
+    # and must neither reject nor confer the admitted checkout's current role.
+    resolver_env.pop("JUNO_WORKSPACE_ROLE", None)
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(resolver), "--cwd", str(root), "--operation", "product-edit", "--format", "json"],
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, check=False,
+            timeout=10, env=resolver_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorkflowError("generated edit dispatch persisted task authority recheck failed") from exc
+    try:
+        current = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise WorkflowError("generated edit dispatch persisted task authority recheck returned invalid evidence") from exc
+    if completed.returncode != 0 or not isinstance(current, dict) or current.get("valid") is not True:
+        raise WorkflowError("generated edit dispatch persisted task authority is invalid or unregistered")
+    authority_fields = (
+        "current_root", "role", "role_source", "role_base", "task_id", "manifest_identity",
+        "create_receipt_sha256", "expected_paths_sha256", "role_authority",
+    )
+    if current.get("role") != "task" or any(current.get(key) != admitted.get(key) for key in authority_fields):
+        raise WorkflowError("generated edit dispatch persisted task role/manifest authority changed")
+    return current
+
+
 def generated_dispatch_root(
     step: dict[str, Any], receipts: dict[str, dict[str, Any]], context: dict[str, Any],
     project_root: Path, completed_steps: dict[str, Any],
@@ -1664,6 +1696,22 @@ def generated_dispatch_root(
     root = canonical_admitted_task_root(str(current.get("root") or ""))
     if workspace.get("role") != "task" or workspace.get("current_root") != str(root):
         raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: workspace/path binding mismatch")
+    authority = current_persisted_task_authority(root, workspace)
+    expected_paths_hash = hashlib.sha256(json.dumps(
+        payload.get("expected_paths") or [], sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict):
+        manifest = {}
+    try:
+        manifest_path = Path(str(manifest["path"])).resolve(strict=True)
+        manifest_hash = file_sha256(manifest_path) if manifest_path.is_file() else ""
+    except (KeyError, OSError):
+        manifest_hash = ""
+    if (authority.get("expected_paths_sha256") != expected_paths_hash
+            or manifest_hash != str(manifest.get("sha256") or "")
+            or authority.get("create_receipt_sha256") != manifest_hash):
+        raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: persisted task manifest evidence changed")
     head = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"], stdin=subprocess.DEVNULL,
         text=True, capture_output=True, check=False, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
