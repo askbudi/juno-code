@@ -23,6 +23,7 @@ For an authorized local-integration workflow, declare exactly:
 ```yaml
 schema_version: 2
 workflow_class: local_integration
+orchestration_workspace: controller # or exact absolute external orchestration root
 risk_tier: <low|medium|high|release>
 integration_policy:
   queue: automatic_after_review_pass
@@ -33,9 +34,15 @@ validation_ownership:
   pre_merge_review: <step-id>
   candidate_review: <step-id>
   actual_target_review: <integration-step-id>
+steps:
+  - id: <candidate-review-step-id>
+    candidate_read_only:
+      path: "{{ candidate_path }}" # exact canonical Git worktree top-level
+      sha: "{{ candidate_sha }}"   # full 40-character SHA
+    command: [yy, pi, "Review exact candidate {{ candidate_sha }} at {{ candidate_path }} without mutation."]
 ```
 
-Every typed receipt in this workflow explicitly lists `producer_step_digest` in `required_fields`; producers write the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
+The candidate declaration is mandatory for every non-noop candidate review. Its command runs with the exact external orchestration workspace as cwd; aliases, nested candidate paths, and candidate-root cwd are invalid. Every typed receipt in this workflow explicitly lists `producer_step_digest` in `required_fields`; producers write the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
 
 MUST NOT:
 

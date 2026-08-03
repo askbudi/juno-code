@@ -474,26 +474,37 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
 
   it('guards a real linked candidate from an external review cwd and preserves exact mutation evidence', async () => {
     const repository = path.join(testDir, 'review-repository');
-    const candidate = path.join(testDir, 'immutable-candidate');
+    const candidateConfigured = path.join(testDir, 'immutable-candidate');
     await fs.ensureDir(repository);
     spawnSync('git', ['init', '-q'], { cwd: repository });
     await fs.writeFile(path.join(repository, 'product.txt'), 'original\n');
     spawnSync('git', ['add', '.'], { cwd: repository });
     spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], { cwd: repository });
-    expect(spawnSync('git', ['worktree', 'add', '--detach', candidate, 'HEAD'], { cwd: repository }).status).toBe(0);
+    expect(spawnSync('git', ['worktree', 'add', '--detach', candidateConfigured, 'HEAD'], { cwd: repository }).status).toBe(0);
+    const candidate = await fs.realpath(candidateConfigured);
     const candidateSha = spawnSync('git', ['-C', candidate, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
     const indexPath = spawnSync('git', ['-C', candidate, 'rev-parse', '--path-format=absolute', '--git-path', 'index'], { encoding: 'utf8' }).stdout.trim();
     const indexBefore = await fs.readFile(indexPath);
     const reviewerBin = path.join(testDir, 'review-bin');
     await fs.ensureDir(reviewerBin);
     await fs.writeFile(path.join(reviewerBin, 'yy'), `#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, shutil, subprocess, sys
 if len(sys.argv) > 1 and sys.argv[1] == 'continue-scope':
     print(json.dumps({'fullHash':'SCOPE_0123456789ABCDEF','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF','settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF','sessionId':None}))
     raise SystemExit(0)
 candidate, expected, mode = pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 pathlib.Path(os.environ['REVIEW_INVOCATION']).write_text(json.dumps({'cwd': os.getcwd(), 'candidate': str(candidate), 'sha': expected}))
-if mode == 'mutate': (candidate / 'product.txt').write_text('reviewer mutation\\n')
+if mode in {'mutate', 'index', 'commit'}:
+    (candidate / 'product.txt').write_text('reviewer mutation\\n')
+if mode == 'index': subprocess.run(['git', '-C', str(candidate), 'add', 'product.txt'], check=True)
+if mode == 'commit':
+    subprocess.run(['git', '-C', str(candidate), 'add', 'product.txt'], check=True)
+    subprocess.run(['git', '-C', str(candidate), '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'reviewer mutation'], check=True)
+if mode == 'delete': shutil.rmtree(candidate)
+if mode == 'replace':
+    backup = candidate.with_name(candidate.name + '.original')
+    candidate.rename(backup)
+    shutil.copytree(backup, candidate, symlinks=True)
 capture = os.environ.get('JUNO_SUBAGENT_CAPTURE_PATH')
 if capture: pathlib.Path(capture).write_text(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'PASS','session_id':'review-session'}) + '\\n')
 print('PASS')
@@ -522,10 +533,23 @@ print('PASS')
     expect(clean.status, clean.stderr).toBe(0);
     expect(await fs.readJson(invocationPath)).toEqual({ cwd: await fs.realpath(workflowFixtureController!), candidate, sha: candidateSha });
     const cleanEvidence = await fs.readJson(path.join(cleanOut, 'steps', 'candidate_review', 'candidate_read_only.json'));
-    expect(cleanEvidence).toMatchObject({ passed: true, changed_fields: [], expected_sha: candidateSha });
+    expect(cleanEvidence).toMatchObject({
+      schema_version: 'juno_candidate_read_only.v2', passed: true, changed_fields: [], expected_sha: candidateSha,
+    });
+    expect(JSON.stringify(cleanEvidence)).not.toContain('base64');
+    expect(Object.keys(cleanEvidence.before.raw_index).sort()).toEqual(['bytes', 'sha256']);
     expect(cleanEvidence.before.raw_index).toEqual(cleanEvidence.after.raw_index);
     expect(cleanEvidence.before.logical_index).toEqual(cleanEvidence.after.logical_index);
     expect(cleanEvidence.before.status_porcelain_v2_z).toEqual(cleanEvidence.after.status_porcelain_v2_z);
+    const cleanContract = await fs.readJson(path.join(cleanOut, 'run_contract.json'));
+    const guardAnchor = cleanContract.completed_steps.candidate_review.candidate_read_only;
+    expect(guardAnchor.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(guardAnchor.evidence_sha256).toMatch(/^[0-9a-f]{64}$/);
+    const cleanAttempt = cleanContract.attempts.at(-1);
+    const archivedManifest = await fs.readJson(cleanAttempt.manifest);
+    const archivedGuard = archivedManifest.steps[0].candidate_read_only_evidence;
+    expect(archivedGuard.path).toContain(`${path.sep}attempts${path.sep}`);
+    expect(createHash('sha256').update(await fs.readFile(archivedGuard.path)).digest('hex')).toBe(archivedGuard.sha256);
     expect(await fs.readFile(indexPath)).toEqual(indexBefore);
     expect(spawnSync('git', ['-C', candidate, 'status', '--porcelain=v2'], { encoding: 'utf8' }).stdout).toBe('');
 
@@ -543,7 +567,117 @@ print('PASS')
     expect(mutationEvidence.changed_fields).toContain('status_porcelain_v2_z');
     expect(mutationEvidence.before.head).toBe(candidateSha);
     expect(mutationEvidence.after.head).toBe(candidateSha);
-  });
+
+    const restoreCandidate = async (mode: string) => {
+      if (mode === 'delete') {
+        spawnSync('git', ['worktree', 'repair', candidate], { cwd: repository });
+        spawnSync('git', ['worktree', 'remove', '--force', candidate], { cwd: repository });
+        spawnSync('git', ['worktree', 'add', '--detach', candidate, candidateSha], { cwd: repository });
+      } else if (mode === 'replace') {
+        await fs.remove(candidate);
+        await fs.move(`${candidate}.original`, candidate);
+      }
+      spawnSync('git', ['-C', candidate, 'reset', '--hard', candidateSha]);
+      spawnSync('git', ['-C', candidate, 'clean', '-fd']);
+    };
+    await restoreCandidate('mutate');
+    for (const mode of ['index', 'commit', 'delete', 'replace']) {
+      const out = path.join(testDir, `candidate-${mode}-out`);
+      await fs.writeJson(workflowPath, makeWorkflow(mode));
+      const result = runWorkflow(['--workflow', workflowPath, '--out-dir', out], undefined, {
+        PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+      });
+      expect(result.status, `${mode}: ${result.stderr}`).not.toBe(0);
+      expect(result.stderr).toMatch(/candidate_read_only mutation detected; no cleanup performed/);
+      const evidence = await fs.readJson(path.join(out, 'steps', 'candidate_review', 'candidate_read_only.json'));
+      expect(evidence.passed).toBe(false);
+      expect(evidence.changed_fields.length).toBeGreaterThan(0);
+      expect(JSON.stringify(evidence)).not.toContain('base64');
+      await restoreCandidate(mode);
+    }
+
+    const nestedDirectory = path.join(candidate, 'nested');
+    await fs.ensureDir(nestedDirectory);
+    const nestedWorkflow = makeWorkflow('observe');
+    nestedWorkflow.vars.candidate_path = nestedDirectory;
+    await fs.writeJson(workflowPath, nestedWorkflow);
+    const nested = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, 'nested-out')], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    });
+    expect(nested.status).not.toBe(0);
+    expect(nested.stderr).toMatch(/exact Git worktree top-level/);
+    await fs.remove(nestedDirectory);
+
+    const alias = path.join(testDir, 'candidate-alias');
+    await fs.symlink(candidate, alias);
+    const aliasWorkflow = makeWorkflow('observe');
+    aliasWorkflow.vars.candidate_path = alias;
+    await fs.writeJson(workflowPath, aliasWorkflow);
+    const aliased = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, 'alias-out')], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    });
+    expect(aliased.status).not.toBe(0);
+    expect(aliased.stderr).toMatch(/exact canonical path/);
+
+    const shaWorkflow = makeWorkflow('observe');
+    shaWorkflow.vars.candidate_sha = 'f'.repeat(40);
+    await fs.writeJson(workflowPath, shaWorkflow);
+    const substitutedSha = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, 'sha-out')], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    });
+    expect(substitutedSha.status).not.toBe(0);
+    expect(substitutedSha.stderr).toMatch(/SHA mismatch/);
+
+    const reusableWorkflow: any = makeWorkflow('observe');
+    reusableWorkflow.steps.push({ id: 'suffix', capture_session: false, command: 'true' });
+    await fs.writeJson(workflowPath, reusableWorkflow);
+    const reuseOut = path.join(testDir, 'candidate-reuse-out');
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', reuseOut], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    }).status).toBe(0);
+    const reuseGuard = path.join(reuseOut, 'steps', 'candidate_review', 'candidate_read_only.json');
+    await fs.writeFile(reuseGuard, `${await fs.readFile(reuseGuard, 'utf8')} `);
+    const resumed = runWorkflow(['--workflow', workflowPath, '--out-dir', reuseOut, '--from-step', 'suffix'], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    });
+    expect(resumed.status).not.toBe(0);
+    expect(resumed.stderr).toMatch(/candidate_read_only checkpoint\[candidate_review\] artifact hash mismatch/);
+
+    const amendmentParent = path.join(testDir, 'candidate-amendment-parent');
+    await fs.writeJson(workflowPath, reusableWorkflow);
+    expect(runWorkflow(['--workflow', workflowPath, '--out-dir', amendmentParent], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+    }).status).toBe(0);
+    const amendmentGuard = path.join(amendmentParent, 'steps', 'candidate_review', 'candidate_read_only.json');
+    const amendmentEvidence = await fs.readJson(amendmentGuard);
+    amendmentEvidence.after.head = '0'.repeat(40);
+    await fs.writeJson(amendmentGuard, amendmentEvidence);
+    reusableWorkflow.amendment_mode = 'harness_only_validation';
+    await fs.writeJson(workflowPath, reusableWorkflow);
+    const amended = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', path.join(testDir, 'candidate-amendment'),
+      '--amends-run', amendmentParent, '--from-step', 'suffix',
+    ], undefined, { PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath });
+    expect(amended.status).not.toBe(0);
+    expect(amended.stderr).toMatch(/candidate_read_only checkpoint\[candidate_review\] artifact hash mismatch/);
+
+    delete reusableWorkflow.amendment_mode;
+    await fs.writeJson(workflowPath, reusableWorkflow);
+    const recoveryOut = path.join(testDir, 'candidate-recovery-out');
+    const interrupted = runWorkflow(['--workflow', workflowPath, '--out-dir', recoveryOut], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`, REVIEW_INVOCATION: invocationPath,
+      JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest',
+    });
+    expect(interrupted.status).toBe(86);
+    await fs.remove(path.join(recoveryOut, 'active_step.json'));
+    const recoveryGuard = path.join(recoveryOut, 'steps', 'candidate_review', 'candidate_read_only.json');
+    await fs.writeFile(recoveryGuard, `${await fs.readFile(recoveryGuard, 'utf8')} `);
+    const recovered = runWorkflow(['recover-attempt', recoveryOut, '--dry-run'], undefined, {
+      PATH: `${reviewerBin}:${process.env.PATH}`,
+    });
+    expect(recovered.status).not.toBe(0);
+    expect(recovered.stderr).toMatch(/candidate_read_only checkpoint\[candidate_review\] artifact hash mismatch/);
+  }, 120_000);
 
   it('warns when a runtime copy differs from the installed workflow template', async () => {
     const templateDir = path.join(testDir, 'templates');

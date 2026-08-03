@@ -4,14 +4,21 @@ Own task/PDR creation. Execute only when the request also authorizes implementat
 
 1. Resolve the canonical controller with `.juno_task/scripts/controller_resolver.py --operation diagnostic`; Juno never silently switches refs to manufacture a controller. Read the task-creation, review, and lifecycle wikis.
 2. Write empty-context task bodies and one symbolic manifest covering the parent, implementation/review tasks, separately reserved E2E, controller root, exact product target refs, expected paths, validation, dependencies, budgets/timeouts, artifact root, and cleanup owner. Every product mutation—including a small fix—must use a named exact-base worktree.
-3. For local integration, declare `schema_version: 2`, `workflow_class: local_integration`, exactly one `risk_tier: low|medium|high|release`, `integration_step`, `terminal_gate`, and exactly this policy:
+3. For local integration, declare `schema_version: 2`, `workflow_class: local_integration`, `orchestration_workspace: controller` (or an exact absolute external orchestration root), exactly one `risk_tier: low|medium|high|release`, `integration_step`, `terminal_gate`, and exactly this policy. Every non-noop candidate-review step declares the exact canonical worktree root and full candidate SHA; it is dispatched from the orchestration workspace, never the candidate:
 
    ```yaml
+   orchestration_workspace: controller
    integration_policy:
      queue: automatic_after_review_pass
      channel_scope: git_common_dir_and_target_ref
      target_movement: rebuild_and_rereview
      checked_out_target: detach_same_sha
+   steps:
+     - id: candidate_review
+       candidate_read_only:
+         path: "{{ candidate_path }}"
+         sha: "{{ candidate_sha }}"
+       command: [yy, pi, "Review exact candidate {{ candidate_sha }} at {{ candidate_path }} without mutation."]
    ```
 
 4. Assign `validation_ownership.pre_merge_review`, `candidate_review`, and `actual_target_review`. Use a lean phase graph: deterministic preflight, implementation agent, independent pre-merge review, deterministic candidate preparation/verification, a candidate semantic reviewer only when composition creates different bytes, and integration with actual-target review. Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps; encode those checks as typed receipt requirements and helper postconditions. Define typed receipts for required PASS gates and an integration receipt produced by the integration step with `outcome=integrated` and required `feature_tag_policy`. Every receipt `required_fields` list includes `producer_step_digest`, bound to `JUNO_WORKFLOW_STEP_DIGEST`. Reference receipt locations through `{{ receipts.<id>.path }}` or `JUNO_WORKFLOW_RECEIPT_<ID>`, never a duplicate hardcoded path. The integration command must be an argv list that directly executes `integration_owner_preflight.py integrate` (optionally through `python3`), with separate `--risk-tier` and `--checked-out-target detach_same_sha` arguments; never place this owner behind a shell command or wrapper. Actual-review arguments are required for effective high/release risk.

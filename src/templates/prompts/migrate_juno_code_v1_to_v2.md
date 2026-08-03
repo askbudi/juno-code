@@ -82,6 +82,7 @@ An authorized workflow declares:
 ```yaml
 schema_version: 2
 workflow_class: local_integration
+orchestration_workspace: controller # or exact absolute external orchestration root
 risk_tier: <low|medium|high|release>
 integration_policy:
   queue: automatic_after_review_pass
@@ -92,9 +93,15 @@ validation_ownership:
   pre_merge_review: <step-id>
   candidate_review: <step-id>
   actual_target_review: <integration-step-id>
+steps:
+  - id: <candidate-review-step-id>
+    candidate_read_only:
+      path: "{{ candidate_path }}" # exact canonical Git worktree top-level
+      sha: "{{ candidate_sha }}"   # full 40-character SHA
+    command: [yy, pi, "Review exact candidate {{ candidate_sha }} at {{ candidate_path }} without mutation."]
 ```
 
-Every typed receipt `required_fields` list includes `producer_step_digest`, and its producer writes the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
+Every non-noop candidate review must use that declaration and executes from the external orchestration workspace, never an alias, nested candidate directory, or candidate root. Every typed receipt `required_fields` list includes `producer_step_digest`, and its producer writes the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
 
 ## Phase E — specialization and cleanup
 

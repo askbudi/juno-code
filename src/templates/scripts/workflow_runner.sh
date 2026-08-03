@@ -9,7 +9,6 @@ process unless a step opts into fail-fast behavior.
 from __future__ import annotations
 
 import argparse
-import base64
 import datetime as _dt
 import errno
 import hashlib
@@ -1473,41 +1472,123 @@ def _candidate_git(candidate: Path, *args: str) -> bytes:
     return completed.stdout
 
 
+def _bounded_digest(value: bytes) -> dict[str, Any]:
+    """Persist equality evidence without retaining private or unbounded Git payloads."""
+    return {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
+
+
+def canonical_candidate_root(declared_path: str) -> Path:
+    candidate = Path(declared_path).expanduser()
+    if not candidate.is_absolute():
+        raise WorkflowError("candidate_read_only path must be an absolute canonical Git worktree root")
+    try:
+        canonical = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise WorkflowError(f"candidate_read_only path is unavailable: {declared_path}") from exc
+    if str(candidate) != str(canonical):
+        raise WorkflowError(
+            f"candidate_read_only path must be exact canonical path (no alias or traversal): {declared_path}"
+        )
+    top_level = Path(_candidate_git(canonical, "rev-parse", "--path-format=absolute", "--show-toplevel").decode().strip())
+    try:
+        top_level = top_level.resolve(strict=True)
+    except OSError as exc:
+        raise WorkflowError("candidate_read_only Git worktree top-level is unavailable") from exc
+    if canonical != top_level:
+        raise WorkflowError(
+            f"candidate_read_only path must equal exact Git worktree top-level: declared={canonical} top={top_level}"
+        )
+    return canonical
+
+
+def ensure_external_orchestration(candidate: Path, orchestration_cwd: Path) -> None:
+    orchestration = orchestration_cwd.resolve(strict=True)
+    try:
+        orchestration.relative_to(candidate)
+    except ValueError:
+        return
+    raise WorkflowError(
+        f"candidate_read_only orchestration cwd must be outside candidate root: {orchestration}"
+    )
+
+
 def snapshot_candidate_identity(candidate: Path, expected_sha: str, *, require_expected: bool = True) -> dict[str, Any]:
-    candidate = candidate.resolve()
-    if not candidate.is_dir():
-        raise WorkflowError(f"candidate_read_only path is not a directory: {candidate}")
-    head = _candidate_git(candidate, "rev-parse", "HEAD").decode().strip()
+    candidate = canonical_candidate_root(str(candidate))
     if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         raise WorkflowError(f"candidate_read_only SHA is not a full commit identity: {expected_sha}")
+    head = _candidate_git(candidate, "rev-parse", "HEAD").decode().strip()
     if require_expected and head != expected_sha:
         raise WorkflowError(f"candidate_read_only SHA mismatch: expected {expected_sha}, observed {head}")
-    index_path_text = _candidate_git(candidate, "rev-parse", "--path-format=absolute", "--git-path", "index").decode().strip()
-    index_path = Path(index_path_text)
+    git_common_dir = Path(
+        _candidate_git(candidate, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
+    ).resolve(strict=True)
+    git_dir = Path(
+        _candidate_git(candidate, "rev-parse", "--path-format=absolute", "--git-dir").decode().strip()
+    ).resolve(strict=True)
+    index_path = Path(
+        _candidate_git(candidate, "rev-parse", "--path-format=absolute", "--git-path", "index").decode().strip()
+    ).resolve()
     status = _candidate_git(candidate, "status", "--porcelain=v2", "-z", "--untracked-files=all")
     index_bytes = index_path.read_bytes() if index_path.is_file() else b""
     logical_index = _candidate_git(candidate, "ls-files", "--stage", "-z")
-
-    def encoded(value: bytes) -> dict[str, Any]:
-        return {
-            "sha256": hashlib.sha256(value).hexdigest(),
-            "bytes": len(value),
-            "base64": base64.b64encode(value).decode("ascii"),
-        }
-
+    root_stat = candidate.stat()
+    git_dir_stat = git_dir.stat()
+    topology = canonical_sha256({
+        "candidate_device": root_stat.st_dev,
+        "candidate_inode": root_stat.st_ino,
+        "git_dir_device": git_dir_stat.st_dev,
+        "git_dir_inode": git_dir_stat.st_ino,
+        "git_common_dir": str(git_common_dir),
+        "git_dir": str(git_dir),
+    })
     return {
         "path": str(candidate),
         "head": head,
-        "index_path": str(index_path.resolve()),
-        "raw_index": encoded(index_bytes),
-        "logical_index": encoded(logical_index),
-        "status_porcelain_v2_z": encoded(status),
+        "worktree_identity_sha256": topology,
+        "git_common_dir_sha256": hashlib.sha256(str(git_common_dir).encode()).hexdigest(),
+        "git_dir_sha256": hashlib.sha256(str(git_dir).encode()).hexdigest(),
+        "raw_index": _bounded_digest(index_bytes),
+        "logical_index": _bounded_digest(logical_index),
+        "status_porcelain_v2_z": _bounded_digest(status),
     }
 
 
 def candidate_identity_changes(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    fields = ("path", "head", "index_path", "raw_index", "logical_index", "status_porcelain_v2_z")
+    fields = (
+        "path", "head", "worktree_identity_sha256", "git_common_dir_sha256", "git_dir_sha256",
+        "raw_index", "logical_index", "status_porcelain_v2_z",
+    )
     return [field for field in fields if before.get(field) != after.get(field)]
+
+
+def verify_candidate_guard_evidence(
+    evidence: dict[str, Any], expected_sha256: str, *, orchestration_cwd: Path,
+) -> dict[str, Any]:
+    if evidence.get("schema_version") != "juno_candidate_read_only.v2" or evidence.get("passed") is not True:
+        raise WorkflowError("candidate_read_only guard evidence is incomplete or unsuccessful")
+    if canonical_sha256(evidence) != expected_sha256:
+        raise WorkflowError("candidate_read_only guard evidence hash mismatch")
+    candidate = canonical_candidate_root(str(evidence.get("candidate_path") or ""))
+    ensure_external_orchestration(candidate, orchestration_cwd)
+    current = snapshot_candidate_identity(candidate, str(evidence.get("expected_sha") or ""))
+    if candidate_identity_changes(evidence.get("after") or {}, current):
+        raise WorkflowError("candidate_read_only guard evidence no longer matches exact candidate identity")
+    return evidence
+
+
+def verify_candidate_guard_artifact(
+    checkpoint: dict[str, Any], step_id: str, orchestration_cwd: Path,
+) -> dict[str, Any] | None:
+    anchor = checkpoint.get("candidate_read_only")
+    if anchor is None:
+        return None
+    if not isinstance(anchor, dict):
+        raise WorkflowError(f"candidate_read_only checkpoint[{step_id}] evidence missing")
+    path = Path(str(anchor.get("path") or ""))
+    if not path.is_file() or file_sha256(path) != anchor.get("sha256"):
+        raise WorkflowError(f"candidate_read_only checkpoint[{step_id}] artifact hash mismatch")
+    evidence = load_json_object(path, f"candidate_read_only checkpoint[{step_id}]")
+    return verify_candidate_guard_evidence(evidence, str(anchor.get("evidence_sha256") or ""), orchestration_cwd=orchestration_cwd)
 
 
 def execute_rendered_command(
@@ -1837,6 +1918,14 @@ def build_run_contract(
             str(step["id"]): {
                 "template_sha256": canonical_sha256(step["command"]),
                 "initial_rendered_sha256": canonical_sha256(render(step["command"], context)),
+                "candidate_read_only_template_sha256": (
+                    canonical_sha256(step["candidate_read_only"])
+                    if step.get("candidate_read_only") is not None else None
+                ),
+                "candidate_read_only_rendered_sha256": (
+                    canonical_sha256(render(step["candidate_read_only"], context))
+                    if step.get("candidate_read_only") is not None else None
+                ),
             }
             for step in workflow["steps"]
         },
@@ -2043,6 +2132,8 @@ def prepare_selective_amendment(
         normally_reusable = status in {"success", "reused_verified", "amendment_revalidated"} and bool(completed)
         if not normally_reusable:
             raise WorkflowError(f"amendment_prerequisite[{step_id}]: no reusable successful predecessor evidence")
+        if step.get("candidate_read_only") is not None:
+            verify_candidate_guard_artifact(completed, step_id, project_root)
         manifest_attempt = (
             previous.get("reused_from_attempt")
             if status in {"reused_verified", "amendment_revalidated"}
@@ -2084,15 +2175,27 @@ def archive_attempt(out_dir: Path, manifest: dict[str, Any]) -> None:
     if attempt_dir.exists():
         raise WorkflowError(f"attempt archive already exists: {attempt_dir}")
     attempt_dir.mkdir(parents=True)
-    write_text(attempt_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-    for step in manifest.get("steps", []):
+    archived_manifest = json.loads(json.dumps(manifest))
+    for step in archived_manifest.get("steps", []):
         for key in ("stdout_path", "stderr_path", "response_path"):
             raw_path = str(step.get(key) or "")
             if not raw_path:
                 continue
             source = Path(raw_path)
             if source.is_file():
-                shutil.copy2(source, attempt_dir / source.name)
+                destination = attempt_dir / source.name
+                shutil.copy2(source, destination)
+                step[key] = str(destination.resolve())
+        guard = step.get("candidate_read_only_evidence")
+        if isinstance(guard, dict) and guard.get("path"):
+            source = Path(str(guard["path"]))
+            destination = attempt_dir / "steps" / safe_id(str(step.get("id") or "step"), "step") / "candidate_read_only.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not source.is_file() or file_sha256(source) != guard.get("sha256"):
+                raise WorkflowError(f"attempt candidate_read_only[{step.get('id')}]: artifact hash mismatch")
+            shutil.copy2(source, destination)
+            guard["path"] = str(destination.resolve())
+    write_text(attempt_dir / "manifest.json", json.dumps(archived_manifest, indent=2, ensure_ascii=False) + "\n")
     for name in ("summary.md", "summary.stdout.txt", "summary.stderr.txt", "summary.command.sh"):
         source = out_dir / name
         if source.is_file():
@@ -2370,6 +2473,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                 not is_selective_amendment and previous.get("status") not in reusable_statuses
             ):
                 raise WorkflowError(f"resume_prerequisite[{step_id}]: no reusable successful predecessor evidence")
+            if step.get("candidate_read_only") is not None:
+                verify_candidate_guard_artifact(completed, step_id, project_root)
             for contract in receipts_by_producer.get(step_id, []):
                 receipt_evidence = (completed.get("receipts") or {}).get(contract["id"])
                 if not receipt_evidence:
@@ -2470,13 +2575,12 @@ def run_workflow(args: argparse.Namespace) -> int:
                     )
                 if step.get("candidate_read_only") is not None:
                     rendered_identity = render(step["candidate_read_only"], context)
-                    candidate_path = Path(str(rendered_identity["path"])).resolve()
+                    candidate_path = canonical_candidate_root(str(rendered_identity["path"]))
                     expected_candidate_sha = str(rendered_identity["sha"])
-                    if candidate_path == project_root:
-                        raise WorkflowError("candidate_read_only review may not execute with candidate as cwd")
+                    ensure_external_orchestration(candidate_path, project_root)
                     before_identity = snapshot_candidate_identity(candidate_path, expected_candidate_sha)
                     candidate_guard = {
-                        "schema_version": "juno_candidate_read_only.v1",
+                        "schema_version": "juno_candidate_read_only.v2",
                         "candidate_path": str(candidate_path),
                         "expected_sha": expected_candidate_sha,
                         "orchestration_cwd": str(project_root),
@@ -2486,15 +2590,15 @@ def run_workflow(args: argparse.Namespace) -> int:
                         "passed": None,
                     }
                     write_text(candidate_guard_path, json.dumps(candidate_guard, indent=2, sort_keys=True) + "\n")
-            except (WorkflowError, KeyError, TypeError) as exc:
+            except (WorkflowError, KeyError, TypeError, OSError) as exc:
                 precondition_error = str(exc)
                 if step.get("candidate_read_only") is not None:
                     failed_guard = candidate_guard or {
-                        "schema_version": "juno_candidate_read_only.v1",
+                        "schema_version": "juno_candidate_read_only.v2",
                         "orchestration_cwd": str(project_root),
                         "passed": False,
                     }
-                    failed_guard["preflight_error"] = precondition_error
+                    failed_guard["preflight_error"] = precondition_error[:512]
                     write_text(candidate_guard_path, json.dumps(failed_guard, indent=2, sort_keys=True) + "\n")
         if args.dry_run:
             status = "dry_run"
@@ -2541,7 +2645,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     candidate_guard["passed"] = not changed_fields
                 except (WorkflowError, OSError) as exc:
                     changed_fields = ["snapshot_unavailable"]
-                    candidate_guard["after_error"] = str(exc)
+                    candidate_guard["after_error"] = str(exc)[:512]
                     candidate_guard["changed_fields"] = changed_fields
                     candidate_guard["passed"] = False
                 write_text(candidate_guard_path, json.dumps(candidate_guard, indent=2, sort_keys=True) + "\n")
@@ -2584,8 +2688,12 @@ def run_workflow(args: argparse.Namespace) -> int:
             "session_id": "",
             "command_sha256": command_digest,
         }
-        if step.get("candidate_read_only") is not None:
-            result["candidate_read_only_evidence"] = str(candidate_guard_path)
+        if step.get("candidate_read_only") is not None and candidate_guard_path.is_file():
+            result["candidate_read_only_evidence"] = {
+                "path": str(candidate_guard_path.resolve()),
+                "sha256": file_sha256(candidate_guard_path),
+                "evidence_sha256": canonical_sha256(load_json_object(candidate_guard_path, "candidate_read_only evidence")),
+            }
         child_steps: list[dict[str, Any]] = []
         if not args.dry_run:
             try:
@@ -2654,6 +2762,18 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "stderr": {"path": str(stderr_path.resolve()), "sha256": file_sha256(stderr_path)},
                     "response": {"path": str(response_path.resolve()), "sha256": file_sha256(response_path)},
                 }
+                candidate_anchor: dict[str, Any] | None = None
+                if step.get("candidate_read_only") is not None:
+                    if candidate_guard is None or candidate_guard.get("passed") is not True:
+                        raise WorkflowError(f"step[{step_id}]: successful candidate review lacks passing guard evidence")
+                    candidate_anchor = {
+                        "path": str(candidate_guard_path.resolve()),
+                        "sha256": file_sha256(candidate_guard_path),
+                        "evidence_sha256": canonical_sha256(candidate_guard),
+                    }
+                    artifacts["candidate_read_only"] = {
+                        "path": candidate_anchor["path"], "sha256": candidate_anchor["sha256"]
+                    }
                 if capture_enabled:
                     if not capture_path.is_file():
                         raise WorkflowError(f"step[{step_id}].capture: required capture artifact missing")
@@ -2680,6 +2800,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "artifacts": artifacts,
                     "receipts": produced_receipts,
                     "child_steps": child_steps,
+                    "candidate_read_only": candidate_anchor,
                     "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
                 }
                 run_contract.setdefault("completed_steps", {})[step_id] = checkpoint
@@ -3190,8 +3311,9 @@ def recovery_context(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
 def verify_recovery_contract(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     if contract.get("schema_version") != RUN_CONTRACT_SCHEMA:
         raise WorkflowError(f"recovery contract has unsupported schema: {contract.get('schema_version')!r}")
-    if Path(str(contract.get("project_root") or "")).resolve() == Path("").resolve():
-        raise WorkflowError("recovery_contract[project_root]: missing")
+    project_root_text = str(contract.get("project_root") or "").strip()
+    if not project_root_text or not Path(project_root_text).is_absolute():
+        raise WorkflowError("recovery_contract[project_root]: missing or non-absolute")
     source_text = str(contract.get("workflow_source_path") or "")
     if not source_text:
         raise WorkflowError("recovery requires a path-backed workflow source; stdin-only legacy runs are not recoverable")
@@ -3268,8 +3390,11 @@ def verify_checkpoint(
             str(evidence.get("sha256") or ""),
         )
     verify_persisted_child_steps(checkpoint.get("child_steps", []), step_id, run_dir)
+    candidate_evidence = verify_candidate_guard_artifact(
+        checkpoint, step_id, Path(str(contract["project_root"]))
+    )
     response_path = Path(str(artifacts["response"]["path"]))
-    return {
+    recovered = {
         "id": step_id,
         "command": checkpoint["command"],
         "command_preview": command_preview(checkpoint["command"]),
@@ -3288,6 +3413,9 @@ def verify_checkpoint(
         "reused_from_attempt": checkpoint.get("attempt_id"),
         "child_steps": checkpoint.get("child_steps", []),
     }
+    if candidate_evidence is not None:
+        recovered["candidate_read_only_evidence"] = checkpoint["candidate_read_only"]
+    return recovered
 
 
 def recover_attempt(run_dir: Path, dry_run: bool) -> dict[str, Any]:
