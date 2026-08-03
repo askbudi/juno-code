@@ -232,17 +232,6 @@ def lifecycle_manifest_identity(*, task_id: str, branch: str, base: str, common:
              "git_common_dir": str(common), "expected_paths": expected_paths}
     return hashlib.sha256(json.dumps(bound, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-def register_worktree_role(repo: Path, path: Path, role: str, *, task_id: str, manifest_identity: str) -> None:
-    git(repo, "config", "--local", "extensions.worktreeConfig", "true")
-    git(path, "config", "--worktree", "juno.workspace.role", role)
-    git(path, "config", "--worktree", "juno.workspace.roleBase", git(path, "rev-parse", "HEAD"))
-    git(path, "config", "--worktree", "juno.workspace.taskId", task_id)
-    git(path, "config", "--worktree", "juno.workspace.manifestIdentity", manifest_identity)
-    if (git(path, "config", "--worktree", "--get", "juno.workspace.role") != role
-            or git(path, "config", "--worktree", "--get", "juno.workspace.taskId") != task_id
-            or git(path, "config", "--worktree", "--get", "juno.workspace.manifestIdentity") != manifest_identity):
-        raise LifecycleError("workspace_role_registration_failed")
-
 def rollback_failed_create(repo: Path, path: Path, branch: str, base: str) -> dict[str, Any]:
     registration = [row for row in listed(repo) if Path(row["worktree"]).resolve() == path]
     evidence: dict[str, Any] = {"registered_before": registration, "removed": False, "branch_deleted": False}
@@ -292,10 +281,15 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         row = matches[0]
         if row.get("branch") != branch or row.get("HEAD") != base: raise LifecycleError("existing_worktree_identity_mismatch")
         if status(path): raise LifecycleError("existing_worktree_dirty")
-        if (git(path, "config", "--worktree", "--get", "juno.workspace.role", check=False) != "task"
-                or git(path, "config", "--worktree", "--get", "juno.workspace.taskId", check=False) != args.task_id
-                or git(path, "config", "--worktree", "--get", "juno.workspace.manifestIdentity", check=False) != manifest_identity):
-            raise LifecycleError("existing_worktree_role_or_manifest_identity_mismatch")
+        persisted_role = git(path, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+        if persisted_role:
+            if (persisted_role != "task"
+                    or git(path, "config", "--worktree", "--get", "juno.workspace.taskId", check=False) != args.task_id
+                    or git(path, "config", "--worktree", "--get", "juno.workspace.manifestIdentity", check=False) != manifest_identity):
+                raise LifecycleError("existing_worktree_role_or_manifest_identity_mismatch")
+        elif any(git(path, "config", "--worktree", "--get", f"juno.workspace.{key}", check=False)
+                 for key in ("taskId", "manifestIdentity", "createReceiptSha256", "verifyReceiptSha256", "expectedPathsSha256")):
+            raise LifecycleError("existing_worktree_partial_role_identity")
         policy = checkout_policy(path)
         requested_mode = "sparse" if args.sparse else "full"
         if (not policy["consistent"] or policy["mode"] != requested_mode
@@ -311,7 +305,8 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
                 configure_sparse_checkout(path, requested_sparse_paths, base)
             else:
                 git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
-            register_worktree_role(repo, path, "task", task_id=args.task_id, manifest_identity=manifest_identity)
+            # Creation establishes Git identity only. Persisted task authority is
+            # an explicit post-verify registration using the exact create+verify receipts.
             policy = checkout_policy(path)
             actual_head = git(path, "rev-parse", "HEAD")
             actual_branch = git(path, "symbolic-ref", "-q", "HEAD", check=False)
@@ -462,7 +457,11 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
     elif role["role"] == "task":
         refusals.append("verify_receipt_required")
     lifecycle_script = SCRIPT_DIR / "worktree_lifecycle.py"
-    if args.manifest:
+    if args.manifest and args.verify_receipt and role.get("role") == "unregistered":
+        next_argv = ["python3", str(SCRIPT_DIR / "controller_resolver.py"), "--cwd", str(current),
+                     "--register-workspace-role", "task", "--create-receipt", str(args.manifest.resolve()),
+                     "--verify-receipt", str(args.verify_receipt.resolve())]
+    elif args.manifest:
         next_argv = ["python3", str(lifecycle_script), "verify", "--manifest", str(args.manifest.resolve()),
                      "--path", str(args.task_worktree.resolve()), "--output", str(args.next_receipt.resolve())]
     else:

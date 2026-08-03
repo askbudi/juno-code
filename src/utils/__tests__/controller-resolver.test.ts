@@ -53,9 +53,14 @@ describe('canonical controller resolver', () => {
     task = await fs.realpath(task);
     git(task, 'config', '--local', 'juno.controller.path', controller);
     git(task, 'config', '--local', 'juno.controller.branch', 'controller-branch');
-    const registration = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task,
-      '--register-workspace-role', 'task', '--task-id', 'fixture-task', '--manifest-identity', 'a'.repeat(64)], task);
-    expect(registration.status, registration.stderr).toBe(0);
+    git(task, 'config', '--local', 'extensions.worktreeConfig', 'true');
+    git(task, 'config', '--worktree', 'juno.workspace.role', 'task');
+    git(task, 'config', '--worktree', 'juno.workspace.roleBase', git(task, 'rev-parse', 'HEAD'));
+    git(task, 'config', '--worktree', 'juno.workspace.taskId', 'fixture-task');
+    git(task, 'config', '--worktree', 'juno.workspace.manifestIdentity', 'a'.repeat(64));
+    git(task, 'config', '--worktree', 'juno.workspace.createReceiptSha256', 'b'.repeat(64));
+    git(task, 'config', '--worktree', 'juno.workspace.verifyReceiptSha256', 'c'.repeat(64));
+    git(task, 'config', '--worktree', 'juno.workspace.expectedPathsSha256', 'd'.repeat(64));
   });
 
   afterEach(async () => fs.remove(sandbox));
@@ -139,8 +144,11 @@ describe('canonical controller resolver', () => {
   });
 
   it('supports warn and strict integration-owner enforcement', () => {
-    const registration = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task, '--register-workspace-role', 'integration-owner'], task);
-    expect(registration.status, registration.stderr).toBe(0);
+    git(task, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(task, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    for (const key of ['taskId', 'manifestIdentity', 'createReceiptSha256', 'verifyReceiptSha256', 'expectedPathsSha256']) {
+      run('git', ['config', '--worktree', '--unset-all', `juno.workspace.${key}`], task);
+    }
     const warn = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task, '--operation', 'orchestration'], task, { JUNO_WORKSPACE_ROLE: 'integration-owner', JUNO_WORKSPACE_ENFORCEMENT: 'warn' });
     expect(warn.status).toBe(0);
     expect(warn.stderr).toContain('warning');

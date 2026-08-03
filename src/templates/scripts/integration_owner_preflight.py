@@ -20,15 +20,28 @@ def sha(path:Path)->str:return hashlib.sha256(path.read_bytes()).hexdigest()
 def require_committed_tree(repo:Path,fallback_base:str)->dict[str,Any]:
  try:return controller_checkpoint.committed_admission(repo,fallback_base)
  except controller_checkpoint.CheckpointError as exc:raise IntegrationError(f"committed-tree admission refused: {exc}") from exc
-def advance_protected_role_base(repo:Path,integrated_sha:str)->dict[str,Any]:
- if not (repo/".juno_task").is_dir():return {"role":"unmanaged", "advanced":False}
- resolution=controller_checkpoint.resolve_role(repo,persisted_only=True)
- if resolution.get("role")!="integration-owner":return {"role":resolution.get("role"),"advanced":False}
+def advance_protected_role_base(repo:Path,integrated_sha:str,*,inject_failure:bool=False)->dict[str,Any]:
+ if not (repo/".juno_task").is_dir():return {"role":"unmanaged", "advanced":False,"registered":False}
  actual=git(repo,"rev-parse",f"{integrated_sha}^{{commit}}")
  if actual!=integrated_sha:raise IntegrationError("protected roleBase candidate identity mismatch")
+ persisted=git(repo,"config","--worktree","--get","juno.workspace.role",check=False) or None
+ authority=git(repo,"config","--worktree","--get","juno.workspace.roleAuthority",check=False) or None
+ git_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-dir")).resolve()
+ common_dir=common(repo)
+ if persisted not in {None,"integration-owner"}:raise IntegrationError(f"protected integration refuses persisted workspace role: {persisted}")
+ if persisted=="integration-owner" and authority not in {"eligible-candidate.v1","protected-integration.v1"}:raise IntegrationError("integration-owner lacks exact eligible authority")
+ if persisted is None and git_dir==common_dir:return {"role":"controller","advanced":False,"registered":False}
+ if inject_failure:raise IntegrationError("injected_authority_persistence_failure")
+ run(repo,"config","--local","extensions.worktreeConfig","true")
+ for key in ("taskId","manifestIdentity","createReceiptSha256","verifyReceiptSha256","expectedPathsSha256"):
+  run(repo,"config","--worktree","--unset-all",f"juno.workspace.{key}",check=False)
+ run(repo,"config","--worktree","juno.workspace.role","integration-owner")
+ run(repo,"config","--worktree","juno.workspace.roleAuthority","protected-integration.v1")
  run(repo,"config","--worktree","juno.workspace.roleBase",actual)
- if git(repo,"config","--worktree","--get","juno.workspace.roleBase")!=actual:raise IntegrationError("protected roleBase update failed")
- return {"role":"integration-owner","advanced":True,"role_base":actual}
+ if (git(repo,"config","--worktree","--get","juno.workspace.role")!="integration-owner"
+     or git(repo,"config","--worktree","--get","juno.workspace.roleAuthority")!="protected-integration.v1"
+     or git(repo,"config","--worktree","--get","juno.workspace.roleBase")!=actual):raise IntegrationError("protected roleBase update failed")
+ return {"role":"integration-owner","advanced":True,"registered":persisted is None,"role_base":actual,"authority":"protected-integration.v1"}
 def full_ref(v:str)->str:
  if not v.startswith("refs/heads/"):raise IntegrationError("integration target must be a full refs/heads/... name")
  return v
@@ -267,7 +280,7 @@ def runtime_identities(detaches:list[dict[str,Any]],repositories:list[dict[str,A
  return result
 
 def main(argv:list[str]|None=None)->int:
- p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--checked-out-target",choices=("detach_same_sha",));p.add_argument("--risk-tier",choices=tuple(RISK_ORDER),default="high");p.add_argument("--feature-tag",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt",type=Path);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int)
+ p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--checked-out-target",choices=("detach_same_sha",));p.add_argument("--risk-tier",choices=tuple(RISK_ORDER),default="high");p.add_argument("--feature-tag",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt",type=Path);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int);p.add_argument("--inject-authority-failure-after",type=int)
  a=p.parse_args(argv)
  child_evidence_text=os.environ.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip();child_evidence_root=Path(child_evidence_text).resolve() if child_evidence_text else None
  if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
@@ -343,14 +356,19 @@ def main(argv:list[str]|None=None)->int:
    verify_nested_owners(a.repository,a.controller_checkout)
    validation_receipt={"validation":validations,"deterministic_actual_target_validation":"passed","actual_review_sha256":actual_hash,"target_refs":{item["name"]:{"target_ref":item["target_ref"],"reviewed_tip":item["candidate_sha"]} for item in a.repository}};validation_hash=hashlib.sha256(json.dumps(validation_receipt,sort_keys=True).encode()).hexdigest()
    tag_required=effective in {"high","release"};tag_requested=tag_required or a.feature_tag
+   receipt["resume_stage"]="protected_authority_persistence";receipt["role_base_updates"]=[]
+   receipt["feature_tag_policy"]={"required":tag_required,"requested":a.feature_tag,"created":False,"status":"withheld_pending_authority" if tag_requested else "skipped_by_policy"};write(a.output,receipt,replace=True)
+   for index,item in enumerate(a.repository):
+    update=advance_protected_role_base(item["path"],item["candidate_sha"],inject_failure=a.inject_authority_failure_after is not None and index>=a.inject_authority_failure_after)
+    receipt["role_base_updates"].append(update);write(a.output,receipt,replace=True)
    feature=tag(a.repository[-1]["path"],a.task_id,integrated,a.repository[-1]["target_ref"],candidate_hash,validation_hash) if tag_requested else None
    tag_policy={"required":tag_required,"requested":a.feature_tag,"created":feature is not None,"status":"created" if feature else "skipped_by_policy"}
-   role_base_updates=[advance_protected_role_base(item["path"],item["candidate_sha"]) for item in a.repository]
-   receipt.update({"outcome":"integrated","passed":True,"feature_tag":feature,"feature_tag_policy":tag_policy,"actual_semantic_review":actual_semantic,"candidate_receipt_sha256":candidate_hash,"actual_target":validation_receipt,"lock_order":[x["lock_key"] for x in validated],"role_base_updates":role_base_updates,"runtime_identities":runtime_identities(detaches,a.repository)})
+   receipt.update({"outcome":"integrated","passed":True,"feature_tag":feature,"feature_tag_policy":tag_policy,"actual_semantic_review":actual_semantic,"candidate_receipt_sha256":candidate_hash,"actual_target":validation_receipt,"lock_order":[x["lock_key"] for x in validated],"runtime_identities":runtime_identities(detaches,a.repository)})
   finally:
    for h in reversed(handles):fcntl.flock(h.fileno(),fcntl.LOCK_UN);h.close()
  except (IntegrationError,lifecycle.LifecycleError,OSError,json.JSONDecodeError,subprocess.TimeoutExpired) as exc:
   receipt.update({"passed":False,"error":str(exc),"runtime_identities":runtime_identities(detaches,a.repository)})
+  if receipt.get("feature_tag_policy",{}).get("status")=="withheld_pending_authority":receipt["feature_tag_policy"]["status"]="withheld_authority_persistence_failed"
   receipt["outcome"]="partial_local_integration" if any(update.get("status") in {"moved","resumed_already_moved"} for update in receipt["updates"]) else "failed_preserved"
   if receipt["updates"] and not receipt.get("resume_stage"):receipt["resume_stage"]="target_updates"
   try:write(a.output,receipt,replace=a.output.resolve().exists())
