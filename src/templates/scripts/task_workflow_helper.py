@@ -221,7 +221,7 @@ def symbolic_task_set_errors(manifest: dict[str, Any], *, manifest_dir: Path | N
             errors.append(f"task {key or index} role implementation must explicitly declare edit_capable true or false")
         if not isinstance(edit_capable, bool):
             errors.append(f"task {key or index} edit_capable must be boolean")
-        if edit_capable:
+        if generated_task_requires_admission(task):
             admission = task.get("edit_admission")
             required = {"repository", "target_ref", "approved_base", "task_worktree", "task_branch_ref",
                         "cleanup_owner", "manifest", "verify_receipt", "output", "next_receipt", "expected_paths"}
@@ -317,6 +317,24 @@ def q(value: str) -> str:
     return value.replace("'", "''")
 
 
+def generated_write_contract(task: dict[str, Any]) -> str:
+    """Derive generated dispatch authority from the rendered agent contract.
+
+    A review with edit admission is a fix-capable review even when the legacy
+    edit_capable hint is omitted/default-false. Reviews without admission stay
+    genuinely read-only.
+    """
+    if str(task.get("role", "")) == "review" and task.get("edit_admission") is not None:
+        return "review_fix"
+    if task.get("edit_capable") is True:
+        return "product_edit"
+    return "read_only"
+
+
+def generated_task_requires_admission(task: dict[str, Any]) -> bool:
+    return generated_write_contract(task) != "read_only"
+
+
 def render_workflow(manifest: dict[str, Any]) -> str:
     workflow_id = manifest.get("workflow_id") or manifest.get("id") or "task_set_workflow"
     name = manifest.get("name") or workflow_id.replace("_", " ").title()
@@ -349,20 +367,27 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         f"    Shared implementation tag: {impl_tag}",
         "  review_contract: |",
         "    Inspect the exact lifecycle-bound diff, tests, and typed receipts independently.",
-        "    Runner transport success is not semantic acceptance; reviewer fixes may be committed and accepted at the resulting exact tip.",
+        "    This is a read-only review: do not edit files or create commits.",
+        "  review_fix_contract: |",
+        "    Fixes are authorized only in the lifecycle-admitted TASK_ROOT; they may be committed and accepted at the resulting exact tip.",
     ]
-    edit_tasks = [task for task in manifest["tasks"] if task.get("edit_capable") is True]
+    edit_tasks = [task for task in manifest["tasks"] if generated_task_requires_admission(task)]
     if edit_tasks:
         lines.append("receipts:")
         for idx, task in enumerate(manifest["tasks"], start=1):
-            if task.get("edit_capable") is not True: continue
+            if not generated_task_requires_admission(task): continue
             task_id = task["id"]; receipt_id = f"edit_admission_{idx}_{re.sub(r'[^a-z0-9_]', '_', task_id.lower())}"
+            task_root = str(Path(task["edit_admission"]["task_worktree"]).expanduser().resolve())
             lines.extend([
                 f"  - id: {receipt_id}", f"    producer: pre_edit_{idx}_{task_id}",
                 f"    path: {task['edit_admission']['output']}", "    schema_version: juno_edit_preflight.v1",
                 "    required_fields:", "      - producer_step_digest", "      - passed", "      - task_id",
-                "      - workspace.role", "      - target.target_ref", "      - expected_paths",
+                "      - current.root", "      - current.git_common_dir", "      - current.branch_ref",
+                "      - current.head", "      - current.clean", "      - workspace.role",
+                "      - workspace.current_root", "      - target.target_ref", "      - expected_paths",
                 "    expected_fields:", "      passed: true", f"      task_id: {task_id}",
+                f"      current.root: {task_root}", "      current.clean: true", "      workspace.role: task",
+                f"      workspace.current_root: {task_root}",
             ])
     lines.extend([
         "steps:",
@@ -390,7 +415,9 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         task_id = task["id"]
         step_id = task.get("step_id") or f"task_{idx}_{task_id}"
         receipt_id = f"edit_admission_{idx}_{re.sub(r'[^a-z0-9_]', '_', task_id.lower())}"
-        if task.get("edit_capable") is True:
+        write_contract = generated_write_contract(task)
+        write_capable = generated_task_requires_admission(task)
+        if write_capable:
             admission = task["edit_admission"]
             command = ["python3", ".juno_task/scripts/worktree_lifecycle.py", "edit-preflight",
                        "--repository", admission["repository"], "--target-ref", admission["target_ref"],
@@ -417,7 +444,11 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             f"\n\n        Deliberately declared conversational handoff:\n        {{{{ steps.{prior}.response }}}}"
             if conversational_handoff else ""
         )
-        role_contract = ["", "        {{ vars.review_contract }}"] if str(task.get("role", "")) == "review" else []
+        role_contract = []
+        if str(task.get("role", "")) == "review":
+            role_contract = ["", "        {{ vars.review_contract }}"]
+            if write_contract == "review_fix":
+                role_contract.append("        {{ vars.review_fix_contract }}")
         terminal_guard = []
         if str(task.get("role", "")) == "review":
             terminal_guard = [
@@ -429,7 +460,10 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             f"    description: {title}",
             "    capture_session: false",
             "    fail_workflow: true",
-            *( ["    edit_capable: true", "    requires_receipts:", f"      - {receipt_id}"] if task.get("edit_capable") is True else [] ),
+            "    generated_task_contract:",
+            f"      role: {task.get('role', '')}",
+            f"      write_contract: {write_contract}",
+            *( [f"      task_root_receipt: {receipt_id}", "    edit_capable: true", "    requires_receipts:", f"      - {receipt_id}"] if write_capable else [] ),
             "    command:",
             "      - yy",
             "      - pi",

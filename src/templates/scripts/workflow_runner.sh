@@ -730,16 +730,33 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             producer = receipts[receipt_id]["producer"]
             if step_indexes[producer] >= step_indexes[step_id]:
                 raise WorkflowError(f"step {step_id} requires receipt {receipt_id} before its producer {producer}")
-        if step.get("edit_capable") is True:
-            admission = [receipts[receipt_id] for receipt_id in step.get("requires_receipts") or []
-                         if receipts[receipt_id]["schema_version"] == "juno_edit_preflight.v1"
-                         and receipts[receipt_id]["expected_fields"].get("passed") is True]
-            if len(admission) != 1:
-                raise WorkflowError(
-                    f"edit-capable step {step_id} requires exactly one successful juno_edit_preflight.v1 receipt"
-                )
-        elif step.get("edit_capable") not in {None, False}:
+        admission = [receipts[receipt_id] for receipt_id in step.get("requires_receipts") or []
+                     if receipts[receipt_id]["schema_version"] == "juno_edit_preflight.v1"
+                     and receipts[receipt_id]["expected_fields"].get("passed") is True]
+        if step.get("edit_capable") is True and len(admission) != 1:
+            raise WorkflowError(
+                f"edit-capable step {step_id} requires exactly one successful juno_edit_preflight.v1 receipt"
+            )
+        elif step.get("edit_capable") not in {None, False, True}:
             raise WorkflowError(f"step {step_id} edit_capable must be boolean")
+        generated = step.get("generated_task_contract")
+        if generated is not None:
+            if not isinstance(generated, dict):
+                raise WorkflowError(f"generated step {step_id} contract must be a mapping")
+            write_contract = str(generated.get("write_contract") or "")
+            if write_contract not in {"read_only", "product_edit", "review_fix"}:
+                raise WorkflowError(f"generated step {step_id} has invalid write_contract: {write_contract}")
+            if write_contract == "read_only":
+                if generated.get("task_root_receipt") or step.get("edit_capable") is True:
+                    raise WorkflowError(f"generated read-only step {step_id} cannot declare edit admission")
+            else:
+                receipt_id = str(generated.get("task_root_receipt") or "")
+                if len(admission) != 1 or not receipt_id or admission[0]["id"] != receipt_id:
+                    raise WorkflowError(
+                        f"generated write-capable step {step_id} requires one matching task_root_receipt"
+                    )
+                if step.get("edit_capable") is not True:
+                    raise WorkflowError(f"generated write-capable step {step_id} must declare edit_capable true")
 
     terminal_gate = str(workflow.get("terminal_gate") or "").strip()
     if terminal_gate and terminal_gate not in step_indexes:
@@ -1599,6 +1616,79 @@ def verify_candidate_guard_artifact(
         raise WorkflowError(f"candidate_read_only checkpoint[{step_id}] artifact hash mismatch")
     evidence = load_json_object(path, f"candidate_read_only checkpoint[{step_id}]")
     return verify_candidate_guard_evidence(evidence, str(anchor.get("evidence_sha256") or ""), orchestration_cwd=orchestration_cwd)
+
+
+def canonical_admitted_task_root(declared_path: str) -> Path:
+    root = Path(declared_path).expanduser()
+    if not root.is_absolute():
+        raise WorkflowError("generated edit admission task root must be absolute")
+    try:
+        canonical = root.resolve(strict=True)
+    except OSError as exc:
+        raise WorkflowError(f"generated edit admission task root is unavailable: {declared_path}") from exc
+    if str(root) != str(canonical):
+        raise WorkflowError("generated edit admission task root must be an exact canonical path")
+    top = subprocess.run(
+        ["git", "-C", str(canonical), "rev-parse", "--path-format=absolute", "--show-toplevel"],
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if top.returncode != 0:
+        raise WorkflowError("generated edit admission task root is not a Git worktree")
+    if Path(top.stdout.strip()).resolve(strict=True) != canonical:
+        raise WorkflowError("generated edit admission path is not the exact Git worktree root")
+    return canonical
+
+
+def generated_dispatch_root(
+    step: dict[str, Any], receipts: dict[str, dict[str, Any]], context: dict[str, Any],
+    project_root: Path, completed_steps: dict[str, Any],
+) -> Path:
+    generated = step.get("generated_task_contract")
+    if not isinstance(generated, dict) or generated.get("write_contract") == "read_only":
+        return project_root
+    receipt_id = str(generated.get("task_root_receipt") or "")
+    contract = receipts[receipt_id]
+    producer = contract["producer"]
+    evidence = completed_steps.get(producer, {})
+    receipt_evidence = (evidence.get("receipts") or {}).get(receipt_id)
+    if not receipt_evidence:
+        raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: producer evidence missing")
+    path = receipt_path(contract, context, project_root)
+    payload = load_json_object(path, f"receipt[{receipt_id}]")
+    validate_receipt_payload(contract, payload, str(evidence["command_sha256"]), location=str(path))
+    if file_sha256(path) != str(receipt_evidence.get("sha256") or ""):
+        raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: artifact hash mismatch")
+    current = payload.get("current") or {}
+    workspace = payload.get("workspace") or {}
+    root = canonical_admitted_task_root(str(current.get("root") or ""))
+    if workspace.get("role") != "task" or workspace.get("current_root") != str(root):
+        raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: workspace/path binding mismatch")
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], stdin=subprocess.DEVNULL,
+        text=True, capture_output=True, check=False, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    branch = subprocess.run(
+        ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"], stdin=subprocess.DEVNULL,
+        text=True, capture_output=True, check=False, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    common = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain=v2", "--untracked-files=all"],
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    actual_common = str(Path(common.stdout.strip()).resolve()) if common.returncode == 0 else ""
+    if (head.returncode or common.returncode or status.returncode or status.stdout
+            or head.stdout.strip() != current.get("head")
+            or branch.stdout.strip() != current.get("branch_ref")
+            or actual_common != current.get("git_common_dir") or current.get("clean") is not True):
+        raise WorkflowError(f"step[{step['id']}].task_root_receipt[{receipt_id}]: exact task identity changed")
+    return root
 
 
 def execute_rendered_command(
@@ -2545,9 +2635,24 @@ def run_workflow(args: argparse.Namespace) -> int:
         stdout = ""
         stderr = ""
         exit_code = 0
-        env, child_continue_session_before = build_command_env(
-            project_root, command, capture_enabled, capture_path, f"workflow_{step_slug}", bool(args.dry_run)
-        )
+        dispatch_root = project_root
+        dispatch_root_error = ""
+        if not args.dry_run:
+            try:
+                dispatch_root = generated_dispatch_root(
+                    step, receipts, context, project_root, run_contract.get("completed_steps") or {}
+                )
+            except (WorkflowError, KeyError, TypeError, OSError) as exc:
+                dispatch_root_error = str(exc)
+        if dispatch_root_error:
+            env = child_process_environment(dict(os.environ))
+            child_continue_session_before = None
+        else:
+            env, child_continue_session_before = build_command_env(
+                dispatch_root, command, capture_enabled, capture_path, f"workflow_{step_slug}", bool(args.dry_run)
+            )
+        if dispatch_root != project_root:
+            env["TASK_ROOT"] = str(dispatch_root)
         env["JUNO_WORKFLOW_ID"] = workflow_id
         env["JUNO_WORKFLOW_RUN_ID"] = run_id
         env["JUNO_WORKFLOW_STEP_ID"] = step_id
@@ -2565,7 +2670,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         for receipt_id, receipt in context.get("receipts", {}).items():
             env_key = "JUNO_WORKFLOW_RECEIPT_" + re.sub(r"[^A-Za-z0-9]", "_", receipt_id).upper()
             env[env_key] = str(receipt["path"])
-        precondition_error = ""
+        precondition_error = dispatch_root_error
         candidate_guard: dict[str, Any] | None = None
         candidate_guard_path = legacy_step_dir / "candidate_read_only.json"
         if not args.dry_run:
@@ -2633,7 +2738,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
             inject_interruption("command_started")
             try:
-                proc = execute_rendered_command(command, project_root, env, live_log_path, activity, active_marker)
+                proc = execute_rendered_command(command, dispatch_root, env, live_log_path, activity, active_marker)
                 stdout = proc.stdout or ""
                 stderr = proc.stderr or ""
                 exit_code = int(proc.returncode)

@@ -266,6 +266,62 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).not.toContain('--checkpoint-controller');
   });
 
+  it('dispatches generated write steps only from the receipt-bound task root', async () => {
+    const taskRootConfigured = path.join(testDir, 'task-worktree');
+    await fs.ensureDir(taskRootConfigured);
+    const taskRoot = await fs.realpath(taskRootConfigured);
+    spawnSync('git', ['init', '-b', 'task-branch'], { cwd: taskRoot, encoding: 'utf8' });
+    await fs.writeFile(path.join(taskRoot, 'tracked.txt'), 'base\n');
+    spawnSync('git', ['add', 'tracked.txt'], { cwd: taskRoot });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], { cwd: taskRoot });
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: taskRoot, encoding: 'utf8' }).stdout.trim();
+    const common = (await fs.realpath(spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: taskRoot, encoding: 'utf8',
+    }).stdout.trim()));
+    const receiptPath = path.join(testDir, 'edit-admission.json');
+    const markerPath = path.join(testDir, 'dispatch.json');
+    const producer = (receiptRoot: string) => [
+      'python3', '-c',
+      `import json,os,pathlib; pathlib.Path(${JSON.stringify(receiptPath)}).write_text(json.dumps({"schema_version":"juno_edit_preflight.v1","producer_step_digest":os.environ["JUNO_WORKFLOW_STEP_DIGEST"],"passed":True,"task_id":"T1","current":{"root":${JSON.stringify(receiptRoot)},"git_common_dir":${JSON.stringify(common)},"branch_ref":"refs/heads/task-branch","head":${JSON.stringify(head)},"clean":True},"workspace":{"role":"task","current_root":${JSON.stringify(receiptRoot)}},"target":{"target_ref":"refs/heads/main"},"expected_paths":["tracked.txt"]}))`,
+    ];
+    const workflow = (receiptRoot: string) => ({
+      schema_version: 1,
+      workflow_id: 'generated_edit_dispatch',
+      receipts: [{
+        id: 'edit', producer: 'admit', path: receiptPath, schema_version: 'juno_edit_preflight.v1',
+        required_fields: ['producer_step_digest', 'passed', 'task_id', 'current.root', 'current.git_common_dir', 'current.branch_ref', 'current.head', 'current.clean', 'workspace.role', 'workspace.current_root'],
+        expected_fields: { passed: true, task_id: 'T1', 'current.root': taskRoot, 'current.clean': true, 'workspace.role': 'task', 'workspace.current_root': taskRoot },
+      }],
+      steps: [
+        { id: 'admit', capture_session: false, fail_workflow: true, command: producer(receiptRoot) },
+        {
+          id: 'edit', capture_session: false, fail_workflow: true, edit_capable: true, requires_receipts: ['edit'],
+          generated_task_contract: { role: 'review', write_contract: 'review_fix', task_root_receipt: 'edit' },
+          command: ['python3', '-c', `import json,os,pathlib; pathlib.Path(${JSON.stringify(markerPath)}).write_text(json.dumps({"cwd":str(pathlib.Path.cwd()),"task_root":os.environ.get("TASK_ROOT"),"controller_root":os.environ.get("JUNO_TASK_ROOT")}))`],
+        },
+      ],
+    });
+    const workflowPath = path.join(testDir, 'generated-edit.json');
+    await fs.writeJson(workflowPath, workflow(taskRoot));
+
+    const accepted = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, 'accepted'), '--print-output', 'none']);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(await fs.pathExists(markerPath), accepted.stdout + accepted.stderr).toBe(true);
+    expect(await fs.readJson(markerPath)).toEqual({ cwd: taskRoot, task_root: taskRoot, controller_root: await fs.realpath(workflowFixtureController!) });
+
+    await fs.remove(markerPath);
+    const drifted: any = workflow(taskRoot);
+    drifted.steps.splice(1, 0, {
+      id: 'drift-after-admission', capture_session: false, fail_workflow: true,
+      command: ['git', '-C', taskRoot, 'checkout', '--detach'],
+    });
+    await fs.writeJson(workflowPath, drifted);
+    const refused = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, 'refused'), '--print-output', 'none']);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr + refused.stdout).toContain('exact task identity changed');
+    expect(await fs.pathExists(markerPath)).toBe(false);
+  });
+
   it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
     const workflowPath = path.join(testDir, 'local-integration.json');
     const workflow: any = {
