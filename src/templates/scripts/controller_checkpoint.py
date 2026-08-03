@@ -495,7 +495,14 @@ def managed_hook(helper: Path, user_hook: Path | None, user_sha256: str | None) 
         digest = shlex.quote(user_sha256)
         user = (f"actual=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' {quoted})\n"
                 f"if [ \"$actual\" != {digest} ]; then echo 'controller-checkpoint: approved user hook hash mismatch' >&2; exit 2; fi\n"
-                f"if [ -x {quoted} ]; then exec {quoted} \"$@\"; fi\n")
+                f"if [ -x {quoted} ]; then\n"
+                f"  set +e\n"
+                f"  {quoted} \"$@\"\n"
+                f"  status=$?\n"
+                f"  set -e\n"
+                f"  if [ \"$status\" -ne 0 ]; then exit \"$status\"; fi\n"
+                f"  {guard}"
+                f"fi\n")
     return "#!/bin/sh\nset -eu\n" + HOOK_MARKER + "\n" + guard + user
 
 

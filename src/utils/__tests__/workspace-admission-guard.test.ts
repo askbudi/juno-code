@@ -212,7 +212,9 @@ describe('joined workspace edit and commit admission', () => {
 
     const hook = path.join(controller, '.git', 'hooks', 'pre-commit');
     await fs.ensureDir(path.dirname(hook));
-    await fs.writeFile(hook, '#!/bin/sh\nprintf user-hook\\n >> "' + path.join(temp, 'hook.log') + '"\n');
+    await fs.writeFile(hook, '#!/bin/sh\nprintf user-hook\\n >> "' + path.join(temp, 'hook.log') + '"\n' +
+      'if [ "${JUNO_TEST_USER_HOOK_EXIT:-0}" -ne 0 ]; then exit "$JUNO_TEST_USER_HOOK_EXIT"; fi\n' +
+      'if grep -q "stage-from-user-hook" product.txt; then git add -- product.txt; fi\n');
     await fs.chmod(hook, 0o755);
     const digest = createHash('sha256').update(await fs.readFile(hook)).digest('hex');
     expect(python(checkpoint, ['--root', controller, 'hook', 'install'], controller).status).toBe(2);
@@ -224,6 +226,28 @@ describe('joined workspace edit and commit admission', () => {
     git(controller, 'add', '.juno_task/tasks/one.md');
     git(controller, 'commit', '-m', 'controller evidence');
     expect(await fs.readFile(path.join(temp, 'hook.log'), 'utf8')).toContain('user-hook');
+
+    // A successful approved hook cannot make a product path durable after the first guard.
+    const beforeHookStageHead = git(controller, 'rev-parse', 'HEAD');
+    await fs.writeFile(path.join(controller, 'product.txt'), 'stage-from-user-hook\n');
+    await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'hook-stage-attempt\n');
+    git(controller, 'add', '.juno_task/tasks/one.md');
+    const hookStagedProduct = gitCommitResult(controller, 'user hook must not stage product');
+    expect(hookStagedProduct.status).not.toBe(0);
+    expect(hookStagedProduct.stderr).toContain('product.txt (product_path)');
+    expect(git(controller, 'rev-parse', 'HEAD')).toBe(beforeHookStageHead);
+    expect(git(controller, 'diff', '--cached', '--name-only').split('\n').sort()).toEqual([
+      '.juno_task/tasks/one.md', 'product.txt',
+    ]);
+    git(controller, 'restore', '--staged', '--worktree', '.juno_task/tasks/one.md', 'product.txt');
+
+    // A user-hook failure keeps its exact nonzero status and does not reach the second guard.
+    await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'user-hook-nonzero\n');
+    git(controller, 'add', '.juno_task/tasks/one.md');
+    const userNonzero = run(hook, [], controller, { JUNO_TEST_USER_HOOK_EXIT: '23' });
+    expect(userNonzero.status).toBe(23);
+    expect(git(controller, 'rev-parse', 'HEAD')).toBe(beforeHookStageHead);
+    git(controller, 'restore', '--staged', '--worktree', '.juno_task/tasks/one.md');
 
     // The managed guard runs first, and the approved composed bytes remain hash-bound.
     await fs.writeFile(path.join(controller, 'product.txt'), 'guard first\n');
@@ -240,7 +264,9 @@ describe('joined workspace edit and commit admission', () => {
     expect(drifted.status).not.toBe(0);
     expect(drifted.stderr).toContain('approved user hook hash mismatch');
     git(controller, 'restore', '--staged', '--worktree', '.juno_task/tasks/one.md');
-    await fs.writeFile(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), '#!/bin/sh\nprintf user-hook\\n >> "' + path.join(temp, 'hook.log') + '"\n');
+    await fs.writeFile(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), '#!/bin/sh\nprintf user-hook\\n >> "' + path.join(temp, 'hook.log') + '"\n' +
+      'if [ "${JUNO_TEST_USER_HOOK_EXIT:-0}" -ne 0 ]; then exit "$JUNO_TEST_USER_HOOK_EXIT"; fi\n' +
+      'if grep -q "stage-from-user-hook" product.txt; then git add -- product.txt; fi\n');
     await fs.chmod(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), 0o755);
 
     const bypassBase = git(controller, 'rev-parse', 'HEAD');
