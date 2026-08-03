@@ -69,13 +69,20 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
 
     explicit = os.environ.get("JUNO_TASK_ROOT", "").strip()
     registered = config(cwd, "juno.controller.path") if repo_root_text else None
+    local_initialized_root = not repo_root_text and (current_root / ".juno_task").is_dir()
     # Environment is routing/assertion only. Persisted controller registration,
-    # checkout registration, and primary-worktree topology determine identity.
-    source = "registration" if registered else "primary-worktree"
-    persisted_controller = canonical(registered, current_root) if registered else (
-        current_root if repo_root_text and is_primary_worktree(current_root) else None
+    # checkout topology, or an initialized non-Git project determine identity.
+    # The latter must not inherit an unrelated parent shell's controller route.
+    source = (
+        "registration" if registered else
+        "primary-worktree" if repo_root_text else
+        "non-git-current-root" if local_initialized_root else
+        "environment" if explicit else "current-root"
     )
-    asserted_controller = canonical(explicit, current_root) if explicit else None
+    persisted_controller = canonical(registered, current_root) if registered else (
+        current_root if (repo_root_text and is_primary_worktree(current_root)) or local_initialized_root else None
+    )
+    asserted_controller = canonical(explicit, current_root) if explicit and not local_initialized_root else None
     controller = persisted_controller or asserted_controller or current_root
     expected_branch = config(cwd, "juno.controller.branch") if registered else None
     asserted_branch = os.environ.get("JUNO_CONTROLLER_BRANCH", "").strip() or None

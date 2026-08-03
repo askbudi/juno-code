@@ -135,6 +135,29 @@ describe('canonical controller resolver', () => {
     }
   });
 
+  it('keeps an initialized non-Git project local despite an inherited controller route', async () => {
+    const project = path.join(sandbox, 'initialized non-git project');
+    await fs.ensureDir(path.join(project, '.juno_task', 'scripts'));
+    await fs.copy(resolverTemplate, path.join(project, '.juno_task', 'scripts', 'controller_resolver.py'));
+
+    const result = run(
+      'python3',
+      [path.join(project, '.juno_task/scripts/controller_resolver.py'), '--cwd', project],
+      project,
+      { JUNO_TASK_ROOT: controller, JUNO_WORKSPACE_ROLE: 'controller' },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      path: await fs.realpath(project),
+      current_root: await fs.realpath(project),
+      source: 'non-git-current-root',
+      role: 'controller',
+      role_source: 'non-git-current-root',
+      valid: true,
+    });
+  });
+
   it('treats explicit roots as assertions and never falls back from invalid or unrelated roots', async () => {
     const explicit = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, { JUNO_TASK_ROOT: controller });
     expect(JSON.parse(explicit.stdout).source).toBe('registration');
