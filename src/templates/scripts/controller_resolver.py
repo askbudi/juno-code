@@ -77,17 +77,23 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
     asserted_branch = os.environ.get("JUNO_CONTROLLER_BRANCH", "").strip() or None
     persisted_role = worktree_config(cwd, "juno.workspace.role") if repo_root_text else None
     role_base = worktree_config(cwd, "juno.workspace.roleBase") if repo_root_text else None
-    if persisted_controller == current_root:
+    task_id = worktree_config(cwd, "juno.workspace.taskId") if repo_root_text else None
+    manifest_identity = worktree_config(cwd, "juno.workspace.manifestIdentity") if repo_root_text else None
+    if not repo_root_text:
+        role = "controller"
+        role_source = "non-git-current-root"
+    elif persisted_controller == current_root:
         role = "controller"
         role_source = "controller-registration" if registered else "primary-worktree"
     else:
-        role = persisted_role or "task"
-        role_source = "worktree-registration" if persisted_role else "linked-worktree-topology"
+        role = persisted_role or "unregistered"
+        role_source = "worktree-registration" if persisted_role else "missing-worktree-registration"
     asserted_role = os.environ.get("JUNO_WORKSPACE_ROLE", "").strip() or None
     result: dict[str, object] = {
         "path": str(controller), "current_root": str(current_root), "resolver": "installed",
         "source": source, "expected_branch": expected_branch,
         "actual_branch": None, "role": role, "role_source": role_source, "role_base": role_base,
+        "task_id": task_id, "manifest_identity": manifest_identity,
         "role_assertion": asserted_role, "enforcement": enforcement,
         "operation": operation, "valid": True, "diagnostics": [],
     }
@@ -111,8 +117,14 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         errors.append(f"JUNO_TASK_ROOT assertion mismatch: persisted={persisted_controller} asserted={asserted_controller}")
     if asserted_branch and expected_branch and asserted_branch != expected_branch:
         errors.append(f"JUNO_CONTROLLER_BRANCH assertion mismatch: persisted={expected_branch!r} asserted={asserted_branch!r}")
-    if role not in VALID_ROLES:
+    if role == "unregistered":
+        errors.append("linked worktree has no persisted workspace role registration; register it through the lifecycle owner")
+    elif role not in VALID_ROLES:
         errors.append(f"invalid persisted workspace role {role!r}; expected controller, task, or integration-owner")
+    if role == "task" and (not task_id or not manifest_identity):
+        errors.append("task workspace registration is incomplete: taskId and manifestIdentity are required")
+    if role != "task" and (task_id or manifest_identity):
+        errors.append("non-task workspace carries task lifecycle identity")
     if asserted_role and asserted_role not in VALID_ROLES:
         errors.append(f"invalid JUNO_WORKSPACE_ROLE assertion {asserted_role!r}")
     elif asserted_role and asserted_role != role:
@@ -141,6 +153,8 @@ def main() -> None:
     parser.add_argument("--register", metavar="PATH")
     parser.add_argument("--branch")
     parser.add_argument("--register-workspace-role", choices=sorted(VALID_ROLES))
+    parser.add_argument("--task-id")
+    parser.add_argument("--manifest-identity")
     args = parser.parse_args()
     cwd = Path(args.cwd).resolve()
     if args.register:
@@ -165,11 +179,24 @@ def main() -> None:
             raise SystemExit("controller-resolver: controller role requires persisted controller identity")
         if args.register_workspace_role != "controller" and persisted_controller == current_root:
             raise SystemExit("controller-resolver: task/integration-owner role requires a linked non-controller worktree")
-        subprocess.run(["git", "-C", str(cwd), "config", "--local", "extensions.worktreeConfig", "true"], check=True)
-        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.role", args.register_workspace_role], check=True)
+        if args.register_workspace_role == "task":
+            if not args.task_id or not args.manifest_identity:
+                raise SystemExit("controller-resolver: task role registration requires --task-id and --manifest-identity")
+            if not (len(args.manifest_identity) == 64 and all(c in "0123456789abcdef" for c in args.manifest_identity)):
+                raise SystemExit("controller-resolver: --manifest-identity must be a lowercase SHA-256")
+        elif args.task_id or args.manifest_identity:
+            raise SystemExit("controller-resolver: task lifecycle identity is valid only for task registration")
         base = git(cwd, "rev-parse", "HEAD")
         if not base:
             raise SystemExit("controller-resolver: role registration requires a readable HEAD")
+        subprocess.run(["git", "-C", str(cwd), "config", "--local", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.role", args.register_workspace_role], check=True)
+        if args.register_workspace_role == "task":
+            subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.taskId", args.task_id], check=True)
+            subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.manifestIdentity", args.manifest_identity], check=True)
+        else:
+            subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "--unset-all", "juno.workspace.taskId"], check=False)
+            subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "--unset-all", "juno.workspace.manifestIdentity"], check=False)
         subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.roleBase", base], check=True)
     result = resolve(cwd, args.operation)
     if args.format == "root":

@@ -85,7 +85,7 @@ def target_preflight(args:argparse.Namespace)->dict[str,Any]:
       "observed_at":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
     }
     write(args.output,payload)
-    if not payload["passed"]: raise CandidateError(classification)
+    if not payload["passed"]: raise CandidateError(str(payload["classification"]))
     return payload
 
 def plan(args:argparse.Namespace)->dict[str,Any]:

@@ -212,11 +212,20 @@ def configure_sparse_checkout(path: Path, paths: list[str], base: str) -> None:
         raise LifecycleError(f"git sparse-checkout set failed: {result.stderr.strip()}")
     git(path, "reset", "--hard", base)
 
-def register_worktree_role(repo: Path, path: Path, role: str) -> None:
+def lifecycle_manifest_identity(*, task_id: str, branch: str, base: str, common: Path, expected_paths: list[str]) -> str:
+    bound = {"task_id": task_id, "branch_ref": branch, "base_sha": base,
+             "git_common_dir": str(common), "expected_paths": expected_paths}
+    return hashlib.sha256(json.dumps(bound, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+def register_worktree_role(repo: Path, path: Path, role: str, *, task_id: str, manifest_identity: str) -> None:
     git(repo, "config", "--local", "extensions.worktreeConfig", "true")
     git(path, "config", "--worktree", "juno.workspace.role", role)
     git(path, "config", "--worktree", "juno.workspace.roleBase", git(path, "rev-parse", "HEAD"))
-    if git(path, "config", "--worktree", "--get", "juno.workspace.role") != role:
+    git(path, "config", "--worktree", "juno.workspace.taskId", task_id)
+    git(path, "config", "--worktree", "juno.workspace.manifestIdentity", manifest_identity)
+    if (git(path, "config", "--worktree", "--get", "juno.workspace.role") != role
+            or git(path, "config", "--worktree", "--get", "juno.workspace.taskId") != task_id
+            or git(path, "config", "--worktree", "--get", "juno.workspace.manifestIdentity") != manifest_identity):
         raise LifecycleError("workspace_role_registration_failed")
 
 def rollback_failed_create(repo: Path, path: Path, branch: str, base: str) -> dict[str, Any]:
@@ -261,13 +270,17 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
     if args.hard_min_free_bytes is not None and capacity["available"] and capacity["free_bytes"] < args.hard_min_free_bytes:
         raise LifecycleError(f"capacity_below_hard_threshold threshold={args.hard_min_free_bytes} observed={capacity['free_bytes']} recovery=free_space")
     if lock_path(repo).exists(): raise LifecycleError(f"git_index_lock_present: {lock_path(repo)}")
+    manifest_identity = lifecycle_manifest_identity(task_id=args.task_id, branch=branch, base=base,
+                                                   common=common, expected_paths=expected_paths)
     matches = [row for row in listed(repo) if Path(row["worktree"]).resolve() == path]
     if matches:
         row = matches[0]
         if row.get("branch") != branch or row.get("HEAD") != base: raise LifecycleError("existing_worktree_identity_mismatch")
         if status(path): raise LifecycleError("existing_worktree_dirty")
-        if git(path, "config", "--worktree", "--get", "juno.workspace.role", check=False) != "task":
-            raise LifecycleError("existing_worktree_role_mismatch")
+        if (git(path, "config", "--worktree", "--get", "juno.workspace.role", check=False) != "task"
+                or git(path, "config", "--worktree", "--get", "juno.workspace.taskId", check=False) != args.task_id
+                or git(path, "config", "--worktree", "--get", "juno.workspace.manifestIdentity", check=False) != manifest_identity):
+            raise LifecycleError("existing_worktree_role_or_manifest_identity_mismatch")
         policy = checkout_policy(path)
         requested_mode = "sparse" if args.sparse else "full"
         if (not policy["consistent"] or policy["mode"] != requested_mode
@@ -283,7 +296,7 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
                 configure_sparse_checkout(path, requested_sparse_paths, base)
             else:
                 git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
-            register_worktree_role(repo, path, "task")
+            register_worktree_role(repo, path, "task", task_id=args.task_id, manifest_identity=manifest_identity)
             policy = checkout_policy(path)
             actual_head = git(path, "rev-parse", "HEAD")
             actual_branch = git(path, "symbolic-ref", "-q", "HEAD", check=False)
@@ -299,7 +312,8 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
     payload = {"schema_version": SCHEMA, "operation": "create", "outcome": outcome, "repository_root": str(root),
                "git_common_dir": str(common), "target_ref": target_ref, "target_sha_at_create": target_sha_at_create,
                "base_sha": base, "task_id": args.task_id,
-               "branch_ref": branch, "worktree": str(path), "workspace_role": "task", "expected_paths": expected_paths,
+               "branch_ref": branch, "worktree": str(path), "workspace_role": "task",
+               "workspace_manifest_identity": manifest_identity, "expected_paths": expected_paths,
                "sparse_tooling_paths": sparse_tooling_paths, "checkout_policy": policy,
                "validation_commands": args.validation_command, "cleanup_owner": args.cleanup_owner,
                "capacity": capacity, "clean": status(path) == ""}
@@ -349,7 +363,10 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
     """Join persisted role, target/base, and exact lifecycle evidence without Git mutation."""
     current = args.path.expanduser().resolve()
     expected_paths = normalize_sparse_paths(args.expected_path)
-    target = integration_candidate.classify_target(args.repository, args.target_ref, args.approved_base)
+    try:
+        target = integration_candidate.classify_target(args.repository, args.target_ref, args.approved_base)
+    except integration_candidate.CandidateError as exc:
+        raise LifecycleError(f"target_classifier_refused: {exc}") from exc
     role = controller_resolver.resolve(current, "product-edit")
     refusals: list[str] = []
     manifest: dict[str, Any] | None = None
@@ -368,14 +385,23 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 "git_common_dir_mismatch": manifest.get("git_common_dir") != target["git_common_dir"],
                 "expected_paths_mismatch": sorted(manifest.get("expected_paths") or []) != expected_paths,
                 "worktree_path_mismatch": Path(str(manifest.get("worktree") or "/nonexistent")).resolve() != current,
+                "manifest_identity_mismatch": manifest.get("workspace_manifest_identity") != lifecycle_manifest_identity(
+                    task_id=args.task_id, branch=str(manifest.get("branch_ref") or ""),
+                    base=target["approved_base"], common=Path(target["git_common_dir"]), expected_paths=expected_paths),
             }
             refusals.extend(name for name, failed in checks.items() if failed)
+    if role.get("task_id") and role.get("task_id") != args.task_id:
+        refusals.append("persisted_task_id_mismatch")
+    if manifest and role.get("manifest_identity") != manifest.get("workspace_manifest_identity"):
+        refusals.append("persisted_manifest_identity_mismatch")
     if role["role"] in {"controller", "integration-owner"}:
         refusals.append(f"workspace_role_{role['role']}_refuses_product_edit")
     elif role["role"] != "task":
         refusals.append("workspace_role_not_task")
     if not target["passed"]:
         refusals.append(str(target["classification"]))
+    elif target["classification"] != "exact":
+        refusals.append("target_not_exact_for_edit")
     if role["role"] == "task" and manifest is None:
         refusals.append("create_manifest_required")
     actual: dict[str, Any] = {"root": None, "git_common_dir": None, "branch_ref": None, "head": None, "clean": False}
@@ -394,10 +420,14 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
         refusals.append("path_is_not_registered_git_worktree")
     if args.verify_receipt:
         verification = json.loads(args.verify_receipt.read_text(encoding="utf-8"))
+        verification_actual = verification.get("actual") or {}
         if (verification.get("schema_version") != SCHEMA or verification.get("operation") != "verify"
                 or verification.get("passed") is not True or verification.get("manifest_sha256") != manifest_hash
-                or (verification.get("actual") or {}).get("worktree") != str(current)):
+                or verification_actual.get("worktree") != str(current)):
             refusals.append("verify_receipt_mismatch")
+        elif any(verification_actual.get(key) != actual.get(key)
+                 for key in ("head", "branch_ref", "git_common_dir", "clean")):
+            refusals.append("verify_receipt_actual_mismatch")
     elif role["role"] == "task":
         refusals.append("verify_receipt_required")
     lifecycle_script = SCRIPT_DIR / "worktree_lifecycle.py"

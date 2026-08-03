@@ -21,6 +21,9 @@ function git(cwd: string, ...args: string[]) {
 function python(script: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
   return run('python3', [script, ...args], cwd, env);
 }
+function gitCommitResult(cwd: string, message: string) {
+  return run('git', ['commit', '-m', message], cwd);
+}
 
 describe('joined workspace edit and commit admission', () => {
   let temp: string;
@@ -63,7 +66,10 @@ describe('joined workspace edit and commit admission', () => {
   it('uses persisted role evidence and refuses environment reclassification', () => {
     const taskRole = python(resolver, ['--cwd', task], task);
     expect(taskRole.status, taskRole.stderr).toBe(0);
-    expect(JSON.parse(taskRole.stdout)).toMatchObject({ role: 'task', role_source: 'worktree-registration', role_base: base });
+    expect(JSON.parse(taskRole.stdout)).toMatchObject({
+      role: 'task', role_source: 'worktree-registration', role_base: base,
+      task_id: 'T1', manifest_identity: expect.any(String),
+    });
     const spoof = python(resolver, ['--cwd', task], task, { JUNO_WORKSPACE_ROLE: 'controller' });
     expect(spoof.status).toBe(2);
     expect(spoof.stderr).toContain('assertion mismatch');
@@ -76,6 +82,43 @@ describe('joined workspace edit and commit admission', () => {
     const ownerBoundary = python(checkpoint, ['--root', task, 'staged-check', '--json'], task);
     expect(ownerBoundary.status).toBe(2);
     expect(ownerBoundary.stderr).toContain('integration_owner_commit_forbidden');
+  });
+
+  it('fails closed for an unregistered legacy linked worktree without mutation', async () => {
+    const legacy = path.join(temp, 'legacy');
+    git(controller, 'worktree', 'add', '--detach', legacy, base);
+    const before = git(legacy, 'rev-parse', 'HEAD');
+    const result = python(resolver, ['--cwd', legacy], legacy);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('linked worktree has no persisted workspace role registration');
+    expect(result.stderr).not.toContain('Traceback');
+    expect(git(legacy, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(legacy, 'status', '--porcelain')).toBe('');
+  });
+
+  it('refuses substituted lifecycle identity even when manifest fields look valid', async () => {
+    git(task, 'config', '--worktree', 'juno.workspace.taskId', 'OTHER');
+    const receipt = path.join(temp, 'substituted-edit.json');
+    const result = python(path.join(task, '.juno_task', 'scripts', 'worktree_lifecycle.py'), ['edit-preflight',
+      '--repository', task, '--target-ref', 'refs/heads/main', '--approved-base', base,
+      '--task-id', 'T1', '--expected-path', 'product.txt', '--path', task, '--manifest', manifest,
+      '--verify-receipt', verification, '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1',
+      '--cleanup-owner', 'fixture', '--next-receipt', path.join(temp, 'next.json'), '--output', receipt], task);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('persisted_task_id_mismatch');
+    expect(result.stderr).not.toContain('Traceback');
+    expect(JSON.parse(fs.readFileSync(receipt, 'utf8')).passed).toBe(false);
+  });
+
+  it('keeps target classifier failures typed without traceback', () => {
+    const receipt = path.join(temp, 'bad-target-edit.json');
+    const result = python(lifecycle, ['edit-preflight', '--repository', controller, '--target-ref', 'main',
+      '--approved-base', base, '--task-id', 'T1', '--expected-path', 'product.txt', '--path', controller,
+      '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--cleanup-owner', 'fixture',
+      '--next-receipt', path.join(temp, 'next.json'), '--output', receipt], controller);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('target_classifier_refused');
+    expect(result.stderr).not.toContain('Traceback');
   });
 
   it('refuses an exact staged gitlink without changing HEAD or index', async () => {
@@ -127,6 +170,34 @@ describe('joined workspace edit and commit admission', () => {
     expect(await fs.pathExists(path.join(task, '.juno_task', 'scripts', '__pycache__'))).toBe(false);
   });
 
+  it('refuses stale target and substituted verification receipts', async () => {
+    const forgedPath = path.join(temp, 'forged-verify.json');
+    const forged = JSON.parse(await fs.readFile(verification, 'utf8'));
+    forged.actual.head = 'f'.repeat(40);
+    await fs.writeJson(forgedPath, forged);
+    const forgedOutput = path.join(temp, 'forged-edit.json');
+    let result = python(path.join(task, '.juno_task', 'scripts', 'worktree_lifecycle.py'), ['edit-preflight',
+      '--repository', task, '--target-ref', 'refs/heads/main', '--approved-base', base, '--task-id', 'T1',
+      '--expected-path', 'product.txt', '--path', task, '--manifest', manifest, '--verify-receipt', forgedPath,
+      '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--cleanup-owner', 'fixture',
+      '--next-receipt', path.join(temp, 'next.json'), '--output', forgedOutput], task);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('verify_receipt_actual_mismatch');
+
+    await fs.writeFile(path.join(controller, 'advance.txt'), 'advance\n');
+    git(controller, 'add', 'advance.txt');
+    git(controller, 'commit', '--no-verify', '-m', 'advance target');
+    const staleOutput = path.join(temp, 'stale-edit.json');
+    result = python(path.join(task, '.juno_task', 'scripts', 'worktree_lifecycle.py'), ['edit-preflight',
+      '--repository', task, '--target-ref', 'refs/heads/main', '--approved-base', base, '--task-id', 'T1',
+      '--expected-path', 'product.txt', '--path', task, '--manifest', manifest, '--verify-receipt', verification,
+      '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--cleanup-owner', 'fixture',
+      '--next-receipt', path.join(temp, 'next-stale.json'), '--output', staleOutput], task);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('target_not_exact_for_edit');
+    expect(JSON.parse(await fs.readFile(staleOutput, 'utf8')).target.classification).toBe('advanced_descendant');
+  });
+
   it('shares one classifier across staged checks, hooks, and no-verify detection', async () => {
     await fs.writeFile(path.join(controller, 'product.txt'), 'controller product\n');
     git(controller, 'add', 'product.txt');
@@ -153,6 +224,24 @@ describe('joined workspace edit and commit admission', () => {
     git(controller, 'add', '.juno_task/tasks/one.md');
     git(controller, 'commit', '-m', 'controller evidence');
     expect(await fs.readFile(path.join(temp, 'hook.log'), 'utf8')).toContain('user-hook');
+
+    // The managed guard runs first, and the approved composed bytes remain hash-bound.
+    await fs.writeFile(path.join(controller, 'product.txt'), 'guard first\n');
+    git(controller, 'add', 'product.txt');
+    const logBefore = await fs.readFile(path.join(temp, 'hook.log'), 'utf8');
+    const guardFirst = gitCommitResult(controller, 'refused before user hook');
+    expect(guardFirst.status).not.toBe(0);
+    expect(await fs.readFile(path.join(temp, 'hook.log'), 'utf8')).toBe(logBefore);
+    git(controller, 'restore', '--staged', '--worktree', 'product.txt');
+    await fs.appendFile(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), '# drift\n');
+    await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'three\n');
+    git(controller, 'add', '.juno_task/tasks/one.md');
+    const drifted = gitCommitResult(controller, 'refuse drifted composed hook');
+    expect(drifted.status).not.toBe(0);
+    expect(drifted.stderr).toContain('approved user hook hash mismatch');
+    git(controller, 'restore', '--staged', '--worktree', '.juno_task/tasks/one.md');
+    await fs.writeFile(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), '#!/bin/sh\nprintf user-hook\\n >> "' + path.join(temp, 'hook.log') + '"\n');
+    await fs.chmod(path.join(controller, '.git', 'hooks', 'pre-commit.juno-user'), 0o755);
 
     const bypassBase = git(controller, 'rev-parse', 'HEAD');
     await fs.writeFile(path.join(controller, 'product.txt'), 'bypass\n');

@@ -485,10 +485,44 @@ def file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def managed_hook(helper: Path, user_hook: Path | None) -> str:
-    user = "" if user_hook is None else f"if [ -x {shlex.quote(str(user_hook))} ]; then {shlex.quote(str(user_hook))} \"$@\"; fi\n"
-    return ("#!/bin/sh\nset -eu\n" + HOOK_MARKER + "\n" + user
-            + f"exec python3 {shlex.quote(str(helper.resolve()))} --root \"$(git rev-parse --show-toplevel)\" staged-check\n")
+def managed_hook(helper: Path, user_hook: Path | None, user_sha256: str | None) -> str:
+    guard = f"python3 {shlex.quote(str(helper.resolve()))} --root \"$(git rev-parse --show-toplevel)\" staged-check\n"
+    if user_hook is None:
+        user = ""
+    else:
+        assert user_sha256 is not None
+        quoted = shlex.quote(str(user_hook))
+        digest = shlex.quote(user_sha256)
+        user = (f"actual=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' {quoted})\n"
+                f"if [ \"$actual\" != {digest} ]; then echo 'controller-checkpoint: approved user hook hash mismatch' >&2; exit 2; fi\n"
+                f"if [ -x {quoted} ]; then exec {quoted} \"$@\"; fi\n")
+    return "#!/bin/sh\nset -eu\n" + HOOK_MARKER + "\n" + guard + user
+
+
+def load_hook_metadata(metadata: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or not value.get("helper"):
+            raise ValueError("missing helper")
+        if bool(value.get("user_hook")) != bool(value.get("user_sha256")):
+            raise ValueError("incomplete user hook identity")
+        return value
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise CheckpointError(f"managed hook metadata invalid: {exc}") from exc
+
+
+def verify_managed_hook(hook: Path, metadata: Path) -> tuple[dict[str, Any], str]:
+    if not metadata.is_file():
+        raise CheckpointError("managed hook metadata missing; refuse operation")
+    meta = load_hook_metadata(metadata)
+    user = Path(meta["user_hook"]) if meta.get("user_hook") else None
+    if user is not None:
+        if not user.is_file() or file_sha(user) != meta["user_sha256"]:
+            raise CheckpointError("approved user hook hash mismatch; refuse operation")
+    expected = managed_hook(Path(meta["helper"]), user, meta.get("user_sha256"))
+    if hook.read_text(encoding="utf-8") != expected:
+        raise CheckpointError("managed hook drift; refuse operation")
+    return meta, expected
 
 
 def parse_approval(value: str | None) -> tuple[Path, str] | None:
@@ -508,14 +542,17 @@ def hook_command(root: Path, action: str, approval_value: str | None) -> dict[st
     hook, user_hook, metadata = hook_paths(root)
     approval = parse_approval(approval_value)
     if action == "status":
+        managed = hook.is_file() and HOOK_MARKER in hook.read_text(encoding="utf-8", errors="replace")
+        healthy = False
+        if managed:
+            verify_managed_hook(hook, metadata)
+            healthy = True
         return {"action": action, "hook": str(hook), "exists": hook.exists(), "sha256": file_sha(hook) if hook.is_file() else None,
-                "managed": hook.is_file() and HOOK_MARKER in hook.read_text(encoding="utf-8", errors="replace")}
+                "managed": managed, "healthy": healthy}
     if action == "install":
         existing_managed = hook.is_file() and HOOK_MARKER in hook.read_text(encoding="utf-8", errors="replace")
         if existing_managed:
-            if not metadata.is_file(): raise CheckpointError("managed hook metadata missing; refuse replacement")
-            meta = json.loads(metadata.read_text(encoding="utf-8")); expected = managed_hook(Path(meta["helper"]), Path(meta["user_hook"]) if meta.get("user_hook") else None)
-            if hook.read_text(encoding="utf-8") != expected: raise CheckpointError("managed hook drift; refuse replacement")
+            verify_managed_hook(hook, metadata)
             return {"action": action, "outcome": "already_installed", "hook": str(hook)}
         if hook.exists():
             if approval is None or approval[0] != hook or approval[1] != file_sha(hook):
@@ -523,20 +560,21 @@ def hook_command(root: Path, action: str, approval_value: str | None) -> dict[st
             if user_hook.exists() or metadata.exists(): raise CheckpointError("hook composition sidecar collision")
         elif approval is not None:
             raise CheckpointError("--approve-existing supplied but no existing hook is present")
-        helper = Path(__file__).resolve(); content = managed_hook(helper, user_hook if hook.exists() else None)
+        helper = Path(__file__).resolve()
+        approved_user_sha = approval[1] if hook.exists() and approval else None
+        content = managed_hook(helper, user_hook if hook.exists() else None, approved_user_sha)
         hook.parent.mkdir(parents=True, exist_ok=True)
         if hook.exists(): hook.rename(user_hook)
         hook.write_text(content, encoding="utf-8"); hook.chmod(0o755)
-        metadata.write_text(json.dumps({"helper": str(helper), "user_hook": str(user_hook) if user_hook.exists() else None}, sort_keys=True) + "\n")
+        metadata.write_text(json.dumps({"helper": str(helper), "user_hook": str(user_hook) if user_hook.exists() else None,
+                                        "user_sha256": approved_user_sha}, sort_keys=True) + "\n")
         return {"action": action, "outcome": "installed", "hook": str(hook), "user_hook": str(user_hook) if user_hook.exists() else None}
     if action == "remove":
         if not hook.is_file() or HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="replace"):
             if metadata.exists() or user_hook.exists():
                 raise CheckpointError("managed hook sidecars remain without an intact dispatcher; refuse removal")
             return {"action": action, "outcome": "not_managed_preserved" if hook.exists() else "already_absent", "hook": str(hook)}
-        if not metadata.is_file(): raise CheckpointError("managed hook metadata missing; refuse removal")
-        meta = json.loads(metadata.read_text(encoding="utf-8")); expected = managed_hook(Path(meta["helper"]), Path(meta["user_hook"]) if meta.get("user_hook") else None)
-        if hook.read_text(encoding="utf-8") != expected: raise CheckpointError("managed hook drift; refuse removal")
+        meta, _ = verify_managed_hook(hook, metadata)
         hook.unlink(); metadata.unlink()
         if user_hook.exists(): user_hook.rename(hook)
         return {"action": action, "outcome": "removed", "hook": str(hook)}

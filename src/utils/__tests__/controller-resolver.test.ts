@@ -53,9 +53,23 @@ describe('canonical controller resolver', () => {
     task = await fs.realpath(task);
     git(task, 'config', '--local', 'juno.controller.path', controller);
     git(task, 'config', '--local', 'juno.controller.branch', 'controller-branch');
+    const registration = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task,
+      '--register-workspace-role', 'task', '--task-id', 'fixture-task', '--manifest-identity', 'a'.repeat(64)], task);
+    expect(registration.status, registration.stderr).toBe(0);
   });
 
   afterEach(async () => fs.remove(sandbox));
+
+  it('fails closed for a linked worktree before persisted role registration', () => {
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.role');
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.taskId');
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.manifestIdentity');
+    const before = git(task, 'rev-parse', 'HEAD');
+    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('linked worktree has no persisted workspace role registration');
+    expect(git(task, 'rev-parse', 'HEAD')).toBe(before);
+  });
 
   it('resolves a registered controller across a real linked worktree with spaces', () => {
     const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
