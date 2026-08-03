@@ -75,6 +75,20 @@ def write(path:Path,payload:dict[str,Any],*,replace:bool=False)->None:
  encoded=json.dumps(payload,indent=2,sort_keys=True)+"\n";path=path.resolve();path.parent.mkdir(parents=True,exist_ok=True)
  if path.exists() and not replace and path.read_text()!=encoded:raise IntegrationError(f"immutable receipt collision: {path}")
  temporary=path.with_name(f".{path.name}.tmp-{os.getpid()}");temporary.write_text(encoded);temporary.replace(path)
+def verify_target_channel_planning(value:dict[str,Any],item:dict[str,Any])->None:
+ planning=value.get("target_channel_planning")
+ if not isinstance(planning,dict) or planning.get("intent")!="target_channel_owner":return
+ repo=item["path"]
+ expected={"repository":str(repo),"git_common_dir":str(common(repo)),
+           "git_dir":str(Path(git(repo,"rev-parse","--path-format=absolute","--git-dir")).resolve()),
+           "head":git(repo,"rev-parse","HEAD"),"base_sha":value.get("base_sha")}
+ for field,actual in expected.items():
+  if planning.get(field)!=actual:raise IntegrationError(f"candidate target-channel owner {field} mismatch")
+ if planning.get("read_only") is not True or planning.get("role_persisted_by_planning") is not False:
+  raise IntegrationError("candidate target-channel planning authority contract invalid")
+ if git(repo,"status","--porcelain=v2","--untracked-files=all"):
+  raise IntegrationError("candidate target-channel owner is no longer clean")
+
 def load_candidate(path:Path,repositories:list[dict[str,Any]])->dict[str,Any]:
  value=json.loads(path.read_text());
  if value.get("schema_version")!="juno_integration_candidate.v2" or value.get("operation")!="verify" or value.get("eligible") is not True:raise IntegrationError("eligible verified candidate receipt required")
@@ -91,6 +105,7 @@ def load_candidate(path:Path,repositories:list[dict[str,Any]])->dict[str,Any]:
   if Path(str(value.get("repository") or "")).resolve()!=item["path"]:raise IntegrationError("candidate receipt repository mismatch")
   for field,expected in (("target_ref",item["target_ref"]),("expected_target_sha",item["expected_sha"]),("candidate_sha",item["candidate_sha"])):
    if value.get(field)!=expected:raise IntegrationError(f"candidate receipt {field} mismatch")
+  verify_target_channel_planning(value,item)
  candidate_path=value.get("candidate_path")
  if run(Path(value["repository"]),"merge-base","--is-ancestor",value["expected_target_sha"],value["candidate_sha"],check=False).returncode:raise IntegrationError("candidate does not descend from expected target")
  if not candidate_path or git(Path(candidate_path),"rev-parse","HEAD")!=value.get("candidate_sha") or git(Path(candidate_path),"status","--porcelain=v2","--untracked-files=all"):
