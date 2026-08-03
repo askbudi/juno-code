@@ -59,7 +59,6 @@ describe('canonical controller resolver', () => {
     git(task, 'config', '--worktree', 'juno.workspace.taskId', 'fixture-task');
     git(task, 'config', '--worktree', 'juno.workspace.manifestIdentity', 'a'.repeat(64));
     git(task, 'config', '--worktree', 'juno.workspace.createReceiptSha256', 'b'.repeat(64));
-    git(task, 'config', '--worktree', 'juno.workspace.verifyReceiptSha256', 'c'.repeat(64));
     git(task, 'config', '--worktree', 'juno.workspace.expectedPathsSha256', 'd'.repeat(64));
   });
 
@@ -146,7 +145,7 @@ describe('canonical controller resolver', () => {
   it('supports warn and strict integration-owner enforcement', () => {
     git(task, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
     git(task, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
-    for (const key of ['taskId', 'manifestIdentity', 'createReceiptSha256', 'verifyReceiptSha256', 'expectedPathsSha256']) {
+    for (const key of ['taskId', 'manifestIdentity', 'createReceiptSha256', 'expectedPathsSha256']) {
       run('git', ['config', '--worktree', '--unset-all', `juno.workspace.${key}`], task);
     }
     const warn = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task, '--operation', 'orchestration'], task, { JUNO_WORKSPACE_ROLE: 'integration-owner', JUNO_WORKSPACE_ENFORCEMENT: 'warn' });

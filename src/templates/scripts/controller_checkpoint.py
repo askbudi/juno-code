@@ -647,7 +647,8 @@ def commit_evidence(root: Path, commit: str) -> tuple[list[str], tuple[tuple[str
     return sorted(changed), tuple(pairs)
 
 
-def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_persisted: bool = True) -> dict[str, Any]:
+def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_persisted: bool = True,
+                        protected_role_override: str | None = None) -> dict[str, Any]:
     """Audit every commit since protected authority with bounded exact evidence."""
     root = repo_root(str(root))
     includes, _ = load_config(root)
@@ -674,6 +675,10 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
         if commits:
             raise CheckpointError("unmanaged repository has commits beyond protected admission base")
         resolution = {"role": "unmanaged-exact", "role_source": "fallback-base"}
+    elif protected_role_override == "integration-owner":
+        # The protected integration owner must audit an as-yet-unregistered
+        # owner checkout before CAS. No CLI exposes this internal classification.
+        resolution = {"role": "integration-owner", "role_source": "protected-integration-preflight"}
     else:
         resolution = resolve_role(root, persisted_only=True)
 

@@ -59,9 +59,9 @@ describe('joined workspace edit and commit admission', () => {
     expect(created.status, created.stderr).toBe(0);
     const verified = python(lifecycle, ['verify', '--manifest', manifest, '--path', task, '--output', verification], controller);
     expect(verified.status, verified.stderr).toBe(0);
-    const registered = python(resolver, ['--cwd', task, '--register-workspace-role', 'task',
-      '--create-receipt', manifest, '--verify-receipt', verification], task);
-    expect(registered.status, registered.stderr).toBe(0);
+    // Successful exact creation is the sole task-role writer. Verification is
+    // read-only evidence and never grants a later registration capability.
+    expect(git(task, 'config', '--worktree', '--get', 'juno.workspace.role')).toBe('task');
   });
 
   afterEach(async () => fs.remove(temp));
@@ -79,51 +79,62 @@ describe('joined workspace edit and commit admission', () => {
 
     const registered = python(resolver, ['--cwd', task, '--register-workspace-role', 'integration-owner'], task);
     expect(registered.status).not.toBe(0);
-    expect(registered.stderr).toContain('exact eligible authority');
+    expect(registered.stderr).toMatch(/invalid choice|refuses public assignment/i);
     expect(JSON.parse(python(resolver, ['--cwd', task], task).stdout).role).toBe('task');
     expect(git(task, 'config', '--worktree', '--get', 'juno.workspace.taskId')).toBe('T1');
   });
 
-  it('refuses arbitrary task self-assignment and substituted lifecycle authority', async () => {
+  it('refuses public task assignment even with forged self-consistent create and verify receipts', async () => {
     const legacy = path.join(temp, 'self-assigned');
     git(controller, 'worktree', 'add', '-b', 'task-self-assigned', legacy, base);
-    const arbitrary = python(resolver, ['--cwd', legacy, '--register-workspace-role', 'task',
-      '--task-id', 'ATTACKER', '--manifest-identity', 'a'.repeat(64)], legacy);
-    expect(arbitrary.status).not.toBe(0);
-    expect(arbitrary.stderr).toContain('exact --create-receipt and --verify-receipt');
-
     const forgedCreate = path.join(temp, 'forged-create.json');
+    const forgedVerify = path.join(temp, 'forged-verify.json');
     const forged = JSON.parse(await fs.readFile(manifest, 'utf8'));
     forged.worktree = legacy;
     forged.branch_ref = 'refs/heads/task-self-assigned';
     forged.task_id = 'ATTACKER';
-    await fs.writeJson(forgedCreate, forged);
-    const substituted = python(resolver, ['--cwd', legacy, '--register-workspace-role', 'task',
-      '--create-receipt', forgedCreate, '--verify-receipt', verification], legacy);
-    expect(substituted.status).not.toBe(0);
-    expect(substituted.stderr).toMatch(/manifest_sha256|worktree|receipt/i);
+    forged.workspace_manifest_identity = createHash('sha256').update(JSON.stringify({
+      base_sha: base,
+      branch_ref: forged.branch_ref,
+      expected_paths: forged.expected_paths,
+      git_common_dir: forged.git_common_dir,
+      task_id: forged.task_id,
+    })).digest('hex');
+    await fs.writeJson(forgedCreate, forged, { spaces: 2 });
+    const forgedVerification = python(lifecycle, ['verify', '--manifest', forgedCreate, '--path', legacy, '--output', forgedVerify], legacy);
+    expect(forgedVerification.status, forgedVerification.stderr).toBe(0);
+    expect(JSON.parse(await fs.readFile(forgedVerify, 'utf8')).passed).toBe(true);
+
+    const assignment = python(resolver, ['--cwd', legacy, '--register-workspace-role', 'task',
+      '--create-receipt', forgedCreate, '--verify-receipt', forgedVerify], legacy);
+    expect(assignment.status).not.toBe(0);
+    expect(assignment.stderr).toMatch(/invalid choice|refuses public assignment/i);
     expect(run('git', ['-C', legacy, 'config', '--worktree', '--get', 'juno.workspace.role'], legacy).status).toBe(1);
 
-    const reregister = python(resolver, ['--cwd', task, '--register-workspace-role', 'task',
-      '--create-receipt', manifest, '--verify-receipt', verification], task);
-    expect(reregister.status, reregister.stderr).toBe(0);
-    expect(JSON.parse(reregister.stdout)).toMatchObject({
+    const resolved = JSON.parse(python(resolver, ['--cwd', task], task).stdout);
+    expect(resolved).toMatchObject({
       role: 'task', task_id: 'T1', role_base: base,
       create_receipt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-      verify_receipt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       expected_paths_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
   });
 
   it('fails closed for an unregistered legacy linked worktree and atomically receipts edit refusal without mutation', async () => {
     const legacy = path.join(temp, 'legacy');
-    git(controller, 'worktree', 'add', '--detach', legacy, base);
+    git(controller, 'worktree', 'add', '-b', 'task-legacy', legacy, base);
     const before = git(legacy, 'rev-parse', 'HEAD');
     const beforeIndex = git(legacy, 'write-tree');
     const result = python(resolver, ['--cwd', legacy], legacy);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('linked worktree has no persisted workspace role registration');
     expect(result.stderr).not.toContain('Traceback');
+
+    const recreate = python(lifecycle, ['create', '--repository', controller, '--target-ref', 'refs/heads/main', '--expected-base', base,
+      '--path', legacy, '--branch-ref', 'refs/heads/task-legacy', '--task-id', 'LEGACY', '--expected-path', 'product.txt',
+      '--cleanup-owner', 'fixture', '--output', path.join(temp, 'legacy-create.json')], controller);
+    expect(recreate.status).toBe(2);
+    expect(recreate.stderr).toContain('existing_worktree_unregistered_recreate_required');
+    expect(run('git', ['-C', legacy, 'config', '--worktree', '--get', 'juno.workspace.role'], legacy).status).toBe(1);
 
     const receipt = path.join(temp, 'unregistered-edit.json');
     const refused = python(path.join(legacy, '.juno_task', 'scripts', 'worktree_lifecycle.py'), ['edit-preflight',

@@ -18,7 +18,7 @@ def run(repo:Path,*args:str,check:bool=True,env:dict[str,str]|None=None)->subpro
 def git(repo:Path,*args:str,check:bool=True)->str:return run(repo,*args,check=check).stdout.strip()
 def sha(path:Path)->str:return hashlib.sha256(path.read_bytes()).hexdigest()
 def require_committed_tree(repo:Path,fallback_base:str)->dict[str,Any]:
- try:return controller_checkpoint.committed_admission(repo,fallback_base)
+ try:return controller_checkpoint.committed_admission(repo,fallback_base,protected_role_override="integration-owner")
  except controller_checkpoint.CheckpointError as exc:raise IntegrationError(f"committed-tree admission refused: {exc}") from exc
 def advance_protected_role_base(repo:Path,integrated_sha:str,*,inject_failure:bool=False)->dict[str,Any]:
  if not (repo/".juno_task").is_dir():return {"role":"unmanaged", "advanced":False,"registered":False}
@@ -29,11 +29,11 @@ def advance_protected_role_base(repo:Path,integrated_sha:str,*,inject_failure:bo
  git_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-dir")).resolve()
  common_dir=common(repo)
  if persisted not in {None,"integration-owner"}:raise IntegrationError(f"protected integration refuses persisted workspace role: {persisted}")
- if persisted=="integration-owner" and authority not in {"eligible-candidate.v1","protected-integration.v1"}:raise IntegrationError("integration-owner lacks exact eligible authority")
+ if persisted=="integration-owner" and authority!="protected-integration.v1":raise IntegrationError("integration-owner lacks protected integration authority")
  if persisted is None and git_dir==common_dir:return {"role":"controller","advanced":False,"registered":False}
  if inject_failure:raise IntegrationError("injected_authority_persistence_failure")
  run(repo,"config","--local","extensions.worktreeConfig","true")
- for key in ("taskId","manifestIdentity","createReceiptSha256","verifyReceiptSha256","expectedPathsSha256"):
+ for key in ("taskId","manifestIdentity","createReceiptSha256","verifyReceiptSha256","expectedPathsSha256","eligibleReceiptSha256"):
   run(repo,"config","--worktree","--unset-all",f"juno.workspace.{key}",check=False)
  run(repo,"config","--worktree","juno.workspace.role","integration-owner")
  run(repo,"config","--worktree","juno.workspace.roleAuthority","protected-integration.v1")
