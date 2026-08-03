@@ -295,13 +295,29 @@ def assert_frozen(root: Path, includes: tuple[str, ...], frozen: dict[str, Any],
         raise CheckpointError("selected controller content changed during checkpoint")
 
 
-def index_mode(root: Path, path: str) -> str | None:
-    entry = git(root, "ls-files", "--stage", "--", path, check=False).strip().splitlines()
-    return entry[0].split()[0] if len(entry) == 1 and entry[0].split() else None
+INDEX_TREE = ":index"
 
 
-def classify_paths(root: Path, includes: tuple[str, ...], paths: list[str], role: str, *, treeish: str | None = None) -> list[dict[str, str]]:
-    """Single role/path classifier used by checkpoint, hooks, and independent checks."""
+def path_modes(root: Path, path: str, treeish: str | None) -> set[str]:
+    """Return all modes for a path in an index/tree endpoint; None is an empty tree."""
+    if treeish is None:
+        return set()
+    if treeish == INDEX_TREE:
+        rows = git(root, "ls-files", "--stage", "--", path, check=False).splitlines()
+    else:
+        rows = git(root, "ls-tree", treeish, "--", path, check=False).splitlines()
+    return {parts[0] for row in rows if (parts := row.split(None, 3))}
+
+
+def classify_paths(
+    root: Path,
+    includes: tuple[str, ...],
+    paths: list[str],
+    role: str,
+    *,
+    evidence_pairs: tuple[tuple[str | None, str | None], ...],
+) -> list[dict[str, str]]:
+    """Single role/path/mode classifier used by checkpoints, hooks, and history audits."""
     offending: list[dict[str, str]] = []
     for path in sorted(set(paths)):
         reason: str | None = None
@@ -310,13 +326,15 @@ def classify_paths(root: Path, includes: tuple[str, ...], paths: list[str], role
         elif role == "controller" and not selected(path, includes):
             reason = "product_path"
         if role == "controller":
-            mode = None
-            if treeish:
-                row = git(root, "ls-tree", treeish, "--", path, check=False).strip().split(None, 3)
-                mode = row[0] if row else None
-            else:
-                mode = index_mode(root, path)
-            if mode == "160000":
+            # Inspect both endpoints of every audited delta. A deleted or replaced
+            # gitlink may be absent from both the filesystem and the new tree.
+            modes = {
+                mode
+                for old_tree, new_tree in evidence_pairs
+                for tree in (old_tree, new_tree)
+                for mode in path_modes(root, path, tree)
+            }
+            if "160000" in modes:
                 reason = "gitlink"
             try:
                 inspect_boundary(root, path)
@@ -344,10 +362,12 @@ def staged_paths(root: Path) -> list[str]:
     return sorted({name for item in dirt if item.staged for name in status_names(item)})
 
 
-def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *, treeish: str | None = None,
+def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *,
+                     evidence_pairs: tuple[tuple[str | None, str | None], ...] | None = None,
                      resolution: dict[str, Any] | None = None) -> dict[str, Any]:
     resolution = resolution or resolve_role(root)
-    offending = classify_paths(root, includes, paths, str(resolution["role"]), treeish=treeish)
+    pairs = evidence_pairs or (("HEAD", INDEX_TREE),)
+    offending = classify_paths(root, includes, paths, str(resolution["role"]), evidence_pairs=pairs)
     return {"schema_version": BOUNDARY_SCHEMA_VERSION, "passed": not offending,
             "root": str(root), "branch": git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or None,
             "head": git(root, "rev-parse", "HEAD"), "role": resolution["role"],
@@ -611,14 +631,20 @@ def hook_command(root: Path, action: str, approval_value: str | None) -> dict[st
     raise CheckpointError(f"unknown hook action: {action}")
 
 
-def commit_first_parent_paths(root: Path, commit: str) -> list[str]:
-    """Return the delta authored by a commit, including merge resolution vs first parent."""
+def commit_evidence(root: Path, commit: str) -> tuple[list[str], tuple[tuple[str | None, str | None], ...]]:
+    """Return paths and old/new tree evidence for every parent of an audited commit."""
     row = git(root, "rev-list", "--parents", "-n", "1", commit).strip().split()
-    if len(row) > 1:
-        arguments = ("diff", "--name-only", "-z", row[1], commit)
-    else:
-        arguments = ("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit)
-    return sorted(set(value for value in git(root, *arguments).split("\0") if value))
+    parents = row[1:]
+    if not parents:
+        paths = git(root, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit)
+        return sorted(set(value for value in paths.split("\0") if value)), ((None, commit),)
+    changed: set[str] = set()
+    pairs: list[tuple[str | None, str | None]] = []
+    for parent in parents:
+        paths = git(root, "diff", "--name-only", "--no-renames", "-z", parent, commit)
+        changed.update(value for value in paths.split("\0") if value)
+        pairs.append((parent, commit))
+    return sorted(changed), tuple(pairs)
 
 
 def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_persisted: bool = True) -> dict[str, Any]:
@@ -655,9 +681,9 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
     offending_total = 0
     diagnostics: list[dict[str, str]] = []
     for commit in commits:
-        paths = commit_first_parent_paths(root, commit)
+        paths, evidence_pairs = commit_evidence(root, commit)
         all_paths.update(paths)
-        offending = classify_paths(root, includes, paths, str(resolution["role"]), treeish=commit)
+        offending = classify_paths(root, includes, paths, str(resolution["role"]), evidence_pairs=evidence_pairs)
         if not offending:
             continue
         subject = git(root, "show", "-s", "--format=%s", commit).replace("\n", " ")[:MAX_COMMIT_SUBJECT_CHARS]

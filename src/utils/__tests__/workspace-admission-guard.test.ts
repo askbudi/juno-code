@@ -225,6 +225,81 @@ describe('joined workspace edit and commit admission', () => {
     expect(git(controller, 'write-tree')).toBe(index);
   });
 
+  it('refuses allowlisted gitlink deletion and replacement from staged and durable merge evidence', async () => {
+    const child = path.join(temp, 'owned-child');
+    git(temp, 'init', '-b', 'main', child);
+    git(child, 'config', 'user.name', 'Fixture');
+    git(child, 'config', 'user.email', 'fixture@example.invalid');
+    await fs.writeFile(path.join(child, 'tracked'), 'child\n');
+    git(child, 'add', 'tracked');
+    git(child, 'commit', '-m', 'child');
+
+    await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {
+      gitCheckpoint: { include: ['.juno_task', '.gitmodules', 'owned'] },
+    });
+    git(controller, '-c', 'protocol.file.allow=always', 'submodule', 'add', child, 'owned');
+    git(controller, 'add', '.juno_task/config.json', '.gitmodules', 'owned');
+    git(controller, 'commit', '--no-verify', '-m', 'allowlisted gitlink baseline');
+    const gitlinkBase = git(controller, 'rev-parse', 'HEAD');
+
+    // Deletion must use the old HEAD mode even when the allowlisted directory is absent.
+    git(controller, 'rm', '-f', 'owned');
+    git(controller, 'restore', '--source=HEAD', '--staged', '--worktree', '.gitmodules');
+    expect(await fs.pathExists(path.join(controller, 'owned'))).toBe(false);
+    const deletionIndex = git(controller, 'write-tree');
+    let refused = python(checkpoint, ['--root', controller, 'staged-check', '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('owned (gitlink)');
+    expect(git(controller, 'rev-parse', 'HEAD')).toBe(gitlinkBase);
+    expect(git(controller, 'write-tree')).toBe(deletionIndex);
+
+    // A gitlink-to-file replacement also retains old-mode evidence.
+    git(controller, 'reset', '--hard', gitlinkBase);
+    git(controller, 'rm', '-f', 'owned');
+    git(controller, 'restore', '--source=HEAD', '--staged', '--worktree', '.gitmodules');
+    await fs.writeFile(path.join(controller, 'owned'), 'replacement\n');
+    git(controller, 'add', 'owned');
+    const replacementIndex = git(controller, 'write-tree');
+    refused = python(checkpoint, ['--root', controller, 'staged-check', '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('owned (gitlink)');
+    expect(git(controller, 'write-tree')).toBe(replacementIndex);
+
+    // --no-verify cannot make either transition durable without detection.
+    git(controller, 'commit', '--no-verify', '-m', 'replace allowlisted gitlink');
+    refused = python(checkpoint, ['--root', controller, 'committed-check', '--base', gitlinkBase, '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('owned (gitlink)');
+    expect(refused.stderr).toContain('replace allowlisted gitlink');
+
+    git(controller, 'reset', '--hard', gitlinkBase);
+    git(controller, 'rm', '-f', 'owned');
+    git(controller, 'restore', '--source=HEAD', '--staged', '--worktree', '.gitmodules');
+    git(controller, 'commit', '--no-verify', '-m', 'delete allowlisted gitlink');
+    expect(await fs.pathExists(path.join(controller, 'owned'))).toBe(false);
+    refused = python(checkpoint, ['--root', controller, 'committed-check', '--base', gitlinkBase, '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('delete allowlisted gitlink');
+
+    // Merge commits are compared with every parent, while the side commit remains
+    // independently audited, so neither topology can hide old mode 160000.
+    git(controller, 'reset', '--hard', gitlinkBase);
+    git(controller, 'switch', '-C', 'gitlink-side', gitlinkBase);
+    git(controller, 'rm', '-f', 'owned');
+    git(controller, 'restore', '--source=HEAD', '--staged', '--worktree', '.gitmodules');
+    git(controller, 'commit', '--no-verify', '-m', 'delete gitlink on side');
+    git(controller, 'switch', '-C', 'gitlink-merge', gitlinkBase);
+    await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'merge peer\n');
+    git(controller, 'add', '.juno_task/tasks/one.md');
+    git(controller, 'commit', '--no-verify', '-m', 'allowed merge peer');
+    git(controller, 'merge', '--no-verify', '--no-ff', '-m', 'merge gitlink deletion', 'gitlink-side');
+    refused = python(checkpoint, ['--root', controller, 'committed-check', '--base', gitlinkBase, '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('owned (gitlink)');
+    expect(refused.stderr).toContain('delete gitlink on side');
+    expect(refused.stderr).toContain('merge gitlink deletion');
+  });
+
   it('writes a typed controller refusal and admits only the exact clean verified task tree', async () => {
     const controllerReceipt = path.join(temp, 'controller-edit.json');
     const refused = python(lifecycle, ['edit-preflight', '--repository', controller, '--target-ref', 'refs/heads/main', '--approved-base', base,
