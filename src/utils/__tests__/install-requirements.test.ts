@@ -282,6 +282,50 @@ exit 0
     expect(await fs.pathExists(path.join(commonDir, 'juno', 'version-checks', '.version_check_cache'))).toBe(true);
   });
 
+  it('keeps a real linked worktree byte-stable while writing the shared version cache', async () => {
+    const repository = path.join(tempDir, 'repository');
+    const candidate = path.join(tempDir, 'candidate');
+    await fs.ensureDir(repository);
+    expect(spawnSync('git', ['init', '-q'], { cwd: repository, encoding: 'utf8' }).status).toBe(0);
+    await fs.writeFile(path.join(repository, '.gitignore'), '.venv_juno/\n');
+    await fs.writeFile(path.join(repository, 'product.txt'), 'unchanged\n');
+    expect(spawnSync('git', ['add', '.'], { cwd: repository, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], {
+      cwd: repository, encoding: 'utf8',
+    }).status).toBe(0);
+    expect(spawnSync('git', ['worktree', 'add', '--detach', candidate, 'HEAD'], { cwd: repository, encoding: 'utf8' }).status).toBe(0);
+    const candidateVenvBin = path.join(candidate, '.venv_juno', 'bin');
+    await fs.ensureDir(candidateVenvBin);
+    await writeExecutable(path.join(candidateVenvBin, 'activate'), `#!/usr/bin/env bash
+VIRTUAL_ENV="$(cd "$(dirname "${'${BASH_SOURCE[0]}'}")/.." && pwd)"
+export VIRTUAL_ENV
+PATH="${binDir}:${'${PATH}'}"
+export PATH
+`);
+
+    const git = (...args: string[]) => spawnSync('git', ['-C', candidate, ...args], { encoding: 'buffer' }).stdout;
+    const before = {
+      head: git('rev-parse', 'HEAD').toString(),
+      index: await fs.readFile(git('rev-parse', '--path-format=absolute', '--git-path', 'index').toString().trim()),
+      logical: git('ls-files', '--stage', '-z'),
+      status: git('status', '--porcelain=v2', '-z', '--untracked-files=all'),
+    };
+    const result = spawnSync('bash', [scriptPath], {
+      cwd: candidate,
+      env: testEnv({ VERSION_CHECK_CACHE_DIR: undefined }),
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const indexPath = git('rev-parse', '--path-format=absolute', '--git-path', 'index').toString().trim();
+    expect(git('rev-parse', 'HEAD').toString()).toBe(before.head);
+    expect(await fs.readFile(indexPath)).toEqual(before.index);
+    expect(git('ls-files', '--stage', '-z')).toEqual(before.logical);
+    expect(git('status', '--porcelain=v2', '-z', '--untracked-files=all')).toEqual(before.status);
+    const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir').toString().trim();
+    expect(await fs.pathExists(path.join(commonDir, 'juno', 'version-checks', '.version_check_cache'))).toBe(true);
+    expect(await fs.pathExists(path.join(candidate, '.juno_task', '.version_check_cache'))).toBe(false);
+  });
+
   it('uses one metadata process and no network on a fresh complete cache', async () => {
     await createVenv();
     await writeSuccessCache();

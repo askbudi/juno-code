@@ -9,6 +9,7 @@ process unless a step opts into fail-fast behavior.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import errno
 import hashlib
@@ -745,6 +746,11 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         risk_tier = str(workflow.get("risk_tier") or "").strip()
         if risk_tier not in {"low", "medium", "high", "release"}:
             raise WorkflowError("local_integration requires exactly one risk_tier: low, medium, high, or release")
+        orchestration_workspace = workflow.get("orchestration_workspace")
+        if orchestration_workspace != "controller" and not (
+            isinstance(orchestration_workspace, str) and Path(orchestration_workspace).is_absolute()
+        ):
+            raise WorkflowError("local_integration orchestration_workspace must be controller or an explicit absolute external path")
         required_roles = {"pre_merge_review", "candidate_review", "actual_target_review"}
         missing_roles = sorted(required_roles - set(validation_ownership or {}))
         if missing_roles:
@@ -797,6 +803,14 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
                 raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
             if not candidate_noop and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
                 raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
+            if review_step_id == review_steps[1] and not candidate_noop:
+                identity = review_step.get("candidate_read_only")
+                if not isinstance(identity, dict) or set(identity) != {"path", "sha"} or not all(
+                    isinstance(identity.get(key), str) and identity[key].strip() for key in ("path", "sha")
+                ):
+                    raise WorkflowError(
+                        "candidate_review must declare candidate_read_only with exactly path and sha"
+                    )
         if "--actual-review-command" in integration_argv:
             actual_index = integration_argv.index("--actual-review-command")
             actual_command = integration_argv[actual_index + 1] if actual_index + 1 < len(integration_argv) else ""
@@ -1443,6 +1457,59 @@ def command_owns_actual_review_child(command: Any, project_root: Path) -> bool:
     return bool(owner_args) and owner_args[0] == "integrate" and "--actual-review-command" in owner_args and "--actual-review-receipt" in owner_args
 
 
+def _candidate_git(candidate: Path, *args: str) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", str(candidate), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if completed.returncode:
+        raise WorkflowError(
+            f"candidate_read_only git {' '.join(args)} failed: "
+            f"{completed.stderr.decode(errors='replace').strip()}"
+        )
+    return completed.stdout
+
+
+def snapshot_candidate_identity(candidate: Path, expected_sha: str, *, require_expected: bool = True) -> dict[str, Any]:
+    candidate = candidate.resolve()
+    if not candidate.is_dir():
+        raise WorkflowError(f"candidate_read_only path is not a directory: {candidate}")
+    head = _candidate_git(candidate, "rev-parse", "HEAD").decode().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+        raise WorkflowError(f"candidate_read_only SHA is not a full commit identity: {expected_sha}")
+    if require_expected and head != expected_sha:
+        raise WorkflowError(f"candidate_read_only SHA mismatch: expected {expected_sha}, observed {head}")
+    index_path_text = _candidate_git(candidate, "rev-parse", "--path-format=absolute", "--git-path", "index").decode().strip()
+    index_path = Path(index_path_text)
+    status = _candidate_git(candidate, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+    index_bytes = index_path.read_bytes() if index_path.is_file() else b""
+    logical_index = _candidate_git(candidate, "ls-files", "--stage", "-z")
+
+    def encoded(value: bytes) -> dict[str, Any]:
+        return {
+            "sha256": hashlib.sha256(value).hexdigest(),
+            "bytes": len(value),
+            "base64": base64.b64encode(value).decode("ascii"),
+        }
+
+    return {
+        "path": str(candidate),
+        "head": head,
+        "index_path": str(index_path.resolve()),
+        "raw_index": encoded(index_bytes),
+        "logical_index": encoded(logical_index),
+        "status_porcelain_v2_z": encoded(status),
+    }
+
+
+def candidate_identity_changes(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    fields = ("path", "head", "index_path", "raw_index", "logical_index", "status_porcelain_v2_z")
+    return [field for field in fields if before.get(field) != after.get(field)]
+
+
 def execute_rendered_command(
     command: Any,
     project_root: Path,
@@ -2064,6 +2131,20 @@ def run_workflow(args: argparse.Namespace) -> int:
         workflow_source_path = str(workflow_path)
     workflow = parse_yaml_like(workflow_text)
     validate_workflow(workflow)
+    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        declared_workspace = str(workflow["orchestration_workspace"])
+        orchestration_root = (
+            Path(os.environ["JUNO_TASK_ROOT"]).resolve()
+            if declared_workspace == "controller"
+            else Path(declared_workspace).resolve()
+        )
+        if not orchestration_root.is_dir():
+            raise WorkflowError(f"local_integration orchestration workspace does not exist: {orchestration_root}")
+        if args.project_root and project_root != orchestration_root:
+            raise WorkflowError(
+                f"local_integration --project-root must equal orchestration workspace {orchestration_root}"
+            )
+        project_root = orchestration_root
 
     now = _dt.datetime.now(_dt.timezone.utc)
     run_id = now.strftime("%Y%m%d_%H%M%S_%fZ")
@@ -2370,6 +2451,8 @@ def run_workflow(args: argparse.Namespace) -> int:
             env_key = "JUNO_WORKFLOW_RECEIPT_" + re.sub(r"[^A-Za-z0-9]", "_", receipt_id).upper()
             env[env_key] = str(receipt["path"])
         precondition_error = ""
+        candidate_guard: dict[str, Any] | None = None
+        candidate_guard_path = legacy_step_dir / "candidate_read_only.json"
         if not args.dry_run:
             try:
                 for receipt_id in step.get("requires_receipts") or []:
@@ -2385,14 +2468,42 @@ def run_workflow(args: argparse.Namespace) -> int:
                         str(evidence["command_sha256"]),
                         str(receipt_evidence["sha256"]),
                     )
-            except WorkflowError as exc:
+                if step.get("candidate_read_only") is not None:
+                    rendered_identity = render(step["candidate_read_only"], context)
+                    candidate_path = Path(str(rendered_identity["path"])).resolve()
+                    expected_candidate_sha = str(rendered_identity["sha"])
+                    if candidate_path == project_root:
+                        raise WorkflowError("candidate_read_only review may not execute with candidate as cwd")
+                    before_identity = snapshot_candidate_identity(candidate_path, expected_candidate_sha)
+                    candidate_guard = {
+                        "schema_version": "juno_candidate_read_only.v1",
+                        "candidate_path": str(candidate_path),
+                        "expected_sha": expected_candidate_sha,
+                        "orchestration_cwd": str(project_root),
+                        "before": before_identity,
+                        "after": None,
+                        "changed_fields": [],
+                        "passed": None,
+                    }
+                    write_text(candidate_guard_path, json.dumps(candidate_guard, indent=2, sort_keys=True) + "\n")
+            except (WorkflowError, KeyError, TypeError) as exc:
                 precondition_error = str(exc)
+                if step.get("candidate_read_only") is not None:
+                    failed_guard = candidate_guard or {
+                        "schema_version": "juno_candidate_read_only.v1",
+                        "orchestration_cwd": str(project_root),
+                        "passed": False,
+                    }
+                    failed_guard["preflight_error"] = precondition_error
+                    write_text(candidate_guard_path, json.dumps(failed_guard, indent=2, sort_keys=True) + "\n")
         if args.dry_run:
             status = "dry_run"
         elif precondition_error:
             stderr = precondition_error + "\n"
             exit_code = 1
             status = "failed"
+            if step.get("candidate_read_only") is not None:
+                final_exit = 1
         else:
             active_marker = out_dir / "active_step.json"
             activity = {
@@ -2407,11 +2518,42 @@ def run_workflow(args: argparse.Namespace) -> int:
             }
             write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
             inject_interruption("command_started")
-            proc = execute_rendered_command(command, project_root, env, live_log_path, activity, active_marker)
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-            exit_code = int(proc.returncode)
-            status = "success" if exit_code == 0 else "failed"
+            try:
+                proc = execute_rendered_command(command, project_root, env, live_log_path, activity, active_marker)
+                stdout = proc.stdout or ""
+                stderr = proc.stderr or ""
+                exit_code = int(proc.returncode)
+                status = "success" if exit_code == 0 else "failed"
+            except OSError as exc:
+                stderr = f"command dispatch failed: {exc}\n"
+                exit_code = 1
+                status = "failed"
+            if candidate_guard is not None:
+                try:
+                    after_identity = snapshot_candidate_identity(
+                        Path(candidate_guard["candidate_path"]),
+                        str(candidate_guard["expected_sha"]),
+                        require_expected=False,
+                    )
+                    changed_fields = candidate_identity_changes(candidate_guard["before"], after_identity)
+                    candidate_guard["after"] = after_identity
+                    candidate_guard["changed_fields"] = changed_fields
+                    candidate_guard["passed"] = not changed_fields
+                except (WorkflowError, OSError) as exc:
+                    changed_fields = ["snapshot_unavailable"]
+                    candidate_guard["after_error"] = str(exc)
+                    candidate_guard["changed_fields"] = changed_fields
+                    candidate_guard["passed"] = False
+                write_text(candidate_guard_path, json.dumps(candidate_guard, indent=2, sort_keys=True) + "\n")
+                if changed_fields:
+                    mutation_error = (
+                        "candidate_read_only mutation detected; no cleanup performed; "
+                        f"changed={','.join(changed_fields)}; evidence={candidate_guard_path}"
+                    )
+                    stderr = stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + mutation_error + "\n"
+                    exit_code = 1
+                    status = "failed"
+                    final_exit = 1
             inject_interruption("command_success_before_artifacts")
         duration = round(time.monotonic() - started, 3)
         write_text(stdout_path, stdout)
@@ -2442,6 +2584,8 @@ def run_workflow(args: argparse.Namespace) -> int:
             "session_id": "",
             "command_sha256": command_digest,
         }
+        if step.get("candidate_read_only") is not None:
+            result["candidate_read_only_evidence"] = str(candidate_guard_path)
         child_steps: list[dict[str, Any]] = []
         if not args.dry_run:
             try:
