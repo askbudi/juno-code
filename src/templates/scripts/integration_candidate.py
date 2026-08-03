@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse, datetime as dt, hashlib, json, os, subprocess, sys, uuid
 from pathlib import Path
 from typing import Any
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import controller_checkpoint
 SCHEMA = "juno_integration_candidate.v2"
 TARGET_PREFLIGHT_SCHEMA = "juno_integration_target_preflight.v1"
 class CandidateError(Exception): pass
@@ -77,7 +79,12 @@ def classify_target(repo:Path,target_ref_value:str,approved_base:str)->dict[str,
       "approved_base_is_ancestor":ancestry,"safe_next_action":safe_action,
       "passed":classification in {"exact","advanced_descendant"}}
 
+def require_committed_tree(repo:Path,fallback_base:str)->dict[str,Any]:
+    try:return controller_checkpoint.committed_admission(repo,fallback_base)
+    except controller_checkpoint.CheckpointError as exc:raise CandidateError(f"committed-tree admission refused: {exc}") from exc
+
 def target_preflight(args:argparse.Namespace)->dict[str,Any]:
+    require_committed_tree(args.repository,args.approved_base)
     snapshot=classify_target(args.repository,args.target_ref,args.approved_base)
     payload={
       "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",**snapshot,
@@ -89,7 +96,7 @@ def target_preflight(args:argparse.Namespace)->dict[str,Any]:
     return payload
 
 def plan(args:argparse.Namespace)->dict[str,Any]:
-    repo=args.repository.resolve(); target_ref=full_ref(args.target_ref); target=git(repo,"rev-parse",f"{target_ref}^{{commit}}")
+    repo=args.repository.resolve(); require_committed_tree(repo,args.base_sha); target_ref=full_ref(args.target_ref); target=git(repo,"rev-parse",f"{target_ref}^{{commit}}")
     tip=git(repo,"rev-parse",f"{args.reviewed_tip}^{{commit}}"); base=git(repo,"rev-parse",f"{args.base_sha}^{{commit}}")
     load_pass(args.premerge_review,"pre_merge",tip)
     if run(repo,"merge-base","--is-ancestor",base,tip,check=False).returncode: raise CandidateError("reviewed tip does not descend from base")

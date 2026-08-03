@@ -27,6 +27,12 @@ SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
 BOUNDARY_SCHEMA_VERSION = "juno_workspace_commit_boundary.v1"
 HOOK_MARKER = "# juno-controller-boundary-hook-v1"
+RELEASE_PATHS = (
+    "juno-code/package.json",
+    "juno-code/package-lock.json",
+    "frontend/generated/package-facts.json",
+    "scripts/release-juno-code.sh",
+)
 DEFAULT_INCLUDE = (
     ".juno_task/tasks",
     ".juno_task/ledger",
@@ -319,8 +325,15 @@ def classify_paths(root: Path, includes: tuple[str, ...], paths: list[str], role
     return offending
 
 
-def resolve_role(root: Path) -> dict[str, Any]:
-    return controller_resolver.resolve(root, "diagnostic")
+def resolve_role(root: Path, *, persisted_only: bool = False) -> dict[str, Any]:
+    if not persisted_only:
+        return controller_resolver.resolve(root, "diagnostic")
+    keys = ("JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE")
+    saved = {key: os.environ.pop(key) for key in keys if key in os.environ}
+    try:
+        return controller_resolver.resolve(root, "diagnostic")
+    finally:
+        os.environ.update(saved)
 
 
 def staged_paths(root: Path) -> list[str]:
@@ -328,8 +341,9 @@ def staged_paths(root: Path) -> list[str]:
     return sorted({name for item in dirt if item.staged for name in status_names(item)})
 
 
-def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *, treeish: str | None = None) -> dict[str, Any]:
-    resolution = resolve_role(root)
+def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *, treeish: str | None = None,
+                     resolution: dict[str, Any] | None = None) -> dict[str, Any]:
+    resolution = resolution or resolve_role(root)
     offending = classify_paths(root, includes, paths, str(resolution["role"]), treeish=treeish)
     return {"schema_version": BOUNDARY_SCHEMA_VERSION, "passed": not offending,
             "root": str(root), "branch": git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or None,
@@ -588,6 +602,91 @@ def hook_command(root: Path, action: str, approval_value: str | None) -> dict[st
     raise CheckpointError(f"unknown hook action: {action}")
 
 
+def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_persisted: bool = True) -> dict[str, Any]:
+    """Apply the canonical role/path classifier to commits since protected authority."""
+    root = repo_root(str(root))
+    includes, _ = load_config(root)
+    persisted_base = git(root, "config", "--worktree", "--get", "juno.workspace.roleBase", check=False).strip() or None
+    requested_base = (persisted_base or fallback_base) if prefer_persisted else (fallback_base or persisted_base)
+    if not requested_base:
+        raise CheckpointError("committed-check requires --base or persisted workspace roleBase evidence")
+    base = git(root, "rev-parse", f"{requested_base}^{{commit}}").strip()
+    head = git(root, "rev-parse", "HEAD").strip()
+    relation = subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", base, head],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    if relation == 0:
+        paths = [value for value in git(root, "diff", "--name-only", "-z", base, head).split("\0") if value]
+        classification = "at_or_advanced_from_role_base"
+    elif subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", head, base],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        # A protected integration may advance authority while preserving a detached
+        # runtime checkout at the old SHA. It contains no unadmitted new commits.
+        paths = []
+        classification = "checkout_behind_protected_role_base"
+    else:
+        raise CheckpointError("workspace HEAD diverges from persisted roleBase authority")
+    if not (root / ".juno_task").is_dir():
+        if paths:
+            raise CheckpointError("unmanaged repository has commits beyond protected admission base")
+        resolution = {"role": "unmanaged-exact", "role_source": "fallback-base"}
+    else:
+        resolution = resolve_role(root, persisted_only=True)
+    payload = boundary_payload(root, includes, paths, treeish=head, resolution=resolution)
+    payload.update({"base": base, "head": head, "classification": classification})
+    require_boundary(payload)
+    return payload
+
+
+def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
+    """Create the one explicit package-release commit without weakening the hook."""
+    resolution = resolve_role(root)
+    if resolution.get("role") != "integration-owner":
+        raise CheckpointError("release-commit requires persisted integration-owner authority")
+    paths = list(dict.fromkeys(normalize_entry(value) for value in requested_paths))
+    if tuple(paths) != RELEASE_PATHS:
+        raise CheckpointError(f"release-commit paths must exactly match protected release identity: {list(RELEASE_PATHS)}")
+    hook, _, metadata = hook_paths(root)
+    if hook.exists():
+        if not hook.is_file() or HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="replace"):
+            raise CheckpointError("release-commit refuses an unmanaged pre-commit hook")
+        verify_managed_hook(hook, metadata)
+    dirt = parse_status(root)
+    if any(item.conflicted or item.dirty_submodule for item in dirt):
+        raise CheckpointError("release-commit refuses conflicts or dirty submodules")
+    if any(item.staged for item in dirt):
+        raise CheckpointError("release-commit refuses a pre-existing staged index")
+    dirty_paths = sorted({name for item in dirt for name in status_names(item)})
+    blocked = [path for path in dirty_paths if path not in RELEASE_PATHS]
+    if blocked:
+        raise CheckpointError(f"release-commit refuses non-release dirt: {blocked}")
+    if not dirty_paths:
+        raise CheckpointError("release-commit requires release metadata changes")
+    for path in dirty_paths:
+        inspect_boundary(root, path)
+    before = git(root, "rev-parse", "HEAD").strip()
+    frozen = {path: fingerprint(root, path) for path in dirty_paths}
+    git(root, "add", "--", *RELEASE_PATHS)
+    try:
+        staged = staged_paths(root)
+        if staged != dirty_paths or any(path not in RELEASE_PATHS for path in staged):
+            raise CheckpointError(f"release-commit staged identity mismatch: dirty={dirty_paths} staged={staged}")
+        if git(root, "rev-parse", "HEAD").strip() != before:
+            raise CheckpointError("release-commit HEAD changed after admission")
+        if any(fingerprint(root, path) != frozen[path] for path in dirty_paths):
+            raise CheckpointError("release-commit content changed after staging")
+        # The ordinary integration-owner classifier remains a hard deny. This
+        # exact helper owns the commit and intentionally bypasses hook dispatch,
+        # as controller checkpoint commits do, after verifying any managed hook.
+        git(root, "commit", "--no-verify", "-m", validate_message(message), "--", *RELEASE_PATHS)
+    except BaseException:
+        git(root, "restore", "--staged", "--", *RELEASE_PATHS, check=False)
+        raise
+    head = git(root, "rev-parse", "HEAD").strip()
+    git(root, "config", "--worktree", "juno.workspace.roleBase", head)
+    return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_commit", "passed": True,
+            "role": "integration-owner", "before": before, "head": head, "paths": staged}
+
+
 def emit(payload: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, sort_keys=True))
@@ -621,6 +720,8 @@ def main(argv: list[str] | None = None) -> int:
     staged.add_argument("--json", action="store_true")
     committed = sub.add_parser("committed-check", help="Independent committed-tree check for hook bypass")
     committed.add_argument("--base"); committed.add_argument("--json", action="store_true")
+    release = sub.add_parser("release-commit", help="Create an exact guarded package release commit")
+    release.add_argument("--message", required=True); release.add_argument("--path", action="append", required=True); release.add_argument("--json", action="store_true")
     hook = sub.add_parser("hook", help="Explicit managed pre-commit adoption")
     hook.add_argument("action", choices=["install", "status", "remove"]); hook.add_argument("--approve-existing"); hook.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -629,14 +730,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "staged-check":
         payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
     if args.command == "committed-check":
-        resolution = resolve_role(root)
-        requested_base = args.base or resolution.get("role_base")
-        if not requested_base:
-            raise CheckpointError("committed-check requires --base or persisted workspace roleBase evidence")
-        base = git(root, "rev-parse", f"{requested_base}^{{commit}}").strip()
-        paths = [value for value in git(root, "diff", "--name-only", "-z", base, "HEAD").split("\0") if value]
-        payload = boundary_payload(root, includes, paths, treeish="HEAD"); payload["base"] = base
-        require_boundary(payload); emit(payload, args.json); return 0
+        payload = committed_admission(root, args.base, prefer_persisted=args.base is None); emit(payload, args.json); return 0
+    if args.command == "release-commit":
+        lease = acquire_lease(root)
+        try: payload = release_commit(root, args.message, args.path)
+        finally: fcntl.flock(lease.fileno(), fcntl.LOCK_UN); lease.close()
+        emit(payload, args.json); return 0
     if args.command == "hook":
         payload = hook_command(root, args.action, args.approve_existing); emit(payload, args.json); return 0
     should_commit = args.command == "commit" or (args.command == "require-clean" and args.checkpoint)

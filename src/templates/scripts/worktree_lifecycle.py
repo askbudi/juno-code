@@ -392,6 +392,15 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
             refusals.extend(name for name, failed in checks.items() if failed)
     if role.get("task_id") and role.get("task_id") != args.task_id:
         refusals.append("persisted_task_id_mismatch")
+    if role.get("role_base") != target["approved_base"]:
+        refusals.append("persisted_role_base_mismatch")
+    if args.task_worktree.expanduser().resolve() != current:
+        refusals.append("task_worktree_argument_mismatch")
+    if manifest and args.task_branch_ref != manifest.get("branch_ref"):
+        refusals.append("task_branch_ref_argument_mismatch")
+    for expected_path in expected_paths:
+        if not (current / expected_path).exists():
+            refusals.append(f"expected_path_missing:{expected_path}")
     if manifest and role.get("manifest_identity") != manifest.get("workspace_manifest_identity"):
         refusals.append("persisted_manifest_identity_mismatch")
     if role["role"] in {"controller", "integration-owner"}:

@@ -40,7 +40,7 @@ describe('joined workspace edit and commit admission', () => {
     await fs.ensureDir(path.join(controller, '.juno_task', 'tasks'));
     await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {});
     await fs.ensureDir(path.join(controller, '.juno_task', 'scripts'));
-    for (const name of ['controller_resolver.py', 'integration_candidate.py', 'worktree_lifecycle.py']) {
+    for (const name of ['controller_resolver.py', 'controller_checkpoint.py', 'git_index_lock.py', 'integration_candidate.py', 'worktree_lifecycle.py']) {
       await fs.copy(path.join(scripts, name), path.join(controller, '.juno_task', 'scripts', name));
     }
     await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'one\n');
@@ -108,6 +108,36 @@ describe('joined workspace edit and commit admission', () => {
     expect(result.stderr).toContain('persisted_task_id_mismatch');
     expect(result.stderr).not.toContain('Traceback');
     expect(JSON.parse(fs.readFileSync(receipt, 'utf8')).passed).toBe(false);
+  });
+
+  it('binds explicit task routing, persisted base, and materialized expected paths', async () => {
+    const installed = path.join(task, '.juno_task', 'scripts', 'worktree_lifecycle.py');
+    const common = ['edit-preflight', '--repository', task, '--target-ref', 'refs/heads/main', '--approved-base', base,
+      '--task-id', 'T1', '--expected-path', 'product.txt', '--path', task, '--manifest', manifest,
+      '--verify-receipt', verification, '--cleanup-owner', 'fixture', '--next-receipt', path.join(temp, 'next.json')];
+    const cases: Array<[string, string[]]> = [
+      ['task_worktree_argument_mismatch', ['--task-worktree', controller, '--task-branch-ref', 'refs/heads/task-T1']],
+      ['task_branch_ref_argument_mismatch', ['--task-worktree', task, '--task-branch-ref', 'refs/heads/substituted']],
+    ];
+    for (const [reason, routing] of cases) {
+      const output = path.join(temp, `${reason}.json`);
+      const result = python(installed, [...common, ...routing, '--output', output], task);
+      expect(result.status).toBe(2);
+      expect(JSON.parse(await fs.readFile(output, 'utf8')).refusals).toContain(reason);
+    }
+
+    git(task, 'config', '--worktree', 'juno.workspace.roleBase', 'HEAD^');
+    let output = path.join(temp, 'stale-role-base.json');
+    let result = python(installed, [...common, '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--output', output], task);
+    expect(result.status).toBe(2);
+    expect(JSON.parse(await fs.readFile(output, 'utf8')).refusals).toContain('persisted_role_base_mismatch');
+    git(task, 'config', '--worktree', 'juno.workspace.roleBase', base);
+
+    await fs.remove(path.join(task, 'product.txt'));
+    output = path.join(temp, 'missing-expected-path.json');
+    result = python(installed, [...common, '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--output', output], task);
+    expect(result.status).toBe(2);
+    expect(JSON.parse(await fs.readFile(output, 'utf8')).refusals).toContain('expected_path_missing:product.txt');
   });
 
   it('keeps target classifier failures typed without traceback', () => {
