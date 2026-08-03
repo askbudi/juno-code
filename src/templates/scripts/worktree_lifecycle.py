@@ -72,12 +72,27 @@ def lock_path(repo: Path) -> Path:
     return Path(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "index.lock")).resolve()
 
 def write_receipt(path: Path, payload: dict[str, Any]) -> None:
+    """Publish a complete immutable receipt atomically; never expose partial JSON."""
     path = path.expanduser().resolve()
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    if path.exists() and path.read_text(encoding="utf-8") != encoded:
-        raise LifecycleError(f"immutable receipt already exists with different content: {path}")
+    if path.exists():
+        if path.read_text(encoding="utf-8") != encoded:
+            raise LifecycleError(f"immutable receipt already exists with different content: {path}")
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(encoded, encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_text(encoding="utf-8") != encoded:
+                raise LifecycleError(f"immutable receipt already exists with different content: {path}")
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def listed(repo: Path) -> list[dict[str, str]]:
     rows, row = [], {}
@@ -367,8 +382,15 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
         target = integration_candidate.classify_target(args.repository, args.target_ref, args.approved_base)
     except integration_candidate.CandidateError as exc:
         raise LifecycleError(f"target_classifier_refused: {exc}") from exc
-    role = controller_resolver.resolve(current, "product-edit")
     refusals: list[str] = []
+    try:
+        role = controller_resolver.resolve(current, "product-edit")
+    except controller_resolver.ResolverError as exc:
+        # Resolver refusal is policy evidence, not a process-control exit. Keep
+        # its typed result in the joined receipt and emit one lifecycle refusal.
+        role = exc.result
+        refusals.append("workspace_resolver_refused")
+    role_valid = role.get("valid") is True
     manifest: dict[str, Any] | None = None
     manifest_hash: str | None = None
     if args.manifest:
@@ -390,9 +412,9 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
                     base=target["approved_base"], common=Path(target["git_common_dir"]), expected_paths=expected_paths),
             }
             refusals.extend(name for name, failed in checks.items() if failed)
-    if role.get("task_id") and role.get("task_id") != args.task_id:
+    if role_valid and role.get("task_id") and role.get("task_id") != args.task_id:
         refusals.append("persisted_task_id_mismatch")
-    if role.get("role_base") != target["approved_base"]:
+    if role_valid and role.get("role_base") != target["approved_base"]:
         refusals.append("persisted_role_base_mismatch")
     if args.task_worktree.expanduser().resolve() != current:
         refusals.append("task_worktree_argument_mismatch")
@@ -401,11 +423,11 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
     for expected_path in expected_paths:
         if not (current / expected_path).exists():
             refusals.append(f"expected_path_missing:{expected_path}")
-    if manifest and role.get("manifest_identity") != manifest.get("workspace_manifest_identity"):
+    if role_valid and manifest and role.get("manifest_identity") != manifest.get("workspace_manifest_identity"):
         refusals.append("persisted_manifest_identity_mismatch")
-    if role["role"] in {"controller", "integration-owner"}:
+    if role_valid and role["role"] in {"controller", "integration-owner"}:
         refusals.append(f"workspace_role_{role['role']}_refuses_product_edit")
-    elif role["role"] != "task":
+    elif role_valid and role["role"] != "task":
         refusals.append("workspace_role_not_task")
     if not target["passed"]:
         refusals.append(str(target["classification"]))

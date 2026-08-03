@@ -47,12 +47,16 @@ def is_primary_worktree(cwd: Path) -> bool:
     return bool(git_dir and common and Path(git_dir).resolve() == Path(common).resolve())
 
 
+class ResolverError(Exception):
+    def __init__(self, message: str, result: dict[str, object]):
+        super().__init__(message)
+        self.result = result
+
+
 def fail(message: str, result: dict[str, object]) -> None:
     result["valid"] = False
     result["diagnostics"] = [*result.get("diagnostics", []), message]
-    print(json.dumps(result, sort_keys=True))
-    print(f"controller-resolver: {message}", file=sys.stderr)
-    raise SystemExit(2)
+    raise ResolverError(message, result)
 
 
 def resolve(cwd: Path, operation: str) -> dict[str, object]:
@@ -210,4 +214,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ResolverError as exc:
+        print(json.dumps(exc.result, sort_keys=True))
+        print(f"controller-resolver: {exc}", file=sys.stderr)
+        raise SystemExit(2)

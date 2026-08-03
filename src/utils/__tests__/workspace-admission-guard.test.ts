@@ -84,15 +84,33 @@ describe('joined workspace edit and commit admission', () => {
     expect(ownerBoundary.stderr).toContain('integration_owner_commit_forbidden');
   });
 
-  it('fails closed for an unregistered legacy linked worktree without mutation', async () => {
+  it('fails closed for an unregistered legacy linked worktree and atomically receipts edit refusal without mutation', async () => {
     const legacy = path.join(temp, 'legacy');
     git(controller, 'worktree', 'add', '--detach', legacy, base);
     const before = git(legacy, 'rev-parse', 'HEAD');
+    const beforeIndex = git(legacy, 'write-tree');
     const result = python(resolver, ['--cwd', legacy], legacy);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('linked worktree has no persisted workspace role registration');
     expect(result.stderr).not.toContain('Traceback');
+
+    const receipt = path.join(temp, 'unregistered-edit.json');
+    const refused = python(path.join(legacy, '.juno_task', 'scripts', 'worktree_lifecycle.py'), ['edit-preflight',
+      '--repository', legacy, '--target-ref', 'refs/heads/main', '--approved-base', base,
+      '--task-id', 'T1', '--expected-path', 'product.txt', '--path', legacy,
+      '--task-worktree', legacy, '--task-branch-ref', 'refs/heads/task-T1', '--cleanup-owner', 'fixture',
+      '--next-receipt', path.join(temp, 'next.json'), '--output', receipt], legacy);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('edit_preflight_refused');
+    expect(refused.stderr).not.toContain('controller-resolver:');
+    expect(refused.stderr).not.toContain('Traceback');
+    expect(JSON.parse(await fs.readFile(receipt, 'utf8'))).toMatchObject({
+      schema_version: 'juno_edit_preflight.v1', passed: false,
+      workspace: { role: 'unregistered', valid: false },
+      refusals: ['workspace_resolver_refused'],
+    });
     expect(git(legacy, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(legacy, 'write-tree')).toBe(beforeIndex);
     expect(git(legacy, 'status', '--porcelain')).toBe('');
   });
 
@@ -306,6 +324,33 @@ describe('joined workspace edit and commit admission', () => {
     const independent = python(checkpoint, ['--root', controller, 'committed-check', '--base', bypassBase, '--json'], controller);
     expect(independent.status).toBe(2);
     expect(independent.stderr).toContain('product.txt');
+
+    // Admission audits commit history, not the final tree: reverting a forbidden
+    // commit cannot erase the durable evidence that --no-verify was used.
+    git(controller, 'revert', '--no-commit', 'HEAD');
+    git(controller, 'commit', '--no-verify', '-m', 'revert unsafe bypass');
+    expect(git(controller, 'diff', '--name-only', bypassBase, 'HEAD')).toBe('');
+    const revertedBypass = python(checkpoint, ['--root', controller, 'committed-check', '--base', bypassBase, '--json'], controller);
+    expect(revertedBypass.status).toBe(2);
+    expect(revertedBypass.stderr).toContain('product.txt');
+    expect(revertedBypass.stderr).toContain('unsafe bypass');
+
+    // A merge cannot hide a forbidden side commit behind an allowed first-parent tree.
+    const mergeBase = git(controller, 'rev-parse', 'HEAD');
+    git(controller, 'switch', '-c', 'side');
+    await fs.writeFile(path.join(controller, 'product.txt'), 'forbidden side\n');
+    git(controller, 'add', 'product.txt');
+    git(controller, 'commit', '--no-verify', '-m', 'forbidden side commit');
+    git(controller, 'switch', '-c', 'merge-owner', mergeBase);
+    await fs.writeFile(path.join(controller, '.juno_task', 'tasks', 'one.md'), 'merge owner\n');
+    git(controller, 'add', '.juno_task/tasks/one.md');
+    git(controller, 'commit', '--no-verify', '-m', 'allowed owner commit');
+    git(controller, 'merge', '--no-verify', '--no-ff', '-m', 'merge forbidden side', 'side');
+    const mergedBypass = python(checkpoint, ['--root', controller, 'committed-check', '--base', mergeBase, '--json'], controller);
+    expect(mergedBypass.status).toBe(2);
+    expect(mergedBypass.stderr).toContain('product.txt');
+    expect(mergedBypass.stderr).toContain('forbidden side commit');
+
     const removed = python(checkpoint, ['--root', controller, 'hook', 'remove'], controller);
     expect(removed.status, removed.stderr).toBe(0);
     expect(createHash('sha256').update(await fs.readFile(hook)).digest('hex')).toBe(digest);

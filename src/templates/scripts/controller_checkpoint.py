@@ -27,6 +27,9 @@ SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
 BOUNDARY_SCHEMA_VERSION = "juno_workspace_commit_boundary.v1"
 HOOK_MARKER = "# juno-controller-boundary-hook-v1"
+MAX_COMMITTED_DIAGNOSTICS = 20
+MAX_COMMITTED_PATHS = 100
+MAX_COMMIT_SUBJECT_CHARS = 120
 RELEASE_PATHS = (
     "juno-code/package.json",
     "juno-code/package-lock.json",
@@ -355,10 +358,16 @@ def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *,
 def require_boundary(payload: dict[str, Any]) -> None:
     if payload["passed"]:
         return
-    details = ", ".join(f"{item['path']} ({item['reason']})" for item in payload["offending"])
+    details = ", ".join(
+        f"{item['path']} ({item['reason']})"
+        + (f" commit={item['commit']} subject={item['subject']!r}" if item.get("commit") else "")
+        for item in payload["offending"]
+    )
+    omitted = payload.get("offending_count", len(payload["offending"])) - len(payload["offending"])
+    suffix = f", omitted={omitted}" if omitted else ""
     raise CheckpointError(
         f"workspace commit boundary refused role={payload['role']} branch={payload['branch'] or 'DETACHED'} "
-        f"offending=[{details}]; safe_next_action={payload['safe_next_action']}"
+        f"offending=[{details}]{suffix}; safe_next_action={payload['safe_next_action']}"
     )
 
 
@@ -602,8 +611,18 @@ def hook_command(root: Path, action: str, approval_value: str | None) -> dict[st
     raise CheckpointError(f"unknown hook action: {action}")
 
 
+def commit_first_parent_paths(root: Path, commit: str) -> list[str]:
+    """Return the delta authored by a commit, including merge resolution vs first parent."""
+    row = git(root, "rev-list", "--parents", "-n", "1", commit).strip().split()
+    if len(row) > 1:
+        arguments = ("diff", "--name-only", "-z", row[1], commit)
+    else:
+        arguments = ("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit)
+    return sorted(set(value for value in git(root, *arguments).split("\0") if value))
+
+
 def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_persisted: bool = True) -> dict[str, Any]:
-    """Apply the canonical role/path classifier to commits since protected authority."""
+    """Audit every commit since protected authority with bounded exact evidence."""
     root = repo_root(str(root))
     includes, _ = load_config(root)
     persisted_base = git(root, "config", "--worktree", "--get", "juno.workspace.roleBase", check=False).strip() or None
@@ -614,25 +633,47 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
     head = git(root, "rev-parse", "HEAD").strip()
     relation = subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", base, head],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    commits: list[str] = []
     if relation == 0:
-        paths = [value for value in git(root, "diff", "--name-only", "-z", base, head).split("\0") if value]
+        commits = git(root, "rev-list", "--reverse", "--topo-order", f"{base}..{head}").splitlines()
         classification = "at_or_advanced_from_role_base"
     elif subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", head, base],
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
         # A protected integration may advance authority while preserving a detached
         # runtime checkout at the old SHA. It contains no unadmitted new commits.
-        paths = []
         classification = "checkout_behind_protected_role_base"
     else:
         raise CheckpointError("workspace HEAD diverges from persisted roleBase authority")
     if not (root / ".juno_task").is_dir():
-        if paths:
+        if commits:
             raise CheckpointError("unmanaged repository has commits beyond protected admission base")
         resolution = {"role": "unmanaged-exact", "role_source": "fallback-base"}
     else:
         resolution = resolve_role(root, persisted_only=True)
-    payload = boundary_payload(root, includes, paths, treeish=head, resolution=resolution)
-    payload.update({"base": base, "head": head, "classification": classification})
+
+    all_paths: set[str] = set()
+    offending_total = 0
+    diagnostics: list[dict[str, str]] = []
+    for commit in commits:
+        paths = commit_first_parent_paths(root, commit)
+        all_paths.update(paths)
+        offending = classify_paths(root, includes, paths, str(resolution["role"]), treeish=commit)
+        if not offending:
+            continue
+        subject = git(root, "show", "-s", "--format=%s", commit).replace("\n", " ")[:MAX_COMMIT_SUBJECT_CHARS]
+        offending_total += len(offending)
+        remaining = MAX_COMMITTED_DIAGNOSTICS - len(diagnostics)
+        diagnostics.extend({**item, "commit": commit, "subject": subject} for item in offending[:max(remaining, 0)])
+
+    sorted_paths = sorted(all_paths)
+    payload = {"schema_version": BOUNDARY_SCHEMA_VERSION, "passed": offending_total == 0,
+               "root": str(root), "branch": git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or None,
+               "head": head, "role": resolution["role"], "role_source": resolution.get("role_source"),
+               "paths": sorted_paths[:MAX_COMMITTED_PATHS], "path_count": len(sorted_paths),
+               "offending": diagnostics, "offending_count": offending_total,
+               "diagnostics_truncated": offending_total > len(diagnostics), "commits_checked": len(commits),
+               "safe_next_action": "run worktree_lifecycle.py edit-preflight with the owner-approved full target ref/base, then create/verify the named exact-base task worktree",
+               "base": base, "classification": classification}
     require_boundary(payload)
     return payload
 
@@ -774,6 +815,6 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (CheckpointError, OSError) as exc:
+    except (CheckpointError, controller_resolver.ResolverError, OSError) as exc:
         print(f"controller_checkpoint: error: {exc}", file=sys.stderr)
         raise SystemExit(2)
