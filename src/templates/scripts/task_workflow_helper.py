@@ -216,6 +216,20 @@ def symbolic_task_set_errors(manifest: dict[str, Any], *, manifest_dir: Path | N
         keys.append(key)
         role = str(task.get("role", ""))
         tags = [str(tag) for tag in task.get("tags", []) or []]
+        edit_capable = task.get("edit_capable", False)
+        if role == "implementation" and "edit_capable" not in task:
+            errors.append(f"task {key or index} role implementation must explicitly declare edit_capable true or false")
+        if not isinstance(edit_capable, bool):
+            errors.append(f"task {key or index} edit_capable must be boolean")
+        if edit_capable:
+            admission = task.get("edit_admission")
+            required = {"repository", "target_ref", "approved_base", "task_worktree", "task_branch_ref",
+                        "cleanup_owner", "manifest", "verify_receipt", "output", "next_receipt", "expected_paths"}
+            if not isinstance(admission, dict) or set(admission) != required:
+                errors.append(f"task {key or index} edit_admission must contain exactly: {', '.join(sorted(required))}")
+            elif (not isinstance(admission.get("expected_paths"), list) or not admission["expected_paths"]
+                  or not all(isinstance(value, str) and value for value in admission["expected_paths"])):
+                errors.append(f"task {key or index} edit_admission.expected_paths must be a non-empty string list")
         if role == "post_deploy_e2e" and manifest.get("implementation_tag") in tags:
             errors.append(f"post-deploy E2E task {key} must not carry the implementation tag")
         if role != "post_deploy_e2e" and manifest.get("e2e_tag") in tags:
@@ -336,6 +350,21 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         "  review_contract: |",
         "    Inspect the exact lifecycle-bound diff, tests, and typed receipts independently.",
         "    Runner transport success is not semantic acceptance; reviewer fixes may be committed and accepted at the resulting exact tip.",
+    ]
+    edit_tasks = [task for task in manifest["tasks"] if task.get("edit_capable") is True]
+    if edit_tasks:
+        lines.append("receipts:")
+        for idx, task in enumerate(manifest["tasks"], start=1):
+            if task.get("edit_capable") is not True: continue
+            task_id = task["id"]; receipt_id = f"edit_admission_{idx}_{re.sub(r'[^a-z0-9_]', '_', task_id.lower())}"
+            lines.extend([
+                f"  - id: {receipt_id}", f"    producer: pre_edit_{idx}_{task_id}",
+                f"    path: {task['edit_admission']['output']}", "    schema_version: juno_edit_preflight.v1",
+                "    required_fields:", "      - producer_step_digest", "      - passed", "      - task_id",
+                "      - workspace.role", "      - target.target_ref", "      - expected_paths",
+                "    expected_fields:", "      passed: true", f"      task_id: {task_id}",
+            ])
+    lines.extend([
         "steps:",
         "  - id: preflight",
         "    description: Resolve selected Kanban tasks and prove E2E tag isolation",
@@ -343,7 +372,7 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         "    fail_workflow: true",
         "    command: |",
         "      set -eu",
-    ]
+    ])
     if parent:
         lines.append(f"      {kanban_cmd} get {parent} --compact >/dev/null")
     for task in manifest["tasks"]:
@@ -360,6 +389,20 @@ def render_workflow(manifest: dict[str, Any]) -> str:
     for idx, task in enumerate(manifest["tasks"], start=1):
         task_id = task["id"]
         step_id = task.get("step_id") or f"task_{idx}_{task_id}"
+        receipt_id = f"edit_admission_{idx}_{re.sub(r'[^a-z0-9_]', '_', task_id.lower())}"
+        if task.get("edit_capable") is True:
+            admission = task["edit_admission"]
+            command = ["python3", ".juno_task/scripts/worktree_lifecycle.py", "edit-preflight",
+                       "--repository", admission["repository"], "--target-ref", admission["target_ref"],
+                       "--approved-base", admission["approved_base"], "--task-id", task_id,
+                       "--path", admission["task_worktree"], "--manifest", admission["manifest"],
+                       "--verify-receipt", admission["verify_receipt"], "--task-worktree", admission["task_worktree"],
+                       "--task-branch-ref", admission["task_branch_ref"], "--cleanup-owner", admission["cleanup_owner"],
+                       "--next-receipt", admission["next_receipt"], "--output", "{{ receipts." + receipt_id + ".path }}"]
+            for expected_path in admission["expected_paths"]: command.extend(["--expected-path", expected_path])
+            lines.extend([f"  - id: pre_edit_{idx}_{task_id}", "    description: Read-only exact task-worktree edit admission",
+                          "    capture_session: false", "    fail_workflow: true", "    command:"])
+            lines.extend(f"      - {json.dumps(argument)}" for argument in command)
         title = task.get("title") or f"Run Kanban task {task_id}"
         if "read_first" in task:
             read_first = task["read_first"]
@@ -386,6 +429,7 @@ def render_workflow(manifest: dict[str, Any]) -> str:
             f"    description: {title}",
             "    capture_session: false",
             "    fail_workflow: true",
+            *( ["    edit_capable: true", "    requires_receipts:", f"      - {receipt_id}"] if task.get("edit_capable") is True else [] ),
             "    command:",
             "      - yy",
             "      - pi",

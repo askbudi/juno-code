@@ -7,13 +7,13 @@ import { spawn, spawnSync } from 'node:child_process';
 const helper = path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py');
 
 function run(repo: string, ...args: string[]) {
-  return spawnSync('python3', [helper, '--root', repo, ...args], { encoding: 'utf8' });
+  return runWithEnv(repo, {}, ...args);
 }
 
 function runWithEnv(repo: string, env: NodeJS.ProcessEnv, ...args: string[]) {
   return spawnSync('python3', [helper, '--root', repo, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, JUNO_TASK_ROOT: '', JUNO_CONTROLLER_BRANCH: '', JUNO_WORKSPACE_ROLE: '', ...env },
   });
 }
 
@@ -157,12 +157,20 @@ describe('controller_checkpoint.py template script', () => {
     expect(result.stderr).toContain('lease busy');
   });
 
+  const agentEnv = (command: string) => ({
+    ...process.env,
+    JUNO_TASK_ROOT: '',
+    JUNO_CONTROLLER_BRANCH: '',
+    JUNO_WORKSPACE_ROLE: '',
+    JUNO_CHECKPOINT_AGENT_COMMAND: command,
+  });
+
   it('accepts valid agent grouping while deterministic code owns commits', async () => {
     await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'agent grouped\n');
     const command = path.join(testDir, 'agent-ok.py');
     await fs.writeFile(command, `#!/usr/bin/env python3\nimport json\nprint(json.dumps({"schema_version":"juno_controller_checkpoint_agent.v1","groups":[{"paths":[".juno_task/tasks/one.md"],"message":"chore(controller): grouped fixture"}]}))\n`);
     await fs.chmod(command, 0o755);
-    const result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent', '--json'], { encoding: 'utf8', env: { ...process.env, JUNO_CHECKPOINT_AGENT_COMMAND: command } });
+    const result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent', '--json'], { encoding: 'utf8', env: agentEnv(command) });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).outcome).toBe('committed');
     expect(git(repo, 'log', '-1', '--format=%s')).toBe('chore(controller): grouped fixture');
@@ -173,7 +181,7 @@ describe('controller_checkpoint.py template script', () => {
     const command = path.join(testDir, 'agent-mutate.py');
     await fs.writeFile(command, `#!/usr/bin/env python3\nimport json, pathlib\npathlib.Path('.juno_task/tasks/one.md').write_text('mutated by agent\\n')\nprint(json.dumps({"schema_version":"juno_controller_checkpoint_agent.v1","groups":[{"paths":[".juno_task/tasks/one.md"],"message":"bad"}]}))\n`);
     await fs.chmod(command, 0o755);
-    const result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: { ...process.env, JUNO_CHECKPOINT_AGENT_COMMAND: command } });
+    const result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: agentEnv(command) });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('content changed');
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
@@ -184,18 +192,18 @@ describe('controller_checkpoint.py template script', () => {
     const command = path.join(testDir, 'agent.py');
     await fs.writeFile(command, '#!/usr/bin/env python3\nprint("not json")\n');
     await fs.chmod(command, 0o755);
-    let result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: { ...process.env, JUNO_CHECKPOINT_AGENT_COMMAND: command } });
+    let result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: agentEnv(command) });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('agent proposal');
     await fs.writeFile(command, `#!/usr/bin/env python3\nimport json\nprint(json.dumps({"schema_version":"juno_controller_checkpoint_agent.v1","groups":[]}))\n`);
-    result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: { ...process.env, JUNO_CHECKPOINT_AGENT_COMMAND: command } });
+    result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: agentEnv(command) });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('exactly once');
     await fs.writeFile(command, '#!/usr/bin/env python3\nimport time\ntime.sleep(2)\n');
     await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), { gitCheckpoint: { agent: { timeoutSeconds: 1 } } });
     git(repo, 'add', '.juno_task/config.json');
     git(repo, 'commit', '-m', 'configure timeout', '--', '.juno_task/config.json');
-    result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: { ...process.env, JUNO_CHECKPOINT_AGENT_COMMAND: command } });
+    result = spawnSync('python3', [helper, '--root', repo, 'commit', '--agent'], { encoding: 'utf8', env: agentEnv(command) });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('timed out');
   });

@@ -15,14 +15,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from git_index_lock import IndexLockError, diagnose_index_lock, require_index_unlocked
+import controller_resolver
 
 SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
+BOUNDARY_SCHEMA_VERSION = "juno_workspace_commit_boundary.v1"
+HOOK_MARKER = "# juno-controller-boundary-hook-v1"
 DEFAULT_INCLUDE = (
     ".juno_task/tasks",
     ".juno_task/ledger",
@@ -282,6 +286,68 @@ def assert_frozen(root: Path, includes: tuple[str, ...], frozen: dict[str, Any],
         raise CheckpointError("selected controller content changed during checkpoint")
 
 
+def index_mode(root: Path, path: str) -> str | None:
+    entry = git(root, "ls-files", "--stage", "--", path, check=False).strip().splitlines()
+    return entry[0].split()[0] if len(entry) == 1 and entry[0].split() else None
+
+
+def classify_paths(root: Path, includes: tuple[str, ...], paths: list[str], role: str, *, treeish: str | None = None) -> list[dict[str, str]]:
+    """Single role/path classifier used by checkpoint, hooks, and independent checks."""
+    offending: list[dict[str, str]] = []
+    for path in sorted(set(paths)):
+        reason: str | None = None
+        if role == "integration-owner":
+            reason = "integration_owner_commit_forbidden"
+        elif role == "controller" and not selected(path, includes):
+            reason = "product_path"
+        if role == "controller":
+            mode = None
+            if treeish:
+                row = git(root, "ls-tree", treeish, "--", path, check=False).strip().split(None, 3)
+                mode = row[0] if row else None
+            else:
+                mode = index_mode(root, path)
+            if mode == "160000":
+                reason = "gitlink"
+            try:
+                inspect_boundary(root, path)
+            except CheckpointError:
+                if reason != "gitlink":
+                    reason = "nested_repository_or_unsafe_boundary"
+        if reason:
+            offending.append({"path": path, "reason": reason})
+    return offending
+
+
+def resolve_role(root: Path) -> dict[str, Any]:
+    return controller_resolver.resolve(root, "diagnostic")
+
+
+def staged_paths(root: Path) -> list[str]:
+    dirt = parse_status(root)
+    return sorted({name for item in dirt if item.staged for name in status_names(item)})
+
+
+def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *, treeish: str | None = None) -> dict[str, Any]:
+    resolution = resolve_role(root)
+    offending = classify_paths(root, includes, paths, str(resolution["role"]), treeish=treeish)
+    return {"schema_version": BOUNDARY_SCHEMA_VERSION, "passed": not offending,
+            "root": str(root), "branch": git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or None,
+            "head": git(root, "rev-parse", "HEAD"), "role": resolution["role"],
+            "role_source": resolution.get("role_source"), "paths": paths, "offending": offending,
+            "safe_next_action": "run worktree_lifecycle.py edit-preflight with the owner-approved full target ref/base, then create/verify the named exact-base task worktree"}
+
+
+def require_boundary(payload: dict[str, Any]) -> None:
+    if payload["passed"]:
+        return
+    details = ", ".join(f"{item['path']} ({item['reason']})" for item in payload["offending"])
+    raise CheckpointError(
+        f"workspace commit boundary refused role={payload['role']} branch={payload['branch'] or 'DETACHED'} "
+        f"offending=[{details}]; safe_next_action={payload['safe_next_action']}"
+    )
+
+
 def assert_staged_boundary(
     root: Path,
     includes: tuple[str, ...],
@@ -310,6 +376,7 @@ def assert_staged_boundary(
         raise CheckpointError("dirty path set changed after staging")
     if any(fingerprint(root, path) != frozen["fingerprints"][path] for path in remaining):
         raise CheckpointError("selected controller content changed after staging")
+    require_boundary(boundary_payload(root, includes, actual_staged))
 
 
 def validate_message(value: Any) -> str:
@@ -408,10 +475,81 @@ def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, An
     return commits
 
 
+def hook_paths(root: Path) -> tuple[Path, Path, Path]:
+    raw = Path(git(root, "rev-parse", "--git-path", "hooks/pre-commit").strip())
+    hook = (raw if raw.is_absolute() else root / raw).resolve()
+    return hook, hook.with_name("pre-commit.juno-user"), hook.with_name("pre-commit.juno-metadata.json")
+
+
+def file_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def managed_hook(helper: Path, user_hook: Path | None) -> str:
+    user = "" if user_hook is None else f"if [ -x {shlex.quote(str(user_hook))} ]; then {shlex.quote(str(user_hook))} \"$@\"; fi\n"
+    return ("#!/bin/sh\nset -eu\n" + HOOK_MARKER + "\n" + user
+            + f"exec python3 {shlex.quote(str(helper.resolve()))} --root \"$(git rev-parse --show-toplevel)\" staged-check\n")
+
+
+def parse_approval(value: str | None) -> tuple[Path, str] | None:
+    if not value:
+        return None
+    raw_path, separator, digest = value.rpartition("=")
+    if not separator or not re_full_sha(digest):
+        raise CheckpointError("--approve-existing must be exact PATH=SHA256")
+    return Path(raw_path).expanduser().resolve(), digest
+
+
+def re_full_sha(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def hook_command(root: Path, action: str, approval_value: str | None) -> dict[str, Any]:
+    hook, user_hook, metadata = hook_paths(root)
+    approval = parse_approval(approval_value)
+    if action == "status":
+        return {"action": action, "hook": str(hook), "exists": hook.exists(), "sha256": file_sha(hook) if hook.is_file() else None,
+                "managed": hook.is_file() and HOOK_MARKER in hook.read_text(encoding="utf-8", errors="replace")}
+    if action == "install":
+        existing_managed = hook.is_file() and HOOK_MARKER in hook.read_text(encoding="utf-8", errors="replace")
+        if existing_managed:
+            if not metadata.is_file(): raise CheckpointError("managed hook metadata missing; refuse replacement")
+            meta = json.loads(metadata.read_text(encoding="utf-8")); expected = managed_hook(Path(meta["helper"]), Path(meta["user_hook"]) if meta.get("user_hook") else None)
+            if hook.read_text(encoding="utf-8") != expected: raise CheckpointError("managed hook drift; refuse replacement")
+            return {"action": action, "outcome": "already_installed", "hook": str(hook)}
+        if hook.exists():
+            if approval is None or approval[0] != hook or approval[1] != file_sha(hook):
+                raise CheckpointError(f"existing pre-commit hook requires explicit approval: --approve-existing {hook}={file_sha(hook)}")
+            if user_hook.exists() or metadata.exists(): raise CheckpointError("hook composition sidecar collision")
+        elif approval is not None:
+            raise CheckpointError("--approve-existing supplied but no existing hook is present")
+        helper = Path(__file__).resolve(); content = managed_hook(helper, user_hook if hook.exists() else None)
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        if hook.exists(): hook.rename(user_hook)
+        hook.write_text(content, encoding="utf-8"); hook.chmod(0o755)
+        metadata.write_text(json.dumps({"helper": str(helper), "user_hook": str(user_hook) if user_hook.exists() else None}, sort_keys=True) + "\n")
+        return {"action": action, "outcome": "installed", "hook": str(hook), "user_hook": str(user_hook) if user_hook.exists() else None}
+    if action == "remove":
+        if not hook.is_file() or HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="replace"):
+            if metadata.exists() or user_hook.exists():
+                raise CheckpointError("managed hook sidecars remain without an intact dispatcher; refuse removal")
+            return {"action": action, "outcome": "not_managed_preserved" if hook.exists() else "already_absent", "hook": str(hook)}
+        if not metadata.is_file(): raise CheckpointError("managed hook metadata missing; refuse removal")
+        meta = json.loads(metadata.read_text(encoding="utf-8")); expected = managed_hook(Path(meta["helper"]), Path(meta["user_hook"]) if meta.get("user_hook") else None)
+        if hook.read_text(encoding="utf-8") != expected: raise CheckpointError("managed hook drift; refuse removal")
+        hook.unlink(); metadata.unlink()
+        if user_hook.exists(): user_hook.rename(hook)
+        return {"action": action, "outcome": "removed", "hook": str(hook)}
+    raise CheckpointError(f"unknown hook action: {action}")
+
+
 def emit(payload: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, sort_keys=True))
     else:
+        if "outcome" not in payload or "selected" not in payload:
+            print(f"workspace boundary: {payload.get('action', 'passed')} passed={payload.get('passed', True)} role={payload.get('role', '')}")
+            return
         selected_paths = payload.get("selected", [])
         print(f"controller checkpoint: {payload['outcome']} ({len(selected_paths)} selected)")
         for path in selected_paths:
@@ -434,9 +572,28 @@ def main(argv: list[str] | None = None) -> int:
     clean.add_argument("--checkpoint", action="store_true")
     clean.add_argument("--message", default="chore(controller): checkpoint before integration")
     clean.add_argument("--json", action="store_true")
+    staged = sub.add_parser("staged-check", help="Read-only pre-commit staged-tree boundary")
+    staged.add_argument("--json", action="store_true")
+    committed = sub.add_parser("committed-check", help="Independent committed-tree check for hook bypass")
+    committed.add_argument("--base"); committed.add_argument("--json", action="store_true")
+    hook = sub.add_parser("hook", help="Explicit managed pre-commit adoption")
+    hook.add_argument("action", choices=["install", "status", "remove"]); hook.add_argument("--approve-existing"); hook.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = repo_root(args.root)
     includes, agent_config = load_config(root)
+    if args.command == "staged-check":
+        payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
+    if args.command == "committed-check":
+        resolution = resolve_role(root)
+        requested_base = args.base or resolution.get("role_base")
+        if not requested_base:
+            raise CheckpointError("committed-check requires --base or persisted workspace roleBase evidence")
+        base = git(root, "rev-parse", f"{requested_base}^{{commit}}").strip()
+        paths = [value for value in git(root, "diff", "--name-only", "-z", base, "HEAD").split("\0") if value]
+        payload = boundary_payload(root, includes, paths, treeish="HEAD"); payload["base"] = base
+        require_boundary(payload); emit(payload, args.json); return 0
+    if args.command == "hook":
+        payload = hook_command(root, args.action, args.approve_existing); emit(payload, args.json); return 0
     should_commit = args.command == "commit" or (args.command == "require-clean" and args.checkpoint)
     lease = acquire_lease(root)
     try:

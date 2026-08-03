@@ -58,30 +58,29 @@ def output_text(value:Any)->str:
     if isinstance(value,bytes):return value.decode("utf-8",errors="replace")
     return str(value)
 
-def target_preflight(args:argparse.Namespace)->dict[str,Any]:
-    repo=args.repository.resolve();target_ref=full_ref(args.target_ref)
-    common_raw=git(repo,"rev-parse","--path-format=absolute","--git-common-dir")
-    common_dir=Path(common_raw).resolve()
-    approved_result=run(repo,"rev-parse",f"{args.approved_base}^{{commit}}",check=False)
-    if approved_result.returncode:
-      raise CandidateError("approved base is not a readable commit")
+def classify_target(repo:Path,target_ref_value:str,approved_base:str)->dict[str,Any]:
+    """Canonical read-only target/base classifier shared by lifecycle admission."""
+    repo=repo.resolve();target_ref=full_ref(target_ref_value)
+    common_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-common-dir")).resolve()
+    approved_result=run(repo,"rev-parse",f"{approved_base}^{{commit}}",check=False)
+    if approved_result.returncode:raise CandidateError("approved base is not a readable commit")
     approved=approved_result.stdout.strip()
     target_result=run(repo,"rev-parse","--verify",f"{target_ref}^{{commit}}",check=False)
     observed=target_result.stdout.strip() if target_result.returncode==0 else None
-    if observed is None:
-      classification="missing_target";ancestry=False;safe_action="refuse_missing_target"
-    elif observed==approved:
-      classification="exact";ancestry=True;safe_action="continue_exact_base_policy"
+    if observed is None:classification="missing_target";ancestry=False;safe_action="refuse_missing_target"
+    elif observed==approved:classification="exact";ancestry=True;safe_action="continue_exact_base_policy"
     elif run(repo,"merge-base","--is-ancestor",approved,observed,check=False).returncode==0:
       classification="advanced_descendant";ancestry=True;safe_action="snapshot_then_rebuild_and_rereview"
-    else:
-      classification="invalid_rewind_or_divergence";ancestry=False;safe_action="refuse_history_change"
-    payload={
-      "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",
-      "repository":str(repo),"git_common_dir":str(common_dir),"target_ref":target_ref,
+    else:classification="invalid_rewind_or_divergence";ancestry=False;safe_action="refuse_history_change"
+    return {"repository":str(repo),"git_common_dir":str(common_dir),"target_ref":target_ref,
       "approved_base":approved,"observed_target_sha":observed,"classification":classification,
       "approved_base_is_ancestor":ancestry,"safe_next_action":safe_action,
-      "passed":classification in {"exact","advanced_descendant"},
+      "passed":classification in {"exact","advanced_descendant"}}
+
+def target_preflight(args:argparse.Namespace)->dict[str,Any]:
+    snapshot=classify_target(args.repository,args.target_ref,args.approved_base)
+    payload={
+      "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",**snapshot,
       "producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST", ""),
       "observed_at":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
     }

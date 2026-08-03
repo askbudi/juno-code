@@ -730,6 +730,16 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             producer = receipts[receipt_id]["producer"]
             if step_indexes[producer] >= step_indexes[step_id]:
                 raise WorkflowError(f"step {step_id} requires receipt {receipt_id} before its producer {producer}")
+        if step.get("edit_capable") is True:
+            admission = [receipts[receipt_id] for receipt_id in step.get("requires_receipts") or []
+                         if receipts[receipt_id]["schema_version"] == "juno_edit_preflight.v1"
+                         and receipts[receipt_id]["expected_fields"].get("passed") is True]
+            if len(admission) != 1:
+                raise WorkflowError(
+                    f"edit-capable step {step_id} requires exactly one successful juno_edit_preflight.v1 receipt"
+                )
+        elif step.get("edit_capable") not in {None, False}:
+            raise WorkflowError(f"step {step_id} edit_capable must be boolean")
 
     terminal_gate = str(workflow.get("terminal_gate") or "").strip()
     if terminal_gate and terminal_gate not in step_indexes:

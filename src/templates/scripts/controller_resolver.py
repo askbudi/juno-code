@@ -36,6 +36,17 @@ def config(cwd: Path, key: str) -> Optional[str]:
     return git(cwd, "config", "--local", "--get", key)
 
 
+def worktree_config(cwd: Path, key: str) -> Optional[str]:
+    """Read checkout-specific persisted identity; never infer it from process env."""
+    return git(cwd, "config", "--worktree", "--get", key)
+
+
+def is_primary_worktree(cwd: Path) -> bool:
+    git_dir = git(cwd, "rev-parse", "--path-format=absolute", "--git-dir")
+    common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return bool(git_dir and common and Path(git_dir).resolve() == Path(common).resolve())
+
+
 def fail(message: str, result: dict[str, object]) -> None:
     result["valid"] = False
     result["diagnostics"] = [*result.get("diagnostics", []), message]
@@ -54,19 +65,30 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
 
     explicit = os.environ.get("JUNO_TASK_ROOT", "").strip()
     registered = config(cwd, "juno.controller.path") if repo_root_text else None
-    source = "environment" if explicit else "registration" if registered else "current-root"
-    raw = explicit or registered or str(current_root)
-    controller = canonical(raw, current_root)
-    expected_branch = os.environ.get("JUNO_CONTROLLER_BRANCH", "").strip() or (
-        config(cwd, "juno.controller.branch") if source == "registration" else None
+    # Environment is routing/assertion only. Persisted controller registration,
+    # checkout registration, and primary-worktree topology determine identity.
+    source = "registration" if registered else "primary-worktree"
+    persisted_controller = canonical(registered, current_root) if registered else (
+        current_root if repo_root_text and is_primary_worktree(current_root) else None
     )
-    role = os.environ.get("JUNO_WORKSPACE_ROLE", "").strip() or config(cwd, "juno.workspace.role") or (
-        "controller" if controller == current_root else "task"
-    )
+    asserted_controller = canonical(explicit, current_root) if explicit else None
+    controller = persisted_controller or asserted_controller or current_root
+    expected_branch = config(cwd, "juno.controller.branch") if registered else None
+    asserted_branch = os.environ.get("JUNO_CONTROLLER_BRANCH", "").strip() or None
+    persisted_role = worktree_config(cwd, "juno.workspace.role") if repo_root_text else None
+    role_base = worktree_config(cwd, "juno.workspace.roleBase") if repo_root_text else None
+    if persisted_controller == current_root:
+        role = "controller"
+        role_source = "controller-registration" if registered else "primary-worktree"
+    else:
+        role = persisted_role or "task"
+        role_source = "worktree-registration" if persisted_role else "linked-worktree-topology"
+    asserted_role = os.environ.get("JUNO_WORKSPACE_ROLE", "").strip() or None
     result: dict[str, object] = {
         "path": str(controller), "current_root": str(current_root), "resolver": "installed",
         "source": source, "expected_branch": expected_branch,
-        "actual_branch": None, "role": role, "enforcement": enforcement,
+        "actual_branch": None, "role": role, "role_source": role_source, "role_base": role_base,
+        "role_assertion": asserted_role, "enforcement": enforcement,
         "operation": operation, "valid": True, "diagnostics": [],
     }
 
@@ -78,16 +100,23 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
     else:
         actual_branch = git(controller, "symbolic-ref", "--quiet", "--short", "HEAD")
         result["actual_branch"] = actual_branch
-        if source in {"environment", "registration"} and repo_root_text:
+        if repo_root_text:
             current_identity = repository_identity(current_root)
             controller_identity = repository_identity(controller)
             if not current_identity or current_identity != controller_identity:
-                label = "explicit" if source == "environment" else "registered"
-                errors.append(f"{label} controller is not a linked worktree of the invoking repository")
+                errors.append("configured controller is not a linked worktree of the invoking repository")
         if expected_branch and actual_branch != expected_branch:
             errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {actual_branch or 'detached HEAD'!r}")
+    if asserted_controller and persisted_controller and asserted_controller != persisted_controller:
+        errors.append(f"JUNO_TASK_ROOT assertion mismatch: persisted={persisted_controller} asserted={asserted_controller}")
+    if asserted_branch and expected_branch and asserted_branch != expected_branch:
+        errors.append(f"JUNO_CONTROLLER_BRANCH assertion mismatch: persisted={expected_branch!r} asserted={asserted_branch!r}")
     if role not in VALID_ROLES:
-        errors.append(f"invalid workspace role {role!r}; expected controller, task, or integration-owner")
+        errors.append(f"invalid persisted workspace role {role!r}; expected controller, task, or integration-owner")
+    if asserted_role and asserted_role not in VALID_ROLES:
+        errors.append(f"invalid JUNO_WORKSPACE_ROLE assertion {asserted_role!r}")
+    elif asserted_role and asserted_role != role:
+        errors.append(f"JUNO_WORKSPACE_ROLE assertion mismatch: persisted={role!r} asserted={asserted_role!r}")
 
     role_problem = role == "integration-owner" and operation in {"kanban", "orchestration", "session-write"}
     if role_problem:
@@ -107,10 +136,11 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cwd", default=os.getcwd())
-    parser.add_argument("--operation", choices=["diagnostic", "kanban", "orchestration", "session-write"], default="diagnostic")
+    parser.add_argument("--operation", choices=["diagnostic", "kanban", "orchestration", "session-write", "product-edit"], default="diagnostic")
     parser.add_argument("--format", choices=["json", "root", "shell"], default="json")
     parser.add_argument("--register", metavar="PATH")
     parser.add_argument("--branch")
+    parser.add_argument("--register-workspace-role", choices=sorted(VALID_ROLES))
     args = parser.parse_args()
     cwd = Path(args.cwd).resolve()
     if args.register:
@@ -123,6 +153,24 @@ def main() -> None:
             raise SystemExit("controller-resolver: registration requires --branch for detached HEAD")
         subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.path", str(target)], check=True)
         subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.branch", branch], check=True)
+    if args.register_workspace_role:
+        if not (repo_root_text := git(cwd, "rev-parse", "--show-toplevel")):
+            raise SystemExit("controller-resolver: role registration requires a Git worktree")
+        current_root = Path(repo_root_text).resolve()
+        registered_controller = config(cwd, "juno.controller.path")
+        persisted_controller = canonical(registered_controller, current_root) if registered_controller else (
+            current_root if is_primary_worktree(current_root) else None
+        )
+        if args.register_workspace_role == "controller" and persisted_controller != current_root:
+            raise SystemExit("controller-resolver: controller role requires persisted controller identity")
+        if args.register_workspace_role != "controller" and persisted_controller == current_root:
+            raise SystemExit("controller-resolver: task/integration-owner role requires a linked non-controller worktree")
+        subprocess.run(["git", "-C", str(cwd), "config", "--local", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.role", args.register_workspace_role], check=True)
+        base = git(cwd, "rev-parse", "HEAD")
+        if not base:
+            raise SystemExit("controller-resolver: role registration requires a readable HEAD")
+        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.roleBase", base], check=True)
     result = resolve(cwd, args.operation)
     if args.format == "root":
         print(result["path"])

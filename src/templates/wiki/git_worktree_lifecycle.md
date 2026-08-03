@@ -33,9 +33,17 @@ Controller status is intentionally absent. Capacity is advisory. `--hard-min-fre
 
 `verify` binds later work to the immutable manifest. `audit` records inventory, target reachability, and prune dry-run.
 
-## Read-only official-target preflight
+## Read-only edit admission and official-target preflight
 
-Before implementation, keep the task worktree at the exact owner-approved base and separately run `integration_candidate.py target-preflight --repository REPO --target-ref refs/heads/TARGET --approved-base SHA --output RECEIPT.json`. The typed receipt binds the Git common directory, full target ref, approved base, observed target, ancestry, timestamp, producer digest, and safe next action. `exact` and `advanced_descendant` pass; rewind/divergence and missing targets write refusal evidence and exit nonzero. The helper is read-only: descendant acceptance is only a snapshot for later rebuild/re-review, never permission to substitute the current target for the task base or semantic acceptance of composed bytes.
+Before implementation, run `worktree_lifecycle.py edit-preflight` with the explicit task ID, full owner-approved target ref, approved base SHA, expected paths, task-worktree path/branch, create manifest, and verify receipt. The joined `juno_edit_preflight.v1` receipt reuses persisted resolver identity and target/lifecycle verification. Only the exact clean registered task worktree passes. Controller and integration-owner checkouts refuse and print a copy-safe create/verify action; the command never fetches, switches, edits refs, or creates a worktree. `JUNO_WORKSPACE_ROLE` is assertion-only: persisted controller registration, checkout-specific role registration, and lifecycle evidence classify the workspace. Generated edit-capable steps declare `edit_capable: true` and require exactly one successful joined receipt before dispatch.
+
+Keep the task worktree at the exact owner-approved base and separately run `integration_candidate.py target-preflight --repository REPO --target-ref refs/heads/TARGET --approved-base SHA --output RECEIPT.json`. The typed receipt binds the Git common directory, full target ref, approved base, observed target, ancestry, timestamp, producer digest, and safe next action. `exact` and `advanced_descendant` pass; rewind/divergence and missing targets write refusal evidence and exit nonzero. The helper is read-only: descendant acceptance is only a snapshot for later rebuild/re-review, never permission to substitute the current target for the task base or semantic acceptance of composed bytes.
+
+## Commit boundary and hook adoption
+
+`controller_checkpoint.py staged-check` is the shared classifier for checkpoint staging and managed pre-commit. Controller commits may contain only configured controller paths; product paths, nested repositories, and gitlinks refuse. Integration-owner worktrees do not create ordinary commits: product promotion is only target-ref CAS, while package release commits remain under the guarded release authority. There is no controller-promotion exception or environment bypass. `committed-check --base SHA` (or a persisted checkout role base) independently detects `git commit --no-verify` before guarded integration/release entry.
+
+Git hook adoption is explicit. `controller_checkpoint.py hook install` refuses any existing pre-commit hook until the operator supplies its exact path and SHA-256 with `--approve-existing PATH=SHA256`; approved bytes are composed ahead of the managed check. Install/remove are idempotent and refuse drift, missing metadata, or sidecar collisions without changing hooks. Refusals never reset, restore, stage, commit, tag, or move refs/worktrees.
 
 ## Three semantic gates and candidate composition
 

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,15 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.dont_write_bytecode = True
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import controller_resolver
+import integration_candidate
+
 SCHEMA = "juno_worktree_lifecycle.v5"
+EDIT_PREFLIGHT_SCHEMA = "juno_edit_preflight.v1"
 SPARSE_POLICY_HEADER = "# juno-worktree-lifecycle sparse-v1"
 DEFAULT_ACTIVITY_PROBE_TIMEOUT_SECONDS = 5
 MAX_ACTIVITY_PROBE_TIMEOUT_SECONDS = 60
@@ -203,6 +212,13 @@ def configure_sparse_checkout(path: Path, paths: list[str], base: str) -> None:
         raise LifecycleError(f"git sparse-checkout set failed: {result.stderr.strip()}")
     git(path, "reset", "--hard", base)
 
+def register_worktree_role(repo: Path, path: Path, role: str) -> None:
+    git(repo, "config", "--local", "extensions.worktreeConfig", "true")
+    git(path, "config", "--worktree", "juno.workspace.role", role)
+    git(path, "config", "--worktree", "juno.workspace.roleBase", git(path, "rev-parse", "HEAD"))
+    if git(path, "config", "--worktree", "--get", "juno.workspace.role") != role:
+        raise LifecycleError("workspace_role_registration_failed")
+
 def rollback_failed_create(repo: Path, path: Path, branch: str, base: str) -> dict[str, Any]:
     registration = [row for row in listed(repo) if Path(row["worktree"]).resolve() == path]
     evidence: dict[str, Any] = {"registered_before": registration, "removed": False, "branch_deleted": False}
@@ -250,6 +266,8 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         row = matches[0]
         if row.get("branch") != branch or row.get("HEAD") != base: raise LifecycleError("existing_worktree_identity_mismatch")
         if status(path): raise LifecycleError("existing_worktree_dirty")
+        if git(path, "config", "--worktree", "--get", "juno.workspace.role", check=False) != "task":
+            raise LifecycleError("existing_worktree_role_mismatch")
         policy = checkout_policy(path)
         requested_mode = "sparse" if args.sparse else "full"
         if (not policy["consistent"] or policy["mode"] != requested_mode
@@ -265,6 +283,7 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
                 configure_sparse_checkout(path, requested_sparse_paths, base)
             else:
                 git(repo, "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(path), base)
+            register_worktree_role(repo, path, "task")
             policy = checkout_policy(path)
             actual_head = git(path, "rev-parse", "HEAD")
             actual_branch = git(path, "symbolic-ref", "-q", "HEAD", check=False)
@@ -280,7 +299,7 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
     payload = {"schema_version": SCHEMA, "operation": "create", "outcome": outcome, "repository_root": str(root),
                "git_common_dir": str(common), "target_ref": target_ref, "target_sha_at_create": target_sha_at_create,
                "base_sha": base, "task_id": args.task_id,
-               "branch_ref": branch, "worktree": str(path), "expected_paths": expected_paths,
+               "branch_ref": branch, "worktree": str(path), "workspace_role": "task", "expected_paths": expected_paths,
                "sparse_tooling_paths": sparse_tooling_paths, "checkout_policy": policy,
                "validation_commands": args.validation_command, "cleanup_owner": args.cleanup_owner,
                "capacity": capacity, "clean": status(path) == ""}
@@ -324,6 +343,83 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                "actual": actual, "refusals": refusals}
     write_receipt(args.output, payload)
     if not passed: raise LifecycleError("worktree_verification_refused: " + ",".join(refusals))
+    return payload
+
+def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
+    """Join persisted role, target/base, and exact lifecycle evidence without Git mutation."""
+    current = args.path.expanduser().resolve()
+    expected_paths = normalize_sparse_paths(args.expected_path)
+    target = integration_candidate.classify_target(args.repository, args.target_ref, args.approved_base)
+    role = controller_resolver.resolve(current, "product-edit")
+    refusals: list[str] = []
+    manifest: dict[str, Any] | None = None
+    manifest_hash: str | None = None
+    if args.manifest:
+        manifest_hash = hashlib.sha256(args.manifest.read_bytes()).hexdigest()
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") != SCHEMA or manifest.get("operation") != "create":
+            refusals.append("invalid_create_manifest")
+        else:
+            checks = {
+                "task_id_mismatch": manifest.get("task_id") != args.task_id,
+                "manifest_workspace_role_mismatch": manifest.get("workspace_role") != "task",
+                "target_ref_mismatch": manifest.get("target_ref") != target["target_ref"],
+                "approved_base_mismatch": manifest.get("base_sha") != target["approved_base"],
+                "git_common_dir_mismatch": manifest.get("git_common_dir") != target["git_common_dir"],
+                "expected_paths_mismatch": sorted(manifest.get("expected_paths") or []) != expected_paths,
+                "worktree_path_mismatch": Path(str(manifest.get("worktree") or "/nonexistent")).resolve() != current,
+            }
+            refusals.extend(name for name, failed in checks.items() if failed)
+    if role["role"] in {"controller", "integration-owner"}:
+        refusals.append(f"workspace_role_{role['role']}_refuses_product_edit")
+    elif role["role"] != "task":
+        refusals.append("workspace_role_not_task")
+    if not target["passed"]:
+        refusals.append(str(target["classification"]))
+    if role["role"] == "task" and manifest is None:
+        refusals.append("create_manifest_required")
+    actual: dict[str, Any] = {"root": None, "git_common_dir": None, "branch_ref": None, "head": None, "clean": False}
+    try:
+        actual_root, actual_common = identity(current)
+        actual = {"root": str(actual_root), "git_common_dir": str(actual_common),
+                  "branch_ref": git(current, "symbolic-ref", "-q", "HEAD", check=False) or None,
+                  "head": git(current, "rev-parse", "HEAD"), "clean": status(current) == ""}
+        if actual_root != current: refusals.append("path_is_not_worktree_root")
+        if manifest:
+            if actual["branch_ref"] != manifest.get("branch_ref"): refusals.append("unexpected_branch")
+            if actual["head"] != manifest.get("base_sha"): refusals.append("unexpected_head")
+            if actual["git_common_dir"] != manifest.get("git_common_dir"): refusals.append("actual_common_dir_mismatch")
+            if not actual["clean"]: refusals.append("dirty")
+    except LifecycleError:
+        refusals.append("path_is_not_registered_git_worktree")
+    if args.verify_receipt:
+        verification = json.loads(args.verify_receipt.read_text(encoding="utf-8"))
+        if (verification.get("schema_version") != SCHEMA or verification.get("operation") != "verify"
+                or verification.get("passed") is not True or verification.get("manifest_sha256") != manifest_hash
+                or (verification.get("actual") or {}).get("worktree") != str(current)):
+            refusals.append("verify_receipt_mismatch")
+    elif role["role"] == "task":
+        refusals.append("verify_receipt_required")
+    lifecycle_script = SCRIPT_DIR / "worktree_lifecycle.py"
+    if args.manifest:
+        next_argv = ["python3", str(lifecycle_script), "verify", "--manifest", str(args.manifest.resolve()),
+                     "--path", str(args.task_worktree.resolve()), "--output", str(args.next_receipt.resolve())]
+    else:
+        next_argv = ["python3", str(lifecycle_script), "create", "--repository", str(args.repository.resolve()),
+                     "--target-ref", target["target_ref"], "--expected-base", target["approved_base"],
+                     "--path", str(args.task_worktree.resolve()), "--branch-ref", args.task_branch_ref,
+                     "--task-id", args.task_id]
+        for expected_path in expected_paths: next_argv.extend(["--expected-path", expected_path])
+        next_argv.extend(["--cleanup-owner", args.cleanup_owner, "--output", str(args.next_receipt.resolve())])
+    payload = {"schema_version": EDIT_PREFLIGHT_SCHEMA, "operation": "edit_preflight",
+               "passed": not refusals, "task_id": args.task_id, "current": actual,
+               "workspace": role, "target": target, "expected_paths": expected_paths,
+               "manifest": None if args.manifest is None else {"path": str(args.manifest.resolve()), "sha256": manifest_hash},
+               "verify_receipt": None if args.verify_receipt is None else {"path": str(args.verify_receipt.resolve()), "sha256": hashlib.sha256(args.verify_receipt.read_bytes()).hexdigest()},
+               "refusals": sorted(set(refusals)), "safe_next_action": {"argv": next_argv, "shell": shlex.join(next_argv)},
+               "producer_step_digest": os.environ.get("JUNO_WORKFLOW_STEP_DIGEST", "")}
+    write_receipt(args.output, payload)
+    if refusals: raise LifecycleError("edit_preflight_refused: " + ",".join(sorted(set(refusals))))
     return payload
 
 def validate_activity_probe_timeout(value: int) -> int:
@@ -663,6 +759,12 @@ def parser() -> argparse.ArgumentParser:
     create_p.add_argument("--sparse-tooling-path", action="append", default=[], metavar="RELATIVE_PATH")
     create_p.add_argument("--cleanup-owner", required=True); create_p.add_argument("--hard-min-free-bytes", type=int); create_p.add_argument("--output", type=Path, required=True)
     verify_p = sub.add_parser("verify", allow_abbrev=False); verify_p.set_defaults(func=verify); verify_p.add_argument("--manifest", type=Path, required=True); verify_p.add_argument("--path", type=Path); verify_p.add_argument("--output", type=Path, required=True)
+    edit_p = sub.add_parser("edit-preflight", allow_abbrev=False); edit_p.set_defaults(func=edit_preflight)
+    edit_p.add_argument("--repository", type=Path, required=True); edit_p.add_argument("--target-ref", required=True); edit_p.add_argument("--approved-base", required=True)
+    edit_p.add_argument("--task-id", required=True); edit_p.add_argument("--expected-path", action="append", default=[])
+    edit_p.add_argument("--path", type=Path, default=Path.cwd()); edit_p.add_argument("--manifest", type=Path); edit_p.add_argument("--verify-receipt", type=Path)
+    edit_p.add_argument("--task-worktree", type=Path, required=True); edit_p.add_argument("--task-branch-ref", required=True); edit_p.add_argument("--cleanup-owner", required=True)
+    edit_p.add_argument("--next-receipt", type=Path, required=True); edit_p.add_argument("--output", type=Path, required=True)
     audit_p = sub.add_parser("audit", allow_abbrev=False); audit_p.set_defaults(func=audit); audit_p.add_argument("--repository", type=Path, required=True); audit_p.add_argument("--target-ref", required=True); audit_p.add_argument("--output", type=Path, required=True)
     release_p = sub.add_parser("release-target", allow_abbrev=False); release_p.set_defaults(func=release_target)
     for name in ("repository", "path", "output"): release_p.add_argument(f"--{name}", type=Path, required=True)
