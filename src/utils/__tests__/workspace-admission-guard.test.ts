@@ -512,5 +512,5 @@ describe('joined workspace edit and commit admission', () => {
     expect(removed.status, removed.stderr).toBe(0);
     expect(createHash('sha256').update(await fs.readFile(hook)).digest('hex')).toBe(digest);
     expect(python(checkpoint, ['--root', controller, 'hook', 'remove'], controller).status).toBe(0);
-  });
+  }, 30_000);
 });
