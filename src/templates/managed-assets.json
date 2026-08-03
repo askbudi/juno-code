@@ -15,6 +15,13 @@
       "type": "prompt"
     },
     {
+      "source": "prompts/reflect.md",
+      "destination": ".juno_task/prompts/reflect.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "reflect"
+    },
+    {
       "source": "prompts/new_task_workflow.md",
       "destination": ".juno_task/prompts/new_task_workflow.md",
       "installClass": "project",

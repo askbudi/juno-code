@@ -54,6 +54,9 @@ describe('ManagedProjectAssets', () => {
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
     expect(dictionary.clean_worktree).toContain('# Run an exact-base product-change workflow');
+    expect(dictionary.reflect).toContain('# End-of-session reflection');
+    expect(dictionary.reflect).toContain('REFLECTION_TABLE');
+    expect(dictionary.reflect).toContain('complete reflection table');
     expect(dictionary.new_task_workflow).toContain('# Create task workflow');
     expect(dictionary.new_task_workflow).toContain('{{ receipts.<id>.path }}');
     expect(dictionary.new_task_workflow).toContain('Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps');
