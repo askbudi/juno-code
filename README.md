@@ -48,7 +48,7 @@ Register a controller checkout from a linked task checkout when an environment o
 ./.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation diagnostic --format shell
 ```
 
-Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local controller registration, then the current project root. A configured controller is branch-verified and invalid configuration fails closed. Juno and Kanban never switch, detach, stash, or update branches to manufacture compliance.
+Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local controller registration, then the current project root. Canonical registration requires both the path and branch, establishes the controller's committed-audit base only when no base exists, and never advances it on re-registration. There is no public workspace-role assignment interface; exact task creation and protected integration own checkout-specific authority. A configured controller is branch-verified and invalid configuration fails closed. Juno and Kanban never switch, detach, stash, or update branches to manufacture compliance.
 
 | Lane | Permitted | Forbidden |
 |---|---|---|

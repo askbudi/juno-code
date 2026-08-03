@@ -79,7 +79,7 @@ describe('joined workspace edit and commit admission', () => {
 
     const registered = python(resolver, ['--cwd', task, '--register-workspace-role', 'integration-owner'], task);
     expect(registered.status).not.toBe(0);
-    expect(registered.stderr).toMatch(/invalid choice|refuses public assignment/i);
+    expect(registered.stderr).toContain('unrecognized arguments: --register-workspace-role integration-owner');
     expect(JSON.parse(python(resolver, ['--cwd', task], task).stdout).role).toBe('task');
     expect(git(task, 'config', '--worktree', '--get', 'juno.workspace.taskId')).toBe('T1');
   });
@@ -108,7 +108,7 @@ describe('joined workspace edit and commit admission', () => {
     const assignment = python(resolver, ['--cwd', legacy, '--register-workspace-role', 'task',
       '--create-receipt', forgedCreate, '--verify-receipt', forgedVerify], legacy);
     expect(assignment.status).not.toBe(0);
-    expect(assignment.stderr).toMatch(/invalid choice|refuses public assignment/i);
+    expect(assignment.stderr).toContain('unrecognized arguments: --register-workspace-role task');
     expect(run('git', ['-C', legacy, 'config', '--worktree', '--get', 'juno.workspace.role'], legacy).status).toBe(1);
 
     const resolved = JSON.parse(python(resolver, ['--cwd', task], task).stdout);
@@ -198,6 +198,46 @@ describe('joined workspace edit and commit admission', () => {
     result = python(installed, [...common, '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--output', output], task);
     expect(result.status).toBe(2);
     expect(JSON.parse(await fs.readFile(output, 'utf8')).refusals).toContain('expected_path_missing:product.txt');
+  });
+
+  it('requires explicit approved committed base when controller authority is missing', () => {
+    expect(run('git', ['config', '--worktree', '--get', 'juno.workspace.roleBase'], controller).status).toBe(1);
+    const missing = python(checkpoint, ['--root', controller, 'committed-check', '--json'], controller);
+    expect(missing.status).toBe(2);
+    expect(missing.stderr).toContain('committed-check requires --base or persisted workspace roleBase evidence');
+    expect(run('git', ['config', '--worktree', '--get', 'juno.workspace.roleBase'], controller).status).toBe(1);
+
+    const approved = python(checkpoint, ['--root', controller, 'committed-check', '--base', base, '--json'], controller);
+    expect(approved.status, approved.stderr).toBe(0);
+    expect(JSON.parse(approved.stdout)).toMatchObject({ base, head: base, commits_checked: 0, passed: true });
+    expect(run('git', ['config', '--worktree', '--get', 'juno.workspace.roleBase'], controller).status).toBe(1);
+  });
+
+  it('does not let canonical re-registration reset durable controller audit authority', async () => {
+    const registered = python(resolver, ['--cwd', controller, '--register', controller, '--branch', 'main'], controller);
+    expect(registered.status, registered.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(base);
+
+    await fs.writeFile(path.join(controller, 'product.txt'), 'unauthorized\n');
+    git(controller, 'add', 'product.txt');
+    git(controller, 'commit', '--no-verify', '-m', 'unauthorized product commit');
+    const unauthorized = git(controller, 'rev-parse', 'HEAD');
+    let refused = python(checkpoint, ['--root', controller, 'committed-check', '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('unauthorized product commit');
+
+    const repeated = python(resolver, ['--cwd', controller, '--register', controller, '--branch', 'main'], controller);
+    expect(repeated.status, repeated.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(base);
+    expect(git(controller, 'rev-parse', 'HEAD')).toBe(unauthorized);
+    refused = python(checkpoint, ['--root', controller, 'committed-check', '--json'], controller);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('product.txt');
+
+    const removedInterface = python(resolver, ['--cwd', controller, '--register-workspace-role', 'controller'], controller);
+    expect(removedInterface.status).not.toBe(0);
+    expect(removedInterface.stderr).toContain('unrecognized arguments');
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(base);
   });
 
   it('keeps target classifier failures typed without traceback', () => {

@@ -164,42 +164,37 @@ def main() -> None:
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--operation", choices=["diagnostic", "kanban", "orchestration", "session-write", "product-edit"], default="diagnostic")
     parser.add_argument("--format", choices=["json", "root", "shell"], default="json")
-    parser.add_argument("--register", metavar="PATH")
-    parser.add_argument("--branch")
-    # Task and integration-owner identities are deliberately not public CLI
-    # assignments. Exact create and protected integration own those writes.
-    parser.add_argument("--register-workspace-role", choices=["controller"])
+    parser.add_argument("--register", metavar="PATH", help="Register the canonical controller checkout")
+    parser.add_argument("--branch", help="Exact branch of the canonical controller checkout")
     args = parser.parse_args()
     cwd = Path(args.cwd).resolve()
+    if bool(args.register) != bool(args.branch):
+        parser.error("--register PATH and --branch BRANCH are required together")
     if args.register:
         root = git(cwd, "rev-parse", "--show-toplevel")
         if not root:
             raise SystemExit("controller-resolver: registration requires a Git worktree")
         target = canonical(args.register, Path(root))
-        branch = args.branch or git(target, "symbolic-ref", "--quiet", "--short", "HEAD")
-        if not branch:
-            raise SystemExit("controller-resolver: registration requires --branch for detached HEAD")
-        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.path", str(target)], check=True)
-        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.branch", branch], check=True)
-    if args.register_workspace_role:
-        if not (repo_root_text := git(cwd, "rev-parse", "--show-toplevel")):
-            raise SystemExit("controller-resolver: role registration requires a Git worktree")
-        current_root = Path(repo_root_text).resolve()
-        registered_controller = config(cwd, "juno.controller.path")
-        persisted_controller = canonical(registered_controller, current_root) if registered_controller else (
-            current_root if is_primary_worktree(current_root) else None
-        )
-        if persisted_controller != current_root:
-            raise SystemExit("controller-resolver: controller role requires persisted controller identity")
-        base = git(cwd, "rev-parse", "HEAD")
-        if not base:
-            raise SystemExit("controller-resolver: controller role registration requires a readable HEAD")
+        target_root = git(target, "rev-parse", "--show-toplevel")
+        if not target_root or Path(target_root).resolve() != target:
+            raise SystemExit("controller-resolver: registered controller must be an exact Git worktree root")
+        if repository_identity(Path(root)) != repository_identity(target):
+            raise SystemExit("controller-resolver: registered controller must belong to the invoking repository")
+        if not (target / ".juno_task").is_dir():
+            raise SystemExit("controller-resolver: registered controller has no .juno_task directory")
+        actual_branch = git(target, "symbolic-ref", "--quiet", "--short", "HEAD")
+        if actual_branch != args.branch:
+            raise SystemExit(f"controller-resolver: controller branch mismatch: expected {args.branch!r}, found {actual_branch or 'detached HEAD'!r}")
+        head = git(target, "rev-parse", "HEAD")
+        if not head:
+            raise SystemExit("controller-resolver: registered controller requires a readable HEAD")
+        # Canonical controller registration establishes initial audit authority
+        # once. Re-registration must never bless commits added since that base.
         subprocess.run(["git", "-C", str(cwd), "config", "--local", "extensions.worktreeConfig", "true"], check=True)
-        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.role", "controller"], check=True)
-        for key in ("taskId", "manifestIdentity", "createReceiptSha256", "verifyReceiptSha256",
-                    "expectedPathsSha256", "roleAuthority", "eligibleReceiptSha256"):
-            subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "--unset-all", f"juno.workspace.{key}"], check=False)
-        subprocess.run(["git", "-C", str(cwd), "config", "--worktree", "juno.workspace.roleBase", base], check=True)
+        if not worktree_config(target, "juno.workspace.roleBase"):
+            subprocess.run(["git", "-C", str(target), "config", "--worktree", "juno.workspace.roleBase", head], check=True)
+        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.path", str(target)], check=True)
+        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.branch", args.branch], check=True)
     result = resolve(cwd, args.operation)
     if args.format == "root":
         print(result["path"])

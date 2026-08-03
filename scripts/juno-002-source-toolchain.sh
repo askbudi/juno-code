@@ -157,10 +157,9 @@ controller_status() {
 }
 
 register_controller() {
-    local controller_path=${1:?controller path required} branch=${2:-}
-    local args=(--cwd "$REPOSITORY_ROOT" --register "$controller_path" --format json)
-    [[ -n "$branch" ]] && args+=(--branch "$branch")
-    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" "${args[@]}"
+    [[ $# -eq 2 ]] || fail "usage: $0 register-controller PATH BRANCH"
+    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" \
+        --cwd "$1" --register "$1" --branch "$2" --format json
 }
 
 status() {
@@ -202,7 +201,7 @@ case "$invoked_as" in
             status) status ;;
             run-yy) run_selected code "$@" ;;
             run-kanban) run_selected kanban "$@" ;;
-            *) fail "usage: $0 {install|select|rollback-selection|controller-status|register-controller PATH [BRANCH]|status|run-yy|run-kanban}" ;;
+            *) fail "usage: $0 {install|select|rollback-selection|controller-status|register-controller PATH BRANCH|status|run-yy|run-kanban}" ;;
         esac
         ;;
 esac

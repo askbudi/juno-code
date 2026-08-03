@@ -81,6 +81,33 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
+  it('initializes controller audit authority once and exposes no public role assignment', async () => {
+    const resolver = path.join(task, '.juno_task/scripts/controller_resolver.py');
+    const initial = git(controller, 'rev-parse', 'HEAD');
+    const registration = run('python3', [resolver, '--cwd', task, '--register', controller, '--branch', 'controller-branch'], task);
+    expect(registration.status, registration.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+    expect(run('git', ['config', '--worktree', '--get', 'juno.workspace.role'], controller).status).toBe(1);
+
+    await fs.writeFile(path.join(controller, 'product.txt'), 'unaudited\n');
+    git(controller, 'add', 'product.txt');
+    git(controller, 'commit', '--no-verify', '-m', 'unaudited product commit');
+    const unauthorized = git(controller, 'rev-parse', 'HEAD');
+    expect(unauthorized).not.toBe(initial);
+
+    const repeated = run('python3', [resolver, '--cwd', task, '--register', controller, '--branch', 'controller-branch'], task);
+    expect(repeated.status, repeated.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+
+    const obsolete = run('python3', [resolver, '--cwd', controller, '--register-workspace-role', 'controller'], controller);
+    expect(obsolete.status).not.toBe(0);
+    expect(obsolete.stderr).toContain('unrecognized arguments: --register-workspace-role controller');
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+    const help = run('python3', [resolver, '--help'], task);
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).not.toContain('register-workspace-role');
+  });
+
   it('allows implicit bootstrap only in the resolved controller and preserves resolver failure truth', () => {
     const names = ['JUNO_TASK_ROOT', 'JUNO_CONTROLLER_BRANCH', 'JUNO_WORKSPACE_ROLE', 'JUNO_WORKSPACE_ENFORCEMENT'] as const;
     const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
