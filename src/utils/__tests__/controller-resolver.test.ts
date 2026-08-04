@@ -53,14 +53,59 @@ describe('canonical controller resolver', () => {
     task = await fs.realpath(task);
     git(task, 'config', '--local', 'juno.controller.path', controller);
     git(task, 'config', '--local', 'juno.controller.branch', 'controller-branch');
+    git(task, 'config', '--local', 'extensions.worktreeConfig', 'true');
+    git(task, 'config', '--worktree', 'juno.workspace.role', 'task');
+    git(task, 'config', '--worktree', 'juno.workspace.roleBase', git(task, 'rev-parse', 'HEAD'));
+    git(task, 'config', '--worktree', 'juno.workspace.taskId', 'fixture-task');
+    git(task, 'config', '--worktree', 'juno.workspace.manifestIdentity', 'a'.repeat(64));
+    git(task, 'config', '--worktree', 'juno.workspace.createReceiptSha256', 'b'.repeat(64));
+    git(task, 'config', '--worktree', 'juno.workspace.expectedPathsSha256', 'd'.repeat(64));
   });
 
   afterEach(async () => fs.remove(sandbox));
+
+  it('fails closed for a linked worktree before persisted role registration', () => {
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.role');
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.taskId');
+    git(task, 'config', '--worktree', '--unset-all', 'juno.workspace.manifestIdentity');
+    const before = git(task, 'rev-parse', 'HEAD');
+    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('linked worktree has no persisted workspace role registration');
+    expect(git(task, 'rev-parse', 'HEAD')).toBe(before);
+  });
 
   it('resolves a registered controller across a real linked worktree with spaces', () => {
     const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
+  });
+
+  it('initializes controller audit authority once and exposes no public role assignment', async () => {
+    const resolver = path.join(task, '.juno_task/scripts/controller_resolver.py');
+    const initial = git(controller, 'rev-parse', 'HEAD');
+    const registration = run('python3', [resolver, '--cwd', task, '--register', controller, '--branch', 'controller-branch'], task);
+    expect(registration.status, registration.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+    expect(run('git', ['config', '--worktree', '--get', 'juno.workspace.role'], controller).status).toBe(1);
+
+    await fs.writeFile(path.join(controller, 'product.txt'), 'unaudited\n');
+    git(controller, 'add', 'product.txt');
+    git(controller, 'commit', '--no-verify', '-m', 'unaudited product commit');
+    const unauthorized = git(controller, 'rev-parse', 'HEAD');
+    expect(unauthorized).not.toBe(initial);
+
+    const repeated = run('python3', [resolver, '--cwd', task, '--register', controller, '--branch', 'controller-branch'], task);
+    expect(repeated.status, repeated.stderr).toBe(0);
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+
+    const obsolete = run('python3', [resolver, '--cwd', controller, '--register-workspace-role', 'controller'], controller);
+    expect(obsolete.status).not.toBe(0);
+    expect(obsolete.stderr).toContain('unrecognized arguments: --register-workspace-role controller');
+    expect(git(controller, 'config', '--worktree', '--get', 'juno.workspace.roleBase')).toBe(initial);
+    const help = run('python3', [resolver, '--help'], task);
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).not.toContain('register-workspace-role');
   });
 
   it('allows implicit bootstrap only in the resolved controller and preserves resolver failure truth', () => {
@@ -74,14 +119,10 @@ describe('canonical controller resolver', () => {
         resolution: { current_root: controller, role: 'controller' },
       });
 
-      // A controller role inherited by a task launch cannot authorize writes to
-      // the task worktree: exact controller/root identity is also required.
+      // Environment role is assertion-only and cannot reclassify persisted task topology.
       process.env.JUNO_WORKSPACE_ROLE = 'controller';
-      expect(resolveAutomaticProjectBootstrap(task)).toMatchObject({
-        allowed: false,
-        reason: 'non-controller-worktree',
-        resolution: { current_root: task, path: controller },
-      });
+      expect(() => resolveAutomaticProjectBootstrap(task)).toThrow();
+      process.env.JUNO_WORKSPACE_ROLE = '';
 
       git(task, 'config', '--local', 'juno.controller.path', path.join(sandbox, 'missing-controller'));
       expect(() => resolveAutomaticProjectBootstrap(task)).toThrow();
@@ -94,12 +135,35 @@ describe('canonical controller resolver', () => {
     }
   });
 
-  it('gives an explicit linked root priority and never falls back from invalid or unrelated roots', async () => {
+  it('keeps an initialized non-Git project local despite an inherited controller route', async () => {
+    const project = path.join(sandbox, 'initialized non-git project');
+    await fs.ensureDir(path.join(project, '.juno_task', 'scripts'));
+    await fs.copy(resolverTemplate, path.join(project, '.juno_task', 'scripts', 'controller_resolver.py'));
+
+    const result = run(
+      'python3',
+      [path.join(project, '.juno_task/scripts/controller_resolver.py'), '--cwd', project],
+      project,
+      { JUNO_TASK_ROOT: controller, JUNO_WORKSPACE_ROLE: 'controller' },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      path: await fs.realpath(project),
+      current_root: await fs.realpath(project),
+      source: 'non-git-current-root',
+      role: 'controller',
+      role_source: 'non-git-current-root',
+      valid: true,
+    });
+  });
+
+  it('treats explicit roots as assertions and never falls back from invalid or unrelated roots', async () => {
     const explicit = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, { JUNO_TASK_ROOT: controller });
-    expect(JSON.parse(explicit.stdout).source).toBe('environment');
+    expect(JSON.parse(explicit.stdout).source).toBe('registration');
     const invalid = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, { JUNO_TASK_ROOT: path.join(sandbox, 'missing') });
     expect(invalid.status).toBe(2);
-    expect(invalid.stderr).toContain('does not exist');
+    expect(invalid.stderr).toContain('assertion mismatch');
 
     const unrelated = path.join(sandbox, 'unrelated controller');
     await fs.ensureDir(path.join(unrelated, '.juno_task'));
@@ -111,7 +175,7 @@ describe('canonical controller resolver', () => {
       { JUNO_TASK_ROOT: unrelated, JUNO_CONTROLLER_BRANCH: 'controller-branch' },
     );
     expect(wrongRepository.status).toBe(2);
-    expect(wrongRepository.stderr).toContain('explicit controller is not a linked worktree');
+    expect(wrongRepository.stderr).toContain('assertion mismatch');
   });
 
   it('rejects stale and wrong-branch registrations without changing either HEAD', () => {
@@ -129,6 +193,11 @@ describe('canonical controller resolver', () => {
   });
 
   it('supports warn and strict integration-owner enforcement', () => {
+    git(task, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(task, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    for (const key of ['taskId', 'manifestIdentity', 'createReceiptSha256', 'expectedPathsSha256']) {
+      run('git', ['config', '--worktree', '--unset-all', `juno.workspace.${key}`], task);
+    }
     const warn = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task, '--operation', 'orchestration'], task, { JUNO_WORKSPACE_ROLE: 'integration-owner', JUNO_WORKSPACE_ENFORCEMENT: 'warn' });
     expect(warn.status).toBe(0);
     expect(warn.stderr).toContain('warning');

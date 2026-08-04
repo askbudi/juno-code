@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const root = path.resolve(process.cwd(), '..');
 const helper = path.resolve(process.cwd(), 'src/templates/scripts/integration_owner_preflight.py');
+const candidate = path.resolve(process.cwd(), 'src/templates/scripts/integration_candidate.py');
 
 describe('target-ref integration channel', () => {
   it('is compilable and exposes only receipt-gated CAS integration controls', async () => {
@@ -28,6 +29,10 @@ describe('target-ref integration channel', () => {
     expect(source).not.toContain('controller_nested_integration_owner_receipt_required');
     expect(source).not.toContain('--checkpoint-controller');
     expect(source).not.toContain('other_write_capable_processes');
+    const candidateSource = await fs.readFile(candidate, 'utf8');
+    expect(candidateSource).toContain('--target-channel-owner');
+    expect(candidateSource).toContain('protected_role_override="integration-owner"');
+    expect(candidateSource).toContain('role_persisted_by_planning":False');
   });
 
   it.skipIf(process.env.JUNO_CODE_REAL_GIT_INTEGRATION !== '1')(

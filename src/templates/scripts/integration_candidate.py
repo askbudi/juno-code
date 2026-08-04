@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse, datetime as dt, hashlib, json, os, subprocess, sys, uuid
 from pathlib import Path
 from typing import Any
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import controller_checkpoint
 SCHEMA = "juno_integration_candidate.v2"
 TARGET_PREFLIGHT_SCHEMA = "juno_integration_target_preflight.v1"
 class CandidateError(Exception): pass
@@ -58,39 +60,70 @@ def output_text(value:Any)->str:
     if isinstance(value,bytes):return value.decode("utf-8",errors="replace")
     return str(value)
 
-def target_preflight(args:argparse.Namespace)->dict[str,Any]:
-    repo=args.repository.resolve();target_ref=full_ref(args.target_ref)
-    common_raw=git(repo,"rev-parse","--path-format=absolute","--git-common-dir")
-    common_dir=Path(common_raw).resolve()
-    approved_result=run(repo,"rev-parse",f"{args.approved_base}^{{commit}}",check=False)
-    if approved_result.returncode:
-      raise CandidateError("approved base is not a readable commit")
+def classify_target(repo:Path,target_ref_value:str,approved_base:str)->dict[str,Any]:
+    """Canonical read-only target/base classifier shared by lifecycle admission."""
+    repo=repo.resolve();target_ref=full_ref(target_ref_value)
+    common_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-common-dir")).resolve()
+    approved_result=run(repo,"rev-parse",f"{approved_base}^{{commit}}",check=False)
+    if approved_result.returncode:raise CandidateError("approved base is not a readable commit")
     approved=approved_result.stdout.strip()
     target_result=run(repo,"rev-parse","--verify",f"{target_ref}^{{commit}}",check=False)
     observed=target_result.stdout.strip() if target_result.returncode==0 else None
-    if observed is None:
-      classification="missing_target";ancestry=False;safe_action="refuse_missing_target"
-    elif observed==approved:
-      classification="exact";ancestry=True;safe_action="continue_exact_base_policy"
+    if observed is None:classification="missing_target";ancestry=False;safe_action="refuse_missing_target"
+    elif observed==approved:classification="exact";ancestry=True;safe_action="continue_exact_base_policy"
     elif run(repo,"merge-base","--is-ancestor",approved,observed,check=False).returncode==0:
       classification="advanced_descendant";ancestry=True;safe_action="snapshot_then_rebuild_and_rereview"
-    else:
-      classification="invalid_rewind_or_divergence";ancestry=False;safe_action="refuse_history_change"
-    payload={
-      "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",
-      "repository":str(repo),"git_common_dir":str(common_dir),"target_ref":target_ref,
+    else:classification="invalid_rewind_or_divergence";ancestry=False;safe_action="refuse_history_change"
+    return {"repository":str(repo),"git_common_dir":str(common_dir),"target_ref":target_ref,
       "approved_base":approved,"observed_target_sha":observed,"classification":classification,
       "approved_base_is_ancestor":ancestry,"safe_next_action":safe_action,
-      "passed":classification in {"exact","advanced_descendant"},
+      "passed":classification in {"exact","advanced_descendant"}}
+
+def require_committed_tree(repo:Path,fallback_base:str)->dict[str,Any]:
+    try:return controller_checkpoint.committed_admission(repo,fallback_base)
+    except controller_checkpoint.CheckpointError as exc:raise CandidateError(f"committed-tree admission refused: {exc}") from exc
+
+def require_target_channel_owner(repo:Path,declared_owner:Path,base_sha:str)->dict[str,Any]:
+    """Read-only first-use audit for the exact checkout that will own target CAS."""
+    repo=repo.resolve();declared=declared_owner.resolve()
+    root=Path(git(declared,"rev-parse","--show-toplevel")).resolve()
+    if declared!=repo or root!=repo:raise CandidateError("target-channel owner must exactly match --repository Git root")
+    git_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-dir")).resolve()
+    common_dir=Path(git(repo,"rev-parse","--path-format=absolute","--git-common-dir")).resolve()
+    if git_dir==common_dir:raise CandidateError("target-channel owner must be a dedicated linked checkout")
+    persisted=git(repo,"config","--worktree","--get","juno.workspace.role",check=False) or None
+    authority=git(repo,"config","--worktree","--get","juno.workspace.roleAuthority",check=False) or None
+    if persisted not in {None,"integration-owner"}:raise CandidateError(f"target-channel owner has incompatible persisted role: {persisted}")
+    if persisted=="integration-owner" and authority!="protected-integration.v1":raise CandidateError("integration-owner lacks protected integration authority")
+    try:
+      audit=controller_checkpoint.committed_admission(repo,base_sha,protected_role_override="integration-owner")
+    except controller_checkpoint.CheckpointError as exc:
+      raise CandidateError(f"committed-tree admission refused: {exc}") from exc
+    base=git(repo,"rev-parse",f"{base_sha}^{{commit}}")
+    head=git(repo,"rev-parse","HEAD")
+    if head!=base:raise CandidateError("target-channel owner must remain at the exact approved base")
+    if git(repo,"status","--porcelain=v2","--untracked-files=all"):raise CandidateError("target-channel owner must be clean")
+    return {"intent":"target_channel_owner","repository":str(repo),"git_common_dir":str(common_dir),
+      "git_dir":str(git_dir),"head":head,"base_sha":base,"persisted_role":persisted,
+      "protected_authority_persisted":persisted=="integration-owner","committed_tree_admission":audit,
+      "read_only":True,"role_persisted_by_planning":False}
+
+def target_preflight(args:argparse.Namespace)->dict[str,Any]:
+    require_committed_tree(args.repository,args.approved_base)
+    snapshot=classify_target(args.repository,args.target_ref,args.approved_base)
+    payload={
+      "schema_version":TARGET_PREFLIGHT_SCHEMA,"operation":"target_preflight",**snapshot,
       "producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST", ""),
       "observed_at":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
     }
     write(args.output,payload)
-    if not payload["passed"]: raise CandidateError(classification)
+    if not payload["passed"]: raise CandidateError(str(payload["classification"]))
     return payload
 
 def plan(args:argparse.Namespace)->dict[str,Any]:
     repo=args.repository.resolve(); target_ref=full_ref(args.target_ref); target=git(repo,"rev-parse",f"{target_ref}^{{commit}}")
+    planning=(require_target_channel_owner(repo,args.target_channel_owner,args.base_sha) if args.target_channel_owner else
+              {"intent":"registered_repository","committed_tree_admission":require_committed_tree(repo,args.base_sha)})
     tip=git(repo,"rev-parse",f"{args.reviewed_tip}^{{commit}}"); base=git(repo,"rev-parse",f"{args.base_sha}^{{commit}}")
     load_pass(args.premerge_review,"pre_merge",tip)
     if run(repo,"merge-base","--is-ancestor",base,tip,check=False).returncode: raise CandidateError("reviewed tip does not descend from base")
@@ -104,7 +137,7 @@ def plan(args:argparse.Namespace)->dict[str,Any]:
     if git(task_worktree,"rev-parse","HEAD")!=tip or git(task_worktree,"status","--porcelain=v2","--untracked-files=all"):raise CandidateError("reviewed task worktree must be exact and clean")
     payload={"schema_version":SCHEMA,"operation":"plan","task_id":args.task_id,"repository":str(repo),"target_ref":target_ref,
       "base_sha":base,"reviewed_tip":tip,"task_worktree":str(task_worktree),"expected_target_sha":target,"strategy":strategy,"task_paths":task_paths,
-      "target_paths":target_paths,"overlap_paths":sorted(set(task_paths)&set(target_paths)),"expected_paths":expected,
+      "target_channel_planning":planning,"target_paths":target_paths,"overlap_paths":sorted(set(task_paths)&set(target_paths)),"expected_paths":expected,
       "premerge_review_sha256":hashlib.sha256(args.premerge_review.read_bytes()).hexdigest(),"premerge_review":load_pass(args.premerge_review,"pre_merge",tip),"pdr_matrix":json.loads(args.pdr_matrix.read_text())}
     if not isinstance(payload["pdr_matrix"],dict) or not payload["pdr_matrix"] or any(v!="PASS" for v in payload["pdr_matrix"].values()): raise CandidateError("PDR matrix must be non-empty and contain only PASS values")
     write(args.output,payload);return payload
@@ -197,7 +230,7 @@ def parser()->argparse.ArgumentParser:
  q=s.add_parser("target-preflight",allow_abbrev=False);q.set_defaults(func=target_preflight)
  q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--approved-base",required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("plan",allow_abbrev=False);q.set_defaults(func=plan)
- q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path,required=True);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
+ q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-channel-owner",type=Path,help="explicit dedicated integration-owner checkout; enables the read-only protected first-use audit");q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path,required=True);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("build",allow_abbrev=False);q.set_defaults(func=build);q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path,required=True);q.add_argument("--validation-command",action="append",required=True);q.add_argument("--validation-timeout",type=float,default=1800);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("verify",allow_abbrev=False);q.set_defaults(func=verify);q.add_argument("--candidate",type=Path,required=True);q.add_argument("--candidate-review",type=Path);q.add_argument("--output",type=Path,required=True)
  return p

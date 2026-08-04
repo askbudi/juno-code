@@ -266,6 +266,118 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).not.toContain('--checkpoint-controller');
   });
 
+  it('rechecks persisted task authority before every generated write dispatch', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    await fs.writeFile(path.join(controller, 'tracked.txt'), 'base\n');
+    spawnSync('git', ['add', 'tracked.txt'], { cwd: controller });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], { cwd: controller });
+    spawnSync('git', ['config', '--local', 'extensions.worktreeConfig', 'true'], { cwd: controller });
+    spawnSync('git', ['config', '--local', 'juno.controller.path', controller], { cwd: controller });
+    spawnSync('git', ['config', '--local', 'juno.controller.branch', 'fixture-controller'], { cwd: controller });
+
+    const taskRootConfigured = path.join(testDir, 'task-worktree');
+    expect(spawnSync('git', ['worktree', 'add', '-b', 'task-branch', taskRootConfigured, 'HEAD'], {
+      cwd: controller, encoding: 'utf8',
+    }).status).toBe(0);
+    const taskRoot = await fs.realpath(taskRootConfigured);
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: taskRoot, encoding: 'utf8' }).stdout.trim();
+    const common = await fs.realpath(spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: taskRoot, encoding: 'utf8',
+    }).stdout.trim());
+    const manifestPath = path.join(testDir, 'create-manifest.json');
+    await fs.writeJson(manifestPath, { schema_version: 'juno_worktree_lifecycle.v5', operation: 'create', task_id: 'T1' });
+    const manifestSha = createHash('sha256').update(await fs.readFile(manifestPath)).digest('hex');
+    const expectedPathsSha = createHash('sha256').update(JSON.stringify(['tracked.txt'])).digest('hex');
+    const manifestIdentity = createHash('sha256').update('task-manifest-T1').digest('hex');
+    const roleValues: Record<string, string> = {
+      role: 'task', taskId: 'T1', manifestIdentity, roleBase: head,
+      createReceiptSha256: manifestSha, expectedPathsSha256: expectedPathsSha,
+    };
+    const persistRole = () => {
+      for (const [key, value] of Object.entries(roleValues)) {
+        expect(spawnSync('git', ['config', '--worktree', `juno.workspace.${key}`, value], { cwd: taskRoot }).status).toBe(0);
+      }
+    };
+    persistRole();
+
+    const receiptPath = path.join(testDir, 'edit-admission.json');
+    const markerPath = path.join(testDir, 'dispatch.json');
+    const producer = (receiptRoot: string) => {
+      const payload = {
+        schema_version: 'juno_edit_preflight.v1', passed: true, task_id: 'T1',
+        current: { root: receiptRoot, git_common_dir: common, branch_ref: 'refs/heads/task-branch', head, clean: true },
+        workspace: {
+          valid: true, current_root: receiptRoot, role: 'task', role_source: 'worktree-registration',
+          role_base: head, task_id: 'T1', manifest_identity: manifestIdentity,
+          create_receipt_sha256: manifestSha, expected_paths_sha256: expectedPathsSha, role_authority: null,
+        },
+        target: { target_ref: 'refs/heads/main' }, expected_paths: ['tracked.txt'],
+        manifest: { path: manifestPath, sha256: manifestSha },
+      };
+      return [
+        'python3', '-c',
+        `import json,os,pathlib; payload=json.loads(${JSON.stringify(JSON.stringify(payload))}); payload["producer_step_digest"]=os.environ["JUNO_WORKFLOW_STEP_DIGEST"]; pathlib.Path(${JSON.stringify(receiptPath)}).write_text(json.dumps(payload))`,
+      ];
+    };
+    const workflow = (receiptRoot: string, mutation?: string[]) => ({
+      schema_version: 1,
+      workflow_id: 'generated_edit_dispatch',
+      receipts: [{
+        id: 'edit', producer: 'admit', path: receiptPath, schema_version: 'juno_edit_preflight.v1',
+        required_fields: ['producer_step_digest', 'passed', 'task_id', 'current.root', 'current.git_common_dir', 'current.branch_ref', 'current.head', 'current.clean', 'workspace.role', 'workspace.current_root'],
+        expected_fields: { passed: true, task_id: 'T1', 'current.root': taskRoot, 'current.clean': true, 'workspace.role': 'task', 'workspace.current_root': taskRoot },
+      }],
+      steps: [
+        { id: 'admit', capture_session: false, fail_workflow: true, command: producer(receiptRoot) },
+        ...(mutation ? [{ id: 'mutate-after-admission', capture_session: false, fail_workflow: true, command: mutation }] : []),
+        {
+          id: 'edit', capture_session: false, fail_workflow: true, edit_capable: true, requires_receipts: ['edit'],
+          generated_task_contract: { role: 'review', write_contract: 'review_fix', task_root_receipt: 'edit' },
+          command: ['python3', '-c', `import json,os,pathlib; pathlib.Path(${JSON.stringify(markerPath)}).write_text(json.dumps({"cwd":str(pathlib.Path.cwd()),"task_root":os.environ.get("TASK_ROOT"),"controller_root":os.environ.get("JUNO_TASK_ROOT")}))`],
+        },
+      ],
+    });
+    const workflowPath = path.join(testDir, 'generated-edit.json');
+    const runCase = async (name: string, document: object) => {
+      await fs.remove(markerPath);
+      await fs.writeJson(workflowPath, document);
+      return runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, name), '--print-output', 'none']);
+    };
+
+    const accepted = await runCase('accepted', workflow(taskRoot));
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(await fs.readJson(markerPath)).toEqual({ cwd: taskRoot, task_root: taskRoot, controller_root: controller });
+
+    const removed = await runCase('role-removed', workflow(taskRoot, [
+      'git', '-C', taskRoot, 'config', '--worktree', '--unset-all', 'juno.workspace.role',
+    ]));
+    expect(removed.status).not.toBe(0);
+    expect(removed.stderr + removed.stdout).toContain('persisted task authority is invalid or unregistered');
+    expect(await fs.pathExists(markerPath)).toBe(false);
+
+    persistRole();
+    const changed = await runCase('manifest-changed', workflow(taskRoot, [
+      'git', '-C', taskRoot, 'config', '--worktree', 'juno.workspace.manifestIdentity', 'stale-manifest',
+    ]));
+    expect(changed.status).not.toBe(0);
+    expect(changed.stderr + changed.stdout).toContain('persisted task role/manifest authority changed');
+    expect(await fs.pathExists(markerPath)).toBe(false);
+
+    persistRole();
+    const alias = path.join(testDir, 'task-path-alias');
+    await fs.symlink(taskRoot, alias);
+    const pathDrift = await runCase('path-drift', workflow(alias));
+    expect(pathDrift.status).not.toBe(0);
+    expect(await fs.pathExists(markerPath)).toBe(false);
+
+    const branchDrift = await runCase('branch-drift', workflow(taskRoot, [
+      'git', '-C', taskRoot, 'checkout', '--detach',
+    ]));
+    expect(branchDrift.status).not.toBe(0);
+    expect(branchDrift.stderr + branchDrift.stdout).toContain('exact task identity changed');
+    expect(await fs.pathExists(markerPath)).toBe(false);
+  });
+
   it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
     const workflowPath = path.join(testDir, 'local-integration.json');
     const workflow: any = {
