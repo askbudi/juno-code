@@ -312,8 +312,13 @@ def restoration_process_evidence(path:Path)->dict[str,Any]:
  if foreign:raise IntegrationError(f"unsafe_active_runtime_ownership path={path} pids={[item['pid'] for item in foreign]}")
  return evidence
 
-def restoration_registration(rows:list[dict[str,str]])->list[dict[str,str]]:
- return sorted(({key:value for key,value in row.items() if key not in {"HEAD","branch","detached"}} for row in rows),key=lambda row:row.get("worktree",""))
+def restoration_registration(rows:list[dict[str,str]],mutable_path:Path)->list[dict[str,str]]:
+ mutable_path=mutable_path.resolve();mutable_identities={mutable_path,common(mutable_path)};normalized=[]
+ for row in rows:
+  try:is_mutable=Path(row.get("worktree","")).resolve() in mutable_identities
+  except OSError:is_mutable=False
+  normalized.append({key:value for key,value in row.items() if not (is_mutable and key in {"HEAD","branch","detached"})})
+ return sorted(normalized,key=lambda row:row.get("worktree",""))
 
 def exact_checkout_state(path:Path,item:dict[str,Any],allowed_heads:set[str],allowed_dirty_paths:set[str]|None=None)->dict[str,Any]:
  if lifecycle.lock_path(path).exists():raise IntegrationError(f"restoration_index_lock_present path={path}")
@@ -325,7 +330,7 @@ def exact_checkout_state(path:Path,item:dict[str,Any],allowed_heads:set[str],all
  if run(path,"diff","--cached","--quiet",check=False).returncode:raise IntegrationError(f"restoration_index_dirt name={item['name']}")
  if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError(f"restoration_target_moved name={item['name']}")
  if run(path,"cat-file","-e",f"{item['candidate_sha']}^{{commit}}",check=False).returncode:raise IntegrationError(f"restoration_candidate_object_missing name={item['name']}")
- return {"head":head,"branch":branch or "DETACHED","status":git(path,"status","--porcelain=v2","--untracked-files=all"),"registration":restoration_registration(lifecycle.listed(Path(item["path"]))) }
+ return {"head":head,"branch":branch or "DETACHED","status":git(path,"status","--porcelain=v2","--untracked-files=all"),"registration":restoration_registration(lifecycle.listed(Path(item["path"])),path) }
 
 def restore_controller_checkout(repositories:list[dict[str,Any]],gitlinks:list[tuple[str,str]],controller:Path|None,policy:str|None,detaches:list[dict[str,Any]],receipt:dict[str,Any],inject_after:int|None)->list[dict[str,Any]]:
  if policy is None:return []
@@ -350,12 +355,12 @@ def restore_controller_checkout(repositories:list[dict[str,Any]],gitlinks:list[t
   fields=git(root["path"],"ls-tree",root["candidate_sha"],"--",relative.as_posix()).split(None,3)
   if len(fields)<3 or fields[0]!="160000" or fields[2]!=item["candidate_sha"]:raise IntegrationError(f"restoration_gitlink_mismatch name={item['name']}")
   before=exact_checkout_state(path,item,{item["expected_sha"],item["candidate_sha"]})
-  detached_registration=restoration_registration(detached.get("evidence",{}).get("inventory_after") or [])
+  detached_registration=restoration_registration(detached.get("evidence",{}).get("inventory_after") or [],path)
   if not detached_registration or before["registration"]!=detached_registration:raise IntegrationError(f"restoration_inventory_drift name={item['name']}")
   process=restoration_process_evidence(path)
   planned.append({"name":item["name"],"kind":"nested","path":str(path),"before":before,"process_evidence":process,"status":"planned"})
  root_before=exact_checkout_state(controller,root,{root["expected_sha"],root["candidate_sha"]},{relative.as_posix() for _,_,relative in children})
- root_detached_registration=restoration_registration(root_detach.get("evidence",{}).get("inventory_after") or [])
+ root_detached_registration=restoration_registration(root_detach.get("evidence",{}).get("inventory_after") or [],controller)
  if not root_detached_registration or root_before["registration"]!=root_detached_registration:raise IntegrationError("controller_root_inventory_drift")
  root_process=restoration_process_evidence(controller)
  root_inventory=root_before["registration"]
@@ -378,6 +383,8 @@ def restore_controller_checkout(repositories:list[dict[str,Any]],gitlinks:list[t
   owners=[row for row in lifecycle.listed(Path(root["path"])) if row.get("branch")==root["target_ref"]]
   if owners:raise IntegrationError("foreign_branch_owner_before_root_restoration")
   run(controller,"symbolic-ref","HEAD",root["target_ref"])
+ owners_after=[row for row in lifecycle.listed(Path(root["path"])) if row.get("branch")==root["target_ref"]]
+ if len(owners_after)!=1 or Path(owners_after[0]["worktree"]).resolve()!=controller:raise IntegrationError("controller_root_target_owner_readback_failed")
  after=exact_checkout_state(controller,root,{root["candidate_sha"]})
  if after["branch"]!=root["target_ref"]:raise IntegrationError("controller_root_restoration_postcondition_failed")
  if after["registration"]!=root_inventory:raise IntegrationError("controller_root_inventory_drift")

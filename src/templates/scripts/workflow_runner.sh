@@ -3928,7 +3928,7 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
         )
         if completed.returncode:
             detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
-            detail = re.sub(r"(?i)(authorization|token|password|secret)(\s*[:=]\s*)\S+", r"\1\2[REDACTED]", detail)
+            detail = re.sub(r"(?im)^(\s*(?:authorization|token|password|secret)\s*[:=]\s*).*$", r"\1[REDACTED]", detail)
             detail = detail[-2000:]
             raise WorkflowError(f"checkpoint exit {completed.returncode}: {detail}")
     except (OSError, subprocess.SubprocessError, WorkflowError) as exc:
