@@ -11,6 +11,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -117,6 +118,33 @@ def acquire_lease(root: Path):
         handle.close()
         raise CheckpointError(f"repository lease busy: {lease_path}") from exc
     return handle
+
+
+def acquire_target_channel(root: Path, timeout_seconds: float = 30.0):
+    """Serialize branch commits with integration CAS/restoration on the same channel."""
+    target_ref = git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip()
+    if not target_ref:
+        raise CheckpointError("checkpoint requires a named branch; detached HEAD is not allowed")
+    if not target_ref.startswith("refs/heads/"):
+        raise CheckpointError(f"checkpoint branch is not a full local head ref: {target_ref}")
+    identity = f"{common_dir(root)}\0{target_ref}".encode()
+    channel_path = common_dir(root) / "juno-integration-channels" / (hashlib.sha256(identity).hexdigest() + ".lock")
+    channel_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = channel_path.open("a+", encoding="utf-8")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError as exc:
+            if time.monotonic() >= deadline:
+                handle.close()
+                raise CheckpointError(f"target channel lock timeout: {channel_path}") from exc
+            time.sleep(0.05)
+    if git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip() != target_ref:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN); handle.close()
+        raise CheckpointError("checkpoint branch changed while acquiring target channel")
+    return handle, target_ref, channel_path
 
 
 def normalize_entry(value: Any) -> str:
@@ -804,19 +832,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "committed-check":
         payload = committed_admission(root, args.base, prefer_persisted=args.base is None); emit(payload, args.json); return 0
     if args.command == "release-commit":
-        lease = acquire_lease(root)
-        try: payload = release_commit(root, args.message, args.path)
-        finally: fcntl.flock(lease.fileno(), fcntl.LOCK_UN); lease.close()
+        lease = acquire_lease(root); channel = None
+        try:
+            channel = acquire_target_channel(root)
+            payload = release_commit(root, args.message, args.path)
+        finally:
+            if channel: fcntl.flock(channel[0].fileno(), fcntl.LOCK_UN); channel[0].close()
+            fcntl.flock(lease.fileno(), fcntl.LOCK_UN); lease.close()
         emit(payload, args.json); return 0
     if args.command == "hook":
         payload = hook_command(root, args.action, args.approve_existing); emit(payload, args.json); return 0
     should_commit = args.command == "commit" or (args.command == "require-clean" and args.checkpoint)
-    lease = acquire_lease(root)
+    lease = acquire_lease(root); channel = None
     try:
+        if should_commit: channel = acquire_target_channel(root)
         frozen = inspect(root, includes, recover_stale_lock=should_commit)
         payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "root": str(root),
+            "target_channel": None if channel is None else {"target_ref": channel[1], "lock_path": str(channel[2])},
             "branch": frozen["branch"],
             "head": frozen["head"],
             "index_lock": frozen["index_lock"],
@@ -839,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
         emit(payload, getattr(args, "json", False))
         return 0
     finally:
+        if channel: fcntl.flock(channel[0].fileno(), fcntl.LOCK_UN); channel[0].close()
         fcntl.flock(lease.fileno(), fcntl.LOCK_UN)
         lease.close()
 

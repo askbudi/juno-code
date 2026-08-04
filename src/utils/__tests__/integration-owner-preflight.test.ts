@@ -19,6 +19,10 @@ describe('target-ref integration channel', () => {
     expect(source).toContain('juno-feature/');
     expect(source).toContain('--actual-review-command');
     expect(source).toContain('--controller-checkout');
+    expect(source).toContain('--restore-controller-checkout');
+    expect(source).toContain('exact_integrated');
+    expect(source).toContain('controller_restoration');
+    expect(source).toContain('unsafe_active_runtime_ownership');
     expect(source).toContain('--checked-out-target');
     expect(source).toContain('detach_same_sha');
     expect(source).toContain('--risk-tier');

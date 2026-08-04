@@ -584,7 +584,7 @@ def registration_identity(rows: list[dict[str, str]]) -> list[dict[str, str]]:
                   key=lambda row: row.get("worktree", ""))
 
 def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
-                    *, controller: Path | None = None) -> dict[str, Any]:
+                    *, controller: Path | None = None, allow_controller_root: bool = False) -> dict[str, Any]:
     """Detach HEAD metadata only; preserve processes and every worktree/index byte."""
     repository = repository.resolve(); path = path.resolve(); target = full_ref(target)
     root, path_common = identity(path); _, repo_common = identity(repository); refusals: list[str] = []
@@ -614,7 +614,7 @@ def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
     if run_returncode(path, "diff", "--cached", "--quiet"): refusals.append("index_dirty")
     topology = None
     if controller:
-        topology, topology_refusals = controller_topology(controller, path, expected); refusals.extend(topology_refusals)
+        topology, topology_refusals = controller_topology(controller, path, expected, allow_controller_root=allow_controller_root); refusals.extend(topology_refusals)
     probe_status, processes = active_cwd_processes(path)
     process_evidence = {"probe_status": probe_status, "processes": processes,
                         "classification": "preserved_non_blocking" if probe_status == "found" else
@@ -632,7 +632,7 @@ def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
     if git(repository, "rev-parse", "--verify", f"{target}^{{commit}}", check=False) != expected:
         refusals.append("target_sha_changed_before_release")
     if controller:
-        boundary_topology, boundary_refusals = controller_topology(controller, path, expected)
+        boundary_topology, boundary_refusals = controller_topology(controller, path, expected, allow_controller_root=allow_controller_root)
         if boundary_topology != topology: refusals.append("controller_topology_changed_before_release")
         refusals.extend(boundary_refusals)
     if refusals:
@@ -652,7 +652,7 @@ def detach_same_sha(repository: Path, path: Path, target: str, expected: str,
     if evidence["registration_after"] != evidence["registration_before"]: post_refusals.append("worktree_registration_changed_during_release")
     if evidence["target_owner_count_after"] != 0: post_refusals.append("target_ref_owner_remained_after_release")
     if controller:
-        final_topology, final_refusals = controller_topology(controller, path, expected)
+        final_topology, final_refusals = controller_topology(controller, path, expected, allow_controller_root=allow_controller_root)
         if final_topology != topology: post_refusals.append("controller_topology_changed_during_release")
         post_refusals.extend(final_refusals)
     if post_refusals:
@@ -682,13 +682,16 @@ def run_returncode(repo: Path, *args: str) -> int:
     return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).returncode
 
-def controller_topology(controller: Path, path: Path, expected: str) -> tuple[dict[str, Any], list[str]]:
+def controller_topology(controller: Path, path: Path, expected: str, *, allow_controller_root: bool = False) -> tuple[dict[str, Any], list[str]]:
     controller = controller.resolve(); controller_root, _ = identity(controller); refusals: list[str] = []
     if controller_root != controller: refusals.append("controller_checkout_is_not_git_root")
     try: relative = path.relative_to(controller_root)
     except ValueError:
         return {"classification": "auxiliary_integration_owner", "controller_root": str(controller_root)}, refusals
-    if not relative.parts: refusals.append("controller_root_cannot_be_target_owner")
+    if not relative.parts:
+        if not allow_controller_root: refusals.append("controller_root_cannot_be_target_owner")
+        return {"classification": "controller_root_target_owner", "controller_root": str(controller_root),
+                "controller_head": git(controller_root, "rev-parse", "HEAD"), "expected_sha": expected}, refusals
     entry = git(controller_root, "ls-tree", "HEAD", "--", relative.as_posix()).split(None, 3)
     if len(entry) < 3 or entry[0] != "160000":
         refusals.append("controller_nested_owner_is_not_bound_gitlink"); gitlink_sha = None

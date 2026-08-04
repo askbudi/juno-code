@@ -213,6 +213,9 @@ describe('controller_checkpoint.py template script', () => {
     expect(main.indexOf('clearContinueScopeRunning')).toBeLessThan(main.lastIndexOf('checkpointControllerAfterFinalization'));
     const workflow = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh'), 'utf8');
     expect(workflow).toContain('checkpoint_after_finalization(exit_code, "workflow")');
+    expect(workflow).toContain('completed.stderr or completed.stdout');
+    expect(workflow).toContain('[REDACTED]');
+    expect(workflow).toContain('detail[-2000:]');
     expect(workflow).toContain('automatic_after_review_pass');
     expect(workflow).not.toContain('integration_command_text.index("--checkpoint-controller")');
     const parallel = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh'), 'utf8');
@@ -220,5 +223,9 @@ describe('controller_checkpoint.py template script', () => {
     const preflight = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/integration_owner_preflight.py'), 'utf8');
     expect(preflight).not.toContain('--checkpoint-controller');
     expect(preflight).toContain('update-ref');
+    const checkpoint = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py'), 'utf8');
+    expect(checkpoint).toContain('juno-integration-channels');
+    expect(checkpoint).toContain('target channel lock timeout');
+    expect(preflight).toContain('juno-integration-channels');
   });
 });

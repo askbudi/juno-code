@@ -122,21 +122,26 @@ def verify_gitlinks(repositories:list[dict[str,Any]],gitlinks:list[tuple[str,str
   fields=entry.split(None,3)
   if len(fields)<3 or fields[0]!="160000" or fields[2]!=by_name[child]["candidate_sha"]:raise IntegrationError(f"root_gitlink_mismatch child={child} path={path}")
 
-def verify_nested_owners(repositories:list[dict[str,Any]],controller:Path|None)->list[dict[str,Any]]:
+def verify_nested_owners(repositories:list[dict[str,Any]],controller:Path|None,restore_policy:str|None=None,allow_restored_transition:bool=False)->list[dict[str,Any]]:
  if controller is None:return []
  controller=controller.resolve();controller_root=Path(git(controller,"rev-parse","--show-toplevel")).resolve()
  if controller_root!=controller:raise IntegrationError("controller checkout must be its exact Git root")
  evidence=[]
- for item in repositories:
+ for index,item in enumerate(repositories):
   try:relative=item["path"].relative_to(controller_root)
   except ValueError:
    evidence.append({"name":item["name"],"classification":"auxiliary_integration_owner","path":str(item["path"])});continue
-  if not relative.parts:raise IntegrationError("controller checkout cannot be an integration owner")
+  if not relative.parts:
+   if restore_policy!="exact_integrated" or index!=len(repositories)-1:
+    raise IntegrationError("controller checkout cannot be an integration owner without --restore-controller-checkout exact_integrated")
+   evidence.append({"name":item["name"],"classification":"controller_root_target_owner","controller_root":str(controller_root),"controller_head":git(controller_root,"rev-parse","HEAD"),"target_ref":item["target_ref"],"expected_sha":item["expected_sha"],"path":str(item["path"])});continue
   fields=git(controller_root,"ls-tree","HEAD","--",relative.as_posix()).split(None,3)
   if len(fields)<3 or fields[0]!="160000":raise IntegrationError(f"controller_nested_owner_not_gitlink name={item['name']}")
   if fields[2]!=item["expected_sha"]:raise IntegrationError("controller nested gitlink SHA mismatch")
-  if git(controller_root,"status","--porcelain=v2","--untracked-files=all","--",relative.as_posix()):raise IntegrationError("controller nested gitlink is dirty")
-  evidence.append({"name":item["name"],"classification":"controller_nested_integration_owner","controller_root":str(controller_root),"controller_head":git(controller_root,"rev-parse","HEAD"),"gitlink_path":relative.as_posix(),"gitlink_sha":fields[2],"gitlink_clean":True,"path":str(item["path"])})
+  path_status=git(controller_root,"status","--porcelain=v2","--untracked-files=all","--",relative.as_posix())
+  transitional=allow_restored_transition and git(item["path"],"rev-parse","HEAD")==item["candidate_sha"] and not git(item["path"],"symbolic-ref","-q","HEAD",check=False)
+  if path_status and not transitional:raise IntegrationError("controller nested gitlink is dirty")
+  evidence.append({"name":item["name"],"classification":"controller_nested_integration_owner","controller_root":str(controller_root),"controller_head":git(controller_root,"rev-parse","HEAD"),"gitlink_path":relative.as_posix(),"gitlink_sha":fields[2],"gitlink_clean":not bool(path_status),"restored_transition":transitional,"path":str(item["path"])})
  return evidence
 
 def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_policy:str|None=None)->dict[str,Any]:
@@ -191,7 +196,11 @@ def load_resume(path:Path,task_id:str,plan:list[dict[str,str]])->tuple[set[str],
   name=evidence.get("name") if isinstance(evidence,dict) else None
   if name not in by_name or evidence.get("checkout_sha")!=by_name[name]["expected_sha"]:raise IntegrationError("resume receipt contains invalid detached runtime identity")
   worktree=Path(str(evidence.get("worktree") or ""))
-  if not worktree.exists() or common(worktree)!=common(Path(by_name[name]["path"])) or git(worktree,"rev-parse","HEAD",check=False)!=evidence["checkout_sha"] or git(worktree,"symbolic-ref","-q","HEAD",check=False):raise IntegrationError("resume receipt detached runtime identity is no longer present")
+  if not worktree.exists() or common(worktree)!=common(Path(by_name[name]["path"])):raise IntegrationError("resume receipt runtime identity is no longer present")
+  current_head=git(worktree,"rev-parse","HEAD",check=False);current_branch=git(worktree,"symbolic-ref","-q","HEAD",check=False)
+  allowed_old=current_head==evidence["checkout_sha"] and not current_branch
+  allowed_restored=current_head==by_name[name]["candidate_sha"] and current_branch in {"",by_name[name]["target_ref"]}
+  if not (allowed_old or allowed_restored):raise IntegrationError("resume receipt runtime identity moved outside exact restoration states")
   detached_names.append(name)
  if len(detached_names)!=len(set(detached_names)):raise IntegrationError("resume receipt contains duplicate detached runtime identity")
  return completed,detaches
@@ -284,31 +293,127 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
  evidence["review_receipt_sha256"]=sha(receipt_path)
  return evidence
 
+
+def process_lineage()->set[int]:
+ result:set[int]=set();pid=os.getpid()
+ for _ in range(64):
+  if pid<=1 or pid in result:break
+  result.add(pid)
+  probe=subprocess.run(["ps","-o","ppid=","-p",str(pid)],text=True,capture_output=True,stdin=subprocess.DEVNULL)
+  if probe.returncode or not probe.stdout.strip().isdigit():break
+  pid=int(probe.stdout.strip())
+ return result
+
+def restoration_process_evidence(path:Path)->dict[str,Any]:
+ status,processes=lifecycle.active_cwd_processes(path);lineage=process_lineage()
+ owning=[item for item in processes if item.get("pid") in lineage];foreign=[item for item in processes if item.get("pid") not in lineage]
+ evidence={"probe_status":status,"owning_controller_lineage":owning,"foreign_product_runtimes":foreign,"policy":"preserved_no_signal"}
+ if status=="unknown":raise IntegrationError(f"controller_restoration_process_probe_unknown path={path}")
+ if foreign:raise IntegrationError(f"unsafe_active_runtime_ownership path={path} pids={[item['pid'] for item in foreign]}")
+ return evidence
+
+def restoration_registration(rows:list[dict[str,str]])->list[dict[str,str]]:
+ return sorted(({key:value for key,value in row.items() if key not in {"HEAD","branch","detached"}} for row in rows),key=lambda row:row.get("worktree",""))
+
+def exact_checkout_state(path:Path,item:dict[str,Any],allowed_heads:set[str],allowed_dirty_paths:set[str]|None=None)->dict[str,Any]:
+ if lifecycle.lock_path(path).exists():raise IntegrationError(f"restoration_index_lock_present path={path}")
+ head=git(path,"rev-parse","HEAD");branch=git(path,"symbolic-ref","-q","HEAD",check=False)
+ if head not in allowed_heads:raise IntegrationError(f"restoration_checkout_head_mismatch name={item['name']} actual={head}")
+ if run(path,"diff","--quiet",check=False).returncode:
+  dirty_paths=set(git(path,"diff","--name-only").splitlines())
+  if not allowed_dirty_paths or not dirty_paths or not dirty_paths.issubset(allowed_dirty_paths):raise IntegrationError(f"restoration_tracked_dirt name={item['name']}")
+ if run(path,"diff","--cached","--quiet",check=False).returncode:raise IntegrationError(f"restoration_index_dirt name={item['name']}")
+ if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError(f"restoration_target_moved name={item['name']}")
+ if run(path,"cat-file","-e",f"{item['candidate_sha']}^{{commit}}",check=False).returncode:raise IntegrationError(f"restoration_candidate_object_missing name={item['name']}")
+ return {"head":head,"branch":branch or "DETACHED","status":git(path,"status","--porcelain=v2","--untracked-files=all"),"registration":restoration_registration(lifecycle.listed(Path(item["path"]))) }
+
+def restore_controller_checkout(repositories:list[dict[str,Any]],gitlinks:list[tuple[str,str]],controller:Path|None,policy:str|None,detaches:list[dict[str,Any]],receipt:dict[str,Any],inject_after:int|None)->list[dict[str,Any]]:
+ if policy is None:return []
+ if policy!="exact_integrated" or controller is None:raise IntegrationError("exact controller restoration requires --controller-checkout")
+ controller=controller.resolve();root=repositories[-1];detach_by_name={entry["name"]:entry for entry in detaches}
+ root_detach=detach_by_name.get(root["name"])
+ if not root_detach or Path(root_detach["worktree"]).resolve()!=controller:raise IntegrationError("controller restoration requires receipt-bound root detachment")
+ links=dict(gitlinks);children=[];paths=[]
+ for item in repositories[:-1]:
+  detached=detach_by_name.get(item["name"])
+  if not detached:continue
+  path=Path(detached["worktree"]).resolve()
+  try:relative=path.relative_to(controller)
+  except ValueError:continue
+  if item["name"] not in links or relative.as_posix()!=links[item["name"]]:raise IntegrationError(f"unbound_nested_restoration name={item['name']}")
+  paths.append(relative);children.append((item,path,relative))
+ for left in paths:
+  for right in paths:
+   if left!=right and (left in right.parents or right in left.parents):raise IntegrationError("overlapping_nested_restoration_paths")
+ planned=[]
+ for item,path,relative in children:
+  fields=git(root["path"],"ls-tree",root["candidate_sha"],"--",relative.as_posix()).split(None,3)
+  if len(fields)<3 or fields[0]!="160000" or fields[2]!=item["candidate_sha"]:raise IntegrationError(f"restoration_gitlink_mismatch name={item['name']}")
+  before=exact_checkout_state(path,item,{item["expected_sha"],item["candidate_sha"]})
+  detached_registration=restoration_registration(detached.get("evidence",{}).get("inventory_after") or [])
+  if not detached_registration or before["registration"]!=detached_registration:raise IntegrationError(f"restoration_inventory_drift name={item['name']}")
+  process=restoration_process_evidence(path)
+  planned.append({"name":item["name"],"kind":"nested","path":str(path),"before":before,"process_evidence":process,"status":"planned"})
+ root_before=exact_checkout_state(controller,root,{root["expected_sha"],root["candidate_sha"]},{relative.as_posix() for _,_,relative in children})
+ root_detached_registration=restoration_registration(root_detach.get("evidence",{}).get("inventory_after") or [])
+ if not root_detached_registration or root_before["registration"]!=root_detached_registration:raise IntegrationError("controller_root_inventory_drift")
+ root_process=restoration_process_evidence(controller)
+ root_inventory=root_before["registration"]
+ receipt["controller_restoration"]={"policy":policy,"status":"planned","entries":planned,"root":{"name":root["name"],"path":str(controller),"before":root_before,"process_evidence":root_process,"status":"planned"}}
+ receipt["resume_stage"]="controller_restoration";write(Path(receipt["_output_path"]),{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
+ mutation_count=0
+ for entry,(item,path,relative) in zip(planned,children):
+  if git(path,"rev-parse","HEAD")!=item["candidate_sha"]:
+   run(path,"-c","submodule.recurse=false","checkout","--detach",item["candidate_sha"])
+  after=exact_checkout_state(path,item,{item["candidate_sha"]})
+  if after["registration"]!=entry["before"]["registration"]:raise IntegrationError(f"nested_restoration_inventory_drift name={item['name']}")
+  if after["branch"]!="DETACHED":raise IntegrationError(f"nested_restoration_attached_branch name={item['name']}")
+  entry.update({"status":"restored","after":after});mutation_count+=1
+  write(Path(receipt["_output_path"]),{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
+  if inject_after is not None and mutation_count>=inject_after:raise IntegrationError("injected_controller_restoration_failure")
+ root_entry=receipt["controller_restoration"]["root"]
+ if git(controller,"rev-parse","HEAD")!=root["candidate_sha"]:
+  run(controller,"-c","submodule.recurse=false","checkout","--detach",root["candidate_sha"])
+ if git(controller,"symbolic-ref","-q","HEAD",check=False)!=root["target_ref"]:
+  owners=[row for row in lifecycle.listed(Path(root["path"])) if row.get("branch")==root["target_ref"]]
+  if owners:raise IntegrationError("foreign_branch_owner_before_root_restoration")
+  run(controller,"symbolic-ref","HEAD",root["target_ref"])
+ after=exact_checkout_state(controller,root,{root["candidate_sha"]})
+ if after["branch"]!=root["target_ref"]:raise IntegrationError("controller_root_restoration_postcondition_failed")
+ if after["registration"]!=root_inventory:raise IntegrationError("controller_root_inventory_drift")
+ root_entry.update({"status":"restored","after":after});mutation_count+=1
+ receipt["controller_restoration"]["status"]="restored"
+ write(Path(receipt["_output_path"]),{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
+ if inject_after is not None and mutation_count>=inject_after:raise IntegrationError("injected_controller_restoration_failure")
+ return planned+[root_entry]
+
 def runtime_identities(detaches:list[dict[str,Any]],repositories:list[dict[str,Any]])->list[dict[str,Any]]:
  by_name={item["name"]:item for item in repositories};result=[]
  for evidence in detaches:
   item=by_name[evidence["name"]];target=git(item["path"],"rev-parse",item["target_ref"],check=False)
   checkout=evidence["checkout_sha"]
   state="unknown_target" if not target else "current" if target==checkout else "stale_behind_target"
-  result.append({"name":item["name"],"worktree":evidence["worktree"],"checkout_sha":checkout,"target_sha":target or None,
+  worktree=Path(evidence["worktree"]);actual=git(worktree,"rev-parse","HEAD",check=False);branch=git(worktree,"symbolic-ref","-q","HEAD",check=False)
+  if actual==item["candidate_sha"]:state="restored_attached" if branch==item["target_ref"] else "restored_detached"
+  result.append({"name":item["name"],"worktree":evidence["worktree"],"checkout_sha":checkout,"actual_checkout_sha":actual or None,"checkout_ref":branch or None,"target_sha":target or None,
                  "runtime_identity_status":state,"process_policy":"preserved_no_signal"})
  return result
 
 def main(argv:list[str]|None=None)->int:
- p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--checked-out-target",choices=("detach_same_sha",));p.add_argument("--risk-tier",choices=tuple(RISK_ORDER),default="high");p.add_argument("--feature-tag",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt",type=Path);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int);p.add_argument("--inject-authority-failure-after",type=int)
+ p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False);p.add_argument("integrate",nargs="?");p.add_argument("--repository",action="append",type=parse_repo,required=True);p.add_argument("--candidate-receipt",action="append",type=Path,required=True);p.add_argument("--resume-receipt",type=Path);p.add_argument("--gitlink",action="append",type=parse_gitlink,default=[]);p.add_argument("--controller-checkout",type=Path);p.add_argument("--restore-controller-checkout",choices=("exact_integrated",));p.add_argument("--checked-out-target",choices=("detach_same_sha",));p.add_argument("--risk-tier",choices=tuple(RISK_ORDER),default="high");p.add_argument("--feature-tag",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt",type=Path);p.add_argument("--validation-command",action="append",required=True);p.add_argument("--validation-timeout",type=float,default=3600);p.add_argument("--lock-timeout",type=float,default=30);p.add_argument("--task-id",required=True);p.add_argument("--output",type=Path,required=True);p.add_argument("--inject-failure-after",type=int);p.add_argument("--inject-restoration-failure-after",type=int);p.add_argument("--inject-authority-failure-after",type=int)
  a=p.parse_args(argv)
  child_evidence_text=os.environ.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip();child_evidence_root=Path(child_evidence_text).resolve() if child_evidence_text else None
  if a.integrate not in (None,"integrate"):p.error("only the integrate subcommand is supported")
  if not 0<=a.lock_timeout<=300:p.error("--lock-timeout must be between 0 and 300 seconds")
  if not 0<a.validation_timeout<=86400:p.error("--validation-timeout must be between 0 and 86400 seconds")
  if a.output.resolve().exists():print(f"integration_owner_preflight: error: immutable receipt collision: {a.output.resolve()}",file=sys.stderr);return 2
- receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"running","task_id":a.task_id,"producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"updates":[],"feature_tag":None};detaches=[]
+ receipt:dict[str,Any]={"schema_version":SCHEMA,"outcome":"running","task_id":a.task_id,"producer_step_digest":os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),"updates":[],"feature_tag":None,"_output_path":str(a.output.resolve())};detaches=[]
  try:
   if len(a.candidate_receipt)!=len(a.repository):raise IntegrationError("one --candidate-receipt is required per --repository")
-  committed_admission=[require_committed_tree(item["path"],item["expected_sha"]) for item in a.repository]
+  committed_admission=[require_committed_tree(item["path"],item["candidate_sha"] if a.resume_receipt else item["expected_sha"]) for item in a.repository]
   candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
   receipt_hashes=[sha(path) for path in a.candidate_receipt];candidate_hash=receipt_hashes[0] if len(receipt_hashes)==1 else hashlib.sha256("\n".join(receipt_hashes).encode()).hexdigest()
-  plan=public_plan(a.repository,receipt_hashes);topology=verify_nested_owners(a.repository,a.controller_checkout)
+  plan=public_plan(a.repository,receipt_hashes);topology=verify_nested_owners(a.repository,a.controller_checkout,a.restore_controller_checkout,a.resume_receipt is not None)
   reasons=[]
   if any(c.get("candidate_bytes_changed_by_composition") is True for c in candidates):reasons.append("composed_candidate")
   if len(a.repository)>1:reasons.append("multiple_repositories")
@@ -331,29 +436,30 @@ def main(argv:list[str]|None=None)->int:
     path=lock_file(item);path.parent.mkdir(parents=True,exist_ok=True);h=path.open("a+");acquire_bounded(h,a.lock_timeout);handles.append(h)
    if [sha(path) for path in a.candidate_receipt]!=receipt_hashes:raise IntegrationError("candidate_receipt_changed_under_lock")
    candidates=[load_candidate(path,[repository]) for path,repository in zip(a.candidate_receipt,a.repository)]
-   verify_gitlinks(a.repository,a.gitlink);verify_nested_owners(a.repository,a.controller_checkout)
+   verify_gitlinks(a.repository,a.gitlink);verify_nested_owners(a.repository,a.controller_checkout,a.restore_controller_checkout,a.resume_receipt is not None)
    by_name={x["name"]:x for x in validated}
    detached_names={entry["name"] for entry in detaches}
    for item in validated:
     if item["target_checkout"] and item["name"] not in resumed and item["name"] not in detached_names:
-     evidence=lifecycle.detach_same_sha(Path(item["path"]),Path(item["target_checkout"]),item["target_ref"],item["expected_sha"],controller=a.controller_checkout)
+     allow_root=a.restore_controller_checkout=="exact_integrated" and a.controller_checkout is not None and Path(item["target_checkout"]).resolve()==a.controller_checkout.resolve()
+     evidence=lifecycle.detach_same_sha(Path(item["path"]),Path(item["target_checkout"]),item["target_ref"],item["expected_sha"],controller=a.controller_checkout,allow_controller_root=allow_root)
      detaches.append({"name":item["name"],"worktree":item["target_checkout"],"checkout_sha":item["expected_sha"],"evidence":evidence})
    receipt["checked_out_target_policy"]={"requested":a.checked_out_target,"detachments":detaches};receipt["runtime_identities"]=runtime_identities(detaches,a.repository)
    for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"],a.checked_out_target)
    for original in a.repository:
     if original["name"] in resumed:receipt["updates"].append({"name":original["name"],"target_ref":original["target_ref"],"before_sha":original["expected_sha"],"after_sha":original["candidate_sha"],"status":"resumed_already_moved"})
-   receipt["resume_stage"]="target_updates";write(a.output,receipt,replace=True)
+   receipt["resume_stage"]="target_updates";write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
    for index,original in enumerate(a.repository):
     item=by_name[original["name"]]
     if original["name"] in resumed:continue
     if a.inject_failure_after is not None and index>=a.inject_failure_after:raise IntegrationError("injected_update_failure")
-    update={"name":item["name"],"target_ref":item["target_ref"],"before_sha":item["expected_sha"],"after_sha":None,"status":"attempting"};receipt["updates"].append(update);write(a.output,receipt,replace=True)
+    update={"name":item["name"],"target_ref":item["target_ref"],"before_sha":item["expected_sha"],"after_sha":None,"status":"attempting"};receipt["updates"].append(update);write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
     result=run(Path(item["path"]),"update-ref",item["target_ref"],item["candidate_sha"],item["expected_sha"],check=False)
-    if result.returncode:update["status"]="cas_failed";write(a.output,receipt,replace=True);raise IntegrationError(f"target_cas_failed name={item['name']}: {result.stderr.strip()}")
-    update.update({"after_sha":git(Path(item["path"]),"rev-parse",item["target_ref"]),"status":"moved"});write(a.output,receipt,replace=True)
+    if result.returncode:update["status"]="cas_failed";write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True);raise IntegrationError(f"target_cas_failed name={item['name']}: {result.stderr.strip()}")
+    update.update({"after_sha":git(Path(item["path"]),"rev-parse",item["target_ref"]),"status":"moved"});write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
    for item in a.repository:
     if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target readback mismatch")
-   receipt["resume_stage"]="actual_target_validation";write(a.output,receipt,replace=True)
+   receipt["resume_stage"]="actual_target_validation";write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
    actual_cwd=Path(candidates[-1]["candidate_path"]);integrated=a.repository[-1]["candidate_sha"]
    if git(actual_cwd,"rev-parse","HEAD")!=integrated or git(actual_cwd,"status","--porcelain=v2","--untracked-files=all"):raise IntegrationError("actual target validation checkout moved or dirty")
    validations=[]
@@ -368,14 +474,15 @@ def main(argv:list[str]|None=None)->int:
     actual_semantic="performed";actual_hash=sha(a.actual_review_receipt)
    for item in a.repository:
     if git(item["path"],"rev-parse",item["target_ref"])!=item["candidate_sha"]:raise IntegrationError("actual target moved during validation/review")
-   verify_nested_owners(a.repository,a.controller_checkout)
+   verify_nested_owners(a.repository,a.controller_checkout,a.restore_controller_checkout,a.resume_receipt is not None)
+   restore_controller_checkout(a.repository,a.gitlink,a.controller_checkout,a.restore_controller_checkout,detaches,receipt,a.inject_restoration_failure_after)
    validation_receipt={"validation":validations,"deterministic_actual_target_validation":"passed","actual_review_sha256":actual_hash,"target_refs":{item["name"]:{"target_ref":item["target_ref"],"reviewed_tip":item["candidate_sha"]} for item in a.repository}};validation_hash=hashlib.sha256(json.dumps(validation_receipt,sort_keys=True).encode()).hexdigest()
    tag_required=effective in {"high","release"};tag_requested=tag_required or a.feature_tag
    receipt["resume_stage"]="protected_authority_persistence";receipt["role_base_updates"]=[]
-   receipt["feature_tag_policy"]={"required":tag_required,"requested":a.feature_tag,"created":False,"status":"withheld_pending_authority" if tag_requested else "skipped_by_policy"};write(a.output,receipt,replace=True)
+   receipt["feature_tag_policy"]={"required":tag_required,"requested":a.feature_tag,"created":False,"status":"withheld_pending_authority" if tag_requested else "skipped_by_policy"};write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
    for index,item in enumerate(a.repository):
     update=advance_protected_role_base(item["path"],item["candidate_sha"],inject_failure=a.inject_authority_failure_after is not None and index>=a.inject_authority_failure_after)
-    receipt["role_base_updates"].append(update);write(a.output,receipt,replace=True)
+    receipt["role_base_updates"].append(update);write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
    feature=tag(a.repository[-1]["path"],a.task_id,integrated,a.repository[-1]["target_ref"],candidate_hash,validation_hash) if tag_requested else None
    tag_policy={"required":tag_required,"requested":a.feature_tag,"created":feature is not None,"status":"created" if feature else "skipped_by_policy"}
    receipt.update({"outcome":"integrated","passed":True,"feature_tag":feature,"feature_tag_policy":tag_policy,"actual_semantic_review":actual_semantic,"candidate_receipt_sha256":candidate_hash,"actual_target":validation_receipt,"lock_order":[x["lock_key"] for x in validated],"runtime_identities":runtime_identities(detaches,a.repository)})
@@ -386,8 +493,8 @@ def main(argv:list[str]|None=None)->int:
   if receipt.get("feature_tag_policy",{}).get("status")=="withheld_pending_authority":receipt["feature_tag_policy"]["status"]="withheld_authority_persistence_failed"
   receipt["outcome"]="partial_local_integration" if any(update.get("status") in {"moved","resumed_already_moved"} for update in receipt["updates"]) else "failed_preserved"
   if receipt["updates"] and not receipt.get("resume_stage"):receipt["resume_stage"]="target_updates"
-  try:write(a.output,receipt,replace=a.output.resolve().exists())
+  try:write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=a.output.resolve().exists())
   except Exception as write_exc:print(f"integration_owner_preflight: receipt error: {write_exc}",file=sys.stderr)
   print(f"integration_owner_preflight: error: {exc}",file=sys.stderr);return 2
- write(a.output,receipt,replace=True);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
+ write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
 if __name__=="__main__":raise SystemExit(main())

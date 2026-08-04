@@ -3921,12 +3921,17 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
     env = child_process_environment(dict(os.environ))
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     try:
-        subprocess.run(
+        completed = subprocess.run(
             [sys.executable, str(script), "--root", str(root), "commit", "--message", message],
             cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=30, check=True,
+            timeout=30, check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+            detail = re.sub(r"(?i)(authorization|token|password|secret)(\s*[:=]\s*)\S+", r"\1\2[REDACTED]", detail)
+            detail = detail[-2000:]
+            raise WorkflowError(f"checkpoint exit {completed.returncode}: {detail}")
+    except (OSError, subprocess.SubprocessError, WorkflowError) as exc:
         print(
             f"workflow_runner.sh: WARNING: controller checkpoint failed after finalization; "
             f"run {script} --root {root} commit manually: {exc}", file=sys.stderr,
