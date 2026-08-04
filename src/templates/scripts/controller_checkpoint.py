@@ -42,8 +42,10 @@ DEFAULT_INCLUDE = (
     ".juno_task/ledger",
     ".juno_task/wiki",
     ".juno_task/specs",
+    ".juno_task/workflows",
     ".juno_task/plan.md",
     ".juno_task/tasks.md",
+    ".juno_task/managed-assets.json",
 )
 
 

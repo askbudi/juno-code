@@ -889,7 +889,7 @@ describe('hooks', () => {
       expect(config.logLevel).toBe('info');
     });
 
-    it('should preserve existing START_RUN commands and append dependency updater', async () => {
+    it('should preserve an existing hooks section without injecting commands', async () => {
       const { loadConfig } = await import('../../core/config.js');
 
       const configDir = join(testDir, '.juno_task');
@@ -911,14 +911,11 @@ describe('hooks', () => {
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      expect(config.hooks.START_RUN.commands).toEqual([
-        'echo "existing"',
-        './.juno_task/scripts/install_requirements.sh',
-      ]);
+      expect(config.hooks.START_RUN.commands).toEqual(['echo "existing"']);
       expect(config.promptMacros.local.ship).toBe('run tests');
     });
 
-    it('should append dependency updater to existing empty START_RUN commands', async () => {
+    it('should preserve explicitly empty START_RUN commands', async () => {
       const { loadConfig } = await import('../../core/config.js');
 
       const configDir = join(testDir, '.juno_task');
@@ -933,9 +930,7 @@ describe('hooks', () => {
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      expect(config.hooks.START_RUN.commands).toEqual([
-        './.juno_task/scripts/install_requirements.sh',
-      ]);
+      expect(config.hooks.START_RUN.commands).toEqual([]);
     });
 
     it('should not duplicate existing dependency updater command variants', async () => {
@@ -977,7 +972,7 @@ describe('hooks', () => {
       expect(config.hooks.START_RUN.commands).toEqual([]);
     });
 
-    it('should migrate defaultMaxIterations from old default (50) to new default (1)', async () => {
+    it('should preserve an explicit legacy defaultMaxIterations value', async () => {
       const { loadConfig } = await import('../../core/config.js');
 
       const configDir = join(testDir, '.juno_task');
@@ -994,7 +989,7 @@ describe('hooks', () => {
       await loadConfig({ baseDir: testDir });
 
       const config = await fs.readJson(configPath);
-      expect(config.defaultMaxIterations).toBe(1);
+      expect(config.defaultMaxIterations).toBe(50);
       expect(config.defaultSubagent).toBe('claude'); // Preserve other fields
     });
 

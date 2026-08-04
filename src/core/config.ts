@@ -9,16 +9,14 @@
 
 import { z } from 'zod';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import * as yaml from 'js-yaml';
 import fs from 'fs-extra';
 import type { JunoTaskConfig, PromptMacroConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
-import {
-  SUBAGENT_DEFAULT_MODELS,
-  isModelCompatibleWithSubagent,
-} from './subagent-models.js';
+import { SUBAGENT_DEFAULT_MODELS } from './subagent-models.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -133,6 +131,19 @@ const GitCheckpointAgentSchema = z
   })
   .strict();
 
+export const DEFAULT_GIT_CHECKPOINT_INCLUDE = [
+  '.juno_task/tasks',
+  '.juno_task/ledger',
+  '.juno_task/wiki',
+  '.juno_task/specs',
+  '.juno_task/workflows',
+  '.juno_task/plan.md',
+  '.juno_task/tasks.md',
+  '.juno_task/managed-assets.json',
+] as const;
+
+export const PROJECT_CONFIG_VERSION = 1;
+
 const GitCheckpointSchema = z
   .object({
     include: z.array(z.string().min(1)).optional(),
@@ -162,6 +173,8 @@ const KanbanRegistrySchema = z
  */
 export const JunoTaskConfigSchema = z
   .object({
+    configVersion: z.number().int().min(1).optional().describe('Persisted project config generation'),
+
     // Core settings
     defaultSubagent: SubagentTypeSchema.describe('Default subagent to use for task execution'),
 
@@ -309,52 +322,37 @@ const DEFAULT_PROMPT_MACROS: PromptMacroConfig = {
   local: {},
 };
 
-export const DEFAULT_CONFIG: JunoTaskConfig = {
-  // Core settings
-  defaultSubagent: 'claude',
-  defaultBackend: 'shell',
-  defaultMaxIterations: 1,
-  defaultModels: { ...SUBAGENT_DEFAULT_MODELS },
+/** User-visible defaults persisted into fresh and upgraded project configs. */
+export function createPersistedProjectConfigDefaults(baseDir: string): Record<string, unknown> {
+  return {
+    configVersion: PROJECT_CONFIG_VERSION,
+    defaultSubagent: 'claude',
+    defaultBackend: 'shell',
+    defaultMaxIterations: 1,
+    defaultModels: { ...SUBAGENT_DEFAULT_MODELS },
+    logLevel: 'info',
+    verbose: 1,
+    quiet: false,
+    mcpTimeout: 43200000,
+    mcpRetries: 3,
+    onHourlyLimit: 'raise',
+    interactive: true,
+    headlessMode: false,
+    workingDirectory: baseDir,
+    sessionDirectory: path.join(baseDir, '.juno_task'),
+    kanbanRegistry: { enabled: false, allowedProjects: [] },
+    gitCheckpoint: { include: [...DEFAULT_GIT_CHECKPOINT_INCLUDE] },
+    envFilePath: '.env.juno',
+    envFileCopied: false,
+    hooks: getDefaultHooks(),
+    autoDependencyUpdate: true,
+    promptMacros: { ...DEFAULT_PROMPT_MACROS, global: {}, local: {} },
+  };
+}
 
-  // Logging settings
-  logLevel: 'info',
-  verbose: 1,
-  quiet: false,
-
-  // MCP settings (also used by shell backend)
-  mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
-  mcpRetries: 3,
-
-  // Quota/hourly limit settings
-  onHourlyLimit: 'raise', // Default to exit immediately when hourly limit is reached
-
-  // TUI settings
-  interactive: true,
-  headlessMode: false,
-
-  // Paths
-  workingDirectory: process.cwd(),
-  sessionDirectory: path.join(process.cwd(), '.juno_task'),
-
-  // Cross-project Kanban registry is deny-all unless explicitly enabled and allowlisted.
-  kanbanRegistry: {
-    enabled: false,
-    allowedProjects: [],
-  },
-
-  // Project environment bootstrap
-  envFilePath: '.env.juno',
-  envFileCopied: false,
-
-  // Hooks configuration - populated with default hooks template
-  hooks: getDefaultHooks(),
-
-  // Project dependency bootstrap runs by default and can be disabled with autoDependencyUpdate: false.
-  autoDependencyUpdate: true,
-
-  // Prompt macros
-  promptMacros: { ...DEFAULT_PROMPT_MACROS },
-};
+export const DEFAULT_CONFIG = createPersistedProjectConfigDefaults(
+  process.cwd(),
+) as unknown as JunoTaskConfig;
 
 /**
  * Global configuration file names to search for
@@ -377,7 +375,6 @@ const PROJECT_CONFIG_FILE = '.juno_task/config.json';
  * Default project env file created and loaded on startup
  */
 const DEFAULT_PROJECT_ENV_FILE = '.env.juno';
-const AUTO_DEPENDENCY_UPDATE_COMMAND = './.juno_task/scripts/install_requirements.sh';
 
 /**
  * Supported configuration file formats
@@ -1034,11 +1031,15 @@ async function loadEnvFileIntoProcess(envFilePath: string): Promise<void> {
  * - If a custom env path is configured and not initialized yet, copy `.env.juno` once.
  * - Load `.env.juno`, then custom env file (if different) so custom values can override defaults.
  */
-async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
+async function ensureAndLoadProjectEnv(
+  baseDir: string,
+  allowWritesOverride?: boolean,
+): Promise<void> {
   const configPath = path.join(baseDir, PROJECT_CONFIG_FILE);
   const defaultEnvPath = resolvePath(DEFAULT_PROJECT_ENV_FILE, baseDir);
 
-  const allowProjectWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
+  const allowProjectWrites =
+    allowWritesOverride ?? process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
 
   // Agent startup in task/candidate worktrees is read-only. Controller startup
   // and direct loadConfig callers retain normal initialization by default.
@@ -1095,12 +1096,23 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
       typeof existingConfig.envFilePath !== 'string' ||
       typeof existingConfig.envFileCopied !== 'boolean')
   ) {
-    const updatedConfig = {
-      ...existingConfig,
-      envFilePath: configuredEnvPathRaw,
-      envFileCopied,
-    };
-    await fs.writeJson(configPath, updatedConfig, { spaces: 2 });
+    const lockPath = path.join(path.dirname(configPath), '.config.json.migration.lock');
+    const lock = await acquireProjectConfigMigrationLock(lockPath);
+    if (lock) {
+      try {
+        const originalConfigBytes = await fs.readFile(configPath);
+        const currentConfig = JSON.parse(originalConfigBytes.toString('utf8')) as Record<string, unknown>;
+        const updatedConfig = {
+          ...currentConfig,
+          envFilePath: configuredEnvPathRaw,
+          envFileCopied,
+        };
+        await writeProjectConfigAtomic(configPath, updatedConfig, fs.rename, originalConfigBytes);
+      } finally {
+        await lock.close().catch(() => undefined);
+        await fs.remove(lockPath).catch(() => undefined);
+      }
+    }
   }
 
   // Load existing env files in both modes; read-only startup merely refuses to
@@ -1124,50 +1136,94 @@ async function ensureAndLoadProjectEnv(baseDir: string): Promise<void> {
  * @param baseDir - Base directory where .juno_task directory should be located
  * @returns Promise that resolves when migration is complete
  */
-function commandInvokesAutoDependencyUpdater(command: unknown): boolean {
-  return (
-    typeof command === 'string' &&
-    command.includes('.juno_task/scripts') &&
-    command.includes('install_requirements.sh')
-  );
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function ensureAutoDependencyUpdateHook(existingConfig: Record<string, any>): boolean {
-  if (existingConfig.autoDependencyUpdate === false) {
-    return false;
-  }
+function cloneJsonValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
-  if (!existingConfig.hooks || typeof existingConfig.hooks !== 'object' || Array.isArray(existingConfig.hooks)) {
-    existingConfig.hooks = {};
+/** Add only absent persisted defaults; scalar and array values remain user-owned. */
+export function mergePersistedProjectDefaults(
+  existing: Record<string, unknown>,
+  defaults: Record<string, unknown>,
+): boolean {
+  let changed = false;
+  for (const [key, defaultValue] of Object.entries(defaults)) {
+    if (!Object.prototype.hasOwnProperty.call(existing, key)) {
+      existing[key] = cloneJsonValue(defaultValue);
+      changed = true;
+      continue;
+    }
+    const currentValue = existing[key];
+    if (
+      key !== 'hooks' &&
+      key !== 'defaultModels' &&
+      isPlainObject(currentValue) &&
+      isPlainObject(defaultValue)
+    ) {
+      changed = mergePersistedProjectDefaults(currentValue, defaultValue) || changed;
+    }
   }
+  return changed;
+}
 
-  if (
-    !existingConfig.hooks.START_RUN ||
-    typeof existingConfig.hooks.START_RUN !== 'object' ||
-    Array.isArray(existingConfig.hooks.START_RUN)
-  ) {
-    existingConfig.hooks.START_RUN = { commands: [] };
+export async function writeProjectConfigAtomic(
+  configPath: string,
+  payload: Record<string, unknown>,
+  replace: (source: string, destination: string) => Promise<void> = fs.rename,
+  expectedOriginal?: Buffer,
+): Promise<void> {
+  const mode = (await fs.stat(configPath)).mode & 0o777;
+  const tempPath = path.join(
+    path.dirname(configPath),
+    `.${path.basename(configPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode });
+    if (expectedOriginal && !(await fs.readFile(configPath)).equals(expectedOriginal)) {
+      throw new Error('project config changed during migration');
+    }
+    await replace(tempPath, configPath);
+  } finally {
+    await fs.remove(tempPath).catch(() => undefined);
   }
+}
 
-  if (!Array.isArray(existingConfig.hooks.START_RUN.commands)) {
-    existingConfig.hooks.START_RUN.commands = [];
+async function validateProjectConfigBeforeWrites(
+  configPath: string,
+  baseDir: string,
+): Promise<void> {
+  if (!(await fs.pathExists(configPath))) return;
+  const projectConfig = await loadConfigFromFile(configPath, baseDir);
+  validateConfig({ ...DEFAULT_CONFIG, ...projectConfig });
+}
+
+async function acquireProjectConfigMigrationLock(
+  lockPath: string,
+): Promise<fsPromises.FileHandle | undefined> {
+  try {
+    const handle = await fsPromises.open(lockPath, 'wx', 0o600);
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
+    return handle;
+  } catch (error: any) {
+    if (error?.code === 'EEXIST') return undefined;
+    throw error;
   }
-
-  if (existingConfig.hooks.START_RUN.commands.some(commandInvokesAutoDependencyUpdater)) {
-    return false;
-  }
-
-  existingConfig.hooks.START_RUN.commands.push(AUTO_DEPENDENCY_UPDATE_COMMAND);
-  return true;
 }
 
 async function ensureHooksConfig(baseDir: string): Promise<void> {
+  const configDir = path.join(baseDir, '.juno_task');
+  const configPath = path.join(configDir, 'config.json');
+  const lockPath = path.join(configDir, '.config.json.migration.lock');
+  let lock: fsPromises.FileHandle | undefined;
   try {
-    const configDir = path.join(baseDir, '.juno_task');
-    const configPath = path.join(configDir, 'config.json');
-
-    // Ensure the .juno_task directory exists
     await fs.ensureDir(configDir);
+    lock = await acquireProjectConfigMigrationLock(lockPath);
+    if (!lock) return;
+
+    await validateProjectConfigBeforeWrites(configPath, baseDir);
 
     // Check if config file exists
     const configExists = await fs.pathExists(configPath);
@@ -1176,31 +1232,41 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
     const allHookTypes = getDefaultHooks();
 
     if (!configExists) {
-      // Create new config file with default config including all hook types
-      const defaultConfig = {
-        ...DEFAULT_CONFIG,
-        hooks: allHookTypes,
-      };
+      // Create a complete project config from the same persisted defaults used by migration.
+      const defaultConfig = createPersistedProjectConfigDefaults(baseDir);
       await fs.writeJson(configPath, defaultConfig, { spaces: 2 });
     } else {
-      // Read existing config and ensure hooks field exists with all hook types
-      const existingConfig = await fs.readJson(configPath);
-      let needsUpdate = false;
+      // Read existing config and add only newly introduced persisted defaults.
+      const originalConfigBytes = await fs.readFile(configPath);
+      const existingConfig = JSON.parse(originalConfigBytes.toString('utf8')) as Record<string, any>;
+      const persistedDefaults = createPersistedProjectConfigDefaults(baseDir);
+      // A legacy single-model choice is user intent; seed the new map with it before additive merge.
+      if (
+        !isPlainObject(existingConfig.defaultModels) &&
+        typeof existingConfig.defaultModel === 'string'
+      ) {
+        const selected =
+          typeof existingConfig.defaultSubagent === 'string' ? existingConfig.defaultSubagent : 'claude';
+        (persistedDefaults.defaultModels as Record<string, string>)[selected] =
+          existingConfig.defaultModel;
+      }
+      let needsUpdate = mergePersistedProjectDefaults(existingConfig, persistedDefaults);
+      if (
+        typeof existingConfig.configVersion === 'number' &&
+        existingConfig.configVersion < PROJECT_CONFIG_VERSION
+      ) {
+        existingConfig.configVersion = PROJECT_CONFIG_VERSION;
+        needsUpdate = true;
+      }
 
-      // If hooks field doesn't exist, add it with all hook types unless dependency updates are disabled.
+      // Hooks are user-owned and opaque. Only a wholly absent hooks section receives defaults.
       if (!existingConfig.hooks) {
         existingConfig.hooks = allHookTypes;
         needsUpdate = true;
       }
 
-      // Surgical migration for projects that already had hooks (including empty START_RUN.commands)
-      // before the dependency updater was introduced. Existing commands and unrelated config stay intact.
-      if (ensureAutoDependencyUpdateHook(existingConfig)) {
-        needsUpdate = true;
-      }
-
       // Migration: Add defaultModel if missing (for configs created before this feature)
-      if (!existingConfig.defaultModel) {
+      if (!Object.prototype.hasOwnProperty.call(existingConfig, 'defaultModel')) {
         const subagent = existingConfig.defaultSubagent || 'claude';
         existingConfig.defaultModel =
           SUBAGENT_DEFAULT_MODELS[subagent as keyof typeof SUBAGENT_DEFAULT_MODELS] ||
@@ -1223,37 +1289,10 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
         needsUpdate = true;
       }
 
-      // Keep legacy defaultModel aligned with per-subagent model map for the selected default subagent.
-      // defaultModels is now the source of truth; this sync prevents stale legacy values from masking
-      // the intended per-subagent default on subsequent runs.
-      const selectedSubagentRaw =
-        typeof existingConfig.defaultSubagent === 'string' ? existingConfig.defaultSubagent : 'claude';
-      const selectedSubagent =
-        selectedSubagentRaw in SUBAGENT_DEFAULT_MODELS
-          ? (selectedSubagentRaw as keyof typeof SUBAGENT_DEFAULT_MODELS)
-          : 'claude';
-      const selectedMapModel =
-        existingConfig.defaultModels && typeof existingConfig.defaultModels === 'object'
-          ? (existingConfig.defaultModels as Record<string, unknown>)[selectedSubagent]
-          : undefined;
-      if (
-        typeof selectedMapModel === 'string' &&
-        isModelCompatibleWithSubagent(selectedMapModel, selectedSubagent) &&
-        existingConfig.defaultModel !== selectedMapModel
-      ) {
-        existingConfig.defaultModel = selectedMapModel;
-        needsUpdate = true;
-      }
-
-      // Migration: Update defaultMaxIterations from old default (50) to new default (1)
-      // Old configs created before v1.44.109 had defaultMaxIterations: 50
-      if (existingConfig.defaultMaxIterations === 50) {
-        existingConfig.defaultMaxIterations = DEFAULT_CONFIG.defaultMaxIterations;
-        needsUpdate = true;
-      }
+      // Existing model and iteration scalars are explicit project values and are never rewritten.
 
       // Ensure env bootstrap keys exist in project config
-      if (!existingConfig.envFilePath) {
+      if (!Object.prototype.hasOwnProperty.call(existingConfig, 'envFilePath')) {
         existingConfig.envFilePath = DEFAULT_PROJECT_ENV_FILE;
         needsUpdate = true;
       }
@@ -1264,12 +1303,18 @@ async function ensureHooksConfig(baseDir: string): Promise<void> {
       }
 
       if (needsUpdate) {
-        await fs.writeJson(configPath, existingConfig, { spaces: 2 });
+        await writeProjectConfigAtomic(configPath, existingConfig, fs.rename, originalConfigBytes);
       }
     }
   } catch (error) {
-    // Log warning but don't block app startup
-    console.warn(`Warning: Failed to ensure hooks configuration: ${error}`);
+    // Invalid config or migration failures remain visible; the original file is not replaced.
+    console.warn(`Warning: Failed to ensure project configuration: ${error}`);
+    throw error;
+  } finally {
+    if (lock) {
+      await lock.close().catch(() => undefined);
+      await fs.remove(lockPath).catch(() => undefined);
+    }
   }
 }
 
@@ -1312,36 +1357,29 @@ export async function loadConfig(
 
   const allowProjectWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
 
-  // Ensure hooks configuration exists in project config (auto-migration) only
-  // where resolver-confirmed startup policy permits project writes.
+  const resolveConfig = async (): Promise<JunoTaskConfig> => {
+    const loader = new ConfigLoader(baseDir);
+    loader.fromEnvironment();
+    if (configFile) {
+      await loader.fromFile(configFile);
+    } else {
+      await loader.autoDiscoverFile();
+    }
+    if (cliConfig) loader.fromCli(cliConfig);
+    return validateConfig(loader.merge());
+  };
+
+  // Validate every effective source before any project mutation.
+  await ensureAndLoadProjectEnv(baseDir, false);
+  let resolved = await resolveConfig();
+
   if (allowProjectWrites) {
     await ensureHooksConfig(baseDir);
+    await ensureAndLoadProjectEnv(baseDir, true);
+    resolved = await resolveConfig();
   }
 
-  // Load project env in every workspace, but create/migrate files only when the
-  // same startup policy permits writes.
-  await ensureAndLoadProjectEnv(baseDir);
-
-  const loader = new ConfigLoader(baseDir);
-
-  // Load from environment
-  loader.fromEnvironment();
-
-  // Load from specific file or auto-discover
-  if (configFile) {
-    await loader.fromFile(configFile);
-  } else {
-    await loader.autoDiscoverFile();
-  }
-
-  // Add CLI config if provided
-  if (cliConfig) {
-    loader.fromCli(cliConfig);
-  }
-
-  // Merge and validate
-  const mergedConfig = loader.merge();
-  return validateConfig(mergedConfig);
+  return resolved;
 }
 
 /**

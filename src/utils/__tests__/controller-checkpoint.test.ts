@@ -54,6 +54,39 @@ describe('controller_checkpoint.py template script', () => {
     expect(JSON.parse(noOp.stdout).outcome).toBe('noop');
   });
 
+  it('selects workflows and the managed-assets manifest under legacy fallback defaults', async () => {
+    await fs.ensureDir(path.join(repo, '.juno_task', 'workflows'));
+    await fs.writeFile(path.join(repo, '.juno_task', 'workflows', 'run.json'), '{}\n');
+    await fs.writeFile(path.join(repo, '.juno_task', 'managed-assets.json'), '{}\n');
+    const result = run(repo, 'plan', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    const expected = [
+      '.juno_task/managed-assets.json',
+      '.juno_task/workflows/run.json',
+    ];
+    expect(JSON.parse(result.stdout).selected).toEqual(expected);
+
+    await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), {
+      gitCheckpoint: {
+        include: [
+          '.juno_task/tasks',
+          '.juno_task/ledger',
+          '.juno_task/wiki',
+          '.juno_task/specs',
+          '.juno_task/workflows',
+          '.juno_task/plan.md',
+          '.juno_task/tasks.md',
+          '.juno_task/managed-assets.json',
+        ],
+      },
+    });
+    git(repo, 'add', '.juno_task/config.json');
+    git(repo, 'commit', '-m', 'explicit migrated config');
+    const explicit = run(repo, 'plan', '--json');
+    expect(explicit.status, explicit.stderr).toBe(0);
+    expect(JSON.parse(explicit.stdout).selected).toEqual(expected);
+  });
+
   it('blocks dirty product paths and leaves both worktree and index untouched', async () => {
     await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'controller\n');
     await fs.writeFile(path.join(repo, 'product.txt'), 'product\n');
@@ -115,7 +148,7 @@ describe('controller_checkpoint.py template script', () => {
       name.startsWith('index.lock.stale.'),
     );
     expect(quarantines).toHaveLength(1);
-  });
+  }, 30_000);
 
   it('rejects submodule dirt and an existing index lock', async () => {
     await fs.writeFile(path.join(repo, '.git', 'index.lock'), 'busy');

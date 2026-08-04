@@ -13,6 +13,11 @@ import {
   DEFAULT_CONFIG,
   ENV_VAR_MAPPING,
   JunoTaskConfigSchema,
+  DEFAULT_GIT_CHECKPOINT_INCLUDE,
+  PROJECT_CONFIG_VERSION,
+  createPersistedProjectConfigDefaults,
+  mergePersistedProjectDefaults,
+  writeProjectConfigAtomic,
   getPromptMacroDictionary,
 } from '../config.js';
 import type { JunoTaskConfig } from '../../types/index.js';
@@ -64,6 +69,8 @@ describe('Configuration Module', () => {
         enabled: false,
         allowedProjects: [],
       });
+      expect(DEFAULT_CONFIG.configVersion).toBe(PROJECT_CONFIG_VERSION);
+      expect(DEFAULT_CONFIG.gitCheckpoint?.include).toEqual(DEFAULT_GIT_CHECKPOINT_INCLUDE);
       expect(DEFAULT_CONFIG.promptMacros).toEqual({
         enabled: true,
         order: 'before_command_substitution',
@@ -75,6 +82,55 @@ describe('Configuration Module', () => {
 
     it('should pass schema validation', () => {
       expect(() => validateConfig(DEFAULT_CONFIG)).not.toThrow();
+    });
+
+    it('defines complete persisted defaults for fresh projects', () => {
+      const persisted = createPersistedProjectConfigDefaults('/tmp/example-project');
+      expect(persisted).toMatchObject({
+        configVersion: PROJECT_CONFIG_VERSION,
+        defaultBackend: 'shell',
+        autoDependencyUpdate: true,
+        onHourlyLimit: 'raise',
+        kanbanRegistry: { enabled: false, allowedProjects: [] },
+        gitCheckpoint: { include: [...DEFAULT_GIT_CHECKPOINT_INCLUDE] },
+        promptMacros: {
+          enabled: true,
+          order: 'before_command_substitution',
+          maxDepth: 10,
+          global: {},
+          local: {},
+        },
+        workingDirectory: '/tmp/example-project',
+        sessionDirectory: '/tmp/example-project/.juno_task',
+      });
+    });
+
+    it('recursively adds absent object keys without replacing explicit scalars or arrays', () => {
+      const existing: Record<string, unknown> = {
+        enabled: false,
+        empty: {},
+        list: [],
+        nested: { custom: 'keep' },
+        hooks: { CUSTOM: { commands: ['keep'] } },
+      };
+      expect(
+        mergePersistedProjectDefaults(existing, {
+          enabled: true,
+          empty: { added: true },
+          list: ['default'],
+          nested: { custom: 'replace', added: true },
+          hooks: { START_RUN: { commands: ['default'] } },
+          newKey: 'added',
+        }),
+      ).toBe(true);
+      expect(existing).toEqual({
+        enabled: false,
+        empty: { added: true },
+        list: [],
+        nested: { custom: 'keep', added: true },
+        hooks: { CUSTOM: { commands: ['keep'] } },
+        newKey: 'added',
+      });
     });
   });
 
@@ -833,6 +889,8 @@ logLevel: info
       // NOTE: loadConfig() auto-migrates hooks to include default hooks template with file size monitoring
       expect(config).toMatchObject({
         ...DEFAULT_CONFIG,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
         hooks: {
           START_RUN: {
             commands: expect.arrayContaining([
@@ -851,6 +909,144 @@ logLevel: info
 
       // New behavior: always bootstrap project env file on load
       expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(true);
+    });
+
+    it('additively migrates a legacy project config and is byte-idempotent', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, {
+        defaultSubagent: 'claude',
+        defaultModel: 'user-owned-model',
+        defaultModels: { pi: ':gpt' },
+        defaultMaxIterations: 50,
+        hooks: { START_ITERATION: { commands: ['custom-hook'] } },
+        promptMacros: { global: { custom: 'keep' } },
+        gitCheckpoint: { include: [] },
+        kanbanRegistry: { enabled: true, allowedProjects: [] },
+      });
+      await fs.chmod(configPath, 0o600);
+
+      await loadConfig({ baseDir: tempDir });
+      const migrated = await fs.readJson(configPath);
+      expect(migrated).toMatchObject({
+        configVersion: PROJECT_CONFIG_VERSION,
+        defaultSubagent: 'claude',
+        defaultModel: 'user-owned-model',
+        defaultModels: { pi: ':gpt' },
+        defaultMaxIterations: 50,
+        defaultBackend: 'shell',
+        autoDependencyUpdate: true,
+        hooks: { START_ITERATION: { commands: ['custom-hook'] } },
+        promptMacros: {
+          enabled: true,
+          order: 'before_command_substitution',
+          maxDepth: 10,
+          global: { custom: 'keep' },
+          local: {},
+        },
+        gitCheckpoint: { include: [] },
+        kanbanRegistry: { enabled: true, allowedProjects: [] },
+      });
+      expect(migrated.hooks).toEqual({ START_ITERATION: { commands: ['custom-hook'] } });
+      expect(migrated.defaultModels).toEqual({ pi: ':gpt' });
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+
+      const once = await fs.readFile(configPath);
+      await loadConfig({ baseDir: tempDir });
+      expect(await fs.readFile(configPath)).toEqual(once);
+    });
+
+    it('preserves an explicit empty model scalar', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, {
+        defaultSubagent: 'claude',
+        defaultModel: '',
+        hooks: {},
+      });
+
+      const config = await loadConfig({ baseDir: tempDir });
+
+      expect(config.defaultModel).toBe('');
+      expect((await fs.readJson(configPath)).defaultModel).toBe('');
+    });
+
+    it('does not mutate an invalid project config before validation fails', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeFile(
+        configPath,
+        '{"defaultSubagent":"claude","defaultMaxIterations":2000,"hooks":{}}\n',
+      );
+      const before = await fs.readFile(configPath);
+
+      await expect(loadConfig({ baseDir: tempDir })).rejects.toThrow(/defaultMaxIterations/);
+
+      expect(await fs.readFile(configPath)).toEqual(before);
+      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+    });
+
+    it('validates CLI overrides before migrating valid project bytes', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, { defaultSubagent: 'claude', hooks: {} });
+      const before = await fs.readFile(configPath);
+
+      await expect(
+        loadConfig({ baseDir: tempDir, cliConfig: { defaultMaxIterations: 2000 } }),
+      ).rejects.toThrow(/defaultMaxIterations/);
+
+      expect(await fs.readFile(configPath)).toEqual(before);
+      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+    });
+
+    it('leaves original config bytes intact when atomic replacement fails', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      const legacy = createPersistedProjectConfigDefaults(tempDir);
+      delete legacy.configVersion;
+      legacy.envFileCopied = true;
+      await fs.writeJson(configPath, legacy, { spaces: 4 });
+      await fs.writeFile(path.join(tempDir, '.env.juno'), '');
+      const before = await fs.readFile(configPath);
+      await expect(
+        writeProjectConfigAtomic(
+          configPath,
+          { ...legacy, configVersion: PROJECT_CONFIG_VERSION },
+          async () => {
+            throw new Error('injected rename failure');
+          },
+        ),
+      ).rejects.toThrow('injected rename failure');
+
+      expect(await fs.readFile(configPath)).toEqual(before);
+      expect((await fs.readdir(path.dirname(configPath))).some((name) => name.endsWith('.tmp'))).toBe(false);
+    });
+
+    it('preserves mode and refuses replacement when the expected original changed', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeFile(configPath, '{"original":true}\n', { mode: 0o600 });
+      const expected = await fs.readFile(configPath);
+      await fs.writeFile(configPath, '{"concurrent":true}\n', { mode: 0o600 });
+
+      await expect(
+        writeProjectConfigAtomic(configPath, { migrated: true }, fs.rename, expected),
+      ).rejects.toThrow('project config changed during migration');
+
+      expect(await fs.readJson(configPath)).toEqual({ concurrent: true });
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    });
+
+    it('keeps the managed Python checkpoint fallback aligned with persisted defaults', async () => {
+      const script = await fs.readFile(
+        path.join(process.cwd(), 'src/templates/scripts/controller_checkpoint.py'),
+        'utf8',
+      );
+      const match = script.match(/DEFAULT_INCLUDE = \((.*?)\n\)/s);
+      expect(match).not.toBeNull();
+      const pythonDefaults = [...match![1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+      expect(pythonDefaults).toEqual(DEFAULT_GIT_CHECKPOINT_INCLUDE);
     });
 
     it('loads existing task env without migrating any project bytes in read-only bootstrap mode', async () => {
@@ -928,7 +1124,7 @@ logLevel: info
       expect(config.logLevel).toBe('debug');
     });
 
-    it('should sync legacy defaultModel to defaultModels for the active defaultSubagent', async () => {
+    it('should preserve divergent legacy and per-subagent model values', async () => {
       const junoTaskDir = path.join(tempDir, '.juno_task');
       await fs.ensureDir(junoTaskDir);
 
@@ -948,8 +1144,8 @@ logLevel: info
       });
 
       const updatedConfig = await fs.readJson(path.join(junoTaskDir, 'config.json'));
-      expect(config.defaultModel).toBe(':api-codex');
-      expect(updatedConfig.defaultModel).toBe(':api-codex');
+      expect(config.defaultModel).toBe(':pi');
+      expect(updatedConfig.defaultModel).toBe(':pi');
       expect(updatedConfig.defaultModels.pi).toBe(':api-codex');
     });
   });
@@ -1381,6 +1577,8 @@ mcpServerPath: "/usr/local/bin/mcp-server"
       // Auto-migration adds default hooks template with file size monitoring
       expect(configs[0]).toMatchObject({
         ...DEFAULT_CONFIG,
+        workingDirectory: tempDir,
+        sessionDirectory: path.join(tempDir, '.juno_task'),
         hooks: {
           START_RUN: {
             commands: expect.arrayContaining([
@@ -1396,6 +1594,9 @@ mcpServerPath: "/usr/local/bin/mcp-server"
           },
         },
       });
+      expect(
+        await fs.pathExists(path.join(tempDir, '.juno_task', '.config.json.migration.lock')),
+      ).toBe(false);
     });
 
     it('should handle config loading with non-existent specific file', async () => {

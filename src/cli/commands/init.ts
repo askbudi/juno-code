@@ -14,6 +14,7 @@ import { promptMultiline, promptInputOnce } from '../utils/multiline.js';
 
 import { getDefaultHooks } from '../../templates/default-hooks.js';
 import { getDefaultModelForSubagent } from '../../core/subagent-models.js';
+import { createPersistedProjectConfigDefaults } from '../../core/config.js';
 import type { InitCommandOptions } from '../types.js';
 import type { SubagentType } from '../../types/index.js';
 import { ValidationError } from '../types.js';
@@ -590,39 +591,20 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   }
 
   private async createConfigFile(junoTaskDir: string, targetDirectory: string): Promise<void> {
+    const selectedSubagent = (this.context.subagent || 'claude') as SubagentType;
+    const selectedModel = getDefaultModelForSubagent(selectedSubagent);
+    const defaults = createPersistedProjectConfigDefaults(targetDirectory);
     const configContent = {
-      // Core settings
-      defaultSubagent: this.context.subagent,
-      defaultMaxIterations: 1,
-      defaultModel: getDefaultModelForSubagent(
-        (this.context.subagent || 'claude') as SubagentType,
-      ),
-
-      // Project metadata
+      ...defaults,
+      defaultSubagent: selectedSubagent,
+      defaultModel: selectedModel,
+      defaultModels: {
+        ...(defaults.defaultModels as Record<string, string>),
+        [selectedSubagent]: selectedModel,
+      },
       mainTask: this.context.task || 'Project initialization',
-
-      // Logging settings
-      logLevel: 'info',
       verbose: 0,
-      quiet: false,
-
-      // Shell backend settings
-      mcpTimeout: 43200000, // 43200 seconds (12 hours) - default for long-running shell backend operations
-      mcpRetries: 3,
-
-      // TUI settings
-      interactive: true,
-      headlessMode: false,
-
-      // Paths
-      workingDirectory: targetDirectory,
-      sessionDirectory: path.join(targetDirectory, '.juno_task'),
-
-      // Project environment bootstrap
-      envFilePath: '.env.juno',
       envFileCopied: true,
-
-      // Hooks configuration with default file size monitoring
       hooks: getDefaultHooks(),
     };
 

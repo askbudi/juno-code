@@ -26,6 +26,27 @@ vi.mock('../../core/config.js', () => ({
     workingDirectory: '/test/dir',
     verbose: 0,
   }),
+  createPersistedProjectConfigDefaults: vi.fn((baseDir: string) => ({
+    configVersion: 1,
+    defaultSubagent: 'claude',
+    defaultBackend: 'shell',
+    defaultMaxIterations: 1,
+    defaultModels: { claude: ':sonnet', pi: ':pi' },
+    gitCheckpoint: {
+      include: [
+        '.juno_task/tasks',
+        '.juno_task/ledger',
+        '.juno_task/wiki',
+        '.juno_task/specs',
+        '.juno_task/workflows',
+        '.juno_task/plan.md',
+        '.juno_task/tasks.md',
+        '.juno_task/managed-assets.json',
+      ],
+    },
+    workingDirectory: baseDir,
+    sessionDirectory: `${baseDir}/.juno_task`,
+  })),
 }));
 
 vi.mock('fs-extra', () => {
@@ -195,6 +216,20 @@ describe('Init Command', () => {
         await runInit([], options, mockCommand);
 
         expect(fs.ensureDir).toHaveBeenCalled();
+        const configWrite = vi.mocked(fs.writeFile).mock.calls.find(([target]) =>
+          String(target).endsWith('/.juno_task/config.json'),
+        );
+        expect(configWrite).toBeDefined();
+        expect(JSON.parse(String(configWrite![1]))).toMatchObject({
+          configVersion: 1,
+          defaultBackend: 'shell',
+          gitCheckpoint: {
+            include: expect.arrayContaining([
+              '.juno_task/workflows',
+              '.juno_task/managed-assets.json',
+            ]),
+          },
+        });
         expect(consoleSpy).toHaveBeenCalledWith(
           expect.stringContaining('Project initialization complete'),
         );

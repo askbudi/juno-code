@@ -62,6 +62,9 @@ export type ProgressEventType = 'tool_start' | 'tool_result' | 'thinking' | 'err
 
 // Base configuration interface
 export interface JunoTaskConfig {
+  /** Persisted project configuration generation. */
+  configVersion?: number;
+
   // Core settings
   defaultSubagent: SubagentType;
   defaultMaxIterations: number;
