@@ -83,6 +83,9 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('worktree_lifecycle.py');
       expect(missing).toContain('task_workflow_helper.py');
       expect(missing).toContain('workflow_run_evidence.py');
+      expect(missing).toContain('wiki_lint.py');
+      expect(missing).toContain('wiki_lint.sh');
+      expect(missing).toContain('tests/test_integration_concurrency.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -192,6 +195,16 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'workflow_run_evidence.py'),
         '#!/usr/bin/env python3\nprint("workflow evidence")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'wiki_lint.py'),
+        '#!/usr/bin/env python3\nprint("wiki lint")',
+      );
+      await fs.writeFile(path.join(scriptsDir, 'wiki_lint.sh'), '#!/bin/bash\necho "wiki lint"');
+      await fs.ensureDir(path.join(scriptsDir, 'tests'));
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_integration_concurrency.py'),
+        '#!/usr/bin/env python3\nprint("integration concurrency")',
+      );
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -274,6 +287,9 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: false },
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
+        { name: 'wiki_lint.py', installed: false },
+        { name: 'wiki_lint.sh', installed: false },
+        { name: 'tests/test_integration_concurrency.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'integration_candidate.py', installed: false },
@@ -390,6 +406,16 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'workflow_run_evidence.py'),
         '#!/usr/bin/env python3\nprint("workflow evidence")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'wiki_lint.py'),
+        '#!/usr/bin/env python3\nprint("wiki lint")',
+      );
+      await fs.writeFile(path.join(scriptsDir, 'wiki_lint.sh'), '#!/bin/bash\necho "wiki lint"');
+      await fs.ensureDir(path.join(scriptsDir, 'tests'));
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_integration_concurrency.py'),
+        '#!/usr/bin/env python3\nprint("integration concurrency")',
+      );
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -419,6 +445,9 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: true },
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
+        { name: 'wiki_lint.py', installed: true },
+        { name: 'wiki_lint.sh', installed: true },
+        { name: 'tests/test_integration_concurrency.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'integration_candidate.py', installed: true },

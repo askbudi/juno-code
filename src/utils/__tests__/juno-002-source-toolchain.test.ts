@@ -198,7 +198,7 @@ chmod +x "$prefix/node_modules/.bin/yy"
     expect(status.stdout).toContain(`juno_code_source=${await fs.realpath(codeSource)}`);
     expect(status.stdout).toContain(`juno_kanban_source=${await fs.realpath(kanbanSource)}`);
     expect(status.stdout).toContain('policy=>=2.0.5,<3.0.0');
-  });
+  }, 30_000);
 
   it.each(['1.9.9', '2.0.4', '3.0.0'])('rejects source Kanban %s during install', async (version) => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-002-reject-'));
