@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import fs from 'fs-extra';
@@ -76,6 +77,62 @@ describe('ManagedProjectAssets', () => {
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
   });
+
+  it(
+    'installs an operationally closed managed wiki generation',
+    async () => {
+      const templatesDir = ManagedProjectAssets.getTemplatesDirectory();
+      expect(templatesDir).not.toBeNull();
+      const definitions = (await fs.readJson(path.join(templatesDir!, 'managed-assets.json')))
+        .assets as Array<{
+        source: string;
+        destination: string;
+        installClass: 'project' | 'script';
+        type: string;
+      }>;
+
+      await ManagedProjectAssets.update(projectDir, { silent: true });
+      await ScriptInstaller.autoUpdate(projectDir, true);
+
+      const managedWikis = definitions.filter((asset) => asset.type === 'wiki');
+      const relativeLink = /\[[^\]]+\]\((?![a-z]+:|#)([^)#]+)(?:#[^)]*)?\)/gi;
+      for (const wiki of managedWikis) {
+        const wikiPath = path.join(projectDir, wiki.destination);
+        const content = await fs.readFile(wikiPath, 'utf8');
+        for (const match of content.matchAll(relativeLink)) {
+          expect(
+            await fs.pathExists(path.resolve(path.dirname(wikiPath), match[1])),
+            `${wiki.destination} has an unresolved installed link: ${match[1]}`,
+          ).toBe(true);
+        }
+      }
+
+      for (const requiredPath of [
+        '.juno_task/scripts/wiki_lint.sh',
+        '.juno_task/scripts/wiki_lint.py',
+        '.juno_task/scripts/tests/test_integration_concurrency.py',
+        '.juno_task/wiki/runtime_migration_and_replacement_contract.md',
+      ]) {
+        expect(await fs.pathExists(path.join(projectDir, requiredPath)), requiredPath).toBe(true);
+      }
+
+      for (const command of [
+        './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md',
+        './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md',
+        // Keep the fast suite bounded: this proves the installed lifecycle modules load;
+        // the exact installed concurrency gate is exercised by the package acceptance loop.
+        'python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py',
+      ]) {
+        const result = spawnSync('/bin/bash', ['-c', command], {
+          cwd: projectDir,
+          encoding: 'utf8',
+          timeout: 30_000,
+        });
+        expect(result.status, `${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
+      }
+    },
+    60_000,
+  );
 
   it('detects a mixed lifecycle generation without changing project files', async () => {
     await ManagedProjectAssets.update(projectDir, { silent: true });

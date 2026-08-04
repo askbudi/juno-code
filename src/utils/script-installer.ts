@@ -11,9 +11,16 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import managedAssetManifest from '../templates/managed-assets.json';
 
+const MANAGED_SCRIPT_ROOT = '.juno_task/scripts';
 const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
   .filter((asset) => asset.installClass === 'script')
-  .map((asset) => path.basename(asset.destination));
+  .map((asset) => path.relative(MANAGED_SCRIPT_ROOT, asset.destination))
+  .map((scriptName) => {
+    if (!scriptName || scriptName.startsWith('..') || path.isAbsolute(scriptName)) {
+      throw new Error('Managed script destinations must stay under .juno_task/scripts');
+    }
+    return scriptName;
+  });
 
 const COHERENCE_BLOCKING_PROJECT_ASSETS = new Set(
   managedAssetManifest.assets

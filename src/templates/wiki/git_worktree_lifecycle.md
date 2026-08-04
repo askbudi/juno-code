@@ -6,7 +6,6 @@ wiki_contract:
   runtime_contract_enforced: "Risk-tiered immutable review identities, metadata-only detach, target-ref CAS, actual-target validation, tiered tags, and strict cleanup."
   validation_gate: "python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py && python3 .juno_task/scripts/tests/test_integration_concurrency.py"
   related_sots:
-    - "parallel_runner_task_creation_best_practices.md"
     - "parallel_runner_and_spec_review.md"
   owns:
     - "Named worktree creation, candidate, local integration, feature tag, and cleanup contracts."

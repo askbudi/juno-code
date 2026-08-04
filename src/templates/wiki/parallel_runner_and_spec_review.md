@@ -1,14 +1,13 @@
 ---
 wiki_contract:
-  line_limit: 130
+  line_limit: 140
   purpose: "Stable post-run review contract for parallel-runner/subagent work, spec-invariant review, submodule commits, and write-capable CLI acceptance."
   failure_mode_prevented: "Root agents marking mixed, partial, dirty, or semantically mismatched subagent work as done."
   runtime_contract_enforced: "Kanban task status, git commits, task MUST/MUST NOT requirements, tests, and dangerous-path evidence agree before root work is closed."
   validation_gate: "./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md && git diff --check -- .juno_task/wiki/parallel_runner_and_spec_review.md"
   related_sots:
-    - "parallel_runner_task_creation_best_practices.md"
     - "git_worktree_lifecycle.md"
-    - "task_contract_schema.md"
+    - "runtime_migration_and_replacement_contract.md"
   owns:
     - "Post-parallel-run/spec-invariant review checklist."
     - "Requirement matrix review expectations."
@@ -22,7 +21,11 @@ wiki_contract:
 
 # Parallel Runner + Spec-Invariant Review
 
-Use this guide after `./.juno_task/scripts/parallel_runner.sh` finishes, before accepting subagent work, and before marking root work done for production jobs, write-capable CLIs, submodules, or multi-task implementation batches. For task creation rules, see [`parallel_runner_task_creation_best_practices.md`](parallel_runner_task_creation_best_practices.md); for isolated checkout integration and cleanup, see [`git_worktree_lifecycle.md`](git_worktree_lifecycle.md); for replacement inventories, limit provenance, feasibility, cleanup ledgers, and validation ownership, see [`runtime_migration_and_replacement_contract.md`](runtime_migration_and_replacement_contract.md).
+Use this guide after `./.juno_task/scripts/parallel_runner.sh` finishes, before accepting subagent work, and before marking root work done for production jobs, write-capable CLIs, submodules, or multi-task implementation batches. Project-local task-authoring/schema guides may specialize those concerns without becoming package-managed files. For isolated checkout integration and cleanup, see [`git_worktree_lifecycle.md`](git_worktree_lifecycle.md); for replacement inventories, limit provenance, feasibility, cleanup ledgers, and validation ownership, see [`runtime_migration_and_replacement_contract.md`](runtime_migration_and_replacement_contract.md).
+
+## Workflow Runner guidance ownership
+
+Workflow Runner intentionally has no duplicate managed wiki. `.juno_task/prompts/run_workflow.md` owns execution and lifecycle governance, `workflow_runner.sh --help` owns exact CLI syntax, and the package README owns the operator overview. This page owns only post-run/spec review shared with Parallel Runner. Tests bind those surfaces to the installed scripts; copying their full contracts here would create drift.
 
 ## Why this matters
 Parallel/subagent runs can finish with mixed outcomes: failed tasks may leave useful diffs, successful tasks may miss a MUST/MUST NOT, and submodules may be committed without the parent pointer. A reviewer must independently prove that the implementation matches the selected kanban/spec contract.
@@ -121,10 +124,10 @@ Failure mode prevented: internal helper params becoming client inputs. Runtime c
 
 ## Write-capable CLI review
 
-For CLIs or jobs that can write production data, verify dangerous operator paths before closure. See [`task_contract_schema.md`](task_contract_schema.md) for structured contract fields. Create deploy/E2E tasks only after this review fixes final commit/tag, or mark expected commit/tag as `TBD pending spec-invariant review` and update it before running deploy/E2E.
+For CLIs or jobs that can write production data, verify dangerous operator paths before closure. A project-local `task_contract_schema.md`, when present, may define structured contract fields. Create deploy/E2E tasks only after this review fixes final commit/tag, or mark expected commit/tag as `TBD pending spec-invariant review` and update it before running deploy/E2E.
 
 Minimum evidence to record: dry-run writes zero rows; authorized write path requires the named approval/control and writes only the approved target; resume existing skips completed work; repeated run-id without resume cannot duplicate completed work; partial existing output hard-stops before more writes; failed child/retry behavior is observable and retry-safe; wrapper-generated IDs/paths satisfy downstream CLI and DB schemas; no unintended DDL, latest/live mutation, fallback, adapter, replay, or alternate SOT when forbidden.
 
 ## What belongs here
 
-Keep this page process-wide. Put domain metrics, SQL predicates, production run IDs, customer incidents, and one-off logs in kanban responses or `.juno_task/specs/...` artifacts. If task bodies are being authored for a parallel run, use [`parallel_runner_task_creation_best_practices.md`](parallel_runner_task_creation_best_practices.md) as the source of truth.
+Keep this page process-wide. Put domain metrics, SQL predicates, production run IDs, customer incidents, one-off logs, and project-local task-authoring conventions in Kanban responses, specs, or unowned local wikis.

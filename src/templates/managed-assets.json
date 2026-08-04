@@ -62,6 +62,30 @@
       "type": "wiki"
     },
     {
+      "source": "wiki/runtime_migration_and_replacement_contract.md",
+      "destination": ".juno_task/wiki/runtime_migration_and_replacement_contract.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "scripts/wiki_lint.py",
+      "destination": ".juno_task/scripts/wiki_lint.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/wiki_lint.sh",
+      "destination": ".juno_task/scripts/wiki_lint.sh",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_integration_concurrency.py",
+      "destination": ".juno_task/scripts/tests/test_integration_concurrency.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/git_index_lock.py",
       "destination": ".juno_task/scripts/git_index_lock.py",
       "installClass": "script",
