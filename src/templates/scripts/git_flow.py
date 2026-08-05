@@ -398,16 +398,40 @@ def controller_sync(invocation: Path) -> dict[str, Any]:
                     raise FlowError(f"controller-owned path changed: {protected}")
             if resolve(ctl, target_ref) != target_tip or resolve(ctl, "HEAD") != target_tip or not clean(ctl):
                 raise FlowError("controller moved while candidate was built")
-            git(ctl, "merge", "--ff-only", candidate_sha)
-            if resolve(ctl, target_ref) != candidate_sha or resolve(ctl, "HEAD") != candidate_sha:
+            # Use the canonical target-channel lock and exact expected-SHA update
+            # primitive from integration_owner_preflight, then refresh the clean
+            # checked-out controller without a check-then-merge race.
+            scripts = Path(__file__).resolve().parent
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            try:
+                import integration_owner_preflight as authority
+            except ImportError as exc:
+                raise FlowError("controller-sync requires integration_owner_preflight.py") from exc
+            authority_item = {"path": ctl, "target_ref": target_ref}
+            lock_path = authority.lock_file(authority_item)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+") as channel_lock:
+                authority.acquire_bounded(channel_lock, 30)
+                try:
+                    if resolve(ctl, target_ref) != target_tip or resolve(ctl, "HEAD") != target_tip or not clean(ctl):
+                        raise FlowError("controller moved before expected-SHA CAS")
+                    git(ctl, "switch", "--detach", target_tip)
+                    update = authority.run(ctl, "update-ref", target_ref, candidate_sha, target_tip, check=False)
+                    if update.returncode:
+                        git(ctl, "switch", short_ref(target_ref), check=False)
+                        raise FlowError("controller expected-SHA CAS refused: " + update.stderr.strip())
+                    git(ctl, "switch", short_ref(target_ref))
+                finally:
+                    fcntl.flock(channel_lock.fileno(), fcntl.LOCK_UN)
+            if resolve(ctl, target_ref) != candidate_sha or resolve(ctl, "HEAD") != candidate_sha or not clean(ctl):
                 raise FlowError("controller CAS readback failed")
-            git(ctl, "submodule", "sync", "--recursive", check=False)
-            git(ctl, "submodule", "update", "--init", "--recursive", "--checkout", check=False)
         finally:
             git(ctl, "worktree", "remove", "--force", str(candidate), check=False)
             shutil.rmtree(temp, ignore_errors=True)
     return {"operation": "controller-sync", "before": target_tip, "integration": source_tip,
-            "controller": candidate_sha, "remotePublished": False}
+            "controller": candidate_sha, "remotePublished": False,
+            "casAuthority": "integration_owner_preflight.target_channel_lock+update_ref"}
 
 
 def parser() -> argparse.ArgumentParser:

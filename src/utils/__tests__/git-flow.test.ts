@@ -26,14 +26,27 @@ describe('configured Git flow', () => {
   let controller: string;
   let integration: string;
   let remote: string;
-  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3' });
+  let childRemote: string;
+  let childSeed: string;
+  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3', GIT_ALLOW_PROTOCOL: 'file' });
 
   beforeEach(async () => {
     sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-git-flow-'));
     controller = path.join(sandbox, 'controller');
     integration = path.join(sandbox, 'integration');
     remote = path.join(sandbox, 'origin.git');
+    childRemote = path.join(sandbox, 'child.git');
+    childSeed = path.join(sandbox, 'child-seed');
     expect(run('git', ['init', '--bare', remote], sandbox).status).toBe(0);
+    expect(run('git', ['init', '--bare', childRemote], sandbox).status).toBe(0);
+    fs.ensureDirSync(childSeed);
+    git(childSeed, 'init', '-b', 'main');
+    git(childSeed, 'config', 'user.name', 'Test');
+    git(childSeed, 'config', 'user.email', 'test@example.com');
+    fs.writeFileSync(path.join(childSeed, 'child.txt'), 'one\n');
+    commit(childSeed, 'child one');
+    git(childSeed, 'remote', 'add', 'origin', childRemote);
+    git(childSeed, 'push', '-q', '-u', 'origin', 'main');
     fs.ensureDirSync(controller);
     git(controller, 'init', '-b', 'controller');
     git(controller, 'config', 'user.name', 'Test');
@@ -42,9 +55,11 @@ describe('configured Git flow', () => {
     fs.writeJsonSync(path.join(controller, '.juno_task', 'config.json'), { defaultSubagent: 'pi' });
     fs.writeFileSync(path.join(controller, '.juno_task', 'tasks', 'board.ndjson'), 'controller-only\n');
     fs.writeFileSync(path.join(controller, 'product.txt'), 'base\n');
+    git(controller, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', '-b', 'main', childRemote, 'child');
     commit(controller, 'base');
     git(controller, 'branch', 'integration');
     git(controller, 'worktree', 'add', '--detach', integration, 'integration');
+    git(integration, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', '--checkout');
     fs.removeSync(path.join(integration, '.juno_task', 'tasks'));
     fs.writeFileSync(path.join(integration, 'product.txt'), 'integration\n');
     commit(integration, 'integration product');
@@ -106,6 +121,36 @@ describe('configured Git flow', () => {
     git(controller, 'update-ref', 'refs/heads/integration', git(integration, 'rev-parse', 'HEAD'), previous);
     const pushed = run('python3', [engine, 'push', '--json'], integration, env());
     expect(pushed.status, pushed.stderr).toBe(0);
+    expect(git(controller, 'ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0]).toBe(git(integration, 'rev-parse', 'HEAD'));
+  });
+
+  it('advances configured submodule branches and pushes a local child before the root', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--submodules', 'tracking', '--advance-submodule-branches'], controller, env()).status).toBe(0);
+    fs.writeFileSync(path.join(childSeed, 'child.txt'), 'two\n');
+    commit(childSeed, 'child two');
+    git(childSeed, 'push', '-q', 'origin', 'main');
+
+    const synced = run('python3', [engine, 'sync', '--json'], integration, env());
+    expect(synced.status, synced.stderr).toBe(0);
+    expect(JSON.parse(synced.stdout).advancedSubmodules).toEqual(['child']);
+    const remoteChild = git(childSeed, 'rev-parse', 'HEAD');
+    expect(git(integration, 'rev-parse', 'HEAD:child')).toBe(remoteChild);
+
+    const child = path.join(integration, 'child');
+    git(child, 'config', 'user.name', 'Test');
+    git(child, 'config', 'user.email', 'test@example.com');
+    fs.writeFileSync(path.join(child, 'child.txt'), 'three\n');
+    commit(child, 'local child three');
+    const localChild = git(child, 'rev-parse', 'HEAD');
+    git(integration, 'add', 'child');
+    commit(integration, 'record local child');
+    const old = git(controller, 'rev-parse', 'refs/heads/integration');
+    git(controller, 'update-ref', 'refs/heads/integration', git(integration, 'rev-parse', 'HEAD'), old);
+
+    const pushed = run('python3', [engine, 'push', '--json'], integration, env());
+    expect(pushed.status, pushed.stderr).toBe(0);
+    expect(JSON.parse(pushed.stdout).pushed).toEqual(['child', 'root']);
+    expect(git(childSeed, 'ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0]).toBe(localChild);
     expect(git(controller, 'ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0]).toBe(git(integration, 'rev-parse', 'HEAD'));
   });
 
