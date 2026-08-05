@@ -28,7 +28,7 @@ describe('configured Git flow', () => {
   let remote: string;
   let childRemote: string;
   let childSeed: string;
-  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3', GIT_ALLOW_PROTOCOL: 'file' });
+  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_WORKSPACE_ROLE: '', JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3', GIT_ALLOW_PROTOCOL: 'file' });
 
   beforeEach(async () => {
     sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-git-flow-'));
@@ -68,6 +68,12 @@ describe('configured Git flow', () => {
     git(controller, 'update-ref', 'refs/heads/integration', tip, old);
     git(controller, 'remote', 'add', 'origin', remote);
     git(controller, 'push', '-q', 'origin', 'controller', 'integration');
+    git(controller, 'config', '--local', 'extensions.worktreeConfig', 'true');
+    git(controller, 'config', '--local', 'juno.controller.path', controller);
+    git(controller, 'config', '--local', 'juno.controller.branch', 'controller');
+    git(integration, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(integration, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    git(integration, 'config', '--worktree', 'juno.workspace.roleBase', git(controller, 'rev-parse', 'refs/heads/integration'));
   });
 
   afterEach(async () => fs.remove(sandbox));
@@ -124,6 +130,25 @@ describe('configured Git flow', () => {
     expect(git(controller, 'ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0]).toBe(git(integration, 'rev-parse', 'HEAD'));
   });
 
+  it('refuses a stale controller target without replacing the externally moved ref', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    const external = path.join(sandbox, 'external-target');
+    git(controller, 'worktree', 'add', '--detach', external, 'controller');
+    git(external, 'config', 'user.name', 'Test');
+    git(external, 'config', 'user.email', 'test@example.com');
+    fs.writeFileSync(path.join(external, 'external.txt'), 'external movement\n');
+    commit(external, 'external target movement');
+    const expectedExternal = git(external, 'rev-parse', 'HEAD');
+    git(controller, 'update-ref', 'refs/heads/controller', expectedExternal);
+
+    const result = run('python3', [engine, 'controller-sync', '--json'], controller, env());
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/controller checkout must be clean|controller moved/);
+    expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(expectedExternal);
+    git(controller, 'worktree', 'remove', '--force', external);
+  });
+
   it('advances configured submodule branches and pushes a local child before the root', () => {
     expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--submodules', 'tracking', '--advance-submodule-branches'], controller, env()).status).toBe(0);
     fs.writeFileSync(path.join(childSeed, 'child.txt'), 'two\n');
@@ -152,6 +177,38 @@ describe('configured Git flow', () => {
     expect(JSON.parse(pushed.stdout).pushed).toEqual(['child', 'root']);
     expect(git(childSeed, 'ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0]).toBe(localChild);
     expect(git(controller, 'ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0]).toBe(git(integration, 'rev-parse', 'HEAD'));
+  });
+
+  it('reports attached children and refuses dirty or divergent submodule state', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--submodules', 'tracking', '--advance-submodule-branches'], controller, env()).status).toBe(0);
+    const child = path.join(integration, 'child');
+    git(child, 'switch', '-c', 'attached-test');
+    const attachedStatus = run('python3', [engine, 'status', '--no-fetch', '--json'], integration, env());
+    expect(attachedStatus.status, attachedStatus.stderr).toBe(0);
+    expect(JSON.parse(attachedStatus.stdout).submodules[0].detached).toBe(false);
+    git(child, 'switch', '--detach', 'HEAD');
+
+    fs.writeFileSync(path.join(child, 'dirty.txt'), 'dirty\n');
+    const dirty = run('python3', [engine, 'sync', '--json'], integration, env());
+    expect(dirty.status).toBe(2);
+    expect(dirty.stderr).toMatch(/dirty/);
+    fs.removeSync(path.join(child, 'dirty.txt'));
+
+    fs.writeFileSync(path.join(childSeed, 'remote.txt'), 'remote\n');
+    commit(childSeed, 'remote side');
+    git(childSeed, 'push', '-q', 'origin', 'main');
+    git(child, 'config', 'user.name', 'Test');
+    git(child, 'config', 'user.email', 'test@example.com');
+    fs.writeFileSync(path.join(child, 'local.txt'), 'local\n');
+    commit(child, 'local side');
+    git(integration, 'add', 'child');
+    commit(integration, 'record divergent child');
+    const old = git(controller, 'rev-parse', 'refs/heads/integration');
+    git(controller, 'update-ref', 'refs/heads/integration', git(integration, 'rev-parse', 'HEAD'), old);
+
+    const divergent = run('python3', [engine, 'sync', '--json'], integration, env());
+    expect(divergent.status).toBe(2);
+    expect(divergent.stderr).toContain('submodule diverged: child');
   });
 
   it('fails closed when integration contains a controller-owned path', () => {

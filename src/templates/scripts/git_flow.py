@@ -85,16 +85,20 @@ def counts(repo: Path, left: str, right: str) -> tuple[int, int]:
 
 
 def controller(invocation: Path) -> Path:
-    override = os.environ.get("JUNO_TASK_ROOT", "").strip()
-    if override:
-        candidate = Path(override).expanduser().resolve()
-    else:
-        registered = git(invocation, "config", "--local", "--get", "juno.controller.path", check=False)
-        candidate = Path(registered).expanduser().resolve() if registered else invocation
-    if not (candidate / ".juno_task").is_dir():
-        raise FlowError(f"configured controller has no .juno_task directory: {candidate}")
-    if common(candidate) != common(invocation):
-        raise FlowError("controller is not a linked worktree of the invoking repository")
+    resolver = Path(__file__).resolve().with_name("controller_resolver.py")
+    if not resolver.is_file():
+        raise FlowError("controller_resolver.py is required")
+    result = run([sys.executable, str(resolver), "--cwd", str(invocation),
+                  "--operation", "diagnostic", "--format", "json"], invocation, False)
+    if result.returncode:
+        raise FlowError(result.stderr.strip() or "controller resolver refused Git-flow context")
+    try:
+        payload = json.loads(result.stdout)
+        candidate = Path(str(payload["path"])).resolve()
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise FlowError("controller resolver returned invalid JSON") from exc
+    if payload.get("valid") is not True:
+        raise FlowError("controller resolver returned invalid context")
     return candidate
 
 
@@ -421,7 +425,13 @@ def controller_sync(invocation: Path) -> dict[str, Any]:
                     if update.returncode:
                         git(ctl, "switch", short_ref(target_ref), check=False)
                         raise FlowError("controller expected-SHA CAS refused: " + update.stderr.strip())
-                    git(ctl, "switch", short_ref(target_ref))
+                    restored = run(["git", "-C", str(ctl), "switch", short_ref(target_ref)], ctl, False)
+                    if restored.returncode:
+                        rollback = authority.run(ctl, "update-ref", target_ref, target_tip, candidate_sha, check=False)
+                        recovery = run(["git", "-C", str(ctl), "switch", short_ref(target_ref)], ctl, False)
+                        if rollback.returncode or recovery.returncode:
+                            raise FlowError("controller checkout restoration failed with partial CAS truth")
+                        raise FlowError("controller checkout restoration failed; exact CAS was rolled back")
                 finally:
                     fcntl.flock(channel_lock.fileno(), fcntl.LOCK_UN)
             if resolve(ctl, target_ref) != candidate_sha or resolve(ctl, "HEAD") != candidate_sha or not clean(ctl):
