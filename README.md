@@ -59,6 +59,25 @@ Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local c
 
 Choose the smallest lane that satisfies the work. Controller dirt and unrelated agents do not gate exact-base creation or a disjoint target channel. Every product change uses a named worktree. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
 
+### Integration/controller Git flow
+
+Initialized projects receive a canonical `.juno_task/scripts/git-flow.sh` and a managed `scripts/git-flow.sh` delegate. Existing unrelated root delegates are preserved. Git-flow mutations stay disabled until explicit configuration:
+
+```bash
+./scripts/git-flow.sh configure \
+  --integration-branch integration \
+  --controller-branch controller \
+  --integration-checkout /absolute/path/to/detached-integration \
+  --remote origin
+
+./scripts/git-flow.sh status
+./scripts/git-flow.sh sync
+./scripts/git-flow.sh push
+./scripts/git-flow.sh controller-sync
+```
+
+Configuration is split between `.juno_task/config.json`, the versioned `.juno_task/config/git-flow.json` policy, and machine-local `juno.gitFlow.integrationCheckout` Git configuration. The integration checkout must be detached and linked to the registered controller. `sync` is fast-forward-only, `push` publishes integration branches only, and `controller-sync` creates a local two-parent controller composition without pushing. The explicit controller-owned path preset keeps tasks, ledger, specs, sessions, and workflow evidence out of integration and byte-identical to the controller target. Submodules use exact gitlinks by default; configured branch advancement is opt-in and child-first.
+
 Rollback operations are intentionally separate:
 
 1. **Source rollback:** use Git in the source worktrees to choose reviewed source commits; this does not select executables or alter Kanban data.

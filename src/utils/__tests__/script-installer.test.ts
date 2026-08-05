@@ -205,6 +205,8 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'tests/test_integration_concurrency.py'),
         '#!/usr/bin/env python3\nprint("integration concurrency")',
       );
+      await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
+      await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
       const missing = await ScriptInstaller.getMissingScripts(testDir);
       expect(missing).toEqual([]);
@@ -287,6 +289,8 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: false },
         { name: 'workflow_runner.sh', installed: false },
         { name: 'workflow_assert.py', installed: false },
+        { name: 'git-flow.sh', installed: false },
+        { name: 'git_flow.py', installed: false },
         { name: 'wiki_lint.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_integration_concurrency.py', installed: false },
@@ -416,6 +420,8 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'tests/test_integration_concurrency.py'),
         '#!/usr/bin/env python3\nprint("integration concurrency")',
       );
+      await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
+      await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -445,6 +451,8 @@ describe('ScriptInstaller', () => {
         { name: 'parallel_runner_wait.sh', installed: true },
         { name: 'workflow_runner.sh', installed: true },
         { name: 'workflow_assert.py', installed: true },
+        { name: 'git-flow.sh', installed: true },
+        { name: 'git_flow.py', installed: true },
         { name: 'wiki_lint.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_integration_concurrency.py', installed: true },
@@ -819,6 +827,30 @@ describe('ScriptInstaller', () => {
       expect((mainBody.match(/if ! ensure_python_environment/g) || [])).toHaveLength(1);
       expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
       expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
+    });
+
+    it('installs the managed root Git-flow delegate and canonical engine', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+
+      const updated = await ScriptInstaller.autoUpdate(testDir, true);
+
+      expect(updated).toBe(true);
+      expect(await fs.readFile(path.join(testDir, 'scripts/git-flow.sh'), 'utf8')).toContain(
+        '# juno-code-managed: root-git-flow.v1',
+      );
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git-flow.sh'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git_flow.py'))).toBe(true);
+    });
+
+    it('preserves an unrelated root Git-flow script', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await fs.ensureDir(path.join(testDir, 'scripts'));
+      const custom = '#!/bin/sh\necho custom\n';
+      await fs.writeFile(path.join(testDir, 'scripts/git-flow.sh'), custom);
+
+      await ScriptInstaller.autoUpdate(testDir, true);
+
+      expect(await fs.readFile(path.join(testDir, 'scripts/git-flow.sh'), 'utf8')).toBe(custom);
     });
 
     it('should not update when scripts match package version', async () => {

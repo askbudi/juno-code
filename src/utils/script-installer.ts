@@ -98,8 +98,18 @@ export class ScriptInstaller {
     'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
     'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
     'workflow_assert.py', // Emit named, machine-readable workflow assertions
+    'git-flow.sh', // Configured integration/controller Git-flow entrypoint
+    'git_flow.py', // Canonical controller-owned Git-flow engine
     ...MANAGED_SCRIPT_NAMES, // Lifecycle scripts are declared once in managed-assets.json
   ];
+
+  private static readonly ROOT_DELEGATE_MARKER = '# juno-code-managed: root-git-flow.v1';
+  private static readonly ROOT_DELEGATE = `#!/usr/bin/env bash
+# juno-code-managed: root-git-flow.v1
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "\${BASH_SOURCE[0]}")/.." && pwd -P)"
+exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
+`;
 
   /**
    * Get the templates scripts directory from the package
@@ -200,6 +210,39 @@ export class ScriptInstaller {
     }
   }
 
+  /** Install the root convenience delegate without overwriting unrelated project scripts. */
+  static async installRootGitFlowDelegate(
+    projectDir: string,
+    silent = true,
+  ): Promise<boolean> {
+    const destination = path.join(projectDir, 'scripts', 'git-flow.sh');
+    if (await fs.pathExists(destination)) {
+      const existing = await fs.readFile(destination, 'utf8');
+      if (!existing.includes(this.ROOT_DELEGATE_MARKER)) {
+        if (!silent) {
+          console.error(
+            '⚠ Preserved existing scripts/git-flow.sh because it is not Juno-managed.',
+          );
+        }
+        return false;
+      }
+      if (this.ROOT_DELEGATE === existing) return false;
+    }
+    await fs.ensureDir(path.dirname(destination));
+    await fs.writeFile(destination, this.ROOT_DELEGATE, { mode: 0o755 });
+    await fs.chmod(destination, 0o755);
+    if (!silent) console.log('✓ Installed managed delegate: scripts/git-flow.sh');
+    return true;
+  }
+
+  private static async rootDelegateNeedsUpdate(projectDir: string): Promise<boolean> {
+    const destination = path.join(projectDir, 'scripts', 'git-flow.sh');
+    if (!(await fs.pathExists(destination))) return true;
+    const existing = await fs.readFile(destination, 'utf8');
+    if (!existing.includes(this.ROOT_DELEGATE_MARKER)) return false;
+    return existing !== this.ROOT_DELEGATE;
+  }
+
   /**
    * Check which required scripts are missing from the project
    * @param projectDir - The project root directory
@@ -235,7 +278,8 @@ export class ScriptInstaller {
 
       const missing = await this.getMissingScripts(projectDir);
 
-      if (missing.length === 0) {
+      const delegateNeeded = await this.rootDelegateNeedsUpdate(projectDir);
+      if (missing.length === 0 && !delegateNeeded) {
         return false;
       }
 
@@ -251,7 +295,9 @@ export class ScriptInstaller {
         }
       }
 
-      let installedAny = false;
+      let installedAny = delegateNeeded
+        ? await this.installRootGitFlowDelegate(projectDir, silent)
+        : false;
       for (const script of scriptsToInstall) {
         const installed = await this.installScript(projectDir, script, silent);
         if (installed) {
@@ -425,7 +471,7 @@ export class ScriptInstaller {
       }
 
       const outdated = await this.getOutdatedScripts(projectDir);
-      return outdated.length > 0;
+      return outdated.length > 0 || (await this.rootDelegateNeedsUpdate(projectDir));
     } catch {
       return false;
     }
@@ -475,7 +521,8 @@ export class ScriptInstaller {
           }
         }
 
-        if (missing.length === 0 && outdated.length === 0) {
+        const delegateNeeded = await this.rootDelegateNeedsUpdate(projectDir);
+        if (missing.length === 0 && outdated.length === 0 && !delegateNeeded) {
           return false;
         }
 
@@ -495,9 +542,9 @@ export class ScriptInstaller {
         }
       }
 
-      if (scriptsToUpdate.length === 0) return false;
+      let updatedAny = await this.installRootGitFlowDelegate(projectDir, silent);
+      if (scriptsToUpdate.length === 0) return updatedAny;
 
-      let updatedAny = false;
       for (const script of scriptsToUpdate) {
         const installed = await this.installScript(projectDir, script, silent);
         if (installed) {
