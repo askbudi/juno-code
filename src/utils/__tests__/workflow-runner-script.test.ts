@@ -645,6 +645,9 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       [['PI_ADDITIONAL_ARGS=--model :luna', 'yy', 'pi', 'hidden'], 'inject additional args'],
       [['yy', 'pi', '--additional-args=--model :luna', 'hidden'], '--additional-args'],
       [['yy', '--config', 'other.json', 'pi', 'hidden'], 'alternate config'],
+      [['yy', 'pi', '-cother.json', 'hidden'], 'alternate config'],
+      [['yy', '-cother.json', 'pi', 'hidden'], 'alternate config'],
+      [['yy', 'pi', '-m:unapproved', 'hidden'], 'malformed model selector flag'],
     ] as Array<[string[], string]>) {
       const result = await lint(command);
       expect(result.status).not.toBe(0);

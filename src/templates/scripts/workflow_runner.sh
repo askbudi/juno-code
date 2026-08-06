@@ -963,6 +963,9 @@ def juno_subagent_name(command: Any) -> str | None:
         if part in {"-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file"}:
             idx += 2
             continue
+        if len(part) > 2 and part.startswith(("-m", "-c")):
+            idx += 1
+            continue
         if part.startswith("--subagent="):
             return part.split("=", 1)[1] or None
         return part if part in {"pi", "claude", "codex", "gemini", "cursor"} else None
@@ -1132,7 +1135,7 @@ def parse_pi_model_selection(command: Any, *, context: str) -> dict[str, Any]:
             break
         if part == "--additional-args" or part.startswith("--additional-args="):
             raise WorkflowError(f"{context} must not use --additional-args in a managed yy pi launch")
-        if part in {"-c", "--config"} or part.startswith(("--config=", "-c=")):
+        if part in {"-c", "--config"} or part.startswith("--config=") or (len(part) > 2 and part.startswith("-c")):
             raise WorkflowError(f"{context} must not select an alternate config")
 
     values: dict[str, list[str]] = {"provider": [], "model": []}
@@ -1152,7 +1155,7 @@ def parse_pi_model_selection(command: Any, *, context: str) -> dict[str, Any]:
             values["provider"].append(part.split("=", 1)[1])
         elif part.startswith("--model="):
             values["model"].append(part.split("=", 1)[1])
-        elif part.startswith("-m="):
+        elif len(part) > 2 and part.startswith("-m"):
             raise WorkflowError(f"{context} has malformed model selector flag {part}")
         index += 1
     if len(values["provider"]) > 1 or len(values["model"]) > 1:
