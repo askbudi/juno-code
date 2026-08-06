@@ -762,6 +762,14 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                       "priorReceipt": {"path": str(receipt_path), "sha256": file_sha(receipt_path)},
                       "refusal": "historical success no longer matches current controller readback"})
         stale_path = receipt_path.with_name(f"{operation_id}-stale-{digest_json(stale['priorReceipt'])[:12]}.json")
+        if stale_path.exists():
+            prior_stale = json.loads(stale_path.read_text(encoding="utf-8"))
+            if (prior_stale.get("outcome") == "stale_rebuild_required"
+                    and prior_stale.get("priorReceipt") == stale["priorReceipt"]
+                    and prior_stale.get("expectedControllerSha") == target_tip
+                    and prior_stale.get("integratedSha") == source_tip
+                    and prior_stale.get("policy", {}).get("digest") == policy_digest):
+                return {**prior_stale, "receiptPath": str(stale_path), "idempotent": True}
         atomic_write(stale_path, stale)
         return {**stale, "receiptPath": str(stale_path)}
     receipt = sync_receipt_base(ctl, policy, policy_path, source_ref, target_ref, source_tip, target_tip,

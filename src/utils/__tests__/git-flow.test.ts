@@ -126,6 +126,9 @@ describe('configured Git flow', () => {
     const staleReplay = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
     expect(staleReplay.status, staleReplay.stderr).toBe(0);
     expect(JSON.parse(staleReplay.stdout)).toMatchObject({ outcome: 'stale_rebuild_required', resumable: true });
+    const repeatedStale = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(repeatedStale.status, repeatedStale.stderr).toBe(0);
+    expect(JSON.parse(repeatedStale.stdout)).toMatchObject({ outcome: 'stale_rebuild_required', idempotent: true });
   });
 
   it('fast-forwards a stale detached checkout and publishes local integration commits', () => {
