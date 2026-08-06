@@ -502,9 +502,13 @@ def verify_nested_source(source: Path, target_tip: str, source_tip: str, integra
     return evidence
 
 
-def load_integration_receipt(path: Path, ctl: Path, source_ref: str, source_tip: str) -> dict[str, Any]:
-    try: value = json.loads(path.read_text(encoding="utf-8"))
+def load_integration_receipt(path: Path, ctl: Path, source_ref: str, source_tip: str,
+                             *, expected_sha256: str | None = None) -> tuple[dict[str, Any], str]:
+    try:
+        encoded = path.read_bytes(); observed_sha256 = hashlib.sha256(encoded).hexdigest(); value = json.loads(encoded)
     except (OSError, json.JSONDecodeError) as exc: raise FlowError(f"invalid integration receipt: {exc}") from exc
+    if expected_sha256 is not None and observed_sha256 != expected_sha256:
+        raise FlowError("resume source integration receipt digest mismatch")
     if value.get("schema_version") != "juno_local_integration.v3" or value.get("outcome") != "integrated" or value.get("passed") is not True:
         raise FlowError("exact successful juno_local_integration.v3 receipt required")
     matches = [item for item in value.get("repositories", []) if item.get("target_ref") == source_ref and item.get("candidate_sha") == source_tip]
@@ -513,7 +517,7 @@ def load_integration_receipt(path: Path, ctl: Path, source_ref: str, source_tip:
     if not any(item.get("target_ref") == source_ref and item.get("reviewed_tip") == source_tip for item in reviewed.values()):
         raise FlowError("integration receipt lacks exact actual-target readback")
     if common(Path(matches[0]["path"]).resolve()) != common(ctl): raise FlowError("integration receipt repository identity mismatch")
-    return value
+    return value, observed_sha256
 
 
 def process_evidence(ctl: Path) -> dict[str, Any]:
@@ -614,11 +618,41 @@ def cleanup_candidate(ctl: Path, candidate: Path, branch: str, expected: str, ta
     return lifecycle.cleanup(args)
 
 
-def validation(candidate: Path, policy: dict[str, Any], store: Path, operation_id: str) -> list[dict[str, Any]]:
+def candidate_identity(candidate: Path, expected_sha: str) -> dict[str, Any]:
+    try:
+        return {"head": resolve(candidate, "HEAD"), "expectedHead": expected_sha,
+                "clean": clean(candidate), "matches": resolve(candidate, "HEAD") == expected_sha and clean(candidate)}
+    except Exception as exc:
+        return {"head": None, "expectedHead": expected_sha, "clean": False, "matches": False, "error": str(exc)}
+
+
+def persist_then_cleanup(receipt_path: Path, receipt: dict[str, Any], ctl: Path, candidate: Path,
+                         branch: str, expected: str, target_ref: str, store: Path,
+                         operation_id: str) -> None:
+    cleanup_receipt = store / "candidates" / operation_id / "lifecycle-cleanup.json"
+    receipt["candidateCleanup"] = {"status": "pending", "receiptPath": str(cleanup_receipt)}
+    atomic_write(receipt_path, receipt, replace=receipt_path.exists())
+    try:
+        result = cleanup_candidate(ctl, candidate, branch, expected, target_ref, store, operation_id)
+        receipt["candidateCleanup"] = {"status": "completed", "passed": result.get("passed", True),
+                                       "receiptPath": str(cleanup_receipt), "refusals": result.get("refusals", [])}
+    except Exception as exc:
+        receipt["candidateCleanup"] = {"status": "refused_preserved", "passed": False,
+                                       "receiptPath": str(cleanup_receipt), "error": str(exc)}
+    atomic_write(receipt_path, receipt, replace=True)
+
+
+def validation(candidate: Path, expected_sha: str, policy: dict[str, Any], store: Path, operation_id: str) -> list[dict[str, Any]]:
     artifacts = store / "validation" / operation_id; artifacts.mkdir(parents=True, exist_ok=True)
     results = []
     sanitized = {key: value for key, value in os.environ.items() if key not in {"JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "GIT_INDEX_FILE"}}
     for index, command in enumerate(policy["controllerSync"]["validationCommands"]):
+        before = candidate_identity(candidate, expected_sha)
+        if not before["matches"]:
+            results.append({"commandSha256": hashlib.sha256(command.encode()).hexdigest(), "exitCode": 125,
+                            "timedOut": False, "identityBefore": before, "identityAfter": before,
+                            "identityDrift": True, "refusal": "candidate identity invalid before validation"})
+            break
         started = time.monotonic()
         try:
             result = subprocess.run(command, shell=True, cwd=candidate, text=True, capture_output=True,
@@ -631,11 +665,15 @@ def validation(candidate: Path, policy: dict[str, Any], store: Path, operation_i
             if isinstance(stderr, bytes): stderr = stderr.decode(errors="replace")
         out_path, err_path = artifacts / f"{index:03d}.stdout.txt", artifacts / f"{index:03d}.stderr.txt"
         out_path.write_text(stdout, encoding="utf-8"); err_path.write_text(stderr, encoding="utf-8")
-        item = {"commandSha256": hashlib.sha256(command.encode()).hexdigest(), "exitCode": exit_code,
-                "timedOut": timed_out, "durationSeconds": round(time.monotonic() - started, 6),
-                "stdoutSha256": file_sha(out_path), "stderrSha256": file_sha(err_path)}
+        after = candidate_identity(candidate, expected_sha); identity_drift = not after["matches"]
+        item = {"commandSha256": hashlib.sha256(command.encode()).hexdigest(),
+                "exitCode": 125 if identity_drift and exit_code == 0 else exit_code,
+                "commandExitCode": exit_code, "timedOut": timed_out,
+                "durationSeconds": round(time.monotonic() - started, 6),
+                "stdoutSha256": file_sha(out_path), "stderrSha256": file_sha(err_path),
+                "identityBefore": before, "identityAfter": after, "identityDrift": identity_drift}
         results.append(item)
-        if exit_code: break
+        if item["exitCode"]: break
     return results
 
 
@@ -678,6 +716,7 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                 "planOnly": True, "processEvidence": process, "wouldMutate": False}
     integration_receipt: Path
     resume_path: Path | None = None
+    expected_integration_sha: str | None = None
     if args.resume:
         resume_path = args.resume.expanduser().resolve()
         try: prior = json.loads(resume_path.read_text(encoding="utf-8"))
@@ -687,12 +726,16 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
         if prior.get("projectId") != policy["projectId"] or prior.get("controllerRef") != target_ref or prior.get("integrationRef") != source_ref:
             raise FlowError("resume receipt channel identity mismatch")
         integration_receipt = Path(prior["sourceIntegrationReceipt"]["path"])
+        expected_integration_sha = prior["sourceIntegrationReceipt"].get("sha256")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(expected_integration_sha or "")):
+            raise FlowError("resume receipt has invalid source integration receipt digest")
     elif args.integration_receipt:
         integration_receipt = args.integration_receipt.expanduser().resolve()
     else:
         raise FlowError("controller-sync mutation requires --integration-receipt or --resume")
-    integration_value = load_integration_receipt(integration_receipt, ctl, source_ref, source_tip)
-    receipt_hash = file_sha(integration_receipt); policy_digest = digest_json(policy)
+    integration_value, receipt_hash = load_integration_receipt(
+        integration_receipt, ctl, source_ref, source_tip, expected_sha256=expected_integration_sha)
+    policy_digest = digest_json(policy)
     resume_hash = "" if resume_path is None else file_sha(resume_path)
     operation_id = hashlib.sha256(f"{receipt_hash}\0{target_tip}\0{source_tip}\0{policy_digest}\0{resume_hash}".encode()).hexdigest()[:24]
     store = project_store(ctl, policy); receipt_path = store / "receipts" / f"{operation_id}.json"
@@ -726,6 +769,10 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                 atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
             target_tip = resolve(ctl, target_ref); receipt["expectedControllerSha"] = target_tip; receipt["parents"] = [target_tip, source_tip]
             receipt["mergeBase"] = git(ctl, "merge-base", target_tip, source_tip); receipt["cas"]["before"] = target_tip
+        if file_sha(integration_receipt) != receipt_hash:
+            receipt.update({"outcome": "stale_rebuild_required", "resumable": True,
+                            "refusal": "source integration receipt changed before candidate construction"})
+            atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
         if attached(source) or not clean(source) or resolve(source, "HEAD") != source_tip:
             receipt.update({"outcome": "failed_preserved", "resumable": False, "refusal": "integration checkout is not exact, clean, and detached"})
             atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
@@ -741,22 +788,33 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
             atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
         if built["outcome"] == "pending_conflict":
             receipt.update(built); receipt["resumable"] = True
-            cleanup_candidate(ctl, candidate, branch, target_tip, target_ref, store, operation_id)
-            atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
+            persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, target_tip, target_ref, store, operation_id)
+            return {**receipt, "receiptPath": str(receipt_path)}
         receipt.update({"candidateSha": candidate_head, "candidateTree": built["tree"], "changedPaths": built["changedPaths"]})
         pending_ref = f"refs/juno/controller-sync/pending/{policy['projectId']}/{operation_id}"
         git(ctl, "update-ref", pending_ref, candidate_head)
-        results = validation(candidate, policy, store, operation_id); receipt["validation"] = results
-        failed = any(item["exitCode"] for item in results)
+        results = validation(candidate, candidate_head, policy, store, operation_id); receipt["validation"] = results
+        receipt["candidateIdentityAfterValidation"] = candidate_identity(candidate, candidate_head)
+        failed = any(item["exitCode"] for item in results) or not receipt["candidateIdentityAfterValidation"]["matches"]
         if failed:
             receipt.update({"outcome": "pending_validation_failure", "resumable": True, "pendingRef": pending_ref})
-            cleanup_candidate(ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
-            atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
+            persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
+            return {**receipt, "receiptPath": str(receipt_path)}
         process = process_evidence(ctl); receipt["processEvidence"] = process
         if process.get("blocking") or attached(ctl) != target_ref or not clean(ctl) or resolve(ctl, "HEAD") != target_tip:
             receipt.update({"outcome": "validated_pending", "resumable": True, "pendingRef": pending_ref})
-            cleanup_candidate(ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
-            atomic_write(receipt_path, receipt, replace=receipt_path.exists()); return {**receipt, "receiptPath": str(receipt_path)}
+            persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
+            return {**receipt, "receiptPath": str(receipt_path)}
+        if not candidate_identity(candidate, candidate_head)["matches"]:
+            receipt.update({"outcome": "pending_validation_failure", "resumable": True,
+                            "pendingRef": pending_ref, "refusal": "candidate identity changed after validation"})
+            persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
+            return {**receipt, "receiptPath": str(receipt_path)}
+        if file_sha(integration_receipt) != receipt_hash:
+            receipt.update({"outcome": "stale_rebuild_required", "resumable": True,
+                            "pendingRef": pending_ref, "refusal": "source integration receipt changed before CAS"})
+            persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, pending_ref, store, operation_id)
+            return {**receipt, "receiptPath": str(receipt_path)}
         import integration_owner_preflight as authority
         authority_item = {"path": ctl, "target_ref": target_ref}; lock_path = authority.lock_file(authority_item); lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as channel_lock:
@@ -772,8 +830,10 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                     receipt["cas"]["attempted"] = True
                     update = authority.run(ctl, "update-ref", target_ref, candidate_head, target_tip, check=False)
                     if update.returncode:
-                        git(ctl, "symbolic-ref", "HEAD", target_ref, check=False)
-                        receipt.update({"outcome": "stale_rebuild_required", "resumable": True, "pendingRef": pending_ref})
+                        restored = run(["git", "-C", str(ctl), "switch", short_ref(target_ref)], ctl, False)
+                        receipt.update({"outcome": "stale_rebuild_required", "resumable": True, "pendingRef": pending_ref,
+                                        "checkoutRestoration": {"status": "restored_current_target" if restored.returncode == 0 else "detached_preserved",
+                                                                "exitCode": restored.returncode}})
                     else:
                         restored = run(["git", "-C", str(ctl), "switch", short_ref(target_ref)], ctl, False)
                         if restored.returncode:
@@ -784,9 +844,9 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                         else:
                             receipt["cas"]["after"] = resolve(ctl, target_ref); receipt.update({"outcome": "synced_local", "resumable": False})
         cleanup_target = target_ref if receipt["outcome"] == "synced_local" else pending_ref
-        cleanup_candidate(ctl, candidate, branch, candidate_head, cleanup_target, store, operation_id)
+        persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, cleanup_target, store, operation_id)
         if receipt["outcome"] == "synced_local": git(ctl, "update-ref", "-d", pending_ref, candidate_head)
-        atomic_write(receipt_path, receipt, replace=receipt_path.exists())
+        atomic_write(receipt_path, receipt, replace=True)
         return {**receipt, "receiptPath": str(receipt_path)}
 
 

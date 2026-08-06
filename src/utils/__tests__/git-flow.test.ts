@@ -308,7 +308,7 @@ describe('configured Git flow', () => {
   });
 
   it('retains a validated candidate and receipt when configured validation fails', () => {
-    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync', '--validation-command', 'exit 7'], controller, env()).status).toBe(0);
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync', '--validation-command', 'printf drift > validation-drift.txt'], controller, env()).status).toBe(0);
     commit(controller, 'configure flow');
     const before = git(controller, 'rev-parse', 'refs/heads/controller');
     const receipt = integrationReceipt(sandbox, controller, integration);
@@ -316,9 +316,18 @@ describe('configured Git flow', () => {
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
     expect(value).toMatchObject({ outcome: 'pending_validation_failure', resumable: true, integrationRemainsSuccessful: true });
-    expect(value.validation[0].exitCode).toBe(7);
+    expect(value.validation[0]).toMatchObject({ commandExitCode: 0, exitCode: 125, identityDrift: true });
+    expect(value.candidateCleanup.status).toBe('refused_preserved');
+    expect(fs.pathExistsSync(value.receiptPath)).toBe(true);
     expect(git(controller, 'rev-parse', value.pendingRef)).toBe(value.candidateSha);
     expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(before);
+
+    const originalIntegrationReceipt = fs.readFileSync(receipt, 'utf8');
+    fs.writeFileSync(receipt, originalIntegrationReceipt + ' ');
+    const tamperedResume = run('python3', [engine, 'controller-sync', '--resume', value.receiptPath, '--json'], controller, env());
+    expect(tamperedResume.status).toBe(2);
+    expect(tamperedResume.stderr).toContain('digest mismatch');
+    fs.writeFileSync(receipt, originalIntegrationReceipt);
 
     const policyPath = path.join(controller, '.juno_task/config/git-flow.json');
     const policy = fs.readJsonSync(policyPath);
