@@ -1001,6 +1001,13 @@ def effective_command_argv(command: Any) -> list[str]:
                 except ValueError:
                     return []
                 break
+            if part.startswith("--split-string=") or (part.startswith("-S") and part != "-S"):
+                value = part.split("=", 1)[1] if part.startswith("--") else part[2:]
+                try:
+                    parts = shlex.split(value, posix=True) + parts[index + 1:]
+                except ValueError:
+                    return []
+                break
             if part.startswith("-"):
                 return []
             parts = parts[index:]
@@ -1058,6 +1065,13 @@ def command_environment_assignments(command: Any) -> list[str]:
             if part in {"-S", "--split-string"} and index + 1 < len(parts):
                 try:
                     parts = shlex.split(parts[index + 1], posix=True) + parts[index + 2:]
+                except ValueError:
+                    return assignments
+                break
+            if part.startswith("--split-string=") or (part.startswith("-S") and part != "-S"):
+                value = part.split("=", 1)[1] if part.startswith("--") else part[2:]
+                try:
+                    parts = shlex.split(value, posix=True) + parts[index + 1:]
                 except ValueError:
                     return assignments
                 break
