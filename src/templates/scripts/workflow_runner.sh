@@ -827,7 +827,7 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
             candidate_noop = review_step_id == review_steps[1] and review_argv == ["true"]
             if not candidate_noop and not is_canonical_yy_pi_command(review_step.get("command")):
                 raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
-            if not candidate_noop and any(token in {"--resume", "--continue", "continue", "cc"} for token in review_argv):
+            if not candidate_noop and has_resume_or_continue(review_step.get("command")):
                 raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
             if review_step_id == review_steps[1] and not candidate_noop:
                 identity = review_step.get("candidate_read_only")
@@ -844,6 +844,8 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
             if not is_canonical_yy_pi_command(actual_command):
                 raise WorkflowError("actual_target_review must launch through yy pi")
             validate_pi_launch_policy(actual_step, context="actual_target_review", policy=policy)
+            if has_resume_or_continue(actual_command):
+                raise WorkflowError("actual_target_review must use a fresh session without resume/continue")
         if str(validation_ownership["actual_target_review"]) != integration_step:
             raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
         integration_receipts = [
@@ -1058,6 +1060,16 @@ def is_bare_pi_command(command: Any) -> bool:
 def is_canonical_yy_pi_command(command: Any) -> bool:
     parts = effective_command_argv(command)
     return bool(parts) and Path(parts[0]).name == "yy" and juno_subagent_name(parts) == "pi"
+
+
+def has_resume_or_continue(command: Any) -> bool:
+    parts = effective_command_argv(command)
+    return any(
+        token in {"--resume", "--continue", "continue", "cc", "-r"}
+        or token.startswith(("--resume=", "--continue="))
+        or (len(token) > 2 and token.startswith("-r"))
+        for token in parts
+    )
 
 
 MODEL_PROVIDER_ENV_RE = re.compile(r"(?:^|_)(?:MODEL|PROVIDER)$", re.I)

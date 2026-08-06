@@ -560,6 +560,11 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const claimedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(claimedActualOverride.status).not.toBe(0);
     delete workflow.steps[2].provider_model_override_authorization;
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi --continue review old-session';
+    await fs.writeJson(workflowPath, workflow);
+    const continuedActualReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(continuedActualReview.status).not.toBe(0);
+    expect(continuedActualReview.stderr).toMatch(/actual_target_review must use a fresh session/);
     workflow.steps[2].command[actualReviewIndex] = 'yy pi review';
 
     workflow.steps[0].command = ['yy', 'pi', '--resume', 'old-session', 'Review again.'];
