@@ -1063,13 +1063,16 @@ def is_canonical_yy_pi_command(command: Any) -> bool:
 
 
 def has_resume_or_continue(command: Any) -> bool:
-    parts = effective_command_argv(command)
-    return any(
-        token in {"--resume", "--continue", "continue", "cc", "-r"}
-        or token.startswith(("--resume=", "--continue="))
-        or (len(token) > 2 and token.startswith("-r"))
-        for token in parts
-    )
+    for token in effective_command_argv(command):
+        if token == "--":
+            return False
+        if (
+            token in {"--resume", "--continue", "continue", "cc", "-r"}
+            or token.startswith(("--resume=", "--continue="))
+            or (len(token) > 2 and token.startswith("-r"))
+        ):
+            return True
+    return False
 
 
 MODEL_PROVIDER_ENV_RE = re.compile(r"(?:^|_)(?:MODEL|PROVIDER)$", re.I)

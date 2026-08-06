@@ -565,6 +565,11 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const continuedActualReview = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(continuedActualReview.status).not.toBe(0);
     expect(continuedActualReview.stderr).toMatch(/actual_target_review must use a fresh session/);
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi -rold-session review';
+    await fs.writeJson(workflowPath, workflow);
+    const compactResumedActualReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(compactResumedActualReview.status).not.toBe(0);
+    expect(compactResumedActualReview.stderr).toMatch(/actual_target_review must use a fresh session/);
     workflow.steps[2].command[actualReviewIndex] = 'yy pi review';
 
     workflow.steps[0].command = ['yy', 'pi', '--resume', 'old-session', 'Review again.'];
@@ -573,6 +578,23 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(resumedReview.status).not.toBe(0);
     expect(resumedReview.stderr).toMatch(/fresh session without resume/);
     workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
+    workflow.steps[1].command = ['yy', 'pi', '--resume=old-session', 'Review again.'];
+    workflow.steps[1].candidate_read_only = { path: '{{ candidate_path }}', sha: '{{ candidate_sha }}' };
+    await fs.writeJson(workflowPath, workflow);
+    const equalResumedCandidateReview = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(equalResumedCandidateReview.status).not.toBe(0);
+    expect(equalResumedCandidateReview.stderr).toMatch(/fresh session without resume/);
+
+    workflow.steps[0].command = ['yy', 'pi', '--', '--resume is prompt text'];
+    workflow.steps[1].command = ['yy', 'pi', '--', '--continue is prompt text'];
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi -- "cc and -rold are prompt text"';
+    await fs.writeJson(workflowPath, workflow);
+    const delimitedPromptReviews = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(delimitedPromptReviews.status, delimitedPromptReviews.stderr).toBe(0);
+    workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
+    workflow.steps[1].command = 'true';
+    delete workflow.steps[1].candidate_read_only;
+    workflow.steps[2].command[actualReviewIndex] = 'yy pi review';
 
     workflow.steps[2].command =
       'python3 .juno_task/scripts/integration_owner_preflight.py --checkpoint-controller --exec-command integrate.sh';

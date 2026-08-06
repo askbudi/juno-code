@@ -237,12 +237,16 @@ def child_session(stdout:str,stderr:str,capture:dict[str,Any])->str|None:
   match=SESSION_SUMMARY_RE.search(text)
   if match:return match.group(1)
  return None
+def has_resume_or_continue(tokens:list[str])->bool:
+ for token in tokens:
+  if token=="--":return False
+  if token in {"--resume","--continue","continue","cc","-r"} or token.startswith(("--resume=","--continue=")) or (len(token)>2 and token.startswith("-r")):return True
+ return False
 def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float,child_root:Path|None=None)->dict[str,Any]:
  try:tokens=shlex.split(command)
  except ValueError as exc:raise IntegrationError(f"actual_target_review command is not parseable: {exc}") from exc
  if len(tokens)<2 or Path(tokens[0]).name not in {"yy","juno-code","ypl"} or tokens[1]!="pi":raise IntegrationError("actual_target_review must be a declared yy/juno-code/ypl pi execution")
- forbidden={"--resume","--continue","continue","cc"}
- if any(token in forbidden for token in tokens):raise IntegrationError("actual_target_review must use a fresh session without resume/continue")
+ if has_resume_or_continue(tokens):raise IntegrationError("actual_target_review must use a fresh session without resume/continue")
  child_root_text=os.environ.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","").strip()
  child_root=child_root.resolve() if child_root else Path(child_root_text).resolve() if child_root_text else None
  staging=None

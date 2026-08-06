@@ -10,6 +10,12 @@ const candidate = path.resolve(process.cwd(), 'src/templates/scripts/integration
 describe('target-ref integration channel', () => {
   it('is compilable and exposes only receipt-gated CAS integration controls', async () => {
     execFileSync('python3', ['-m', 'py_compile', helper]);
+    const detectorResults = JSON.parse(execFileSync('python3', [
+      '-c',
+      'import json,runpy,sys; f=runpy.run_path(sys.argv[1])["has_resume_or_continue"]; print(json.dumps([f(v) for v in [["yy","pi","--resume","old"],["yy","pi","--resume=old"],["yy","pi","-rold"],["yy","pi","--continue"],["yy","pi","--","--resume","cc","-rold"]]]))',
+      helper,
+    ], { encoding: 'utf8' }));
+    expect(detectorResults).toEqual([true, true, true, true, false]);
     const source = await fs.readFile(helper, 'utf8');
     expect(source).toContain('git_common_dir');
     expect(source).toContain('update-ref');
