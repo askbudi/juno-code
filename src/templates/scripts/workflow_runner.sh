@@ -947,27 +947,52 @@ def juno_subagent_name(command: Any) -> str | None:
         return "pi"
     if executable not in {"juno-code", "yy"}:
         return None
+    boolean_options = {
+        "--quiet", "--silent", "-q", "--live", "--no-color", "--enable-feedback",
+        "--continue", "--til-completion", "--until-completion", "--run-until-completion",
+        "--till-complete", "--no-stale-check", "--force-update", "--no-hooks", "--no-hook",
+    }
+    value_options = {
+        "-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file",
+        "--log-level", "--agents", "--mcp-timeout", "--stale-threshold",
+        "--on-hourly-limit", "--thinking",
+    }
+    variadic_options = {"--tools", "--allowed-tools", "--disallowed-tools", "--append-allowed-tools", "--pre-run-hook"}
     idx = 1
     while idx < len(parts):
         part = parts[idx]
-        if part in {"--quiet", "--silent", "-q", "--verbose", "-v", "--live"}:
+        if part in boolean_options:
             idx += 1
-            if part in {"--verbose", "-v"} and idx < len(parts) and not parts[idx].startswith("-"):
+            continue
+        if part in {"--verbose", "-v"}:
+            idx += 1
+            if idx < len(parts) and not parts[idx].startswith("-"):
                 idx += 1
             continue
         if part.startswith("--verbose="):
             idx += 1
             continue
-        if part in {"-s", "--subagent"}:
-            return parts[idx + 1] if idx + 1 < len(parts) and parts[idx + 1] else None
-        if part in {"-b", "--backend", "-m", "--model", "-c", "--config", "-l", "--log-file"}:
-            idx += 2
+        if part in variadic_options:
+            idx += 1
+            while idx < len(parts) and not parts[idx].startswith("-"):
+                idx += 1
             continue
-        if len(part) > 2 and part.startswith(("-m", "-c")):
+        if any(part.startswith(f"{option}=") for option in variadic_options):
             idx += 1
             continue
+        if part in {"-s", "--subagent"}:
+            return parts[idx + 1] if idx + 1 < len(parts) and parts[idx + 1] else None
         if part.startswith("--subagent="):
             return part.split("=", 1)[1] or None
+        if part in value_options:
+            idx += 2
+            continue
+        if any(part.startswith(f"{option}=") for option in value_options if option.startswith("--")):
+            idx += 1
+            continue
+        if len(part) > 2 and part.startswith(("-b", "-m", "-c", "-l")):
+            idx += 1
+            continue
         return part if part in {"pi", "claude", "codex", "gemini", "cursor"} else None
     return None
 

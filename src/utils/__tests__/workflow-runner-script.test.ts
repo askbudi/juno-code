@@ -649,8 +649,14 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       [['yy', '--config', 'other.json', 'pi', 'hidden'], 'alternate config'],
       [['yy', 'pi', '-cother.json', 'hidden'], 'alternate config'],
       [['yy', '-cother.json', 'pi', 'hidden'], 'alternate config'],
+      [['yy', '--config=other.json', 'pi', 'hidden'], 'alternate config'],
       [['yy', 'pi', '-m:unapproved', 'hidden'], 'malformed model selector flag'],
       [['yy', '-m:unapproved', 'pi', 'hidden'], 'malformed model selector flag'],
+      [['yy', '--model=:unapproved', 'pi', 'hidden'], 'not exactly allowlisted'],
+      [['yy', '--no-color', '--model', ':unapproved', 'pi', 'hidden'], 'not exactly allowlisted'],
+      [['yy', '--log-level', 'debug', '--model', ':unapproved', 'pi', 'hidden'], 'not exactly allowlisted'],
+      [['yy', '-lworkflow.log', '--model', ':unapproved', 'pi', 'hidden'], 'not exactly allowlisted'],
+      [['yy', '--force-update', '--model', ':unapproved', 'pi', 'hidden'], 'not exactly allowlisted'],
     ] as Array<[string[], string]>) {
       const result = await lint(command);
       expect(result.status).not.toBe(0);
