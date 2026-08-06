@@ -1192,7 +1192,10 @@ def validate_pi_launch_policy(
     command = step.get("command")
     raw_parts = command_argv(command)
     effective_parts = effective_command_argv(command)
-    if raw_parts and Path(raw_parts[0]).name == "env" and not effective_parts:
+    raw_prefix = list(raw_parts)
+    while raw_prefix and ENV_ASSIGNMENT_RE.fullmatch(raw_prefix[0]):
+        raw_prefix.pop(0)
+    if raw_prefix and Path(raw_prefix[0]).name == "env" and not effective_parts:
         raise WorkflowError(f"{context} uses an unsupported env wrapper; launch directly through yy pi")
     direct = direct_agent_executable(command)
     if direct == "pi":

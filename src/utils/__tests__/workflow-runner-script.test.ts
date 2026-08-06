@@ -640,6 +640,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       [['env', 'env', 'PI_PROVIDER=openai', 'yy', 'pi', 'hidden'], 'environment assignment PI_PROVIDER'],
       [['X=1', 'env', 'env', 'env', 'env', 'yy', 'pi', '--model', ':unapproved', 'hidden'], 'not exactly allowlisted'],
       [['X=1', 'env', 'env', 'env', 'env', 'env', 'PI_MODEL=:luna', 'yy', 'pi', 'hidden'], 'environment assignment PI_MODEL'],
+      [['X=1', 'env', '-v', 'yy', 'pi', '--model', ':unapproved', 'hidden'], 'unsupported env wrapper'],
       [['X=1', 'env', '-Syy pi --model :unapproved hidden'], 'not exactly allowlisted'],
       [['X=1', 'env', '--split-string=PI_MODEL=:luna yy pi hidden'], 'environment assignment PI_MODEL'],
       [['JUNO_CODE_CONFIG=other.json', 'yy', 'pi', 'hidden'], 'alternate config through environment assignment'],
