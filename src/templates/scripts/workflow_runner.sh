@@ -1031,14 +1031,17 @@ MODEL_PROVIDER_ENV_RE = re.compile(r"(?:^|_)(?:MODEL|PROVIDER)$", re.I)
 def command_environment_assignments(command: Any) -> list[str]:
     parts = command_argv(command)
     assignments: list[str] = []
-    index = 0
-    while index < len(parts) and ENV_ASSIGNMENT_RE.fullmatch(parts[index]):
-        assignments.append(parts[index])
-        index += 1
-    if index < len(parts) and Path(parts[index]).name == "env":
-        index += 1
+    for _ in range(4):
+        while parts and ENV_ASSIGNMENT_RE.fullmatch(parts[0]):
+            assignments.append(parts.pop(0))
+        if not parts or Path(parts[0]).name != "env":
+            return assignments
+        index = 1
         while index < len(parts):
             part = parts[index]
+            if part == "--":
+                parts = parts[index + 1:]
+                break
             if ENV_ASSIGNMENT_RE.fullmatch(part):
                 assignments.append(part)
                 index += 1
@@ -1052,7 +1055,18 @@ def command_environment_assignments(command: Any) -> list[str]:
             if part.startswith(("--unset=", "--chdir=")):
                 index += 1
                 continue
+            if part in {"-S", "--split-string"} and index + 1 < len(parts):
+                try:
+                    parts = shlex.split(parts[index + 1], posix=True) + parts[index + 2:]
+                except ValueError:
+                    return assignments
+                break
+            if part.startswith("-"):
+                return assignments
+            parts = parts[index:]
             break
+        else:
+            return assignments
     return assignments
 
 
