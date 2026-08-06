@@ -665,7 +665,7 @@ def safe_id(value: Any, fallback: str) -> str:
     return text or fallback
 
 
-def validate_workflow(workflow: dict[str, Any]) -> None:
+def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = None) -> None:
     workflow_schema = str(workflow.get("schema_version") or "").strip()
     if workflow_schema and workflow_schema not in {"1", "1.0", "v1", "2", "2.0", "v2"}:
         raise WorkflowError(f"unsupported schema_version: {workflow['schema_version']}")
@@ -713,9 +713,9 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
     for step in steps:
-        validate_pi_launch_policy(step, context=f"step {step['id']}")
+        validate_pi_launch_policy(step, context=f"step {step['id']}", policy=policy)
     if summary_has_command:
-        validate_pi_launch_policy(summary, context="summary")
+        validate_pi_launch_policy(summary, context="summary", policy=policy)
 
     receipts = normalize_receipt_contracts(workflow)
     for receipt_id, contract in receipts.items():
@@ -781,14 +781,14 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         missing_roles = sorted(required_roles - set(validation_ownership or {}))
         if missing_roles:
             raise WorkflowError(f"local_integration validation_ownership missing roles: {', '.join(missing_roles)}")
-        policy = workflow.get("integration_policy")
+        integration_policy = workflow.get("integration_policy")
         allowed_policy = {
             "queue": "automatic_after_review_pass",
             "channel_scope": "git_common_dir_and_target_ref",
             "target_movement": "rebuild_and_rereview",
             "checked_out_target": "detach_same_sha",
         }
-        if policy != allowed_policy:
+        if integration_policy != allowed_policy:
             raise WorkflowError(
                 "local_integration integration_policy must exactly select automatic_after_review_pass, "
                 "git_common_dir_and_target_ref, rebuild_and_rereview, and detach_same_sha"
@@ -843,7 +843,7 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
             actual_step = {"command": actual_command}
             if not is_canonical_yy_pi_command(actual_command):
                 raise WorkflowError("actual_target_review must launch through yy pi")
-            validate_pi_launch_policy(actual_step, context="actual_target_review")
+            validate_pi_launch_policy(actual_step, context="actual_target_review", policy=policy)
         if str(validation_ownership["actual_target_review"]) != integration_step:
             raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
         integration_receipts = [
@@ -976,6 +976,8 @@ ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
 def effective_command_argv(command: Any) -> list[str]:
     parts = command_argv(command)
     for _ in range(4):
+        while parts and ENV_ASSIGNMENT_RE.fullmatch(parts[0]):
+            parts = parts[1:]
         if not parts or Path(parts[0]).name != "env":
             return parts
         index = 1
@@ -1023,15 +1025,139 @@ def is_canonical_yy_pi_command(command: Any) -> bool:
     return bool(parts) and Path(parts[0]).name == "yy" and juno_subagent_name(parts) == "pi"
 
 
-def pi_provider_model_override_tokens(command: Any) -> list[str]:
+MODEL_PROVIDER_ENV_RE = re.compile(r"(?:^|_)(?:MODEL|PROVIDER)$", re.I)
+
+
+def command_environment_assignments(command: Any) -> list[str]:
+    parts = command_argv(command)
+    assignments: list[str] = []
+    index = 0
+    while index < len(parts) and ENV_ASSIGNMENT_RE.fullmatch(parts[index]):
+        assignments.append(parts[index])
+        index += 1
+    if index < len(parts) and Path(parts[index]).name == "env":
+        index += 1
+        while index < len(parts):
+            part = parts[index]
+            if ENV_ASSIGNMENT_RE.fullmatch(part):
+                assignments.append(part)
+                index += 1
+                continue
+            if part in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if part in {"-u", "--unset", "-P", "-C", "--chdir"}:
+                index += 2
+                continue
+            if part.startswith(("--unset=", "--chdir=")):
+                index += 1
+                continue
+            break
+    return assignments
+
+
+def load_workflow_model_policy(project_root: Path) -> dict[str, Any]:
+    config_path = (project_root / ".juno_task" / "config.json").resolve()
+    if not config_path.is_file():
+        allowlist: list[str] = []
+        config_sha256: str | None = None
+    else:
+        raw = config_path.read_bytes()
+        config_sha256 = sha256_bytes(raw)
+        try:
+            config = json.loads(raw)
+        except Exception as error:
+            raise WorkflowError(f"workflow model policy config is invalid JSON: {config_path}") from error
+        if not isinstance(config, dict):
+            raise WorkflowError(f"workflow model policy config must be a JSON object: {config_path}")
+        value = config.get("workflowModels", [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise WorkflowError("project config workflowModels must be an array of strings")
+        allowlist = list(value)
+        if any(not item or item != item.strip() for item in allowlist):
+            raise WorkflowError("project config workflowModels entries must be non-empty and already trimmed")
+        if len(set(allowlist)) != len(allowlist):
+            raise WorkflowError("project config workflowModels entries must be unique")
+    return {
+        "config_path": str(config_path),
+        "config_sha256": config_sha256,
+        "workflow_models": allowlist,
+        "workflow_models_sha256": canonical_sha256(allowlist),
+    }
+
+
+def parse_pi_model_selection(command: Any, *, context: str) -> dict[str, Any]:
     parts = effective_command_argv(command)
-    return [
-        part for part in parts
-        if part in {"--provider", "-m", "--model"} or part.startswith(("--provider=", "--model="))
-    ]
+    assignments = command_environment_assignments(command)
+    assignment_names = [item.split("=", 1)[0] for item in assignments]
+    hidden = [name for name in assignment_names if MODEL_PROVIDER_ENV_RE.search(name)]
+    if hidden:
+        raise WorkflowError(f"{context} must not select model/provider through environment assignment {hidden[0]}")
+    alternate_config = [name for name in assignment_names if re.search(r"(?:^|_)CONFIG(?:_FILE|_PATH)?$", name, re.I)]
+    if alternate_config:
+        raise WorkflowError(f"{context} must not select an alternate config through environment assignment {alternate_config[0]}")
+    hidden_args = [name for name in assignment_names if "ADDITIONAL_ARGS" in name.upper()]
+    if hidden_args:
+        raise WorkflowError(f"{context} must not inject additional args through environment assignment {hidden_args[0]}")
+    for part in parts:
+        if part == "--":
+            break
+        if part == "--additional-args" or part.startswith("--additional-args="):
+            raise WorkflowError(f"{context} must not use --additional-args in a managed yy pi launch")
+        if part in {"-c", "--config"} or part.startswith(("--config=", "-c=")):
+            raise WorkflowError(f"{context} must not select an alternate config")
+
+    values: dict[str, list[str]] = {"provider": [], "model": []}
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part == "--":
+            break
+        kind = "provider" if part == "--provider" else "model" if part in {"-m", "--model"} else ""
+        if kind:
+            if index + 1 >= len(parts) or not parts[index + 1] or parts[index + 1].startswith("-"):
+                raise WorkflowError(f"{context} has a missing value for {part}")
+            values[kind].append(parts[index + 1])
+            index += 2
+            continue
+        if part.startswith("--provider="):
+            values["provider"].append(part.split("=", 1)[1])
+        elif part.startswith("--model="):
+            values["model"].append(part.split("=", 1)[1])
+        elif part.startswith("-m="):
+            raise WorkflowError(f"{context} has malformed model selector flag {part}")
+        index += 1
+    if len(values["provider"]) > 1 or len(values["model"]) > 1:
+        raise WorkflowError(f"{context} has duplicate model/provider selector arguments")
+    provider = values["provider"][0] if values["provider"] else None
+    model = values["model"][0] if values["model"] else None
+    for kind, value in (("provider", provider), ("model", model)):
+        if value is not None and (not value or value != value.strip() or any(ch.isspace() for ch in value)):
+            raise WorkflowError(f"{context} has malformed {kind} selector")
+    if provider is not None and (provider.startswith(":") or "/" in provider):
+        raise WorkflowError(f"{context} has malformed provider selector")
+    if model == ":":
+        raise WorkflowError(f"{context} has malformed model selector")
+    if provider and not model:
+        raise WorkflowError(f"{context} explicit --provider requires explicit --model")
+    if provider and model and (model.startswith(":") or "/" in model):
+        raise WorkflowError(f"{context} provider plus shorthand or qualified model is ambiguous")
+    if model and "/" in model:
+        provider_part, separator, model_part = model.partition("/")
+        if not separator or not provider_part or not model_part or "/" in model_part:
+            raise WorkflowError(f"{context} has malformed model selector")
+    normalized = f"{provider}/{model}" if provider and model else model
+    return {
+        "explicit": normalized is not None,
+        "provider": provider,
+        "model": model,
+        "normalized_selector": normalized,
+    }
 
 
-def validate_pi_launch_policy(step: dict[str, Any], *, context: str) -> None:
+def validate_pi_launch_policy(
+    step: dict[str, Any], *, context: str, policy: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     command = step.get("command")
     raw_parts = command_argv(command)
     effective_parts = effective_command_argv(command)
@@ -1042,11 +1168,16 @@ def validate_pi_launch_policy(step: dict[str, Any], *, context: str) -> None:
         raise WorkflowError(f"{context} must launch through yy pi, not bare pi")
     if direct:
         raise WorkflowError(f"{context} must launch through yy pi, not direct agent CLI {direct}")
-    overrides = pi_provider_model_override_tokens(command) if is_canonical_yy_pi_command(command) else []
-    if overrides:
-        raise WorkflowError(
-            f"{context} must inherit the project provider/model; explicit override {overrides[0]} is forbidden"
-        )
+    if not is_canonical_yy_pi_command(command):
+        return None
+    selection = parse_pi_model_selection(command, context=context)
+    if selection["explicit"]:
+        allowed = (policy or {}).get("workflow_models", [])
+        if selection["normalized_selector"] not in allowed:
+            raise WorkflowError(
+                f"{context} explicit selector {selection['normalized_selector']!r} is not exactly allowlisted by workflowModels"
+            )
+    return selection
 
 
 def extract_model_from_command(command: Any) -> str | None:
@@ -1952,6 +2083,7 @@ def maybe_run_summary_command(
     out_dir: Path,
     dry_run: bool,
     live_log_path: Path | None = None,
+    model_policy: dict[str, Any] | None = None,
 ) -> tuple[str, str, int, Any | None, dict[str, Any] | None]:
     explicit = workflow.get("summary")
     if not isinstance(explicit, dict) or "command" not in explicit:
@@ -1959,6 +2091,9 @@ def maybe_run_summary_command(
         write_text(out_dir / "summary.stderr.txt", "")
         return "", "", 0, None, None
     command = render(explicit["command"], context)
+    model_selection = validate_pi_launch_policy(
+        {"command": command}, context="summary", policy=model_policy
+    )
     write_text(out_dir / "summary.command.sh", command_preview(command) + "\n")
     is_juno_command = detect_juno_command(command)
     capture_enabled = bool(explicit.get("capture_session", explicit.get("capture", is_juno_command)))
@@ -1996,6 +2131,7 @@ def maybe_run_summary_command(
             "capture_json_path": str(capture_path) if capture_enabled else "",
             "capture_result": "",
             "session_id": "",
+            "workflow_model_selection": model_selection,
         }
         if capture_enabled:
             apply_agent_session_capture(
@@ -2030,11 +2166,41 @@ def resolve_from_step(steps: list[dict[str, Any]], selector: str | None) -> int:
     return value
 
 
+def workflow_model_bindings(
+    workflow: dict[str, Any], context: dict[str, Any], policy: dict[str, Any]
+) -> dict[str, Any]:
+    steps: dict[str, Any] = {}
+    for step in workflow["steps"]:
+        command = render(step["command"], context)
+        steps[str(step["id"])] = validate_pi_launch_policy(
+            {"command": command}, context=f"step {step['id']}", policy=policy
+        )
+    summary = workflow.get("summary")
+    summary_selection = None
+    if isinstance(summary, dict) and "command" in summary:
+        summary_selection = validate_pi_launch_policy(
+            {"command": render(summary["command"], context)}, context="summary", policy=policy
+        )
+    actual_target = None
+    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        integration_id = str(workflow.get("integration_step") or "")
+        integration = next((step for step in workflow["steps"] if str(step["id"]) == integration_id), None)
+        argv = command_argv(render(integration["command"], context)) if integration else []
+        if "--actual-review-command" in argv:
+            index = argv.index("--actual-review-command")
+            actual = argv[index + 1] if index + 1 < len(argv) else ""
+            actual_target = validate_pi_launch_policy(
+                {"command": actual}, context="actual_target_review", policy=policy
+            )
+    return {"steps": steps, "summary": summary_selection, "actual_target_review": actual_target}
+
+
 def build_run_contract(
     workflow_text: str,
     workflow: dict[str, Any],
     context: dict[str, Any],
     project_root: Path,
+    model_policy: dict[str, Any],
 ) -> dict[str, Any]:
     frozen_inputs: list[dict[str, Any]] = []
     for item in workflow.get("frozen_inputs") or []:
@@ -2059,6 +2225,8 @@ def build_run_contract(
         "workflow_source_sha256": sha256_bytes(workflow_text.encode("utf-8")),
         "workflow_source_path": str(context.get("workflow_source_path") or ""),
         "project_root": str(project_root.resolve()),
+        "workflow_model_policy": model_policy,
+        "workflow_model_bindings": workflow_model_bindings(workflow, context, model_policy),
         "resolved_vars": context["vars"],
         "resolved_vars_sha256": canonical_sha256(context["vars"]),
         "step_order": [str(step["id"]) for step in workflow["steps"]],
@@ -2111,6 +2279,8 @@ def verify_run_contract(frozen: dict[str, Any], current: dict[str, Any]) -> None
         "workflow_class": (frozen.get("workflow_class"), current.get("workflow_class")),
         "integration_step": (frozen.get("integration_step"), current.get("integration_step")),
         "controller_disposition": (frozen.get("controller_disposition"), current.get("controller_disposition")),
+        "workflow_model_policy": (frozen.get("workflow_model_policy"), current.get("workflow_model_policy")),
+        "workflow_model_bindings": (frozen.get("workflow_model_bindings"), current.get("workflow_model_bindings")),
     }
     for name, (expected, actual) in checks.items():
         if expected != actual:
@@ -2381,7 +2551,6 @@ def run_workflow(args: argparse.Namespace) -> int:
         workflow_dir = workflow_path.parent
         workflow_source_path = str(workflow_path)
     workflow = parse_yaml_like(workflow_text)
-    validate_workflow(workflow)
     if str(workflow.get("workflow_class") or "").strip() == "local_integration":
         declared_workspace = str(workflow["orchestration_workspace"])
         orchestration_root = (
@@ -2396,6 +2565,9 @@ def run_workflow(args: argparse.Namespace) -> int:
                 f"local_integration --project-root must equal orchestration workspace {orchestration_root}"
             )
         project_root = orchestration_root
+
+    model_policy = load_workflow_model_policy(project_root)
+    validate_workflow(workflow, model_policy)
 
     now = _dt.datetime.now(_dt.timezone.utc)
     run_id = now.strftime("%Y%m%d_%H%M%S_%fZ")
@@ -2442,7 +2614,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     run_contract_path = out_dir / "run_contract.json"
     is_resume = requested_from_step and run_contract_path.exists() and not args.amends_run
     is_selective_amendment = bool(args.amends_run and requested_from_step)
-    current_contract = build_run_contract(workflow_text, workflow, context, project_root)
+    current_contract = build_run_contract(workflow_text, workflow, context, project_root, model_policy)
     parent_contract: dict[str, Any] | None = None
     parent_manifest: dict[str, Any] | None = None
     parent_manifest_path: Path | None = None
@@ -2550,6 +2722,8 @@ def run_workflow(args: argparse.Namespace) -> int:
         "failed_steps": [],
         "status": "success",
         "tmux_observer": tmux_observer,
+        "workflow_model_policy": model_policy,
+        "workflow_model_bindings": current_contract["workflow_model_bindings"],
     }
 
     final_exit = 0
@@ -2665,6 +2839,9 @@ def run_workflow(args: argparse.Namespace) -> int:
             manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
             continue
         command = render(step["command"], context)
+        model_selection = validate_pi_launch_policy(
+            {"command": command}, context=f"step {step_id}", policy=model_policy
+        )
         preview = command_preview(command)
         command_digest = canonical_sha256(command)
         is_juno_command = detect_juno_command(command)
@@ -2850,6 +3027,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "capture_result": "",
             "session_id": "",
             "command_sha256": command_digest,
+            "workflow_model_selection": model_selection,
         }
         if step.get("candidate_read_only") is not None and candidate_guard_path.is_file():
             result["candidate_read_only_evidence"] = {
@@ -2965,6 +3143,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "child_steps": child_steps,
                     "candidate_read_only": candidate_anchor,
                     "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
+                    "workflow_model_policy_sha256": model_policy["workflow_models_sha256"],
+                    "workflow_model_selection": model_selection,
                 }
                 run_contract.setdefault("completed_steps", {})[step_id] = checkpoint
                 write_text(run_contract_path, json.dumps(run_contract, indent=2, ensure_ascii=False) + "\n")
@@ -3021,7 +3201,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     context["workflow_semantic"] = {"terminal_gate": terminal_gate or "none", "status": semantic_status}
 
     summary_stdout, summary_stderr, summary_exit, summary_command, summary_session = maybe_run_summary_command(
-        workflow, context, project_root, out_dir, bool(args.dry_run), live_log_path
+        workflow, context, project_root, out_dir, bool(args.dry_run), live_log_path, model_policy
     )
     if summary_session:
         session_candidates.append(summary_session)
@@ -3063,6 +3243,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         "stderr_path": str(out_dir / "summary.stderr.txt"),
         "exit_code": summary_exit,
         "command": summary_command,
+        "workflow_model_selection": summary_session.get("workflow_model_selection") if summary_session else None,
     }
     if summary_session:
         manifest["summary"]["session_id"] = summary_session.get("session_id", "")
@@ -3344,8 +3525,10 @@ def iter_template_strings(value: Any, path: str = "") -> list[tuple[str, str]]:
     return found
 
 
-def workflow_lint_findings(workflow: dict[str, Any]) -> list[dict[str, str]]:
-    validate_workflow(workflow)
+def workflow_lint_findings(
+    workflow: dict[str, Any], policy: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
+    validate_workflow(workflow, policy)
     agent_steps = {
         str(step["id"])
         for step in workflow.get("steps", [])
@@ -3428,11 +3611,17 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--workflow", "-w", required=True, help="Workflow YAML path, or '-' to read from stdin")
+    parser.add_argument("--project-root", help="Canonical project config root (defaults to cwd; local integration uses its orchestration workspace)")
     parser.add_argument("--json", action="store_true", help="Emit findings as JSON")
     args = parser.parse_args(argv)
     workflow_text = sys.stdin.read() if args.workflow == "-" else Path(args.workflow).read_text(encoding="utf-8")
     workflow = parse_yaml_like(workflow_text)
-    findings = workflow_lint_findings(workflow)
+    project_root = Path(args.project_root or os.getcwd()).resolve()
+    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        declared = str(workflow.get("orchestration_workspace") or "")
+        project_root = Path(os.environ["JUNO_TASK_ROOT"] if declared == "controller" else declared).resolve()
+    policy = load_workflow_model_policy(project_root)
+    findings = workflow_lint_findings(workflow, policy)
     if args.json:
         print(json.dumps({"status": "ok" if not findings else "issues", "findings": findings}, indent=2))
     else:
@@ -3485,6 +3674,9 @@ def verify_recovery_contract(contract: dict[str, Any], run_dir: Path) -> dict[st
         raise WorkflowError("recovery_contract[workflow_source_sha256]: workflow source missing or drifted")
     if canonical_sha256(contract.get("receipt_contracts") or {}) != contract.get("receipt_contracts_sha256"):
         raise WorkflowError("recovery_contract[receipt_contracts_sha256]: receipt declarations drifted")
+    current_policy = load_workflow_model_policy(Path(project_root_text))
+    if current_policy != contract.get("workflow_model_policy"):
+        raise WorkflowError("recovery_contract[workflow_model_policy]: project config or workflowModels policy drifted")
     for frozen in contract.get("frozen_inputs") or []:
         path = Path(str(frozen.get("path") or ""))
         expected = frozen.get("sha256")
@@ -3523,6 +3715,14 @@ def verify_checkpoint(
     command_digest = str(checkpoint.get("command_sha256") or "")
     if not command_digest or canonical_sha256(checkpoint.get("command")) != command_digest:
         raise WorkflowError(f"recovery checkpoint[{step_id}]: rendered command digest mismatch")
+    policy = contract.get("workflow_model_policy")
+    if not isinstance(policy, dict) or checkpoint.get("workflow_model_policy_sha256") != policy.get("workflow_models_sha256"):
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: workflow model policy evidence mismatch")
+    selection = validate_pi_launch_policy(
+        {"command": checkpoint.get("command")}, context=f"recovery checkpoint[{step_id}]", policy=policy
+    )
+    if checkpoint.get("workflow_model_selection") != selection:
+        raise WorkflowError(f"recovery checkpoint[{step_id}]: workflow model selection evidence mismatch")
     artifacts = checkpoint.get("artifacts")
     if not isinstance(artifacts, dict):
         raise WorkflowError(f"recovery checkpoint[{step_id}]: artifact evidence missing")
@@ -3575,6 +3775,7 @@ def verify_checkpoint(
         "recovered_from_checkpoint": True,
         "reused_from_attempt": checkpoint.get("attempt_id"),
         "child_steps": checkpoint.get("child_steps", []),
+        "workflow_model_selection": checkpoint.get("workflow_model_selection"),
     }
     if candidate_evidence is not None:
         recovered["candidate_read_only_evidence"] = checkpoint["candidate_read_only"]

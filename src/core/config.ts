@@ -202,6 +202,12 @@ export const JunoTaskConfigSchema = z
       .optional()
       .describe('Optional per-subagent default model overrides'),
 
+    workflowModels: z
+      .array(z.string().min(1).refine((value) => value === value.trim(), 'workflow model selectors must be trimmed'))
+      .refine((values) => new Set(values).size === values.length, 'workflow model selectors must be unique')
+      .optional()
+      .describe('Exact provider/model selectors approved for explicit managed workflow use'),
+
     // Project metadata
     mainTask: z.string().optional().describe('Main task objective for the project'),
 
@@ -342,6 +348,7 @@ export function createPersistedProjectConfigDefaults(baseDir: string): Record<st
     defaultBackend: 'shell',
     defaultMaxIterations: 1,
     defaultModels: { ...SUBAGENT_DEFAULT_MODELS },
+    workflowModels: [],
     logLevel: 'info',
     verbose: 1,
     quiet: false,

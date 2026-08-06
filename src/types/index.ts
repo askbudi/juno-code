@@ -71,6 +71,8 @@ export interface JunoTaskConfig {
   defaultModel?: string;
   /** Optional per-subagent default model overrides */
   defaultModels?: Partial<Record<SubagentType, string>>;
+  /** Exact selectors approved for explicit yy pi use in managed workflows. */
+  workflowModels?: string[];
   defaultBackend: BackendType;
 
   // Project metadata

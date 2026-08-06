@@ -70,6 +70,7 @@ describe('Configuration Module', () => {
         allowedProjects: [],
       });
       expect(DEFAULT_CONFIG.configVersion).toBe(PROJECT_CONFIG_VERSION);
+      expect(DEFAULT_CONFIG.workflowModels).toEqual([]);
       expect(DEFAULT_CONFIG.gitCheckpoint?.include).toEqual(DEFAULT_GIT_CHECKPOINT_INCLUDE);
       expect(DEFAULT_CONFIG.promptMacros).toEqual({
         enabled: true,
@@ -89,6 +90,7 @@ describe('Configuration Module', () => {
       expect(persisted).toMatchObject({
         configVersion: PROJECT_CONFIG_VERSION,
         defaultBackend: 'shell',
+        workflowModels: [],
         autoDependencyUpdate: true,
         onHourlyLimit: 'raise',
         kanbanRegistry: { enabled: false, allowedProjects: [] },
@@ -181,6 +183,14 @@ describe('Configuration Module', () => {
         claude: ':opus',
         pi: ':api-codex',
       });
+    });
+
+    it('accepts only trimmed unique workflow model selectors', () => {
+      expect(validateConfig({ ...DEFAULT_CONFIG, workflowModels: [':luna', 'openai/gpt-4o'] }).workflowModels)
+        .toEqual([':luna', 'openai/gpt-4o']);
+      expect(() => validateConfig({ ...DEFAULT_CONFIG, workflowModels: [':luna', ':luna'] })).toThrow(/unique/);
+      expect(() => validateConfig({ ...DEFAULT_CONFIG, workflowModels: [' :luna'] })).toThrow(/trimmed/);
+      expect(() => validateConfig({ ...DEFAULT_CONFIG, workflowModels: [''] })).toThrow();
     });
 
     it('should accept controller Git checkpoint configuration', () => {
@@ -967,11 +977,24 @@ logLevel: info
       });
       expect(migrated.hooks).toEqual({ START_ITERATION: { commands: ['custom-hook'] } });
       expect(migrated.defaultModels).toEqual({ pi: ':gpt' });
+      expect(migrated.workflowModels).toEqual([]);
       expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
 
       const once = await fs.readFile(configPath);
       await loadConfig({ baseDir: tempDir });
       expect(await fs.readFile(configPath)).toEqual(once);
+    });
+
+    it('preserves an explicit workflow model allowlist, including an empty array', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, { ...createPersistedProjectConfigDefaults(tempDir), workflowModels: [':luna'] });
+      await loadConfig({ baseDir: tempDir });
+      expect((await fs.readJson(configPath)).workflowModels).toEqual([':luna']);
+
+      await fs.writeJson(configPath, { ...createPersistedProjectConfigDefaults(tempDir), workflowModels: [] });
+      await loadConfig({ baseDir: tempDir });
+      expect((await fs.readJson(configPath)).workflowModels).toEqual([]);
     });
 
     it('preserves an explicit empty model scalar', async () => {

@@ -437,6 +437,25 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(accepted.status, accepted.stderr).toBe(0);
 
+    const controllerConfig = path.join(testDir, '.juno_task', 'config.json');
+    await fs.ensureDir(path.dirname(controllerConfig));
+    await fs.writeJson(controllerConfig, { workflowModels: [':luna'] });
+    workflow.orchestration_workspace = testDir;
+    workflow.steps[0].command = ['yy', 'pi', '--model', ':luna', 'Review the exact task tip.'];
+    workflow.steps[1].command = ['yy', 'pi', '--model', ':luna', 'Review the candidate.'];
+    workflow.steps[1].candidate_read_only = { path: '{{ candidate_path }}', sha: '{{ candidate_sha }}' };
+    const actualReviewIndexForAllowed = workflow.steps[2].command.indexOf('--actual-review-command') + 1;
+    workflow.steps[2].command[actualReviewIndexForAllowed] = 'yy pi --model :luna review';
+    await fs.writeJson(workflowPath, workflow);
+    const allowedReviews = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(allowedReviews.status, allowedReviews.stderr).toBe(0);
+    workflow.steps[0].command = ['yy', 'pi', 'Review the exact task tip.'];
+    workflow.steps[1].command = 'true';
+    delete workflow.steps[1].candidate_read_only;
+    workflow.steps[2].command[actualReviewIndexForAllowed] = 'yy pi review';
+    workflow.orchestration_workspace = 'controller';
+    await fs.remove(controllerConfig);
+
     delete workflow.orchestration_workspace;
     await fs.writeJson(workflowPath, workflow);
     const checkoutLocal = runWorkflow(['lint', '--workflow', workflowPath]);
@@ -465,7 +484,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const unapprovedOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(unapprovedOverride.status).not.toBe(0);
-    expect(unapprovedOverride.stderr).toMatch(/explicit override --provider is forbidden/);
+    expect(unapprovedOverride.stderr).toMatch(/explicit --provider requires explicit --model/);
 
     workflow.steps[0].provider_model_override_authorization = 'self-asserted authorization must not bypass policy';
     await fs.writeJson(workflowPath, workflow);
@@ -497,7 +516,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const pathWrappedModelOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(pathWrappedModelOverride.status).not.toBe(0);
-    expect(pathWrappedModelOverride.stderr).toMatch(/explicit override --model is forbidden/);
+    expect(pathWrappedModelOverride.stderr).toMatch(/is not exactly allowlisted by workflowModels/);
 
     workflow.steps[0].command = ['env', '--unknown-env-option', 'yy', 'pi', 'Ambiguous wrapper.'];
     await fs.writeJson(workflowPath, workflow);
@@ -509,7 +528,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const wrappedProviderOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(wrappedProviderOverride.status).not.toBe(0);
-    expect(wrappedProviderOverride.stderr).toMatch(/explicit override --provider is forbidden/);
+    expect(wrappedProviderOverride.stderr).toMatch(/explicit --provider requires explicit --model/);
 
     workflow.steps[0].command = ['env', '-i', 'yy', 'pi', 'Review with defaults.'];
     await fs.writeJson(workflowPath, workflow);
@@ -534,7 +553,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
     const unapprovedActualOverride = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(unapprovedActualOverride.status).not.toBe(0);
-    expect(unapprovedActualOverride.stderr).toMatch(/explicit override --model is forbidden/);
+    expect(unapprovedActualOverride.stderr).toMatch(/is not exactly allowlisted by workflowModels/);
 
     workflow.steps[2].provider_model_override_authorization = 'self-asserted authorization must not bypass policy';
     await fs.writeJson(workflowPath, workflow);
@@ -583,6 +602,53 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(undeclaredProducerDigest.status).not.toBe(0);
     expect(undeclaredProducerDigest.stderr).toMatch(/must include producer_step_digest/);
   }, 120_000);
+
+  it('enforces exact workflowModels selectors and closes indirect yy pi override channels', async () => {
+    const workflowPath = path.join(testDir, 'workflow-models.json');
+    const configPath = path.join(testDir, '.juno_task', 'config.json');
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.writeJson(configPath, {
+      defaultModels: { pi: ':gpt' },
+      workflowModels: [':luna', 'openai/gpt-4o', 'openai/gpt-4.1'],
+    });
+    const lint = async (command: string[] | string, summary?: string[] | string) => {
+      await fs.writeJson(workflowPath, {
+        schema_version: 1,
+        workflow_id: 'workflow-models',
+        steps: [{ id: 'review', command }],
+        ...(summary ? { summary: { command: summary } } : {}),
+      });
+      return runWorkflow(['lint', '--workflow', workflowPath, '--project-root', testDir]);
+    };
+
+    expect((await lint(['yy', 'pi', 'inherit defaults'])).status).toBe(0);
+    expect((await lint(['yy', 'pi', '-m', ':luna', 'shorthand'])).status).toBe(0);
+    expect((await lint(['yy', 'pi', '-m', 'openai/gpt-4o', 'qualified'])).status).toBe(0);
+    expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
+    expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
+
+    for (const [command, message] of [
+      [['yy', 'pi', '-m', ':sol', 'unlisted'], 'not exactly allowlisted'],
+      [['yy', 'pi', '--provider', 'openai', 'provider only'], 'requires explicit --model'],
+      [['yy', 'pi', '--provider', 'openai', '-m', ':luna', 'ambiguous'], 'ambiguous'],
+      [['yy', 'pi', '-m', ':luna', '--model', ':luna', 'duplicate'], 'duplicate'],
+      [['yy', 'pi', '--model'], 'missing value'],
+      [['PI_MODEL=:luna', 'yy', 'pi', 'hidden'], 'environment assignment PI_MODEL'],
+      [['env', 'PI_PROVIDER=openai', 'yy', 'pi', 'hidden'], 'environment assignment PI_PROVIDER'],
+      [['JUNO_CODE_CONFIG=other.json', 'yy', 'pi', 'hidden'], 'alternate config through environment assignment'],
+      [['PI_ADDITIONAL_ARGS=--model :luna', 'yy', 'pi', 'hidden'], 'inject additional args'],
+      [['yy', 'pi', '--additional-args=--model :luna', 'hidden'], '--additional-args'],
+      [['yy', '--config', 'other.json', 'pi', 'hidden'], 'alternate config'],
+    ] as Array<[string[], string]>) {
+      const result = await lint(command);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(message);
+    }
+
+    await fs.writeJson(configPath, { defaultModels: { pi: ':gpt' }, workflowModels: [] });
+    expect((await lint(['yy', 'pi', 'inherit defaults'])).status).toBe(0);
+    expect((await lint(['yy', 'pi', '-m', ':luna', 'explicit'])).status).not.toBe(0);
+  });
 
   it('guards a real linked candidate from an external review cwd and preserves exact mutation evidence', async () => {
     const repository = path.join(testDir, 'review-repository');
@@ -2996,6 +3062,31 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     rejected = runWorkflow(['recover-attempt', outDir]);
     expect(rejected.status).not.toBe(0);
     expect(rejected.stderr).toContain('workflow source');
+  });
+
+  it('binds normalized workflow model selection and fails recovery on config policy drift', async () => {
+    const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
+    const configPath = path.join(testDir, '.juno_task', 'config.json');
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.writeJson(configPath, { workflowModels: [':luna'] });
+    const workflowPath = path.join(testDir, 'model-policy-recovery.json');
+    const outDir = path.join(testDir, 'model-policy-recovery-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'model-policy-recovery',
+      steps: [{ id: 'review', command: [executablePath, 'pi', '--model', ':luna', 'review'] }],
+    });
+    const interrupted = runWorkflow([
+      '--workflow', workflowPath, '--project-root', testDir, '--out-dir', outDir, '--print-output', 'none',
+    ], undefined, { JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest' });
+    expect(interrupted.status).toBe(86);
+    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
+    expect(contract.workflow_model_bindings.steps.review.normalized_selector).toBe(':luna');
+    expect(contract.completed_steps.review.workflow_model_selection.normalized_selector).toBe(':luna');
+    await fs.writeJson(configPath, { workflowModels: [':luna', ':sol'] });
+    const recovered = runWorkflow(['recover-attempt', outDir, '--dry-run']);
+    expect(recovered.status).not.toBe(0);
+    expect(recovered.stderr).toContain('workflowModels policy drifted');
   });
 
   it('refuses recovery while a signalled caller leaves a step process active', async () => {
