@@ -625,6 +625,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect((await lint(['yy', 'pi', '-m', ':luna', 'shorthand'])).status).toBe(0);
     expect((await lint(['yy', 'pi', '-m', 'openai/gpt-4o', 'qualified'])).status).toBe(0);
     expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
+    expect((await lint(['yy', '--quiet', '-l', 'workflow.log', 'pi', 'ordinary flags'])).status).toBe(0);
     expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
 
     for (const [command, message] of [
@@ -648,6 +649,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       [['yy', 'pi', '-cother.json', 'hidden'], 'alternate config'],
       [['yy', '-cother.json', 'pi', 'hidden'], 'alternate config'],
       [['yy', 'pi', '-m:unapproved', 'hidden'], 'malformed model selector flag'],
+      [['yy', '-m:unapproved', 'pi', 'hidden'], 'malformed model selector flag'],
     ] as Array<[string[], string]>) {
       const result = await lint(command);
       expect(result.status).not.toBe(0);
