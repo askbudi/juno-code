@@ -119,6 +119,13 @@ describe('configured Git flow', () => {
     expect(fs.readFileSync(path.join(controller, 'product.txt'), 'utf8')).toBe('integration\n');
     expect(fs.readFileSync(path.join(controller, '.juno_task/tasks/board.ndjson'), 'utf8')).toBe('controller-only\n');
     expect(JSON.parse(result.stdout).remotePublished).toBe(false);
+    const replay = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(JSON.parse(replay.stdout)).toMatchObject({ outcome: 'up_to_date' });
+
+    git(controller, 'update-ref', 'refs/heads/controller', before, head);
+    const staleReplay = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(staleReplay.status, staleReplay.stderr).toBe(0);
+    expect(JSON.parse(staleReplay.stdout)).toMatchObject({ outcome: 'stale_rebuild_required', resumable: true });
   });
 
   it('fast-forwards a stale detached checkout and publishes local integration commits', () => {

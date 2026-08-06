@@ -689,12 +689,13 @@ def detach_controller_with_lifecycle(ctl: Path, target_ref: str, target_tip: str
 
 
 def sync_receipt_base(ctl: Path, policy: dict[str, Any], policy_path: Path, source_ref: str, target_ref: str,
-                      source_tip: str, target_tip: str, integration_receipt: Path | None) -> dict[str, Any]:
+                      source_tip: str, target_tip: str, integration_receipt: Path | None,
+                      integration_receipt_sha: str | None = None) -> dict[str, Any]:
     return {"schemaVersion": SYNC_SCHEMA, "operation": "controller-sync", "createdAt": utc_now(),
         "projectId": policy["projectId"], "repositoryRoot": str(root(ctl)), "gitCommonDir": str(common(ctl)),
         "controllerCheckout": str(ctl), "controllerRef": target_ref, "integrationRef": source_ref,
         "expectedControllerSha": target_tip, "integratedSha": source_tip,
-        "sourceIntegrationReceipt": None if integration_receipt is None else {"path": str(integration_receipt.resolve()), "sha256": file_sha(integration_receipt)},
+        "sourceIntegrationReceipt": None if integration_receipt is None else {"path": str(integration_receipt.resolve()), "sha256": integration_receipt_sha},
         "policy": {"path": str(policy_path), "digest": digest_json(policy), "controllerOwnedPaths": policy["controllerOwnedPaths"], "sharedPaths": policy["sharedPaths"]},
         "mergeBase": git(ctl, "merge-base", target_tip, source_tip), "candidateSha": None, "candidateTree": None,
         "parents": [target_tip, source_tip], "validation": [], "processEvidence": None, "checkpoint": None,
@@ -741,8 +742,30 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
     store = project_store(ctl, policy); receipt_path = store / "receipts" / f"{operation_id}.json"
     if receipt_path.exists():
         existing = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if existing.get("outcome") in {"synced_local", "up_to_date"}: return {**existing, "receiptPath": str(receipt_path), "idempotent": True}
-    receipt = sync_receipt_base(ctl, policy, policy_path, source_ref, target_ref, source_tip, target_tip, integration_receipt)
+        binding_matches = (existing.get("projectId") == policy["projectId"]
+            and existing.get("controllerRef") == target_ref and existing.get("integrationRef") == source_ref
+            and existing.get("integratedSha") == source_tip
+            and existing.get("policy", {}).get("digest") == policy_digest
+            and existing.get("sourceIntegrationReceipt", {}).get("sha256") == receipt_hash)
+        success_current = (existing.get("outcome") == "synced_local"
+            and binding_matches and existing.get("candidateSha") == resolve(ctl, target_ref)
+            and attached(ctl) == target_ref and resolve(ctl, "HEAD") == existing.get("candidateSha") and clean(ctl))
+        up_to_date_current = existing.get("outcome") == "up_to_date" and binding_matches and ancestor(ctl, source_tip, resolve(ctl, target_ref))
+        if success_current or up_to_date_current:
+            return {**existing, "receiptPath": str(receipt_path), "idempotent": True}
+        if existing.get("outcome") not in {"synced_local", "up_to_date"}:
+            return {**existing, "receiptPath": str(receipt_path), "idempotent": True,
+                    "safeNextAction": f"controller-sync --resume {receipt_path}" if existing.get("resumable") else None}
+        stale = sync_receipt_base(ctl, policy, policy_path, source_ref, target_ref, source_tip, target_tip,
+                                  integration_receipt, receipt_hash)
+        stale.update({"operationId": operation_id, "outcome": "stale_rebuild_required", "resumable": True,
+                      "priorReceipt": {"path": str(receipt_path), "sha256": file_sha(receipt_path)},
+                      "refusal": "historical success no longer matches current controller readback"})
+        stale_path = receipt_path.with_name(f"{operation_id}-stale-{digest_json(stale['priorReceipt'])[:12]}.json")
+        atomic_write(stale_path, stale)
+        return {**stale, "receiptPath": str(stale_path)}
+    receipt = sync_receipt_base(ctl, policy, policy_path, source_ref, target_ref, source_tip, target_tip,
+                                integration_receipt, receipt_hash)
     receipt["operationId"] = operation_id
     if resume_path is not None: receipt["resumeReceipt"] = {"path": str(resume_path), "sha256": resume_hash}
     if ancestor(ctl, source_tip, target_tip):
