@@ -503,5 +503,15 @@ def main(argv:list[str]|None=None)->int:
   try:write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=a.output.resolve().exists())
   except Exception as write_exc:print(f"integration_owner_preflight: receipt error: {write_exc}",file=sys.stderr)
   print(f"integration_owner_preflight: error: {exc}",file=sys.stderr);return 2
- write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True);print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"]},sort_keys=True));return 0
+ # Integration truth is durable and all target-channel handles have been released
+ # before the optional bridge runs. Bridge failures must never rewrite this
+ # receipt or change the successful integration exit code.
+ write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)
+ controller_sync={"outcome":"not_enabled"}
+ try:
+  import git_flow
+  controller_sync=git_flow.auto_after_integration(Path(a.repository[-1]["path"]),a.output.resolve())
+ except Exception as exc:
+  controller_sync={"outcome":"failed_preserved","integrationRemainsSuccessful":True,"error":str(exc)}
+ print(json.dumps({"schema_version":SCHEMA,"passed":True,"outcome":"integrated","feature_tag":receipt["feature_tag"],"controller_sync":controller_sync},sort_keys=True));return 0
 if __name__=="__main__":raise SystemExit(main())

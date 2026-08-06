@@ -68,15 +68,22 @@ Initialized projects receive a canonical `.juno_task/scripts/git-flow.sh` and a 
   --integration-branch integration \
   --controller-branch controller \
   --integration-checkout /absolute/path/to/detached-integration \
+  --project-id my-project \
+  --enable-controller-sync \
+  --validation-command 'npm test' \
   --remote origin
 
 ./scripts/git-flow.sh status
 ./scripts/git-flow.sh sync
 ./scripts/git-flow.sh push
-./scripts/git-flow.sh controller-sync
+./scripts/git-flow.sh controller-sync --plan --json
+./scripts/git-flow.sh controller-sync --integration-receipt /path/to/integration.json
+./scripts/git-flow.sh controller-sync --resume /path/to/controller-sync-receipt.json
 ```
 
-Configuration is split between `.juno_task/config.json`, the versioned `.juno_task/config/git-flow.json` policy, and machine-local `juno.gitFlow.integrationCheckout` Git configuration. The integration checkout must be detached and linked to the registered controller. `sync` is fast-forward-only, `push` publishes integration branches only, and `controller-sync` creates a local two-parent controller composition without pushing. The explicit controller-owned path preset keeps tasks, ledger, specs, sessions, and workflow evidence out of integration and byte-identical to the controller target. Submodules use exact gitlinks by default; configured branch advancement is opt-in and child-first.
+Configuration is split between `.juno_task/config.json`, the versioned `.juno_task/config/git-flow.json` v2 policy, and machine-local `juno.gitFlow.integrationCheckout` Git configuration. The integration checkout must be detached and linked to the registered controller. `sync` is fast-forward-only and `push` publishes integration branches only. The receipt-backed `controller-sync` is local-only: it proves product bytes equal the exact integrated tip, reconciles explicit controller/shared paths without implicit ours/theirs resolution, validates an isolated lifecycle-managed two-parent candidate, and advances through the canonical expected-SHA target lock or persists a typed resumable pending receipt. Receipts and retained candidates are stored per `projectId` below the Git common directory, so they do not dirty a checkout. Successful integration automatically attempts the same engine only after its integration receipt is final and locks are released; bridge refusal never changes integration success.
+
+Existing `juno_git_flow.v1` projects are never silently changed or enabled. Run `./scripts/git-flow.sh configure --migrate-policy [--project-id ID]` explicitly; migration records a stable project ID (defaulting once to the current folder name) and leaves controller sync disabled until reviewed configuration explicitly enables it. Submodules use exact gitlinks by default; configured branch advancement remains opt-in and child-first.
 
 Rollback operations are intentionally separate:
 

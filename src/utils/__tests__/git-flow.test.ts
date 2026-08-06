@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const engine = path.resolve(process.cwd(), 'src/templates/scripts/git_flow.py');
 
@@ -19,6 +19,17 @@ function git(cwd: string, ...args: string[]): string {
 function commit(repo: string, message: string) {
   git(repo, 'add', '-A');
   git(repo, 'commit', '-qm', message);
+}
+
+function integrationReceipt(sandbox: string, controller: string, integration: string): string {
+  const tip = git(controller, 'rev-parse', 'refs/heads/integration');
+  const receipt = path.join(sandbox, `integration-${tip}.json`);
+  fs.writeJsonSync(receipt, {
+    schema_version: 'juno_local_integration.v3', outcome: 'integrated', passed: true,
+    repositories: [{ name: 'root', path: integration, target_ref: 'refs/heads/integration', candidate_sha: tip }],
+    actual_target: { target_refs: { root: { target_ref: 'refs/heads/integration', reviewed_tip: tip } } },
+  });
+  return receipt;
 }
 
 describe('configured Git flow', () => {
@@ -87,18 +98,22 @@ describe('configured Git flow', () => {
     expect(value.integration).toMatchObject({ detached: true, clean: true, protectedPathViolations: [] });
     expect(value.integration.checkoutSha).toBe(value.integration.branchSha);
     const policy = fs.readJsonSync(path.join(controller, '.juno_task/config/git-flow.json'));
-    expect(policy.schemaVersion).toBe('juno_git_flow.v1');
+    expect(policy.schemaVersion).toBe('juno_git_flow.v2');
+    expect(policy.projectId).toBe('controller');
+    expect(policy.controllerSync.enabled).toBe(false);
     expect(policy.controllerOwnedPaths).toContain('.juno_task/tasks');
   });
 
   it('composes integration locally while preserving controller-owned state and parent order', () => {
-    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env()).status).toBe(0);
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
     // Configuration is controller state and must be committed before the mutation gate.
     commit(controller, 'configure flow');
     const before = git(controller, 'rev-parse', 'HEAD');
     const source = git(controller, 'rev-parse', 'refs/heads/integration');
-    const result = run('python3', [engine, 'controller-sync', '--json'], controller, env());
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
     expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).outcome, result.stdout).toBe('synced_local');
     const head = git(controller, 'rev-parse', 'HEAD');
     expect(git(controller, 'show', '-s', '--format=%P', head).split(' ')).toEqual([before, source]);
     expect(fs.readFileSync(path.join(controller, 'product.txt'), 'utf8')).toBe('integration\n');
@@ -131,7 +146,7 @@ describe('configured Git flow', () => {
   });
 
   it('refuses a stale controller target without replacing the externally moved ref', () => {
-    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env()).status).toBe(0);
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
     commit(controller, 'configure flow');
     const external = path.join(sandbox, 'external-target');
     git(controller, 'worktree', 'add', '--detach', external, 'controller');
@@ -142,9 +157,10 @@ describe('configured Git flow', () => {
     const expectedExternal = git(external, 'rev-parse', 'HEAD');
     git(controller, 'update-ref', 'refs/heads/controller', expectedExternal);
 
-    const result = run('python3', [engine, 'controller-sync', '--json'], controller, env());
-    expect(result.status).toBe(2);
-    expect(result.stderr).toMatch(/controller checkout must be clean|controller moved/);
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).outcome).toMatch(/pending|stale|failed|blocked/);
     expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(expectedExternal);
     git(controller, 'worktree', 'remove', '--force', external);
   });
@@ -211,15 +227,121 @@ describe('configured Git flow', () => {
     expect(divergent.stderr).toContain('submodule diverged: child');
   });
 
-  it('fails closed when integration contains a controller-owned path', () => {
+  it('allows controller-owned paths to participate in additive reconciliation', () => {
     expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env()).status).toBe(0);
     fs.ensureDirSync(path.join(integration, '.juno_task/tasks'));
     fs.writeFileSync(path.join(integration, '.juno_task/tasks/bad'), 'bad');
-    commit(integration, 'bad ownership');
+    commit(integration, 'add controller record');
     const old = git(controller, 'rev-parse', 'refs/heads/integration');
     git(controller, 'update-ref', 'refs/heads/integration', git(integration, 'rev-parse', 'HEAD'), old);
     const status = run('python3', [engine, 'status', '--no-fetch', '--json'], integration, env());
     expect(status.status).toBe(0);
-    expect(JSON.parse(status.stdout).integration.protectedPathViolations).toContain('.juno_task/tasks');
+    expect(JSON.parse(status.stdout).integration.protectedPathViolations).toEqual([]);
+  });
+
+  it('plans without mutation and requires an exact receipt for attempts', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    const beforeRef = git(controller, 'rev-parse', 'refs/heads/controller');
+    const beforeWorktrees = git(controller, 'worktree', 'list', '--porcelain');
+    const planned = run('python3', [engine, 'controller-sync', '--plan', '--json'], controller, env());
+    expect(planned.status, planned.stderr).toBe(0);
+    expect(JSON.parse(planned.stdout)).toMatchObject({ planOnly: true, wouldMutate: false });
+    expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(beforeRef);
+    expect(git(controller, 'worktree', 'list', '--porcelain')).toBe(beforeWorktrees);
+    const bare = run('python3', [engine, 'controller-sync', '--json'], controller, env());
+    expect(bare.status).toBe(2);
+    expect(bare.stderr).toContain('requires --integration-receipt or --resume');
+  });
+
+  it('persists a pending conflict when both sides diverge on a shared path', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    fs.writeFileSync(path.join(controller, 'AGENTS.md'), 'controller\n');
+    commit(controller, 'controller shared edit');
+    fs.writeFileSync(path.join(integration, 'AGENTS.md'), 'integration\n');
+    commit(integration, 'integration shared edit');
+    const previous = git(controller, 'rev-parse', 'refs/heads/integration');
+    git(controller, 'update-ref', 'refs/heads/integration', git(integration, 'rev-parse', 'HEAD'), previous);
+    const before = git(controller, 'rev-parse', 'refs/heads/controller');
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(result.status, result.stderr).toBe(0);
+    const value = JSON.parse(result.stdout);
+    expect(value).toMatchObject({ outcome: 'pending_conflict', resumable: true, integrationRemainsSuccessful: true });
+    expect(value.conflicts).toContain('AGENTS.md');
+    expect(fs.pathExistsSync(value.receiptPath)).toBe(true);
+    expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(before);
+  });
+
+  it('checkpoints eligible controller dirt before freezing the candidate parent', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    fs.writeFileSync(path.join(controller, '.juno_task/tasks/pending.ndjson'), 'durable controller state\n');
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(result.status, result.stderr).toBe(0);
+    const value = JSON.parse(result.stdout);
+    expect(value.outcome).toBe('synced_local');
+    expect(value.checkpoint.outcome).toBe('committed');
+    expect(git(controller, 'show', '-s', '--format=%P', value.candidateSha).split(' ')[0]).toBe(value.checkpoint.head);
+    expect(fs.readFileSync(path.join(controller, '.juno_task/tasks/pending.ndjson'), 'utf8')).toBe('durable controller state\n');
+  });
+
+  it('defers a validated candidate while a foreign controller process is active', async () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync'], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    const before = git(controller, 'rev-parse', 'refs/heads/controller');
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const sleeper = spawn('sleep', ['20'], { cwd: controller, stdio: 'ignore' });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    try {
+      const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+      expect(result.status, result.stderr).toBe(0);
+      const value = JSON.parse(result.stdout);
+      expect(value.outcome).toMatch(/pending_active_controller|validated_pending/);
+      expect(value.integrationRemainsSuccessful).toBe(true);
+      expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(before);
+    } finally {
+      sleeper.kill('SIGTERM');
+    }
+  });
+
+  it('retains a validated candidate and receipt when configured validation fails', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration, '--enable-controller-sync', '--validation-command', 'exit 7'], controller, env()).status).toBe(0);
+    commit(controller, 'configure flow');
+    const before = git(controller, 'rev-parse', 'refs/heads/controller');
+    const receipt = integrationReceipt(sandbox, controller, integration);
+    const result = run('python3', [engine, 'controller-sync', '--integration-receipt', receipt, '--json'], controller, env());
+    expect(result.status, result.stderr).toBe(0);
+    const value = JSON.parse(result.stdout);
+    expect(value).toMatchObject({ outcome: 'pending_validation_failure', resumable: true, integrationRemainsSuccessful: true });
+    expect(value.validation[0].exitCode).toBe(7);
+    expect(git(controller, 'rev-parse', value.pendingRef)).toBe(value.candidateSha);
+    expect(git(controller, 'rev-parse', 'refs/heads/controller')).toBe(before);
+
+    const policyPath = path.join(controller, '.juno_task/config/git-flow.json');
+    const policy = fs.readJsonSync(policyPath);
+    policy.controllerSync.validationCommands = [];
+    fs.writeJsonSync(policyPath, policy);
+    commit(controller, 'fix controller sync validation');
+    const resumed = run('python3', [engine, 'controller-sync', '--resume', value.receiptPath, '--json'], controller, env());
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(JSON.parse(resumed.stdout).outcome).toBe('synced_local');
+  });
+
+  it('migrates v1 explicitly while leaving controller sync disabled', () => {
+    expect(run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env()).status).toBe(0);
+    const policyPath = path.join(controller, '.juno_task/config/git-flow.json');
+    const current = fs.readJsonSync(policyPath);
+    fs.writeJsonSync(policyPath, {
+      schemaVersion: 'juno_git_flow.v1', remote: current.remote,
+      integrationBranch: current.integrationBranch, controllerBranch: current.controllerBranch,
+      checkoutMode: 'detached', submodules: current.submodules, controllerOwnedPaths: current.controllerOwnedPaths,
+    });
+    const migrated = run('python3', [engine, 'configure', '--migrate-policy', '--project-id', 'portable-project'], controller, env());
+    expect(migrated.status, migrated.stderr).toBe(0);
+    const policy = fs.readJsonSync(policyPath);
+    expect(policy).toMatchObject({ schemaVersion: 'juno_git_flow.v2', projectId: 'portable-project', controllerSync: { enabled: false } });
   });
 });

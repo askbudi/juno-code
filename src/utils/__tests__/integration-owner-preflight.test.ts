@@ -33,6 +33,11 @@ describe('target-ref integration channel', () => {
     expect(source).not.toContain('controller_nested_integration_owner_receipt_required');
     expect(source).not.toContain('--checkpoint-controller');
     expect(source).not.toContain('other_write_capable_processes');
+    expect(source).toContain('git_flow.auto_after_integration');
+    expect(source).toContain('"controller_sync":controller_sync');
+    expect(source.indexOf('write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)')).toBeLessThan(
+      source.indexOf('git_flow.auto_after_integration'),
+    );
     const candidateSource = await fs.readFile(candidate, 'utf8');
     expect(candidateSource).toContain('--target-channel-owner');
     expect(candidateSource).toContain('protected_role_override="integration-owner"');
