@@ -35,6 +35,9 @@ describe('target-ref integration channel', () => {
     expect(source).not.toContain('other_write_capable_processes');
     expect(source).toContain('git_flow.auto_after_integration');
     expect(source).toContain('"controller_sync":controller_sync');
+    const flowSource = await fs.readFile(path.resolve(process.cwd(), 'src/templates/scripts/git_flow.py'), 'utf8');
+    expect(flowSource).toContain('os.environ.pop("JUNO_WORKSPACE_ROLE", None)');
+    expect(flowSource).toContain('os.environ["JUNO_WORKSPACE_ROLE"] = asserted_role');
     expect(source.indexOf('write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)')).toBeLessThan(
       source.indexOf('git_flow.auto_after_integration'),
     );

@@ -883,15 +883,24 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
 
 def auto_after_integration(repository: Path, integration_receipt: Path) -> dict[str, Any]:
     """Best-effort hook called only after integration truth and locks are finalized."""
+    # Workflow Runner launches the integration owner from the controller and may
+    # carry a controller role assertion into the detached integration checkout.
+    # Controller resolution must use persisted registration, not that caller-role
+    # assertion, or every generated integration path would report a false bridge
+    # failure before it can even observe disabled policy.
+    asserted_role = os.environ.pop("JUNO_WORKSPACE_ROLE", None)
     try:
-        ctl = controller(repository); policy, _ = config(ctl)
-        if policy.get("schemaVersion") != SCHEMA or not policy.get("controllerSync", {}).get("enabled"):
-            return {"outcome": "not_enabled"}
-        args = argparse.Namespace(plan=False, resume=None, integration_receipt=integration_receipt)
-        result = controller_sync(repository, args)
-        return {key: result[key] for key in ("outcome", "receiptPath", "candidateSha", "integrationRemainsSuccessful", "error") if key in result}
-    except Exception as exc:
-        return {"outcome": "failed_preserved", "integrationRemainsSuccessful": True, "error": str(exc)}
+        try:
+            ctl = controller(repository); policy, _ = config(ctl)
+            if policy.get("schemaVersion") != SCHEMA or not policy.get("controllerSync", {}).get("enabled"):
+                return {"outcome": "not_enabled"}
+            args = argparse.Namespace(plan=False, resume=None, integration_receipt=integration_receipt)
+            result = controller_sync(repository, args)
+            return {key: result[key] for key in ("outcome", "receiptPath", "candidateSha", "integrationRemainsSuccessful", "error") if key in result}
+        except Exception as exc:
+            return {"outcome": "failed_preserved", "integrationRemainsSuccessful": True, "error": str(exc)}
+    finally:
+        if asserted_role is not None: os.environ["JUNO_WORKSPACE_ROLE"] = asserted_role
 
 
 def parser() -> argparse.ArgumentParser:
