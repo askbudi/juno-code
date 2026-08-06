@@ -975,7 +975,7 @@ ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
 
 def effective_command_argv(command: Any) -> list[str]:
     parts = command_argv(command)
-    for _ in range(4):
+    while True:
         while parts and ENV_ASSIGNMENT_RE.fullmatch(parts[0]):
             parts = parts[1:]
         if not parts or Path(parts[0]).name != "env":
@@ -1031,7 +1031,7 @@ MODEL_PROVIDER_ENV_RE = re.compile(r"(?:^|_)(?:MODEL|PROVIDER)$", re.I)
 def command_environment_assignments(command: Any) -> list[str]:
     parts = command_argv(command)
     assignments: list[str] = []
-    for _ in range(4):
+    while True:
         while parts and ENV_ASSIGNMENT_RE.fullmatch(parts[0]):
             assignments.append(parts.pop(0))
         if not parts or Path(parts[0]).name != "env":
