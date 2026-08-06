@@ -89,6 +89,19 @@ describe('configured Git flow', () => {
 
   afterEach(async () => fs.remove(sandbox));
 
+  it('reports disabled automatic sync without inheriting the caller workspace role assertion', () => {
+    const probe = [
+      'import json, os, sys',
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(engine))})`,
+      'import git_flow',
+      `result = git_flow.auto_after_integration(__import__('pathlib').Path(${JSON.stringify(integration)}), __import__('pathlib').Path('/tmp/not-read-when-disabled.json'))`,
+      "print(json.dumps({'result': result, 'role': os.environ.get('JUNO_WORKSPACE_ROLE')}))",
+    ].join('; ');
+    const checked = run('python3', ['-c', probe], integration, { ...env(), JUNO_WORKSPACE_ROLE: 'controller' });
+    expect(checked.status, checked.stderr).toBe(0);
+    expect(JSON.parse(checked.stdout)).toEqual({ result: { outcome: 'not_enabled' }, role: 'controller' });
+  });
+
   it('configures explicit policy and reports detached integration identity', () => {
     const configured = run('python3', [engine, 'configure', '--integration-branch', 'integration', '--controller-branch', 'controller', '--integration-checkout', integration], controller, env());
     expect(configured.status, configured.stderr).toBe(0);

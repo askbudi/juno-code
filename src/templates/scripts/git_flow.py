@@ -897,6 +897,10 @@ def auto_after_integration(repository: Path, integration_receipt: Path) -> dict[
             args = argparse.Namespace(plan=False, resume=None, integration_receipt=integration_receipt)
             result = controller_sync(repository, args)
             return {key: result[key] for key in ("outcome", "receiptPath", "candidateSha", "integrationRemainsSuccessful", "error") if key in result}
+        except FlowError as exc:
+            if str(exc).startswith("Git flow is disabled;"):
+                return {"outcome": "not_enabled"}
+            return {"outcome": "failed_preserved", "integrationRemainsSuccessful": True, "error": str(exc)}
         except Exception as exc:
             return {"outcome": "failed_preserved", "integrationRemainsSuccessful": True, "error": str(exc)}
     finally:
