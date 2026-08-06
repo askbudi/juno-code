@@ -144,7 +144,7 @@ def verify_nested_owners(repositories:list[dict[str,Any]],controller:Path|None,r
   evidence.append({"name":item["name"],"classification":"controller_nested_integration_owner","controller_root":str(controller_root),"controller_head":git(controller_root,"rev-parse","HEAD"),"gitlink_path":relative.as_posix(),"gitlink_sha":fields[2],"gitlink_clean":not bool(path_status),"restored_transition":transitional,"path":str(item["path"])})
  return evidence
 
-def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_policy:str|None=None)->dict[str,Any]:
+def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_policy:str|None=None,*,allow_post_detach_ambiguity:bool=False)->dict[str,Any]:
  repo=item["path"]
  if index_lock(repo).exists():raise IntegrationError(f"index_lock_present: {index_lock(repo)}")
  inventory=lifecycle.listed(repo);owners=[row for row in inventory if row.get("branch")==item["target_ref"]]
@@ -162,7 +162,7 @@ def validate_item(item:dict[str,Any],expected_current_sha:str|None=None,checked_
   # A prior attempt may have completed metadata detach before its first CAS/write.
   detached=[row for row in inventory if row.get("HEAD")==expected_current_sha and not row.get("branch")]
   if len(detached)==1:owner_path=str(repo.resolve()) if Path(detached[0]["worktree"]).resolve()==common(repo) and git(repo,"rev-parse","HEAD",check=False)==expected_current_sha else str(Path(detached[0]["worktree"]).resolve())
-  elif len(detached)>1:raise IntegrationError("ambiguous detached runtime identity for target retry")
+  elif len(detached)>1 and not allow_post_detach_ambiguity:raise IntegrationError("ambiguous detached runtime identity for target retry")
  return {**item,"path":str(repo),"git_common_dir":str(common(repo)),"lock_key":lock_key(item),"before_sha":actual,"target_checkout":owner_path}
 def public_plan(repositories:list[dict[str,Any]],receipt_hashes:list[str])->list[dict[str,str]]:
  return [{"name":item["name"],"path":str(item["path"]),"target_ref":item["target_ref"],"expected_sha":item["expected_sha"],"candidate_sha":item["candidate_sha"],"candidate_receipt_sha256":receipt_hashes[index]} for index,item in enumerate(repositories)]
@@ -452,7 +452,10 @@ def main(argv:list[str]|None=None)->int:
      evidence=lifecycle.detach_same_sha(Path(item["path"]),Path(item["target_checkout"]),item["target_ref"],item["expected_sha"],controller=a.controller_checkout,allow_controller_root=allow_root)
      detaches.append({"name":item["name"],"worktree":item["target_checkout"],"checkout_sha":item["expected_sha"],"evidence":evidence})
    receipt["checked_out_target_policy"]={"requested":a.checked_out_target,"detachments":detaches};receipt["runtime_identities"]=runtime_identities(detaches,a.repository)
-   for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"],a.checked_out_target)
+   # The target checkout was receipt-bound before detachment. A distinct
+   # integration-owner can legitimately share the same detached expected SHA,
+   # so post-detach ref revalidation must not rediscover a unique checkout.
+   for original in a.repository:validate_item(original,original["candidate_sha"] if original["name"] in resumed else original["expected_sha"],a.checked_out_target,allow_post_detach_ambiguity=True)
    for original in a.repository:
     if original["name"] in resumed:receipt["updates"].append({"name":original["name"],"target_ref":original["target_ref"],"before_sha":original["expected_sha"],"after_sha":original["candidate_sha"],"status":"resumed_already_moved"})
    receipt["resume_stage"]="target_updates";write(a.output,{k:v for k,v in receipt.items() if k!="_output_path"},replace=True)

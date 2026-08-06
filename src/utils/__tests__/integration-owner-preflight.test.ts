@@ -25,6 +25,8 @@ describe('target-ref integration channel', () => {
     expect(source).toContain('unsafe_active_runtime_ownership');
     expect(source).toContain('--checked-out-target');
     expect(source).toContain('detach_same_sha');
+    expect(source).toContain('allow_post_detach_ambiguity=True');
+    expect(source).toContain('and not allow_post_detach_ambiguity:raise IntegrationError("ambiguous detached runtime identity for target retry")');
     expect(source).toContain('--risk-tier');
     expect(source).toContain('not_required_by_effective_tier');
     expect(source).toContain('stale_behind_target');
