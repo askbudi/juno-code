@@ -223,6 +223,24 @@ describe('Configuration Module', () => {
       ).toThrow(/gitCheckpoint/);
     });
 
+    it('should accept only the canonical Git-flow policy pointer', () => {
+      const config = validateConfig({
+        ...DEFAULT_CONFIG,
+        gitFlow: {
+          enabled: true,
+          policy: '.juno_task/config/git-flow.json',
+        },
+      });
+      expect(config.gitFlow).toEqual({
+        enabled: true,
+        policy: '.juno_task/config/git-flow.json',
+      });
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        gitFlow: { enabled: true, policy: '../outside.json' },
+      })).toThrow(/gitFlow/);
+    });
+
     it('should accept an enabled cross-project Kanban alias allowlist', () => {
       const config = validateConfig({
         ...DEFAULT_CONFIG,

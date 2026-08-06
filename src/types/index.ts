@@ -108,6 +108,12 @@ export interface JunoTaskConfig {
   // Controller-owned Git checkpoint configuration
   gitCheckpoint?: GitCheckpointConfig;
 
+  // Thin enablement pointer; policy semantics remain Python-owned.
+  gitFlow?: {
+    enabled: boolean;
+    policy: '.juno_task/config/git-flow.json';
+  };
+
   // Explicit, source-project authorization for cross-project Kanban aliases
   kanbanRegistry?: KanbanRegistryConfig;
 

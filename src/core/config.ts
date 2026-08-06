@@ -152,6 +152,14 @@ const GitCheckpointSchema = z
   .strict()
   .optional();
 
+const GitFlowSchema = z
+  .object({
+    enabled: z.boolean(),
+    policy: z.literal('.juno_task/config/git-flow.json'),
+  })
+  .strict()
+  .optional();
+
 const KanbanProjectAliasSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'must be a lowercase project alias');
@@ -276,6 +284,10 @@ export const JunoTaskConfigSchema = z
     // Controller-owned Git checkpoint configuration
     gitCheckpoint: GitCheckpointSchema.describe(
       'Allowlisted controller paths and optional read-only commit-planning agent settings',
+    ),
+
+    gitFlow: GitFlowSchema.describe(
+      'Enablement and canonical policy pointer for the Python-owned Git-flow engine',
     ),
 
     kanbanRegistry: KanbanRegistrySchema.describe(
