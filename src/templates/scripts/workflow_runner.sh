@@ -963,6 +963,39 @@ def active_shell_syntax(command: str) -> tuple[bool, bool]:
 
 
 def compound_agent_shell_command(command: Any, *, _depth: int = 0) -> bool:
+    if _depth >= 8:
+        return True
+    if isinstance(command, list):
+        parts = effective_command_argv(command)
+        if not parts:
+            return False
+        executable = Path(parts[0]).name
+        if executable in JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES:
+            return False
+
+        def wrapped_launch(value: Any) -> bool:
+            nested = effective_command_argv(value)
+            if not nested:
+                return False
+            nested_executable = Path(nested[0]).name
+            return (
+                nested_executable in JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
+                or compound_agent_shell_command(value, _depth=_depth + 1)
+            )
+
+        if executable in {"bash", "dash", "ksh", "sh", "zsh"}:
+            for index, part in enumerate(parts[1:], start=1):
+                if part.startswith("-") and "c" in part[1:] and index + 1 < len(parts):
+                    return wrapped_launch(parts[index + 1])
+            return False
+        if executable == "eval":
+            return len(parts) > 1 and wrapped_launch(" ".join(parts[1:]))
+        if executable in {"builtin", "command", "exec"}:
+            index = 1
+            while index < len(parts) and (parts[index] == "--" or parts[index].startswith("-")):
+                index += 1
+            return index < len(parts) and wrapped_launch(parts[index:])
+        return False
     if not isinstance(command, str):
         return False
     try:
@@ -987,8 +1020,6 @@ def compound_agent_shell_command(command: Any, *, _depth: int = 0) -> bool:
     # Inspect that argument as shell source instead of searching every quoted
     # token: prompt-generation commands may legitimately write text such as
     # "yy pi ..." without executing it.
-    if _depth >= 8:
-        return True
     parts = effective_command_argv(command)
     if not parts:
         return False

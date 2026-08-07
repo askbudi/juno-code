@@ -687,6 +687,16 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       expect(result.stderr).toContain('compound shell syntax');
     }
 
+    for (const wrappedArgv of [
+      ['bash', '-lc', 'yy pi --model :evil hidden'],
+      ['command', 'yy', 'pi', '--model', ':evil', 'hidden'],
+      ['command', 'bash', '-lc', 'eval "yy pi --model :evil hidden"'],
+    ]) {
+      const result = await lint(wrappedArgv);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('compound shell syntax');
+    }
+
     const malformedShell = await lint('echo "unterminated argument');
     expect(malformedShell.status).not.toBe(0);
     expect(malformedShell.stderr).toContain('compound shell syntax');
