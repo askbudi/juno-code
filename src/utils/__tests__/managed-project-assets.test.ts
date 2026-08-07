@@ -65,6 +65,7 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.new_task_workflow).toContain('{{ receipts.<id>.path }}');
     expect(dictionary.new_task_workflow).toContain('Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps');
     expect(dictionary.new_task_workflow).toContain('same frozen base and tip');
+    expect(dictionary.new_task_workflow).toContain('producer_step_digest');
     expect(dictionary.run_workflow).toContain('# Run task workflow');
     expect(dictionary.run_workflow).toContain('--amends-run PRIOR_RUN --from-step STEP');
     expect(dictionary.run_workflow).toContain('Wait for both review results before repair');
@@ -121,6 +122,15 @@ describe('ManagedProjectAssets', () => {
 
       await ManagedProjectAssets.update(projectDir, { silent: true });
       await ScriptInstaller.autoUpdate(projectDir, true);
+
+      const taskWorkflowHelper = await fs.readFile(
+        path.join(projectDir, '.juno_task/scripts/task_workflow_helper.py'),
+        'utf8',
+      );
+      expect(taskWorkflowHelper).toContain(
+        'role review must not declare edit_capable true or edit_admission',
+      );
+      expect(taskWorkflowHelper).not.toContain('review_fix');
 
       const managedWikis = definitions.filter((asset) => asset.type === 'wiki');
       const relativeLink = /\[[^\]]+\]\((?![a-z]+:|#)([^)#]+)(?:#[^)]*)?\)/gi;

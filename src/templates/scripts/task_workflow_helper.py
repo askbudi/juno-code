@@ -221,6 +221,8 @@ def symbolic_task_set_errors(manifest: dict[str, Any], *, manifest_dir: Path | N
             errors.append(f"task {key or index} role implementation must explicitly declare edit_capable true or false")
         if not isinstance(edit_capable, bool):
             errors.append(f"task {key or index} edit_capable must be boolean")
+        if role == "review" and (edit_capable is True or task.get("edit_admission") is not None):
+            errors.append(f"task {key or index} role review must not declare edit_capable true or edit_admission")
         if generated_task_requires_admission(task):
             admission = task.get("edit_admission")
             required = {"repository", "target_ref", "approved_base", "task_worktree", "task_branch_ref",
@@ -318,14 +320,9 @@ def q(value: str) -> str:
 
 
 def generated_write_contract(task: dict[str, Any]) -> str:
-    """Derive generated dispatch authority from the rendered agent contract.
-
-    A review with edit admission is a fix-capable review even when the legacy
-    edit_capable hint is omitted/default-false. Reviews without admission stay
-    genuinely read-only.
-    """
-    if str(task.get("role", "")) == "review" and task.get("edit_admission") is not None:
-        return "review_fix"
+    """Derive generated dispatch authority; semantic reviewers are always read-only."""
+    if str(task.get("role", "")) == "review":
+        return "read_only"
     if task.get("edit_capable") is True:
         return "product_edit"
     return "read_only"
@@ -367,9 +364,7 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         f"    Shared implementation tag: {impl_tag}",
         "  review_contract: |",
         "    Inspect the exact lifecycle-bound diff, tests, and typed receipts independently.",
-        "    This is a read-only review: do not edit files or create commits.",
-        "  review_fix_contract: |",
-        "    Fixes are authorized only in the lifecycle-admitted TASK_ROOT; they may be committed and accepted at the resulting exact tip.",
+        "    This is a read-only review: do not edit files, create commits, update Kanban, launch reviewers, or repair findings.",
     ]
     edit_tasks = [task for task in manifest["tasks"] if generated_task_requires_admission(task)]
     if edit_tasks:
@@ -447,8 +442,6 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         role_contract = []
         if str(task.get("role", "")) == "review":
             role_contract = ["", "        {{ vars.review_contract }}"]
-            if write_contract == "review_fix":
-                role_contract.append("        {{ vars.review_fix_contract }}")
         terminal_guard = []
         if str(task.get("role", "")) == "review":
             terminal_guard = [
