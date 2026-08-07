@@ -95,7 +95,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 10. Review-ready boundary
 
-Focused tests are the editing loop. Run a full suite only after the candidate is feature-complete and ready for independent review, or after a consolidated repair creates a replacement candidate. Implementation workers never launch semantic reviewers. High-risk Reviewer A and Reviewer B are fresh, read-only, sequential, and bound to the same frozen tip; do not repair between them. Wait for both, consolidate findings by root cause, and assign one separate repair session. Reviewers never edit, commit, update Kanban, launch reviewers, or rerun broad suites by default.
+Focused tests are the editing loop. Run a full suite only after the candidate is feature-complete and ready for independent review, or after implementing a consolidated repair packet. Implementation workers never launch semantic reviewers. Stop and hand off at `REVIEW_READY` with the exact base/tip and bounded validation evidence; do not wait for reviews, consolidate findings, or dispatch repair. The logical orchestrator owns Reviewer A/Reviewer B scheduling and any later repair assignment.
 
 11. Git and controller checkpoint
 

@@ -101,6 +101,8 @@ describe('ManagedProjectAssets', () => {
       );
       expect(implementationReference).toContain('Review-ready boundary');
       expect(implementationReference).toContain('Implementation workers never launch semantic reviewers');
+      expect(implementationReference).toContain('Stop and hand off at `REVIEW_READY`');
+      expect(implementationReference).not.toContain('Wait for both, consolidate findings');
     }
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
