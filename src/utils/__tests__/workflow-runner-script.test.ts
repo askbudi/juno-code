@@ -332,7 +332,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
         ...(mutation ? [{ id: 'mutate-after-admission', capture_session: false, fail_workflow: true, command: mutation }] : []),
         {
           id: 'edit', capture_session: false, fail_workflow: true, edit_capable: true, requires_receipts: ['edit'],
-          generated_task_contract: { role: 'review', write_contract: 'review_fix', task_root_receipt: 'edit' },
+          generated_task_contract: { role: 'implementation', write_contract: 'product_edit', task_root_receipt: 'edit' },
           command: ['python3', '-c', `import json,os,pathlib; pathlib.Path(${JSON.stringify(markerPath)}).write_text(json.dumps({"cwd":str(pathlib.Path.cwd()),"task_root":os.environ.get("TASK_ROOT"),"controller_root":os.environ.get("JUNO_TASK_ROOT")}))`],
         },
       ],
@@ -343,6 +343,30 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       await fs.writeJson(workflowPath, document);
       return runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, name), '--print-output', 'none']);
     };
+
+    for (const writeContract of ['review_fix', 'product_edit']) {
+      const rejectedReview: any = workflow(taskRoot);
+      rejectedReview.steps[1].generated_task_contract = {
+        role: 'review', write_contract: writeContract, task_root_receipt: 'edit',
+      };
+      const rejected = await runCase(`review-${writeContract}`, rejectedReview);
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stderr + rejected.stdout).toContain(
+        'generated review step edit must use write_contract read_only',
+      );
+      expect(await fs.pathExists(markerPath)).toBe(false);
+    }
+
+    const readOnlyWithAdmission: any = workflow(taskRoot);
+    readOnlyWithAdmission.steps[1].generated_task_contract = {
+      role: 'review', write_contract: 'read_only', task_root_receipt: 'edit',
+    };
+    const rejectedReadOnlyAdmission = await runCase('review-read-only-with-admission', readOnlyWithAdmission);
+    expect(rejectedReadOnlyAdmission.status).not.toBe(0);
+    expect(rejectedReadOnlyAdmission.stderr + rejectedReadOnlyAdmission.stdout).toContain(
+      'generated read-only step edit cannot declare edit admission',
+    );
+    expect(await fs.pathExists(markerPath)).toBe(false);
 
     const accepted = await runCase('accepted', workflow(taskRoot));
     expect(accepted.status, accepted.stderr).toBe(0);

@@ -743,8 +743,11 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         if generated is not None:
             if not isinstance(generated, dict):
                 raise WorkflowError(f"generated step {step_id} contract must be a mapping")
+            role = str(generated.get("role") or "")
             write_contract = str(generated.get("write_contract") or "")
-            if write_contract not in {"read_only", "product_edit", "review_fix"}:
+            if role == "review" and write_contract != "read_only":
+                raise WorkflowError(f"generated review step {step_id} must use write_contract read_only")
+            if write_contract not in {"read_only", "product_edit"}:
                 raise WorkflowError(f"generated step {step_id} has invalid write_contract: {write_contract}")
             if write_contract == "read_only":
                 if generated.get("task_root_receipt") or step.get("edit_capable") is True:
@@ -2012,6 +2015,8 @@ def generated_dispatch_root(
     generated = step.get("generated_task_contract")
     if not isinstance(generated, dict) or generated.get("write_contract") == "read_only":
         return project_root
+    if generated.get("role") == "review":
+        raise WorkflowError(f"generated review step {step['id']} cannot obtain edit dispatch authority")
     receipt_id = str(generated.get("task_root_receipt") or "")
     contract = receipts[receipt_id]
     producer = contract["producer"]
