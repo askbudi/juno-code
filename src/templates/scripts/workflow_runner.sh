@@ -935,9 +935,11 @@ def detect_juno_command(command: Any) -> bool:
 DIRECT_AGENT_EXECUTABLES = {"pi", "codex", "claude", "gemini", "cursor"}
 
 
-def has_active_shell_expansion(command: str) -> bool:
+def active_shell_syntax(command: str) -> tuple[bool, bool]:
     quote: str | None = None
     escaped = False
+    has_control = False
+    has_expansion = False
     for index, char in enumerate(command):
         if escaped:
             escaped = False
@@ -954,10 +956,10 @@ def has_active_shell_expansion(command: str) -> bool:
         if quote == "'":
             continue
         if char == "`" or (char == "$" and command[index + 1:index + 2] == "("):
-            return True
-        if char == "\n" and quote is None:
-            return True
-    return False
+            has_expansion = True
+        if quote is None and (char in ";&|<>()" or char == "\n"):
+            has_control = True
+    return has_control, has_expansion
 
 
 def compound_agent_shell_command(command: Any) -> bool:
@@ -971,14 +973,13 @@ def compound_agent_shell_command(command: Any) -> bool:
     except ValueError:
         return True
     agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
-    active_expansion = has_active_shell_expansion(command)
+    has_control, active_expansion = active_shell_syntax(command)
     has_agent = any(Path(token.strip("`$")).name in agent_names for token in tokens)
     if active_expansion and not has_agent:
         agent_pattern = re.compile(
             rf"(?<![A-Za-z0-9_-])(?:{'|'.join(re.escape(name) for name in sorted(agent_names))})(?![A-Za-z0-9_-])"
         )
         has_agent = bool(agent_pattern.search(command))
-    has_control = any(token and all(char in ";&|<>()" for char in token) for token in tokens)
     return has_agent and (has_control or active_expansion)
 
 

@@ -654,6 +654,9 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
     expect((await lint(['yy', '--quiet', '-l', 'workflow.log', 'pi', 'ordinary flags'])).status).toBe(0);
     expect((await lint('yy pi "quoted prompt; punctuation is data"')).status).toBe(0);
+    for (const punctuation of [';', '|', '&', '<', '>', '(', ')']) {
+      expect((await lint(`yy pi '${punctuation}'`)).status).toBe(0);
+    }
     expect((await lint("yy pi 'quoted ; | & < > ( ) ` $( and newline\npunctuation is data'")).status).toBe(0);
     expect((await lint(['yy', 'pi', 'argv ; | & < > ( ) ` $( and newline\npunctuation is data'])).status).toBe(0);
     expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
@@ -1384,7 +1387,15 @@ summary: |
       },
       {
         name: 'parallel-kanban-review',
-        expected: ['workflow_id: parallel_kanban_review', 'TASK_IDS=', 'aggregation_*.json', '--output-dir "{{ out_dir }}/parallel"'],
+        expected: [
+          'workflow_id: parallel_kanban_review',
+          'TASK_IDS=',
+          'aggregation_*.json',
+          '--output-dir "{{ out_dir }}/parallel"',
+          '- id: prepare_master_review',
+          '- "{{ out_dir }}/master_review_prompt.md"',
+          '      - --prompt-file',
+        ],
       },
     ];
 
