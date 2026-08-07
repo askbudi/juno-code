@@ -962,7 +962,7 @@ def active_shell_syntax(command: str) -> tuple[bool, bool]:
     return has_control, has_expansion
 
 
-def compound_agent_shell_command(command: Any) -> bool:
+def compound_agent_shell_command(command: Any, *, _depth: int = 0) -> bool:
     if not isinstance(command, str):
         return False
     try:
@@ -973,16 +973,6 @@ def compound_agent_shell_command(command: Any) -> bool:
     except ValueError:
         return True
     agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
-    invocation_pattern = re.compile(
-        r"(?<![A-Za-z0-9_-])(?:yy|juno-code|ypl)\s+pi(?![A-Za-z0-9_-])"
-        r"|(?<![A-Za-z0-9_-])(?:codex|claude|gemini|cursor)(?=\s|$)"
-    )
-    first_executable = next(
-        (token for token in tokens if not ENV_ASSIGNMENT_RE.fullmatch(token)),
-        "",
-    )
-    if invocation_pattern.search(command) and Path(first_executable).name not in agent_names:
-        return True
     has_control, active_expansion = active_shell_syntax(command)
     has_agent = any(Path(token.strip("`$")).name in agent_names for token in tokens)
     if active_expansion and not has_agent:
@@ -990,7 +980,44 @@ def compound_agent_shell_command(command: Any) -> bool:
             rf"(?<![A-Za-z0-9_-])(?:{'|'.join(re.escape(name) for name in sorted(agent_names))})(?![A-Za-z0-9_-])"
         )
         has_agent = bool(agent_pattern.search(command))
-    return has_agent and (has_control or active_expansion)
+    if has_agent and (has_control or active_expansion):
+        return True
+
+    # Shell/eval/command wrappers hide their executable in a quoted argument.
+    # Inspect that argument as shell source instead of searching every quoted
+    # token: prompt-generation commands may legitimately write text such as
+    # "yy pi ..." without executing it.
+    if _depth >= 8:
+        return True
+    parts = effective_command_argv(command)
+    if not parts:
+        return False
+    executable = Path(parts[0]).name
+
+    def launches_agent(value: str) -> bool:
+        nested = effective_command_argv(value)
+        if not nested:
+            return False
+        nested_executable = Path(nested[0]).name
+        return (
+            nested_executable in DIRECT_AGENT_EXECUTABLES
+            or (nested_executable in JUNO_COMMANDS and juno_subagent_name(nested) in DIRECT_AGENT_EXECUTABLES)
+            or compound_agent_shell_command(value, _depth=_depth + 1)
+        )
+
+    if executable in {"bash", "dash", "ksh", "sh", "zsh"}:
+        for index, part in enumerate(parts[1:], start=1):
+            if part.startswith("-") and "c" in part[1:] and index + 1 < len(parts):
+                return launches_agent(parts[index + 1])
+        return False
+    if executable == "eval":
+        return len(parts) > 1 and launches_agent(" ".join(parts[1:]))
+    if executable in {"builtin", "command", "exec"}:
+        index = 1
+        while index < len(parts) and (parts[index] == "--" or parts[index].startswith("-")):
+            index += 1
+        return index < len(parts) and launches_agent(" ".join(parts[index:]))
+    return False
 
 
 def juno_command_name(command: Any) -> str | None:

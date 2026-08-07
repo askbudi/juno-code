@@ -654,11 +654,14 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
     expect((await lint(['yy', '--quiet', '-l', 'workflow.log', 'pi', 'ordinary flags'])).status).toBe(0);
     expect((await lint('yy pi "quoted prompt; punctuation is data"')).status).toBe(0);
+    expect((await lint('TRACE_ID=review yy pi "assignment-prefixed canonical launch"')).status).toBe(0);
     for (const punctuation of [';', '|', '&', '<', '>', '(', ')']) {
       expect((await lint(`yy pi '${punctuation}'`)).status).toBe(0);
     }
     expect((await lint("yy pi 'quoted ; | & < > ( ) ` $( and newline\npunctuation is data'")).status).toBe(0);
     expect((await lint(['yy', 'pi', 'argv ; | & < > ( ) ` $( and newline\npunctuation is data'])).status).toBe(0);
+    expect((await lint("printf '%s\\n' 'Use yy pi for independent reviews' > prompt.md")).status).toBe(0);
+    expect((await lint("sh -c 'printf %s \"Use yy pi for independent reviews\" > prompt.md'")).status).toBe(0);
     expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
 
     for (const compound of [
@@ -674,6 +677,10 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       "eval 'yy pi --model :evil hidden'",
       'command yy pi --model :evil hidden',
       "bash -lc 'codex hidden'",
+      "dash -c 'pi hidden'",
+      "zsh -c 'juno-code pi hidden'",
+      "X=1 bash -lc 'ypl hidden'",
+      "exec yy pi --model :evil hidden",
     ]) {
       const result = await lint(compound);
       expect(result.status).not.toBe(0);
