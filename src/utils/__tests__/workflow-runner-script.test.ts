@@ -654,17 +654,31 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
     expect((await lint(['yy', '--quiet', '-l', 'workflow.log', 'pi', 'ordinary flags'])).status).toBe(0);
     expect((await lint('yy pi "quoted prompt; punctuation is data"')).status).toBe(0);
+    expect((await lint("yy pi 'quoted ; | & < > ( ) ` $( and newline\npunctuation is data'")).status).toBe(0);
+    expect((await lint(['yy', 'pi', 'argv ; | & < > ( ) ` $( and newline\npunctuation is data'])).status).toBe(0);
     expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
 
     for (const compound of [
       'yy pi allowed-prompt; PI_MODEL=:sol yy pi bypass',
+      'yy pi allowed-prompt && yy pi bypass',
+      'yy pi allowed-prompt\nyy pi bypass',
       'printf input | PI_PROVIDER=openai PI_MODEL=gpt-4o yy pi bypass',
       'echo $(yy pi bypass)',
+      'echo "$(yy pi bypass)"',
+      'echo `pi`',
     ]) {
       const result = await lint(compound);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('compound shell syntax');
     }
+
+    const malformedShell = await lint('echo "unterminated argument');
+    expect(malformedShell.status).not.toBe(0);
+    expect(malformedShell.stderr).toContain('compound shell syntax');
+
+    const compoundSummary = await lint(['echo', 'step'], 'yy pi review | yy pi bypass');
+    expect(compoundSummary.status).not.toBe(0);
+    expect(compoundSummary.stderr).toContain('compound shell syntax');
 
     for (const [command, message] of [
       [['yy', 'pi', '-m', ':sol', 'unlisted'], 'not exactly allowlisted'],

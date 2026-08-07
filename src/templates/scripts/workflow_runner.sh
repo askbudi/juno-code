@@ -932,6 +932,34 @@ def detect_juno_command(command: Any) -> bool:
     return executable in JUNO_COMMANDS
 
 
+DIRECT_AGENT_EXECUTABLES = {"pi", "codex", "claude", "gemini", "cursor"}
+
+
+def has_active_shell_expansion(command: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if char == "'" and quote != '"':
+            quote = None if quote == "'" else "'"
+            continue
+        if char == '"' and quote != "'":
+            quote = None if quote == '"' else '"'
+            continue
+        if quote == "'":
+            continue
+        if char == "`" or (char == "$" and command[index + 1:index + 2] == "("):
+            return True
+        if char == "\n" and quote is None:
+            return True
+    return False
+
+
 def compound_agent_shell_command(command: Any) -> bool:
     if not isinstance(command, str):
         return False
@@ -943,9 +971,15 @@ def compound_agent_shell_command(command: Any) -> bool:
     except ValueError:
         return True
     agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
-    has_agent = any(Path(token).name in agent_names for token in tokens)
+    agent_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_-])(?:{'|'.join(re.escape(name) for name in sorted(agent_names))})(?![A-Za-z0-9_-])"
+    )
+    has_agent = any(
+        Path(token.strip("`$")).name in agent_names or agent_pattern.search(token)
+        for token in tokens
+    )
     has_control = any(token and all(char in ";&|<>()" for char in token) for token in tokens)
-    return has_agent and (has_control or "\n" in command or "`" in command or "$(" in command)
+    return has_agent and (has_control or has_active_shell_expansion(command))
 
 
 def juno_command_name(command: Any) -> str | None:
@@ -1015,7 +1049,6 @@ def juno_subagent_name(command: Any) -> str | None:
     return None
 
 
-DIRECT_AGENT_EXECUTABLES = {"pi", "codex", "claude", "gemini", "cursor"}
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
 
 
