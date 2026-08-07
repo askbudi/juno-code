@@ -971,15 +971,15 @@ def compound_agent_shell_command(command: Any) -> bool:
     except ValueError:
         return True
     agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
-    agent_pattern = re.compile(
-        rf"(?<![A-Za-z0-9_-])(?:{'|'.join(re.escape(name) for name in sorted(agent_names))})(?![A-Za-z0-9_-])"
-    )
-    has_agent = any(
-        Path(token.strip("`$")).name in agent_names or agent_pattern.search(token)
-        for token in tokens
-    )
+    active_expansion = has_active_shell_expansion(command)
+    has_agent = any(Path(token.strip("`$")).name in agent_names for token in tokens)
+    if active_expansion and not has_agent:
+        agent_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_-])(?:{'|'.join(re.escape(name) for name in sorted(agent_names))})(?![A-Za-z0-9_-])"
+        )
+        has_agent = bool(agent_pattern.search(command))
     has_control = any(token and all(char in ";&|<>()" for char in token) for token in tokens)
-    return has_agent and (has_control or has_active_shell_expansion(command))
+    return has_agent and (has_control or active_expansion)
 
 
 def juno_command_name(command: Any) -> str | None:
@@ -3512,7 +3512,7 @@ steps:
       item_placeholder = f"{chr(123) * 2}item{chr(125) * 2}"
       (out_dir / "triage_prompt.md").write_text(
           "You are taking over one production issue in a dedicated tmux pane.\\n"
-          "Keep this pane available for later `yy continue`; do not collapse history.\\n"
+          "Keep this pane available for later session continuation; do not collapse history.\\n"
           f"Issue JSON: {item_placeholder}\\n\\n"
           "Investigate the service, runbook, likely blast radius, immediate mitigations, and follow-up owners. "
           "Finish with a concise HANDOFF_SUMMARY and preserve any session id/artifact paths you create.\\n",
@@ -3544,7 +3544,7 @@ steps:
         printf 'Issues: `%s`\\n\\n' "{{ out_dir }}/issues.jsonl"
         printf 'Parallel artifacts: `%s`\\n\\n' "{{ out_dir }}/parallel"
         printf 'Attach with `tmux ls | grep pc-{{ triage_name }}` then `tmux attach -t <session>`.\\n\\n'
-        printf 'Latest aggregation files preserve each final agent response, commit metadata, cost, and session id so later review or `yy continue` does not need to reconstruct history from scrollback.\\n\\n'
+        printf 'Latest aggregation files preserve each final agent response, commit metadata, cost, and session id so later continuation does not need to reconstruct history from scrollback.\\n\\n'
         find "{{ out_dir }}/parallel" -name 'aggregation_*.json' -print 2>/dev/null | sort || true
       } | tee "$summary"
 summary: |
@@ -3604,8 +3604,8 @@ steps:
         --parallel 3 \\
         --prompt-file "{{ out_dir }}/kanban_worker_prompt.md" \\
         --output-dir "{{ out_dir }}/parallel"
-  - id: master_review
-    capture_session: true
+  - id: prepare_master_review
+    capture_session: false
     command: |
       set -eu
       latest=$(find "{{ out_dir }}/parallel" -name 'aggregation_*.json' -print 2>/dev/null | sort | tail -n 1)
@@ -3613,18 +3613,21 @@ steps:
         echo "No aggregation_*.json found under {{ out_dir }}/parallel" >&2
         exit 2
       fi
-      yy pi "$(cat <<EOF
-      Review the completed parallel kanban batch for topic: {{ review_topic }}.
-
-      Read the latest aggregation artifact at: $latest
-      It preserves each worker final response, session id, commit hash, status, and cost so this master review does not need to reconstruct history from raw logs.
-
-      Aggregation JSON:
-      $(cat "$latest")
-
-      Produce a concise merge/review plan with: completed tasks, failures needing follow-up, commits to inspect, validation gaps, and recommended next kanban updates.
-      EOF
-      )"
+      {
+        printf 'Review the completed parallel kanban batch for topic: %s.\\n\\n' "{{ review_topic }}"
+        printf 'Read the latest aggregation artifact at: %s\\n' "$latest"
+        printf 'It preserves each worker final response, session id, commit hash, status, and cost so this master review does not need to reconstruct history from raw logs.\\n\\n'
+        printf 'Aggregation JSON:\\n'
+        cat "$latest"
+        printf '\\n\\nProduce a concise merge/review plan with: completed tasks, failures needing follow-up, commits to inspect, validation gaps, and recommended next kanban updates.\\n'
+      } > "{{ out_dir }}/master_review_prompt.md"
+  - id: master_review
+    capture_session: true
+    command:
+      - yy
+      - pi
+      - --prompt-file
+      - "{{ out_dir }}/master_review_prompt.md"
 summary: |
   # Parallel kanban review
   Plan session: {{ steps.plan_kanban_tasks.session_id }}
