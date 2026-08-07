@@ -1,4 +1,29 @@
-Study Wiki '.juno_task/wiki/parallel_runner_and_spec_review.md' first.
-Launch this review only through a fresh `yy pi` context. Never use bare `pi`, a direct agent/provider CLI, or an indirect provider/model override. Inherit project defaults or use only an ordinary explicit selector exactly approved by project `workflowModels`; other compatibility testing is separately authorized outside this review workflow.
-check kanban and review commits of this implementation. and review if they fulfill specs. if you found a bug report it on kanban and then resolve it. Is it the best implementation? Is there a place for simplify
-After parallel_runner/subagent implementation finishes, run a spec-invariant review before marking root work complete: compare task MUST/MUST NOT requirements against git diff and tests, especially production-write CLIs. For write-capable CLIs, test dangerous operator paths: dry-run, authorized run, resume, run-id without resume flag, complete existing output, partial existing output, and failed child/retry behavior. If a mismatch is found, create/reopen a kanban bug task first, then fix it.
+# Independent exact-tip semantic review
+
+Task: `{{ task_id }}`
+Review kind: `{{ review_kind }}`
+Reviewer: `{{ reviewer_index }}`
+Repository: `{{ repository }}`
+Base: `{{ base_sha }}`
+Tip: `{{ tip_sha }}`
+Requirements checklist: `{{ checklist_path }}`
+Consolidated prior findings: `{{ findings_summary_path }}`
+Validation evidence: `{{ validation_evidence_path }}`
+
+Launch this review only through a fresh `yy pi` context. Never use bare `pi`, a direct agent/provider CLI, or an indirect provider/model override. Inherit project defaults or use only an ordinary explicit selector exactly approved by project `workflowModels`.
+
+Review only: do not edit, commit, update Kanban, launch another reviewer, repair findings, mutate refs, or change any worktree. Inspect exactly `{{ base_sha }}..{{ tip_sha }}`. Treat validation evidence as evidence, not as a substitute for code and requirement inspection. Stay within the project threat model and report actionable findings with file/line or artifact evidence and a concrete acceptance condition.
+
+For a high-risk pair, Reviewer A and Reviewer B run sequentially but independently against the same frozen base and tip. Do not consume the other reviewer's conclusions. The orchestrator waits for both results before consolidating findings or dispatching repair.
+
+Output exactly one verdict class:
+
+```text
+JUNO_REVIEW_FINDING: <severity>; <requirement>; <evidence>; <acceptance condition>
+```
+
+or, only when no blocking finding remains:
+
+```text
+JUNO_REVIEW_VERDICT: PASS
+```

@@ -55,24 +55,52 @@ describe('ManagedProjectAssets', () => {
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
     expect(dictionary.clean_worktree).toContain('# Run an exact-base product-change workflow');
+    expect(dictionary.clean_worktree).toContain('REVIEW_READY');
+    expect(dictionary.clean_worktree).toContain('Reviewer A and then Reviewer B');
+    expect(dictionary.clean_worktree).toContain('Do not repair between Reviewer A and Reviewer B');
     expect(dictionary.reflect).toContain('# End-of-session reflection');
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
     expect(dictionary.reflect).toContain('complete reflection table');
     expect(dictionary.new_task_workflow).toContain('# Create task workflow');
     expect(dictionary.new_task_workflow).toContain('{{ receipts.<id>.path }}');
     expect(dictionary.new_task_workflow).toContain('Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps');
+    expect(dictionary.new_task_workflow).toContain('same frozen base and tip');
     expect(dictionary.run_workflow).toContain('# Run task workflow');
     expect(dictionary.run_workflow).toContain('--amends-run PRIOR_RUN --from-step STEP');
+    expect(dictionary.run_workflow).toContain('Wait for both review results before repair');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('a merely compatible but older installed v2 is stale');
-    expect(
-      await fs.readFile(path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'), 'utf8'),
-    ).toContain('Never use bare `pi`');
+    const reviewPrompt = await fs.readFile(
+      path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'),
+      'utf8',
+    );
+    expect(reviewPrompt).toContain('Never use bare `pi`');
+    expect(reviewPrompt).toContain('Review only');
+    expect(reviewPrompt).toContain('do not edit, commit, update Kanban, launch another reviewer');
+    expect(reviewPrompt).toContain('JUNO_REVIEW_VERDICT: PASS');
+    expect(reviewPrompt).not.toContain('then resolve it');
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/parallel_runner_and_spec_review.md'), 'utf8'),
     ).toContain('Reviewer launcher identity');
+    expect(
+      await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
+    ).toContain('Sequential same-tip review policy');
+
+    for (const agent of ['claude', 'codex', 'pi']) {
+      const implementationReference = await fs.readFile(
+        path.join(
+          process.cwd(),
+          'src/templates/skills',
+          agent,
+          'ralph-loop/references/implement.md',
+        ),
+        'utf8',
+      );
+      expect(implementationReference).toContain('Review-ready boundary');
+      expect(implementationReference).toContain('Implementation workers never launch semantic reviewers');
+    }
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);

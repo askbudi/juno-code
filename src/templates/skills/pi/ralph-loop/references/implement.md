@@ -92,6 +92,10 @@ You **MUST** consider the user input before proceeding (if not empty).
    - When the issue is resolved always update ./juno_task/scripts/kanban.sh
      `./juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}"`
 
-10. Git and controller checkpoint
+10. Review-ready boundary
+
+Focused tests are the editing loop. Run a full suite only after the candidate is feature-complete and ready for independent review, or after a consolidated repair creates a replacement candidate. Implementation workers never launch semantic reviewers. High-risk Reviewer A and Reviewer B are fresh, read-only, sequential, and bound to the same frozen tip; do not repair between them. Wait for both, consolidate findings by root cause, and assign one separate repair session. Reviewers never edit, commit, update Kanban, launch reviewers, or rerun broad suites by default.
+
+11. Git and controller checkpoint
 
 After tests pass, explicitly stage and commit only task-owned product paths; never use broad staging and never push without separate authorization. Then update Kanban through its wrapper and run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` so allowlisted controller residue is durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block this checkpoint rather than being absorbed. Record the product commit on the task with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`.

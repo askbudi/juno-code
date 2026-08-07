@@ -43,8 +43,10 @@ parallel_runner_wait.sh returns
   -> inspect root and submodule diffs/status
   -> salvage, revert, or rerun partial edits explicitly
   -> compare matrix against code/tests/artifacts
-  -> create/reopen a kanban bug before fixing mismatches
-  -> run targeted tests and dangerous-path checks
+  -> persist findings without changing product or Kanban
+  -> wait for every required independent reviewer
+  -> terminal orchestrator consolidates one repair packet
+  -> separate repair owner runs targeted tests and dangerous-path checks
   -> commit submodules first, then parent pointer
   -> terminal owner runs finalize-review after workflow completion
   -> human reviewer accepts/rejects against the independent matrix
@@ -54,6 +56,8 @@ parallel_runner_wait.sh returns
 ```
 
 Do not use the implementation summary as the checklist. Read it after the matrix exists so the review does not inherit the same blind spots.
+
+**Independent reviewer boundary:** Review only. An independent reviewer never edits, commits, updates Kanban, launches another reviewer, repairs findings, or mutates refs/worktrees. High-risk Reviewer A and Reviewer B run sequentially against one frozen base/tip; no repair occurs until both finish. The terminal orchestrator consolidates both outputs by root cause and assigns one separate repair owner. A replacement tip invalidates the old round and receives fresh required reviews.
 
 **Reviewer launcher identity:** Launch every project subagent and independent reviewer through `yy pi`. Inherited project provider/model defaults are always permitted; an ordinary explicit selector is permitted only on exact project `workflowModels` membership (`--provider P --model M` is normalized to `P/M`, without alias expansion). Bare `pi`, direct agent/provider CLIs, provider-only selection, and inline-env, additional-args, or alternate-config overrides bypass Juno policy and are forbidden. Workflow lint applies this policy to steps, summary, pre-merge/candidate review, and nested actual-target review. Run/recovery evidence binds config identity/hash, allowlist hash, and normalized selection so policy drift fails closed. Failure mode prevented: a green review has irreproducible launch identity. Runtime contract: context separation does not change launcher ownership.
 ## Batch E2E runner protocol
@@ -66,7 +70,7 @@ Failure mode prevented: wasted runner slots, ambiguous non-E2E execution, missed
 
 Before launch, declare each selected task's expected terminal state (`done`, intentionally blocked/todo, or another explicit state) plus required verdict/artifact. After every task step, manually verify Kanban state, blockers, response verdict, and artifact until automation is approved. Agent exit 0 and runner success are transport outcomes, not semantic acceptance; final reporting must show both.
 
-Assign one owner for each expensive production execution. Implementation owns targeted tests; the execution owner writes durable evidence; independent/root review consumes it and reruns the expensive job only when evidence is missing, stale, contradictory, or explicitly required. Long work belongs in a durable run root with launch/status/poll/review phases, not one synchronous agent step that can outlive its harness.
+Assign one owner for each expensive production execution. Implementation owns targeted tests; the execution owner writes durable evidence; independent/root review consumes it and reruns the expensive job only when evidence is missing, stale, contradictory, or explicitly required. Focused tests are the edit loop; a full suite runs once at each review-ready candidate boundary. Long work belongs in a durable run root with launch/status/result/review phases and one bounded wait/result operation, not repeated model-driven sleep/tail polling.
 
 Overfit guard: expected terminal states are task-configured, not globally `done`; reruns remain mandatory for missing or unsafe evidence. This section approves instruction/manual gates only, not a new helper.
 
@@ -91,8 +95,8 @@ Failure mode prevented: a successful semantic gate is repeated until timeout, or
 5. Map evidence to gates before accepting validation: list material dimensions such as browser/device class, host/domain, auth mode, source/cache dimension, or write/read mode; prove each is covered or record why a gap is accepted; prefer task-scoped harnesses over broad global config changes when unrelated suites would inherit behavior.
 6. Check single-SOT cleanup when a validation harness is added/replaced: remove or consolidate stale duplicate route, endpoint, query, job-name, or invariant lists; if duplicates remain, name the owner and drift-prevention rule.
 7. For touched public API routes, inspect route surface before approval: method/path, generated body/query params, auth dependencies, response model/envelope, and OpenAPI-impacting handler signature. Internal reuse must call private helpers, not add client-visible handler params.
-8. If a bug or mismatch is found, create/reopen a kanban bug before fixing it. Use `--body-file` for multiline markdown, commands, `$`, pipes, or code fences.
-9. Run task-specific validation and record exact output in the kanban response or artifact.
+8. If a reviewer finds a bug or mismatch, record a read-only finding with evidence and acceptance conditions. Wait for all required reviewers. The terminal orchestrator then creates/reopens Kanban bugs where required and emits one consolidated repair packet; the reviewer never performs those mutations. Use `--body-file` for multiline markdown, commands, `$`, pipes, or code fences.
+9. A separate repair owner runs task-specific validation and records exact output in the Kanban response or artifact.
 10. For submodules, commit/push inside the submodule first, then commit the parent submodule SHA. Prove `git ls-tree HEAD <submodule_path>` matches the submodule `git rev-parse HEAD`.
     For ordinary worktree branches, the integration owner must fetch the approved target, integrate only after independent review, prove task-tip ancestry (or record and verify an approved squash replacement), run integrated-target validation, and permit deployment/E2E only afterward. Remove worktrees and task branches only through the lifecycle cleanup gate.
 11. For workflow runs, the currently running review step MUST NOT run terminal doctor on its own incomplete workflow. After completion, the named terminal owner runs `task_workflow_helper.py finalize-review <run_dir> --manifest <task-set.json>`, then inspects persisted doctor/packet/receipt evidence and records a human verdict separate from runner success. If timeout/signal leaves no terminal manifest, classify it as interruption, preserve step artifacts, and resume only the smallest invalid stage; do not call missing terminal evidence a completed run. Final review reconciles every machine-declared expected output and every review-created bug/amendment, not only original task IDs. Retain artifacts under the declared spec/run root until the disposition owner applies the recorded retention/archive rule.

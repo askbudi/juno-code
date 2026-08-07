@@ -1,69 +1,41 @@
 # Run an exact-base product-change workflow
 
-Every product mutation, including a small fix, uses a named exact-base worktree. Launch orchestration from the canonical branch-verified controller, pass product paths explicitly, and route Kanban/session writes through `JUNO_TASK_ROOT`. Controller dirt and unrelated processes are not integration inputs. Juno/Kanban must never silently switch refs.
+Every product mutation uses a named exact-base worktree. Orchestrate from the canonical controller, pass the product root as `TASK_ROOT`, and keep Kanban/session writes routed through `JUNO_TASK_ROOT`. Juno never silently switches refs.
 
-MUST:
+This instruction reset changes operating policy, not the current schema or helper contract. Continue to use `schema_version: 2` and the existing lifecycle helpers until the complete replacement ships.
 
-1. Read `.juno_task/wiki/git_worktree_lifecycle.md`, `.juno_task/wiki/parallel_runner_task_creation_best_practices.md`, and `.juno_task/wiki/parallel_runner_and_spec_review.md` before planning or executing.
-2. Resolve the canonical controller and one owner-approved exact `refs/heads/<target>` per changed repository. Record repository identity, target ref/SHA, task ID, expected paths, validation commands, cleanup owner, nested repositories, and durable receipt root. Never infer a conventional target branch.
-3. Use `.juno_task/scripts/worktree_lifecycle.py create` to create a named task worktree from the approved target SHA. A narrow `--fetch REMOTE,REF` may bind `FETCH_HEAD` with `--expected-base`; it must not advance the target ref. Existing paths/branches are reusable only when path, ref, HEAD, and cleanliness exactly match the manifest. Treat the receipt's resolved worktree as path truth; successful exact creation internally establishes task authority before publishing the receipt. Assert any display/configured spelling with read-only `worktree_lifecycle.py verify --manifest ... --path ...`, never lexical shell equality. Never attempt public task-role registration.
-4. Before implementation dispatch, run joined read-only `worktree_lifecycle.py edit-preflight` with explicit role/target/base/task/path/create/verify evidence, plus `integration_candidate.py target-preflight` for each official target. Mark generated product steps `edit_capable: true` and require the successful `juno_edit_preflight.v1` receipt. Keep the task tree at its exact approved base; accept only `exact` or `advanced_descendant`, and treat the latter solely as a snapshot requiring later candidate rebuild/re-review. Refuse missing, rewind, or divergent targets.
-5. Run implementation only in the task worktree. Verify its Git root, branch, base, and clean starting state; edit only declared paths; validate; and create one or more coherent task commits. Product steps receive explicit `TASK_ROOT`; controller-owned Kanban/session writes stay on the controller.
-6. In a fresh dedicated `yy pi` context with no implicit resume, produce a `pre_merge` PASS receipt bound to the request/PDR, complete base-to-tip diff, expected paths, commits, tests, and open-bug set. Bare `pi`, direct agent/provider CLIs, and indirect provider/model overrides are forbidden. Inherit project defaults or use only an ordinary explicit selector exactly approved by project `workflowModels`; compatibility testing outside that allowlist is separately authorized outside this workflow. A failed review requires a review-fix commit and a fresh receipt; reviewer fixes and acceptance at the resulting exact tip are permitted.
-7. Use `integration_candidate.py plan` and `build`. When the target is still the task base, the candidate may be the reviewed task tip. When it advanced, build a both-parent candidate whose parents are exactly current target then reviewed task tip. Conflicts or target ambiguity preserve the worktree and fail closed. For an unresolved gitlink conflict, build a fresh successor from the exact current root target, reapply only reviewed owned bytes, bind the reviewed child candidate, and re-review the successor; never guess-resolve the failed candidate.
-8. Run `integration_candidate.py verify`. A direct unchanged candidate reuses the immutable pre-merge review; a composed candidate requires an independent `candidate` PASS receipt. Any target movement requires rebuild and re-review.
-9. Integrate only through an argv-list command that directly executes `integration_owner_preflight.py integrate` (optionally through `python3`), declaring `--risk-tier low|medium|high|release` and, when approved, `--checked-out-target detach_same_sha`; a shell command or wrapper must never own this workflow step. Under the target-channel locks it performs the canonical metadata-only same-SHA detach, preserving active processes and untracked bytes, then expected-SHA CAS and deterministic actual-target validation. High/release, composition, multi-repository, and controller-nested topology require an `actual_target` PASS receipt; direct low/medium does not. Actual review remains inside integration but is persisted as a first-class fresh `actual_target_review` Workflow Runner child step, including logs, response, capture/session, timing, semantic outcome, target/receipt hashes, checkpoints, recovery, manifest, and doctor evidence. List nested repositories child-first and bind root gitlinks. Partial integration is preserved, never rewound.
-10. For local runtime or feature E2E, bind one canonical checkout/ref/HEAD/gitlink identity and record process CWD/PID plus scoped state/log locations without secrets. A healthy port or hot reload is not source identity; restart after target, gitlink, or lockfile changes. Keep product-specific service management in the product project.
-11. Require a typed integration receipt with `outcome=integrated`, risk/review/runtime truth, and feature-tag policy. High/release requires a local `juno-feature/<task>/<sha>` tag; low/medium skips it by default and may request it.
-12. Use `worktree_lifecycle.py cleanup` only after actual-target review passes, the reviewed result is reachable from the exact target, the task worktree is clean/inactive, and nested worktrees are handled first. Preserve blocked worktrees with owner and reason; never force cleanup.
-13. Persist creation, pre-merge, candidate, integration, actual-target, validation, feature-tag, runtime-identity, cleanup, and final semantic-verdict receipts under the controller's durable workflow artifact root. Report local target, remote target, and runner/semantic outcomes separately.
+## Required flow
 
-For an authorized local-integration workflow, declare exactly:
+1. Resolve the canonical controller and the owner-approved full target ref and SHA. Record task ID, expected paths, validation commands, risk tier, cleanup owner, and receipt root.
+2. Run `worktree_lifecycle.py create`, `verify`, and joined `edit-preflight` for the exact-base named task worktree. Run `integration_candidate.py target-preflight` for each official target. Product steps are `edit_capable: true` and consume the successful admission; controller and integration-owner checkouts are not product edit locations.
+3. Implement only in the admitted task worktree. Use focused affected tests as the inner loop. Implementation and repair workers never launch semantic reviewers.
+4. Enter `REVIEW_READY` only when the requested behavior and ordinary happy path are complete, focused tests and lifecycle E2E pass, runtime/template parity is current, one full suite passes on the exact tip, and no known implementation TODO or accepted open finding remains.
+5. Freeze the exact base and tip. For high risk, launch Reviewer A and then Reviewer B in fresh independent `yy pi` sessions against that same frozen identity. Never use bare `pi`; inherit project provider/model defaults or use only an exact project-allowed provider/model selector. Both reviewers are read-only. Do not repair between Reviewer A and Reviewer B. Configure orchestration so a finding from A does not prevent B from returning its independent result.
+6. Wait for both review results before repair. If either reports findings, deduplicate both outputs by root cause and dispatch one repair packet to one repair session. Run focused tests, then one full suite at the replacement candidate boundary, freeze the new tip, and repeat Reviewer A then Reviewer B. Low/medium work uses the project-required single independent review.
+7. After required PASS evidence, use `integration_candidate.py plan`, `build`, and `verify`. Reuse the reviewed tip when composition is unchanged; a composed candidate still receives the currently required independent candidate review. Target movement means rebuild and re-review.
+8. Integrate only through the directly executed argv-list `integration_owner_preflight.py integrate` owner with declared risk and approved `--checked-out-target detach_same_sha`. Preserve current expected-SHA CAS, actual-target validation/review, feature-tag, partial-state, and resume requirements. Do not manually move refs.
+9. Use typed `worktree_lifecycle.py cleanup` only after integrated reachability and current acceptance are proven. Preserve any uncertain, dirty, active, or unreachable worktree.
+10. Report implemented, validated, reviewed, integrated, released, and cleanup-complete states separately from a bounded terminal summary. Keep raw logs and full receipts artifact-backed; observe long work through one bounded wait/result operation instead of repeated model-driven sleep/tail polling.
 
-```yaml
-schema_version: 2
-workflow_class: local_integration
-orchestration_workspace: controller # or exact absolute external orchestration root
-risk_tier: <low|medium|high|release>
-integration_policy:
-  queue: automatic_after_review_pass
-  channel_scope: git_common_dir_and_target_ref
-  target_movement: rebuild_and_rereview
-  checked_out_target: detach_same_sha
-validation_ownership:
-  pre_merge_review: <step-id>
-  candidate_review: <step-id>
-  actual_target_review: <integration-step-id>
-steps:
-  - id: <candidate-review-step-id>
-    candidate_read_only:
-      path: "{{ candidate_path }}" # exact canonical Git worktree top-level
-      sha: "{{ candidate_sha }}"   # full 40-character SHA
-    command: [yy, pi, "Review exact candidate {{ candidate_sha }} at {{ candidate_path }} without mutation."]
-```
-
-The candidate declaration is mandatory for every non-noop candidate review. Its command runs with the exact external orchestration workspace as cwd; aliases, nested candidate paths, and candidate-root cwd are invalid. Every typed receipt in this workflow explicitly lists `producer_step_digest` in `required_fields`; producers write the matching `JUNO_WORKFLOW_STEP_DIGEST` value.
-
-MUST NOT:
-
-- Do not edit product files in the controller or integration-owner checkout, even for a small fix.
-- Do not pre-advance a local target merely to create a task worktree.
-- Do not require controller cleanliness, repository-wide writer quiescence, or a clean checkout owner as a target-channel gate.
-- Do not use a direct merge/fast-forward command in place of the reviewed candidate and expected-SHA CAS helper.
-- Do not auto-stash, reset, discard, rewind, force-remove, force-delete, or silently overwrite work.
-- Do not infer push, publication, package release, deployment, production mutation, or post-deploy E2E authority from task execution or local integration.
+## Validation timing
 
 ```text
-controller orchestration
-  -> exact approved target SHA
-  -> named task worktree
-  -> implementation + tests + commit
-  -> pre_merge PASS
-  -> direct/both-parent candidate
-  -> candidate review when composed
-  -> target-channel lock + metadata detach + expected-SHA CAS
-  -> deterministic actual-target validation + tiered review/tag
-  -> typed safe cleanup + final verdict
+edit -> focused test -> edit -> focused test -> happy path
+                                      |
+                                      v
+                         REVIEW_READY candidate
+                                      |
+                               one full suite
+                                      |
+                     Reviewer A -> Reviewer B
+                                      |
+                        findings? one repair
 ```
 
-If any identity, review, integration, or cleanup gate cannot be proven, preserve the task/candidate evidence and report the exact blocker and safest next command.
+Reviewers do not rerun the full suite by default. They consume exact-tip validation evidence and run only bounded diagnostics needed to establish a finding. Rerun a full suite only at a new candidate boundary, after a failed full run, or when reviewed bytes legitimately changed.
+
+## Current mechanical contract
+
+For authorized local integration, retain the current `schema_version: 2`, `workflow_class: local_integration`, exact integration policy, validation ownership, typed receipts, candidate read-only identity, direct integration-owner argv command, actual-target child evidence, and safe cleanup requirements documented in `.juno_task/wiki/git_worktree_lifecycle.md`. This patch does not advertise the future task-level lifecycle command and does not reject or adapt existing workflows.
+
+Never use G8ylrk's signer, key, HMAC, sandbox, Seatbelt, bubblewrap, trusted-runtime closure, special approval, helper-owned edit, or helper-owned commit architecture. Never infer push, publication, deployment, production mutation, restart, or post-deploy E2E authority from implementation or local integration.
