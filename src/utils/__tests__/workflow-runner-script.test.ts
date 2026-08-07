@@ -681,6 +681,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       "zsh -c 'juno-code pi hidden'",
       "X=1 bash -lc 'ypl hidden'",
       "exec yy pi --model :evil hidden",
+      "exec -a harmless yy pi --model :evil hidden",
     ]) {
       const result = await lint(compound);
       expect(result.status).not.toBe(0);
@@ -689,8 +690,13 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
 
     for (const wrappedArgv of [
       ['bash', '-lc', 'yy pi --model :evil hidden'],
+      ['sh', '-c', 'codex hidden'],
+      ['eval', 'yy', 'pi', '--model', ':evil', 'hidden'],
       ['command', 'yy', 'pi', '--model', ':evil', 'hidden'],
+      ['exec', '-a', 'harmless', 'pi', 'hidden'],
       ['command', 'bash', '-lc', 'eval "yy pi --model :evil hidden"'],
+      ['command', 'exec', '-a', 'harmless', 'yy', 'pi', '--provider', 'evil', '--model', 'hidden'],
+      [...Array(10).fill('command'), 'yy', 'pi', '--model', ':evil', 'hidden'],
     ]) {
       const result = await lint(wrappedArgv);
       expect(result.status).not.toBe(0);

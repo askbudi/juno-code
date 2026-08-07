@@ -993,7 +993,12 @@ def compound_agent_shell_command(command: Any, *, _depth: int = 0) -> bool:
         if executable in {"builtin", "command", "exec"}:
             index = 1
             while index < len(parts) and (parts[index] == "--" or parts[index].startswith("-")):
+                option = parts[index]
                 index += 1
+                if executable == "exec" and option != "--" and "a" in option[1:] and not option.split("a", 1)[1]:
+                    # Bash exec's -a name option consumes the following argv
+                    # entry before the wrapped executable.
+                    index += 1
             return index < len(parts) and wrapped_launch(parts[index:])
         return False
     if not isinstance(command, str):
@@ -1046,7 +1051,10 @@ def compound_agent_shell_command(command: Any, *, _depth: int = 0) -> bool:
     if executable in {"builtin", "command", "exec"}:
         index = 1
         while index < len(parts) and (parts[index] == "--" or parts[index].startswith("-")):
+            option = parts[index]
             index += 1
+            if executable == "exec" and option != "--" and "a" in option[1:] and not option.split("a", 1)[1]:
+                index += 1
         return index < len(parts) and launches_agent(" ".join(parts[index:]))
     return False
 
