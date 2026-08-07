@@ -106,6 +106,23 @@ describe('ManagedProjectAssets', () => {
       expect(implementationReference.indexOf('Git and controller checkpoint')).toBeLessThan(
         implementationReference.indexOf('Stop and hand off at `REVIEW_READY`'),
       );
+      expect(implementationReference.indexOf('Record the product commit on the task')).toBeLessThan(
+        implementationReference.indexOf('controller_checkpoint.py commit'),
+      );
+    }
+
+    const distributedSkills = [
+      ['claude', '.claude/skills/ralph-loop/references/implement.md'],
+      ['codex', '.agents/skills/ralph-loop/references/implement.md'],
+      ['pi', '.pi/skills/ralph-loop/references/implement.md'],
+    ] as const;
+    for (const [agent, relativePath] of distributedSkills) {
+      const canonical = await fs.readFile(
+        path.join(process.cwd(), 'src/templates/skills', agent, 'ralph-loop/references/implement.md'),
+        'utf8',
+      );
+      expect(await fs.readFile(path.resolve(process.cwd(), '..', relativePath), 'utf8')).toBe(canonical);
+      expect(await fs.readFile(path.resolve(process.cwd(), relativePath), 'utf8')).toBe(canonical);
     }
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });

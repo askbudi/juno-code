@@ -94,7 +94,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 10. Git and controller checkpoint
 
-After tests pass, explicitly stage and commit only task-owned product paths; never use broad staging and never push without separate authorization. Then update Kanban through its wrapper and run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` so allowlisted controller residue is durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block this checkpoint rather than being absorbed. Record the product commit on the task with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`.
+After tests pass, explicitly stage and commit only task-owned product paths; never use broad staging and never push without separate authorization. Record the product commit on the task with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`. Then run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` so that Kanban update and other allowlisted controller residue are durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block this checkpoint rather than being absorbed.
 
 11. Review-ready boundary
 
