@@ -653,7 +653,18 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect((await lint(['yy', 'pi', '-m', 'openai/gpt-4o', 'qualified'])).status).toBe(0);
     expect((await lint(['yy', 'pi', '--provider', 'openai', '--model', 'gpt-4.1', 'split'])).status).toBe(0);
     expect((await lint(['yy', '--quiet', '-l', 'workflow.log', 'pi', 'ordinary flags'])).status).toBe(0);
+    expect((await lint('yy pi "quoted prompt; punctuation is data"')).status).toBe(0);
     expect((await lint(['echo', 'step'], ['yy', 'pi', '--model=:luna', 'summary'])).status).toBe(0);
+
+    for (const compound of [
+      'yy pi allowed-prompt; PI_MODEL=:sol yy pi bypass',
+      'printf input | PI_PROVIDER=openai PI_MODEL=gpt-4o yy pi bypass',
+      'echo $(yy pi bypass)',
+    ]) {
+      const result = await lint(compound);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('compound shell syntax');
+    }
 
     for (const [command, message] of [
       [['yy', 'pi', '-m', ':sol', 'unlisted'], 'not exactly allowlisted'],

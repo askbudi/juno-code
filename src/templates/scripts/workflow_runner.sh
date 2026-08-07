@@ -932,6 +932,22 @@ def detect_juno_command(command: Any) -> bool:
     return executable in JUNO_COMMANDS
 
 
+def compound_agent_shell_command(command: Any) -> bool:
+    if not isinstance(command, str):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return True
+    agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
+    has_agent = any(Path(token).name in agent_names for token in tokens)
+    has_control = any(token and all(char in ";&|<>()" for char in token) for token in tokens)
+    return has_agent and (has_control or "\n" in command or "`" in command or "$(" in command)
+
+
 def juno_command_name(command: Any) -> str | None:
     parts = command_argv(command)
     if not parts:
@@ -1230,6 +1246,8 @@ def validate_pi_launch_policy(
     step: dict[str, Any], *, context: str, policy: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
     command = step.get("command")
+    if compound_agent_shell_command(command):
+        raise WorkflowError(f"{context} must use one direct agent command or an argv list, not compound shell syntax")
     raw_parts = command_argv(command)
     effective_parts = effective_command_argv(command)
     raw_prefix = list(raw_parts)
