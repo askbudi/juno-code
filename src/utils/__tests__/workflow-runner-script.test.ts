@@ -669,6 +669,11 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       'echo $(yy pi bypass)',
       'echo "$(yy pi bypass)"',
       'echo `pi`',
+      "bash -lc 'yy pi --model :evil hidden'",
+      "sh -c 'PI_MODEL=:evil yy pi hidden'",
+      "eval 'yy pi --model :evil hidden'",
+      'command yy pi --model :evil hidden',
+      "bash -lc 'codex hidden'",
     ]) {
       const result = await lint(compound);
       expect(result.status).not.toBe(0);

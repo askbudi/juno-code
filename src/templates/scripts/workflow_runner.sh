@@ -973,6 +973,16 @@ def compound_agent_shell_command(command: Any) -> bool:
     except ValueError:
         return True
     agent_names = JUNO_COMMANDS | DIRECT_AGENT_EXECUTABLES
+    invocation_pattern = re.compile(
+        r"(?<![A-Za-z0-9_-])(?:yy|juno-code|ypl)\s+pi(?![A-Za-z0-9_-])"
+        r"|(?<![A-Za-z0-9_-])(?:codex|claude|gemini|cursor)(?=\s|$)"
+    )
+    first_executable = next(
+        (token for token in tokens if not ENV_ASSIGNMENT_RE.fullmatch(token)),
+        "",
+    )
+    if invocation_pattern.search(command) and Path(first_executable).name not in agent_names:
+        return True
     has_control, active_expansion = active_shell_syntax(command)
     has_agent = any(Path(token.strip("`$")).name in agent_names for token in tokens)
     if active_expansion and not has_agent:
