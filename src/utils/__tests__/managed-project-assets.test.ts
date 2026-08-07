@@ -103,6 +103,9 @@ describe('ManagedProjectAssets', () => {
       expect(implementationReference).toContain('Implementation workers never launch semantic reviewers');
       expect(implementationReference).toContain('Stop and hand off at `REVIEW_READY`');
       expect(implementationReference).not.toContain('Wait for both, consolidate findings');
+      expect(implementationReference.indexOf('Git and controller checkpoint')).toBeLessThan(
+        implementationReference.indexOf('Stop and hand off at `REVIEW_READY`'),
+      );
     }
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
