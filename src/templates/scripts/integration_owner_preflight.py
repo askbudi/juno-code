@@ -242,6 +242,17 @@ def has_resume_or_continue(tokens:list[str])->bool:
   if token=="--":return False
   if token in {"--resume","--continue","continue","cc","-r"} or token.startswith(("--resume=","--continue=")) or (len(token)>2 and token.startswith("-r")):return True
  return False
+def final_review_verdict(text:str)->tuple[bool,list[str]]:
+ blocks:list[list[str]]=[];current:list[str]=[]
+ for raw in text.splitlines():
+  line=raw.strip()
+  if line=="JUNO_REVIEW_VERDICT: PASS" or (line.startswith("JUNO_REVIEW_FINDING: ") and len(line)>len("JUNO_REVIEW_FINDING: ")):current.append(line)
+  elif current:blocks.append(current);current=[]
+ if current:blocks.append(current)
+ if not blocks:raise IntegrationError("actual_target_review lacks a strict final verdict block")
+ final=blocks[-1];passes=[line for line in final if line=="JUNO_REVIEW_VERDICT: PASS"];findings=[line for line in final if line.startswith("JUNO_REVIEW_FINDING: ")]
+ if passes and findings or len(passes)>1:raise IntegrationError("actual_target_review has a contradictory final verdict block")
+ return bool(passes),findings
 def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated:str,timeout:float,child_root:Path|None=None)->dict[str,Any]:
  try:tokens=shlex.split(command)
  except ValueError as exc:raise IntegrationError(f"actual_target_review command is not parseable: {exc}") from exc
@@ -257,7 +268,7 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
    child_root.rmdir()
   staging=Path(tempfile.mkdtemp(prefix=f".{child_root.name}.staging-",dir=child_root.parent));staging.chmod(0o700)
  capture_path=(staging/"capture.raw.json") if staging else receipt_path.with_suffix(".capture.raw.json")
- env={key:value for key,value in os.environ.items() if key not in {"JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","JUNO_WORKFLOW_DIRECT_OWNER"}};env.update({"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)})
+ env={key:value for key,value in os.environ.items() if key not in {"JUNO_WORKFLOW_CHILD_EVIDENCE_DIR","JUNO_WORKFLOW_DIRECT_OWNER","JUNO_TASK_ROOT","JUNO_CONTROLLER_BRANCH","JUNO_WORKSPACE_ROLE","JUNO_WORKSPACE_ENFORCEMENT","TASK_ROOT"}};env.update({"JUNO_TOOL_ID":"workflow_actual_target_review","JUNO_SUBAGENT_CAPTURE_PATH":str(capture_path)})
  if receipt_path.exists():receipt_path.unlink()
  started_wall=datetime.datetime.now(datetime.timezone.utc);started=time.monotonic()
  try:review_run=subprocess.run(tokens,cwd=actual_cwd,text=True,capture_output=True,stdin=subprocess.DEVNULL,timeout=timeout,env=env)
@@ -274,6 +285,13 @@ def actual_review_child(command:str,actual_cwd:Path,receipt_path:Path,integrated
  session_id=child_session(review_run.stdout or "",review_run.stderr or "",capture)
  semantic="failed"
  review:dict[str,Any]={}
+ if review_run.returncode==0 and not receipt_path.is_file():
+  try:
+   passed,findings=final_review_verdict(response)
+   receipt_path.parent.mkdir(parents=True,exist_ok=True)
+   receipt_path.write_text(json.dumps({"schema_version":"juno_review.v1","review_kind":"actual_target","passed":passed,"reviewed_tip":integrated,"open_bugs":findings},sort_keys=True)+"\n")
+  except IntegrationError:
+   pass
  if review_run.returncode==0 and receipt_path.is_file():
   try:review=json.loads(receipt_path.read_text())
   except json.JSONDecodeError:review={}

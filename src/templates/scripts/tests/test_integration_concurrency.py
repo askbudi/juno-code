@@ -50,6 +50,15 @@ class IntegrationConcurrencyTest(unittest.TestCase):
    module.actual_review_child(f"'{fake_yy}' pi timeout",self.repo,self.tmp/"timeout-review.json",self.base,.01)
   timed_out=json.loads((timeout_dir/"actual_target_review.event.json").read_text());self.assertEqual(124,timed_out["exit_code"]);self.assertIn("timed out",Path(timed_out["artifacts"]["stderr"]["path"]).read_text())
 
+ def test_actual_review_child_materializes_receipt_from_final_verdict(self):
+  import importlib.util
+  spec=importlib.util.spec_from_file_location("integration_child_verdict",INTEGRATE);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+  fake=self.tmp/"verdict-launcher"/"yy";fake.parent.mkdir();fake.write_text("#!/bin/sh\nprintf '%s\\n' 'JUNO_REVIEW_VERDICT: PASS' '' 'JUNO_REVIEW_FINDING: example; echoed prompt; ignored; ignored' '' 'JUNO_REVIEW_VERDICT: PASS' 'session_id=verdict-session'\n");fake.chmod(0o755)
+  receipt=self.tmp/"materialized-review.json"
+  evidence=module.actual_review_child(f"'{fake}' pi -p prompt",self.repo,receipt,self.base,30)
+  self.assertEqual("accepted",evidence["semantic_outcome"])
+  self.assertEqual({"schema_version":"juno_review.v1","review_kind":"actual_target","passed":True,"reviewed_tip":self.base,"open_bugs":[]},json.loads(receipt.read_text()))
+
  def test_validation_subprocess_cannot_publish_or_replace_actual_review_evidence(self):
   candidate,eligible=self.candidate(False);actual=self.tmp/"isolated-actual.json";child_dir=self.tmp/"isolated-child"
   attacker=self.tmp/"validation-attacker.py"

@@ -93,6 +93,14 @@ class TaskLifecycleContractTests(unittest.TestCase):
             lifecycle.strict_verdict(
                 "JUNO_REVIEW_VERDICT: PASS\nJUNO_REVIEW_FINDING: high; CAS; x; fix\n"
             )
+        echoed = (
+            "Prompt example:\nJUNO_REVIEW_VERDICT: PASS\n\n"
+            "Alternative example:\nJUNO_REVIEW_FINDING: <severity>; <requirement>; <evidence>; <acceptance>\n\n"
+            "Semantic response:\nJUNO_REVIEW_FINDING: high; CAS; file.py:2; bind expected SHA\n"
+        )
+        self.assertEqual("FINDINGS", lifecycle.strict_verdict(echoed)[0])
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "contradictory"):
+            lifecycle.strict_verdict("JUNO_REVIEW_VERDICT: PASS\nJUNO_REVIEW_FINDING: high; CAS; x; fix\n")
         with self.assertRaisesRegex(lifecycle.LifecycleError, "lacks"):
             lifecycle.strict_verdict("looks good")
 
@@ -169,7 +177,8 @@ class RealGitLifecycleCanaryTests(unittest.TestCase):
         (repo / ".juno_task/prompts/review_commit_parallel_runner.md").write_text(
             "Task {{ task_id }} Reviewer {{ reviewer_index }} Base {{ base_sha }} Tip {{ tip_sha }} "
             "Repository {{ repository }} Checklist {{ checklist_path }} Prior {{ findings_summary_path }} "
-            "Validation {{ validation_evidence_path }}\nJUNO_REVIEW_VERDICT: PASS is the only passing class.\n"
+            "Validation {{ validation_evidence_path }} Bundle {{ requirements_bundle }} PriorBody {{ findings_summary }}\n"
+            "JUNO_REVIEW_VERDICT: PASS is the only passing class.\n"
         )
         self.git(repo, "add", ".")
         self.git(repo, "commit", "-m", "base")
@@ -210,15 +219,21 @@ else:
 a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));print(json.dumps(v))
 ''')
         self.write_executable(scripts / "integration_owner_preflight.py", '''#!/usr/bin/env python3
-import argparse,json,shlex,subprocess
+import argparse,json,os,shlex,subprocess
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument("integrate",nargs="?");p.add_argument("--repository",required=True);p.add_argument("--candidate-receipt");p.add_argument("--risk-tier");p.add_argument("--checked-out-target");p.add_argument("--validation-command");p.add_argument("--task-id");p.add_argument("--output",type=Path,required=True);p.add_argument("--require-actual-review",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt")
+p=argparse.ArgumentParser();p.add_argument("integrate",nargs="?");p.add_argument("--repository",required=True);p.add_argument("--candidate-receipt");p.add_argument("--resume-receipt");p.add_argument("--risk-tier");p.add_argument("--checked-out-target");p.add_argument("--validation-command");p.add_argument("--task-id");p.add_argument("--output",type=Path,required=True);p.add_argument("--require-actual-review",action="store_true");p.add_argument("--actual-review-command");p.add_argument("--actual-review-receipt")
 a=p.parse_args();name,rest=a.repository.split("=",1);repo,target,expected,candidate=rest.split(",",3)
-r=subprocess.run(["git","-C",repo,"update-ref",target,candidate,expected],capture_output=True,text=True)
-if r.returncode: raise SystemExit(2)
+if not a.resume_receipt:
+ r=subprocess.run(["git","-C",repo,"update-ref",target,candidate,expected],capture_output=True,text=True)
+ if r.returncode: raise SystemExit(2)
+ if os.environ.get("CANARY_MODE")=="partial":
+  v={"schema_version":"juno_local_integration.v3","outcome":"partial_local_integration","passed":False,"error":"actual_target_review_command_failed","resume_stage":"actual_target_validation","updates":[{"status":"moved","after_sha":candidate}]};a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));raise SystemExit(2)
 actual="not_required_by_effective_tier"
 if a.actual_review_command:
- r=subprocess.run(a.actual_review_command,shell=True,cwd=repo)
+ tokens=shlex.split(a.actual_review_command)
+ if len(tokens)<2 or tokens[0]!="yy" or tokens[1]!="pi": raise SystemExit("actual review was not canonical yy pi")
+ child_env={k:v for k,v in os.environ.items() if k not in {"JUNO_TASK_ROOT","JUNO_CONTROLLER_BRANCH","JUNO_WORKSPACE_ROLE","JUNO_WORKSPACE_ENFORCEMENT","TASK_ROOT"}}
+ r=subprocess.run(tokens,cwd=repo,env=child_env)
  if r.returncode: raise SystemExit(r.returncode)
  actual="performed"
 v={"schema_version":"juno_local_integration.v3","outcome":"integrated","passed":True,"actual_semantic_review":actual,"actual_target":{"deterministic_actual_target_validation":"passed"}}
@@ -233,9 +248,10 @@ if "Implement Kanban task" in prompt or "Repair the complete" in prompt:
  assert os.environ.get("JUNO_WORKSPACE_ROLE")=="task"
  p=pathlib.Path("product.txt");p.write_text(p.read_text()+("repaired\\n" if "Repair" in prompt else "implemented\\n"));subprocess.run(["git","add","product.txt"],check=True);subprocess.run(["git","commit","-m","repair" if "Repair" in prompt else "implement"],check=True);print("REVIEW_READY")
 else:
- assert os.environ.get("JUNO_WORKSPACE_ROLE")=="controller";assert pathlib.Path.cwd().resolve()==pathlib.Path(os.environ["CANARY_CONTROLLER"]).resolve()
+ is_actual=pathlib.Path.cwd().resolve()!=pathlib.Path(os.environ["CANARY_CONTROLLER"]).resolve()
+ assert os.environ.get("JUNO_WORKSPACE_ROLE")== (None if is_actual else "controller")
  log=pathlib.Path(os.environ["CANARY_REVIEW_LOG"]);count=len(log.read_text().splitlines()) if log.exists() else 0
- m={k:(re.search(k+r" ([0-9a-f]{40})",prompt).group(1) if re.search(k+r" ([0-9a-f]{40})",prompt) else None) for k in ("Base","Tip")};m["count"]=count
+ m={k:(re.search(k+r" ([0-9a-f]{40})",prompt).group(1) if re.search(k+r" ([0-9a-f]{40})",prompt) else None) for k in ("Base","Tip")};m["count"]=count;m["requirements_rendered"]="lifecycle reaches COMPLETE" in prompt;m["prior_finding_rendered"]="repair all findings" in prompt
  with log.open("a") as f:f.write(json.dumps(m)+"\\n")
  mode=os.environ.get("CANARY_MODE","pass")
  if mode=="exhaust" or mode=="repair" and count==0: print("JUNO_REVIEW_FINDING: high; review flow; candidate; repair all findings")
@@ -264,6 +280,13 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
         manifest_path=root/f"manifest-{risk}.json";manifest_path.write_text(json.dumps(manifest))
         env={**os.environ,"PATH":str(fake_bin)+os.pathsep+os.environ["PATH"],"CANARY_REVIEW_LOG":str(review_log),"CANARY_CONTROLLER":str(controller),"CANARY_MODE":mode}
         result=subprocess.run([sys.executable,str(SCRIPT),"run","--manifest",str(manifest_path)],cwd=repo,text=True,capture_output=True,env=env)
+        if mode == "partial":
+            self.assertEqual(2,result.returncode,result.stderr+result.stdout)
+            partial=json.loads((root/f"artifacts-{risk}/state.json").read_text())
+            self.assertEqual("PARTIAL_INTEGRATION",partial["phase"]);self.assertEqual("partial_local_integration",partial["integration_status"])
+            self.assertEqual("passed",partial["actual_target_verification"]);self.assertEqual("failed",partial["actual_target_review"])
+            self.assertEqual(partial["candidate_sha"],self.git(repo,"rev-parse","refs/heads/main"))
+            result=subprocess.run([sys.executable,str(SCRIPT),"resume","--state",str(root/f"artifacts-{risk}/state.json")],cwd=repo,text=True,capture_output=True,env=env)
         self.assertEqual(3 if mode=="exhaust" else 0,result.returncode,result.stderr+result.stdout)
         state=json.loads((root/f"artifacts-{risk}/state.json").read_text())
         reviews=[json.loads(line) for line in review_log.read_text().splitlines()]
@@ -290,6 +313,8 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
         self.assertEqual(reviews[0]["Tip"],reviews[1]["Tip"])
         self.assertNotEqual(reviews[1]["Tip"],reviews[2]["Tip"])
         self.assertEqual(reviews[2]["Tip"],reviews[3]["Tip"])
+        self.assertTrue(all(review["requirements_rendered"] for review in reviews))
+        self.assertTrue(reviews[2]["prior_finding_rendered"]);self.assertTrue(reviews[3]["prior_finding_rendered"])
         self.assertEqual("passed",state["review_status"])
 
     def test_replacement_findings_stop_at_review_budget_without_integration(self):
@@ -297,6 +322,12 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
         self.assertEqual(4,len(reviews))
         self.assertEqual("budget_exhausted",state["review_status"])
         self.assertEqual("not_started",state["integration_status"])
+
+    def test_post_cas_review_failure_persists_and_resumes_partial_integration(self):
+        state,reviews=self.run_canary("high", "partial")
+        self.assertEqual("COMPLETE",state["phase"])
+        self.assertEqual("integrated",state["integration_status"])
+        self.assertEqual(3,len(reviews))
 
     def test_owner_waiver_integrates_without_fictional_pre_cas_pass(self):
         state,reviews=self.run_canary("high", "waiver")
