@@ -69,8 +69,8 @@ class TaskLifecycleContractTests(unittest.TestCase):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "requirements_checklist"):
                 lifecycle.validate_manifest(value)
             value = self.manifest(root, ["README.md"])
-            value["review"]["one_time_owner_extension_pair_limit"] = 2
-            with self.assertRaisesRegex(lifecycle.LifecycleError, "one-time owner review extension"):
+            value["review"]["owner_authorized_extension_pair_limit"] = 9
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "bounded count"):
                 lifecycle.validate_manifest(value)
             value = self.manifest(root, ["README.md"])
             value["repositories"].append(dict(value["repositories"][0], id="child"))
@@ -145,17 +145,25 @@ class TaskLifecycleContractTests(unittest.TestCase):
     def test_one_time_review_extension_is_receipt_bound_and_capped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); manifest = self.manifest(root, ["README.md"], "high")
-            manifest["review"]["one_time_owner_extension_pair_limit"] = 1
+            manifest["review"]["owner_authorized_extension_pair_limit"] = 1
             manifest = lifecycle.validate_manifest(manifest); candidate = "b" * 40
             receipt = root / "extension.json"
             lifecycle.atomic_json(receipt, {"schema_version":"juno_review_budget_extension.v1","task_id":"T1",
                 "candidate_sha":candidate,"additional_consolidated_repairs":1,"additional_replacement_pairs":1,"bounded":True})
-            state = {"task_id":"T1","review_budget_extension_base_sha":candidate,"receipts":{
+            state = {"task_id":"T1","review_budget_extension_base_shas":{"1":candidate},"receipts":{
                 "review_budget_extension_1":{"path":str(receipt),"sha256":lifecycle.file_digest(receipt)}}}
             self.assertEqual(3, lifecycle.maximum_review_round(manifest, state))
-            state["review_budget_extension_base_sha"] = "c" * 40
-            with self.assertRaisesRegex(lifecycle.LifecycleError, "extension evidence"):
+            state["review_budget_extension_base_shas"]["1"] = "c" * 40
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "extension 1 evidence"):
                 lifecycle.maximum_review_round(manifest, state)
+
+    def test_unsuccessful_controller_sync_outcomes_withhold_terminal_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); manifest = self.manifest(root, ["README.md"], "high")
+            state = {"controller_sync":"not_enabled"}
+            for outcome in ("not_enabled", "unknown", "failed_preserved"):
+                state["controller_sync"] = outcome
+                self.assertFalse(lifecycle.terminal_controller_readback(manifest, state, root / "state.json"))
 
     def test_compact_result_keeps_partial_dimensions_independent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -220,8 +228,8 @@ class RealGitLifecycleCanaryTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        repo, controller = root / "repo", root / "controller"
-        repo.mkdir(); controller.mkdir()
+        repo = root / "repo"; controller = repo
+        repo.mkdir()
         self.git(repo, "init", "-b", "main")
         self.git(repo, "config", "user.name", "Test")
         self.git(repo, "config", "user.email", "test@example.com")
@@ -238,8 +246,13 @@ class RealGitLifecycleCanaryTests(unittest.TestCase):
         base = self.git(repo, "rev-parse", "HEAD")
         scripts = repo / ".juno_task/scripts"
         scripts.mkdir(parents=True)
-        for required in ("controller_checkpoint.py", "kanban.sh"):
-            self.write_executable(scripts / required, "#!/usr/bin/env python3\n")
+        self.write_executable(scripts / "controller_checkpoint.py", "#!/usr/bin/env python3\n")
+        self.write_executable(scripts / "kanban.sh", '''#!/usr/bin/env python3
+import json,subprocess,sys
+refs=subprocess.check_output(["git","for-each-ref","--format=%(refname)","refs/heads/task/"],text=True).splitlines()
+tip=subprocess.check_output(["git","rev-parse",refs[0]],text=True).strip() if refs else None
+print(json.dumps({"id":sys.argv[2],"status":"in_progress","commit_hash":tip,"fields":{}}))
+''')
         self.write_executable(scripts / "worktree_lifecycle.py", '''#!/usr/bin/env python3
 import argparse,json,subprocess
 from pathlib import Path
@@ -298,7 +311,7 @@ if a.actual_review_command:
  if r.returncode: raise SystemExit(r.returncode)
  actual="performed"
 v={"schema_version":"juno_local_integration.v3","outcome":"integrated","passed":True,"actual_semantic_review":actual,"actual_target":{"deterministic_actual_target_validation":"passed"}}
-a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));print(json.dumps({"outcome":"integrated","controller_sync":{"outcome":"not_enabled"}}))
+a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));print(json.dumps({"outcome":"integrated","controller_sync":{"outcome":"synced_local","candidateSha":candidate}}))
 ''')
         fake_bin = root / "bin"; fake_bin.mkdir()
         review_log = root / "reviews.jsonl"
@@ -312,10 +325,10 @@ if "Implement Kanban task" in prompt or "Repair the complete" in prompt:
   repo=pathlib.Path(os.environ["CANARY_REPO"]);(repo/"target.txt").write_text("advanced\\n");subprocess.run(["git","-C",str(repo),"add","target.txt"],check=True);subprocess.run(["git","-C",str(repo),"commit","-m","advance target"],check=True)
  print("REVIEW_READY")
 else:
- is_actual=pathlib.Path.cwd().resolve()!=pathlib.Path(os.environ["CANARY_CONTROLLER"]).resolve()
- assert os.environ.get("JUNO_WORKSPACE_ROLE")== (None if is_actual else "controller")
+ is_actual=os.environ.get("JUNO_WORKSPACE_ROLE") is None
+ assert is_actual or os.environ.get("JUNO_WORKSPACE_ROLE")=="controller"
  log=pathlib.Path(os.environ["CANARY_REVIEW_LOG"]);count=len(log.read_text().splitlines()) if log.exists() else 0
- m={k:(re.search(k+r" ([0-9a-f]{40})",prompt).group(1) if re.search(k+r" ([0-9a-f]{40})",prompt) else None) for k in ("Base","Tip")};m["count"]=count;m["requirements_rendered"]="lifecycle reaches COMPLETE" in prompt;m["prior_finding_rendered"]="repair all findings" in prompt
+ m={k:(re.search(k+r" ([0-9a-f]{40})",prompt).group(1) if re.search(k+r" ([0-9a-f]{40})",prompt) else None) for k in ("Base","Tip")};m["count"]=count;m["requirements_rendered"]="lifecycle reaches COMPLETE" in prompt;m["prior_finding_rendered"]="repair all findings" in prompt;m["canonical_resolved"]="{{" not in prompt
  with log.open("a") as f:f.write(json.dumps(m)+"\\n")
  mode=os.environ.get("CANARY_MODE","pass")
  if mode=="exhaust" or mode=="repair" and count==0: print("JUNO_REVIEW_FINDING: high; review flow; candidate; repair all findings")
@@ -328,7 +341,7 @@ else:
             self.write_executable(controller / ".juno_task/scripts/kanban.sh", f'''#!/usr/bin/env python3
 import json,subprocess
 candidate=subprocess.check_output(["git","-C",{str(task)!r},"rev-parse","HEAD"],text=True).strip()
-print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{{"status":"waived_by_owner","candidate_sha":candidate,"reason":"fixture owner decision"}}}}}}]))
+print(json.dumps([{{"id":"CANARY_{risk.upper()}","status":"in_progress","commit_hash":candidate,"fields":{{"lifecycle_review":{{"status":"waived_by_owner","candidate_sha":candidate,"reason":"fixture owner decision"}}}}}}]))
 ''')
         manifest = {
             "schema_version": "juno_task_lifecycle.v1", "task_id": f"CANARY_{risk.upper()}",
@@ -401,7 +414,9 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
         self.assertEqual(1,len(reviews))  # delivery-sensitive actual-target review only
 
     def test_descendant_target_composition_cleans_both_worktrees_and_completes(self):
-        state,_reviews=self.run_canary("medium", "descendant")
+        state,reviews=self.run_canary("medium", "descendant")
+        self.assertTrue(reviews[1]["requirements_rendered"])
+        self.assertTrue(reviews[1]["canonical_resolved"])
         self.assertTrue(state["candidate_composed"])
         self.assertNotEqual(state["candidate_sha"], state["reviewed_task_tip_sha"])
         cleanup_root=Path(state["manifest"]["path"]).parent / "artifacts-medium" / "cleanup"

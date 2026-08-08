@@ -193,10 +193,10 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     review = normalized["review"]
     if review.get("initial_pair_limit") != 1 or review.get("replacement_pair_limit") != 1:
         raise LifecycleError("review budget requires one initial pair and one replacement pair")
-    extension = review.get("one_time_owner_extension_pair_limit", 0)
-    if type(extension) is not int or extension not in {0, 1}:
-        raise LifecycleError("one-time owner review extension must be zero or one pair")
-    review["one_time_owner_extension_pair_limit"] = extension
+    extension = review.get("owner_authorized_extension_pair_limit", 0)
+    if type(extension) is not int or not 0 <= extension <= 8:
+        raise LifecycleError("owner-authorized review extensions must be a bounded count from zero through eight")
+    review["owner_authorized_extension_pair_limit"] = extension
     for command_key in ("implementation_command", "repair_command", "review_command"):
         configured = normalized.get(command_key)
         if configured is None:
@@ -733,17 +733,24 @@ def controller_checkpoint(manifest: dict[str, Any], state: dict[str, Any], path:
 def review_composed_candidate(manifest: dict[str, Any], state: dict[str, Any], candidate: dict[str, Any], root: Path) -> Path:
     repo = manifest["repositories"][0]
     template = Path(repo["path"]).resolve() / ".juno_task/prompts/review_commit_parallel_runner.md"
+    checklist = Path(str(manifest["requirements_checklist"])).resolve()
     artifact = root / "candidate-review"
     artifact.mkdir(parents=True, exist_ok=True)
-    prior = artifact / "prior-findings.json"; atomic_json(prior, {"findings": []})
+    prior_source = root.parent / f"review-{state['review_round']}" / "prior-findings.json"
+    prior_value = load_mapping(prior_source) if prior_source.is_file() else {"findings": []}
+    prior = artifact / "prior-findings.json"; atomic_json(prior, prior_value)
     values = {
         "task_id": manifest["task_id"], "review_kind": "composed candidate", "reviewer_index": "candidate",
         "repository": str(Path(candidate["candidate_path"]).resolve()), "base_sha": candidate["expected_target_sha"],
-        "tip_sha": candidate["candidate_sha"], "checklist_path": str(Path(manifest["requirements_checklist"]).resolve()),
-        "findings_summary_path": str(prior), "validation_evidence_path": str((root / "candidate.json").resolve()),
+        "tip_sha": candidate["candidate_sha"], "checklist_path": str(checklist),
+        "requirements_bundle": checklist.read_text(encoding="utf-8"),
+        "findings_summary_path": str(prior), "findings_summary": prior.read_text(encoding="utf-8"),
+        "validation_evidence_path": str((root / "candidate.json").resolve()),
     }
     text = template.read_text(encoding="utf-8")
     for key, value in values.items(): text = text.replace("{{ " + key + " }}", value)
+    if re.search(r"{{\s*[^}]+\s*}}", text):
+        raise LifecycleError("unresolved canonical review template variable")
     prompt = artifact / "prompt.md"; prompt.write_text(text, encoding="utf-8")
     result = run_command(agent_command(manifest, prompt, "review"), Path(manifest["controller_root"]).resolve(), artifact / "process",
                          timeout=float(manifest["timeouts"]["agent_seconds"]), env=review_environment(manifest))
@@ -761,6 +768,23 @@ def record_owner_waiver(state: dict[str, Any], path: Path, waiver: dict[str, Any
     atomic_json(receipt, waiver)
     state["review_status"] = "waived_by_owner"; state["review_passed"] = False
     save_state(path, state, "REVIEW_WAIVED_BY_OWNER", receipt=("owner_waiver", receipt))
+
+
+def capture_controller_sync(value: dict[str, Any], state: dict[str, Any]) -> None:
+    try:
+        terminal_line = [line for line in value.pop("_helper_stdout_text", "").splitlines() if line.strip().startswith("{")][-1]
+        sync = json.loads(terminal_line).get("controller_sync", {})
+    except (IndexError, json.JSONDecodeError):
+        sync = {}
+    outcome = str(sync.get("outcome") or "unknown")
+    projection: dict[str, Any] = {"outcome": outcome}
+    if isinstance(sync.get("candidateSha"), str):
+        projection["candidate_sha"] = sync["candidateSha"]
+    receipt_path = Path(str(sync.get("receiptPath") or "")).expanduser()
+    if receipt_path.is_absolute() and receipt_path.is_file():
+        projection["receipt"] = {"path": str(receipt_path.resolve()), "sha256": file_digest(receipt_path)}
+    state["controller_sync"] = outcome
+    state["controller_sync_evidence"] = projection
 
 
 def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], path: Path) -> None:
@@ -874,11 +898,7 @@ def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], pat
     state["integration_status"] = "integrated"
     state["actual_target_verification"] = "passed"
     state["actual_target_review"] = "passed" if value.get("actual_semantic_review") == "performed" else "not_required_by_policy"
-    try:
-        terminal_line = [line for line in value.pop("_helper_stdout_text", "").splitlines() if line.strip().startswith("{")][-1]
-        state["controller_sync"] = json.loads(terminal_line).get("controller_sync", {}).get("outcome", "unknown")
-    except (IndexError, json.JSONDecodeError):
-        state["controller_sync"] = "unknown"
+    capture_controller_sync(value, state)
     save_state(path, state, "ACTUAL_TARGET_VERIFIED", receipt=("integration", integration))
 
 
@@ -935,11 +955,7 @@ def resume_partial_integration(manifest: dict[str, Any], state: dict[str, Any], 
     state["integration_status"] = "integrated"
     state["actual_target_verification"] = "passed"
     state["actual_target_review"] = "passed" if value.get("actual_semantic_review") == "performed" else "not_required_by_policy"
-    try:
-        terminal_line = [line for line in value.pop("_helper_stdout_text", "").splitlines() if line.strip().startswith("{")][-1]
-        state["controller_sync"] = json.loads(terminal_line).get("controller_sync", {}).get("outcome", "unknown")
-    except (IndexError, json.JSONDecodeError):
-        state["controller_sync"] = "unknown"
+    capture_controller_sync(value, state)
     save_state(path, state, "ACTUAL_TARGET_VERIFIED", receipt=("integration", attempt), detail={"resumed_partial_integration": True})
 
 
@@ -973,6 +989,53 @@ def recover_integration(manifest: dict[str, Any], state: dict[str, Any], path: P
     else:
         state["integration_status"] = "failed_preserved"
         save_state(path, state, "READY_TO_INTEGRATE", detail={"recovered_integration": "failed_preserved"})
+
+
+def terminal_controller_readback(manifest: dict[str, Any], state: dict[str, Any], path: Path, *, recovered: bool = False) -> bool:
+    """Prove controller ancestry and canonical Kanban projection before cleanup."""
+    successful = {"synced_local", "up_to_date", "verified_local"}
+    if state.get("controller_sync") not in successful and not recovered:
+        return False
+    controller = Path(manifest["controller_root"]).resolve()
+    integrated = state.get("integrated_sha")
+    try:
+        controller_head = git(controller, "rev-parse", "HEAD")
+        if not integrated or subprocess.run(["git", "-C", str(controller), "merge-base", "--is-ancestor", integrated, controller_head],
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            return False
+    except LifecycleError:
+        return False
+    evidence = state.get("controller_sync_evidence") if isinstance(state.get("controller_sync_evidence"), dict) else {}
+    expected_controller = evidence.get("candidate_sha")
+    if expected_controller and expected_controller != controller_head:
+        return False
+    wrapper = controller / ".juno_task/scripts/kanban.sh"
+    if not wrapper.is_file():
+        return False
+    result = subprocess.run([str(wrapper), "get", manifest["task_id"], "-f", "json"], cwd=controller,
+                            text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    if result.returncode:
+        return False
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    task = value[0] if isinstance(value, list) and len(value) == 1 else value
+    expected_task_tip = state.get("reviewed_task_tip_sha") or state.get("candidate_sha")
+    if (not isinstance(task, dict) or task.get("id") != manifest["task_id"]
+            or task.get("commit_hash") != expected_task_tip):
+        return False
+    if recovered and state.get("controller_sync") not in successful:
+        state["controller_sync"] = "verified_local"
+    receipt = path.parent / "controller-terminal-readback.json"
+    atomic_json(receipt, {"schema_version": "juno_lifecycle_controller_readback.v1", "passed": True,
+                          "task_id": manifest["task_id"], "integrated_sha": integrated,
+                          "controller_head": controller_head, "integration_is_ancestor": True,
+                          "kanban_status": task.get("status"), "kanban_commit_hash": task.get("commit_hash"),
+                          "controller_sync": state["controller_sync"]})
+    save_state(path, state, "ACTUAL_TARGET_VERIFIED", receipt=("controller_terminal_readback", receipt),
+               detail={"terminal_controller_readback": "passed"})
+    return True
 
 
 def cleanup(manifest: dict[str, Any], state: dict[str, Any], path: Path) -> None:
@@ -1018,17 +1081,19 @@ def compact_result(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def maximum_review_round(manifest: dict[str, Any], state: dict[str, Any]) -> int:
-    extension = manifest["review"].get("one_time_owner_extension_pair_limit", 0)
+    extension = manifest["review"].get("owner_authorized_extension_pair_limit", 0)
     maximum = manifest["review"]["initial_pair_limit"] + manifest["review"]["replacement_pair_limit"]
-    if not extension:
-        return maximum
-    value = load_mapping(path_for_receipt(state, "review_budget_extension_1"))
-    expected_base = state.get("review_budget_extension_base_sha")
-    if (value.get("schema_version") != "juno_review_budget_extension.v1" or value.get("task_id") != state["task_id"]
-            or value.get("candidate_sha") != expected_base or value.get("additional_consolidated_repairs") != 1
-            or value.get("additional_replacement_pairs") != 1 or value.get("bounded") is not True):
-        raise LifecycleError("one-time review budget extension evidence is invalid")
-    return maximum + 1
+    expected_bases = state.get("review_budget_extension_base_shas")
+    if extension and not isinstance(expected_bases, dict):
+        raise LifecycleError("owner-authorized review extension bases are missing")
+    for index in range(1, extension + 1):
+        value = load_mapping(path_for_receipt(state, f"review_budget_extension_{index}"))
+        expected_base = expected_bases.get(str(index))
+        if (value.get("schema_version") != "juno_review_budget_extension.v1" or value.get("task_id") != state["task_id"]
+                or value.get("candidate_sha") != expected_base or value.get("additional_consolidated_repairs") != 1
+                or value.get("additional_replacement_pairs") != 1 or value.get("bounded") is not True):
+            raise LifecycleError(f"owner-authorized review extension {index} evidence is invalid")
+    return maximum + extension
 
 
 def advance(manifest_path: Path, manifest: dict[str, Any], state: dict[str, Any], path: Path) -> int:
@@ -1071,7 +1136,20 @@ def advance(manifest_path: Path, manifest: dict[str, Any], state: dict[str, Any]
         elif phase == "READY_TO_INTEGRATE": candidate_and_integrate(manifest, state, path)
         elif phase == "INTEGRATING": recover_integration(manifest, state, path)
         elif phase == "PARTIAL_INTEGRATION": resume_partial_integration(manifest, state, path)
-        elif phase == "ACTUAL_TARGET_VERIFIED": cleanup(manifest, state, path)
+        elif phase == "ACTUAL_TARGET_VERIFIED":
+            if not terminal_controller_readback(manifest, state, path):
+                save_state(path, state, "CONTROLLER_SYNC_REQUIRED",
+                           detail={"controller_sync": state.get("controller_sync"), "cleanup_withheld": True})
+                return 3
+            cleanup(manifest, state, path)
+        elif phase == "CONTROLLER_SYNC_REQUIRED":
+            # A controller owner may repair synchronization out of band. Resume
+            # only after direct ancestry and canonical Kanban readback prove it.
+            if not terminal_controller_readback(manifest, state, path, recovered=True):
+                save_state(path, state, "CONTROLLER_SYNC_REQUIRED",
+                           detail={"controller_sync": state.get("controller_sync"), "cleanup_withheld": True})
+                return 3
+            cleanup(manifest, state, path)
         elif phase == "CLEANUP_COMPLETE":
             state["checkpoint_return_phase"] = "COMPLETE"
             controller_checkpoint(manifest, state, path, "terminal")
