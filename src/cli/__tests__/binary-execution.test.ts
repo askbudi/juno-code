@@ -218,6 +218,28 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Commands:');
     });
 
+    it('exposes one lifecycle command and forwards run state operations to the managed runtime', async () => {
+      const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-lifecycle-cli-'));
+      try {
+        const scriptDir = path.join(sandbox, '.juno_task', 'scripts');
+        await fs.ensureDir(scriptDir);
+        const script = path.join(scriptDir, 'task_lifecycle.py');
+        await fs.writeFile(script, 'import json,sys; print(json.dumps({"forwarded":sys.argv[1:]}))\n');
+        const state = path.join(sandbox, 'state.json');
+        await fs.writeJson(state, {});
+
+        const help = await executeCLI(['--help'], { cwd: sandbox });
+        expect(help.exitCode).toBe(0);
+        expect(help.stdout).toContain('lifecycle');
+
+        const status = await executeCLI(['lifecycle', 'status', '--state', state], { cwd: sandbox });
+        expect(status.exitCode).toBe(0);
+        expect(JSON.parse(status.stdout.trim())).toEqual({ forwarded: ['status', '--state', state] });
+      } finally {
+        await fs.remove(sandbox);
+      }
+    });
+
     it('should expose script update commands and accept --force without routing to an agent prompt', async () => {
       const help = await executeCLI(['--help']);
       expect(help.exitCode).toBe(0);

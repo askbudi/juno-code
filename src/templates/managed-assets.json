@@ -86,6 +86,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/tests/test_task_lifecycle.py",
+      "destination": ".juno_task/scripts/tests/test_task_lifecycle.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/git_index_lock.py",
       "destination": ".juno_task/scripts/git_index_lock.py",
       "installClass": "script",
@@ -94,6 +100,12 @@
     {
       "source": "scripts/controller_checkpoint.py",
       "destination": ".juno_task/scripts/controller_checkpoint.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/task_lifecycle.py",
+      "destination": ".juno_task/scripts/task_lifecycle.py",
       "installClass": "script",
       "type": "script"
     },

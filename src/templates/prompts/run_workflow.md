@@ -1,16 +1,16 @@
-# Run task workflow
+# Run a workflow or task lifecycle
 
-Own execution, semantic review, reviewed local integration, and safe cleanup for one exact existing workflow/task-set manifest. Reuse the creation handoff; otherwise require explicit artifacts and never invent replacement tasks.
+Choose the public owner by intent:
 
-1. From the controller, resolve orchestration identity and preflight exact target/base/task/path/risk/validation/receipt/E2E authority. Juno never silently switches refs to manufacture a controller. Controller dirt is not product input.
-2. Require exact `worktree_lifecycle.py create`, `verify`, and joined `edit-preflight` evidence before every product-edit dispatch. Run product commands in the admitted `TASK_ROOT`; keep Kanban/session writes on `JUNO_TASK_ROOT`.
-3. Lint and execute the currently shipped `schema_version: 2` local-integration contract. Keep its exact queue, channel, target-movement, detach, candidate, typed-receipt, direct integration-owner argv, actual-target, recovery, and terminal-gate requirements. Every typed receipt requires `producer_step_digest` bound to `JUNO_WORKFLOW_STEP_DIGEST`. This bootstrap introduces no second runtime. Ordinary schema-v2 workflows remain executable, while generated and validation-owned reviewer edit authority is rejected.
-4. Implementation uses focused affected tests and completes the ordinary happy path. Implementation and repair workers never launch reviewers. At the exact candidate boundary, run one full suite to establish `REVIEW_READY`; do not claim `REVIEW_READY` before that suite passes.
-5. Freeze base and tip. For high risk, run fresh read-only Reviewer A and then Reviewer B sequentially against the same frozen base and tip. A finding from A must not suppress B. Do not edit or repair between the two reviews. Only the logical orchestrator launches them.
-6. Wait for both review results before repair. Deduplicate all findings by root cause and issue one bounded repair packet. One repair session handles the complete packet, runs focused tests, then runs one full suite at the replacement candidate boundary before a fresh same-tip A-then-B round. Continue until both PASS. Low/medium uses one independent review.
-7. Use the canonical parameterized review prompt; never manually rewrite review philosophy or inject complete historical transcripts. Store raw logs and receipts as artifacts. Observe long work through one bounded wait/result call rather than repeated sleep/tail turns.
-8. After review PASS, perform current deterministic candidate planning/build/verification. Reuse direct unchanged reviewed bytes; composition-changed bytes receive the currently required candidate review. Target movement invalidates stale evidence.
-9. Integrate only through direct `integration_owner_preflight.py integrate` expected-SHA CAS. Preserve active runtimes and truthful partial state. Deterministic actual-target validation is mandatory; retain the current runtime-required actual semantic review and feature-tag policy until the final hard cut.
-10. Inspect terminal evidence, run `task_workflow_helper.py finalize-review`, and clean only through typed lifecycle cleanup after accepted target reachability is proven. Resume the smallest invalid stage; use `--amends-run PRIOR_RUN --from-step STEP` only for the current documented harness correction contract.
+- Generic ordered reporting/agent workflow: `workflow_runner.sh --workflow PATH`.
+- Product task implementation, review, integration, verification, and cleanup: `yy lifecycle run --manifest PATH`.
 
-Report transport success separately from semantic PASS and separately from implemented, validated, reviewed, integrated, released, and cleanup-complete status. Local integration does not grant push, publication, deployment, production mutation, restart, or post-deploy E2E authority.
+For task lifecycle work, never expose or ask the operator to discover helper choreography. The controller retains orchestration state, product workers receive the admitted `TASK_ROOT`, and the lifecycle never silently switches controller or target branches. Observe with `yy lifecycle status --state PATH`; resume only the recorded first pending phase with `yy lifecycle resume --state PATH`. Worker and reviewer roles remain bounded by the managed contracts.
+
+`workflow_class: local_integration` is historical. Its artifacts remain readable with `workflow_runner.sh doctor`, but lint, start, `--from-step`, recovery, and amendment are hard-rejected. Do not create an adapter or mechanically translate historical execution evidence.
+
+A lifecycle terminal result reports candidate validation, review PASS or truthful owner waiver, expected-SHA integration, deterministic actual-target verification, delivery-sensitive review, controller synchronization/checkpoint, and cleanup independently. `waived_by_owner` never means PASS and never lowers risk.
+
+Release, push, publication, deployment, production mutation, restart, and post-deploy E2E are outside the reusable task lifecycle and require project-specific authorization.
+
+Why tests and backing implementation matter: prompts establish role behavior, but only the state machine and real process/Git tests can enforce same-tip review timing, bounded repair, CAS, target truth, and safe cleanup.

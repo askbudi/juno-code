@@ -286,6 +286,15 @@ class WorkflowError(Exception):
     pass
 
 
+LOCAL_INTEGRATION_HARD_CUT = (
+    "legacy local_integration execution was retired by the task lifecycle hard cut; "
+    "use `yy lifecycle run --manifest PATH` or inspect historical artifacts with workflow_runner.sh doctor"
+)
+RETIRED_LIFECYCLE_HELPERS = {
+    "worktree_lifecycle.py", "integration_candidate.py", "integration_owner_preflight.py",
+}
+
+
 RUN_CONTRACT_SCHEMA = "juno_workflow_run_contract.v1"
 
 
@@ -666,6 +675,8 @@ def safe_id(value: Any, fallback: str) -> str:
 
 
 def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = None) -> None:
+    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
+        raise WorkflowError(LOCAL_INTEGRATION_HARD_CUT)
     workflow_schema = str(workflow.get("schema_version") or "").strip()
     if workflow_schema and workflow_schema not in {"1", "1.0", "v1", "2", "2.0", "v2"}:
         raise WorkflowError(f"unsupported schema_version: {workflow['schema_version']}")
@@ -713,6 +724,11 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
     for step in steps:
+        helper_tokens = effective_command_argv(step.get("command"))
+        helper_index = 1 if helper_tokens and Path(helper_tokens[0]).name in {"python", "python3"} else 0
+        helper_executable = Path(helper_tokens[helper_index]).name if len(helper_tokens) > helper_index else ""
+        if helper_executable in RETIRED_LIFECYCLE_HELPERS:
+            raise WorkflowError(LOCAL_INTEGRATION_HARD_CUT)
         validate_pi_launch_policy(step, context=f"step {step['id']}", policy=policy)
     if summary_has_command:
         validate_pi_launch_policy(summary, context="summary", policy=policy)
@@ -767,117 +783,6 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
     validation_ownership = workflow.get("validation_ownership")
     if validation_ownership is not None and not isinstance(validation_ownership, dict):
         raise WorkflowError("validation_ownership must be a mapping")
-    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
-        if workflow_schema not in {"2", "2.0", "v2"}:
-            raise WorkflowError(
-                "local_integration requires schema_version: 2; migration required for pre-2.0.14 workflow contracts"
-            )
-        risk_tier = str(workflow.get("risk_tier") or "").strip()
-        if risk_tier not in {"low", "medium", "high", "release"}:
-            raise WorkflowError("local_integration requires exactly one risk_tier: low, medium, high, or release")
-        orchestration_workspace = workflow.get("orchestration_workspace")
-        if orchestration_workspace != "controller" and not (
-            isinstance(orchestration_workspace, str) and Path(orchestration_workspace).is_absolute()
-        ):
-            raise WorkflowError("local_integration orchestration_workspace must be controller or an explicit absolute external path")
-        required_roles = {"pre_merge_review", "candidate_review", "actual_target_review"}
-        missing_roles = sorted(required_roles - set(validation_ownership or {}))
-        if missing_roles:
-            raise WorkflowError(f"local_integration validation_ownership missing roles: {', '.join(missing_roles)}")
-        integration_policy = workflow.get("integration_policy")
-        allowed_policy = {
-            "queue": "automatic_after_review_pass",
-            "channel_scope": "git_common_dir_and_target_ref",
-            "target_movement": "rebuild_and_rereview",
-            "checked_out_target": "detach_same_sha",
-        }
-        if integration_policy != allowed_policy:
-            raise WorkflowError(
-                "local_integration integration_policy must exactly select automatic_after_review_pass, "
-                "git_common_dir_and_target_ref, rebuild_and_rereview, and detach_same_sha"
-            )
-        if not terminal_gate:
-            raise WorkflowError("local_integration workflow requires terminal_gate")
-        integration_step = str(workflow.get("integration_step") or "").strip()
-        if integration_step not in step_indexes:
-            raise WorkflowError("local_integration workflow requires a valid integration_step")
-        integration_command = next(step["command"] for step in steps if step["id"] == integration_step)
-        integration_argv = command_argv(integration_command)
-        direct_owner = False
-        if isinstance(integration_command, list) and integration_argv:
-            script_index = 0
-            if Path(integration_argv[0]).name != "integration_owner_preflight.py":
-                if Path(integration_argv[0]).name in {"python", "python3"} and len(integration_argv) > 1 and Path(integration_argv[1]).name == "integration_owner_preflight.py":
-                    script_index = 1
-                else:
-                    script_index = -1
-            direct_owner = script_index >= 0 and len(integration_argv) > script_index + 1 and integration_argv[script_index + 1] == "integrate"
-        required_integration_tokens = ("--candidate-receipt", "--risk-tier", "--checked-out-target")
-        if not direct_owner or any(token not in integration_argv for token in required_integration_tokens) or "detach_same_sha" not in integration_argv:
-            raise WorkflowError(
-                f"local_integration integration_step {integration_step} must be a directly executed argv-list "
-                "integration_owner_preflight.py owner that drains an eligible candidate through target-ref CAS and actual-target review"
-            )
-        review_steps = [str(validation_ownership["pre_merge_review"]), str(validation_ownership["candidate_review"])]
-        if any(step_indexes[step] >= step_indexes[integration_step] for step in review_steps):
-            raise WorkflowError("pre_merge_review and candidate_review must precede integration_step")
-        pre_merge_step = next(step for step in steps if str(step["id"]) == review_steps[0])
-        if risk_tier in {"medium", "high", "release"} and not is_canonical_yy_pi_command(pre_merge_step.get("command")):
-            raise WorkflowError("medium/high/release pre_merge_review must be a dedicated yy pi agent step")
-        for review_step_id in review_steps:
-            review_step = next(step for step in steps if str(step["id"]) == review_step_id)
-            review_argv = effective_command_argv(review_step.get("command"))
-            candidate_noop = review_step_id == review_steps[1] and review_argv == ["true"]
-            review_contract = review_step.get("generated_task_contract")
-            review_has_admission = any(
-                receipts[receipt_id]["schema_version"] == "juno_edit_preflight.v1"
-                for receipt_id in review_step.get("requires_receipts") or []
-            )
-            if (
-                review_step.get("edit_capable") is True
-                or review_has_admission
-                or isinstance(review_contract, dict)
-                and (
-                    review_contract.get("write_contract") != "read_only"
-                    or review_contract.get("task_root_receipt")
-                )
-            ):
-                raise WorkflowError(
-                    f"independent review step {review_step_id} cannot declare edit authority"
-                )
-            if not candidate_noop and not is_canonical_yy_pi_command(review_step.get("command")):
-                raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
-            if not candidate_noop and has_resume_or_continue(review_step.get("command")):
-                raise WorkflowError(f"independent review step {review_step_id} must use a fresh session without resume/continue")
-            if review_step_id == review_steps[1] and not candidate_noop:
-                identity = review_step.get("candidate_read_only")
-                if not isinstance(identity, dict) or set(identity) != {"path", "sha"} or not all(
-                    isinstance(identity.get(key), str) and identity[key].strip() for key in ("path", "sha")
-                ):
-                    raise WorkflowError(
-                        "candidate_review must declare candidate_read_only with exactly path and sha"
-                    )
-        if "--actual-review-command" in integration_argv:
-            actual_index = integration_argv.index("--actual-review-command")
-            actual_command = integration_argv[actual_index + 1] if actual_index + 1 < len(integration_argv) else ""
-            actual_step = {"command": actual_command}
-            if not is_canonical_yy_pi_command(actual_command):
-                raise WorkflowError("actual_target_review must launch through yy pi")
-            validate_pi_launch_policy(actual_step, context="actual_target_review", policy=policy)
-            if has_resume_or_continue(actual_command):
-                raise WorkflowError("actual_target_review must use a fresh session without resume/continue")
-        if str(validation_ownership["actual_target_review"]) != integration_step:
-            raise WorkflowError("actual_target_review must be executed and receipt-gated by integration_step")
-        integration_receipts = [
-            contract for contract in receipts.values()
-            if contract["producer"] == integration_step
-            and contract["expected_fields"].get("outcome") == "integrated"
-            and "feature_tag_policy" in contract["required_fields"]
-        ]
-        if not integration_receipts:
-            raise WorkflowError("integration_step must produce a typed integrated receipt requiring feature_tag_policy")
-        if step_indexes[terminal_gate] < step_indexes[integration_step]:
-            raise WorkflowError("terminal_gate must not precede integration_step")
     for role, step_id_value in (validation_ownership or {}).items():
         if str(step_id_value) not in step_indexes:
             raise WorkflowError(f"validation_ownership.{role} references unknown step: {step_id_value}")
@@ -1808,34 +1713,6 @@ def append_live_log(path: Path | None, text: str) -> None:
         handle.flush()
 
 
-def command_owns_actual_review_child(command: Any, project_root: Path) -> bool:
-    # Bind the capability to the canonical managed owner script beside this
-    # runner. A matching basename, symlink, copy, or alternate interpreter is
-    # not an owner identity.
-    if not isinstance(command, list):
-        return False
-    tokens = [str(part) for part in command]
-    if not tokens:
-        return False
-    canonical_owner = SCRIPT_DIR / "integration_owner_preflight.py"
-    script_index = 0
-    if len(tokens) >= 2 and Path(tokens[0]).name in {"python", "python3"}:
-        interpreter = shutil.which(tokens[0])
-        if interpreter is None or Path(interpreter).resolve() != Path(sys.executable).resolve():
-            return False
-        script_index = 1
-    candidate = Path(tokens[script_index])
-    if not candidate.is_absolute():
-        candidate = project_root / candidate
-    try:
-        if candidate != canonical_owner or candidate.is_symlink() or candidate.resolve(strict=True) != canonical_owner:
-            return False
-    except OSError:
-        return False
-    owner_args = tokens[script_index + 1 :]
-    return bool(owner_args) and owner_args[0] == "integrate" and "--actual-review-command" in owner_args and "--actual-review-receipt" in owner_args
-
-
 def _candidate_git(candidate: Path, *args: str) -> bytes:
     completed = subprocess.run(
         ["git", "-C", str(candidate), *args],
@@ -2405,18 +2282,7 @@ def workflow_model_bindings(
         summary_selection = validate_pi_launch_policy(
             {"command": render(summary["command"], context)}, context="summary", policy=policy
         )
-    actual_target = None
-    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
-        integration_id = str(workflow.get("integration_step") or "")
-        integration = next((step for step in workflow["steps"] if str(step["id"]) == integration_id), None)
-        argv = command_argv(render(integration["command"], context)) if integration else []
-        if "--actual-review-command" in argv:
-            index = argv.index("--actual-review-command")
-            actual = argv[index + 1] if index + 1 < len(argv) else ""
-            actual_target = validate_pi_launch_policy(
-                {"command": actual}, context="actual_target_review", policy=policy
-            )
-    return {"steps": steps, "summary": summary_selection, "actual_target_review": actual_target}
+    return {"steps": steps, "summary": summary_selection}
 
 
 def build_run_contract(
@@ -2775,21 +2641,6 @@ def run_workflow(args: argparse.Namespace) -> int:
         workflow_dir = workflow_path.parent
         workflow_source_path = str(workflow_path)
     workflow = parse_yaml_like(workflow_text)
-    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
-        declared_workspace = str(workflow["orchestration_workspace"])
-        orchestration_root = (
-            Path(os.environ["JUNO_TASK_ROOT"]).resolve()
-            if declared_workspace == "controller"
-            else Path(declared_workspace).resolve()
-        )
-        if not orchestration_root.is_dir():
-            raise WorkflowError(f"local_integration orchestration workspace does not exist: {orchestration_root}")
-        if args.project_root and project_root != orchestration_root:
-            raise WorkflowError(
-                f"local_integration --project-root must equal orchestration workspace {orchestration_root}"
-            )
-        project_root = orchestration_root
-
     model_policy = load_workflow_model_policy(project_root)
     validate_workflow(workflow, model_policy)
 
@@ -3109,11 +2960,6 @@ def run_workflow(args: argparse.Namespace) -> int:
         child_evidence_dir = out_dir / "child_steps" / step_slug
         env.pop("JUNO_WORKFLOW_CHILD_EVIDENCE_DIR", None)
         env.pop("JUNO_WORKFLOW_DIRECT_OWNER", None)
-        if command_owns_actual_review_child(command, project_root):
-            if not args.dry_run and child_evidence_dir.exists():
-                shutil.rmtree(child_evidence_dir)
-            env["JUNO_WORKFLOW_CHILD_EVIDENCE_DIR"] = str(child_evidence_dir)
-            env["JUNO_WORKFLOW_DIRECT_OWNER"] = "integration_owner_preflight.v1"
         if live_log_path is not None:
             env["JUNO_WORKFLOW_LIVE_LOG_PATH"] = str(live_log_path)
         for receipt_id, receipt in context.get("receipts", {}).items():
@@ -3844,9 +3690,6 @@ Examples:
     workflow_text = sys.stdin.read() if args.workflow == "-" else Path(args.workflow).read_text(encoding="utf-8")
     workflow = parse_yaml_like(workflow_text)
     project_root = Path(args.project_root or os.getcwd()).resolve()
-    if str(workflow.get("workflow_class") or "").strip() == "local_integration":
-        declared = str(workflow.get("orchestration_workspace") or "")
-        project_root = Path(os.environ["JUNO_TASK_ROOT"] if declared == "controller" else declared).resolve()
     policy = load_workflow_model_policy(project_root)
     findings = workflow_lint_findings(workflow, policy)
     if args.json:
@@ -3888,6 +3731,8 @@ def recovery_context(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
 
 
 def verify_recovery_contract(contract: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    if str(contract.get("workflow_class") or "").strip() == "local_integration":
+        raise WorkflowError(LOCAL_INTEGRATION_HARD_CUT)
     if contract.get("schema_version") != RUN_CONTRACT_SCHEMA:
         raise WorkflowError(f"recovery contract has unsupported schema: {contract.get('schema_version')!r}")
     project_root_text = str(contract.get("project_root") or "").strip()
@@ -4238,9 +4083,8 @@ def build_parser() -> argparse.ArgumentParser:
   Receipt paths are available as {{ receipts.<id>.path }} and as
   JUNO_WORKFLOW_RECEIPT_<ID>. Receipt producers receive JUNO_WORKFLOW_STEP_ID and JUNO_WORKFLOW_STEP_DIGEST;
   every receipt required_fields list explicitly includes producer_step_digest.
-  Declare terminal_gate for semantic summaries. schema_version: 2 local_integration workflows declare
-  pre_merge_review, candidate_review, and receipt-gated actual_target_review owners,
-  plus the exact automatic queue/channel/rebuild integration_policy.
+  Legacy workflow_class: local_integration execution is hard-rejected. Use the single
+  `yy lifecycle run --manifest PATH` state machine; doctor remains available for historical artifacts.
 
 Helper commands:
   workflow_runner.sh lint --workflow WORKFLOW.yaml     # flag response/log template anti-patterns

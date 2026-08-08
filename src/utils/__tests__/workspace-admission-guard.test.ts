@@ -170,7 +170,7 @@ describe('joined workspace edit and commit admission', () => {
     expect(JSON.parse(fs.readFileSync(receipt, 'utf8')).passed).toBe(false);
   });
 
-  it('binds explicit task routing, persisted base, and materialized expected paths', async () => {
+  it('binds explicit task routing/base while treating absent declared paths as planned new output', async () => {
     const installed = path.join(task, '.juno_task', 'scripts', 'worktree_lifecycle.py');
     const common = ['edit-preflight', '--repository', task, '--target-ref', 'refs/heads/main', '--approved-base', base,
       '--task-id', 'T1', '--expected-path', 'product.txt', '--path', task, '--manifest', manifest,
@@ -197,7 +197,10 @@ describe('joined workspace edit and commit admission', () => {
     output = path.join(temp, 'missing-expected-path.json');
     result = python(installed, [...common, '--task-worktree', task, '--task-branch-ref', 'refs/heads/task-T1', '--output', output], task);
     expect(result.status).toBe(2);
-    expect(JSON.parse(await fs.readFile(output, 'utf8')).refusals).toContain('expected_path_missing:product.txt');
+    const missingPathReceipt = JSON.parse(await fs.readFile(output, 'utf8'));
+    expect(missingPathReceipt.refusals).toContain('dirty');
+    expect(missingPathReceipt.refusals).not.toContain('expected_path_missing:product.txt');
+    expect(missingPathReceipt.expected_path_dispositions['product.txt']).toBe('planned_new');
   });
 
   it('requires explicit approved committed base when controller authority is missing', () => {

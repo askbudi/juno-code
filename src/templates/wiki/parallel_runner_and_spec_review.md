@@ -23,9 +23,9 @@ wiki_contract:
 
 Use this guide after `./.juno_task/scripts/parallel_runner.sh` finishes, before accepting subagent work, and before marking root work done for production jobs, write-capable CLIs, submodules, or multi-task implementation batches. Project-local task-authoring/schema guides may specialize those concerns without becoming package-managed files. For isolated checkout integration and cleanup, see [`git_worktree_lifecycle.md`](git_worktree_lifecycle.md); for replacement inventories, limit provenance, feasibility, cleanup ledgers, and validation ownership, see [`runtime_migration_and_replacement_contract.md`](runtime_migration_and_replacement_contract.md).
 
-## Workflow Runner guidance ownership
+## Workflow and task-lifecycle guidance ownership
 
-Workflow Runner intentionally has no duplicate managed wiki. `.juno_task/prompts/run_workflow.md` owns execution and lifecycle governance, `workflow_runner.sh --help` owns exact CLI syntax, and the package README owns the operator overview. This page owns only post-run/spec review shared with Parallel Runner. Tests bind those surfaces to the installed scripts; copying their full contracts here would create drift.
+Workflow Runner owns generic ordered workflows only. Product implementation/review/integration/cleanup uses `yy lifecycle`; `git_worktree_lifecycle.md` is its semantic source and `task_lifecycle.py --help` owns exact runtime syntax. Historical `workflow_class: local_integration` artifacts remain doctor-readable but cannot lint/start/resume/recover/amend. This page owns only post-run/spec review shared with Parallel Runner. Tests bind those surfaces to installed scripts; copying their full contracts here would create drift.
 
 ## Why this matters
 Parallel/subagent runs can finish with mixed outcomes: failed tasks may leave useful diffs, successful tasks may miss a MUST/MUST NOT, and submodules may be committed without the parent pointer. A reviewer must independently prove that the implementation matches the selected kanban/spec contract.

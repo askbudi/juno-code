@@ -1217,6 +1217,39 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
     });
 }
 
+function setupTaskLifecycleCommand(program: Command): void {
+  const invoke = async (operation: 'run' | 'resume' | 'status', options: { manifest?: string; state?: string }) => {
+    const [{ spawn }, path, fs] = await Promise.all([
+      import('node:child_process'),
+      import('node:path'),
+      import('fs-extra'),
+    ]);
+    const script = path.resolve(process.cwd(), '.juno_task', 'scripts', 'task_lifecycle.py');
+    if (!(await fs.pathExists(script))) {
+      throw new Error('Missing managed lifecycle runtime. Run `yy scripts update` and retry.');
+    }
+    const args = [script, operation];
+    if (options.manifest) args.push('--manifest', path.resolve(options.manifest));
+    if (options.state) args.push('--state', path.resolve(options.state));
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      const child = spawn('python3', args, { cwd: process.cwd(), env: process.env, stdio: 'inherit' });
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        if (signal) reject(new Error(`Lifecycle terminated by signal ${signal}`));
+        else resolve(code ?? 1);
+      });
+    });
+    if (exitCode !== 0) process.exitCode = exitCode;
+  };
+
+  const lifecycle = program
+    .command('lifecycle')
+    .description('Run one resumable single-repository task lifecycle');
+  lifecycle.command('run').requiredOption('--manifest <path>').option('--state <path>').action((options) => invoke('run', options));
+  lifecycle.command('resume').requiredOption('--state <path>').action((options) => invoke('resume', options));
+  lifecycle.command('status').requiredOption('--state <path>').action((options) => invoke('status', options));
+}
+
 function setupCompletion(program: Command): void {
   try {
     const completionCommand = new CompletionCommand();
@@ -1772,11 +1805,12 @@ async function main(): Promise<void> {
   configureEnvironment();
 
   // Identity discovery must not refresh scripts, skills, services, or project state.
-  const isReadOnlyVersionRequest = process.argv.slice(2).some(
-    (arg) => arg === '--version' || arg === '-V',
-  );
-  const isForceUpdate = process.argv.includes('--force-update');
   const cliArgs = process.argv.slice(2);
+  const isReadOnlyVersionRequest = cliArgs.some((arg) => arg === '--version' || arg === '-V');
+  const isLifecycleCommand = cliArgs[0] === 'lifecycle';
+  const isReadOnlyLifecycleStatus = isLifecycleCommand && cliArgs[1] === 'status';
+  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus;
+  const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
     cliArgs[0] === 'install-scripts' ||
@@ -1786,7 +1820,7 @@ async function main(): Promise<void> {
   // closed before command parsing or agent dispatch. Explicit update commands
   // retain their documented authority in every initialized workspace.
   const mayAutoUpdateProjectAssets =
-    !isReadOnlyVersionRequest &&
+    !isReadOnlyIdentityRequest && !isLifecycleCommand &&
     (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
@@ -1795,7 +1829,7 @@ async function main(): Promise<void> {
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
   try {
-    if (!isReadOnlyVersionRequest) {
+    if (!isReadOnlyIdentityRequest) {
       const { ServiceInstaller } = await import('../utils/service-installer.js');
 
     if (isForceUpdate) {
@@ -1931,6 +1965,7 @@ async function main(): Promise<void> {
   program.addCommand(createSkillsCommand());
   program.addCommand(createAuthCommand());
   setupScriptManagementCommands(program);
+  setupTaskLifecycleCommand(program);
 
   // Setup completion
   setupCompletion(program);

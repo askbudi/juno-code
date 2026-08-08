@@ -451,9 +451,13 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
         refusals.append("task_worktree_argument_mismatch")
     if manifest and args.task_branch_ref != manifest.get("branch_ref"):
         refusals.append("task_branch_ref_argument_mismatch")
+    expected_path_dispositions: dict[str, str] = {}
     for expected_path in expected_paths:
-        if not (current / expected_path).exists():
-            refusals.append(f"expected_path_missing:{expected_path}")
+        candidate = current / expected_path
+        # A complete admission manifest must be able to name files that the
+        # task is authorized to create.  The normalized relative path remains
+        # hash-bound; existence is evidence, not authority.
+        expected_path_dispositions[expected_path] = "existing" if candidate.exists() else "planned_new"
     if role_valid and manifest and role.get("manifest_identity") != manifest.get("workspace_manifest_identity"):
         refusals.append("persisted_manifest_identity_mismatch")
     if role_valid and manifest_hash and role.get("create_receipt_sha256") != manifest_hash:
@@ -508,6 +512,7 @@ def edit_preflight(args: argparse.Namespace) -> dict[str, Any]:
     payload = {"schema_version": EDIT_PREFLIGHT_SCHEMA, "operation": "edit_preflight",
                "passed": not refusals, "task_id": args.task_id, "current": actual,
                "workspace": role, "target": target, "expected_paths": expected_paths,
+               "expected_path_dispositions": expected_path_dispositions,
                "manifest": None if args.manifest is None else {"path": str(args.manifest.resolve()), "sha256": manifest_hash},
                "verify_receipt": None if args.verify_receipt is None else {"path": str(args.verify_receipt.resolve()), "sha256": hashlib.sha256(args.verify_receipt.read_bytes()).hexdigest()},
                "refusals": sorted(set(refusals)), "safe_next_action": {"argv": next_argv, "shell": shlex.join(next_argv)},

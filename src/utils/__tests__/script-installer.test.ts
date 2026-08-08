@@ -78,6 +78,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('workflow_assert.py');
       expect(missing).toContain('git_index_lock.py');
       expect(missing).toContain('controller_checkpoint.py');
+      expect(missing).toContain('task_lifecycle.py');
       expect(missing).toContain('integration_owner_preflight.py');
       expect(missing).toContain('integration_candidate.py');
       expect(missing).toContain('worktree_lifecycle.py');
@@ -86,6 +87,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('wiki_lint.py');
       expect(missing).toContain('wiki_lint.sh');
       expect(missing).toContain('tests/test_integration_concurrency.py');
+      expect(missing).toContain('tests/test_task_lifecycle.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -208,8 +210,14 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
-      const missing = await ScriptInstaller.getMissingScripts(testDir);
-      expect(missing).toEqual([]);
+      const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
+      expect(newlyManaged.sort()).toEqual(['task_lifecycle.py', 'tests/test_task_lifecycle.py']);
+      for (const relative of newlyManaged) {
+        const destination = path.join(scriptsDir, relative);
+        await fs.ensureDir(path.dirname(destination));
+        await fs.writeFile(destination, '#!/usr/bin/env python3\n');
+      }
+      expect(await ScriptInstaller.getMissingScripts(testDir)).toEqual([]);
     });
   });
 
@@ -294,8 +302,10 @@ describe('ScriptInstaller', () => {
         { name: 'wiki_lint.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_integration_concurrency.py', installed: false },
+        { name: 'tests/test_task_lifecycle.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
+        { name: 'task_lifecycle.py', installed: false },
         { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'worktree_lifecycle.py', installed: false },
@@ -420,6 +430,11 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'tests/test_integration_concurrency.py'),
         '#!/usr/bin/env python3\nprint("integration concurrency")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_task_lifecycle.py'),
+        '#!/usr/bin/env python3\nprint("task lifecycle")',
+      );
+      await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
@@ -456,8 +471,10 @@ describe('ScriptInstaller', () => {
         { name: 'wiki_lint.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_integration_concurrency.py', installed: true },
+        { name: 'tests/test_task_lifecycle.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
+        { name: 'task_lifecycle.py', installed: true },
         { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'worktree_lifecycle.py', installed: true },
@@ -751,7 +768,7 @@ describe('ScriptInstaller', () => {
       const updated = await ScriptInstaller.autoUpdate(testDir, true, true);
 
       expect(updated).toBe(true);
-      expect(await fs.readFile(wikiPath, 'utf8')).toContain('# Git Worktree Lifecycle');
+      expect(await fs.readFile(wikiPath, 'utf8')).toContain('# Single-repository task lifecycle');
       expect(await fs.readFile(scriptPath, 'utf8')).toContain('def main(');
       const backupRoot = path.join(testDir, '.juno_task/managed-conflicts');
       const backupDirectories = await fs.readdir(backupRoot);

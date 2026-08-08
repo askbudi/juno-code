@@ -54,21 +54,21 @@ describe('ManagedProjectAssets', () => {
     const freshLoader = new ConfigLoader(projectDir);
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
-    expect(dictionary.clean_worktree).toContain('# Run an exact-base product-change workflow');
+    expect(dictionary.clean_worktree).toContain('# Clean task lifecycle');
     expect(dictionary.clean_worktree).toContain('REVIEW_READY');
-    expect(dictionary.clean_worktree).toContain('Reviewer A and then Reviewer B');
-    expect(dictionary.clean_worktree).toContain('Do not repair between Reviewer A and Reviewer B');
+    expect(dictionary.clean_worktree).toContain('Reviewer A followed by Reviewer B');
+    expect(dictionary.clean_worktree).toContain('one replacement pair');
     expect(dictionary.reflect).toContain('# End-of-session reflection');
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
     expect(dictionary.reflect).toContain('complete reflection table');
-    expect(dictionary.new_task_workflow).toContain('# Create task workflow');
-    expect(dictionary.new_task_workflow).toContain('{{ receipts.<id>.path }}');
-    expect(dictionary.new_task_workflow).toContain('Do not add standalone `implementation_guard`, `pre_merge_guard`, or `candidate_guard` steps');
-    expect(dictionary.new_task_workflow).toContain('same frozen base and tip');
-    expect(dictionary.new_task_workflow).toContain('producer_step_digest');
-    expect(dictionary.run_workflow).toContain('# Run task workflow');
-    expect(dictionary.run_workflow).toContain('--amends-run PRIOR_RUN --from-step STEP');
-    expect(dictionary.run_workflow).toContain('Wait for both review results before repair');
+    expect(dictionary.new_task_workflow).toContain('# New task lifecycle');
+    expect(dictionary.new_task_workflow).toContain('juno_task_lifecycle.v1');
+    expect(dictionary.new_task_workflow).toContain('one initial review pair budget');
+    expect(dictionary.new_task_workflow).toContain('one frozen tip');
+    expect(dictionary.new_task_workflow).toContain('yy lifecycle run --manifest PATH');
+    expect(dictionary.run_workflow).toContain('# Run a workflow or task lifecycle');
+    expect(dictionary.run_workflow).toContain('workflow_runner.sh doctor');
+    expect(dictionary.run_workflow).toContain('waived_by_owner');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
@@ -87,8 +87,13 @@ describe('ManagedProjectAssets', () => {
     ).toContain('Reviewer launcher identity');
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
-    ).toContain('Sequential same-tip review policy');
+    ).toContain('Reviewer A then Reviewer B sequentially on exactly the same frozen base/tip');
 
+    const canonicalImplementationReference = await fs.readFile(
+      path.join(process.cwd(), 'src/templates/skills/canonical/ralph-loop/references/implement.md'),
+      'utf8',
+    );
+    expect(canonicalImplementationReference).toContain('GENERATED DESTINATIONS');
     for (const agent of ['claude', 'codex', 'pi']) {
       const implementationReference = await fs.readFile(
         path.join(
@@ -99,6 +104,7 @@ describe('ManagedProjectAssets', () => {
         ),
         'utf8',
       );
+      expect(implementationReference).toBe(canonicalImplementationReference);
       expect(implementationReference).toContain('# Implementation worker contract');
       expect(implementationReference).toContain('Do not launch subagents or semantic reviewers');
       expect(implementationReference).toContain('Stop and hand off at `REVIEW_READY`');
@@ -237,7 +243,7 @@ describe('ManagedProjectAssets', () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(result.updated).toContain(destination);
     expect(result.installed).toContain('.juno_task/prompts/new_task_workflow.md');
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Run task workflow');
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Run a workflow or task lifecycle');
   });
 
   it('preserves customized prompts and writes a package-version candidate', async () => {
@@ -251,7 +257,7 @@ describe('ManagedProjectAssets', () => {
     expect(conflict).toBeDefined();
     expect(await fs.readFile(destinationPath, 'utf8')).toContain('refs/heads/customer-release');
     expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      '# Run an exact-base product-change workflow',
+      '# Clean task lifecycle',
     );
   });
 
@@ -267,7 +273,7 @@ describe('ManagedProjectAssets', () => {
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup), 'utf8')).toBe(customized);
     expect(await fs.readFile(destinationPath, 'utf8')).toContain(
-      '# Run an exact-base product-change workflow',
+      '# Clean task lifecycle',
     );
   });
 
@@ -390,7 +396,7 @@ describe('CleanWorktreeSpecializer', () => {
     expect(conflict).toBeDefined();
     expect(await fs.pathExists(promptPath)).toBe(false);
     expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      '# Run an exact-base product-change workflow',
+      '# Clean task lifecycle',
     );
   });
 });

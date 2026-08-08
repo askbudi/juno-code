@@ -70,16 +70,13 @@ if capability:
   self.assertEqual(["actual_target_review.event.json","capture.json","response.txt","review_receipt.json","stderr.txt","stdout.txt"],sorted(path.name for path in child_dir.iterdir()))
   event=json.loads((child_dir/"actual_target_review.event.json").read_text());self.assertEqual("accepted",event["semantic_outcome"]);self.assertEqual(candidate,event["reviewed_target_sha"])
 
- def test_workflow_runner_direct_owner_records_real_nested_receipt_and_recovery_evidence(self):
+ def test_workflow_runner_rejects_direct_lifecycle_helper_bypass(self):
   run(sys.executable,"-m","venv","--without-pip",str(self.repo/".venv_juno"))
   candidate,eligible=self.candidate(False);actual=self.tmp/"workflow-actual.json";integration=self.tmp/"workflow-integration.json";out_dir=self.tmp/"workflow-run"
   workflow=self.tmp/"direct-owner-workflow.json"
-  workflow.write_text(json.dumps({"schema_version":1,"workflow_id":"direct_owner_real_execution","receipts":[{"id":"integration","producer":"integrate","path":str(integration),"schema_version":"juno_local_integration.v3","required_fields":["producer_step_digest","outcome"],"expected_fields":{"outcome":"integrated"}}],"steps":[{"id":"integrate","command":[sys.executable,str(INTEGRATE),"integrate","--repository",f"root={self.repo},refs/heads/main,{self.base},{candidate}","--candidate-receipt",str(eligible),"--risk-tier","high","--checked-out-target","detach_same_sha","--validation-command","git diff --check","--actual-review-command",self.actual_review_command(actual,candidate),"--actual-review-receipt",str(actual),"--task-id","WORKFLOWREAL","--output",str(integration)]}]}))
-  executed=run("env","-u","JUNO_TASK_ROOT","-u","JUNO_CONTROLLER_BRANCH","-u","JUNO_WORKSPACE_ROLE",sys.executable,str(ROOT/".juno_task/scripts/workflow_runner.sh"),"--workflow",str(workflow),"--out-dir",str(out_dir),"--project-root",str(self.repo),"--print-output","none","--no-print-step-stdout",cwd=self.repo)
-  self.assertEqual(0,executed.returncode);receipt=json.loads(integration.read_text());manifest=json.loads((out_dir/"manifest.json").read_text());contract=json.loads((out_dir/"run_contract.json").read_text())
-  step=manifest["steps"][0];self.assertEqual(step["command_sha256"],receipt["producer_step_digest"]);self.assertEqual("integrated",receipt["outcome"]);self.assertEqual("accepted",step["child_steps"][0]["semantic_outcome"])
-  checkpoint=contract["completed_steps"]["integrate"];self.assertEqual(receipt["producer_step_digest"],checkpoint["command_sha256"]);self.assertEqual("actual_target_review",checkpoint["child_steps"][0]["child_id"])
-  self.assertEqual(0,run("env","-u","JUNO_TASK_ROOT","-u","JUNO_CONTROLLER_BRANCH","-u","JUNO_WORKSPACE_ROLE",sys.executable,str(ROOT/".juno_task/scripts/workflow_runner.sh"),"doctor",str(out_dir),cwd=self.repo,ok=False).returncode)
+  workflow.write_text(json.dumps({"schema_version":1,"workflow_id":"direct_owner_refused","steps":[{"id":"integrate","command":[sys.executable,str(INTEGRATE),"integrate","--repository",f"root={self.repo},refs/heads/main,{self.base},{candidate}","--candidate-receipt",str(eligible),"--risk-tier","high","--checked-out-target","detach_same_sha","--validation-command","git diff --check","--actual-review-command",self.actual_review_command(actual,candidate),"--actual-review-receipt",str(actual),"--task-id","WORKFLOWREAL","--output",str(integration)]}]}))
+  executed=run("env","-u","JUNO_TASK_ROOT","-u","JUNO_CONTROLLER_BRANCH","-u","JUNO_WORKSPACE_ROLE",sys.executable,str(ROOT/".juno_task/scripts/workflow_runner.sh"),"--workflow",str(workflow),"--out-dir",str(out_dir),"--project-root",str(self.repo),"--print-output","none","--no-print-step-stdout",cwd=self.repo,ok=False)
+  self.assertNotEqual(0,executed.returncode);self.assertIn("task lifecycle hard cut",executed.stderr);self.assertFalse(integration.exists());self.assertEqual(self.base,git(self.repo,"rev-parse","refs/heads/main"))
 
  def test_workflow_owned_high_risk_requires_child_capability_before_cas(self):
   candidate,eligible=self.candidate(False);output=self.tmp/"missing-child-capability.json";actual=self.tmp/"missing-child-actual.json"
@@ -255,6 +252,16 @@ if capability:
   run(sys.executable,str(CAND),"build","--plan",str(plan),"--candidate-path",str(self.tmp/"candidate"),"--validation-command","git diff --check","--output",str(built))
   candidate=json.loads(built.read_text())["candidate_sha"];review.write_text(json.dumps({"schema_version":"juno_review.v1","review_kind":"candidate","passed":True,"reviewed_tip":candidate,"open_bugs":[]})+"\n")
   run(sys.executable,str(CAND),"verify","--candidate",str(built),"--candidate-review",str(review),"--output",str(eligible));git(self.repo,"checkout","--detach",json.loads(plan.read_text())["expected_target_sha"]);return candidate,eligible
+ def test_candidate_preserves_truthful_owner_waiver_without_fictional_pass(self):
+  task=self.tmp/"waived-task";git(self.repo,"worktree","add","-b","task/WAIVED",str(task),self.base);git(task,"config","user.email","test@example.com");git(task,"config","user.name","Test")
+  (task/"feature").write_text("waived candidate\n");git(task,"add","feature");git(task,"commit","-m","waived candidate");tip=git(task,"rev-parse","HEAD")
+  waiver=self.tmp/"owner-waiver.json";waiver.write_text(json.dumps({"schema_version":"juno_owner_review_waiver.v1","status":"waived_by_owner","candidate_sha":tip,"review_passed":False,"objective_risk":"high","effective_risk":"high"})+"\n")
+  matrix=self.tmp/"waived-matrix.json";matrix.write_text('{"requirements":"PASS"}\n');plan=self.tmp/"waived-plan.json";built=self.tmp/"waived-built.json";eligible=self.tmp/"waived-eligible.json"
+  run(sys.executable,str(CAND),"plan","--repository",str(self.repo),"--target-ref","refs/heads/main","--base-sha",self.base,"--reviewed-tip",tip,"--task-worktree",str(task),"--task-id","WAIVED","--expected-path","feature","--owner-waiver",str(waiver),"--pdr-matrix",str(matrix),"--output",str(plan))
+  planned=json.loads(plan.read_text());self.assertEqual("waived_by_owner",planned["review_status"]);self.assertFalse(planned["review_passed"])
+  run(sys.executable,str(CAND),"build","--plan",str(plan),"--candidate-path",str(self.tmp/"waived-candidate"),"--validation-command","git diff --check","--output",str(built))
+  run(sys.executable,str(CAND),"verify","--candidate",str(built),"--output",str(eligible));verified=json.loads(eligible.read_text());self.assertTrue(verified["eligible"]);self.assertEqual("waived_by_owner",verified["review_status"]);self.assertFalse(verified["review_passed"])
+
  def test_unregistered_target_channel_owner_planning_is_read_only_and_fail_closed(self):
   git(self.repo,"branch","-m","controller");git(self.repo,"branch","main",self.base)
   task=self.tmp/"planning-task";git(self.repo,"worktree","add","-b","task/PLANNING",str(task),self.base);git(task,"config","user.email","test@example.com");git(task,"config","user.name","Test")
@@ -371,6 +378,11 @@ if capability:
   base_args=[sys.executable,str(INTEGRATE),"integrate","--repository",f"root={self.repo},refs/heads/main,{self.base},{candidate}","--candidate-receipt",str(eligible),"--risk-tier","low","--validation-command","true","--task-id","FAST"]
   refused=run(*base_args,"--output",str(omitted),ok=False);self.assertIn("target_ref_checked_out",refused.stderr);self.assertEqual("refs/heads/main",git(self.repo,"symbolic-ref","HEAD"))
   receipt=self.tmp/"fast.json";run(*base_args,"--checked-out-target","detach_same_sha","--output",str(receipt));value=json.loads(receipt.read_text());self.assertEqual(os.environ.get("JUNO_WORKFLOW_STEP_DIGEST",""),value["producer_step_digest"]);self.assertEqual("low",value["declared_risk_tier"]);self.assertEqual("low",value["effective_risk_tier"]);self.assertEqual("not_required_by_effective_tier",value["actual_semantic_review"]);self.assertEqual("skipped_by_policy",value["feature_tag_policy"]["status"]);self.assertEqual("stale_behind_target",value["runtime_identities"][0]["runtime_identity_status"]);self.assertEqual(self.base,git(self.repo,"rev-parse","HEAD"));self.assertEqual(candidate,git(self.repo,"rev-parse","refs/heads/main"))
+ def test_delivery_sensitive_medium_requires_actual_review_without_risk_downgrade(self):
+  candidate,eligible=self.candidate(False);actual=self.tmp/"delivery-actual.json";receipt=self.tmp/"delivery-medium.json"
+  run(sys.executable,str(INTEGRATE),"integrate","--repository",f"root={self.repo},refs/heads/main,{self.base},{candidate}","--candidate-receipt",str(eligible),"--risk-tier","medium","--require-actual-review","--validation-command","true","--actual-review-command",self.actual_review_command(actual,candidate),"--actual-review-receipt",str(actual),"--task-id","DELIVERY","--output",str(receipt))
+  value=json.loads(receipt.read_text());self.assertEqual("medium",value["effective_risk_tier"]);self.assertTrue(value["actual_review_required"]);self.assertIn("delivery_sensitive",value["actual_review_reasons"]);self.assertEqual("performed",value["actual_semantic_review"])
+
  def test_detach_failure_before_cas_can_resume_with_runtime_identity(self):
   candidate,eligible=self.candidate(False);git(self.repo,"checkout","main");failed=self.tmp/"detached-before-cas.json"
   args=[sys.executable,str(INTEGRATE),"integrate","--repository",f"root={self.repo},refs/heads/main,{self.base},{candidate}","--candidate-receipt",str(eligible),"--risk-tier","low","--checked-out-target","detach_same_sha","--validation-command","true","--task-id","RETRY","--inject-failure-after","0"]

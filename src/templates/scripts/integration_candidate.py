@@ -27,6 +27,15 @@ def load_pass(path:Path,kind:str,tip:str|None=None)->dict[str,Any]:
     if value.get("open_bugs") != []: raise CandidateError(f"{kind} must explicitly record no open bugs")
     return value
 
+def load_waiver(path:Path,tip:str)->dict[str,Any]:
+    value=json.loads(path.read_text(encoding="utf-8"))
+    if (value.get("schema_version")!="juno_owner_review_waiver.v1" or value.get("status")!="waived_by_owner"
+            or value.get("candidate_sha")!=tip or value.get("review_passed") is not False):
+        raise CandidateError("exact candidate-bound owner waiver required")
+    if value.get("objective_risk") not in {"low","medium","high"} or value.get("effective_risk") not in {"low","medium","high"}:
+        raise CandidateError("owner waiver risk truth missing")
+    return value
+
 def paths(repo:Path,old:str,new:str)->list[str]: return sorted(set(git(repo,"diff","--name-only",old,new).splitlines()))
 def write(path:Path,payload:dict[str,Any])->None:
     encoded=json.dumps(payload,indent=2,sort_keys=True)+"\n"; path=path.resolve()
@@ -125,7 +134,9 @@ def plan(args:argparse.Namespace)->dict[str,Any]:
     planning=(require_target_channel_owner(repo,args.target_channel_owner,args.base_sha) if args.target_channel_owner else
               {"intent":"registered_repository","committed_tree_admission":require_committed_tree(repo,args.base_sha)})
     tip=git(repo,"rev-parse",f"{args.reviewed_tip}^{{commit}}"); base=git(repo,"rev-parse",f"{args.base_sha}^{{commit}}")
-    load_pass(args.premerge_review,"pre_merge",tip)
+    if bool(args.premerge_review)==bool(args.owner_waiver): raise CandidateError("exactly one pre-merge PASS or owner waiver is required")
+    acceptance=load_pass(args.premerge_review,"pre_merge",tip) if args.premerge_review else load_waiver(args.owner_waiver,tip)
+    acceptance_status="passed" if args.premerge_review else "waived_by_owner"
     if run(repo,"merge-base","--is-ancestor",base,tip,check=False).returncode: raise CandidateError("reviewed tip does not descend from base")
     if run(repo,"merge-base","--is-ancestor",base,target,check=False).returncode: raise CandidateError("invalid_rewind_or_divergence")
     task_paths=paths(repo,base,tip); target_paths=paths(repo,base,target)
@@ -138,7 +149,9 @@ def plan(args:argparse.Namespace)->dict[str,Any]:
     payload={"schema_version":SCHEMA,"operation":"plan","task_id":args.task_id,"repository":str(repo),"target_ref":target_ref,
       "base_sha":base,"reviewed_tip":tip,"task_worktree":str(task_worktree),"expected_target_sha":target,"strategy":strategy,"task_paths":task_paths,
       "target_channel_planning":planning,"target_paths":target_paths,"overlap_paths":sorted(set(task_paths)&set(target_paths)),"expected_paths":expected,
-      "premerge_review_sha256":hashlib.sha256(args.premerge_review.read_bytes()).hexdigest(),"premerge_review":load_pass(args.premerge_review,"pre_merge",tip),"pdr_matrix":json.loads(args.pdr_matrix.read_text())}
+      "premerge_review_sha256":hashlib.sha256((args.premerge_review or args.owner_waiver).read_bytes()).hexdigest(),
+      "premerge_review":acceptance,"review_status":acceptance_status,"review_passed":acceptance_status=="passed",
+      "pdr_matrix":json.loads(args.pdr_matrix.read_text())}
     if not isinstance(payload["pdr_matrix"],dict) or not payload["pdr_matrix"] or any(v!="PASS" for v in payload["pdr_matrix"].values()): raise CandidateError("PDR matrix must be non-empty and contain only PASS values")
     write(args.output,payload);return payload
 
@@ -209,7 +222,9 @@ def verify(args:argparse.Namespace)->dict[str,Any]:
       review_source="candidate"; review_hash=hashlib.sha256(args.candidate_review.read_bytes()).hexdigest()
     else:
       pre=candidate.get("premerge_review")
-      if not isinstance(pre,dict) or pre.get("reviewed_tip") != tip: raise CandidateError("direct candidate pre-merge review identity missing")
+      if not isinstance(pre,dict): raise CandidateError("direct candidate semantic acceptance identity missing")
+      reviewed_identity=pre.get("reviewed_tip") if candidate.get("review_status")=="passed" else pre.get("candidate_sha")
+      if reviewed_identity != tip: raise CandidateError("direct candidate semantic acceptance identity missing")
       review_source="pre_merge"; review_hash=candidate["premerge_review_sha256"]
     repo=Path(candidate["repository"])
     if git(repo,"rev-parse",f"{candidate['target_ref']}^{{commit}}")!=candidate["expected_target_sha"]:raise CandidateError("stale_target_rebuild_review_required")
@@ -230,7 +245,7 @@ def parser()->argparse.ArgumentParser:
  q=s.add_parser("target-preflight",allow_abbrev=False);q.set_defaults(func=target_preflight)
  q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--approved-base",required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("plan",allow_abbrev=False);q.set_defaults(func=plan)
- q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-channel-owner",type=Path,help="explicit dedicated integration-owner checkout; enables the read-only protected first-use audit");q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path,required=True);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
+ q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-channel-owner",type=Path,help="explicit dedicated integration-owner checkout; enables the read-only protected first-use audit");q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id",required=True);q.add_argument("--expected-path",action="append",default=[]);q.add_argument("--premerge-review",type=Path);q.add_argument("--owner-waiver",type=Path);q.add_argument("--pdr-matrix",type=Path,required=True);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("build",allow_abbrev=False);q.set_defaults(func=build);q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path,required=True);q.add_argument("--validation-command",action="append",required=True);q.add_argument("--validation-timeout",type=float,default=1800);q.add_argument("--output",type=Path,required=True)
  q=s.add_parser("verify",allow_abbrev=False);q.set_defaults(func=verify);q.add_argument("--candidate",type=Path,required=True);q.add_argument("--candidate-review",type=Path);q.add_argument("--output",type=Path,required=True)
  return p

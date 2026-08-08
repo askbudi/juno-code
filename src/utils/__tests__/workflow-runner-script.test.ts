@@ -254,14 +254,10 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).not.toContain('def resolve_continue_scope_context');
     expect(templateContent).toContain('continue-scope');
     expect(templateContent).toContain('--parent-pid');
-    expect(templateContent).toContain('directly executed argv-list');
-    expect(templateContent).toContain('--candidate-receipt');
-    expect(templateContent).toContain('--risk-tier');
-    expect(templateContent).toContain('detach_same_sha');
-    expect(templateContent).toContain('feature_tag_policy');
-    expect(templateContent).toContain('git_common_dir_and_target_ref');
-    expect(templateContent).toContain('rebuild_and_rereview');
-    expect(templateContent).toContain('local_integration requires schema_version: 2');
+    expect(templateContent).not.toContain('def command_owns_actual_review_child');
+    expect(templateContent).not.toContain('env["JUNO_WORKFLOW_DIRECT_OWNER"]');
+    expect(templateContent).toContain('legacy local_integration execution was retired by the task lifecycle hard cut');
+    expect(templateContent).not.toContain('local_integration requires schema_version: 2');
     expect(templateContent).toContain('required_fields must include producer_step_digest');
     expect(templateContent).not.toContain('--checkpoint-controller');
   });
@@ -402,7 +398,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(await fs.pathExists(markerPath)).toBe(false);
   });
 
-  it('accepts the candidate/CAS local-integration contract and rejects the retired checkpoint shape', async () => {
+  it('hard-rejects legacy local-integration lint after the task lifecycle cutover', async () => {
     const workflowPath = path.join(testDir, 'local-integration.json');
     const workflow: any = {
       schema_version: 2,
@@ -459,7 +455,12 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.writeJson(workflowPath, workflow);
 
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
-    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(accepted.status).not.toBe(0);
+    expect(accepted.stderr + accepted.stdout).toContain(
+      'legacy local_integration execution was retired by the task lifecycle hard cut',
+    );
+    expect(accepted.stderr + accepted.stdout).toContain('yy lifecycle run --manifest PATH');
+    return;
 
     for (const reviewStepId of ['pre_merge_review', 'candidate_review']) {
       const editReview = JSON.parse(JSON.stringify(workflow));
@@ -675,6 +676,34 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(undeclaredProducerDigest.status).not.toBe(0);
     expect(undeclaredProducerDigest.stderr).toMatch(/must include producer_step_digest/);
   }, 120_000);
+
+  it('rejects old local-integration start, resume, recovery, and amendment while doctor remains readable', async () => {
+    const workflowPath = path.join(testDir, 'retired-local-integration.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 2,
+      workflow_id: 'retired_local_integration',
+      workflow_class: 'local_integration',
+      steps: [{ id: 'old', command: 'true' }],
+    });
+    for (const extra of [[], ['--from-step', 'old'], ['--amends-run', path.join(testDir, 'prior-run')]]) {
+      const result = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, `retired-${extra.length}`), ...extra]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('task lifecycle hard cut');
+    }
+    const historical = path.join(testDir, 'historical-local-run');
+    await fs.ensureDir(historical);
+    await fs.writeJson(path.join(historical, 'run_contract.json'), {
+      schema_version: 'juno_workflow_run_contract.v1', workflow_class: 'local_integration',
+    });
+    const recovery = runWorkflow(['recover-attempt', historical, '--dry-run']);
+    expect(recovery.status).toBe(2);
+    expect(recovery.stderr).toContain('task lifecycle hard cut');
+    await fs.writeJson(path.join(historical, 'manifest.json'), {
+      schema_version: '1.0', workflow_class: 'local_integration', steps: [], status: 'failed',
+    });
+    const doctor = runWorkflow(['doctor', historical]);
+    expect(doctor.status, doctor.stderr).toBe(0);
+  });
 
   it('enforces exact workflowModels selectors and closes indirect yy pi override channels', async () => {
     const workflowPath = path.join(testDir, 'workflow-models.json');
@@ -1518,54 +1547,23 @@ summary: |
     expect(await fs.readFile(path.join(outDir, 'summary.md'), 'utf8')).toContain('status=dry_run');
   });
 
-  it('persists typed actual-target child evidence in manifests, checkpoints, recovery, and doctor', async () => {
-    let managedScripts = path.join(testDir, 'managed-scripts');
-    await fs.ensureDir(managedScripts);
-    managedScripts = await fs.realpath(managedScripts);
-    const managedRunner = path.join(managedScripts, 'workflow_runner.sh');
-    await fs.copy(templateScript, managedRunner);
-    await fs.copy(path.join(path.dirname(templateScript), 'workflow_run_evidence.py'), path.join(managedScripts, 'workflow_run_evidence.py'));
-    const producer = await installFakeChildEvidenceProducer(managedScripts);
-    const workflowPath = path.join(testDir, 'child-evidence.json');
-    const outDir = path.join(testDir, 'child-evidence-out');
+  it('withholds the retired integration child-evidence capability from generic workflows', async () => {
+    const workflowPath = path.join(testDir, 'retired-child-evidence.json');
+    const outDir = path.join(testDir, 'retired-child-evidence-out');
     await fs.writeJson(workflowPath, {
       schema_version: 1,
-      workflow_id: 'child_evidence',
-      steps: [{ id: 'integrate', command: [producer, 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
+      workflow_id: 'retired_child_evidence',
+      steps: [{
+        id: 'probe',
+        fail_workflow: true,
+        command: ['python3', '-c', "import os; print(os.environ.get('JUNO_WORKFLOW_CHILD_EVIDENCE_DIR', 'CLEARED'))"],
+      }],
     });
-
-    const interrupted = runWorkflowScript(managedRunner, ['--workflow', workflowPath, '--out-dir', outDir, '--run-root', testDir, '--print-output', 'none'], undefined, {
-      JUNO_WORKFLOW_TEST_INTERRUPT_AT: 'checkpoint_before_terminal_manifest',
-      JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1',
-    });
-    expect(interrupted.status, `${interrupted.stderr}\n${interrupted.stdout}`).toBe(86);
-
-    const contract = await fs.readJson(path.join(outDir, 'run_contract.json'));
-    expect(contract.completed_steps.integrate.child_steps).toHaveLength(1);
-    expect(contract.completed_steps.integrate.child_steps[0]).toMatchObject({
-      child_id: 'actual_target_review',
-      role: 'actual_target_review',
-      invocation_mode: 'fresh_session',
-      session_id: 'child-session-1',
-      semantic_outcome: 'accepted',
-      reviewed_target_sha: 'a'.repeat(40),
-    });
-
-    const recovery = runWorkflow(['recover-attempt', outDir, '--dry-run']);
-    expect(recovery.status, recovery.stderr).toBe(0);
-    expect(JSON.parse(recovery.stdout).verified_prefix_steps).toEqual(['integrate']);
-    const recovered = runWorkflow(['recover-attempt', outDir]);
-    expect(recovered.status, recovered.stderr).toBe(0);
-
-    const recoveredContract = await fs.readJson(path.join(outDir, 'run_contract.json'));
-    const recoveredManifest = await fs.readJson(recoveredContract.attempts.at(-1).manifest);
-    expect(recoveredManifest.steps[0].child_steps[0].artifacts.response.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(runWorkflow(['doctor', outDir]).status).toBe(0);
-
-    await fs.appendFile(recoveredManifest.steps[0].child_steps[0].artifacts.stdout.path, 'tamper');
-    const doctor = runWorkflow(['doctor', outDir]);
-    expect(doctor.status).toBe(1);
-    expect(doctor.stdout).toContain('CHILD_ARTIFACT_HASH_MISMATCH');
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
+    expect(await fs.pathExists(path.join(outDir, 'child_steps', 'probe'))).toBe(false);
   });
 
   it('withholds child-evidence capability from unrelated workflow steps', async () => {
@@ -1624,13 +1622,12 @@ summary: |
       steps: [{ id: 'attacker', command: ['python3', attacker, 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
     const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
-    expect(result.status, result.stderr).toBe(0);
-    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
-    expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
-    expect(await fs.pathExists(path.join(outDir, 'child_steps', 'attacker'))).toBe(false);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 
-  it('grants child-evidence capability to the exact project-relative canonical owner path', async () => {
+  it('does not grant retired child-evidence capability through a generic canonical-owner command', async () => {
     const projectRoot = path.join(testDir, 'relative-owner-project');
     const managedScripts = path.join(projectRoot, '.juno_task', 'scripts');
     await fs.ensureDir(managedScripts);
@@ -1646,10 +1643,9 @@ summary: |
       steps: [{ id: 'integrate', command: ['.juno_task/scripts/integration_owner_preflight.py', 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
     const result = runWorkflowScript(managedRunner, ['--project-root', projectRoot, '--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
-    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
-    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
-    expect(manifest.steps[0].child_steps).toHaveLength(1);
-    expect(manifest.steps[0].child_steps[0].semantic_outcome).toBe('accepted');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 
   it('withholds child-evidence capability from lexical aliases of the canonical owner path', async () => {
@@ -1671,10 +1667,9 @@ summary: |
       steps: [{ id: 'alias', command: [alias, 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
     const result = runWorkflowScript(managedRunner, ['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
-    expect(result.status, result.stderr).toBe(0);
-    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
-    expect(await fs.readFile(manifest.steps[0].stdout_path, 'utf8')).toBe('CLEARED\n');
-    expect(await fs.pathExists(path.join(outDir, 'child_steps', 'alias'))).toBe(false);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 
   it('accepts stdin workflow via --workflow -', async () => {

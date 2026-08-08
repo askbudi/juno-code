@@ -28,21 +28,17 @@ describe('packaged worktree lifecycle', () => {
     expect(source).not.toContain('force');
   });
 
-  it('documents backing tests and separate release authority', async () => {
+  it('documents one public lifecycle, backing tests, and separate release authority', async () => {
     const guidance = await fs.readFile(wiki, 'utf8');
+    expect(guidance).toContain('yy lifecycle run --manifest');
     expect(guidance).toContain('Real Git/worktree tests matter');
     expect(guidance).toContain('Package-install tests matter');
-    expect(guidance).toContain('vX.Y.Z');
-    expect(guidance).toContain('There is no automatic force mode');
-    expect(guidance).toContain('--deinitialized-submodule');
-    expect(guidance).toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
-    expect(guidance).toContain('canonical-to-canonical');
-    expect(guidance).toContain('--checked-out-target detach_same_sha');
-    expect(guidance).toContain('no prior release receipt or second detach engine');
+    expect(guidance).toContain('Release, push, publication, deployment');
+    expect(guidance).toContain('without force');
+    expect(guidance).toContain('workflow_runner.sh doctor');
+    expect(guidance).toContain('There is no adapter, schema translation, or dual integration runtime');
+    expect(guidance).not.toContain('verify --manifest CREATE_RECEIPT --path DISPLAY_PATH');
     expect(guidance).not.toContain('--nested-owner-receipt');
-    expect(guidance).toContain('Runtime checkout identity');
-    expect(guidance).toContain('A healthy port is not source identity');
-    expect(guidance).toContain('process CWD and PID');
     expect(guidance).not.toContain('worktree_lifecycle_audit.py');
   });
 });
