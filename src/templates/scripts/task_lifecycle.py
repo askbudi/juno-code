@@ -191,8 +191,12 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     normalized["repositories"][0]["expected_paths"] = sorted(set(expected))
     normalized.setdefault("review", {"initial_pair_limit": 1, "replacement_pair_limit": 1})
     review = normalized["review"]
-    if review != {"initial_pair_limit": 1, "replacement_pair_limit": 1}:
-        raise LifecycleError("review budget is fixed at one initial pair and one replacement pair")
+    if review.get("initial_pair_limit") != 1 or review.get("replacement_pair_limit") != 1:
+        raise LifecycleError("review budget requires one initial pair and one replacement pair")
+    extension = review.get("one_time_owner_extension_pair_limit", 0)
+    if type(extension) is not int or extension not in {0, 1}:
+        raise LifecycleError("one-time owner review extension must be zero or one pair")
+    review["one_time_owner_extension_pair_limit"] = extension
     for command_key in ("implementation_command", "repair_command", "review_command"):
         configured = normalized.get(command_key)
         if configured is None:
@@ -233,8 +237,8 @@ def new_state(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": STATE_SCHEMA, "task_id": manifest["task_id"], "phase": "PLANNED",
         "generation": 0, "manifest": {"path": str(manifest_path.resolve()), "sha256": file_digest(manifest_path)},
-        "effective_risk": manifest["effective_risk"], "candidate_sha": None, "candidate_path": None,
-        "candidate_composed": False, "integrated_sha": None,
+        "effective_risk": manifest["effective_risk"], "candidate_sha": None, "reviewed_task_tip_sha": None,
+        "candidate_path": None, "candidate_composed": False, "integrated_sha": None,
         "release_sha": None, "release_tag": None, "review_status": "not_started", "review_passed": False,
         "validation_status": "not_started", "integration_status": "not_started",
         "actual_target_verification": "not_started", "actual_target_review": "not_started",
@@ -374,6 +378,7 @@ def recover_interrupted_worker(manifest: dict[str, Any], state: dict[str, Any], 
     head = git(task, "rev-parse", "HEAD")
     if head != before:
         state["candidate_sha"] = head
+        state["reviewed_task_tip_sha"] = head
         save_state(path, state, "CANDIDATE_FROZEN", detail={"recovered_interrupted_worker": True, "candidate_sha": head})
     else:
         save_state(path, state, "REPAIR_REQUIRED" if repair else "IMPLEMENT_READY", detail={"recovered_no_worker_commit": True})
@@ -410,6 +415,7 @@ def dispatch_implementation(manifest: dict[str, Any], state: dict[str, Any], pat
     if after == before or git(task, "status", "--porcelain=v2", "--untracked-files=all"):
         raise LifecycleError("worker must return a changed, committed, clean task tip")
     state["candidate_sha"] = after
+    state["reviewed_task_tip_sha"] = after
     save_state(path, state, "CANDIDATE_FROZEN", detail={"candidate_sha": after, "worker": "repair" if repair else "implementation"})
 
 
@@ -604,28 +610,44 @@ def review_pair(manifest: dict[str, Any], state: dict[str, Any], path: Path) -> 
     repo = manifest["repositories"][0]
     task = Path(repo["task_worktree"]).resolve()
     frozen = state["candidate_sha"]
-    round_number = state["review_round"] + 1
+    previous_round = state["review_round"]
+    round_number = previous_round + 1
     state["review_round"] = round_number
     root = path.parent / f"review-{round_number}"
     outcomes = []
+    session_ids: set[str] = set()
     for reviewer in ("A", "B") if state["effective_risk"] == "high" else ("A",):
         if git(task, "rev-parse", "HEAD") != frozen or git(task, "status", "--porcelain=v2", "--untracked-files=all"):
+            state["review_round"] = previous_round
             raise LifecycleError("candidate changed during sequential same-tip review")
         artifact = root / f"reviewer-{reviewer.lower()}"
         prompt = render_review(manifest, state, reviewer, artifact)
         result = run_command(agent_command(manifest, prompt, "review"), Path(manifest["controller_root"]).resolve(), artifact / "process",
                              timeout=float(manifest["timeouts"]["agent_seconds"]), env=review_environment(manifest))
         if result["timed_out"] or result["exit_code"] != 0:
+            state["review_round"] = previous_round
             raise LifecycleError(f"Reviewer {reviewer} launcher/process failed before semantic completion")
-        verdict, findings = strict_verdict(result["stdout_text"])
+        try:
+            verdict, findings = strict_verdict(result["stdout_text"])
+        except LifecycleError:
+            state["review_round"] = previous_round
+            raise
+        session_id = extract_session_id(result["stdout_text"], result["stderr_text"])
+        if not session_id:
+            state["review_round"] = previous_round
+            raise LifecycleError(f"Reviewer {reviewer} lacks fresh session identity evidence")
+        if session_id in session_ids:
+            state["review_round"] = previous_round
+            raise LifecycleError(f"Reviewer {reviewer} reused review session identity")
+        session_ids.add(session_id)
         receipt = artifact / "receipt.json"
         atomic_json(receipt, {"schema_version": "juno_independent_review.v1", "reviewer": reviewer,
                               "base_sha": repo["approved_base_sha"], "reviewed_tip": frozen,
-                              "verdict": verdict, "findings": findings,
-                              "session_id": extract_session_id(result["stdout_text"], result["stderr_text"]),
+                              "verdict": verdict, "findings": findings, "session_id": session_id,
                               "process_receipt_sha256": file_digest(artifact / "process" / "receipt.json")})
         outcomes.append(load_mapping(receipt))
     if git(task, "rev-parse", "HEAD") != frozen:
+        state["review_round"] = previous_round
         raise LifecycleError("candidate changed before review pair consolidation")
     pair = root / "pair.json"
     all_findings = [finding for outcome in outcomes for finding in outcome["findings"]]
@@ -751,10 +773,12 @@ def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], pat
     atomic_json(matrix, {"task_acceptance": "PASS", "closure_audit": "PASS", "candidate_validation": "PASS"})
     acceptance_key = "premerge_review" if state["review_status"] == "passed" else "owner_waiver"
     premerge = path_for_receipt(state, acceptance_key)
+    reviewed_task_tip = state.get("reviewed_task_tip_sha") or state["candidate_sha"]
+    state["reviewed_task_tip_sha"] = reviewed_task_tip
     plan = root / "candidate-plan.json"
     command = [sys.executable, str(assets["candidate"]), "plan", "--repository", str(repository),
                "--target-ref", repo["target_ref"], "--base-sha", repo["approved_base_sha"],
-               "--reviewed-tip", state["candidate_sha"], "--task-worktree", str(Path(repo["task_worktree"]).resolve()),
+               "--reviewed-tip", reviewed_task_tip, "--task-worktree", str(Path(repo["task_worktree"]).resolve()),
                "--task-id", manifest["task_id"],
                "--premerge-review" if acceptance_key == "premerge_review" else "--owner-waiver", str(premerge),
                "--pdr-matrix", str(matrix)]
@@ -774,7 +798,8 @@ def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], pat
     if candidate.get("candidate_bytes_changed_by_composition") is True:
         composed_validation = root / "composed-validation"
         composed_clone = composed_validation / "checkout"
-        cloned = subprocess.run(["git", "clone", "--no-local", "--no-checkout", str(repository), str(composed_clone)],
+        composed_source = Path(candidate["candidate_path"]).resolve()
+        cloned = subprocess.run(["git", "clone", "--no-local", "--no-checkout", str(composed_source), str(composed_clone)],
                                 text=True, capture_output=True, stdin=subprocess.DEVNULL)
         if cloned.returncode: raise LifecycleError(f"composed validation clone failed: {cloned.stderr.strip()}")
         git(composed_clone, "checkout", "--detach", candidate["candidate_sha"])
@@ -794,6 +819,7 @@ def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], pat
     eligible = root / "eligible.json"
     helper([sys.executable, str(assets["candidate"]), "verify", "--candidate", str(built), *review_args, "--output", str(eligible)], repository, eligible)
     candidate_sha = candidate["candidate_sha"]
+    expected_target_sha = candidate["expected_target_sha"]
     state["candidate_sha"] = candidate_sha
     state["candidate_path"] = str(Path(candidate["candidate_path"]).resolve())
     state["candidate_composed"] = candidate.get("candidate_bytes_changed_by_composition") is True
@@ -809,7 +835,7 @@ def candidate_and_integrate(manifest: dict[str, Any], state: dict[str, Any], pat
                                   kind="delivery-sensitive post-CAS")
     actual_command = shlex.join(agent_command(manifest, actual_prompt, "review"))
     integrate = [sys.executable, str(assets["integrate"]), "integrate", "--repository",
-                 f"root={repository},{repo['target_ref']},{repo['approved_base_sha']},{candidate_sha}",
+                 f"root={repository},{repo['target_ref']},{expected_target_sha},{candidate_sha}",
                  "--candidate-receipt", str(eligible), "--risk-tier", state["effective_risk"],
                  "--checked-out-target", "detach_same_sha", "--validation-command", "git diff --check",
                  "--task-id", manifest["task_id"], "--output", str(integration)]
@@ -868,10 +894,14 @@ def resume_partial_integration(manifest: dict[str, Any], state: dict[str, Any], 
     if not eligible.is_file() or not actual_prompt.is_file():
         raise LifecycleError("partial integration resume evidence is incomplete")
     candidate_sha = state["candidate_sha"]
+    built = load_mapping(root / "candidate.json")
+    expected_target_sha = built.get("expected_target_sha")
+    if not isinstance(expected_target_sha, str):
+        raise LifecycleError("partial integration candidate lacks expected target identity")
     actual_command = shlex.join(agent_command(manifest, actual_prompt, "review"))
     attempt = root / f"integration-resume-{state['generation']}.json"
     integrate = [sys.executable, str(assets["integrate"]), "integrate", "--repository",
-                 f"root={repository},{repo['target_ref']},{repo['approved_base_sha']},{candidate_sha}",
+                 f"root={repository},{repo['target_ref']},{expected_target_sha},{candidate_sha}",
                  "--candidate-receipt", str(eligible), "--resume-receipt", str(prior),
                  "--risk-tier", state["effective_risk"], "--checked-out-target", "detach_same_sha",
                  "--validation-command", "git diff --check", "--task-id", manifest["task_id"],
@@ -958,9 +988,12 @@ def cleanup(manifest: dict[str, Any], state: dict[str, Any], path: Path) -> None
                 "--path", str(candidate_path), "--target-ref", repo["target_ref"], "--branch-ref", "DETACHED",
                 "--expected-head", state["candidate_sha"], "--output", str(candidate_receipt)], repository, candidate_receipt)
     receipt = cleanup_root / "receipt.json"
+    reviewed_task_tip = state.get("reviewed_task_tip_sha")
+    if not reviewed_task_tip:
+        raise LifecycleError("reviewed task-tip identity is missing before cleanup")
     command = [sys.executable, str(assets["worktree"]), "cleanup", "--repository", str(repository), "--path", str(task),
                "--target-ref", repo["target_ref"], "--branch-ref", repo["task_branch_ref"],
-               "--expected-head", state["candidate_sha"], "--delete-branch", "--output", str(receipt)]
+               "--expected-head", reviewed_task_tip, "--delete-branch", "--output", str(receipt)]
     try:
         helper(command, repository, receipt)
     except LifecycleError:
@@ -984,6 +1017,20 @@ def compact_result(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def maximum_review_round(manifest: dict[str, Any], state: dict[str, Any]) -> int:
+    extension = manifest["review"].get("one_time_owner_extension_pair_limit", 0)
+    maximum = manifest["review"]["initial_pair_limit"] + manifest["review"]["replacement_pair_limit"]
+    if not extension:
+        return maximum
+    value = load_mapping(path_for_receipt(state, "review_budget_extension_1"))
+    expected_base = state.get("review_budget_extension_base_sha")
+    if (value.get("schema_version") != "juno_review_budget_extension.v1" or value.get("task_id") != state["task_id"]
+            or value.get("candidate_sha") != expected_base or value.get("additional_consolidated_repairs") != 1
+            or value.get("additional_replacement_pairs") != 1 or value.get("bounded") is not True):
+        raise LifecycleError("one-time review budget extension evidence is invalid")
+    return maximum + 1
+
+
 def advance(manifest_path: Path, manifest: dict[str, Any], state: dict[str, Any], path: Path) -> int:
     while True:
         phase = state["phase"]
@@ -1003,7 +1050,7 @@ def advance(manifest_path: Path, manifest: dict[str, Any], state: dict[str, Any]
             if waiver:
                 record_owner_waiver(state, path, waiver)
                 continue
-            if state["review_round"] >= 2:
+            if state["review_round"] >= maximum_review_round(manifest, state):
                 state["review_status"] = "budget_exhausted"
                 save_state(path, state, "REVIEW_BUDGET_EXHAUSTED")
                 return 3

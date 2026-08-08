@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "task_lifecycle.py"
 spec = importlib.util.spec_from_file_location("task_lifecycle", SCRIPT)
@@ -68,6 +69,10 @@ class TaskLifecycleContractTests(unittest.TestCase):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "requirements_checklist"):
                 lifecycle.validate_manifest(value)
             value = self.manifest(root, ["README.md"])
+            value["review"]["one_time_owner_extension_pair_limit"] = 2
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "one-time owner review extension"):
+                lifecycle.validate_manifest(value)
+            value = self.manifest(root, ["README.md"])
             value["repositories"].append(dict(value["repositories"][0], id="child"))
             with self.assertRaisesRegex(lifecycle.LifecycleError, "exactly one"):
                 lifecycle.validate_manifest(value)
@@ -103,6 +108,54 @@ class TaskLifecycleContractTests(unittest.TestCase):
             lifecycle.strict_verdict("JUNO_REVIEW_VERDICT: PASS\nJUNO_REVIEW_FINDING: high; CAS; x; fix\n")
         with self.assertRaisesRegex(lifecycle.LifecycleError, "lacks"):
             lifecycle.strict_verdict("looks good")
+
+    def _assert_review_identity_rejected(self, outputs: list[str], message: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); prompt = root / "prompt.md"; prompt.write_text("review\n")
+            manifest = self.manifest(root, ["product.txt"], "high")
+            manifest["timeouts"] = {"agent_seconds": 30}
+            state = {"candidate_sha": "b" * 40, "effective_risk": "high", "review_round": 0,
+                     "review_passed": False, "receipts": {}}
+            results = iter(outputs)
+
+            def fake_run(_command, _cwd, artifact, **_kwargs):
+                artifact.mkdir(parents=True, exist_ok=True)
+                (artifact / "receipt.json").write_text("{}\n")
+                return {"timed_out": False, "exit_code": 0, "stdout_text": next(results), "stderr_text": ""}
+
+            def fake_git(_repo, *args, **_kwargs):
+                return "" if args and args[0] == "status" else "b" * 40
+
+            with mock.patch.object(lifecycle, "git", side_effect=fake_git), \
+                 mock.patch.object(lifecycle, "render_review", return_value=prompt), \
+                 mock.patch.object(lifecycle, "run_command", side_effect=fake_run):
+                with self.assertRaisesRegex(lifecycle.LifecycleError, message):
+                    lifecycle.review_pair(manifest, state, root / "state.json")
+            self.assertFalse(state["review_passed"])
+            self.assertEqual(0, state["review_round"])
+            self.assertFalse((root / "review-1" / "pair.json").exists())
+
+    def test_high_risk_review_pair_rejects_missing_session_identity(self):
+        self._assert_review_identity_rejected(["JUNO_REVIEW_VERDICT: PASS\n"], "lacks fresh session identity")
+
+    def test_high_risk_review_pair_rejects_duplicate_session_identity(self):
+        output = "JUNO_REVIEW_VERDICT: PASS\nsession_id: same-session\n"
+        self._assert_review_identity_rejected([output, output], "reused review session identity")
+
+    def test_one_time_review_extension_is_receipt_bound_and_capped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); manifest = self.manifest(root, ["README.md"], "high")
+            manifest["review"]["one_time_owner_extension_pair_limit"] = 1
+            manifest = lifecycle.validate_manifest(manifest); candidate = "b" * 40
+            receipt = root / "extension.json"
+            lifecycle.atomic_json(receipt, {"schema_version":"juno_review_budget_extension.v1","task_id":"T1",
+                "candidate_sha":candidate,"additional_consolidated_repairs":1,"additional_replacement_pairs":1,"bounded":True})
+            state = {"task_id":"T1","review_budget_extension_base_sha":candidate,"receipts":{
+                "review_budget_extension_1":{"path":str(receipt),"sha256":lifecycle.file_digest(receipt)}}}
+            self.assertEqual(3, lifecycle.maximum_review_round(manifest, state))
+            state["review_budget_extension_base_sha"] = "c" * 40
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "extension evidence"):
+                lifecycle.maximum_review_round(manifest, state)
 
     def test_compact_result_keeps_partial_dimensions_independent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -198,7 +251,11 @@ if a.cmd=="create": subprocess.run(["git","-C",str(a.repository),"worktree","add
 elif a.cmd=="verify": v={"schema_version":"fixture","operation":"verify","passed":True}
 elif a.cmd=="edit-preflight": v={"schema_version":"fixture","operation":"edit_preflight","passed":True,"expected_path_dispositions":{x:"planned_new" for x in a.expected_path or []}}
 else:
- subprocess.run(["git","-C",str(a.repository),"worktree","remove",str(a.path)],check=True);subprocess.run(["git","-C",str(a.repository),"branch","-D",a.branch_ref.removeprefix("refs/heads/")],check=True);v={"schema_version":"fixture","operation":"cleanup","passed":True,"removed":True}
+ head=subprocess.check_output(["git","-C",str(a.path),"rev-parse","HEAD"],text=True).strip()
+ if head!=a.expected_head: raise SystemExit("unexpected_head")
+ subprocess.run(["git","-C",str(a.repository),"worktree","remove",str(a.path)],check=True)
+ if a.delete_branch: subprocess.run(["git","-C",str(a.repository),"branch","-D",a.branch_ref.removeprefix("refs/heads/")],check=True)
+ v={"schema_version":"fixture","operation":"cleanup","passed":True,"removed":True,"expected_head":a.expected_head}
 a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));print(json.dumps(v))
 ''')
         self.write_executable(scripts / "integration_candidate.py", '''#!/usr/bin/env python3
@@ -207,13 +264,17 @@ from pathlib import Path
 p=argparse.ArgumentParser();s=p.add_subparsers(dest="cmd",required=True)
 q=s.add_parser("target-preflight");q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--approved-base",required=True);q.add_argument("--output",type=Path,required=True)
 q=s.add_parser("plan");q.add_argument("--repository",type=Path,required=True);q.add_argument("--target-ref",required=True);q.add_argument("--base-sha",required=True);q.add_argument("--reviewed-tip",required=True);q.add_argument("--task-worktree",type=Path,required=True);q.add_argument("--task-id");q.add_argument("--expected-path",action="append");q.add_argument("--premerge-review");q.add_argument("--owner-waiver");q.add_argument("--pdr-matrix");q.add_argument("--target-channel-owner");q.add_argument("--output",type=Path,required=True)
-q=s.add_parser("build");q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path");q.add_argument("--validation-command");q.add_argument("--output",type=Path,required=True)
+q=s.add_parser("build");q.add_argument("--plan",type=Path,required=True);q.add_argument("--candidate-path",type=Path);q.add_argument("--validation-command");q.add_argument("--output",type=Path,required=True)
 q=s.add_parser("verify");q.add_argument("--candidate",type=Path,required=True);q.add_argument("--candidate-review");q.add_argument("--output",type=Path,required=True)
 a=p.parse_args()
 if a.cmd=="target-preflight": v={"schema_version":"fixture","operation":"target_preflight","passed":True,"classification":"exact"}
 elif a.cmd=="plan": v={"schema_version":"fixture","operation":"plan","repository":str(a.repository),"target_ref":a.target_ref,"expected_target_sha":subprocess.check_output(["git","-C",str(a.repository),"rev-parse",a.target_ref],text=True).strip(),"reviewed_tip":a.reviewed_tip,"task_worktree":str(a.task_worktree)}
 elif a.cmd=="build":
- v=json.loads(a.plan.read_text());v.update({"operation":"build","candidate_sha":v["reviewed_tip"],"candidate_path":v["task_worktree"],"candidate_bytes_changed_by_composition":False,"validation":[{"exit_code":0}],"eligible":False})
+ v=json.loads(a.plan.read_text());candidate=v["reviewed_tip"];candidate_path=Path(v["task_worktree"])
+ ancestor=subprocess.run(["git","-C",v["repository"],"merge-base","--is-ancestor",v["expected_target_sha"],candidate]).returncode==0
+ if not ancestor:
+  candidate_path=a.candidate_path;subprocess.run(["git","-C",v["repository"],"worktree","add","--detach",str(candidate_path),v["expected_target_sha"]],check=True);subprocess.run(["git","-C",str(candidate_path),"merge","--no-ff","--no-edit",candidate],check=True);candidate=subprocess.check_output(["git","-C",str(candidate_path),"rev-parse","HEAD"],text=True).strip()
+ v.update({"operation":"build","candidate_sha":candidate,"candidate_path":str(candidate_path),"candidate_bytes_changed_by_composition":candidate!=v["reviewed_tip"],"validation":[{"exit_code":0}],"eligible":False})
 else:
  v=json.loads(a.candidate.read_text());v.update({"operation":"verify","eligible":True})
 a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(v));print(json.dumps(v))
@@ -246,7 +307,10 @@ import json,os,pathlib,re,subprocess,sys
 prompt=sys.argv[-1]
 if "Implement Kanban task" in prompt or "Repair the complete" in prompt:
  assert os.environ.get("JUNO_WORKSPACE_ROLE")=="task"
- p=pathlib.Path("product.txt");p.write_text(p.read_text()+("repaired\\n" if "Repair" in prompt else "implemented\\n"));subprocess.run(["git","add","product.txt"],check=True);subprocess.run(["git","commit","-m","repair" if "Repair" in prompt else "implement"],check=True);print("REVIEW_READY")
+ p=pathlib.Path("product.txt");p.write_text(p.read_text()+("repaired\\n" if "Repair" in prompt else "implemented\\n"));subprocess.run(["git","add","product.txt"],check=True);subprocess.run(["git","commit","-m","repair" if "Repair" in prompt else "implement"],check=True)
+ if os.environ.get("CANARY_MODE")=="descendant":
+  repo=pathlib.Path(os.environ["CANARY_REPO"]);(repo/"target.txt").write_text("advanced\\n");subprocess.run(["git","-C",str(repo),"add","target.txt"],check=True);subprocess.run(["git","-C",str(repo),"commit","-m","advance target"],check=True)
+ print("REVIEW_READY")
 else:
  is_actual=pathlib.Path.cwd().resolve()!=pathlib.Path(os.environ["CANARY_CONTROLLER"]).resolve()
  assert os.environ.get("JUNO_WORKSPACE_ROLE")== (None if is_actual else "controller")
@@ -256,7 +320,7 @@ else:
  mode=os.environ.get("CANARY_MODE","pass")
  if mode=="exhaust" or mode=="repair" and count==0: print("JUNO_REVIEW_FINDING: high; review flow; candidate; repair all findings")
  else: print("JUNO_REVIEW_VERDICT: PASS")
- print("session_id: session-canary")
+ print(f"session_id: session-canary-{count}")
 ''')
         checklist = root / "requirements.md"; checklist.write_text("- lifecycle reaches COMPLETE\n")
         task = root / f"task-{risk}"
@@ -278,7 +342,7 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
             "timeouts": {"agent_seconds":30,"validation_seconds":30},
         }
         manifest_path=root/f"manifest-{risk}.json";manifest_path.write_text(json.dumps(manifest))
-        env={**os.environ,"PATH":str(fake_bin)+os.pathsep+os.environ["PATH"],"CANARY_REVIEW_LOG":str(review_log),"CANARY_CONTROLLER":str(controller),"CANARY_MODE":mode}
+        env={**os.environ,"PATH":str(fake_bin)+os.pathsep+os.environ["PATH"],"CANARY_REVIEW_LOG":str(review_log),"CANARY_CONTROLLER":str(controller),"CANARY_REPO":str(repo),"CANARY_MODE":mode}
         result=subprocess.run([sys.executable,str(SCRIPT),"run","--manifest",str(manifest_path)],cwd=repo,text=True,capture_output=True,env=env)
         if mode == "partial":
             self.assertEqual(2,result.returncode,result.stderr+result.stdout)
@@ -335,6 +399,16 @@ print(json.dumps([{{"id":"CANARY_{risk.upper()}","fields":{{"lifecycle_review":{
         self.assertFalse(state["review_passed"])
         self.assertEqual("high",state["effective_risk"])
         self.assertEqual(1,len(reviews))  # delivery-sensitive actual-target review only
+
+    def test_descendant_target_composition_cleans_both_worktrees_and_completes(self):
+        state,_reviews=self.run_canary("medium", "descendant")
+        self.assertTrue(state["candidate_composed"])
+        self.assertNotEqual(state["candidate_sha"], state["reviewed_task_tip_sha"])
+        cleanup_root=Path(state["manifest"]["path"]).parent / "artifacts-medium" / "cleanup"
+        candidate=json.loads((cleanup_root/"candidate.json").read_text())
+        task=json.loads((cleanup_root/"receipt.json").read_text())
+        self.assertEqual(state["candidate_sha"],candidate["expected_head"])
+        self.assertEqual(state["reviewed_task_tip_sha"],task["expected_head"])
 
 
 if __name__ == "__main__":
