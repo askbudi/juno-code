@@ -828,6 +828,23 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
             review_step = next(step for step in steps if str(step["id"]) == review_step_id)
             review_argv = effective_command_argv(review_step.get("command"))
             candidate_noop = review_step_id == review_steps[1] and review_argv == ["true"]
+            review_contract = review_step.get("generated_task_contract")
+            review_has_admission = any(
+                receipts[receipt_id]["schema_version"] == "juno_edit_preflight.v1"
+                for receipt_id in review_step.get("requires_receipts") or []
+            )
+            if (
+                review_step.get("edit_capable") is True
+                or review_has_admission
+                or isinstance(review_contract, dict)
+                and (
+                    review_contract.get("write_contract") != "read_only"
+                    or review_contract.get("task_root_receipt")
+                )
+            ):
+                raise WorkflowError(
+                    f"independent review step {review_step_id} cannot declare edit authority"
+                )
             if not candidate_noop and not is_canonical_yy_pi_command(review_step.get("command")):
                 raise WorkflowError(f"independent review step {review_step_id} must launch through yy pi")
             if not candidate_noop and has_resume_or_continue(review_step.get("command")):

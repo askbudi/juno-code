@@ -1,101 +1,38 @@
 ---
-description: Study kanban.sh and Execute the implementation plan by processing and executing all tasks defined in  ./.juno_task/tasks.md, update ./.juno_task/tasks.md with the tasks on kanban
+description: Implement exactly one assigned Kanban task in its admitted exact-base worktree and stop at REVIEW_READY.
 ---
 
-## User Input
+# Implementation worker contract
 
-```text
-A.
-**ALWAYS check remaining tasks and latest user feedback context from kanban task responses/current user input. Integrate it into the plan;**
-this is the primary mechanism for user input and for you to track your progress.
-`./juno_task/scripts/kanban.sh list --limit 5`
-return the most recent 5 Tasks and their status and potential agent response to them.
+An implementation worker owns one explicitly assigned Kanban task. It does not choose a different task, create follow-up tasks, edit the project plan, orchestrate reviews, integrate, release, deploy, or clean lifecycle worktrees.
 
-**Important** `./juno_task/scripts/kanban.sh` has already been installed in your environment and you can execute it in your bash.
+## 1. Resolve the assignment
 
-A.1
-When user provides explicit `[kanban_task:<id>]`, prioritize it over global list, but still run list only for collision/context awareness. and run it in table mode to see `./juno_task/scripts/kanban.sh list --format table`
+1. Read `AGENTS.md` and the complete assigned task with `./.juno_task/scripts/kanban.sh get {task_id}`.
+2. Treat current user input and that task as the scope authority. Read related tasks only when their complete content is required.
+3. Verify that `TASK_ROOT` is the admitted task worktree, that its Git root/base/branch match the handoff, and that expected product paths are explicit. Stop on missing or contradictory lifecycle evidence.
+4. Write a bounded progress response file and mark the task in progress through the controller wrapper:
+   `./.juno_task/scripts/kanban.sh mark in_progress --id {task_id} --response-file {response_file}`.
 
+## 2. Implement the task
 
-B.
-Based on Items in **./juno_task/scripts/kanban.sh** reflect on @.juno_task/plan.md and keep it up-to-date.
-0g. Entities and their status in **./juno_task/scripts/kanban.sh** has higher priority and level of truth than other parts of the app.
-If you see user report a bug that you earlier marked as resolved, you need to investigate the issue again.
-./juno_task/scripts/kanban.sh items has the higher level of truth. Always
+1. Work only under the admitted `TASK_ROOT`; never edit product files in the controller or integration-owner checkout.
+2. Implement only requested behavior and owned paths. Preserve project single sources of truth and synchronize runtime/template pairs whenever one changes.
+3. Use focused affected tests as the edit loop. Complete the ordinary happy path and required dangerous-path checks before the candidate boundary.
+4. Do not launch subagents or semantic reviewers. If the task cannot be completed within scope, leave a bounded blocker response and stop without claiming success.
 
-0e. Status in ./juno_task/scripts/kanban.sh could be backlog, todo, in_progress, done.
-in_progress, todo, backlog. That is the priority of tasks in general sense, unless you find something with 10X magnitute of importance, or if you do it first it make other tasks easier or unnecessary.
+## 3. Freeze the candidate boundary
 
+1. Confirm focused tests, lifecycle checks, runtime/template parity, and `git diff --check` pass.
+2. Explicitly stage only task-owned product paths and create a coherent product commit. Never use broad staging and never push without separate authorization.
+3. Run the required full suite once against the exact committed, clean candidate tip. If it fails, repair the implementation, rerun focused tests, create a replacement commit, and run the full suite at that replacement boundary.
+4. `REVIEW_READY` requires the requested behavior, ordinary happy path, focused checks, one passing exact-tip full suite, a clean task worktree, and no known TODO or accepted open finding.
 
-0f. After reviwing Feedback, if you find an open issue, you need to update previously handled issues status as well. If user reporting a bug, that earlier on reported on the feedback/plan or AGENTS.md as resolved. You should update it to reflect that the issue is not resolved.
-`./juno_task/scripts/kanban.sh mark todo --ID {Task_ID}`
+## 4. Record and hand off
 
-it would be ok to include past reasoning and root causing to the open issue, You should mention. <PREVIOUS_AGENT_ATTEMP> Tag and describe the approach already taken, so the agent knows
-   1.the issue is still open,
-   2. past approaches to resolve it, what it was, and know that it has failed.
-`./juno_task/scripts/kanban.sh mark todo --ID {Task_ID} --response "<PREVIOUS_AGENT_ATTEMP>{what happend before ...}<PREVIOUS_AGENT_ATTEMP>" `
-
-   **Note** updating response will REPLACE response. So you need to include everything important from the past as well you can check the content of a task with
-   `./juno_task/scripts/kanban.sh get {TASK_ID}`
-
-
-
-C. Using parallel subagents. You may use up to 500 parallel subagents for all operations but only 1 subagent for build/tests.
-
-D. Choose the most important 1 things, ( Based on Open Issue  and Also Tasks ), Think hard about what is the most important Task.
-
-E. update status of most important task on ./juno_task/scripts/kanban.sh.
-(if the task is not on ./juno_task/scripts/kanban.sh, create it ! Kanban is our source of truth)
-`./juno_task/scripts/kanban.sh mark in_progress --ID {Task_ID}`
-
-
-F. Implement the most important 1 thing following the outline.
-
-```
-
-You **MUST** consider the user input before proceeding (if not empty).
-
-## Outline
-
-. Execute implementation following the task plan:
-
-- **Phase-by-phase execution**: Complete each phase before moving to the next
-- **Respect dependencies**: Run sequential tasks in order, parallel tasks [P] can run together
-- **Follow TDD approach**: Execute test tasks before their corresponding implementation tasks
-- **File-based coordination**: Tasks affecting the same files must run sequentially
-- **Validation checkpoints**: Verify each phase completion before proceeding
-
-7. Implementation execution rules:
-   - **Setup first**: Initialize project structure, dependencies, configuration
-   - **Tests before code**: If you need to write tests for contracts, entities, and integration scenarios
-   - **Core development**: Implement models, services, CLI commands, endpoints
-   - **Integration work**: Database connections, middleware, logging, external services
-   - **Polish and validation**: Unit tests, performance optimization, documentation
-
-8. Progress tracking and error handling:
-   - Report progress after each completed task
-   - Halt execution if any non-parallel task fails
-   - For parallel tasks [P], continue with successful tasks, report failed ones
-   - Provide clear error messages with context for debugging
-   - Suggest next steps if implementation cannot proceed
-   - **IMPORTANT** For completed tasks, make sure to mark the task off as [X] in the tasks file.
-   - **IMPORTANT** Keep ./juno_task/scripts/kanban.sh up-to-date
-     When the issue is resolved always update ./juno_task/scripts/kanban.sh
-     `./juno_task/scripts/kanban.sh --status {status} --ID {task_id} --response "{key actions you take, and how you did test it}"`
-
-9. Completion validation:
-   - Verify all required tasks are completed
-   - Check that implemented features match the original specification
-   - Validate that tests pass and coverage meets requirements
-   - Confirm the implementation follows the technical plan
-   - Report final status with summary of completed work
-   - When the issue is resolved always update ./juno_task/scripts/kanban.sh
-     `./juno_task/scripts/kanban.sh --mark done --ID {task_id} --response "{key actions you take, and how you did test it}"`
-
-10. Git and controller checkpoint
-
-After tests pass, explicitly stage and commit only task-owned product paths; never use broad staging and never push without separate authorization. Record the product commit on the task with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`. Then run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` so that Kanban update and other allowlisted controller residue are durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block this checkpoint rather than being absorbed.
-
-11. Review-ready boundary
-
-Focused tests are the editing loop. Run a full suite only after the candidate is feature-complete and ready for independent review, or after implementing a consolidated repair packet. Implementation workers never launch semantic reviewers. Complete the Git and controller checkpoint above. Stop and hand off at `REVIEW_READY` with the exact committed base/tip and bounded validation evidence; do not wait for reviews, consolidate findings, or dispatch repair. The logical orchestrator owns Reviewer A/Reviewer B scheduling and any later repair assignment.
+1. Write a bounded `REVIEW_READY` response file containing the exact base/tip, changed paths, and validation commands/results; keep the task in progress with:
+   `./.juno_task/scripts/kanban.sh mark in_progress --id {task_id} --response-file {response_file}`.
+2. Record the product commit with:
+   `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`.
+3. Run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` after both Kanban updates so allowlisted controller residue is durable. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block the checkpoint rather than being absorbed.
+4. Stop and hand off at `REVIEW_READY`. Do not mark the task done, wait for reviewers, consolidate findings, dispatch repair, move refs, integrate, release, push, publish, deploy, mutate production, restart services, run post-deploy E2E, or clean worktrees. The logical orchestrator owns all later states.

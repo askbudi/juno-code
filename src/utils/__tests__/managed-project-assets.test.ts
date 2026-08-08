@@ -99,15 +99,24 @@ describe('ManagedProjectAssets', () => {
         ),
         'utf8',
       );
-      expect(implementationReference).toContain('Review-ready boundary');
-      expect(implementationReference).toContain('Implementation workers never launch semantic reviewers');
+      expect(implementationReference).toContain('# Implementation worker contract');
+      expect(implementationReference).toContain('Do not launch subagents or semantic reviewers');
       expect(implementationReference).toContain('Stop and hand off at `REVIEW_READY`');
       expect(implementationReference).not.toContain('Wait for both, consolidate findings');
-      expect(implementationReference.indexOf('Git and controller checkpoint')).toBeLessThan(
-        implementationReference.indexOf('Stop and hand off at `REVIEW_READY`'),
+      expect(implementationReference).not.toContain('--mark done');
+      expect(implementationReference).not.toContain('--ID');
+      expect(implementationReference).toContain('Do not mark the task done');
+      expect(implementationReference.indexOf('create a coherent product commit')).toBeLessThan(
+        implementationReference.indexOf('Run the required full suite once'),
       );
-      expect(implementationReference.indexOf('Record the product commit on the task')).toBeLessThan(
+      expect(implementationReference.indexOf('Record the product commit')).toBeLessThan(
         implementationReference.indexOf('controller_checkpoint.py commit'),
+      );
+      expect(implementationReference.lastIndexOf('mark in_progress --id {task_id}')).toBeLessThan(
+        implementationReference.indexOf('controller_checkpoint.py commit'),
+      );
+      expect(implementationReference.indexOf('controller_checkpoint.py commit')).toBeLessThan(
+        implementationReference.indexOf('Stop and hand off at `REVIEW_READY`'),
       );
     }
 

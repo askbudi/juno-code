@@ -23,9 +23,11 @@ This instruction reset changes operating policy, not the current schema or helpe
 edit -> focused test -> edit -> focused test -> happy path
                                       |
                                       v
-                         REVIEW_READY candidate
+                           candidate boundary
                                       |
                                one full suite
+                                      |
+                         REVIEW_READY candidate
                                       |
                      Reviewer A -> Reviewer B
                                       |
@@ -36,6 +38,6 @@ Reviewers do not rerun the full suite by default. They consume exact-tip validat
 
 ## Current mechanical contract
 
-For authorized local integration, retain the current `schema_version: 2`, `workflow_class: local_integration`, exact integration policy, validation ownership, typed receipts, candidate read-only identity, direct integration-owner argv command, actual-target child evidence, and safe cleanup requirements documented in `.juno_task/wiki/git_worktree_lifecycle.md`. Every typed receipt requires `producer_step_digest` bound to `JUNO_WORKFLOW_STEP_DIGEST`. This patch does not advertise the future task-level lifecycle command and does not reject or adapt existing workflows.
+For authorized local integration, retain the current `schema_version: 2`, `workflow_class: local_integration`, exact integration policy, validation ownership, typed receipts, candidate read-only identity, direct integration-owner argv command, actual-target child evidence, and safe cleanup requirements documented in `.juno_task/wiki/git_worktree_lifecycle.md`. Every typed receipt requires `producer_step_digest` bound to `JUNO_WORKFLOW_STEP_DIGEST`. This patch does not advertise the future task-level lifecycle command or adapt existing workflows. It narrowly rejects generated and validation-owned reviewer edit authority; ordinary schema-v2 workflows remain executable.
 
 Never use G8ylrk's signer, key, HMAC, sandbox, Seatbelt, bubblewrap, trusted-runtime closure, special approval, helper-owned edit, or helper-owned commit architecture. Never infer push, publication, deployment, production mutation, restart, or post-deploy E2E authority from implementation or local integration.

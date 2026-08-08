@@ -461,6 +461,28 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(accepted.status, accepted.stderr).toBe(0);
 
+    for (const reviewStepId of ['pre_merge_review', 'candidate_review']) {
+      const editReview = JSON.parse(JSON.stringify(workflow));
+      editReview.receipts.unshift({
+        id: 'edit', producer: 'admit', path: 'edit.json', schema_version: 'juno_edit_preflight.v1',
+        required_fields: ['producer_step_digest', 'passed'], expected_fields: { passed: true },
+      });
+      editReview.steps.unshift({ id: 'admit', command: 'true' });
+      const reviewStep = editReview.steps.find((step: any) => step.id === reviewStepId);
+      reviewStep.edit_capable = true;
+      reviewStep.requires_receipts = ['edit'];
+      reviewStep.generated_task_contract = {
+        role: 'implementation', write_contract: 'product_edit', task_root_receipt: 'edit',
+      };
+      await fs.writeJson(workflowPath, editReview);
+      const rejectedEditReview = runWorkflow(['lint', '--workflow', workflowPath]);
+      expect(rejectedEditReview.status).not.toBe(0);
+      expect(rejectedEditReview.stderr + rejectedEditReview.stdout).toContain(
+        `independent review step ${reviewStepId} cannot declare edit authority`,
+      );
+    }
+    await fs.writeJson(workflowPath, workflow);
+
     const controllerConfig = path.join(testDir, '.juno_task', 'config.json');
     await fs.ensureDir(path.dirname(controllerConfig));
     await fs.writeJson(controllerConfig, { workflowModels: [':luna'] });
