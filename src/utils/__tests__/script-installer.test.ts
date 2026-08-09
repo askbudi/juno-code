@@ -226,10 +226,12 @@ describe('ScriptInstaller', () => {
       const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
       expect(newlyManaged.sort()).toEqual([
         'managed_agent_runner.py',
+        'merge_queue.py',
         'task_lifecycle.py',
         'task_workspace.py',
         'tests/test_controller_workspace.py',
         'tests/test_managed_agent_runner.py',
+        'tests/test_merge_queue.py',
         'tests/test_metadata_controller.py',
         'tests/test_task_lifecycle.py',
         'tests/test_task_workspace.py',
@@ -335,7 +337,9 @@ describe('ScriptInstaller', () => {
         { name: 'managed_agent_runner.py', installed: false },
         { name: 'task_lifecycle.py', installed: false },
         { name: 'task_workspace.py', installed: false },
+        { name: 'merge_queue.py', installed: false },
         { name: 'tests/test_task_workspace.py', installed: false },
+        { name: 'tests/test_merge_queue.py', installed: false },
         { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'worktree_lifecycle.py', installed: false },
@@ -494,6 +498,11 @@ describe('ScriptInstaller', () => {
       );
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'merge_queue.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_merge_queue.py'),
+        '#!/usr/bin/env python3\nprint("merge queue")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
@@ -541,7 +550,9 @@ describe('ScriptInstaller', () => {
         { name: 'managed_agent_runner.py', installed: true },
         { name: 'task_lifecycle.py', installed: true },
         { name: 'task_workspace.py', installed: true },
+        { name: 'merge_queue.py', installed: true },
         { name: 'tests/test_task_workspace.py', installed: true },
+        { name: 'tests/test_merge_queue.py', installed: true },
         { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'worktree_lifecycle.py', installed: true },

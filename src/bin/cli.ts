@@ -34,6 +34,7 @@ import { createServicesCommand } from '../cli/commands/services.js';
 import { createSkillsCommand } from '../cli/commands/skills.js';
 import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
+import { configureMergeQueueCommand } from '../cli/commands/merge.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -1979,6 +1980,7 @@ async function main(): Promise<void> {
   setupScriptManagementCommands(program);
   setupTaskLifecycleCommand(program);
   configureTaskWorkspaceCommand(program);
+  configureMergeQueueCommand(program);
 
   // Setup completion
   setupCompletion(program);

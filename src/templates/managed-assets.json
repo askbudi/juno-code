@@ -176,8 +176,20 @@
       "type": "script"
     },
     {
+      "source": "scripts/merge_queue.py",
+      "destination": ".juno_task/scripts/merge_queue.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/tests/test_task_workspace.py",
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_merge_queue.py",
+      "destination": ".juno_task/scripts/tests/test_merge_queue.py",
       "installClass": "script",
       "type": "script"
     },

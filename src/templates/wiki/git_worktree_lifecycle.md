@@ -17,6 +17,12 @@ controller: Kanban + .juno_task/state/tasks.json
        `-- yy task start Y --> product worktree Y -- implement/commit
 
 product worktree -- yy task finish --> focused validation --> QUEUED
+                                                              |
+                     yy merge next -- affected validation ----+
+                                   | conflict
+                                   `--> CONFLICT -- yy merge resolve TASK_ID
+                                                        |
+                                         expected-old-SHA target CAS --> MERGED
 ```
 
 ## Public task interface
@@ -25,6 +31,10 @@ product worktree -- yy task finish --> focused validation --> QUEUED
 yy task start TASK_ID
 yy task status TASK_ID
 yy task finish TASK_ID
+
+yy merge status
+yy merge next
+yy merge resolve TASK_ID
 ```
 
 `start` reads the canonical segmented task and `.juno_task/config/task-workspace.json`, freezes the target SHA, and creates exactly one deterministic branch/worktree. Repeating it succeeds only for the same clean base identity. Existing branches, existing paths, moved targets, dirty worktrees, and identity drift refuse without discarding anything.
@@ -33,7 +43,9 @@ yy task finish TASK_ID
 
 `finish` requires a clean branch tip that descends from the frozen base and contains committed changes only under configured allowed product paths. Controller-private paths always refuse. Every configured focused command must pass. Success records the tip and changed paths as `QUEUED`; refusal preserves the branch and worktree as `WORKING`.
 
-Review, candidate construction, conflict handling, target mutation, release, push, deployment, and cleanup are separate operations. Neither `start` nor `finish` invokes them. Product target movement after start is normal queue input and never causes an implicit rebase.
+Neither `start` nor `finish` mutates the target. `merge next` is the only normal target writer: a nonblocking lock is scoped to the repository identity and full target ref, direct descendants reuse the feature tip, and a moved target gets one ordinary both-parent merge in a temporary checkout. It runs affected validation once and advances the ref with an expected-old-SHA compare-and-swap followed by exact ref/tree readback. It never rebases, squashes, force-updates, pushes, releases, or synchronizes the controller.
+
+Text conflicts become durable `CONFLICT` records containing exact target/feature identities, conflict paths, and the preserved checkout. Resolve only those paths, stage them, and run `yy merge resolve TASK_ID`. Unrelated drift refuses. Resolution reuses the preserved checkout, validates the new candidate, and performs the same CAS; it never recreates or cleans the feature worktree. `yy merge status` is bounded deterministic observation.
 
 ## Configuration
 

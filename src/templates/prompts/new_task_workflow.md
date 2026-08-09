@@ -17,3 +17,5 @@ yy task finish TASK_ID
 ```
 
 Finish checks the exact task identity, clean committed tip, allowed paths, and configured focused validation, then records the task as `QUEUED`. It does not review, merge, release, push, deploy, clean up, or synchronize controller and product branches. Use `yy task status TASK_ID` for bounded read-only observation.
+
+The target owner advances queued work with `yy merge next`. If it reports `CONFLICT`, edit and stage only the listed paths in the preserved candidate checkout, then run `yy merge resolve TASK_ID`. Use `yy merge status` to observe queued, conflicted, and merged tasks. The merge queue serializes only the short target mutation window; feature implementation remains concurrent.
