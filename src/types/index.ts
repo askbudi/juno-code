@@ -116,16 +116,10 @@ export interface JunoTaskConfig {
     policy: '.juno_task/config/git-flow.json';
   };
 
-  // Task-derived lifecycle; detailed topology/risk policy stays in the versioned file.
-  lifecycle?: {
-    enabled: boolean;
-    policy: '.juno_task/config/lifecycle.json';
-  };
-
-  // Canonical sparse-controller policy remains Python-owned and versioned.
+  // Metadata-only controller boundary; detailed policy remains Python-owned and versioned.
   controllerWorkspace?: {
-    enabled: true;
-    policy: '.juno_task/config/controller-workspace.json';
+    mode: 'metadata-only';
+    policy: '.juno_task/config/metadata-controller.json';
   };
 
   // Explicit, source-project authorization for cross-project Kanban aliases

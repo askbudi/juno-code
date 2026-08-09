@@ -162,8 +162,8 @@ const GitFlowSchema = z
 
 const ControllerWorkspaceSchema = z
   .object({
-    enabled: z.literal(true),
-    policy: z.literal('.juno_task/config/controller-workspace.json'),
+    mode: z.literal('metadata-only'),
+    policy: z.literal('.juno_task/config/metadata-controller.json'),
   })
   .strict()
   .optional();
@@ -304,17 +304,8 @@ export const JunoTaskConfigSchema = z
       'Enablement and canonical policy pointer for the Python-owned Git-flow engine',
     ),
 
-    lifecycle: z
-      .object({
-        enabled: z.boolean(),
-        policy: z.literal('.juno_task/config/lifecycle.json'),
-      })
-      .strict()
-      .optional()
-      .describe('Task-derived lifecycle enablement; topology and risk policy remain project-owned'),
-
     controllerWorkspace: ControllerWorkspaceSchema.describe(
-      'Canonical sparse-controller ownership and checkout policy pointer',
+      'Canonical metadata-only controller ownership and boundary policy pointer',
     ),
 
     kanbanRegistry: KanbanRegistrySchema.describe(
@@ -978,8 +969,24 @@ export function validateConfig(config: unknown): JunoTaskConfig {
         return false;
       });
 
+      const configRecord = config && typeof config === 'object' && !Array.isArray(config)
+        ? config as Record<string, unknown>
+        : undefined;
+      const controllerWorkspace = configRecord?.controllerWorkspace;
+      const hasRetiredControllerConfig = Object.prototype.hasOwnProperty.call(configRecord ?? {}, 'lifecycle') || (
+        controllerWorkspace !== undefined && (
+          typeof controllerWorkspace !== 'object' ||
+          controllerWorkspace === null ||
+          Array.isArray(controllerWorkspace) ||
+          (controllerWorkspace as Record<string, unknown>).mode !== 'metadata-only' ||
+          (controllerWorkspace as Record<string, unknown>).policy !== '.juno_task/config/metadata-controller.json'
+        )
+      );
+
       const hint = hasPromptMacroSnakeCaseHint
         ? ' Hint: use config.promptMacros with keys { enabled, order, maxDepth, global, local }.'
+        : hasRetiredControllerConfig
+          ? ' Migration required: persisted lifecycle and sparse controllerWorkspace configuration were removed; prepare a metadata-only controller using { mode: "metadata-only", policy: ".juno_task/config/metadata-controller.json" }.'
         : '';
 
       throw new Error(`Configuration validation failed: ${errorMessages}${hint}`);

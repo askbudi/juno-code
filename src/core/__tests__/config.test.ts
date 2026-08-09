@@ -251,19 +251,23 @@ describe('Configuration Module', () => {
       })).toThrow(/gitFlow/);
     });
 
-    it('should accept only the canonical sparse-controller policy pointer', () => {
+    it('accepts only the canonical metadata-controller policy pointer', () => {
       const config = validateConfig({
         ...DEFAULT_CONFIG,
         controllerWorkspace: {
-          enabled: true,
-          policy: '.juno_task/config/controller-workspace.json',
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
         },
       });
-      expect(config.controllerWorkspace?.enabled).toBe(true);
+      expect(config.controllerWorkspace?.mode).toBe('metadata-only');
       expect(() => validateConfig({
         ...DEFAULT_CONFIG,
-        controllerWorkspace: { enabled: true, policy: './other.json' },
-      })).toThrow(/controllerWorkspace/);
+        controllerWorkspace: { enabled: true, policy: '.juno_task/config/controller-workspace.json' },
+      })).toThrow(/Migration required.*metadata-only controller/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        lifecycle: { enabled: true, policy: '.juno_task/config/lifecycle.json' },
+      })).toThrow(/Migration required.*persisted lifecycle/);
     });
 
     it('should accept an enabled cross-project Kanban alias allowlist', () => {

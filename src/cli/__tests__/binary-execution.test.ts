@@ -373,6 +373,53 @@ describe('Binary Execution Tests', () => {
       }
     });
 
+    it('loads metadata-controller prepare output and refuses retired persisted controller shapes', async () => {
+      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-metadata-config-'));
+      const configPath = path.join(targetDir, '.juno_task', 'config.json');
+      const env = { JUNO_CODE_PROJECT_BOOTSTRAP_WRITES: '0' };
+      try {
+        await fs.ensureDir(path.dirname(configPath));
+        await fs.writeJson(configPath, {
+          controllerWorkspace: {
+            mode: 'metadata-only',
+            policy: '.juno_task/config/metadata-controller.json',
+          },
+        });
+
+        const accepted = await executeCLI(
+          ['pi', 'set-default-model', ':api-codex', '--cwd', targetDir],
+          { env },
+        );
+        expect(accepted.exitCode).toBe(0);
+        expect(accepted.stdout).toContain('Default model for pi set to :api-codex');
+
+        await fs.writeJson(configPath, {
+          controllerWorkspace: {
+            enabled: true,
+            policy: '.juno_task/config/controller-workspace.json',
+          },
+        });
+        const sparse = await executeCLI(['pi', 'set-default-model', ':api-codex', '--cwd', targetDir], {
+          env,
+          expectError: true,
+        });
+        expect(sparse.exitCode).not.toBe(0);
+        expect(sparse.all).toMatch(/Migration required.*metadata-only controller/);
+
+        await fs.writeJson(configPath, {
+          lifecycle: { enabled: true, policy: '.juno_task/config/lifecycle.json' },
+        });
+        const lifecycle = await executeCLI(['pi', 'set-default-model', ':api-codex', '--cwd', targetDir], {
+          env,
+          expectError: true,
+        });
+        expect(lifecycle.exitCode).not.toBe(0);
+        expect(lifecycle.all).toMatch(/Migration required.*persisted lifecycle/);
+      } finally {
+        await fs.remove(targetDir);
+      }
+    });
+
     it('should retain assignment isolation after real CLI startup refreshes project scripts', async () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       const guardDir = path.join(tempDir, 'guard');
