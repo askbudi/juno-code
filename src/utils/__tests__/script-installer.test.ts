@@ -825,6 +825,35 @@ describe('ScriptInstaller', () => {
       expect(installedEvidenceHelper).toBe(packageEvidenceHelper);
     });
 
+    it('installs only ignored runtime scripts in a metadata-only controller', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task/config'));
+      const config = {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+      };
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), config);
+      await fs.writeJson(path.join(testDir, '.juno_task/config/metadata-controller.json'), {
+        preserved: 'reviewed-project-policy',
+      });
+
+      const updated = await ScriptInstaller.autoUpdate(testDir, true);
+
+      expect(updated).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/task_workspace.py'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/merge_queue.py'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/managed-assets.json'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/wiki'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/prompts'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, 'scripts/git-flow.sh'))).toBe(false);
+      expect(await fs.readJson(path.join(testDir, '.juno_task/config.json'))).toEqual(config);
+      expect(await fs.readJson(
+        path.join(testDir, '.juno_task/config/metadata-controller.json'),
+      )).toEqual({ preserved: 'reviewed-project-policy' });
+      expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
+    });
+
     it('does not mix a new lifecycle script generation with customized guidance', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await ManagedProjectAssets.update(testDir, { silent: true });

@@ -28,6 +28,16 @@ const COHERENCE_BLOCKING_MANAGED_ASSETS = new Set(
 );
 
 export class ScriptInstaller {
+  static async isMetadataOnlyController(projectDir: string): Promise<boolean> {
+    try {
+      const config = await fs.readJson(path.join(projectDir, '.juno_task/config.json'));
+      return config?.controllerWorkspace?.mode === 'metadata-only'
+        && config.controllerWorkspace.policy === '.juno_task/config/metadata-controller.json';
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Update lifecycle guidance before installing a new lifecycle script generation.
    * A specialized clean_worktree policy is intentionally exempt; any other
@@ -152,7 +162,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     silent = false,
   ): Promise<boolean> {
     try {
-      if (MANAGED_SCRIPT_NAMES.includes(scriptName)) {
+      if (
+        MANAGED_SCRIPT_NAMES.includes(scriptName)
+        && !(await this.isMetadataOnlyController(projectDir))
+      ) {
         const ready = await this.prepareManagedLifecycleBundle(projectDir, silent, false);
         if (!ready) return false;
       }
@@ -268,6 +281,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
    */
   static async autoInstallMissing(projectDir: string, silent = true): Promise<boolean> {
     try {
+      const metadataOnlyController = await this.isMetadataOnlyController(projectDir);
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
       if (!(await fs.pathExists(junoTaskDir))) {
@@ -277,7 +291,9 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
       const missing = await this.getMissingScripts(projectDir);
 
-      const delegateNeeded = await this.rootDelegateNeedsUpdate(projectDir);
+      const delegateNeeded = metadataOnlyController
+        ? false
+        : await this.rootDelegateNeedsUpdate(projectDir);
       if (missing.length === 0 && !delegateNeeded) {
         return false;
       }
@@ -287,7 +303,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       }
 
       let scriptsToInstall = missing;
-      if (missing.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
+      if (
+        !metadataOnlyController
+        && missing.some((script) => MANAGED_SCRIPT_NAMES.includes(script))
+      ) {
         const lifecycleReady = await this.prepareManagedLifecycleBundle(projectDir, silent, false);
         if (!lifecycleReady) {
           scriptsToInstall = missing.filter((script) => !MANAGED_SCRIPT_NAMES.includes(script));
@@ -455,7 +474,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       }
 
       const outdated = await this.getOutdatedScripts(projectDir);
-      return outdated.length > 0 || (await this.rootDelegateNeedsUpdate(projectDir));
+      return outdated.length > 0 || (
+        !(await this.isMetadataOnlyController(projectDir))
+        && await this.rootDelegateNeedsUpdate(projectDir)
+      );
     } catch {
       return false;
     }
@@ -475,6 +497,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
   static async autoUpdate(projectDir: string, silent = true, force = false): Promise<boolean> {
     try {
       const debug = process.env.JUNO_CODE_DEBUG === '1';
+      const metadataOnlyController = await this.isMetadataOnlyController(projectDir);
 
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
@@ -513,7 +536,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
         scriptsToUpdate = [...new Set([...missing, ...outdated])];
       }
 
-      if (scriptsToUpdate.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
+      if (!metadataOnlyController && scriptsToUpdate.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
         const lifecycleReady = await this.prepareManagedLifecycleBundle(
           projectDir,
           silent,
@@ -526,7 +549,9 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
         }
       }
 
-      let updatedAny = await this.installRootGitFlowDelegate(projectDir, silent);
+      let updatedAny = metadataOnlyController
+        ? false
+        : await this.installRootGitFlowDelegate(projectDir, silent);
       if (scriptsToUpdate.length === 0) return updatedAny;
 
       for (const script of scriptsToUpdate) {

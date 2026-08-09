@@ -1130,20 +1130,29 @@ function setupScriptManagementCommands(program: Command): void {
       import('../utils/script-installer.js'),
       import('../utils/managed-project-assets.js'),
     ]);
+    const metadataOnlyController = await ScriptInstaller.isMetadataOnlyController(workingDirectory);
 
     if (options.force) {
-      console.log(chalk.blue('🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
+      console.log(chalk.blue(metadataOnlyController
+        ? '🔄 Force updating ignored metadata-controller runtime scripts and Python dependencies...'
+        : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
       const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, false);
-      const assets = await ManagedProjectAssets.update(workingDirectory, { force: true, silent: false });
+      const assets = metadataOnlyController
+        ? { installed: [], updated: [] }
+        : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: false });
       if (!scriptsUpdated && assets.installed.length + assets.updated.length === 0) {
         console.log(chalk.yellow('No project assets updated. Is this an initialized juno-code project with .juno_task/?'));
       }
       return;
     }
 
-    console.log(chalk.blue('🔄 Updating project scripts and checksum-managed prompts/wiki/macros...'));
+    console.log(chalk.blue(metadataOnlyController
+      ? '🔄 Updating ignored metadata-controller runtime scripts...'
+      : '🔄 Updating project scripts and checksum-managed prompts/wiki/macros...'));
     const scriptsUpdated = await ScriptInstaller.autoUpdate(workingDirectory, false);
-    const assets = await ManagedProjectAssets.update(workingDirectory, { silent: false });
+    const assets = metadataOnlyController
+      ? { installed: [], updated: [], conflicts: [] }
+      : await ManagedProjectAssets.update(workingDirectory, { silent: false });
     if (!scriptsUpdated && assets.installed.length + assets.updated.length === 0 && assets.conflicts.length === 0) {
       console.log(chalk.green('✓ Managed project assets are already up to date'));
     }
@@ -1179,7 +1188,26 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
     .action(async (options: { cwd?: string }) => {
       const argvCwd = extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
       const workingDirectory = options.cwd?.trim() || argvCwd?.trim() || process.cwd();
-      const { ManagedProjectAssets } = await import('../utils/managed-project-assets.js');
+      const [{ ManagedProjectAssets }, { ScriptInstaller }] = await Promise.all([
+        import('../utils/managed-project-assets.js'),
+        import('../utils/script-installer.js'),
+      ]);
+      if (await ScriptInstaller.isMetadataOnlyController(workingDirectory)) {
+        const [missing, outdated] = await Promise.all([
+          ScriptInstaller.getMissingScripts(workingDirectory),
+          ScriptInstaller.getOutdatedScripts(workingDirectory),
+        ]);
+        if (missing.length === 0 && outdated.length === 0) {
+          console.log(chalk.green('✓ Metadata-controller runtime scripts are coherent'));
+          return;
+        }
+        console.error(chalk.red('✗ Metadata-controller runtime scripts are incomplete or stale'));
+        for (const entry of missing) console.error(`  missing: .juno_task/scripts/${entry}`);
+        for (const entry of outdated) console.error(`  outdated: .juno_task/scripts/${entry}`);
+        console.error(chalk.yellow('Run `yy scripts update`; the metadata-only controller installs ignored runtime scripts only.'));
+        process.exitCode = 1;
+        return;
+      }
       const report = await ManagedProjectAssets.inspectGeneration(workingDirectory);
       if (report.coherent) {
         console.log(chalk.green('✓ Lifecycle scripts and managed guidance are coherent'));
@@ -1782,12 +1810,16 @@ async function main(): Promise<void> {
   const isMigrationCommand = cliArgs[0] === 'migrate';
   const isReadOnlyLifecycleStatus = isLifecycleCommand && cliArgs[1] === 'status';
   const isReadOnlyTaskStatus = isTaskWorkspaceCommand && cliArgs[1] === 'status';
-  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand;
+  const isScriptsDoctor = cliArgs[0] === 'scripts' && cliArgs[1] === 'doctor';
+  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
     cliArgs[0] === 'install-scripts' ||
     (cliArgs[0] === 'scripts' && cliArgs[1] === 'update');
+  const { ScriptInstaller: StartupScriptInstaller } = await import('../utils/script-installer.js');
+  const isMetadataOnlyController =
+    await StartupScriptInstaller.isMetadataOnlyController(process.cwd());
   // Implicit startup writes require resolver-confirmed controller identity. Do
   // this once, before any project installer, and let invalid registration fail
   // closed before command parsing or agent dispatch. Explicit update commands
@@ -1797,7 +1829,8 @@ async function main(): Promise<void> {
     (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
-  process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = mayAutoUpdateProjectAssets ? '1' : '0';
+  process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES =
+    mayAutoUpdateProjectAssets && !isMetadataOnlyController ? '1' : '0';
 
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
@@ -1872,7 +1905,7 @@ async function main(): Promise<void> {
   // Auto-update agent skill files in .agents/skills/ and .claude/skills/
   // Skills are installed for ALL agents regardless of which subagent is selected
   try {
-    if (mayAutoUpdateProjectAssets) {
+    if (mayAutoUpdateProjectAssets && !isMetadataOnlyController) {
       const { SkillInstaller } = await import('../utils/skill-installer.js');
 
     if (isForceUpdate) {
