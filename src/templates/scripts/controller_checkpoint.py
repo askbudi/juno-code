@@ -253,7 +253,7 @@ def workspace_policy(root: Path) -> dict[str, Any] | None:
         raise CheckpointError(f"controller workspace policy refused: {exc}") from exc
 
 
-def require_sparse_controller(root: Path) -> dict[str, Any] | None:
+def require_sparse_controller(root: Path, *, allow_pending_changes: bool = False) -> dict[str, Any] | None:
     policy = workspace_policy(root)
     if policy is None:
         return None
@@ -261,8 +261,9 @@ def require_sparse_controller(root: Path) -> dict[str, Any] | None:
         evidence = controller_workspace.inspect(root, policy)
     except controller_workspace.WorkspaceError as exc:
         raise CheckpointError(f"sparse controller verification failed: {exc}") from exc
-    if not evidence["passed"]:
-        failed = sorted(key for key, value in evidence["checks"].items() if not value)
+    failed = sorted(key for key, value in evidence["checks"].items()
+                    if not value and not (allow_pending_changes and key == "clean"))
+    if failed:
         raise CheckpointError("sparse controller policy drift blocks checkpoint: " + ",".join(failed))
     return evidence
 
@@ -894,8 +895,12 @@ def main(argv: list[str] | None = None) -> int:
     includes, agent_config = load_config(root)
     includes = scoped_includes(includes, args.task_id)
     persisted_role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False).strip()
+    pending_commands = {"plan", "commit", "require-clean", "staged-check"}
     if persisted_role == "controller":
-        require_sparse_controller(root)
+        # A checkpoint exists to consume eligible controller dirt. All sparse
+        # identity/materialization checks remain mandatory before mutation; only
+        # the expected pre-commit clean check is deferred to terminal readback.
+        require_sparse_controller(root, allow_pending_changes=args.command in pending_commands)
     if args.command == "staged-check":
         payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
     if args.command == "committed-check":
@@ -935,6 +940,8 @@ def main(argv: list[str] | None = None) -> int:
             payload["commits"] = stage_and_commit(root, includes, frozen, groups)
             payload["outcome"] = "committed"
             payload["head"] = payload["commits"][-1]
+            if persisted_role == "controller":
+                payload["sparse_controller_readback"] = require_sparse_controller(root)
         elif args.command == "require-clean":
             raise CheckpointError(f"controller is dirty; run checkpoint first: {frozen['selected']}")
         else:

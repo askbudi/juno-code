@@ -255,6 +255,14 @@ describe('controller_checkpoint.py template script', () => {
     expect(result.stderr).toContain('timed out');
   });
 
+  it('defers only sparse clean-state verification while committing and performs strict readback', async () => {
+    const checkpoint = await fs.readFile(helper, 'utf8');
+    expect(checkpoint).toContain('allow_pending_changes: bool = False');
+    expect(checkpoint).toContain('allow_pending_changes and key == "clean"');
+    expect(checkpoint).toContain('payload["sparse_controller_readback"] = require_sparse_controller(root)');
+    expect(checkpoint).not.toContain('if not evidence["passed"]:\n        failed = sorted');
+  });
+
   it('keeps checkpoints at outer finalizers and out of target-ref integration', async () => {
     const main = await fs.readFile(path.resolve(process.cwd(), 'src/cli/commands/main.ts'), 'utf8');
     expect(main.indexOf('clearContinueScopeRunning')).toBeLessThan(main.lastIndexOf('checkpointControllerAfterFinalization'));

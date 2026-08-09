@@ -34,6 +34,7 @@ describe('kanban wrapper runtime selection', () => {
     await fs.writeJson(path.join(projectRoot, '.juno_task', 'tasks', 'config.json'), {
       storage: 'legacy-ndjson',
     });
+    await fs.writeJson(path.join(projectRoot, '.juno_task', 'config.json'), {});
     await fs.writeFile(path.join(projectRoot, '.juno_task', 'tasks', 'backlog.ndjson'), '');
 
     await fs.writeFile(path.join(installedSite, 'kanban', '__init__.py'), "RUNTIME = 'installed-controller-v2'\n");
@@ -50,6 +51,11 @@ if [[ "${'$'}{1:-}" == "--version" ]]; then
   echo "task 2.0.5"
   exit 0
 fi
+config=""
+if [[ "${'$'}{1:-}" == "--config" || "${'$'}{1:-}" == "-c" ]]; then
+  config="${'$'}2"
+  shift 2
+fi
 if [[ "${'$'}{1:-}" == "create" ]]; then
   body=${'$'}(cat)
   printf 'created:%s\\n' "${'$'}body"
@@ -62,6 +68,10 @@ if [[ ${'$'}# -eq 0 ]]; then
 fi
 if [[ "${'$'}{1:-}" == "show-env" ]]; then
   printf '%s\\n' "${'$'}{VIRTUAL_ENV:-}"
+  exit 0
+fi
+if [[ "${'$'}{1:-}" == "show-config" ]]; then
+  printf '%s\\n' "${'$'}config"
   exit 0
 fi
 if [[ "${'$'}{1:-}" == "--project" ]]; then
@@ -138,6 +148,33 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
 
     expect(result.status, result.stderr).toBe(0);
     expect(fs.realpathSync(result.stdout.trim())).toBe(fs.realpathSync(path.join(projectRoot, '.venv_juno')));
+  });
+
+  it('binds config discovery to the resolved controller and preserves explicit override', async () => {
+    const wrapper = path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh');
+    const env = {
+      ...process.env,
+      JUNO_CONTROLLER_BRANCH: '',
+      JUNO_WORKSPACE_ENFORCEMENT: 'off',
+      JUNO_WORKSPACE_ROLE: '',
+      JUNO_TASK_ROOT: '',
+      VIRTUAL_ENV: '',
+    };
+    const defaultResult = spawnSync(wrapper, ['show-config'], {
+      cwd: projectRoot, encoding: 'utf8', env,
+    });
+    expect(defaultResult.status, defaultResult.stderr).toBe(0);
+    expect(fs.realpathSync(defaultResult.stdout.trim())).toBe(
+      fs.realpathSync(path.join(projectRoot, '.juno_task', 'config.json')),
+    );
+
+    const override = path.join(projectRoot, 'maintenance.json');
+    await fs.writeJson(override, {});
+    const overrideResult = spawnSync(wrapper, ['show-config', '--config', override], {
+      cwd: projectRoot, encoding: 'utf8', env,
+    });
+    expect(overrideResult.status, overrideResult.stderr).toBe(0);
+    expect(fs.realpathSync(overrideResult.stdout.trim())).toBe(fs.realpathSync(override));
   });
 
   it('normalizes --project and preserves the initialized source root', () => {

@@ -18,6 +18,15 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
 describe('ManagedProjectAssets', () => {
   let projectDir: string;
 
+  it('keeps sparse-controller generation aligned with the package version', async () => {
+    const packageJson = await fs.readJson(path.resolve(process.cwd(), 'package.json'));
+    const policy = await fs.readJson(
+      path.resolve(process.cwd(), 'src/templates/config/controller-workspace.json'),
+    );
+    expect(policy.generation.package_name).toBe('juno-code');
+    expect(policy.generation.package_version).toBe(packageJson.version);
+  });
+
   beforeEach(async () => {
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-managed-assets-'));
     await fs.ensureDir(path.join(projectDir, '.juno_task'));

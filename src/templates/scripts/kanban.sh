@@ -346,6 +346,20 @@ main() {
     fi
     log_info "Executing juno-kanban with normalized arguments"
 
+    # Bind storage/config discovery to the resolved canonical controller. A
+    # linked rollback checkout or global project registry must never redirect
+    # reads or writes after sparse-controller cutover. Preserve an explicit
+    # caller override for bounded maintenance commands.
+    local arg_index arg
+    local -a resolved_config_args=(--config "$PROJECT_ROOT/.juno_task/config.json")
+    for ((arg_index = 0; arg_index < ${#NORMALIZED_GLOBAL_FLAGS[@]}; arg_index++)); do
+        arg="${NORMALIZED_GLOBAL_FLAGS[$arg_index]}"
+        if [[ "$arg" == "-c" || "$arg" == "--config" || "$arg" == --config=* ]]; then
+            resolved_config_args=()
+            break
+        fi
+    done
+
     # Execute with proper array expansion to preserve quoting
     # Use ${arr[@]+"${arr[@]}"} pattern to handle empty arrays with set -u
     #
@@ -360,7 +374,7 @@ main() {
     # populated subprocess pipe and an inherited idle descriptor can appear as a
     # socket; probing by type either discards real bodies or leaves query commands
     # hanging. Only commands whose syntax explicitly needs stdin receive it.
-    local pass_stdin=false arg_index arg
+    local pass_stdin=false
     # Preserve the commandless stdin shortcut (`kanban.sh <<'EOF' ...`). This
     # includes socket-backed subprocess input on macOS, not only pipes/files.
     # Interactive no-argument calls remain nonblocking because a TTY is excluded.
@@ -394,10 +408,12 @@ main() {
     fi
 
     if [[ "$pass_stdin" == true ]]; then
-        "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+        "$kanban_executable" ${resolved_config_args[@]+"${resolved_config_args[@]}"} \
+                    ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"}
     else
-        "$kanban_executable" ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+        "$kanban_executable" ${resolved_config_args[@]+"${resolved_config_args[@]}"} \
+                    ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
     fi
 }
