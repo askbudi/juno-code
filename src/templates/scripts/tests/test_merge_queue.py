@@ -138,7 +138,8 @@ class MergeQueueTests(unittest.TestCase):
 
     def fake_review(self, _controller: Path, _candidate: Path, plan: dict,
                     _task_id: str, reviewer: str, sequence: int,
-                    predecessor_receipt: Optional[Path], *, findings: bool = False) -> dict[str, str]:
+                    predecessor_receipt: Optional[Path], _attempt_number: int,
+                    *, findings: bool = False) -> dict[str, str]:
         predecessor = None
         if predecessor_receipt is not None:
             prior = json.loads(predecessor_receipt.read_text())
@@ -186,7 +187,7 @@ class MergeQueueTests(unittest.TestCase):
             reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
         self.assertEqual(reviewed["outcome"], "RISK_EVIDENCE_READY")
         self.assertEqual(dispatch.call_count, 2)
-        merged = merge_runtime.merge_next(self.controller.resolve())
+        merged = merge_runtime.merge_next(self.controller.resolve(), "X")
         self.assertEqual(merged["candidate_sha"], tip)
         self.assertEqual(merged["outcome"], "MERGED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
@@ -199,7 +200,7 @@ class MergeQueueTests(unittest.TestCase):
         attempt = state["tasks"]["X"]["queue_attempt"]
         attempt["risk"]["evidence"] = {"status": "PASS", "candidate_sha": attempt["candidate_sha"]}
         state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
-        failed = self.queue("next", check=False)
+        failed = self.queue("next", "X", check=False)
         self.assertEqual(failed.returncode, 2)
         self.assertIn("canonical receipt reference", failed.stderr)
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
@@ -241,7 +242,7 @@ class MergeQueueTests(unittest.TestCase):
         tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
         moved = git(self.repository, "commit-tree", tree, "-p", x, "-m", "external")
         git(self.repository, "update-ref", "refs/heads/product", moved, x)
-        invalidated = self.queue_payload("next")
+        invalidated = self.queue_payload("next", "Y")
         self.assertEqual(invalidated["outcome"], "RISK_TARGET_MOVED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), moved)
         self.assertTrue(checkout.is_dir())
@@ -257,7 +258,103 @@ class MergeQueueTests(unittest.TestCase):
             reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
         self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+        self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+
+    def test_reviewer_a_pass_b_transport_failure_retries_only_b_in_fresh_namespace(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        calls: list[tuple[str, int]] = []
+        def fail_b(*args: object, **kwargs: object) -> dict[str, str]:
+            reviewer, attempt_number = str(args[4]), int(args[7])
+            calls.append((reviewer, attempt_number))
+            if reviewer == "reviewer_b":
+                raise merge_runtime.MergeQueueError("transport down")
+            return self.fake_review(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=fail_b):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "transport down"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        progress = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual(progress["attempt_counter"], 1)
+        self.assertEqual([step["reviewer"] for step in progress["steps"]], ["reviewer_a"])
+        retry_calls: list[tuple[str, int]] = []
+        def retry(*args: object, **kwargs: object) -> dict[str, str]:
+            retry_calls.append((str(args[4]), int(args[7])))
+            return self.fake_review(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=retry):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(calls, [("reviewer_a", 1), ("reviewer_b", 1)])
+        self.assertEqual(retry_calls, [("reviewer_b", 2)])
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(merge_runtime.merge_next(self.controller.resolve(), "X")["candidate_sha"], tip)
+
+    def test_reviewer_a_transport_failure_retries_fresh_a_then_b(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+            merge_runtime, "dispatch_reviewer",
+            side_effect=merge_runtime.MergeQueueError("A transport down"),
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "A transport down"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        progress = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual((progress["attempt_counter"], progress["steps"]), (1, []))
+        calls: list[tuple[str, int]] = []
+        def retry(*args: object, **kwargs: object) -> dict[str, str]:
+            calls.append((str(args[4]), int(args[7])))
+            return self.fake_review(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=retry):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(calls, [("reviewer_a", 2), ("reviewer_b", 2)])
+
+    def test_awaiting_risk_does_not_starve_low_risk_fifo_work(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        y_tip = self.commit_feature("Y", "docs/y.md", "y\n")
+        self.assertEqual(self.queue_payload("next")["outcome"], "AWAITING_RISK")
+        merged = self.queue_payload("next")
+        self.assertEqual((merged["task_id"], merged["candidate_sha"]), ("Y", y_tip))
         self.assertEqual(self.task("status", "X")["state"], "AWAITING_RISK")
+
+    def test_bare_next_preserves_enqueue_fifo_not_task_id_order(self) -> None:
+        y_tip = self.commit_feature("Y", "docs/y.md", "y\n")
+        self.commit_feature("X", "docs/x.md", "x\n")
+        first = self.queue_payload("next")
+        self.assertEqual((first["task_id"], first["candidate_sha"]), ("Y", y_tip))
+
+    def test_awaiting_release_does_not_starve_queued_work(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        y_tip = self.commit_feature("Y", "docs/y.md", "y\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"]["risk_flags"] = ["release"]
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        self.assertEqual(self.queue_payload("next")["outcome"], "AWAITING_RELEASE")
+        merged = self.queue_payload("next")
+        self.assertEqual((merged["task_id"], merged["candidate_sha"]), ("Y", y_tip))
+        self.assertEqual(self.task("status", "X")["state"], "AWAITING_RELEASE")
+
+    def test_finding_reopen_new_tip_discards_exact_owned_moved_candidate_and_requeues(self) -> None:
+        self.commit_feature("X", "src/x.py", "x\n")
+        self.commit_feature("Y", "src/security/auth.py", "bad\n")
+        self.queue_payload("next")
+        waiting = self.queue_payload("next")
+        checkout = Path(waiting["candidate_checkout"])
+        marker = merge_runtime.owner_marker(self.controller.resolve(), checkout)
+        with mock.patch.object(
+            merge_runtime, "dispatch_reviewer",
+            side_effect=lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True),
+        ):
+            merge_runtime.merge_review(self.controller.resolve(), "Y")
+        worktree = self.workspaces / "Y"
+        (worktree / "src/security/auth.py").write_text("fixed\n")
+        git(worktree, "add", "."); git(worktree, "commit", "-m", "fix findings")
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_FINDINGS")
+        self.assertFalse(checkout.exists())
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
+        again = self.queue_payload("next")
+        self.assertEqual(again["outcome"], "AWAITING_RISK")
+        self.assertNotEqual(again["candidate_sha"], waiting["candidate_sha"])
 
     def test_parallel_x_y_then_moved_target_uses_one_two_parent_composition(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -265,15 +362,17 @@ class MergeQueueTests(unittest.TestCase):
             y = pool.submit(self.commit_feature, "Y", "src/y.txt", "y\n")
             x_tip, y_tip = x.result(), y.result()
         first = self.queue_payload("next")
-        self.assertEqual(first["task_id"], "X")
+        self.assertIn(first["task_id"], {"X", "Y"})
         self.assertEqual(first["strategy"], "direct")
-        self.assertEqual(first["candidate_sha"], x_tip)
+        tips = {"X": x_tip, "Y": y_tip}
+        self.assertEqual(first["candidate_sha"], tips[first["task_id"]])
         second = self.queue_payload("next")
-        self.assertEqual(second["task_id"], "Y")
+        self.assertEqual({first["task_id"], second["task_id"]}, {"X", "Y"})
         self.assertEqual(second["strategy"], "merge_both_parents")
         merged = git(self.repository, "rev-parse", "refs/heads/product")
         self.assertEqual(merged, second["candidate_sha"])
-        self.assertEqual(git(self.repository, "show", "-s", "--format=%P", merged).split(), [x_tip, y_tip])
+        self.assertEqual(git(self.repository, "show", "-s", "--format=%P", merged).split(),
+                         [tips[first["task_id"]], tips[second["task_id"]]])
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/x.txt"), "x")
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
         self.assertEqual(len(self.counter.read_text().splitlines()), 4)  # finish + final candidate, once each
@@ -418,7 +517,9 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         state = merge_runtime.task_runtime.read_state(self.controller)
         self.assertEqual(state["tasks"]["X"]["state"], "QUEUED")
-        self.assertEqual(state["queues"], {})
+        self.assertEqual(state["queues"], {
+            "task_workspace_fifo": {"schema_version": "juno_task_workspace_fifo.v1", "next": 2}
+        })
         self.assertFalse((self.controller / ".juno_task/state/queue.json").exists())
 
     def test_conflict_first_admission_failure_rolls_back_dirty_internal_checkout_then_retries_once(self) -> None:

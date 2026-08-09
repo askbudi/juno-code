@@ -165,6 +165,20 @@ def write_state(controller: Path, state: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def assign_enqueue_sequence(state: dict[str, Any]) -> int:
+    meta = state["queues"].setdefault(
+        "task_workspace_fifo", {"schema_version": "juno_task_workspace_fifo.v1", "next": 1}
+    )
+    if (not isinstance(meta, dict) or set(meta) != {"schema_version", "next"}
+            or meta.get("schema_version") != "juno_task_workspace_fifo.v1"
+            or not isinstance(meta.get("next"), int) or isinstance(meta.get("next"), bool)
+            or not 1 <= meta["next"] <= 2**63 - 1):
+        raise TaskWorkspaceError("task FIFO sequence state is invalid")
+    value = meta["next"]
+    meta["next"] += 1
+    return value
+
+
 @contextmanager
 def state_lock(controller: Path) -> Iterator[None]:
     # Runtime locks are ignored controller-local state; only tasks.json is durable truth.
@@ -408,6 +422,7 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
             if isinstance(current, dict) and current.get("state") == "QUEUED" and current.get("tip_sha") == head:
                 return {**current, "outcome": "already_queued"}
             raise TaskWorkspaceError("task state changed during focused validation; inspect status and retry")
+        queued["enqueue_sequence"] = assign_enqueue_sequence(state)
         state["tasks"][task_id] = queued
         write_state(controller, state)
     return {**queued, "outcome": "queued"}

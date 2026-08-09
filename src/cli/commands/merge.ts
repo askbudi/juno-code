@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { resolveController } from '../../utils/controller-resolver.js';
 import type { ControllerResolution } from '../../utils/controller-resolver.js';
 
-export type MergeQueueOperation = 'status' | 'next' | 'resolve' | 'review';
+export type MergeQueueOperation = 'status' | 'next' | 'resolve' | 'review' | 'reopen';
 export type MergeQueueInvoker = (operation: MergeQueueOperation, taskId?: string) => Promise<void>;
 
 export function requireExactMergeController(resolution: ControllerResolution): string {
@@ -55,7 +55,10 @@ export function configureMergeQueueCommand(
 ): void {
   const merge = program.command('merge').description('Inspect or advance the conflict-aware product merge queue');
   merge.command('status').action(() => invoke('status'));
-  merge.command('next').action(() => invoke('next'));
+  merge.command('next').argument('[task-id]', 'Exact awaiting task to resume').action((taskId?: string) => (
+    taskId === undefined ? invoke('next') : invoke('next', taskId)
+  ));
   merge.command('resolve').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('resolve', taskId));
   merge.command('review').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('review', taskId));
+  merge.command('reopen').argument('<task-id>', 'Task with review findings and a new committed tip').action((taskId: string) => invoke('reopen', taskId));
 }

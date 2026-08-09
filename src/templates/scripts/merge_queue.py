@@ -193,7 +193,9 @@ def select_next(controller: Path, config: dict[str, Any]) -> dict[str, Any]:
                       and row.get("target_ref") == config["target_ref"]]
     if not candidates:
         raise MergeQueueError("no QUEUED task is ready for this target")
-    return sorted(candidates, key=lambda row: row["task_id"])[0]
+    return sorted(candidates, key=lambda row: (
+        row.get("enqueue_sequence", 2**63 - 1), row["task_id"]
+    ))[0]
 
 
 def candidate_directory(controller: Path, task_id: str, target_sha: str, feature_sha: str) -> Path:
@@ -329,9 +331,11 @@ def risk_flags(record: dict[str, Any]) -> Any:
     return record.get("risk_flags", [])
 
 
-def evidence_path(controller: Path, task_id: str, candidate_sha: str) -> Path:
+def evidence_path(controller: Path, task_id: str, candidate_sha: str,
+                  attempt_number: Optional[int] = None) -> Path:
+    suffix = f".attempt-{attempt_number}" if attempt_number is not None else ""
     return (controller / ".juno_task/runtime/merge-queue/evidence" / task_id
-            / f"{candidate_sha}.json")
+            / f"{candidate_sha}{suffix}.json")
 
 
 def evidence_reference(path: Path) -> dict[str, str]:
@@ -395,15 +399,6 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
         raise MergeQueueError("candidate zero-review evidence is not eligible")
     assert_frozen_candidate(controller, task_runtime.load_config(controller), validation_root, candidate_sha)
     return {**risk, "status": "ELIGIBLE", "evidence": reference}
-
-
-def awaiting_record(controller: Path, config: dict[str, Any]) -> Optional[dict[str, Any]]:
-    with task_runtime.state_lock(controller):
-        tasks = task_runtime.read_state(controller)["tasks"]
-        rows = [row for row in tasks.values() if isinstance(row, dict)
-                and row.get("target_ref") == config["target_ref"]
-                and row.get("state") in {"AWAITING_RISK", "AWAITING_RELEASE"}]
-    return sorted(rows, key=lambda row: row["task_id"])[0] if rows else None
 
 
 def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
@@ -518,16 +513,22 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
     return None
 
 
-def merge_next(controller: Path) -> dict[str, Any]:
+def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any]:
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with target_lock(controller, repository, config["target_ref"]):
         recovered = recover_incomplete(controller, config, repository)
         if recovered is not None:
             return recovered
-        waiting = awaiting_record(controller, config)
-        if waiting is not None:
-            return resume_awaiting(controller, config, repository, waiting)
+        if task_id is not None:
+            if not task_runtime.TASK_RE.fullmatch(task_id):
+                raise MergeQueueError("unsafe task id")
+            with task_runtime.state_lock(controller):
+                record = task_runtime.read_state(controller)["tasks"].get(task_id)
+            if not isinstance(record, dict) or record.get("state") not in {
+                    "AWAITING_RISK", "AWAITING_RELEASE"}:
+                raise MergeQueueError("explicit next task is not awaiting risk or release evidence")
+            return resume_awaiting(controller, config, repository, record)
         record = select_next(controller, config)
         feature_worktree = validate_record(config, repository, record)
         target_sha = task_runtime.ref_sha(repository, config["target_ref"])
@@ -783,10 +784,12 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
 
 def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, Any],
                       task_id: str, reviewer: str, sequence: int,
-                      predecessor_receipt: Optional[Path]) -> dict[str, str]:
+                      predecessor_receipt: Optional[Path],
+                      attempt_number: int) -> dict[str, str]:
     """Launch one canonical reviewer. Tests replace this seam with a fake."""
     run_root = (controller / ".juno_task/runtime/merge-queue/reviews" / task_id
-                / plan["candidate"]["candidate_sha"] / f"{sequence}-{reviewer}")
+                / plan["candidate"]["candidate_sha"] / f"attempt-{attempt_number}"
+                / f"{sequence}-{reviewer}")
     if run_root.exists():
         raise MergeQueueError(f"review output already exists; inspect before retry: {run_root}")
     binding_path = run_root.parent / f"{sequence}-{reviewer}.binding.json"
@@ -858,15 +861,61 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 raise MergeQueueError("stored awaiting-risk plan does not match fresh Git policy")
             if plan["release_gate_required"]:
                 raise MergeQueueError("release candidate cannot use semantic review as release authority")
-            # One bounded second validation pass is the high-risk full-suite
-            # gate. Projects choose its exact command in task-workspace policy.
-            validation_rows(config, candidate_root)
+            progress = stored.get("review_progress")
+            if progress is None:
+                progress = {"schema_version": "juno_merge_queue_review_progress.v1",
+                            "attempt_counter": 0, "full_validation_passed": False,
+                            "steps": []}
+            if (not isinstance(progress, dict) or set(progress) != {
+                    "schema_version", "attempt_counter", "full_validation_passed", "steps"}
+                    or progress.get("schema_version") != "juno_merge_queue_review_progress.v1"
+                    or not isinstance(progress.get("attempt_counter"), int)
+                    or isinstance(progress.get("attempt_counter"), bool)
+                    or not 0 <= progress["attempt_counter"] <= 10000
+                    or not isinstance(progress.get("full_validation_passed"), bool)
+                    or not isinstance(progress.get("steps"), list)):
+                raise MergeQueueError("stored reviewer continuation is malformed")
+            if progress["attempt_counter"] == 10000:
+                raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
+            attempt_number = progress["attempt_counter"] + 1
+            progress = {**progress, "attempt_counter": attempt_number}
+            stored = {**stored, "review_progress": progress}
+            attempt = {**attempt, "risk": stored, "review": stored,
+                       "outcome": "REVIEWING"}
+            persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+            if not progress["full_validation_passed"]:
+                # Projects choose the exact high-risk command in task policy.
+                validation_rows(config, candidate_root)
+                progress = {**progress, "full_validation_passed": True}
+                stored = {**stored, "review_progress": progress}
+                attempt = {**attempt, "risk": stored, "review": stored}
+                persist_attempt(controller, attempt, state_name="AWAITING_RISK")
             reviews: list[dict[str, str]] = []
             predecessor: Optional[Path] = None
-            for sequence, reviewer in enumerate(plan["reviewer_sequence"], 1):
+            steps = progress["steps"]
+            if len(steps) > len(plan["reviewer_sequence"]):
+                raise MergeQueueError("stored reviewer continuation exceeds the policy sequence")
+            for index, step in enumerate(steps):
+                reviewer = plan["reviewer_sequence"][index]
+                sequence = index + 1
+                if (not isinstance(step, dict) or set(step) != {
+                        "sequence", "reviewer", "reference", "verified"}
+                        or step.get("sequence") != sequence or step.get("reviewer") != reviewer):
+                    raise MergeQueueError("stored reviewer continuation order is invalid")
+                compact = risk_runtime._compact_review(
+                    step.get("reference"), reviewer, sequence, candidate_sha,
+                    plan["policy_identity"], plan,
+                )
+                if compact != step.get("verified") or compact["verdict"] != "pass" \
+                        or compact["finding_count"]:
+                    raise MergeQueueError("stored reviewer continuation evidence is no longer valid")
+                reviews.append(step["reference"])
+                predecessor = Path(step["reference"]["runner_receipt_path"])
+            for sequence, reviewer in enumerate(
+                    plan["reviewer_sequence"][len(reviews):], len(reviews) + 1):
                 reference = dispatch_reviewer(
                     controller, candidate_root, plan, task_id, reviewer,
-                    sequence, predecessor,
+                    sequence, predecessor, attempt_number,
                 )
                 reviews.append(reference)
                 predecessor = Path(reference["runner_receipt_path"])
@@ -877,6 +926,14 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 )
                 if compact["verdict"] != "pass" or compact["finding_count"]:
                     break
+                step = {"sequence": sequence, "reviewer": reviewer,
+                        "reference": reference, "verified": compact}
+                progress = {**progress, "steps": [*progress["steps"], step]}
+                stored = {**stored, "review_progress": progress}
+                attempt = {**attempt, "risk": stored, "review": stored}
+                # A PASS is durable before Reviewer B starts. A transport
+                # failure therefore retries only the missing suffix.
+                persist_attempt(controller, attempt, state_name="AWAITING_RISK")
             receipt = risk_runtime.finalize(
                 plan, request, affected_tests_passed=True,
                 full_suite_passed=True if plan["full_suite_required"] else None,
@@ -885,7 +942,9 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                          "full_suite_runs": 1 if plan["full_suite_required"] else 0},
                 policy=policy,
             )
-            path = evidence_path(controller, task_id, candidate_sha)
+            path = evidence_path(controller, task_id, candidate_sha, attempt_number)
+            if path.exists():
+                raise MergeQueueError("review evidence attempt path already exists")
             risk_runtime.atomic_receipt(path, receipt, policy)
             reference = evidence_reference(path)
             verified = risk_runtime.verify_candidate_evidence(
@@ -901,8 +960,76 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
         risk_state = {**stored, "status": outcome, "evidence": reference}
         updated = {**attempt, "risk": risk_state, "review": risk_state, "outcome": outcome}
-        persist_attempt(controller, updated, state_name="AWAITING_RISK")
+        persist_attempt(controller, updated, state_name=(
+            "AWAITING_RISK" if verified["eligible"] else "REVIEW_FINDINGS"))
         return updated
+
+
+def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
+    """Requeue a finding-bearing task only after a new validated feature tip."""
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with target_lock(controller, repository, config["target_ref"]):
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            record = state["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "REVIEW_FINDINGS":
+            raise MergeQueueError("task has no review findings to reopen")
+        old_attempt = record.get("queue_attempt")
+        if not isinstance(old_attempt, dict):
+            raise MergeQueueError("review finding task has no frozen queue attempt")
+        worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
+        if Path(record["repository"]).resolve() != repository:
+            raise MergeQueueError("feature repository identity drifted")
+        if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
+            raise MergeQueueError("feature worktree branch identity drifted")
+        new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
+        if task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip:
+            raise MergeQueueError("feature branch tip identity drifted")
+        if new_tip == record["tip_sha"]:
+            raise MergeQueueError("reopen requires a new committed feature tip")
+        if task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise MergeQueueError("feature worktree must be clean before reopen")
+        if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                             record["tip_sha"], new_tip], repository, check=False).returncode:
+            raise MergeQueueError("new feature tip must descend from the reviewed tip")
+        changed = sorted(set(task_runtime.git(
+            worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
+        ).splitlines()))
+        forbidden = [path for path in changed
+                     if task_runtime.path_within(path, config["controller_private_paths"])]
+        outside = [path for path in changed
+                   if not task_runtime.path_within(path, config["allowed_paths"])]
+        if not changed or forbidden or outside:
+            raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
+        validations = validation_rows(config, worktree)
+        if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
+                or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise MergeQueueError("feature tip changed during reopen validation")
+        checkout_value, token = old_attempt.get("candidate_checkout"), old_attempt.get("candidate_token")
+        if checkout_value:
+            if not token:
+                raise MergeQueueError("old candidate ownership token is missing")
+            rollback_unadmitted_candidate(
+                controller, repository, Path(checkout_value), token)
+        queued = {key: value for key, value in record.items()
+                  if key not in {"queue_attempt", "last_queue_outcome"}}
+        queued.update({"state": "QUEUED", "tip_sha": new_tip,
+                       "changed_paths": changed, "validation": validations,
+                       "last_validation_outcome": "PASSED",
+                       "reopened_from_candidate_sha": old_attempt["candidate_sha"]})
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            if state["tasks"].get(task_id) != record:
+                raise MergeQueueError("task state changed during reopen")
+            queued["enqueue_sequence"] = task_runtime.assign_enqueue_sequence(state)
+            state["tasks"][task_id] = queued
+            entry = target_entry(state, repository, config["target_ref"])
+            entry["conflicts"].pop(task_id, None)
+            task_runtime.write_state(controller, state)
+        return {**queued, "outcome": "REQUEUED_AFTER_FINDINGS"}
 
 
 def status(controller: Path) -> dict[str, Any]:
@@ -920,11 +1047,21 @@ def status(controller: Path) -> dict[str, Any]:
                  "risk_status": (((row.get("queue_attempt") or {}).get("risk") or {}).get("status")
                                  if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None),
                  "risk_policy_identity": (((row.get("queue_attempt") or {}).get("risk") or {}).get("policy_identity")
-                                          if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None)}
+                                          if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None),
+                 "review_attempt_counter": (((((row.get("queue_attempt") or {}).get("risk") or {})
+                                               .get("review_progress") or {}).get("attempt_counter"))
+                                            if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
+                                                           .get("review_progress")), dict) else None),
+                 "completed_reviewers": ([step.get("reviewer") for step in
+                                            ((((row.get("queue_attempt") or {}).get("risk") or {})
+                                              .get("review_progress") or {}).get("steps", []))]
+                                           if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
+                                                          .get("review_progress")), dict) else [])}
                 for task_id, row in sorted(tasks.items()) if isinstance(row, dict)
                 and row.get("target_ref") == config["target_ref"]
                 and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
-                                         "AWAITING_RISK", "AWAITING_RELEASE", "MERGED"}]
+                                         "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
+                                         "MERGED"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
             "tasks": rows, "last_attempt": entry["last_attempt"],
@@ -935,11 +1072,14 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="operation", required=True)
     sub.add_parser("status")
-    sub.add_parser("next")
+    next_command = sub.add_parser("next")
+    next_command.add_argument("task_id", nargs="?")
     resolve = sub.add_parser("resolve")
     resolve.add_argument("task_id")
     review = sub.add_parser("review")
     review.add_argument("task_id")
+    reopen = sub.add_parser("reopen")
+    reopen.add_argument("task_id")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
 
@@ -951,11 +1091,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.operation == "status":
             result = status(controller)
         elif args.operation == "next":
-            result = merge_next(controller)
+            result = merge_next(controller, args.task_id)
         elif args.operation == "resolve":
             result = merge_resolve(controller, args.task_id)
-        else:
+        elif args.operation == "review":
             result = merge_review(controller, args.task_id)
+        else:
+            result = merge_reopen(controller, args.task_id)
         print(canonical(result))
         return 0
     except (MergeQueueError, task_runtime.TaskWorkspaceError, risk_runtime.RiskPolicyError,
