@@ -57,7 +57,7 @@ Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local c
 | Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
 | Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
 
-Choose the smallest lane that satisfies the work. The canonical controller can be a non-cone sparse linked worktree whose versioned four-class ownership policy materializes only controller/shared bytes. Sparse policy, required-path, branch, registration, or managed-generation drift fails closed. Every managed product operation receives an explicit verified task/candidate/integration-owner root; release is sourced only from a clean strict full integration owner. Controller sync validates the full candidate externally and records resumable partial truth if post-CAS sparse restoration fails. Controller dirt and unrelated agents do not gate exact-base creation or a disjoint target channel. Every product change uses a named worktree. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
+Choose the smallest lane that satisfies the work. The Bolt replacement is a fresh metadata-only linked controller with an unrelated root: it tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed Juno Code release. Controller commits never merge or synchronize to product history. Migration is plan-first and keeps the old sparse controller read-only for rollback. The sparse/controller-sync lifecycle remains available only during canary migration; replacement work must not add dependencies on it. Every product change still uses an explicit named worktree. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
 
 ### Integration/controller Git flow
 
@@ -133,11 +133,12 @@ After installation/reload, `juno-code c<TAB><TAB>` suggests available subcommand
 
 ![Ralph Wiggum - The Simpsons](https://ghuntley.com/content/images/size/w1200/2025/06/3ea367ed-cae3-454a-840f-134531dea1fd.jpg)
 
-> *"I'm in danger!"* - Ralph Wiggum, every time you Ctrl+C a working AI loop too early
+> _"I'm in danger!"_ - Ralph Wiggum, every time you Ctrl+C a working AI loop too early
 
 [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/) demonstrated something remarkable: AI can deliver production-quality software through iterative refinement. One engineer reportedly delivered a $50,000 project for $297 using this technique.
 
 The core insight is simple:
+
 ```bash
 while :; do
   claude
@@ -148,20 +149,21 @@ Run the AI in a loop. Let it iterate. Watch it solve problems, fix bugs, and add
 
 **But Ralph has problems:**
 
-| Problem | What Happens | Why It Matters |
-|---------|--------------|----------------|
-| **One-time only** | Ralph shines for single big tasks | Doesn't scale to iterative development with many tasks |
-| **Overcooking** | Loop runs too long, AI adds features nobody asked for | You get bloated code and wasted tokens |
-| **Undercooking** | You Ctrl+C too early, work is incomplete | Features half-done, bugs half-fixed |
-| **Fragile state** | Markdown files (TASKS.md, PLANNING.md) as source of truth | LLMs can corrupt format; no strict schema |
-| **Vendor lock-in** | Ralph was built for Claude Code | Can't easily switch to Codex, Gemini, Pi, or others |
-| **No traceability** | Changes blend together | Hard to debug, impossible to time-travel |
+| Problem             | What Happens                                              | Why It Matters                                         |
+| ------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| **One-time only**   | Ralph shines for single big tasks                         | Doesn't scale to iterative development with many tasks |
+| **Overcooking**     | Loop runs too long, AI adds features nobody asked for     | You get bloated code and wasted tokens                 |
+| **Undercooking**    | You Ctrl+C too early, work is incomplete                  | Features half-done, bugs half-fixed                    |
+| **Fragile state**   | Markdown files (TASKS.md, PLANNING.md) as source of truth | LLMs can corrupt format; no strict schema              |
+| **Vendor lock-in**  | Ralph was built for Claude Code                           | Can't easily switch to Codex, Gemini, Pi, or others    |
+| **No traceability** | Changes blend together                                    | Hard to debug, impossible to time-travel               |
 
 ## juno-code: Ralph, But Better
 
-juno-code takes the Ralph insight—*AI works better in loops*—and adds the structure needed for real work:
+juno-code takes the Ralph insight—_AI works better in loops_—and adds the structure needed for real work:
 
 ### Iteration Control: No More Overcooking
+
 ```bash
 # Exactly 5 iterations - cooked perfectly
 juno-code -b shell -s claude -m :opus -i 5 -v
@@ -174,6 +176,7 @@ juno-code -b shell -s claude
 ```
 
 ### Task Tracking: Structured, Not Prose
+
 Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Hot current state uses safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use immutable NDJSON packs.
 
 Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `juno-kanban project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
@@ -186,6 +189,7 @@ Cross-project routing is disabled by default. Authorize it in `.juno_task/config
 The destination wrapper/runtime remains authoritative, and invalid routing never falls back to the source board. This implementation boundary matters because direct foreign-storage access could bypass destination controller, virtualenv, stdin, or write guards; real two-project tests prove exact target and stdin behavior.
 
 Normal local usage remains unchanged:
+
 ```bash
 # Query tasks programmatically - always parseable
 ./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
@@ -207,7 +211,9 @@ Cold archives never enter normal discovery. Owner-authorized maintenance uses a 
 ```
 
 ### Task Dependencies
+
 Declare what must be done first. The kanban system builds a dependency graph so agents work in the right order:
+
 ```bash
 # Create a task that depends on another
 ./.juno_task/scripts/kanban.sh create "Deploy API" --blocked-by A1b2C3
@@ -226,7 +232,9 @@ Declare what must be done first. The kanban system builds a dependency graph so 
 ```
 
 ### Backend Choice: Use Any AI
+
 Switch between Claude, Codex, Gemini, Pi, or Cursor with one flag:
+
 ```bash
 # Stuck on a bug? Try different models
 juno-code -b shell -s claude -m :opus -i 1 -v
@@ -236,7 +244,9 @@ juno-code -b shell -s pi -m :sonnet -i 1 -v
 ```
 
 ### Parallel Execution
+
 Run multiple tasks simultaneously with the parallel runner:
+
 ```bash
 # Run 3 kanban tasks in parallel
 ./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
@@ -252,6 +262,7 @@ Run multiple tasks simultaneously with the parallel runner:
 ```
 
 #### Tmux handoff for operator investigations
+
 Use tmux handoff when each item needs a stable pane for a human to inspect later. In `--tmux-handoff`, completed panes/windows are not reused; each task keeps its scrollback plus per-task JSON result containing the session ID and final response. If there are more tasks than the cap, `--max-panes-per-session N` splits the work into auditable child sessions and writes a manifest.
 
 ```bash
@@ -265,6 +276,7 @@ yy continue <session_id>
 Inspect `{{ out_dir }}/parallel` (or the printed parallel runner artifact path) for `parallel_runner_status.json`, per-task `*.json`, `aggregation_*.json`, and `tmux_handoff_manifest.json` when capped splitting is used. These artifacts matter because aggregation avoids reconstructing work from scratch, manifests make multi-session handoff auditable, and tests protect the no-reuse contract so handoff panes are not accidentally overwritten before `yy continue <session_id>`.
 
 ### Workflow Runner
+
 Use Workflow Runner when the work is not just one prompt, but a repeatable multi-step process: gather context, run one or more agents, validate output, summarize artifacts, and hand off the final session for follow-up. Workflows run from YAML or stdin with durable artifacts, so teams can turn ad-hoc operator playbooks into reviewed, repeatable automation instead of rebuilding context from terminal scrollback.
 
 ```bash
@@ -307,12 +319,15 @@ Some historical local `vX.Y.Z` tags in the development repository do not match t
 Controller checkpoints remain local orchestration durability only. They are not product inputs or integration gates. `controller_checkpoint.py plan --json` is read-only; configured commits remain bounded to explicit controller paths. Ordinary/workflow/parallel outer finalizers may checkpoint after terminal writes, but target integration never requires an unrelated controller checkout to become clean or idle.
 
 ### Full Traceability: Every Change Tracked
+
 - Every task links to a git commit
 - Jump to any point in development history
 - High token efficiency—AI can search git history instead of re-reading everything
 
 ### Hooks Without Lock-in
+
 Run scripts at any lifecycle point. Works with ANY backend, not just Claude:
+
 ```json
 {
   "hooks": {
@@ -323,14 +338,18 @@ Run scripts at any lifecycle point. Works with ANY backend, not just Claude:
 ```
 
 ### Human-Readable Logs
+
 `-v` gives you structured output instead of raw JSON dumps:
+
 ```bash
 juno-code -b shell -s claude -i 5 -v
 # Clean, readable progress instead of wall of JSON
 ```
 
 ### Quota Limit Handling
+
 Auto-wait when you hit API rate limits instead of failing:
+
 ```bash
 # Wait automatically when hitting hourly limits
 juno-code -b shell -s claude -i 10 --on-hourly-limit wait
@@ -387,10 +406,10 @@ You do not need to create temp files yourself. When file transport is required, 
 
 Examples:
 
-```bash
+````bash
 juno-code claude -i 3 -p "Summarize git status: !'git status --short'"
 juno-code claude -i 2 -p "Recent commits:\n!```git log -n 5 --oneline```"
-```
+````
 
 This avoids relying on your shell’s one-time backtick expansion and keeps command output fresh across retries/iterations.
 
@@ -436,24 +455,24 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 
 ### Global Options
 
-| Flag | Description |
-|------|-------------|
-| `-b, --backend <type>` | Backend: `shell` |
-| `-s, --subagent <name>` | Service: `claude`, `codex`, `gemini`, `pi`, `cursor` |
-| `-m, --model <name>` | Model (supports shorthands like `:opus`, `:haiku`) |
-| `-i, --max-iterations <n>` | Iteration limit (-1 for unlimited) |
-| `-p, --prompt <text>` | Prompt text (if omitted with `start`, uses prompt.md) |
-| `-f, --prompt-file <path>` | Read prompt from a file instead of `-p` |
-| `-v, --verbose` | Human-readable verbose output |
-| `-r, --resume <id>` | Resume specific session |
-| `--continue` | Continue most recent session |
-| `--clone [prompt]` | Pi-only: fork a clone from `--resume <id>` or the current shell continue scope |
-| `--live` | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
-| `--no-hooks`, `--no-hook` | Skip lifecycle hooks (equivalent spellings) |
-| `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit) |
-| `--force-update` | Force reinstall all scripts and services |
-| `--til-completion` | Loop until all kanban tasks are done |
-| `--pre-run-hook <name>` | Execute named hooks before loop |
+| Flag                         | Description                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `-b, --backend <type>`       | Backend: `shell`                                                                 |
+| `-s, --subagent <name>`      | Service: `claude`, `codex`, `gemini`, `pi`, `cursor`                             |
+| `-m, --model <name>`         | Model (supports shorthands like `:opus`, `:haiku`)                               |
+| `-i, --max-iterations <n>`   | Iteration limit (-1 for unlimited)                                               |
+| `-p, --prompt <text>`        | Prompt text (if omitted with `start`, uses prompt.md)                            |
+| `-f, --prompt-file <path>`   | Read prompt from a file instead of `-p`                                          |
+| `-v, --verbose`              | Human-readable verbose output                                                    |
+| `-r, --resume <id>`          | Resume specific session                                                          |
+| `--continue`                 | Continue most recent session                                                     |
+| `--clone [prompt]`           | Pi-only: fork a clone from `--resume <id>` or the current shell continue scope   |
+| `--live`                     | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
+| `--no-hooks`, `--no-hook`    | Skip lifecycle hooks (equivalent spellings)                                      |
+| `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit)                      |
+| `--force-update`             | Force reinstall all scripts and services                                         |
+| `--til-completion`           | Loop until all kanban tasks are done                                             |
+| `--pre-run-hook <name>`      | Execute named hooks before loop                                                  |
 
 ### Session Management
 
@@ -478,6 +497,7 @@ Each `juno-code` run also appends execution history to `session_history.json` un
 Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
 
 CLI run summaries also surface these fields live in the terminal:
+
 - `Statistics -> Total Cost`
 - `Statistics -> Completed At`
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
@@ -486,6 +506,7 @@ CLI run summaries also surface these fields live in the terminal:
 For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten during normal continuity operation.
 
 Legacy continuity cleanup is explicit and reversible:
+
 ```bash
 juno-code continuity doctor --json
 juno-code continuity clean                         # dry-run inventory only
@@ -495,6 +516,7 @@ juno-code continuity rollback <receipt-path>
 juno-code continuity pin [SCOPE_0123456789ABCDEF]
 juno-code continuity unpin [SCOPE_0123456789ABCDEF]
 ```
+
 Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `JUNO_CODE_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
 
 Expiration removes only automatic lookup metadata. A missing Pi session fails without deleting its continuity record or trying another scope, and the error directs the operator to an explicit `--resume <session-id>` or a new run. Deterministic clock/TTL/LRU/live/pin/named/concurrency/missing-session tests plus the persisted 2,500-scope structural regression matter because prose or cleanup commands cannot enforce the hard bound, prove lost-update safety, or prove that explicit recovery remains available without cross-scope routing.
@@ -504,6 +526,7 @@ Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE
 Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Concurrency, malformed-document, stale-lock, routing, and deterministic 2,500-pair boundary tests matter because only the locked backing service prevents lost updates, while routing tests prove no caller silently restores the retired env/branch stores.
 
 Script endpoint for hash/status lookups:
+
 ```bash
 juno-code continue-scope --json                    # current scope hash + status
 juno-code continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
@@ -541,6 +564,7 @@ juno-code clone --from C --name M 'Explore M'
 ```
 
 Named branch behavior:
+
 - `juno-code branches` shows named branches for the current shell/pane and marks the active branch.
 - `juno-code switch C` makes `C` active for future `juno-code continue` / `yy cc` in that shell; `juno-code switch +` and `juno-code switch -` cycle to the next/previous listed branch with wraparound; `juno-code switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
 - `juno-code clone 'prompt'` auto-assigns the first available generated branch name (`b1`, `b2`, ...) when a branch registry exists for the current shell, clones from `main`, runs the prompt immediately, and does **not** switch the active branch.
@@ -551,6 +575,7 @@ Named branch behavior:
 - A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.
 
 Explicit session-id resume/clone behavior:
+
 - `juno-code pi --resume <session-id> 'prompt'` or `ypl --resume <session-id> 'prompt'` resumes that exact Pi session. Because `ypl` expands to `yy pi --live`, do **not** run `ypl clone C ...`; `clone C` would be treated as prompt text.
 - `juno-code --resume <session-id> --clone 'prompt'` forks the explicit session id as a non-named clone.
 - `juno-code clone C --resume <session-id> 'prompt'` is not the named-branch syntax; named clones source from the branch registry (`main` by default, or `--from C`). Use `juno-code --resume <session-id> --clone 'prompt'` for an explicit session id, or initialize/register `main` first and then use `juno-code clone C 'prompt'`.
@@ -587,11 +612,11 @@ juno-code skills status
 
 **Skill groups by agent:**
 
-| Agent | Directory | Skills |
-|-------|-----------|--------|
+| Agent  | Directory         | Skills                                                                     |
+| ------ | ----------------- | -------------------------------------------------------------------------- |
 | Claude | `.claude/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-| Codex | `.agents/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-| Pi | `.pi/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
+| Codex  | `.agents/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
+| Pi     | `.pi/skills/`     | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
 
 ### Service Management
 
@@ -622,22 +647,22 @@ This command translates Codex CLI credentials to Pi's `auth.json` format (`type:
 
 ### Supported Services
 
-| Service | Default Model | Shorthands |
-|---------|---------------|------------|
-| claude | `claude-sonnet-4-6` | `:haiku`, `:sonnet`, `:opus` |
-| codex | `gpt-5.3-codex` | `:codex`, `:codex-mini`, `:gpt-5`, `:mini` |
-| gemini | `gemini-2.5-pro` | `:pro`, `:flash`, `:pro-3`, `:flash-3` |
-| pi | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
+| Service | Default Model                 | Shorthands                                                                                                                                                  |
+| ------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| claude  | `claude-sonnet-4-6`           | `:haiku`, `:sonnet`, `:opus`                                                                                                                                |
+| codex   | `gpt-5.3-codex`               | `:codex`, `:codex-mini`, `:gpt-5`, `:mini`                                                                                                                  |
+| gemini  | `gemini-2.5-pro`              | `:pro`, `:flash`, `:pro-3`, `:flash-3`                                                                                                                      |
+| pi      | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
 
 Pi's Codex-provider shortcuts include:
 
-| Shortcut | Resolved Pi model |
-|----------|-------------------|
-| `:luna` | `openai-codex/gpt-5.6-luna` |
-| `:sol` | `openai-codex/gpt-5.6-sol` |
-| `:gpt` | `:sol` → `openai-codex/gpt-5.6-sol` |
-| `:gpt5.5` | `openai-codex/gpt-5.5` |
-| `:mini` | `openai-codex/gpt-5.6-terra` |
+| Shortcut  | Resolved Pi model                   |
+| --------- | ----------------------------------- |
+| `:luna`   | `openai-codex/gpt-5.6-luna`         |
+| `:sol`    | `openai-codex/gpt-5.6-sol`          |
+| `:gpt`    | `:sol` → `openai-codex/gpt-5.6-sol` |
+| `:gpt5.5` | `openai-codex/gpt-5.5`              |
+| `:mini`   | `openai-codex/gpt-5.6-terra`        |
 
 These aliases are subagent-specific: Pi's `:mini` selects Terra, while the Codex service keeps its existing `:mini` mapping.
 
@@ -660,6 +685,7 @@ juno-code pi -m :gpt --thinking max -p 'Analyze and implement this task' -i 1
 ```
 
 Notes:
+
 - Pi accepts `--thinking off|minimal|low|medium|high|xhigh|max`; use `max` for GPT-5.6 models when maximum supported reasoning effort is desired. `PI_THINKING=max` provides the equivalent environment default.
 - `--live` is validated as **Pi-only** (`juno-code pi ...`).
 - `--live` requires extensions enabled (`--no-extensions` is incompatible).
@@ -676,19 +702,21 @@ Service scripts live in `~/.juno_code/services/`. Each is a Python script that a
 
 Hooks allow user-defined shell commands at execution lifecycle points. Configure in `.juno_task/config.json`:
 
-| Hook | When | Example Use |
-|------|------|-------------|
-| `START_RUN` | Before all iterations | Environment setup |
-| `START_ITERATION` | Each iteration start | File size monitoring, linting |
-| `END_ITERATION` | Each iteration end | Test execution |
-| `END_RUN` | After all iterations | Cleanup, reports |
-| `ON_STALE` | Stale iteration detected | Alert, auto-create task |
+| Hook              | When                     | Example Use                   |
+| ----------------- | ------------------------ | ----------------------------- |
+| `START_RUN`       | Before all iterations    | Environment setup             |
+| `START_ITERATION` | Each iteration start     | File size monitoring, linting |
+| `END_ITERATION`   | Each iteration end       | Test execution                |
+| `END_RUN`         | After all iterations     | Cleanup, reports              |
+| `ON_STALE`        | Stale iteration detected | Alert, auto-create task       |
 
 **Default hooks** (set up by `juno-code init`):
+
 - `START_ITERATION`: CLAUDE.md / AGENTS.md file size checks, feedback cleanup
 - `ON_STALE`: Creates a kanban warning task when no progress detected
 
 Example config:
+
 ```json
 {
   "hooks": {
@@ -709,15 +737,15 @@ Example config:
 
 Use these runners as the core automation layer around `juno-code`:
 
-| Need | Use |
-|------|-----|
-| One AI loop over project/kanban context | `juno-code start` or `juno-code -p ...` |
-| Keep looping until kanban is done | `run_until_completion.sh` |
-| Many independent kanban tasks | `parallel_runner.sh --kanban ...` or `--kanban-filter ...` |
-| Many complete shell commands or workflow files | `parallel_runner.sh --commands-file ...` |
-| Ordered multi-step operator/team process | `workflow_runner.sh --workflow ...` |
-| Human inspection after parallel work | `parallel_runner.sh --tmux-handoff ...` |
-| Continue the final workflow agent session | workflow handoff + `yy cc` |
+| Need                                           | Use                                                        |
+| ---------------------------------------------- | ---------------------------------------------------------- |
+| One AI loop over project/kanban context        | `juno-code start` or `juno-code -p ...`                    |
+| Keep looping until kanban is done              | `run_until_completion.sh`                                  |
+| Many independent kanban tasks                  | `parallel_runner.sh --kanban ...` or `--kanban-filter ...` |
+| Many complete shell commands or workflow files | `parallel_runner.sh --commands-file ...`                   |
+| Ordered multi-step operator/team process       | `workflow_runner.sh --workflow ...`                        |
+| Human inspection after parallel work           | `parallel_runner.sh --tmux-handoff ...`                    |
+| Continue the final workflow agent session      | workflow handoff + `yy cc`                                 |
 
 The runner tests exercise real subprocess boundaries because this is where production failures usually hide: command rendering, stdout/stderr handling, artifact capture, session IDs, and continue handoff all need to work outside an in-process unit-test harness.
 
@@ -764,6 +792,7 @@ Execute commands or named hooks before the main loop:
 ```
 
 **Execution order** when both hooks and commands are specified:
+
 1. Hooks from `JUNO_PRE_RUN_HOOK` env var
 2. Hooks from `--pre-run-hook` flags (in order)
 3. Commands from `JUNO_PRE_RUN` env var
@@ -776,22 +805,22 @@ Orchestrate N concurrent juno-code processes with queue management, structured o
 
 #### Input Modes
 
-| Input | Description |
-|-------|-------------|
-| `--kanban T1,T2,T3` | Kanban task IDs |
-| `--kanban-filter '--tag X --status Y'` | Query kanban, auto-extract IDs |
-| `--kanban-filter 'ready'` | Dependency-aware: only unblocked tasks |
-| `--items "a,b,c"` | Generic item list |
-| `--items-file data.csv` | File input (JSONL, CSV, TSV, XLSX) |
-| `--commands-file workflows.yaml` | Raw command YAML mode: fan out complete commands or workflow files |
+| Input                                  | Description                                                        |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `--kanban T1,T2,T3`                    | Kanban task IDs                                                    |
+| `--kanban-filter '--tag X --status Y'` | Query kanban, auto-extract IDs                                     |
+| `--kanban-filter 'ready'`              | Dependency-aware: only unblocked tasks                             |
+| `--items "a,b,c"`                      | Generic item list                                                  |
+| `--items-file data.csv`                | File input (JSONL, CSV, TSV, XLSX)                                 |
+| `--commands-file workflows.yaml`       | Raw command YAML mode: fan out complete commands or workflow files |
 
 #### Execution Modes
 
-| Mode | Flag | Description |
-|------|------|-------------|
-| Headless | (default) | ThreadPoolExecutor, output to log files |
-| Tmux Windows | `--tmux` | Each worker = tmux window |
-| Tmux Panes | `--tmux panes` | Workers as split panes |
+| Mode         | Flag           | Description                             |
+| ------------ | -------------- | --------------------------------------- |
+| Headless     | (default)      | ThreadPoolExecutor, output to log files |
+| Tmux Windows | `--tmux`       | Each worker = tmux window               |
+| Tmux Panes   | `--tmux panes` | Workers as split panes                  |
 
 ```bash
 # Headless parallel execution
@@ -886,6 +915,7 @@ juno-code includes built-in Slack integration for team collaboration. The system
    - Copy the "Bot User OAuth Token" (starts with `xoxb-`)
 
 2. **Configure Environment**:
+
    ```bash
    # In project root .env file
    SLACK_BOT_TOKEN=xoxb-your-token-here
@@ -893,6 +923,7 @@ juno-code includes built-in Slack integration for team collaboration. The system
    ```
 
 3. **Usage**:
+
    ```bash
    # Fetch messages from Slack and create tasks
    ./.juno_task/scripts/slack_fetch.sh --channel bug-reports
@@ -957,6 +988,7 @@ juno-code includes built-in GitHub integration for issue tracking and automated 
    - Copy the token (starts with `ghp_`)
 
 2. **Configure Environment**:
+
    ```bash
    # In project root .env file
    GITHUB_TOKEN=ghp_your_token_here
@@ -965,6 +997,7 @@ juno-code includes built-in GitHub integration for issue tracking and automated 
    ```
 
 3. **Usage**:
+
    ```bash
    # Fetch issues from GitHub and create tasks
    ./.juno_task/scripts/github.py fetch --repo owner/repo
@@ -1012,6 +1045,7 @@ Proactive error detection that scans log files and auto-creates kanban bug repor
 Detects Python errors (Traceback, ValueError, TypeError), Node.js errors (UnhandledPromiseRejection, ECONNREFUSED), and general patterns (FATAL, CRITICAL, PANIC, OOM). Uses ripgrep for high-performance scanning with grep fallback.
 
 Use as a pre-run hook so the agent finds and fixes errors automatically:
+
 ```json
 {
   "hooks": {
@@ -1055,6 +1089,7 @@ The kanban.sh script wraps juno-kanban. Here are the actual commands:
 **Status lifecycle**: `backlog → todo → in_progress → done → archive`
 
 **Body markup** (auto-parsed on create):
+
 - `[task_id]ID1, ID2[/task_id]` → `related_tasks`
 - `[blocked_by]ID1, ID2[/blocked_by]` → `blocked_by` (synonyms: `block_by`, `block`, `parent_task`)
 
@@ -1125,6 +1160,7 @@ Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros
 ```
 
 Notes:
+
 - `local` overrides `global` on key collisions.
 - `maxDepth` defaults to `10` and must be a positive integer.
 - `order` supports `before_command_substitution` (default) or `after_command_substitution`.
@@ -1175,6 +1211,7 @@ Example config:
 ```
 
 Notes:
+
 - `envFilePath`: env file to load (relative to project root or absolute path)
 - `envFileCopied`: tracks one-time initialization from `.env.juno` to custom env path
 - Load order: `.env.juno` first, then `envFilePath` (custom file overrides defaults)
@@ -1314,31 +1351,33 @@ juno-code -b shell -s pi -m :sonnet -p "Same investigation" -i 3
 
 ## Comparison: Ralph vs juno-code
 
-| Feature | Ralph | juno-code |
-|---------|-------|-----------|
-| **Design Focus** | One-time tasks (migrations, rewrites) | Iterative development (scales to 1000s of tasks) |
-| **Core Loop** | `while :; do claude; done` | Controlled iterations |
-| **Stopping** | Ctrl+C (guesswork) | `-i N` or "until tasks done" |
-| **Source of Truth** | Markdown files (TASKS.md, PLANNING.md) | Structured kanban over bash |
-| **Format Integrity** | Relies on LLM instruction-following | Strict NDJSON, always parseable |
-| **Multiple AIs** | Claude only | Claude, Codex, Gemini, Pi, Cursor |
-| **Dependencies** | None | blocked_by, ready, topological sort |
-| **Parallelism** | None | parallel_runner with N workers |
-| **Traceability** | None | Every task → git commit |
-| **Integrations** | None | Slack, GitHub Issues |
-| **Hooks** | Claude-specific | Works with any backend |
-| **Error Detection** | None | Log scanner with auto bug reports |
-| **Verbose** | Raw JSON | Human-readable + jq-friendly |
-| **Feedback** | None | Real-time during execution |
+| Feature              | Ralph                                  | juno-code                                        |
+| -------------------- | -------------------------------------- | ------------------------------------------------ |
+| **Design Focus**     | One-time tasks (migrations, rewrites)  | Iterative development (scales to 1000s of tasks) |
+| **Core Loop**        | `while :; do claude; done`             | Controlled iterations                            |
+| **Stopping**         | Ctrl+C (guesswork)                     | `-i N` or "until tasks done"                     |
+| **Source of Truth**  | Markdown files (TASKS.md, PLANNING.md) | Structured kanban over bash                      |
+| **Format Integrity** | Relies on LLM instruction-following    | Strict NDJSON, always parseable                  |
+| **Multiple AIs**     | Claude only                            | Claude, Codex, Gemini, Pi, Cursor                |
+| **Dependencies**     | None                                   | blocked_by, ready, topological sort              |
+| **Parallelism**      | None                                   | parallel_runner with N workers                   |
+| **Traceability**     | None                                   | Every task → git commit                          |
+| **Integrations**     | None                                   | Slack, GitHub Issues                             |
+| **Hooks**            | Claude-specific                        | Works with any backend                           |
+| **Error Detection**  | None                                   | Log scanner with auto bug reports                |
+| **Verbose**          | Raw JSON                               | Human-readable + jq-friendly                     |
+| **Feedback**         | None                                   | Real-time during execution                       |
 
 ## Troubleshooting
 
 ### Service scripts not updating
+
 ```bash
 juno-code services install --force
 ```
 
 ### Model passthrough issues
+
 ```bash
 # Verify with verbose
 juno-code -v -b shell -s codex -m :codex -p "test"
@@ -1346,17 +1385,20 @@ juno-code -v -b shell -s codex -m :codex -p "test"
 ```
 
 ### Kanban not finding tasks
+
 ```bash
 ./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
 ```
 
 ### Skills not appearing
+
 ```bash
 juno-code skills list
 juno-code skills install --force
 ```
 
 ### Python environment issues
+
 ```bash
 # Force reinstall Python dependencies
 ./.juno_task/scripts/install_requirements.sh --force-update
@@ -1408,6 +1450,7 @@ juno-code start -b shell -s claude -i 5 -v
 ```
 
 **Links:**
+
 - [npm package](https://www.npmjs.com/package/juno-code)
 - [GitHub repository](https://github.com/askbudi/juno-code)
 - [Report issues](https://github.com/askbudi/juno-code/issues)

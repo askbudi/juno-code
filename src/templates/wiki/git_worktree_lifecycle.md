@@ -1,12 +1,12 @@
 ---
 wiki_contract:
   line_limit: 250
-  purpose: "One task-derived root/direct-child implementation, review, CAS, verification, controller-closure, and cleanup lifecycle."
-  failure_mode_prevented: "User-authored choreography, stale refs, wrong checkout review, fictional PASS, repeated child CAS, and unsafe cleanup."
-  runtime_contract_enforced: "yy lifecycle owns the immutable plan and every task-level transition; low-level helpers are not public UX."
-  validation_gate: "python3 .juno_task/scripts/tests/test_task_lifecycle.py"
+  purpose: 'One task-derived root/direct-child implementation, review, CAS, verification, controller-closure, and cleanup lifecycle.'
+  failure_mode_prevented: 'User-authored choreography, stale refs, wrong checkout review, fictional PASS, repeated child CAS, and unsafe cleanup.'
+  runtime_contract_enforced: 'yy lifecycle owns the immutable plan and every task-level transition; low-level helpers are not public UX.'
+  validation_gate: 'python3 .juno_task/scripts/tests/test_task_lifecycle.py'
   related_sots:
-    - "parallel_runner_and_spec_review.md"
+    - 'parallel_runner_and_spec_review.md'
 ---
 
 # Task-derived root/direct-child lifecycle
@@ -28,20 +28,37 @@ Project policy lives at `.juno_task/config/lifecycle.json`:
   "schema_version": "juno_task_lifecycle_config.v2",
   "default_topology": "root-only",
   "repositories": {
-    "root": {"path": ".", "target_ref": "refs/heads/main", "parent": null, "expected_paths": ["src"]},
-    "child": {"path": "child", "target_ref": "refs/heads/main", "parent": "root", "mount_path": "child", "expected_paths": ["src"]}
+    "root": {
+      "path": ".",
+      "target_ref": "refs/heads/main",
+      "parent": null,
+      "expected_paths": ["src"]
+    },
+    "child": {
+      "path": "child",
+      "target_ref": "refs/heads/main",
+      "parent": "root",
+      "mount_path": "child",
+      "expected_paths": ["src"]
+    }
   },
   "topologies": {
-    "root-only": {"root": "root", "children": []},
-    "root-child": {"root": "root", "children": ["child"]}
+    "root-only": { "root": "root", "children": [] },
+    "root-child": { "root": "root", "children": ["child"] }
   },
-  "candidate_gate": {"rows": [{"id": "full-suite", "command": "npm test"}]}
+  "candidate_gate": { "rows": [{ "id": "full-suite", "command": "npm test" }] }
 }
 ```
 
 The repository registry owns identities, full target refs, parent edges, mount paths, default path authority, objective risk, and candidate-gate rows. Task fields may select topology and exact existing/future paths; they cannot replace repository identities or refs. One root plus any number of direct children is supported. Duplicate identities, unknown children, a parent above the selected root, or a child of a child fails before the first worktree mutation.
 
-## Canonical sparse controller
+## Controller topology during the Bolt migration
+
+The replacement controller boundary is metadata-only and uses an unrelated root commit; see [`metadata_controller_boundary.md`](metadata_controller_boundary.md). It contains Kanban/task state and compact receipts, while product code and tracked runtime copies are absent. Its runtime comes from an exact installed release as ignored local state. Controller commits never merge or synchronize into a product target. Cutover remains plan-first and separately authorized, so the previous sparse controller stays read-only for exact rollback until acceptance.
+
+The lifecycle below documents the currently executable sparse-controller path until the Bolt task/worktree and merge-queue commands pass their hard-cut canaries. New code must not extend controller-sync or make it a dependency of the replacement path.
+
+## Legacy sparse controller
 
 The canonical controller is a fresh same-repository linked worktree governed by `.juno_task/config/controller-workspace.json`. Its versioned ownership manifest classifies every tracked path as controller canonical, shared managed distribution, product canonical, or local ignored. Normalization rejects overlap, unsafe paths, symlinks, nested repositories, and unclassified tracked bytes. Canonical checkout is non-cone, worktree-scoped, and uses `index.sparse=false`; its normalized selected paths and exact patterns are digest-bound. Required controller/shared paths must be present while product and unexpected tracked paths are unmaterialized.
 

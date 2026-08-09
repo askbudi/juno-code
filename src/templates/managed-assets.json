@@ -2,6 +2,18 @@
   "schemaVersion": 1,
   "assets": [
     {
+      "source": "config/metadata-controller.json",
+      "destination": ".juno_task/config/metadata-controller.json",
+      "installClass": "project",
+      "type": "config"
+    },
+    {
+      "source": "wiki/metadata_controller_boundary.md",
+      "destination": ".juno_task/wiki/metadata_controller_boundary.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
       "source": "config/controller-workspace.json",
       "destination": ".juno_task/config/controller-workspace.json",
       "installClass": "project",
@@ -76,6 +88,18 @@
     {
       "source": "scripts/wiki_lint.py",
       "destination": ".juno_task/scripts/wiki_lint.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/metadata_controller.py",
+      "destination": ".juno_task/scripts/metadata_controller.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_metadata_controller.py",
+      "destination": ".juno_task/scripts/tests/test_metadata_controller.py",
       "installClass": "script",
       "type": "script"
     },

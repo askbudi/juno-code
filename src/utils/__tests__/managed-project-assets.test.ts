@@ -81,18 +81,34 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
-    expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('a merely compatible but older installed v2 is stale');
+    expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain(
+      'a merely compatible but older installed v2 is stale',
+    );
     const reviewPrompt = await fs.readFile(
       path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'),
       'utf8',
     );
+    const metadataPolicy = await fs.readJson(
+      path.join(projectDir, '.juno_task/config/metadata-controller.json'),
+    );
+    expect(metadataPolicy.schema_version).toBe('juno_metadata_controller_policy.v1');
+    expect(metadataPolicy.product_forbidden).toContain('.juno_task/tasks');
+    expect(
+      await fs.readFile(
+        path.join(projectDir, '.juno_task/wiki/metadata_controller_boundary.md'),
+        'utf8',
+      ),
+    ).toContain('Controller commits never merge or synchronize into a product target');
     expect(reviewPrompt).toContain('Never use bare `pi`');
     expect(reviewPrompt).toContain('Review only');
     expect(reviewPrompt).toContain('do not edit, commit, update Kanban, launch another reviewer');
     expect(reviewPrompt).toContain('JUNO_REVIEW_VERDICT: PASS');
     expect(reviewPrompt).not.toContain('then resolve it');
     expect(
-      await fs.readFile(path.join(projectDir, '.juno_task/wiki/parallel_runner_and_spec_review.md'), 'utf8'),
+      await fs.readFile(
+        path.join(projectDir, '.juno_task/wiki/parallel_runner_and_spec_review.md'),
+        'utf8',
+      ),
     ).toContain('Reviewer launcher identity');
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
@@ -142,10 +158,17 @@ describe('ManagedProjectAssets', () => {
     ] as const;
     for (const [agent, relativePath] of distributedSkills) {
       const canonical = await fs.readFile(
-        path.join(process.cwd(), 'src/templates/skills', agent, 'ralph-loop/references/implement.md'),
+        path.join(
+          process.cwd(),
+          'src/templates/skills',
+          agent,
+          'ralph-loop/references/implement.md',
+        ),
         'utf8',
       );
-      expect(await fs.readFile(path.resolve(process.cwd(), '..', relativePath), 'utf8')).toBe(canonical);
+      expect(await fs.readFile(path.resolve(process.cwd(), '..', relativePath), 'utf8')).toBe(
+        canonical,
+      );
       expect(await fs.readFile(path.resolve(process.cwd(), relativePath), 'utf8')).toBe(canonical);
     }
 
@@ -153,72 +176,81 @@ describe('ManagedProjectAssets', () => {
     expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
   });
 
-  it(
-    'installs an operationally closed managed wiki generation',
-    async () => {
-      const templatesDir = ManagedProjectAssets.getTemplatesDirectory();
-      expect(templatesDir).not.toBeNull();
-      const definitions = (await fs.readJson(path.join(templatesDir!, 'managed-assets.json')))
-        .assets as Array<{
-        source: string;
-        destination: string;
-        installClass: 'project' | 'script';
-        type: string;
-      }>;
+  it('installs an operationally closed managed wiki generation', async () => {
+    const templatesDir = ManagedProjectAssets.getTemplatesDirectory();
+    expect(templatesDir).not.toBeNull();
+    const definitions = (await fs.readJson(path.join(templatesDir!, 'managed-assets.json')))
+      .assets as Array<{
+      source: string;
+      destination: string;
+      installClass: 'project' | 'script';
+      type: string;
+    }>;
 
-      await ManagedProjectAssets.update(projectDir, { silent: true });
-      await ScriptInstaller.autoUpdate(projectDir, true);
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    await ScriptInstaller.autoUpdate(projectDir, true);
 
-      const taskWorkflowHelper = await fs.readFile(
-        path.join(projectDir, '.juno_task/scripts/task_workflow_helper.py'),
-        'utf8',
-      );
-      expect(taskWorkflowHelper).toContain(
-        'role review must not declare edit_capable true or edit_admission',
-      );
-      expect(taskWorkflowHelper).not.toContain('review_fix');
+    const taskWorkflowHelper = await fs.readFile(
+      path.join(projectDir, '.juno_task/scripts/task_workflow_helper.py'),
+      'utf8',
+    );
+    expect(taskWorkflowHelper).toContain(
+      'role review must not declare edit_capable true or edit_admission',
+    );
+    expect(taskWorkflowHelper).not.toContain('review_fix');
 
-      const managedWikis = definitions.filter((asset) => asset.type === 'wiki');
-      const relativeLink = /\[[^\]]+\]\((?![a-z]+:|#)([^)#]+)(?:#[^)]*)?\)/gi;
-      for (const wiki of managedWikis) {
-        const wikiPath = path.join(projectDir, wiki.destination);
-        const content = await fs.readFile(wikiPath, 'utf8');
-        for (const match of content.matchAll(relativeLink)) {
-          expect(
-            await fs.pathExists(path.resolve(path.dirname(wikiPath), match[1])),
-            `${wiki.destination} has an unresolved installed link: ${match[1]}`,
-          ).toBe(true);
-        }
+    const managedWikis = definitions.filter((asset) => asset.type === 'wiki');
+    const relativeLink = /\[[^\]]+\]\((?![a-z]+:|#)([^)#]+)(?:#[^)]*)?\)/gi;
+    for (const wiki of managedWikis) {
+      const wikiPath = path.join(projectDir, wiki.destination);
+      const content = await fs.readFile(wikiPath, 'utf8');
+      for (const match of content.matchAll(relativeLink)) {
+        expect(
+          await fs.pathExists(path.resolve(path.dirname(wikiPath), match[1])),
+          `${wiki.destination} has an unresolved installed link: ${match[1]}`,
+        ).toBe(true);
       }
+    }
 
-      for (const requiredPath of [
-        '.juno_task/scripts/wiki_lint.sh',
-        '.juno_task/scripts/wiki_lint.py',
-        '.juno_task/scripts/tests/test_integration_concurrency.py',
-        '.juno_task/scripts/managed_agent_runner.py',
-        '.juno_task/scripts/tests/test_managed_agent_runner.py',
-        '.juno_task/wiki/runtime_migration_and_replacement_contract.md',
-      ]) {
-        expect(await fs.pathExists(path.join(projectDir, requiredPath)), requiredPath).toBe(true);
-      }
+    for (const requiredPath of [
+      '.juno_task/scripts/wiki_lint.sh',
+      '.juno_task/scripts/wiki_lint.py',
+      '.juno_task/scripts/tests/test_integration_concurrency.py',
+      '.juno_task/scripts/managed_agent_runner.py',
+      '.juno_task/scripts/tests/test_managed_agent_runner.py',
+      '.juno_task/scripts/metadata_controller.py',
+      '.juno_task/scripts/tests/test_metadata_controller.py',
+      '.juno_task/config/metadata-controller.json',
+      '.juno_task/wiki/metadata_controller_boundary.md',
+      '.juno_task/wiki/runtime_migration_and_replacement_contract.md',
+    ]) {
+      expect(await fs.pathExists(path.join(projectDir, requiredPath)), requiredPath).toBe(true);
+    }
 
-      for (const command of [
-        './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md',
-        './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md',
-        // Keep the fast suite bounded: this proves the installed lifecycle modules load;
-        // the exact installed concurrency gate is exercised by the package acceptance loop.
-        'python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py',
-      ]) {
-        const result = spawnSync('/bin/bash', ['-c', command], {
-          cwd: projectDir,
-          encoding: 'utf8',
-          timeout: 30_000,
-        });
-        expect(result.status, `${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
-      }
-    },
-    60_000,
-  );
+    for (const command of [
+      './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md',
+      './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md',
+      // Keep the fast suite bounded: this proves the installed lifecycle modules load;
+      // the exact installed concurrency gate is exercised by the package acceptance loop.
+      'python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py',
+      'python3 .juno_task/scripts/tests/test_metadata_controller.py',
+    ]) {
+      const result = spawnSync('/bin/bash', ['-c', command], {
+        cwd: projectDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PYTHONDONTWRITEBYTECODE: '1',
+          PYTHONPYCACHEPREFIX: '/tmp/juno-managed-assets-pycache',
+        },
+        timeout: 30_000,
+      });
+      expect(
+        result.status,
+        `${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      ).toBe(0);
+    }
+  }, 60_000);
 
   it('detects a mixed lifecycle generation without changing project files', async () => {
     await ManagedProjectAssets.update(projectDir, { silent: true });
@@ -254,7 +286,9 @@ describe('ManagedProjectAssets', () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(result.updated).toContain(destination);
     expect(result.installed).toContain('.juno_task/prompts/new_task_workflow.md');
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Run a workflow or task lifecycle');
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain(
+      '# Run a workflow or task lifecycle',
+    );
   });
 
   it('preserves customized prompts and writes a package-version candidate', async () => {
@@ -283,9 +317,7 @@ describe('ManagedProjectAssets', () => {
     const backup = result.backups.find((entry) => entry.destination === destination);
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup), 'utf8')).toBe(customized);
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain(
-      '# Clean task lifecycle',
-    );
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Clean task lifecycle');
   });
 
   it('preserves a conflicting macro unless force is explicit', async () => {

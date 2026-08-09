@@ -1,0 +1,54 @@
+{
+  "schema_version": "juno_metadata_controller_policy.v1",
+  "controller_branch": "refs/heads/juno/controller-metadata-v1",
+  "product_ref": "refs/heads/juno-mono-002",
+  "spec_copy_mode": "top_level_files_only",
+  "copied_metadata": [
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/specs",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md"
+  ],
+  "generated_metadata": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/config/controller.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/lifecycle.json",
+    ".juno_task/state/queue.json"
+  ],
+  "product_forbidden": [
+    ".juno_task/artifacts",
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/logs",
+    ".juno_task/receipts",
+    ".juno_task/specs",
+    ".juno_task/state",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md",
+    ".juno_task/workflows"
+  ],
+  "tracked_roots": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/config",
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/receipts",
+    ".juno_task/specs",
+    ".juno_task/state",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md"
+  ],
+  "runtime": {
+    "package": "juno-code",
+    "identity_file": ".juno_task/runtime/identity.json",
+    "ignored_roots": [
+      ".juno_task/runtime",
+      ".venv_juno",
+      ".env.juno"
+    ]
+  }
+}

@@ -28,9 +28,14 @@ describe('ScriptInstaller', () => {
       path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
       path.join(scripts, 'controller_resolver.py'),
     );
-    const python = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    const python = spawnSync('sh', ['-c', 'command -v python3'], {
+      encoding: 'utf8',
+    }).stdout.trim();
     await fs.symlink(python, path.join(bin, 'python'));
-    spawnSync('git', ['init', '-b', 'fixture-controller'], { cwd: fixtureController, encoding: 'utf8' });
+    spawnSync('git', ['init', '-b', 'fixture-controller'], {
+      cwd: fixtureController,
+      encoding: 'utf8',
+    });
   });
 
   afterEach(async () => {
@@ -205,6 +210,10 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'wiki_lint.py'),
         '#!/usr/bin/env python3\nprint("wiki lint")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'metadata_controller.py'),
+        '#!/usr/bin/env python3\nprint("metadata controller")',
+      );
       await fs.writeFile(path.join(scriptsDir, 'wiki_lint.sh'), '#!/bin/bash\necho "wiki lint"');
       await fs.ensureDir(path.join(scriptsDir, 'tests'));
       await fs.writeFile(
@@ -220,6 +229,7 @@ describe('ScriptInstaller', () => {
         'task_lifecycle.py',
         'tests/test_controller_workspace.py',
         'tests/test_managed_agent_runner.py',
+        'tests/test_metadata_controller.py',
         'tests/test_task_lifecycle.py',
       ]);
       for (const relative of newlyManaged) {
@@ -310,6 +320,8 @@ describe('ScriptInstaller', () => {
         { name: 'git-flow.sh', installed: false },
         { name: 'git_flow.py', installed: false },
         { name: 'wiki_lint.py', installed: false },
+        { name: 'metadata_controller.py', installed: false },
+        { name: 'tests/test_metadata_controller.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_integration_concurrency.py', installed: false },
         { name: 'tests/test_managed_agent_runner.py', installed: false },
@@ -460,7 +472,18 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'tests/test_controller_workspace.py'),
         '#!/usr/bin/env python3\nprint("controller workspace")',
       );
-      await fs.writeFile(path.join(scriptsDir, 'managed_agent_runner.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(
+        path.join(scriptsDir, 'metadata_controller.py'),
+        '#!/usr/bin/env python3\nprint("metadata controller")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_metadata_controller.py'),
+        '#!/usr/bin/env python3\nprint("metadata controller")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'managed_agent_runner.py'),
+        '#!/usr/bin/env python3\n',
+      );
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
@@ -496,6 +519,8 @@ describe('ScriptInstaller', () => {
         { name: 'git-flow.sh', installed: true },
         { name: 'git_flow.py', installed: true },
         { name: 'wiki_lint.py', installed: true },
+        { name: 'metadata_controller.py', installed: true },
+        { name: 'tests/test_metadata_controller.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_integration_concurrency.py', installed: true },
         { name: 'tests/test_managed_agent_runner.py', installed: true },
@@ -531,7 +556,7 @@ describe('ScriptInstaller', () => {
           '    command:',
           '      - python3',
           '      - -c',
-          '      - "import os; print(\'argv:\' + os.environ[\'SHARED_VALUE\'])"',
+          "      - \"import os; print('argv:' + os.environ['SHARED_VALUE'])\"",
           '    env:',
           '      SHARED_VALUE: per',
           '  - id: shell-command',
@@ -799,18 +824,16 @@ describe('ScriptInstaller', () => {
       const updated = await ScriptInstaller.autoUpdate(testDir, true, true);
 
       expect(updated).toBe(true);
-      expect(await fs.readFile(wikiPath, 'utf8')).toContain('# Task-derived root/direct-child lifecycle');
+      expect(await fs.readFile(wikiPath, 'utf8')).toContain(
+        '# Task-derived root/direct-child lifecycle',
+      );
       expect(await fs.readFile(scriptPath, 'utf8')).toContain('def main(');
       const backupRoot = path.join(testDir, '.juno_task/managed-conflicts');
       const backupDirectories = await fs.readdir(backupRoot);
       const backupChecks = await Promise.all(
         backupDirectories.map((directory) =>
           fs.pathExists(
-            path.join(
-              backupRoot,
-              directory,
-              '.juno_task/wiki/git_worktree_lifecycle.md.backup',
-            ),
+            path.join(backupRoot, directory, '.juno_task/wiki/git_worktree_lifecycle.md.backup'),
           ),
         ),
       );
@@ -870,9 +893,13 @@ describe('ScriptInstaller', () => {
       expect(installed).toContain('E2E_CONTRACT_VALIDATION_INTERNAL');
       expect(installed).toContain('validate-kanban-write');
       const mainBody = installed.slice(installed.indexOf('main() {'));
-      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(mainBody.indexOf('guard-kanban'));
-      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(mainBody.indexOf('validate-kanban-write'));
-      expect((mainBody.match(/if ! ensure_python_environment/g) || [])).toHaveLength(1);
+      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(
+        mainBody.indexOf('guard-kanban'),
+      );
+      expect(mainBody.indexOf('ensure_python_environment')).toBeLessThan(
+        mainBody.indexOf('validate-kanban-write'),
+      );
+      expect(mainBody.match(/if ! ensure_python_environment/g) || []).toHaveLength(1);
       expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
       expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
     });
