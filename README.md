@@ -511,12 +511,21 @@ juno-code continuity clean                         # dry-run inventory only
 juno-code migrate inventory --project . --output /durable/inventory.json
 juno-code migrate owner-template --inventory /durable/inventory.json --output /durable/answers.json
 juno-code migrate generate-policy --inventory /durable/inventory.json --answers /durable/answers.json --output /durable/policies.json
+juno-code migrate evacuation-plan --inventory /durable/inventory.json --policy /durable/policies.json --project /absolute/source --output /durable/evacuation-plan.json
+juno-code migrate evacuation-apply --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-apply.json --allow-disposable-mutation
+juno-code migrate evacuation-verify --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-verify.json
 juno-code continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
 juno-code continuity clean --apply /tmp/review.json
 juno-code continuity rollback <receipt-path>
 juno-code continuity pin [SCOPE_0123456789ABCDEF]
 juno-code continuity unpin [SCOPE_0123456789ABCDEF]
 ```
+
+Metadata evacuation is bound to the exact reviewed inventory, policy, product
+ref/commit/tree, and independent controller rollback identity. Apply is restricted to
+a clean disposable linked worktree and never stages, commits, moves the product ref,
+registers a controller, or removes the rollback controller. Unclassified paths and
+nested repository/gitlink boundary crossings fail closed.
 
 Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `JUNO_CODE_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
 

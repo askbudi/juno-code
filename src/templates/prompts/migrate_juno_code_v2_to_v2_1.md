@@ -41,8 +41,25 @@ cleanup.
      --output /durable/policy-bundle.json
    ```
 
-6. Present the immutable inventory, answers and policy bundle for review before
-   requesting a separately authorized preparation or cutover task.
+6. After review, create the product metadata-removal diff only in a clean disposable
+   linked worktree:
+
+   ```bash
+   yy migrate evacuation-plan --inventory /durable/inventory.json \
+     --policy /durable/policy-bundle.json --project /absolute/source \
+     --output /durable/evacuation-plan.json
+   yy migrate evacuation-apply --plan /durable/evacuation-plan.json \
+     --candidate /absolute/disposable-worktree \
+     --output /durable/evacuation-apply.json --allow-disposable-mutation
+   yy migrate evacuation-verify --plan /durable/evacuation-plan.json \
+     --candidate /absolute/disposable-worktree \
+     --output /durable/evacuation-verify.json
+   ```
+
+7. Present the immutable inventory, answers, policy, evacuation plan and verified
+   candidate diff for review before requesting separately authorized integration,
+   controller preparation, or cutover. Evacuation never stages, commits, moves the
+   product ref, or deletes the preserved controller.
 
 The reviewed target topology keeps a metadata-only controller branch, feature
 branches/worktrees per task, and a clean integration-owner worktree attached to
