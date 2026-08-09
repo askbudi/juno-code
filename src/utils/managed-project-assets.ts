@@ -196,8 +196,6 @@ export class ManagedProjectAssets {
       manifest = parsed as ManagedAssetManifest;
     }
 
-    await this.assertRetiredGenerationSafe(projectDir, manifest, Boolean(options.force));
-
     // Validate all possible install/candidate/backup parents before the first
     // generation write. A missing leaf below a symlinked directory is just as
     // unsafe as a symlinked leaf.
@@ -224,6 +222,8 @@ export class ManagedProjectAssets {
         ),
       );
     }
+
+    await this.assertRetiredGenerationSafe(projectDir, manifest, Boolean(options.force));
 
     // Discover every ordinary managed conflict before changing the installed
     // generation. Candidate files are review aids; installed bytes and the
