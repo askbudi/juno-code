@@ -58,9 +58,11 @@ class MetadataControllerTest(unittest.TestCase):
         command("git", "commit", "-m", "legacy full controller", cwd=self.repo)
         self.old_head = command("git", "rev-parse", "HEAD", cwd=self.repo)
 
-        self.runtime = self.temp / "installed/bin/yy"
+        self.runtime = self.temp / "installed/dist/bin/yy"
         write(self.runtime, "#!/bin/sh\nprintf 'juno-code 2.0.32\\n'\n")
         self.runtime.chmod(self.runtime.stat().st_mode | stat.S_IXUSR)
+        write(self.temp / "installed/dist/templates/scripts/controller_resolver.py", "# runtime resolver\n")
+        write(self.temp / "installed/dist/templates/scripts/task_workspace.py", "# task workspace\n")
         self.new_controller = self.temp / "metadata-controller"
         self.policy = mc.load_policy(POLICY)
         self.plan_path = self.temp / "plan.json"
@@ -106,6 +108,8 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue((self.new_controller / ".juno_task/tasks/TASK.md").is_file())
         self.assertFalse((self.new_controller / ".juno_task/specs/workflows").exists())
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
+        self.assertTrue((self.new_controller / ".juno_task/scripts/controller_resolver.py").is_file())
+        self.assertEqual(payload["runtime_scripts"]["file_count"], 2)
         self.assertIn(".juno_task/scripts/", (self.new_controller / ".gitignore").read_text())
         generated_config = json.loads((self.new_controller / ".juno_task/config.json").read_text())
         self.assertEqual(

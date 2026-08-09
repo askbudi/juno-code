@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -300,6 +301,29 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
 
 
+def install_runtime_scripts(executable: Path, controller: Path) -> dict[str, Any]:
+    source = executable.expanduser().resolve().parent.parent / "templates/scripts"
+    target = controller / ".juno_task/scripts"
+    if not source.is_dir():
+        raise BoundaryError(f"installed runtime is missing packaged controller scripts: {source}")
+    if target.exists() or target.is_symlink():
+        raise BoundaryError("fresh controller runtime script directory must not already exist")
+    entries: list[dict[str, str]] = []
+    for item in sorted(source.rglob("*")):
+        if item.is_symlink():
+            raise BoundaryError(f"packaged runtime scripts may not contain symlinks: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise BoundaryError(f"packaged runtime contains an unsafe script entry: {item}")
+        entries.append({"path": item.relative_to(source).as_posix(),
+                        "sha256": hashlib.sha256(item.read_bytes()).hexdigest()})
+    if not entries or not any(entry["path"] == "controller_resolver.py" for entry in entries):
+        raise BoundaryError("installed runtime script set is incomplete")
+    shutil.copytree(source, target, copy_function=shutil.copy2)
+    return {"source": str(source), "file_count": len(entries), "sha256": digest(entries)}
+
+
 def listed_tree(root: Path, head: str) -> list[tuple[str, str, str]]:
     raw = git(root, "ls-tree", "-r", "-z", head)
     entries: list[tuple[str, str, str]] = []
@@ -473,6 +497,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
         runtime_file = destination / policy["runtime"]["identity_file"]
         runtime_file.parent.mkdir(parents=True, exist_ok=True)
         runtime_file.write_bytes(canonical(identity))
+        runtime_scripts = install_runtime_scripts(Path(identity["executable"]), destination)
         evidence = inspect(destination, policy, expected_branch=plan["new_branch"], require_active=False)
         if not evidence["passed"]:
             raise BoundaryError(f"prepared metadata controller failed verification: {evidence['checks']}")
@@ -485,6 +510,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
                "plan_sha256": hashlib.sha256(args.plan.resolve().read_bytes()).hexdigest(), "new_controller": str(destination),
                "new_branch": plan["new_branch"], "new_head": commit, "new_tree": tree, "root_commit": True,
                "old_controller_preserved": True, "product_head": plan["product_head"], "evidence": evidence,
+               "runtime_scripts": runtime_scripts,
                "cutover_authorized": False}
     atomic_receipt(args.output, payload)
     return payload
