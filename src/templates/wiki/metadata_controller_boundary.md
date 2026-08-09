@@ -82,6 +82,7 @@ python3 .juno_task/scripts/metadata_controller.py migration-plan \
   --expected-product-head PRODUCT_SHA \
   --runtime /installed/bin/yy \
   --runtime-version X.Y.Z \
+  --policy-bundle /durable/path/reviewed-policy-bundle.json \
   --output /durable/path/migration-plan.json
 
 python3 .juno_task/scripts/metadata_controller.py prepare \
@@ -89,7 +90,7 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
   --output /durable/path/prepare.json
 ```
 
-`migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, and rollback identity. It is receipt-only. `prepare` requires a fresh output receipt path before mutation, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, and blob identity. The old sparse/full controller remains intact.
+`migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, rollback identity, and canonical reviewed metadata/task/risk policies. A single reviewed policy bundle is preferred; alternatively pass both `--task-workspace-policy` and `--risk-policy` with the global `--policy` metadata policy. `prepare` re-reads those exact sources and refuses source or content drift before mutation. It requires a fresh output receipt path, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, blob identity, and generated policy digest. The old sparse/full controller remains intact.
 
 Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
 

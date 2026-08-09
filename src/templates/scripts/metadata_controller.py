@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -47,6 +48,125 @@ def canonical(value: Any) -> bytes:
 
 def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def reviewed_path(path: Path, label: str) -> Path:
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise BoundaryError(f"{label} does not resolve to a reviewed file: {exc}") from exc
+    if not resolved.is_file():
+        raise BoundaryError(f"{label} is not a regular file: {resolved}")
+    return resolved
+
+
+def read_json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise BoundaryError(f"{label} must be a JSON object")
+    return value
+
+
+def load_sibling(name: str) -> Any:
+    path = Path(__file__).resolve().with_name(name)
+    spec = importlib.util.spec_from_file_location(f"juno_metadata_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise BoundaryError(f"cannot load packaged policy validator: {name}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_task_policy(value: dict[str, Any]) -> dict[str, Any]:
+    validator = load_sibling("task_workspace.py")
+    with tempfile.TemporaryDirectory(prefix="juno-task-policy-") as temporary:
+        root = Path(temporary)
+        path = root / ".juno_task/config/task-workspace.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(canonical(value))
+        try:
+            return validator.load_config(root)
+        except Exception as exc:
+            raise BoundaryError(f"invalid reviewed task workspace policy: {exc}") from exc
+
+
+def validate_risk_policy(value: dict[str, Any]) -> dict[str, Any]:
+    validator = load_sibling("risk_policy.py")
+    with tempfile.TemporaryDirectory(prefix="juno-risk-policy-") as temporary:
+        path = Path(temporary) / "risk-policy.json"
+        path.write_bytes(canonical(value))
+        try:
+            return validator.load_policy(path)
+        except Exception as exc:
+            raise BoundaryError(f"invalid reviewed risk policy: {exc}") from exc
+
+
+def reviewed_policies_from_sources(
+        *, metadata_policy: dict[str, Any], policy_bundle: Path | None = None,
+        task_policy: Path | None = None, risk_policy: Path | None = None) -> dict[str, Any]:
+    if policy_bundle is not None:
+        if task_policy is not None or risk_policy is not None:
+            raise BoundaryError("use either --policy-bundle or both explicit policy paths, not both")
+        bundle_path = reviewed_path(policy_bundle, "policy bundle")
+        bundle = read_json(bundle_path, "policy bundle")
+        if (bundle.get("schema_version") != "juno_migration_policy_bundle.v1"
+                or bundle.get("operation") != "generate-policy"
+                or bundle.get("outcome") != "generated_from_reviewed_answers"
+                or not isinstance(bundle.get("policies"), dict)):
+            raise BoundaryError("policy bundle is not a reviewed Juno migration policy bundle")
+        policies = bundle["policies"]
+        if set(policies) != {"metadata_controller", "task_workspace", "risk"}:
+            raise BoundaryError("policy bundle must contain exactly metadata_controller, task_workspace, and risk")
+        if digest(load_policy_value(policies["metadata_controller"])) != digest(metadata_policy):
+            raise BoundaryError("policy bundle metadata controller policy differs from --policy")
+        task_value = validate_task_policy(load_policy_value(policies["task_workspace"]))
+        risk_value = validate_risk_policy(load_policy_value(policies["risk"]))
+        source = {"kind": "policy_bundle", "path": str(bundle_path), "sha256": file_digest(bundle_path)}
+    else:
+        if task_policy is None or risk_policy is None:
+            raise BoundaryError("migration-plan requires --policy-bundle or both --task-workspace-policy and --risk-policy")
+        task_path = reviewed_path(task_policy, "task workspace policy")
+        risk_path = reviewed_path(risk_policy, "risk policy")
+        task_value = validate_task_policy(read_json(task_path, "task workspace policy"))
+        risk_value = validate_risk_policy(read_json(risk_path, "risk policy"))
+        source = {"kind": "explicit_paths", "task_workspace_path": str(task_path),
+                  "task_workspace_file_sha256": file_digest(task_path), "risk_path": str(risk_path),
+                  "risk_file_sha256": file_digest(risk_path)}
+    return {"source": source, "metadata_controller_sha256": digest(metadata_policy),
+            "task_workspace": {"sha256": digest(task_value), "content": task_value},
+            "risk": {"sha256": digest(risk_value), "content": risk_value}}
+
+
+def load_policy_value(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BoundaryError("reviewed policy content must be a JSON object")
+    return json.loads(json.dumps(value))
+
+
+def revalidate_planned_policies(plan: dict[str, Any], metadata_policy: dict[str, Any]) -> dict[str, Any]:
+    expected = plan.get("reviewed_policies")
+    if not isinstance(expected, dict) or not isinstance(expected.get("source"), dict):
+        raise BoundaryError("migration plan does not bind reviewed task and risk policies")
+    source = expected["source"]
+    if source.get("kind") == "policy_bundle":
+        actual = reviewed_policies_from_sources(metadata_policy=metadata_policy,
+                                                policy_bundle=Path(source["path"]))
+    elif source.get("kind") == "explicit_paths":
+        actual = reviewed_policies_from_sources(
+            metadata_policy=metadata_policy, task_policy=Path(source["task_workspace_path"]),
+            risk_policy=Path(source["risk_path"]))
+    else:
+        raise BoundaryError("migration plan has an unsupported reviewed policy source")
+    if digest(actual) != digest(expected):
+        raise BoundaryError("reviewed task workspace or risk policy changed after planning")
+    return expected
 
 
 def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
@@ -112,6 +232,18 @@ def load_policy(path: Path) -> dict[str, Any]:
         if not policy_path_allowed(item, value, container=True):
             raise BoundaryError(f"metadata path is outside tracked roots: {item}")
     return value
+
+
+def metadata_policy_from_bundle(path: Path) -> dict[str, Any]:
+    bundle_path = reviewed_path(path, "policy bundle")
+    bundle = read_json(bundle_path, "policy bundle")
+    policies = bundle.get("policies")
+    if not isinstance(policies, dict) or not isinstance(policies.get("metadata_controller"), dict):
+        raise BoundaryError("policy bundle does not contain a metadata controller policy")
+    with tempfile.TemporaryDirectory(prefix="juno-metadata-policy-") as temporary:
+        policy_path = Path(temporary) / "metadata-controller.json"
+        policy_path.write_bytes(canonical(policies["metadata_controller"]))
+        return load_policy(policy_path)
 
 
 def ref_exists(root: Path, ref: str) -> bool:
@@ -239,12 +371,15 @@ def migration_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str
     if args.new_controller.expanduser().resolve().exists():
         raise BoundaryError("fresh metadata controller path already exists")
     runtime = runtime_identity(args.runtime, args.runtime_version, old)
+    reviewed_policies = reviewed_policies_from_sources(
+        metadata_policy=policy, policy_bundle=args.policy_bundle,
+        task_policy=args.task_workspace_policy, risk_policy=args.risk_policy)
     selected_entries(old, old_head, policy)
     payload = {"schema_version": PLAN_SCHEMA, "operation": "migration-plan", "outcome": "planned_no_mutation",
                "old_controller": str(old), "old_branch": args.old_branch, "old_head": old_head,
                "new_controller": str(args.new_controller.expanduser().resolve()), "new_branch": args.new_branch,
                "product_ref": args.product_ref, "product_head": product_head, "git_common_dir": common_dir(old),
-               "runtime": runtime, "policy_sha256": digest(policy),
+               "runtime": runtime, "policy_sha256": digest(policy), "reviewed_policies": reviewed_policies,
                "inventory": inventory(old, old_head, product_head, policy, runtime),
                "cutover_authorized": False, "rollback": {"controller": str(old), "branch": args.old_branch, "head": old_head},
                "steps": ["freeze old controller identity", "prepare unrelated metadata-only root and worktree",
@@ -282,6 +417,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     resolve_commit(old, plan["product_ref"], plan["product_head"], "product target")
     if plan["policy_sha256"] != digest(policy):
         raise BoundaryError("metadata policy changed after planning")
+    reviewed_policies = revalidate_planned_policies(plan, policy)
     runtime_identity(Path(plan["runtime"]["executable"]), plan["runtime"]["version"], old)
     destination = Path(plan["new_controller"])
     if plan["new_branch"] != policy["controller_branch"] or plan["product_ref"] != policy["product_ref"]:
@@ -293,20 +429,20 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     boundary = {"schema_version": RECEIPT_SCHEMA, "operation": "controller-boundary", "source_head": plan["old_head"],
                 "product_ref": plan["product_ref"], "product_head_at_plan": plan["product_head"],
                 "runtime": {"package": "juno-code", "version": plan["runtime"]["version"]},
-                "policy_sha256": plan["policy_sha256"], "controller_commits_integrate_to_product": False,
+                "policy_sha256": plan["policy_sha256"],
+                "reviewed_policy_sha256": {
+                    "task_workspace": reviewed_policies["task_workspace"]["sha256"],
+                    "risk": reviewed_policies["risk"]["sha256"],
+                }, "controller_commits_integrate_to_product": False,
                 "preserved_metadata": {"entries": preserved_entries, "sha256": digest(preserved_entries)}}
-    task_policy_path = Path(__file__).resolve().parents[1] / "config/task-workspace.json"
-    try:
-        task_policy_bytes = canonical(json.loads(task_policy_path.read_text()))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise BoundaryError(f"installed task workspace policy is invalid: {exc}") from exc
+    task_policy_bytes = canonical(reviewed_policies["task_workspace"]["content"])
+    risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
     generated = {
         ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n*.log\n__pycache__/\n",
         ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}),
         ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/config/task-workspace.json": task_policy_bytes,
-        ".juno_task/config/risk-policy.json": (
-            Path(__file__).resolve().parents[1] / "config/risk-policy.json").read_bytes(),
+        ".juno_task/config/risk-policy.json": risk_policy_bytes,
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
         ".juno_task/state/tasks.json": canonical({"schema_version": "juno_task_workspace_state.v1", "tasks": {}, "queues": {}}),
     }
@@ -399,6 +535,7 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     current_boundary_text = run(["git", "-C", str(root), "show", f"{head}:{boundary_path}"], root, False).stdout
     preservation_receipt_ok = False
     preservation_missing: list[str] = []
+    reviewed_policy_hashes: dict[str, str] = {}
     try:
         boundary = json.loads(root_boundary_text)
         if boundary.get("schema_version") != RECEIPT_SCHEMA or boundary.get("operation") != "controller-boundary":
@@ -407,6 +544,11 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
         expected_entries = preservation["entries"]
         if not isinstance(expected_entries, list) or preservation["sha256"] != digest(expected_entries):
             raise ValueError("invalid preserved metadata digest")
+        reviewed_policy_hashes = boundary["reviewed_policy_sha256"]
+        if (set(reviewed_policy_hashes) != {"task_workspace", "risk"}
+                or any(not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in reviewed_policy_hashes.values())):
+            raise ValueError("invalid reviewed policy identity")
         for entry in expected_entries:
             if set(entry) != {"mode", "oid", "path"} or root_entry_map.get(entry["path"]) != {"mode": entry["mode"], "oid": entry["oid"]}:
                 preservation_missing.append(entry.get("path", "<invalid>"))
@@ -422,17 +564,17 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             config_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/config.json"], root).stdout)
             policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/metadata-controller.json"], root).stdout
             task_policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/task-workspace.json"], root).stdout
-            expected_task_policy = canonical(json.loads(
-                (Path(__file__).resolve().parents[1] / "config/task-workspace.json").read_text()
-            )).decode()
             risk_policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/risk-policy.json"], root).stdout
-            expected_risk_policy = (Path(__file__).resolve().parents[1] / "config/risk-policy.json").read_text()
+            task_policy_value = validate_task_policy(json.loads(task_policy_text))
+            risk_policy_value = validate_risk_policy(json.loads(risk_policy_text))
             tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
             generated_contract_ok = (
                 config_value == {"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
                 and policy_text == canonical(policy).decode()
-                and task_policy_text == expected_task_policy
-                and risk_policy_text == expected_risk_policy
+                and task_policy_text == canonical(task_policy_value).decode()
+                and risk_policy_text == canonical(risk_policy_value).decode()
+                and digest(task_policy_value) == reviewed_policy_hashes.get("task_workspace")
+                and digest(risk_policy_value) == reviewed_policy_hashes.get("risk")
                 and tasks_value.get("schema_version") == "juno_task_workspace_state.v1"
                 and isinstance(tasks_value.get("tasks"), dict)
                 and isinstance(tasks_value.get("queues"), dict)
@@ -575,6 +717,12 @@ def main() -> None:
     plan.add_argument("--new-branch", required=True); plan.add_argument("--product-ref", required=True)
     plan.add_argument("--expected-product-head", required=True); plan.add_argument("--runtime", type=Path, required=True)
     plan.add_argument("--runtime-version", required=True); plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--policy-bundle", type=Path,
+                      help="reviewed migration policy bundle containing metadata, task-workspace, and risk policies")
+    plan.add_argument("--task-workspace-policy", type=Path,
+                      help="reviewed task-workspace JSON (requires --risk-policy; alternative to --policy-bundle)")
+    plan.add_argument("--risk-policy", type=Path,
+                      help="reviewed risk-policy JSON (requires --task-workspace-policy; alternative to --policy-bundle)")
     prep = sub.add_parser("prepare"); prep.add_argument("--plan", type=Path, required=True); prep.add_argument("--output", type=Path, required=True)
     verify = sub.add_parser("verify"); verify.add_argument("--root", type=Path, required=True); verify.add_argument("--branch", required=True)
     verify.add_argument("--pending", action="store_true"); verify.add_argument("--output", type=Path, required=True)
@@ -586,8 +734,11 @@ def main() -> None:
     for name in ("cutover-plan", "rollback-plan"):
         item = sub.add_parser(name); item.add_argument("--plan", type=Path, required=True); item.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    policy_path = (args.policy or Path(__file__).resolve().parents[1] / "config/metadata-controller.json").resolve()
-    policy = load_policy(policy_path)
+    if args.command == "migration-plan" and args.policy_bundle is not None and args.policy is None:
+        policy = metadata_policy_from_bundle(args.policy_bundle)
+    else:
+        policy_path = (args.policy or Path(__file__).resolve().parents[1] / "config/metadata-controller.json").resolve()
+        policy = load_policy(policy_path)
     if args.command == "migration-plan":
         for ref, label in ((args.old_branch, "old_branch"), (args.new_branch, "new_branch"), (args.product_ref, "product_ref")):
             safe_ref(ref, label)
