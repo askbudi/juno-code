@@ -50,6 +50,8 @@ Register a controller checkout from a linked task checkout when an environment o
 
 Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local controller registration, then the current project root. Canonical registration requires both the path and branch, establishes the controller's committed-audit base only when no base exists, and never advances it on re-registration. There is no public workspace-role assignment interface; exact task creation and protected integration own checkout-specific authority. A configured controller is branch-verified and invalid configuration fails closed. Juno and Kanban never switch, detach, stash, or update branches to manufacture compliance.
 
+Juno 2.1 controller cutover uses `yy migrate registration plan|apply|verify|rollback`. The plan freezes full refs/HEADs, paths, Git common directory, runtime bytes, and the reviewed policy bundle. Apply and rollback each require their own explicit authorization flag, persist intent before mutation, recover only known partial endpoint states, never move product/controller refs, and preserve the former controller. See `.juno_task/wiki/metadata_controller_boundary.md` after managed assets are installed.
+
 | Lane | Permitted | Forbidden |
 |---|---|---|
 | Controller | Kanban/Juno mutation, orchestration, prompts, and durable receipts; pass the product checkout as explicit `TASK_ROOT` | Product implementation or integration; implicit ref changes |

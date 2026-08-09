@@ -69,9 +69,38 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
 
 `migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, and rollback identity. It is receipt-only. `prepare` requires a fresh output receipt path before mutation, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, and blob identity. The old sparse/full controller remains intact.
 
-Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. Registration mutation is outside this helper and requires explicit owner authorization.
+Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
 
-Rollback is equally explicit: preserve the prior controller worktree/ref, verify the active metadata controller, create a `rollback-plan`, then use the separately authorized registrar. Neither transition merges controller commits into product history, rewrites history, deletes a worktree, pushes, or releases.
+```bash
+yy migrate registration plan \
+  --source-controller /path/to/preserved-controller --source-ref refs/heads/old-controller --expected-source-head OLD_SHA \
+  --target-controller /path/to/metadata-controller --target-ref refs/heads/juno/controller-metadata-v1 --expected-target-head NEW_SHA \
+  --product-root /path/to/integration-owner --product-ref refs/heads/main --expected-product-head PRODUCT_SHA \
+  --runtime /installed/bin/yy --runtime-version 2.1.1 --inventory /durable/inventory.json \
+  --policy-bundle /durable/policy-bundle.json --pending-verification /durable/pending-verify.json \
+  --output /durable/registration-plan.json
+
+# Separate owner authorization is required at this line.
+yy migrate registration apply --plan /durable/registration-plan.json \
+  --output /durable/registration-apply.json --authorize-apply
+yy migrate registration verify --plan /durable/registration-plan.json \
+  --output /durable/registration-verify.json
+```
+
+The apply receipt is preceded by an immutable intent receipt. Repeating apply
+is idempotent. If interruption leaves only planned endpoint values, the same
+authorized command completes them; foreign config values fail closed. The
+registrar never moves product or controller refs and refuses dirty, detached,
+stale, runtime-drifted, policy-drifted, or unrelated worktrees.
+
+Rollback is equally explicit: preserve the prior controller worktree/ref,
+verify the active metadata controller, and run `yy migrate registration
+rollback --plan /durable/registration-plan.json --output
+/durable/registration-rollback.json --authorize-rollback`. It restores the
+exact frozen registration values and pending-controller role. Neither
+transition merges controller commits into product history, rewrites history,
+deletes a worktree, pushes, or releases. Keep every receipt outside the Git
+common directory and all protected worktrees.
 
 ## Operating topology after cutover
 

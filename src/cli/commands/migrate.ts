@@ -6,25 +6,27 @@ import { Command } from 'commander';
 
 export type MigrationInvocation = (args: string[]) => Promise<void>;
 
-function packagedEngine(): string {
+function packagedEngine(name = 'migration_inventory.py'): string {
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     // Bundled CLI: dist/bin/cli.mjs -> dist/templates/scripts.
-    path.resolve(directory, '../templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../templates/scripts/${name}`),
     // Source execution: src/cli/commands -> src/templates/scripts.
-    path.resolve(directory, '../../templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../../templates/scripts/${name}`),
     // Bundled CLI executed from a source checkout before packaging.
-    path.resolve(directory, '../../src/templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../../src/templates/scripts/${name}`),
   ];
   const engine = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!engine) throw new Error('The packaged migration inventory engine is missing');
+  if (!engine) throw new Error(`The packaged migration engine is missing: ${name}`);
   return engine;
 }
 
 export async function invokeMigration(args: string[]): Promise<void> {
-  const engine = packagedEngine();
+  const registration = args[0] === 'registration';
+  const engine = packagedEngine(registration ? 'controller_registration.py' : undefined);
+  const engineArgs = registration ? args.slice(1) : args;
   const exitCode = await new Promise<number>((resolve, reject) => {
-    const child = spawn('python3', [engine, ...args], {
+    const child = spawn('python3', [engine, ...engineArgs], {
       cwd: process.cwd(),
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
       stdio: 'inherit',
@@ -76,4 +78,53 @@ export function configureMigrationCommand(
     .requiredOption('--answers <path>', 'Completed owner answers JSON')
     .requiredOption('--output <path>', 'New policy bundle receipt')
     .action((options) => invoke(['generate-policy', '--inventory', options.inventory, '--answers', options.answers, '--output', options.output]));
+
+  const registration = migrate
+    .command('registration')
+    .description('Plan, apply, verify, or roll back protected controller registration');
+  registration
+    .command('plan')
+    .description('Freeze an exact no-mutation controller registration plan')
+    .requiredOption('--source-controller <path>')
+    .requiredOption('--source-ref <ref>')
+    .requiredOption('--expected-source-head <sha>')
+    .requiredOption('--target-controller <path>')
+    .requiredOption('--target-ref <ref>')
+    .requiredOption('--expected-target-head <sha>')
+    .requiredOption('--product-root <path>')
+    .requiredOption('--product-ref <ref>')
+    .requiredOption('--expected-product-head <sha>')
+    .requiredOption('--runtime <path>')
+    .requiredOption('--runtime-version <version>')
+    .requiredOption('--inventory <path>')
+    .requiredOption('--policy-bundle <path>')
+    .requiredOption('--pending-verification <path>')
+    .requiredOption('--output <path>')
+    .action((options) => invoke([
+      'registration', 'plan',
+      '--source-controller', options.sourceController, '--source-ref', options.sourceRef,
+      '--expected-source-head', options.expectedSourceHead,
+      '--target-controller', options.targetController, '--target-ref', options.targetRef,
+      '--expected-target-head', options.expectedTargetHead,
+      '--product-root', options.productRoot, '--product-ref', options.productRef,
+      '--expected-product-head', options.expectedProductHead,
+      '--runtime', options.runtime, '--runtime-version', options.runtimeVersion,
+      '--inventory', options.inventory, '--policy-bundle', options.policyBundle,
+      '--pending-verification', options.pendingVerification,
+      '--output', options.output,
+    ]));
+  registration.command('apply')
+    .description('Apply an exact plan under an explicit registration authorization')
+    .requiredOption('--plan <path>').requiredOption('--output <path>')
+    .requiredOption('--authorize-apply', 'Authorize only this local controller registration')
+    .action((options) => invoke(['registration', 'apply', '--plan', options.plan, '--output', options.output, '--authorize-apply']));
+  registration.command('verify')
+    .description('Read back registration truth without mutation')
+    .requiredOption('--plan <path>').requiredOption('--output <path>')
+    .action((options) => invoke(['registration', 'verify', '--plan', options.plan, '--output', options.output]));
+  registration.command('rollback')
+    .description('Restore the exact prior registration under explicit authorization')
+    .requiredOption('--plan <path>').requiredOption('--output <path>')
+    .requiredOption('--authorize-rollback', 'Authorize only this local registration rollback')
+    .action((options) => invoke(['registration', 'rollback', '--plan', options.plan, '--output', options.output, '--authorize-rollback']));
 }

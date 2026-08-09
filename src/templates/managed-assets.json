@@ -117,6 +117,18 @@
       "type": "script"
     },
     {
+      "source": "scripts/controller_registration.py",
+      "destination": ".juno_task/scripts/controller_registration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_controller_registration.py",
+      "destination": ".juno_task/scripts/tests/test_controller_registration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/risk_policy.py",
       "destination": ".juno_task/scripts/risk_policy.py",
       "installClass": "script",

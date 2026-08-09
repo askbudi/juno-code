@@ -13,7 +13,7 @@ from typing import Optional
 
 sys.dont_write_bytecode = True
 
-VALID_ROLES = {"controller", "task", "integration-owner"}
+VALID_ROLES = {"controller", "controller-retired", "task", "integration-owner"}
 VALID_ENFORCEMENT = {"off", "warn", "strict"}
 
 
@@ -123,14 +123,16 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         errors.append(f"configured controller has no .juno_task directory: {controller}")
     else:
         actual_branch = git(controller, "symbolic-ref", "--quiet", "--short", "HEAD")
+        actual_full_branch = git(controller, "symbolic-ref", "--quiet", "HEAD")
         result["actual_branch"] = actual_branch
         if repo_root_text:
             current_identity = repository_identity(current_root)
             controller_identity = repository_identity(controller)
             if not current_identity or current_identity != controller_identity:
                 errors.append("configured controller is not a linked worktree of the invoking repository")
-        if expected_branch and actual_branch != expected_branch:
-            errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {actual_branch or 'detached HEAD'!r}")
+        expected_observed = actual_full_branch if expected_branch and expected_branch.startswith("refs/heads/") else actual_branch
+        if expected_branch and expected_observed != expected_branch:
+            errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {expected_observed or 'detached HEAD'!r}")
         workspace_pointer = controller / ".juno_task/config.json"
         try:
             project_config = json.loads(workspace_pointer.read_text(encoding="utf-8"))
@@ -160,7 +162,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
     if role == "unregistered":
         errors.append("linked worktree has no persisted workspace role registration; register it through the lifecycle owner")
     elif role not in VALID_ROLES:
-        errors.append(f"invalid persisted workspace role {role!r}; expected controller, task, or integration-owner")
+        errors.append(f"invalid persisted workspace role {role!r}; expected controller, controller-retired, task, or integration-owner")
     task_authority = (task_id, manifest_identity, create_receipt_sha256, expected_paths_sha256)
     if role == "task" and not all(task_authority):
         errors.append("task workspace registration is incomplete: exact lifecycle receipt identity is required")
@@ -183,6 +185,8 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         elif enforcement == "warn":
             result["diagnostics"] = [message]
             print(f"controller-resolver: warning: {message}", file=sys.stderr)
+    if role == "controller-retired" and operation in {"kanban", "orchestration", "session-write", "product-edit"}:
+        errors.append("retired rollback controller is read-only; run writes from the registered metadata controller")
 
     # Explicit and registered settings are authoritative: invalid values never fall back.
     if errors:
@@ -214,18 +218,29 @@ def main() -> None:
         if not (target / ".juno_task").is_dir():
             raise SystemExit("controller-resolver: registered controller has no .juno_task directory")
         actual_branch = git(target, "symbolic-ref", "--quiet", "--short", "HEAD")
-        if actual_branch != args.branch:
-            raise SystemExit(f"controller-resolver: controller branch mismatch: expected {args.branch!r}, found {actual_branch or 'detached HEAD'!r}")
+        actual_full_branch = git(target, "symbolic-ref", "--quiet", "HEAD")
+        expected_observed = actual_full_branch if args.branch.startswith("refs/heads/") else actual_branch
+        if expected_observed != args.branch:
+            raise SystemExit(f"controller-resolver: controller branch mismatch: expected {args.branch!r}, found {expected_observed or 'detached HEAD'!r}")
         head = git(target, "rev-parse", "HEAD")
         if not head:
             raise SystemExit("controller-resolver: registered controller requires a readable HEAD")
+        existing_path = config(cwd, "juno.controller.path")
+        existing_branch = config(cwd, "juno.controller.branch")
+        branch_aliases = {args.branch, args.branch.removeprefix("refs/heads/")}
+        if existing_path or existing_branch:
+            matching_path = bool(existing_path and canonical(existing_path, Path(root)) == target)
+            matching_branch = bool(existing_branch and existing_branch in branch_aliases)
+            if not (matching_path and matching_branch):
+                raise SystemExit("controller-resolver: changing an existing controller registration requires `yy migrate registration plan` and an explicitly authorized apply")
         # Canonical controller registration establishes initial audit authority
         # once. Re-registration must never bless commits added since that base.
         subprocess.run(["git", "-C", str(cwd), "config", "--local", "extensions.worktreeConfig", "true"], check=True)
         if not worktree_config(target, "juno.workspace.roleBase"):
             subprocess.run(["git", "-C", str(target), "config", "--worktree", "juno.workspace.roleBase", head], check=True)
-        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.path", str(target)], check=True)
-        subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.branch", args.branch], check=True)
+        if not existing_path and not existing_branch:
+            subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.path", str(target)], check=True)
+            subprocess.run(["git", "-C", str(cwd), "config", "--local", "juno.controller.branch", args.branch], check=True)
     result = resolve(cwd, args.operation)
     if args.format == "root":
         print(result["path"])

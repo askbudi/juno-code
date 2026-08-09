@@ -44,6 +44,16 @@ cleanup.
 6. Present the immutable inventory, answers and policy bundle for review before
    requesting a separately authorized preparation or cutover task.
 
+After a fresh controller is prepared, product metadata is evacuated, and all
+pending/current boundary canaries pass, use `yy migrate registration plan` to
+freeze the old controller, pending controller, clean integration-owner product
+ref, runtime artifact, and reviewed policy bundle. Planning and `registration
+verify` are read-only. `registration apply --authorize-apply` and `registration
+rollback --authorize-rollback` are distinct owner-authorized mutations; never
+include either authorization flag merely because this prompt was invoked. Keep
+their immutable plan, intent, result, and verification receipts outside every
+worktree and the Git common directory.
+
 The reviewed target topology keeps a metadata-only controller branch, feature
 branches/worktrees per task, and a clean integration-owner worktree attached to
 the actual product target ref. It does not create an integration branch solely

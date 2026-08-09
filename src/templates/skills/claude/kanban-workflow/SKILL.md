@@ -155,7 +155,7 @@ Add `--raw` for compact output. Add `-p` for pretty print.
 
 ### Canonical Controller Routing
 
-Kanban mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`; register a linked controller with `--register /path/to/controller --branch <branch>`. Explicit/registered path or branch errors fail closed—Kanban never switches Git branches or falls back silently.
+Kanban mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—Kanban never switches Git branches or falls back silently.
 
 Run Kanban and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
 

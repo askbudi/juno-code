@@ -215,6 +215,8 @@ describe('ManagedProjectAssets', () => {
       '.juno_task/scripts/tests/test_managed_agent_runner.py',
       '.juno_task/scripts/metadata_controller.py',
       '.juno_task/scripts/tests/test_metadata_controller.py',
+      '.juno_task/scripts/controller_registration.py',
+      '.juno_task/scripts/tests/test_controller_registration.py',
       '.juno_task/scripts/risk_policy.py',
       '.juno_task/scripts/tests/test_risk_policy.py',
       '.juno_task/scripts/release_gate.py',
