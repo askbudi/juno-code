@@ -106,6 +106,31 @@ class RiskPolicyTest(unittest.TestCase):
         first = self.review(plan, "reviewer_a", 1, "a")
         return [first, self.review(plan, "reviewer_b", 2, "b", predecessor=first)]
 
+    def full_suite(self, plan: dict, name: str = "full-suite.json") -> dict | None:
+        if not plan["full_suite_required"]:
+            return None
+        command = {"id": "full-suite", "cwd": ".", "argv": ["test", "all"],
+                   "timeout_seconds": 60, "max_output_bytes": 4096}
+        identity = {"task_workspace_config_sha256": "1" * 64,
+                    "full_suite_config_sha256": "2" * 64,
+                    "task_validation_commands_sha256": "3" * 64}
+        receipt = {"schema_version": rp.FULL_SUITE_SCHEMA,
+                   "producer": {"schema_version": rp.FULL_SUITE_PRODUCER_SCHEMA,
+                                "tool_id": rp.FULL_SUITE_TOOL_ID},
+                   "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                                 "candidate_tree": plan["candidate"]["candidate_tree"]},
+                   "policy_identity": plan["policy_identity"],
+                   "validation_identity": identity, "command": command,
+                   "started_at": "2026-08-09T00:00:00Z",
+                   "completed_at": "2026-08-09T00:00:01Z",
+                   "result": {"exit_code": 0, "timed_out": False,
+                              "stdout": {"sha256": hashlib.sha256(b"ok").hexdigest(),
+                                         "tail": "ok", "truncated_bytes": 0},
+                              "stderr": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                         "tail": "", "truncated_bytes": 0}}}
+        path, mark = self.object_file(name, receipt)
+        return {"receipt_path": path, "receipt_sha256": mark}
+
     def gate(self, plan: dict) -> dict:
         sha = plan["candidate"]["candidate_sha"]
         auth = {"schema_version": release.AUTH_SCHEMA, "candidate_sha": sha,
@@ -120,7 +145,7 @@ class RiskPolicyTest(unittest.TestCase):
 
     def finish(self, plan: dict, reviews: list[dict] | None = None, **changes: object) -> dict:
         values = {"affected_tests_passed": True,
-                  "full_suite_passed": True if plan["full_suite_required"] else None,
+                  "full_suite_receipt": self.full_suite(plan),
                   "reviews": reviews or [], "metrics": {}, "policy": self.policy}
         request = changes.pop("candidate_request", self.request(
             candidate_sha=plan["candidate"]["candidate_sha"],
@@ -275,32 +300,32 @@ class RiskPolicyTest(unittest.TestCase):
         reviews = self.high_reviews(plan)
         prior = self.finish(plan, reviews)
         prior_ref = self.evidence_ref(prior)
-        reused = self.finish(plan, previous=prior_ref, full_suite_passed=None,
+        reused = self.finish(plan, previous=prior_ref, full_suite_receipt=None,
                              reviews={"transcript": "ignored"})
         self.assertEqual("passed", reused["status"])
         with self.assertRaisesRegex(rp.RiskPolicyError, "exact canonical receipt reference"):
-            self.finish(plan, previous=prior, full_suite_passed=None)
+            self.finish(plan, previous=prior, full_suite_receipt=None)
         fabricated = copy.deepcopy(prior); fabricated["reviews"][0]["finding_count"] = 99
         fabricated_ref = self.evidence_ref(fabricated, "fabricated.json")
         with self.assertRaises(rp.RiskPolicyError):
-            self.finish(plan, previous=fabricated_ref, full_suite_passed=None)
+            self.finish(plan, previous=fabricated_ref, full_suite_receipt=None)
         Path(reviews[0]["runner_receipt_path"]).unlink()
         with self.assertRaisesRegex(rp.RiskPolicyError, "missing|unreadable"):
-            self.finish(plan, previous=prior_ref, full_suite_passed=None)
+            self.finish(plan, previous=prior_ref, full_suite_receipt=None)
 
     def test_reuse_rejects_changed_response_and_supports_verified_chain(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})
         reviews = self.high_reviews(plan); prior = self.finish(plan, reviews)
         prior_ref = self.evidence_ref(prior)
-        reused = self.finish(plan, previous=prior_ref, full_suite_passed=None)
+        reused = self.finish(plan, previous=prior_ref, full_suite_receipt=None)
         reused_ref = self.evidence_ref(reused, "reused.json")
-        repeated = self.finish(plan, previous=reused_ref, full_suite_passed=None)
+        repeated = self.finish(plan, previous=reused_ref, full_suite_receipt=None)
         self.assertEqual(reused["semantic_evidence_reused"]["origin_reviews"],
                          repeated["semantic_evidence_reused"]["origin_reviews"])
         receipt = json.loads(Path(reviews[0]["runner_receipt_path"]).read_text())
         Path(receipt["artifacts"]["response"]["path"]).write_text("{}\n")
         with self.assertRaisesRegex(rp.RiskPolicyError, "digest does not match"):
-            self.finish(plan, previous=prior_ref, full_suite_passed=None)
+            self.finish(plan, previous=prior_ref, full_suite_receipt=None)
 
     def test_previous_schema_producer_and_policy_are_strict(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})
@@ -313,7 +338,7 @@ class RiskPolicyTest(unittest.TestCase):
             else: bad["transcript"] = "forbidden"
             with self.assertRaisesRegex(rp.RiskPolicyError, "previous|policy"):
                 self.finish(plan, previous=self.evidence_ref(bad, mutation + ".json"),
-                            full_suite_passed=None)
+                            full_suite_receipt=None)
 
     def test_merge_queue_callable_freshly_verifies_eligibility(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})
@@ -328,13 +353,20 @@ class RiskPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(rp.RiskPolicyError, "dispatch count"):
             rp.verify_candidate_evidence(
                 self.policy, request, [], self.evidence_ref(forged, "queue-forged.json"))
-        failed = self.finish(plan, affected_tests_passed=False, full_suite_passed=None)
+        failed = self.finish(plan, affected_tests_passed=False, full_suite_receipt=None)
         self.assertFalse(rp.verify_candidate_evidence(
             self.policy, request, [], self.evidence_ref(failed, "queue-failed.json"))["eligible"])
 
+        boolean_only = copy.deepcopy(evidence)
+        boolean_only["validation"]["full_suite"] = "passed"
+        boolean_only["validation"]["full_suite_receipt"] = None
+        with self.assertRaisesRegex(rp.RiskPolicyError, "full-suite authority"):
+            rp.verify_candidate_evidence(
+                self.policy, request, [], self.evidence_ref(boolean_only, "boolean-only.json"))
+
     def test_validation_short_circuit_metrics_and_receipt_bound(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})
-        result = self.finish(plan, affected_tests_passed=False, full_suite_passed=None,
+        result = self.finish(plan, affected_tests_passed=False, full_suite_receipt=None,
                              reviews={"transcript": "never read"},
                              previous={"transcript": "never read"})
         self.assertEqual(0, result["validation"]["review_dispatches"])

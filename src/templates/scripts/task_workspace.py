@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -232,12 +233,15 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
         return {"id": row["id"], "argv": row["argv"], "exit_code": 127,
                 "timed_out": False, "timeout_seconds": row["timeout_seconds"], "duration_ms": 0,
                 "stdout_tail": "", "stderr_tail": tail.decode("utf-8", errors="replace"),
-                "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail)}
+                "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail),
+                "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": hashlib.sha256(message).hexdigest()}
     selector = selectors.DefaultSelector()
     stdout_tail = bytearray()
     stderr_tail = bytearray()
     stream_info = {process.stdout: ("stdout", stdout_tail), process.stderr: ("stderr", stderr_tail)}
     totals = {"stdout": 0, "stderr": 0}
+    hashes = {"stdout": hashlib.sha256(), "stderr": hashlib.sha256()}
     for stream in stream_info:
         if stream is not None:
             selector.register(stream, selectors.EVENT_READ)
@@ -258,6 +262,7 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
                 continue
             name, tail = stream_info[stream]
             totals[name] += len(data)
+            hashes[name].update(data)
             _append_tail(tail, data, limit)
     exit_code = process.wait()
     selector.close()
@@ -271,7 +276,9 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
             "stdout_tail": bytes(stdout_tail).decode("utf-8", errors="replace"),
             "stderr_tail": bytes(stderr_tail).decode("utf-8", errors="replace"),
             "stdout_truncated_bytes": totals["stdout"] - len(stdout_tail),
-            "stderr_truncated_bytes": totals["stderr"] - len(stderr_tail)}
+            "stderr_truncated_bytes": totals["stderr"] - len(stderr_tail),
+            "stdout_sha256": hashes["stdout"].hexdigest(),
+            "stderr_sha256": hashes["stderr"].hexdigest()}
 
 
 def path_within(path: str, roots: list[str]) -> bool:

@@ -324,18 +324,50 @@ def validation_rows(config: dict[str, Any], candidate: Path) -> list[dict[str, A
     return evidence
 
 
-def full_suite_validation(config: dict[str, Any], candidate: Path) -> dict[str, Any]:
+def full_suite_command(config: dict[str, Any]) -> dict[str, Any]:
+    row = config["full_suite_validation"]
+    return {key: row[key] for key in
+            ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
+
+
+def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[str, Any],
+                          identity: dict[str, str], receipt_path: Path) -> dict[str, str]:
     row = config["full_suite_validation"]
     cwd = (candidate / row["cwd"]).resolve()
     try:
         cwd.relative_to(candidate)
     except ValueError as exc:
         raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
+    started_at = risk_runtime.utc_now()
     evidence = task_runtime.run_validation(row, cwd)
+    completed_at = risk_runtime.utc_now()
+    receipt = {
+        "schema_version": risk_runtime.FULL_SUITE_SCHEMA,
+        "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                     "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+        "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                      "candidate_tree": plan["candidate"]["candidate_tree"]},
+        "policy_identity": plan["policy_identity"],
+        "validation_identity": identity,
+        "command": full_suite_command(config),
+        "started_at": started_at, "completed_at": completed_at,
+        "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
+                   "stdout": {"sha256": evidence["stdout_sha256"],
+                              "tail": evidence["stdout_tail"],
+                              "truncated_bytes": evidence["stdout_truncated_bytes"]},
+                   "stderr": {"sha256": evidence["stderr_sha256"],
+                              "tail": evidence["stderr_tail"],
+                              "truncated_bytes": evidence["stderr_truncated_bytes"]}},
+    }
+    risk_runtime.atomic_receipt(receipt_path, receipt,
+                                {"limits": {"max_receipt_bytes":
+                                            plan["evidence_limits"]["max_receipt_bytes"]}})
     if evidence["timed_out"] or evidence["exit_code"]:
         detail = evidence["stderr_tail"] or evidence["stdout_tail"]
         raise MergeValidationError(f"full-suite validation failed ({row['id']}): {detail}", [evidence])
-    return evidence
+    reference = evidence_reference(receipt_path)
+    return risk_runtime.verify_full_suite_receipt(
+        reference, plan, identity, full_suite_command(config))
 
 
 def assert_frozen_candidate(controller: Path, config: dict[str, Any], checkout: Path, candidate_sha: str) -> None:
@@ -463,6 +495,7 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
         raise MergeQueueError(f"candidate risk plan refused: {exc}") from exc
     current = attempt.get("risk")
     reference = current.get("evidence") if isinstance(current, dict) else None
+    reference_from_state = reference is not None
     canonical_path = evidence_path(controller, record["task_id"], candidate_sha)
     if reference is None and canonical_path.is_file():
         reference = evidence_reference(canonical_path)
@@ -470,7 +503,16 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
             "policy_identity": plan["policy_identity"], "plan": plan,
             "evidence": reference}
     if reference is not None:
-        verified = verify_risk_evidence(policy, request, flags, reference)
+        try:
+            verified = verify_risk_evidence(policy, request, flags, reference)
+        except MergeQueueError:
+            if reference_from_state or not (plan["min_reviews"] or plan["full_suite_required"]):
+                raise
+            # External/legacy PASS projections are not cache authority. The
+            # local full-suite + semantic workflow replaces them from scratch.
+            verified = {"eligible": False}
+            reference = None
+            risk = {**risk, "evidence": None}
         if verified["eligible"]:
             return {**risk, "status": "ELIGIBLE", "evidence": reference}
     if plan["release_gate_required"]:
@@ -479,7 +521,7 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
         return {**risk, "status": "AWAITING_RISK"}
     try:
         receipt = risk_runtime.finalize(
-            plan, request, affected_tests_passed=True, full_suite_passed=None,
+            plan, request, affected_tests_passed=True, full_suite_receipt=None,
             reviews=[], metrics={"model_calls": 0, "affected_test_runs": 1,
                                  "full_suite_runs": 0}, policy=policy,
         )
@@ -937,18 +979,39 @@ def full_validation_identity(controller: Path, config: dict[str, Any],
             raise MergeQueueError("task record validation command evidence is malformed")
         command_projection.append({"id": row["id"], "argv": row["argv"],
                                    "timeout_seconds": row["timeout_seconds"]})
-    projection = {
-        "schema_version": "juno_merge_queue_validation_identity.v1",
-        "candidate_sha": candidate_sha,
-        "candidate_tree": task_runtime.git(candidate_root, "rev-parse", f"{candidate_sha}^{{tree}}"),
-        "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
-        "task_workspace_config": config,
-        "task_record_validation_commands": command_projection,
-    }
-    encoded = canonical(projection).encode()
-    if len(encoded) > 65536:
+    commands = canonical(command_projection).encode()
+    full_config = canonical(config["full_suite_validation"]).encode()
+    if len(commands) > 65536 or len(full_config) > 65536:
         raise MergeQueueError("validation identity projection is unbounded")
-    return {"sha256": hashlib.sha256(encoded).hexdigest(), "projection": projection}
+    return {"task_workspace_config_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+            "full_suite_config_sha256": hashlib.sha256(full_config).hexdigest(),
+            "task_validation_commands_sha256": hashlib.sha256(commands).hexdigest()}
+
+
+def full_suite_receipt_path(controller: Path, task_id: str, candidate_sha: str,
+                            identity: dict[str, str]) -> Path:
+    identity_sha = hashlib.sha256(canonical(identity).encode()).hexdigest()
+    return (controller / ".juno_task/runtime/merge-queue/full-suite" / task_id
+            / candidate_sha / f"{identity_sha}.json")
+
+
+def review_target_checkpoint(controller: Path, config: dict[str, Any], repository: Path,
+                             task_id: str, candidate_sha: str,
+                             expected_target_sha: str) -> Optional[dict[str, Any]]:
+    """Briefly validate the review claim and stop spending tokens after target movement."""
+    with target_lock(controller, repository, config["target_ref"]):
+        with task_runtime.state_lock(controller):
+            record = task_runtime.read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "AWAITING_RISK":
+            raise MergeQueueError("review claim state changed while semantic review was active")
+        attempt = record.get("queue_attempt")
+        if (not isinstance(attempt, dict) or attempt.get("candidate_sha") != candidate_sha
+                or attempt.get("expected_target_sha") != expected_target_sha):
+            raise MergeQueueError("review claim candidate identity changed")
+        current = task_runtime.ref_sha(repository, config["target_ref"])
+    if current != expected_target_sha:
+        return requeue_stale_candidate(controller, config, repository, record, current)
+    return None
 
 
 def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
@@ -993,28 +1056,26 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 raise MergeQueueError("release candidate cannot use semantic review as release authority")
             progress = stored.get("review_progress")
             if progress is None:
-                progress = {"schema_version": "juno_merge_queue_review_progress.v1",
-                            "attempt_counter": 0, "full_validation_passed": False,
-                            "validation_identity": None, "full_suite_receipt": None,
+                progress = {"schema_version": "juno_merge_queue_review_progress.v2",
+                            "attempt_counter": 0, "full_suite_receipt": None,
                             "steps": []}
-            if (not isinstance(progress, dict) or set(progress) != {
-                    "schema_version", "attempt_counter", "full_validation_passed",
-                    "validation_identity", "full_suite_receipt", "steps"}
-                    or progress.get("schema_version") != "juno_merge_queue_review_progress.v1"
+            allowed_progress = {"schema_version", "attempt_counter", "full_suite_receipt", "steps",
+                                "full_validation_passed", "validation_identity"}
+            if (not isinstance(progress, dict) or not set(progress).issubset(allowed_progress)
+                    or not {"schema_version", "attempt_counter", "full_suite_receipt", "steps"}.issubset(progress)
+                    or progress.get("schema_version") != "juno_merge_queue_review_progress.v2"
                     or not isinstance(progress.get("attempt_counter"), int)
                     or isinstance(progress.get("attempt_counter"), bool)
                     or not 0 <= progress["attempt_counter"] <= 10000
-                    or not isinstance(progress.get("full_validation_passed"), bool)
-                    or (progress.get("validation_identity") is not None
-                        and not isinstance(progress.get("validation_identity"), dict))
+                    or (progress.get("full_suite_receipt") is not None
+                        and not isinstance(progress.get("full_suite_receipt"), dict))
                     or not isinstance(progress.get("steps"), list)):
                 raise MergeQueueError("stored reviewer continuation is malformed")
+            # Deprecated booleans/projections are explicitly non-authoritative.
+            progress = {key: progress[key] for key in
+                        ("schema_version", "attempt_counter", "full_suite_receipt", "steps")}
             current_validation_identity = full_validation_identity(
                 controller, config, record, candidate_root, candidate_sha)
-            if (progress["full_validation_passed"]
-                    and progress["validation_identity"] != current_validation_identity):
-                progress = {**progress, "full_validation_passed": False,
-                            "validation_identity": None, "full_suite_receipt": None}
             if progress["attempt_counter"] == 10000:
                 raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
             attempt_number = progress["attempt_counter"] + 1
@@ -1023,19 +1084,32 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             attempt = {**attempt, "risk": stored, "review": stored,
                        "outcome": "REVIEWING"}
             persist_attempt(controller, attempt, state_name="AWAITING_RISK")
-            if not progress["full_validation_passed"]:
-                suite_receipt = full_suite_validation(config, candidate_root)
+            suite_reference = None
+            if plan["full_suite_required"] and progress["full_suite_receipt"] is not None:
+                try:
+                    suite_reference = risk_runtime.verify_full_suite_receipt(
+                        progress["full_suite_receipt"], plan, current_validation_identity,
+                        full_suite_command(config))
+                except risk_runtime.RiskPolicyError:
+                    suite_reference = None
+            if plan["full_suite_required"] and suite_reference is None:
+                receipt_path = full_suite_receipt_path(
+                    controller, task_id, candidate_sha, current_validation_identity)
+                suite_reference = full_suite_validation(
+                    config, candidate_root, plan, current_validation_identity, receipt_path)
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)
                 if after_validation_identity != current_validation_identity:
                     raise MergeQueueError("validation identity changed during full validation")
-                progress = {**progress, "full_validation_passed": True,
-                            "validation_identity": current_validation_identity,
-                            "full_suite_receipt": suite_receipt}
+                progress = {**progress, "full_suite_receipt": suite_reference}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
                 persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+            stale = review_target_checkpoint(
+                controller, config, repository, task_id, candidate_sha, expected)
+            if stale is not None:
+                return stale
             reviews: list[dict[str, str]] = []
             predecessor: Optional[Path] = None
             steps = progress["steps"]
@@ -1080,6 +1154,10 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 # A PASS is durable before Reviewer B starts. A transport
                 # failure therefore retries only the missing suffix.
                 persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+                stale = review_target_checkpoint(
+                    controller, config, repository, task_id, candidate_sha, expected)
+                if stale is not None:
+                    return stale
             with target_lock(controller, repository, config["target_ref"]):
                 current_target = task_runtime.ref_sha(repository, config["target_ref"])
                 if current_target != expected:
@@ -1091,7 +1169,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                         controller, config, repository, current_record, current_target)
             receipt = risk_runtime.finalize(
                 plan, request, affected_tests_passed=True,
-                full_suite_passed=True if plan["full_suite_required"] else None,
+                full_suite_receipt=suite_reference,
                 reviews=reviews,
                 metrics={"model_calls": len(reviews), "affected_test_runs": 1,
                          "full_suite_runs": 1 if plan["full_suite_required"] else 0},

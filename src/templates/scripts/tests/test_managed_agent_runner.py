@@ -235,9 +235,31 @@ print('out-after', flush=True)
             receipt_path = out / "receipt.json"
             review_inputs.append({"runner_receipt_path": str(receipt_path),
                                   "runner_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()})
+        suite_path = self.tmp / "full-suite.json"
+        suite = {"schema_version": risk.FULL_SUITE_SCHEMA,
+                 "producer": {"schema_version": risk.FULL_SUITE_PRODUCER_SCHEMA,
+                              "tool_id": risk.FULL_SUITE_TOOL_ID},
+                 "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                               "candidate_tree": plan["candidate"]["candidate_tree"]},
+                 "policy_identity": plan["policy_identity"],
+                 "validation_identity": {"task_workspace_config_sha256": "1" * 64,
+                                         "full_suite_config_sha256": "2" * 64,
+                                         "task_validation_commands_sha256": "3" * 64},
+                 "command": {"id": "full", "cwd": ".", "argv": ["test"],
+                             "timeout_seconds": 60, "max_output_bytes": 4096},
+                 "started_at": "2026-08-09T00:00:00Z",
+                 "completed_at": "2026-08-09T00:00:01Z",
+                 "result": {"exit_code": 0, "timed_out": False,
+                            "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                       "tail": "", "truncated_bytes": 0},
+                            "stderr": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                       "tail": "", "truncated_bytes": 0}}}
+        suite_path.write_bytes(risk.canonical(suite))
+        suite_ref = {"receipt_path": str(suite_path),
+                     "receipt_sha256": hashlib.sha256(suite_path.read_bytes()).hexdigest()}
         evidence = risk.finalize(
             plan, request,
-            affected_tests_passed=True, full_suite_passed=True, reviews=review_inputs,
+            affected_tests_passed=True, full_suite_receipt=suite_ref, reviews=review_inputs,
             metrics={"model_calls": 2}, policy=policy,
         )
         self.assertEqual("passed", evidence["status"])
