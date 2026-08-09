@@ -260,6 +260,8 @@ describe('controller_checkpoint.py template script', () => {
     expect(checkpoint).toContain('allow_pending_changes: bool = False');
     expect(checkpoint).toContain('allow_pending_changes and key == "clean"');
     expect(checkpoint).toContain('payload["sparse_controller_readback"] = require_sparse_controller(root)');
+    expect(checkpoint).toContain('role_source": "registered-sparse-checkpoint"');
+    expect(checkpoint).toContain('sparse checkpoint root is not the exact registered controller');
     expect(checkpoint).not.toContain('if not evidence["passed"]:\n        failed = sorted');
   });
 

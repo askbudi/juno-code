@@ -438,6 +438,16 @@ def classify_paths(
 
 
 def resolve_role(root: Path, *, persisted_only: bool = False) -> dict[str, Any]:
+    persisted_role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False).strip()
+    registered = git(root, "config", "--get", "juno.controller.path", check=False).strip()
+    if persisted_role == "controller" and workspace_policy(root) is not None:
+        if not registered or Path(registered).expanduser().resolve() != root:
+            raise CheckpointError("sparse checkpoint root is not the exact registered controller")
+        # require_sparse_controller already proved branch, policy, generation,
+        # materialization, and registration identity before pending dirt was
+        # inspected. Re-entering the generic resolver here would reject the
+        # intended clean=false state before the checkpoint can classify it.
+        return {"role": "controller", "role_source": "registered-sparse-checkpoint"}
     if not persisted_only:
         return controller_resolver.resolve(root, "diagnostic")
     keys = ("JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE")
