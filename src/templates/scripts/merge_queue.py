@@ -11,6 +11,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import secrets
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ import task_workspace as task_runtime
 
 QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
+OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 
 
 class MergeQueueError(RuntimeError):
@@ -197,6 +199,92 @@ def candidate_directory(controller: Path, task_id: str, target_sha: str, feature
     return Path(tempfile.mkdtemp(prefix=f"{task_id}-{target_sha[:10]}-{feature_sha[:10]}-", dir=root))
 
 
+def owner_marker(controller: Path, checkout: Path) -> Path:
+    root = (controller / ".juno_task/runtime/merge-queue/candidates").resolve()
+    return root / f".{checkout.resolve().name}.owner.json"
+
+
+def create_candidate_checkout(controller: Path, repository: Path, task_id: str,
+                              target_ref: str, target_sha: str, feature_sha: str) -> tuple[Path, str]:
+    checkout = candidate_directory(controller, task_id, target_sha, feature_sha)
+    checkout.rmdir()
+    token = secrets.token_hex(24)
+    task_runtime.run(["git", "-C", str(repository), "worktree", "add", "--detach",
+                      str(checkout), target_sha], repository)
+    marker = owner_marker(controller, checkout)
+    ownership = {"schema_version": OWNER_SCHEMA, "token": token, "task_id": task_id,
+                 "repository_identity": repository_identity(repository), "target_ref": target_ref,
+                 "target_sha": target_sha, "feature_sha": feature_sha,
+                 "candidate_checkout": str(checkout.resolve())}
+    try:
+        with marker.open("x") as handle:
+            handle.write(canonical(ownership) + "\n")
+    except Exception:
+        # Registration succeeded but ownership admission did not. The exact
+        # fresh path is still known in this stack frame; leave a loud error if
+        # Git itself refuses the internal rollback.
+        removed = task_runtime.run(["git", "-C", str(repository), "worktree", "remove", "--force",
+                                    str(checkout)], repository, check=False)
+        if removed.returncode:
+            raise MergeQueueError(f"candidate ownership creation failed and rollback failed: {checkout}")
+        raise
+    return checkout, token
+
+
+def read_candidate_owner(controller: Path, checkout: Path) -> dict[str, Any]:
+    marker = owner_marker(controller, checkout)
+    try:
+        value = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MergeQueueError(f"candidate ownership marker is missing or invalid: {marker}") from exc
+    required = {"schema_version", "token", "task_id", "repository_identity", "target_ref",
+                "target_sha", "feature_sha", "candidate_checkout"}
+    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != OWNER_SCHEMA:
+        raise MergeQueueError(f"candidate ownership marker schema is invalid: {marker}")
+    return value
+
+
+def verify_candidate_owner(controller: Path, repository: Path, checkout: Path, token: str) -> dict[str, Any]:
+    checkout = checkout.resolve()
+    root = (controller / ".juno_task/runtime/merge-queue/candidates").resolve()
+    try:
+        checkout.relative_to(root)
+    except ValueError as exc:
+        raise MergeQueueError("candidate path is outside the configured queue root") from exc
+    owner = read_candidate_owner(controller, checkout)
+    if (owner["token"] != token or owner["candidate_checkout"] != str(checkout)
+            or owner["repository_identity"] != repository_identity(repository)):
+        raise MergeQueueError("candidate ownership token or repository identity mismatch")
+    rows = [row for row in registered_worktrees(repository)
+            if Path(row.get("worktree", "")).resolve() == checkout]
+    if len(rows) != 1 or rows[0].get("branch") or not rows[0].get("detached"):
+        raise MergeQueueError("candidate is not the exact registered detached queue worktree")
+    if repository_identity(checkout) != repository_identity(repository):
+        raise MergeQueueError("candidate checkout common-dir identity mismatch")
+    return owner
+
+
+def rollback_unadmitted_candidate(controller: Path, repository: Path, checkout: Path, token: str) -> None:
+    """Remove only the exact current-attempt internal worktree, even if conflicted."""
+    verify_candidate_owner(controller, repository, checkout, token)
+    marker = owner_marker(controller, checkout)
+    removed = task_runtime.run(["git", "-C", str(repository), "worktree", "remove", "--force",
+                                str(checkout)], repository, check=False)
+    still_registered = any(Path(row.get("worktree", "")).resolve() == checkout.resolve()
+                           for row in registered_worktrees(repository))
+    if removed.returncode or checkout.exists() or still_registered:
+        orphan = Path(repository_identity(repository)) / "juno-orphans/merge-queue" / f"{token}.json"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text(canonical({"schema_version": OWNER_SCHEMA, "outcome": "ORPHANED",
+                                     "candidate_owner": read_candidate_owner(controller, checkout),
+                                     "controller_marker": str(marker),
+                                     "remove_exit_code": removed.returncode,
+                                     "still_registered": still_registered,
+                                     "path_exists": checkout.exists()}) + "\n")
+        raise MergeQueueError(f"unadmitted candidate rollback failed; orphan marker: {orphan}")
+    marker.unlink()
+
+
 def validation_rows(config: dict[str, Any], candidate: Path) -> list[dict[str, Any]]:
     evidence = []
     for row in config["focused_validation"]:
@@ -251,24 +339,17 @@ def cas_target(repository: Path, target_ref: str, candidate_sha: str, expected_s
 
 
 def cleanup_candidate(controller: Path, repository: Path, checkout: Optional[Path],
-                      target_ref: str, candidate_sha: str) -> dict[str, Any]:
+                      target_ref: str, candidate_sha: str, token: Optional[str]) -> dict[str, Any]:
     if checkout is None:
         return {"candidate_checkout": None, "outcome": "not_required"}
-    checkout = checkout.resolve()
-    owned_root = (controller / ".juno_task/runtime/merge-queue/candidates").resolve()
     try:
-        checkout.relative_to(owned_root)
-    except ValueError:
-        return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "unowned_path"}
-    rows = [row for row in registered_worktrees(repository)
-            if Path(row.get("worktree", "")).resolve() == checkout]
-    if len(rows) != 1:
-        return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "unregistered_worktree"}
-    row = rows[0]
-    if row.get("branch") or not row.get("detached"):
-        return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "not_detached"}
-    if repository_identity(checkout) != repository_identity(repository):
-        return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "repository_identity_mismatch"}
+        if not token:
+            raise MergeQueueError("candidate ownership token is absent")
+        verify_candidate_owner(controller, repository, checkout, token)
+    except MergeQueueError as exc:
+        return {"candidate_checkout": str(checkout.resolve()), "outcome": "preserved",
+                "reason": "ownership_mismatch", "detail": str(exc)}
+    checkout = checkout.resolve()
     if task_runtime.git(checkout, "rev-parse", "HEAD", check=False) != candidate_sha:
         return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "candidate_head_mismatch"}
     dirty = task_runtime.git(checkout, "status", "--porcelain=v1", "--untracked-files=all", check=False)
@@ -280,6 +361,7 @@ def cleanup_candidate(controller: Path, repository: Path, checkout: Optional[Pat
     result = task_runtime.run(["git", "-C", str(repository), "worktree", "remove", str(checkout)], repository, check=False)
     if result.returncode:
         return {"candidate_checkout": str(checkout), "outcome": "preserved", "reason": "worktree_remove_failed"}
+    owner_marker(controller, checkout).unlink(missing_ok=True)
     return {"candidate_checkout": str(checkout), "outcome": "removed"}
 
 
@@ -306,7 +388,9 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
         persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
         checkout_value = attempt.get("candidate_checkout")
         checkout = Path(checkout_value) if checkout_value and Path(checkout_value).is_dir() else None
-        return {**attempt, "cleanup": cleanup_candidate(controller, repository, checkout, config["target_ref"], candidate)}
+        return {**attempt, "cleanup": cleanup_candidate(
+            controller, repository, checkout, config["target_ref"], candidate, attempt.get("candidate_token")
+        )}
     # CAS did not land (or another writer moved the target). Revalidate and
     # rebuild from the latest target rather than trusting pre-crash evidence.
     attempt = {**attempt, "outcome": "RECOVERED_RETRY", "observed_target_sha": current}
@@ -333,7 +417,7 @@ def merge_next(controller: Path) -> dict[str, Any]:
         attempt = {"schema_version": ATTEMPT_SCHEMA, "task_id": record["task_id"],
                    "target_ref": config["target_ref"], "expected_target_sha": target_sha,
                    "feature_sha": feature_sha, "strategy": None, "candidate_sha": None,
-                   "candidate_tree": None, "candidate_checkout": None, "validation": [],
+                   "candidate_tree": None, "candidate_checkout": None, "candidate_token": None, "validation": [],
                    "review": None, "outcome": "MERGING"}
         checkout: Optional[Path] = None
         direct = task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
@@ -349,16 +433,18 @@ def merge_next(controller: Path) -> dict[str, Any]:
                 persist_attempt(controller, attempt, state_name="QUEUED")
                 raise MergeQueueError("target no longer descends from the frozen feature base")
             attempt["strategy"] = "merge_both_parents"
-            checkout = candidate_directory(controller, record["task_id"], target_sha, feature_sha)
-            # git worktree requires the destination not to exist.
-            checkout.rmdir()
-            task_runtime.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(checkout), target_sha], repository)
+            checkout, candidate_token = create_candidate_checkout(
+                controller, repository, record["task_id"], config["target_ref"], target_sha, feature_sha
+            )
             attempt["candidate_checkout"] = str(checkout)
+            attempt["candidate_token"] = candidate_token
             merged = task_runtime.run(["git", "-C", str(checkout), "merge", "--no-ff", "--no-edit", feature_sha], checkout, check=False)
             if merged.returncode:
                 conflicts = conflict_paths(checkout)
                 if not conflicts:
                     attempt["outcome"] = "MERGE_FAILED"
+                    rollback_unadmitted_candidate(controller, repository, checkout, candidate_token)
+                    attempt.update({"candidate_checkout": None, "candidate_token": None})
                     persist_attempt(controller, attempt, state_name="QUEUED")
                     raise MergeQueueError(merged.stderr.strip() or "candidate merge failed")
                 all_changed = changed_paths(checkout)
@@ -367,12 +453,17 @@ def merge_next(controller: Path) -> dict[str, Any]:
                             "repository_identity": repository_identity(repository),
                             "target_ref": config["target_ref"], "expected_target_sha": target_sha,
                             "feature_sha": feature_sha, "candidate_checkout": str(checkout),
+                            "candidate_token": candidate_token,
                             "candidate_head": task_runtime.git(checkout, "rev-parse", "HEAD"),
                             "merge_head": task_runtime.git(checkout, "rev-parse", "MERGE_HEAD"),
                             "conflict_paths": conflicts, "changed_paths": all_changed,
                             "guard_snapshot": guard_snapshot(checkout, guarded)}
                 attempt["outcome"] = "CONFLICT"
-                persist_attempt(controller, attempt, state_name="CONFLICT", conflict=conflict)
+                try:
+                    persist_attempt(controller, attempt, state_name="CONFLICT", conflict=conflict)
+                except Exception:
+                    rollback_unadmitted_candidate(controller, repository, checkout, candidate_token)
+                    raise
                 return {**attempt, "conflict_paths": conflicts}
             candidate_sha = task_runtime.git(checkout, "rev-parse", "HEAD")
             parents = task_runtime.git(checkout, "show", "-s", "--format=%P", candidate_sha).split()
@@ -388,12 +479,22 @@ def merge_next(controller: Path) -> dict[str, Any]:
             assert_frozen_candidate(controller, config, validation_root, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != target_sha:
                 raise MergeQueueError("target moved before compare-and-swap; no ref was changed")
-            persist_attempt(controller, attempt, state_name="MERGING")
+            try:
+                persist_attempt(controller, attempt, state_name="MERGING")
+            except Exception:
+                if checkout is not None and attempt.get("candidate_token"):
+                    rollback_unadmitted_candidate(
+                        controller, repository, checkout, attempt["candidate_token"]
+                    )
+                raise
             assert_target_unchecked_out(repository, config["target_ref"])
             cas_target(repository, config["target_ref"], candidate_sha, target_sha)
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"
+            if checkout is not None and attempt.get("candidate_token"):
+                rollback_unadmitted_candidate(controller, repository, checkout, attempt["candidate_token"])
+                attempt.update({"candidate_checkout": None, "candidate_token": None})
             persist_attempt(controller, attempt, state_name="QUEUED")
             raise
         except MergeQueueError:
@@ -403,7 +504,9 @@ def merge_next(controller: Path) -> dict[str, Any]:
         attempt["outcome"] = "MERGED"
         attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])
         persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
-        cleanup = cleanup_candidate(controller, repository, checkout, config["target_ref"], candidate_sha)
+        cleanup = cleanup_candidate(
+            controller, repository, checkout, config["target_ref"], candidate_sha, attempt.get("candidate_token")
+        )
         return {**attempt, "cleanup": cleanup}
 
 
@@ -492,7 +595,8 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
                    "feature_sha": conflict["feature_sha"], "strategy": "resolved_merge",
                    "candidate_sha": candidate_sha,
                    "candidate_tree": task_runtime.git(checkout, "rev-parse", "HEAD^{tree}"),
-                   "candidate_checkout": str(checkout), "validation": [], "review": None,
+                   "candidate_checkout": str(checkout), "candidate_token": conflict.get("candidate_token"),
+                   "validation": [], "review": None,
                    "outcome": "MERGING"}
         resolved_conflict = {**conflict, "resolution_state": "RESOLVED",
                              "resolved_candidate_sha": candidate_sha,
@@ -520,7 +624,9 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         attempt["outcome"] = "MERGED"
         attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])
         persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
-        return {**attempt, "cleanup": cleanup_candidate(controller, repository, checkout, config["target_ref"], candidate_sha)}
+        return {**attempt, "cleanup": cleanup_candidate(
+            controller, repository, checkout, config["target_ref"], candidate_sha, attempt.get("candidate_token")
+        )}
 
 
 def status(controller: Path) -> dict[str, Any]:
