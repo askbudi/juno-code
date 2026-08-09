@@ -114,13 +114,20 @@ The apply receipt is preceded by an immutable intent receipt. Repeating apply
 is idempotent. If interruption leaves only planned endpoint values, the same
 authorized command completes them; foreign config values fail closed. The
 registrar never moves product or controller refs and refuses dirty, detached,
-stale, runtime-drifted, policy-drifted, or unrelated worktrees.
+stale, runtime-drifted, policy-drifted, or unrelated worktrees. The same atomic
+transition registers the product worktree as `integration-owner`, binds
+`protected-integration.v1` authority and its exact starting commit, and proves
+that strict Kanban writes are refused there. Planning requires a fresh product
+worktree with no pre-existing workspace-role authority. A legacy source
+controller may have either the explicit `controller` role or no persisted role
+when the registered resolver proves it is the active controller.
 
 Rollback is equally explicit: preserve the prior controller worktree/ref,
 verify the active metadata controller, and run `yy migrate registration
 rollback --plan /durable/registration-plan.json --output
 /durable/registration-rollback.json --authorize-rollback`. It restores the
-exact frozen registration values and pending-controller role. Neither
+exact frozen registration values, all three product role values, and the
+pending-controller role. Neither
 transition merges controller commits into product history, rewrites history,
 deletes a worktree, pushes, or releases. Keep every receipt outside the Git
 common directory and all protected worktrees.

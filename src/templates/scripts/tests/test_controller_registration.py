@@ -46,7 +46,6 @@ class ProtectedRegistrationTest(unittest.TestCase):
         command("git", "add", ".juno_task/metadata.txt", cwd=self.target); command("git", "commit", "-m", "metadata controller", cwd=self.target)
         self.target_head = command("git", "rev-parse", "HEAD", cwd=self.target).stdout.strip()
         command("git", "config", "extensions.worktreeConfig", "true", cwd=self.product)
-        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=self.source)
         command("git", "config", "--worktree", "juno.workspace.role", "controller-pending", cwd=self.target)
         command("git", "config", "--local", "juno.controller.path", str(self.source), cwd=self.product)
         command("git", "config", "--local", "juno.controller.branch", "old-controller", cwd=self.product)
@@ -102,14 +101,36 @@ class ProtectedRegistrationTest(unittest.TestCase):
         self.assertEqual(apply.read_bytes(), first)
         self.assertTrue((self.receipts / "apply.json.intent.json").is_file())
         self.assertTrue(json.loads(apply.read_text())["evidence"]["passed"])
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.product).stdout.strip(), "integration-owner")
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.roleAuthority", cwd=self.product).stdout.strip(), "protected-integration.v1")
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.roleBase", cwd=self.product).stdout.strip(), self.product_head)
+        protected = command("python3", str(RESOLVER), "--cwd", str(self.product), "--operation", "kanban",
+                            cwd=self.product, check=False, env={"JUNO_WORKSPACE_ENFORCEMENT": "strict"})
+        self.assertNotEqual(protected.returncode, 0); self.assertIn("refuses kanban writes", protected.stderr)
         retired = command("python3", str(RESOLVER), "--cwd", str(self.source), "--operation", "kanban", cwd=self.source, check=False)
         self.assertNotEqual(retired.returncode, 0); self.assertIn("read-only", retired.stderr)
         rollback = self.receipts / "rollback.json"
         self.invoke("rollback", "--plan", str(self.plan), "--output", str(rollback), "--authorize-rollback")
         self.assertEqual(command("git", "config", "--local", "--get", "juno.controller.path", cwd=self.product).stdout.strip(), str(self.source))
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.target).stdout.strip(), "controller-pending")
-        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.source).stdout.strip(), "controller")
+        self.assertNotEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.source, check=False).returncode, 0)
+        for key in ("juno.workspace.role", "juno.workspace.roleAuthority", "juno.workspace.roleBase"):
+            self.assertNotEqual(command("git", "config", "--worktree", "--get", key, cwd=self.product, check=False).returncode, 0)
         self.assertEqual(command("git", "rev-parse", "refs/heads/main", cwd=self.product).stdout, before_product)
+
+    def test_explicit_legacy_source_role_is_accepted_but_foreign_product_authority_is_not(self) -> None:
+        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=self.source)
+        self.make_plan()
+        self.plan.unlink()
+        command("git", "config", "--worktree", "juno.workspace.role", "task", cwd=self.product)
+        refused = self.invoke("plan", "--source-controller", str(self.source), "--source-ref", "refs/heads/old-controller",
+            "--expected-source-head", self.source_head, "--target-controller", str(self.target),
+            "--target-ref", "refs/heads/controller-new", "--expected-target-head", self.target_head,
+            "--product-root", str(self.product), "--product-ref", "refs/heads/main", "--expected-product-head", self.product_head,
+            "--runtime", str(self.runtime), "--runtime-version", "2.1.1", "--inventory", str(self.inventory),
+            "--policy-bundle", str(self.policy), "--pending-verification", str(self.pending),
+            "--output", str(self.plan), check=False)
+        self.assertIn("already carries workspace authority", refused.stderr)
 
     def test_authority_dirt_detached_stale_and_foreign_config_fail_closed(self) -> None:
         self.make_plan()
