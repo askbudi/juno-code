@@ -404,7 +404,15 @@ def required_decisions(payload: dict[str, Any]) -> dict[str, Any]:
                           "path": name, "handling": "automatic", "recommended_disposition": recommendation,
                           "reason": reason})
 
-    for row in payload["controller_private_roots"]: add("controller_private", row["path"], "keep", "durable_controller_state")
+    present_private = {row["path"] for row in payload["controller_private_roots"]}
+    for row in payload["controller_private_roots"]:
+        add("controller_private", row["path"], "keep", "durable_controller_state")
+    # Ownership policy must classify roots that are currently absent too. They
+    # can be created later and must not silently fall outside evacuation or the
+    # product boundary merely because the inventoried commit had no files there.
+    for name in CONTROLLER_PRIVATE_DEFAULTS:
+        if name not in present_private:
+            add("controller_private", name, "retire", "absent_but_policy_reserved_controller_state")
     for row in payload["managed_assets"]:
         if row["state"] != "managed": add("managed_asset", row["path"], "keep", "customized_or_missing_managed_asset")
     for row in payload["custom_project_assets"]:

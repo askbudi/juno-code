@@ -82,6 +82,12 @@ describe('Juno 2.1 migration inventory', () => {
     expect(receipt.policy_generation_blocked).toBe(true);
     expect(receipt.policy_generation_block_reasons).toContain('explicit_product_ref_required');
     expect(receipt.required_owner_answers.automatic_classifications).toContainEqual(expect.objectContaining({ path: '.juno_task/scripts/__pycache__/generated.pyc', handling: 'automatic', reason: 'generated_rebuildable_cache' }));
+    for (const reserved of ['.juno_task/artifacts', '.juno_task/logs', '.juno_task/receipts', '.juno_task/state']) {
+      expect(receipt.required_owner_answers.dispositions).toContainEqual(expect.objectContaining({
+        kind: 'controller_private', path: reserved,
+        reason: 'absent_but_policy_reserved_controller_state',
+      }));
+    }
   });
 
   it('refuses unresolved answers and validates a complete generic policy bundle', async () => {
