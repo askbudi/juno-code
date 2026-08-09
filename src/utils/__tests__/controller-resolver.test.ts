@@ -81,6 +81,18 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
+  it('accepts a canonical full controller ref while preserving short-branch diagnostics', () => {
+    git(task, 'config', '--local', 'juno.controller.branch', 'refs/heads/controller-branch');
+    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      path: controller,
+      expected_branch: 'refs/heads/controller-branch',
+      actual_branch: 'controller-branch',
+      valid: true,
+    });
+  });
+
   it('initializes controller audit authority once and exposes no public role assignment', async () => {
     const resolver = path.join(task, '.juno_task/scripts/controller_resolver.py');
     const initial = git(controller, 'rev-parse', 'HEAD');
@@ -106,6 +118,17 @@ describe('canonical controller resolver', () => {
     const help = run('python3', [resolver, '--help'], task);
     expect(help.status, help.stderr).toBe(0);
     expect(help.stdout).not.toContain('register-workspace-role');
+  });
+
+  it('refuses direct replacement of an existing controller registration', async () => {
+    const replacement = path.join(sandbox, 'replacement controller');
+    git(controller, 'worktree', 'add', '-b', 'replacement-controller', replacement);
+    await fs.ensureDir(path.join(replacement, '.juno_task'));
+    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'),
+      '--cwd', task, '--register', replacement, '--branch', 'replacement-controller'], task);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('yy migrate registration plan');
+    expect(git(task, 'config', '--local', '--get', 'juno.controller.path')).toBe(controller);
   });
 
   it('allows implicit bootstrap only in the resolved controller and preserves resolver failure truth', () => {

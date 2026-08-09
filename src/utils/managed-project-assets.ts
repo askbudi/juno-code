@@ -138,6 +138,24 @@ export class ManagedProjectAssets {
     if (!(await fs.pathExists(junoTaskDir))) {
       return result;
     }
+    const projectConfigPath = path.join(junoTaskDir, 'config.json');
+    let projectConfig: Record<string, any> = {};
+    if (await fs.pathExists(projectConfigPath)) {
+      projectConfig = await fs.readJson(projectConfigPath);
+      const controllerWorkspace = projectConfig?.controllerWorkspace;
+      const metadataOnlyController =
+        controllerWorkspace?.mode === 'metadata-only' &&
+        controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
+      if (projectConfig?.lifecycle !== undefined ||
+          (controllerWorkspace !== undefined && !metadataOnlyController)) {
+        throw new Error(
+          'Legacy Juno 2.0 lifecycle/controllerWorkspace config requires the reviewed 2.1 ' +
+            'migration flow. Run `yy migrate inventory`, generate the owner-reviewed policy, ' +
+            'then apply and verify `yy migrate evacuation-*` in a disposable worktree before ' +
+            'updating managed assets.',
+        );
+      }
+    }
     const templatesDir = this.getTemplatesDirectory();
     if (!templatesDir) {
       throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
@@ -155,6 +173,84 @@ export class ManagedProjectAssets {
         throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
       }
       manifest = parsed as ManagedAssetManifest;
+    }
+
+    await this.assertRetiredGenerationSafe(projectDir, manifest, Boolean(options.force));
+
+    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+      const destinationPath = path.join(projectDir, asset.destination);
+      if (await fs.pathExists(destinationPath) &&
+          (await fs.lstat(destinationPath)).isSymbolicLink()) {
+        throw new Error(`Refusing symbolic-link managed asset: ${asset.destination}`);
+      }
+    }
+
+    // Discover every ordinary managed conflict before changing the installed
+    // generation. Candidate files are review aids; installed bytes and the
+    // manifest stay untouched until the whole generation is admissible.
+    if (!options.force) {
+      for (const asset of MANAGED_ASSET_DEFINITIONS) {
+        const sourcePath = path.join(templatesDir, asset.source);
+        if (!(await fs.pathExists(sourcePath))) {
+          throw new Error(`Missing managed package asset: ${sourcePath}`);
+        }
+        const sourceContent = await fs.readFile(sourcePath);
+        const destinationPath = path.join(projectDir, asset.destination);
+        const record = manifest.assets[asset.destination];
+        if (await fs.pathExists(destinationPath)) {
+          const currentHash = sha256(await fs.readFile(destinationPath));
+          const sourceHash = sha256(sourceContent);
+          if (currentHash !== sourceHash && currentHash !== record?.installedSha256) {
+            const candidateRelative = path.join(
+              '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+              `${asset.destination}.candidate`,
+            );
+            await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+            result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
+          }
+        } else if (
+          asset.destination === BOLT_PROMPT &&
+          await fs.pathExists(path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT))
+        ) {
+          const candidateRelative = path.join(
+            '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+            `${asset.destination}.candidate`,
+          );
+          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+          result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
+        }
+      }
+      const config = projectConfig;
+      const global = config?.promptMacros?.global;
+      if (global && typeof global === 'object' && !Array.isArray(global)) {
+        const mappings = global as Record<string, unknown>;
+        for (const [name, mapping] of Object.entries(MANAGED_PROMPT_MACROS)) {
+          if (mappings[name] !== undefined && JSON.stringify(mappings[name]) !== JSON.stringify(mapping)) {
+            result.macroConflicts.push(name);
+          }
+        }
+      }
+      if (result.macroConflicts.length > 0) {
+        const candidateConfig = structuredClone(config);
+        candidateConfig.promptMacros = candidateConfig.promptMacros ?? {};
+        candidateConfig.promptMacros.global = candidateConfig.promptMacros.global ?? {};
+        for (const name of result.macroConflicts) {
+          candidateConfig.promptMacros.global[name] = MANAGED_PROMPT_MACROS[name];
+        }
+        const candidateRelative = path.join(
+          '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+          '.juno_task/config.json.candidate',
+        );
+        await writeAtomic(
+          path.join(projectDir, candidateRelative),
+          `${JSON.stringify(candidateConfig, null, 2)}\n`,
+        );
+        result.conflicts.push({
+          destination: '.juno_task/config.json',
+          candidate: candidateRelative,
+        });
+      }
+      if (result.conflicts.length > 0) return result;
     }
 
     await this.migrateRetiredGeneration(projectDir, manifest, result, Boolean(options.force));
@@ -274,6 +370,9 @@ export class ManagedProjectAssets {
             : `${contentRelative}.${attempt - 1}`;
       const backupPath = path.join(projectDir, backupRelative);
       if (await fs.pathExists(backupPath)) {
+        if ((await fs.lstat(backupPath)).isSymbolicLink()) {
+          throw new Error(`Refusing symbolic-link managed backup: ${backupRelative}`);
+        }
         if ((await fs.readFile(backupPath)).equals(bytes)) {
           result.backups.push({ destination, backup: backupRelative });
           return;
@@ -297,11 +396,60 @@ export class ManagedProjectAssets {
     result: ManagedAssetUpdateResult,
     force: boolean,
   ): Promise<void> {
-    // Refuse before mutating anything so an ordinary update cannot leave a
-    // partially migrated generation.
+    await this.assertRetiredGenerationSafe(projectDir, manifest, force);
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
       if (!(await fs.pathExists(destinationPath))) continue;
+      if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
+        throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
+      }
+      const content = await fs.readFile(destinationPath);
+      await this.archiveRetired(projectDir, destination, content, result);
+      await fs.remove(destinationPath);
+      delete manifest.assets[destination];
+    }
+
+    const receiptPath = path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT);
+    if (!(await fs.pathExists(receiptPath))) return;
+    const receiptContent = await fs.readFile(receiptPath);
+    let receipt: { promptSha256?: unknown } = {};
+    try {
+      receipt = JSON.parse(receiptContent.toString('utf8')) as { promptSha256?: unknown };
+    } catch {
+      // Invalid receipt bytes are customized state and require explicit force.
+    }
+    const promptPath = path.join(projectDir, BOLT_PROMPT);
+    const promptContent = (await fs.pathExists(promptPath)) ? await fs.readFile(promptPath) : null;
+    const generated =
+      promptContent !== null &&
+      typeof receipt.promptSha256 === 'string' &&
+      receipt.promptSha256 === sha256(promptContent);
+    if (!generated && !force) {
+      throw new Error(
+        `Refusing to migrate customized retired specialization ${RETIRED_SPECIALIZATION_RECEIPT}; ` +
+          'run `yy scripts update --force` to archive it and install the Bolt prompt',
+      );
+    }
+    if (promptContent !== null) {
+      await this.archiveRetired(projectDir, BOLT_PROMPT, promptContent, result);
+      await fs.remove(promptPath);
+    }
+    await this.archiveRetired(projectDir, RETIRED_SPECIALIZATION_RECEIPT, receiptContent, result);
+    await fs.remove(receiptPath);
+    delete manifest.assets[BOLT_PROMPT];
+  }
+
+  private static async assertRetiredGenerationSafe(
+    projectDir: string,
+    manifest: ManagedAssetManifest,
+    force: boolean,
+  ): Promise<void> {
+    for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
+      const destinationPath = path.join(projectDir, destination);
+      if (!(await fs.pathExists(destinationPath))) continue;
+      if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
+        throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
+      }
       const content = await fs.readFile(destinationPath);
       const managed = manifest.assets[destination]?.installedSha256 === sha256(content);
       if (!managed && !force) {
@@ -337,43 +485,6 @@ export class ManagedProjectAssets {
         );
       }
     }
-    for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
-      const destinationPath = path.join(projectDir, destination);
-      if (!(await fs.pathExists(destinationPath))) continue;
-      const content = await fs.readFile(destinationPath);
-      await this.archiveRetired(projectDir, destination, content, result);
-      await fs.remove(destinationPath);
-      delete manifest.assets[destination];
-    }
-
-    const receiptPath = path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT);
-    if (!(await fs.pathExists(receiptPath))) return;
-    const receiptContent = await fs.readFile(receiptPath);
-    let receipt: { promptSha256?: unknown } = {};
-    try {
-      receipt = JSON.parse(receiptContent.toString('utf8')) as { promptSha256?: unknown };
-    } catch {
-      // Invalid receipt bytes are customized state and require explicit force.
-    }
-    const promptPath = path.join(projectDir, BOLT_PROMPT);
-    const promptContent = (await fs.pathExists(promptPath)) ? await fs.readFile(promptPath) : null;
-    const generated =
-      promptContent !== null &&
-      typeof receipt.promptSha256 === 'string' &&
-      receipt.promptSha256 === sha256(promptContent);
-    if (!generated && !force) {
-      throw new Error(
-        `Refusing to migrate customized retired specialization ${RETIRED_SPECIALIZATION_RECEIPT}; ` +
-          'run `yy scripts update --force` to archive it and install the Bolt prompt',
-      );
-    }
-    if (promptContent !== null) {
-      await this.archiveRetired(projectDir, BOLT_PROMPT, promptContent, result);
-      await fs.remove(promptPath);
-    }
-    await this.archiveRetired(projectDir, RETIRED_SPECIALIZATION_RECEIPT, receiptContent, result);
-    await fs.remove(receiptPath);
-    delete manifest.assets[BOLT_PROMPT];
   }
 
   /** Inspect the installed lifecycle bundle without changing project files. */

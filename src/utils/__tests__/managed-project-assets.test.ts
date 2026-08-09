@@ -85,6 +85,15 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('absolute integration-owner worktree');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('screenshots');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('separate yes/no authorities');
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain(
+      '548d1e6763bb6c5b3f2b27a63398faf225ebbb1c',
+    );
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('juno_kanban-2.0.6');
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('ruamel.yaml');
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('--no-deps');
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain(
+      'before any canonical board access',
+    );
     const reviewPrompt = await fs.readFile(
       path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'),
       'utf8',
@@ -225,6 +234,8 @@ describe('ManagedProjectAssets', () => {
       '.juno_task/scripts/tests/test_managed_agent_runner.py',
       '.juno_task/scripts/metadata_controller.py',
       '.juno_task/scripts/tests/test_metadata_controller.py',
+      '.juno_task/scripts/controller_registration.py',
+      '.juno_task/scripts/tests/test_controller_registration.py',
       '.juno_task/scripts/risk_policy.py',
       '.juno_task/scripts/tests/test_risk_policy.py',
       '.juno_task/scripts/release_gate.py',
@@ -338,18 +349,49 @@ describe('ManagedProjectAssets', () => {
     const destinationPath = path.join(projectDir, destination);
     const customized = Buffer.from('# owner-customized runtime\n', 'utf8');
     await fs.writeFile(destinationPath, customized);
+    const laterManaged = path.join(projectDir, '.juno_task/scripts/migration_inventory.py');
+    await fs.remove(laterManaged);
 
     const ordinary = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(ordinary.conflicts).toContainEqual(
       expect.objectContaining({ destination }),
     );
     expect(await fs.readFile(destinationPath)).toEqual(customized);
+    expect(await fs.pathExists(laterManaged)).toBe(false);
+    expect(await ScriptInstaller.installScript(projectDir, 'metadata_controller.py', true)).toBe(
+      false,
+    );
+    expect(await ScriptInstaller.updateScriptIfNewer(
+      projectDir,
+      'metadata_controller.py',
+      true,
+    )).toBe(false);
+    expect(await fs.readFile(destinationPath)).toEqual(customized);
+    expect(await fs.pathExists(laterManaged)).toBe(false);
 
     const forced = await ManagedProjectAssets.update(projectDir, { force: true, silent: true });
     const backup = forced.backups.find((entry) => entry.destination === destination);
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup))).toEqual(customized);
     expect((await fs.stat(destinationPath)).mode & 0o111).not.toBe(0);
+    expect(await fs.pathExists(laterManaged)).toBe(true);
+  });
+
+  it('rejects legacy 2.0 config shapes without changing project bytes', async () => {
+    const configPath = path.join(projectDir, '.juno_task/config.json');
+    const legacy = `${JSON.stringify({
+      lifecycle: { enabled: true },
+      controllerWorkspace: { enabled: true },
+      promptMacros: { global: { owner: 'preserve' } },
+    }, null, 2)}\n`;
+    await fs.writeFile(configPath, legacy);
+
+    await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
+      'yy migrate evacuation-*',
+    );
+    expect(await fs.readFile(configPath, 'utf8')).toBe(legacy);
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/scripts'))).toBe(false);
   });
 
   it('archives retired managed and customized assets during the Bolt upgrade', async () => {

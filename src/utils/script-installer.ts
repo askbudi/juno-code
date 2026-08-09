@@ -152,6 +152,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     silent = false,
   ): Promise<boolean> {
     try {
+      if (MANAGED_SCRIPT_NAMES.includes(scriptName)) {
+        const ready = await this.prepareManagedLifecycleBundle(projectDir, silent, false);
+        if (!ready) return false;
+      }
       const packageScriptsDir = this.getPackageScriptsDir();
       if (!packageScriptsDir) {
         if (!silent && process.env.JUNO_CODE_DEBUG === '1') {
@@ -346,22 +350,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       ]);
 
       if (sourceContent !== destContent) {
-        // Update the script
-        await fs.copy(sourcePath, destPath, { overwrite: true });
-
-        if (scriptName.endsWith('.sh') || scriptName.endsWith('.py')) {
-          await fs.chmod(destPath, 0o755);
-        }
-
-        if (!silent) {
-          console.log(`✓ Updated script: ${scriptName}`);
-        }
-
-        if (process.env.JUNO_CODE_DEBUG === '1') {
-          console.error(`[DEBUG] ScriptInstaller: Updated ${scriptName} (content changed)`);
-        }
-
-        return true;
+        return this.installScript(projectDir, scriptName, silent);
       }
 
       return false;
