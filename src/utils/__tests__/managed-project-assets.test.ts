@@ -76,7 +76,7 @@ describe('ManagedProjectAssets', () => {
       'a merely compatible but older installed v2 is stale',
     );
     for (const prompt of [dictionary.migrate_juno_code_v1_to_v2, dictionary.migrate_juno_kanban_v1_to_v2]) {
-      expect(prompt).toContain('1ed2de072a52c7c9ae0559d62e097a04af595a73');
+      expect(prompt).toContain('548d1e6763bb6c5b3f2b27a63398faf225ebbb1c');
       expect(prompt).toContain('2.0.5');
       expect(prompt).toContain('ruamel.yaml');
       expect(prompt).toContain('--no-deps');

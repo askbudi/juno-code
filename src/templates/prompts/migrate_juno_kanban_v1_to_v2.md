@@ -23,7 +23,7 @@ not accept an import that succeeds only because the operator environment already
 contains the dependency.
 
 The reviewed fixed candidate is Juno Kanban 2.0.6 at source commit
-`1ed2de072a52c7c9ae0559d62e097a04af595a73`. Freeze the owner-approved artifact
+`548d1e6763bb6c5b3f2b27a63398faf225ebbb1c`. Freeze the owner-approved artifact
 SHA separately; a version string or source SHA alone is insufficient. Before
 reading the board:
 

@@ -41,7 +41,7 @@ build and test proof.
 Apply the shared package preflight before any canonical board access: reject Juno
 Kanban 2.0.5 because its sdist could omit `Requires-Dist: ruamel.yaml`; select
 the reviewed 2.0.6 source commit
-`1ed2de072a52c7c9ae0559d62e097a04af595a73`, bind a separately reviewed wheel
+`548d1e6763bb6c5b3f2b27a63398faf225ebbb1c`, bind a separately reviewed wheel
 SHA, inspect bounded `ruamel.yaml>=0.18.6,<0.19` metadata, and prove normal
 clean-environment install/import/public-CLI smoke. A `--no-deps` fixture must
 fail before board access. Ambient dependency leakage is not acceptance.
