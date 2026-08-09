@@ -42,6 +42,10 @@ def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def digest(value: Any) -> str:
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
 def repository_identity(repository: Path) -> str:
     common = task_runtime.git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
     return str(Path(common).resolve())
@@ -824,6 +828,41 @@ def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, An
         raise MergeQueueError(f"managed {reviewer} evidence failed: {exc}") from exc
 
 
+def full_validation_identity(controller: Path, config: dict[str, Any],
+                             record: dict[str, Any], candidate_root: Path,
+                             candidate_sha: str) -> dict[str, Any]:
+    policy_path = controller / ".juno_task/config/task-workspace.json"
+    try:
+        policy_bytes = policy_path.read_bytes()
+    except OSError as exc:
+        raise MergeQueueError("task-workspace policy is missing during review") from exc
+    if not policy_bytes or len(policy_bytes) > 65536:
+        raise MergeQueueError("task-workspace policy bytes are empty or unbounded")
+    recorded = record.get("validation")
+    if not isinstance(recorded, list) or len(recorded) != len(config["focused_validation"]):
+        raise MergeQueueError("task record validation command evidence is missing")
+    command_projection = []
+    for row in recorded:
+        if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                or not isinstance(row.get("argv"), list)
+                or not isinstance(row.get("timeout_seconds"), int)):
+            raise MergeQueueError("task record validation command evidence is malformed")
+        command_projection.append({"id": row["id"], "argv": row["argv"],
+                                   "timeout_seconds": row["timeout_seconds"]})
+    projection = {
+        "schema_version": "juno_merge_queue_validation_identity.v1",
+        "candidate_sha": candidate_sha,
+        "candidate_tree": task_runtime.git(candidate_root, "rev-parse", f"{candidate_sha}^{{tree}}"),
+        "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "task_workspace_config": config,
+        "task_record_validation_commands": command_projection,
+    }
+    encoded = canonical(projection).encode()
+    if len(encoded) > 65536:
+        raise MergeQueueError("validation identity projection is unbounded")
+    return {"sha256": hashlib.sha256(encoded).hexdigest(), "projection": projection}
+
+
 def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
@@ -865,16 +904,25 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             if progress is None:
                 progress = {"schema_version": "juno_merge_queue_review_progress.v1",
                             "attempt_counter": 0, "full_validation_passed": False,
-                            "steps": []}
+                            "validation_identity": None, "steps": []}
             if (not isinstance(progress, dict) or set(progress) != {
-                    "schema_version", "attempt_counter", "full_validation_passed", "steps"}
+                    "schema_version", "attempt_counter", "full_validation_passed",
+                    "validation_identity", "steps"}
                     or progress.get("schema_version") != "juno_merge_queue_review_progress.v1"
                     or not isinstance(progress.get("attempt_counter"), int)
                     or isinstance(progress.get("attempt_counter"), bool)
                     or not 0 <= progress["attempt_counter"] <= 10000
                     or not isinstance(progress.get("full_validation_passed"), bool)
+                    or (progress.get("validation_identity") is not None
+                        and not isinstance(progress.get("validation_identity"), dict))
                     or not isinstance(progress.get("steps"), list)):
                 raise MergeQueueError("stored reviewer continuation is malformed")
+            current_validation_identity = full_validation_identity(
+                controller, config, record, candidate_root, candidate_sha)
+            if (progress["full_validation_passed"]
+                    and progress["validation_identity"] != current_validation_identity):
+                progress = {**progress, "full_validation_passed": False,
+                            "validation_identity": None}
             if progress["attempt_counter"] == 10000:
                 raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
             attempt_number = progress["attempt_counter"] + 1
@@ -886,7 +934,13 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             if not progress["full_validation_passed"]:
                 # Projects choose the exact high-risk command in task policy.
                 validation_rows(config, candidate_root)
-                progress = {**progress, "full_validation_passed": True}
+                after_validation_identity = full_validation_identity(
+                    controller, task_runtime.load_config(controller), record,
+                    candidate_root, candidate_sha)
+                if after_validation_identity != current_validation_identity:
+                    raise MergeQueueError("validation identity changed during full validation")
+                progress = {**progress, "full_validation_passed": True,
+                            "validation_identity": current_validation_identity}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
                 persist_attempt(controller, attempt, state_name="AWAITING_RISK")
@@ -966,7 +1020,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
 
 
 def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
-    """Requeue a finding-bearing task only after a new validated feature tip."""
+    """Recoverable two-phase requeue after a new validated feature tip."""
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
     config = task_runtime.load_config(controller)
@@ -975,51 +1029,100 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             record = state["tasks"].get(task_id)
-        if not isinstance(record, dict) or record.get("state") != "REVIEW_FINDINGS":
+        if not isinstance(record, dict) or record.get("state") not in {"REVIEW_FINDINGS", "REOPENING"}:
             raise MergeQueueError("task has no review findings to reopen")
-        old_attempt = record.get("queue_attempt")
-        if not isinstance(old_attempt, dict):
-            raise MergeQueueError("review finding task has no frozen queue attempt")
+        if record["state"] == "REVIEW_FINDINGS":
+            old_attempt = record.get("queue_attempt")
+            if not isinstance(old_attempt, dict):
+                raise MergeQueueError("review finding task has no frozen queue attempt")
+            worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
+            if Path(record["repository"]).resolve() != repository:
+                raise MergeQueueError("feature repository identity drifted")
+            if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
+                raise MergeQueueError("feature worktree branch identity drifted")
+            new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
+            if task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip:
+                raise MergeQueueError("feature branch tip identity drifted")
+            if new_tip == record["tip_sha"]:
+                raise MergeQueueError("reopen requires a new committed feature tip")
+            if task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+                raise MergeQueueError("feature worktree must be clean before reopen")
+            if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                                 record["tip_sha"], new_tip], repository, check=False).returncode:
+                raise MergeQueueError("new feature tip must descend from the reviewed tip")
+            changed = sorted(set(task_runtime.git(
+                worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
+            ).splitlines()))
+            forbidden = [path for path in changed
+                         if task_runtime.path_within(path, config["controller_private_paths"])]
+            outside = [path for path in changed
+                       if not task_runtime.path_within(path, config["allowed_paths"])]
+            if not changed or forbidden or outside:
+                raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
+            validations = validation_rows(config, worktree)
+            if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
+                    or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+                raise MergeQueueError("feature tip changed during reopen validation")
+            checkout_value, token = old_attempt.get("candidate_checkout"), old_attempt.get("candidate_token")
+            owner = (read_candidate_owner(controller, Path(checkout_value))
+                     if checkout_value else None)
+            policy_bytes = (controller / ".juno_task/config/task-workspace.json").read_bytes()
+            reopen_attempt = {
+                "schema_version": "juno_merge_queue_reopen.v1",
+                "old_candidate_sha": old_attempt["candidate_sha"],
+                "old_candidate_checkout": checkout_value,
+                "old_candidate_token": token,
+                "old_candidate_owner": owner,
+                "new_feature_tip": new_tip,
+                "changed_paths": changed,
+                "validations": validations,
+                "validation_identity": digest({
+                    "new_feature_tip": new_tip, "changed_paths": changed,
+                    "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+                    "focused_validation": config["focused_validation"],
+                }),
+            }
+            reopening = {**record, "state": "REOPENING", "reopen_attempt": reopen_attempt}
+            with task_runtime.state_lock(controller):
+                state = task_runtime.read_state(controller)
+                if state["tasks"].get(task_id) != record:
+                    raise MergeQueueError("task state changed before reopen admission")
+                state["tasks"][task_id] = reopening
+                task_runtime.write_state(controller, state)
+            record = reopening
+        reopen_attempt = record.get("reopen_attempt")
+        if (not isinstance(reopen_attempt, dict)
+                or reopen_attempt.get("schema_version") != "juno_merge_queue_reopen.v1"):
+            raise MergeQueueError("REOPENING task has invalid recovery identity")
         worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
-        if Path(record["repository"]).resolve() != repository:
-            raise MergeQueueError("feature repository identity drifted")
-        if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
-            raise MergeQueueError("feature worktree branch identity drifted")
-        new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
-        if task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip:
-            raise MergeQueueError("feature branch tip identity drifted")
-        if new_tip == record["tip_sha"]:
-            raise MergeQueueError("reopen requires a new committed feature tip")
-        if task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
-            raise MergeQueueError("feature worktree must be clean before reopen")
-        if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
-                             record["tip_sha"], new_tip], repository, check=False).returncode:
-            raise MergeQueueError("new feature tip must descend from the reviewed tip")
-        changed = sorted(set(task_runtime.git(
-            worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
-        ).splitlines()))
-        forbidden = [path for path in changed
-                     if task_runtime.path_within(path, config["controller_private_paths"])]
-        outside = [path for path in changed
-                   if not task_runtime.path_within(path, config["allowed_paths"])]
-        if not changed or forbidden or outside:
-            raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
-        validations = validation_rows(config, worktree)
-        if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
-                or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
-            raise MergeQueueError("feature tip changed during reopen validation")
-        checkout_value, token = old_attempt.get("candidate_checkout"), old_attempt.get("candidate_token")
+        new_tip = reopen_attempt["new_feature_tip"]
+        if (task_runtime.git(worktree, "rev-parse", "HEAD", check=False) != new_tip
+                or task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip
+                or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+            raise MergeQueueError("REOPENING feature identity drifted")
+        checkout_value = reopen_attempt.get("old_candidate_checkout")
+        token = reopen_attempt.get("old_candidate_token")
         if checkout_value:
             if not token:
                 raise MergeQueueError("old candidate ownership token is missing")
-            rollback_unadmitted_candidate(
-                controller, repository, Path(checkout_value), token)
+            checkout = Path(checkout_value)
+            if checkout.exists():
+                if read_candidate_owner(controller, checkout) != reopen_attempt.get("old_candidate_owner"):
+                    raise MergeQueueError("old candidate ownership drifted during reopen")
+                rollback_unadmitted_candidate(controller, repository, checkout, token)
+            else:
+                marker = owner_marker(controller, checkout)
+                registered = any(Path(row.get("worktree", "")).resolve() == checkout.resolve()
+                                 for row in registered_worktrees(repository))
+                if marker.exists() or registered:
+                    raise MergeQueueError("old candidate cleanup is incomplete or orphaned")
         queued = {key: value for key, value in record.items()
-                  if key not in {"queue_attempt", "last_queue_outcome"}}
+                  if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
         queued.update({"state": "QUEUED", "tip_sha": new_tip,
-                       "changed_paths": changed, "validation": validations,
+                       "changed_paths": reopen_attempt["changed_paths"],
+                       "validation": reopen_attempt["validations"],
                        "last_validation_outcome": "PASSED",
-                       "reopened_from_candidate_sha": old_attempt["candidate_sha"]})
+                       "reopened_from_candidate_sha": reopen_attempt["old_candidate_sha"]})
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             if state["tasks"].get(task_id) != record:
@@ -1061,7 +1164,7 @@ def status(controller: Path) -> dict[str, Any]:
                 and row.get("target_ref") == config["target_ref"]
                 and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
                                          "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
-                                         "MERGED"}]
+                                         "REOPENING", "MERGED"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
             "tasks": rows, "last_attempt": entry["last_attempt"],

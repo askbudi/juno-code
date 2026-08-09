@@ -174,6 +174,22 @@ class MergeQueueTests(unittest.TestCase):
         receipt_path, receipt_sha = self.object_file(f"runner-{reviewer}-{sequence}.json", receipt)
         return {"runner_receipt_path": receipt_path, "runner_receipt_sha256": receipt_sha}
 
+    def prepare_moved_finding_reopen(self) -> tuple[Path, Path]:
+        self.commit_feature("X", "src/x.py", "x\n")
+        self.commit_feature("Y", "src/security/auth.py", "bad\n")
+        self.queue_payload("next")
+        waiting = self.queue_payload("next")
+        checkout = Path(waiting["candidate_checkout"])
+        with mock.patch.object(
+            merge_runtime, "dispatch_reviewer",
+            side_effect=lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True),
+        ):
+            merge_runtime.merge_review(self.controller.resolve(), "Y")
+        worktree = self.workspaces / "Y"
+        (worktree / "src/security/auth.py").write_text("fixed\n")
+        git(worktree, "add", "."); git(worktree, "commit", "-m", "fix findings")
+        return checkout, merge_runtime.owner_marker(self.controller.resolve(), checkout)
+
     def test_security_candidate_awaits_exact_risk_evidence_and_fake_reviews_resume_cas(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "secure = True\n")
         waiting = self.queue_payload("next")
@@ -306,6 +322,36 @@ class MergeQueueTests(unittest.TestCase):
             merge_runtime.merge_review(self.controller.resolve(), "X")
         self.assertEqual(calls, [("reviewer_a", 2), ("reviewer_b", 2)])
 
+    def test_changed_failing_validation_identity_stops_b_and_zero_cas(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        def fail_b(*args: object, **kwargs: object) -> dict[str, str]:
+            if args[4] == "reviewer_b":
+                raise merge_runtime.MergeQueueError("B down")
+            return self.fake_review(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=fail_b):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "B down"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.write_policy("import sys; sys.exit(17)")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeValidationError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        progress = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertFalse(progress["full_validation_passed"])
+        self.assertEqual([step["reviewer"] for step in progress["steps"]], ["reviewer_a"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
+    def test_missing_risk_policy_fails_closed_before_reviewer(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        (self.controller / ".juno_task/config/risk-policy.json").unlink()
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeQueueError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
     def test_awaiting_risk_does_not_starve_low_risk_fifo_work(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")
         y_tip = self.commit_feature("Y", "docs/y.md", "y\n")
@@ -333,20 +379,8 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(self.task("status", "X")["state"], "AWAITING_RELEASE")
 
     def test_finding_reopen_new_tip_discards_exact_owned_moved_candidate_and_requeues(self) -> None:
-        self.commit_feature("X", "src/x.py", "x\n")
-        self.commit_feature("Y", "src/security/auth.py", "bad\n")
-        self.queue_payload("next")
-        waiting = self.queue_payload("next")
-        checkout = Path(waiting["candidate_checkout"])
-        marker = merge_runtime.owner_marker(self.controller.resolve(), checkout)
-        with mock.patch.object(
-            merge_runtime, "dispatch_reviewer",
-            side_effect=lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True),
-        ):
-            merge_runtime.merge_review(self.controller.resolve(), "Y")
-        worktree = self.workspaces / "Y"
-        (worktree / "src/security/auth.py").write_text("fixed\n")
-        git(worktree, "add", "."); git(worktree, "commit", "-m", "fix findings")
+        checkout, marker = self.prepare_moved_finding_reopen()
+        old_candidate = git(checkout, "rev-parse", "HEAD")
         reopened = merge_runtime.merge_reopen(self.controller.resolve(), "Y")
         self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_FINDINGS")
         self.assertFalse(checkout.exists())
@@ -354,7 +388,46 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
         again = self.queue_payload("next")
         self.assertEqual(again["outcome"], "AWAITING_RISK")
-        self.assertNotEqual(again["candidate_sha"], waiting["candidate_sha"])
+        self.assertNotEqual(again["candidate_sha"], old_candidate)
+
+    def test_reopen_first_state_write_failure_keeps_findings_and_owned_candidate(self) -> None:
+        checkout, marker = self.prepare_moved_finding_reopen()
+        with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=OSError("first write")):
+            with self.assertRaisesRegex(OSError, "first write"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(self.task("status", "Y")["state"], "REVIEW_FINDINGS")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_reopen_cleanup_failure_is_durable_and_retry_safe(self) -> None:
+        checkout, marker = self.prepare_moved_finding_reopen()
+        with mock.patch.object(
+            merge_runtime, "rollback_unadmitted_candidate",
+            side_effect=merge_runtime.MergeQueueError("cleanup failed"),
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "cleanup failed"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+        self.assertEqual(merge_runtime.merge_reopen(self.controller.resolve(), "Y")["state"], "QUEUED")
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+
+    def test_reopen_final_state_write_failure_recovers_after_cleanup(self) -> None:
+        checkout, marker = self.prepare_moved_finding_reopen()
+        original = merge_runtime.task_runtime.write_state
+        calls = 0
+        def fail_second(controller: Path, state: dict) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("final write")
+            original(controller, state)
+        with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, "final write"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+        recovered = merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(recovered["state"], "QUEUED")
 
     def test_parallel_x_y_then_moved_target_uses_one_two_parent_composition(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:
