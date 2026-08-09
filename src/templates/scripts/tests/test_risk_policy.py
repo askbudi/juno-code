@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""Adversarial real-Git tests for deterministic Bolt risk and reuse evidence."""
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+SCRIPT = Path(__file__).resolve().parents[1] / "risk_policy.py"
+POLICY = Path(__file__).resolve().parents[2] / "config/risk-policy.json"
+SPEC = importlib.util.spec_from_file_location("risk_policy", SCRIPT)
+assert SPEC and SPEC.loader
+rp = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(rp)
+GATE_SPEC = importlib.util.spec_from_file_location("release_gate", SCRIPT.with_name("release_gate.py"))
+assert GATE_SPEC and GATE_SPEC.loader
+release = importlib.util.module_from_spec(GATE_SPEC); GATE_SPEC.loader.exec_module(release)
+
+
+class RiskPolicyTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.policy = rp.load_policy(POLICY)
+
+    def setUp(self) -> None:
+        self.temp = Path(tempfile.mkdtemp(prefix="juno-bolt-risk-test-"))
+        self.repo = self.temp / "repo"
+        subprocess.run(["git", "init", "-b", "main", str(self.repo)], check=True,
+                       stdout=subprocess.DEVNULL)
+        self.git("config", "user.name", "Test"); self.git("config", "user.email", "t@invalid")
+        (self.repo / ".baseline").write_text("base\n")
+        self.git("add", ".baseline"); self.git("commit", "-m", "base")
+        self.base_sha = self.git("rev-parse", "HEAD")
+        self.counter = 0
+        self.make_candidate({"src/runtime.ts": "runtime\n"})
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp, ignore_errors=True)
+
+    def git(self, *args: str) -> str:
+        return subprocess.check_output(["git", "-C", str(self.repo), *args], text=True).strip()
+
+    def make_candidate(self, files: dict[str, str]) -> str:
+        self.counter += 1
+        self.git("switch", "-C", f"candidate-{self.counter}", self.base_sha)
+        for name, content in files.items():
+            path = self.repo / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content)
+        self.git("add", "-A"); self.git("commit", "-m", f"candidate {self.counter}")
+        self.candidate_sha = self.git("rev-parse", "HEAD")
+        return self.candidate_sha
+
+    def request(self, *, candidate_sha: str | None = None,
+                target_ref: str = "refs/heads/main",
+                expected_target_sha: str | None = None) -> dict:
+        return {"repository": str(self.repo), "candidate_sha": candidate_sha or self.candidate_sha,
+                "target_ref": target_ref,
+                "expected_target_sha": expected_target_sha or self.base_sha}
+
+    def plan(self, files: dict[str, str], flags: list[str] | None = None) -> dict:
+        self.make_candidate(files)
+        return rp.classify(self.policy, self.request(), flags)
+
+    def object_file(self, name: str, value: dict) -> tuple[str, str]:
+        path = self.temp / name; data = rp.canonical(value); path.write_bytes(data)
+        return str(path), hashlib.sha256(data).hexdigest()
+
+    def review(self, plan: dict, role: str, sequence: int, session: str, *, findings: int = 0,
+               predecessor: dict | None = None, tool_id: str | None = None) -> dict:
+        predecessor_mark = None
+        if predecessor:
+            prior = json.loads(Path(predecessor["runner_receipt_path"]).read_text())
+            predecessor_mark = {"receipt_sha256": predecessor["runner_receipt_sha256"],
+                                "tool_id": prior["tool_id"], "session_id": prior["session_id"],
+                                "completed_at": prior["completed_at"],
+                                "binding_sha256": prior["review_binding"]["binding_sha256"]}
+        binding = {"schema_version": rp.REVIEW_BINDING_SCHEMA,
+                   "candidate_sha": plan["candidate"]["candidate_sha"],
+                   "policy_identity": plan["policy_identity"], "reviewer_role": role,
+                   "sequence": sequence, "predecessor": predecessor_mark}
+        binding["binding_sha256"] = rp.digest(binding)
+        result = {"schema_version": rp.REVIEW_RESULT_SCHEMA,
+                  "candidate_sha": binding["candidate_sha"],
+                  "policy_identity": binding["policy_identity"], "reviewer_role": role,
+                  "sequence": sequence, "verdict": "findings" if findings else "pass",
+                  "findings": [{"code": f"F{i}", "severity": "high", "summary": "finding"}
+                               for i in range(findings)]}
+        response_path, response_sha = self.object_file(f"response-{session}.json", result)
+        receipt = {"schema_version": rp.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
+                   "state": "succeeded", "semantic_outcome": "completed", "session_id": session,
+                   "tool_id": tool_id or f"bolt_{role}",
+                   "completed_at": f"2026-08-09T00:00:0{sequence}Z",
+                   "identity": {"candidate_sha": binding["candidate_sha"]},
+                   "review_binding": binding,
+                   "artifacts": {"response": {"path": response_path,
+                                                "bytes": Path(response_path).stat().st_size,
+                                                "sha256": response_sha}}}
+        path, mark = self.object_file(f"runner-{session}.json", receipt)
+        return {"runner_receipt_path": path, "runner_receipt_sha256": mark}
+
+    def high_reviews(self, plan: dict) -> list[dict]:
+        first = self.review(plan, "reviewer_a", 1, "a")
+        return [first, self.review(plan, "reviewer_b", 2, "b", predecessor=first)]
+
+    def gate(self, plan: dict) -> dict:
+        sha = plan["candidate"]["candidate_sha"]
+        auth = {"schema_version": release.AUTH_SCHEMA, "candidate_sha": sha,
+                "policy_identity": plan["policy_identity"], "owner_id": "owner",
+                "authorized_scopes": ["local_release"]}
+        auth_path, auth_sha = self.object_file("authorization.json", auth)
+        receipt_path = self.temp / "release.json"
+        release.produce(Path(auth_path), auth_sha, sha, plan["policy_identity"], receipt_path)
+        return {"receipt_path": str(receipt_path),
+                "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                "authorization_path": auth_path}
+
+    def finish(self, plan: dict, reviews: list[dict] | None = None, **changes: object) -> dict:
+        values = {"affected_tests_passed": True,
+                  "full_suite_passed": True if plan["full_suite_required"] else None,
+                  "reviews": reviews or [], "metrics": {}, "policy": self.policy}
+        request = changes.pop("candidate_request", self.request(
+            candidate_sha=plan["candidate"]["candidate_sha"],
+            expected_target_sha=plan["candidate"]["target_sha"]))
+        values.update(changes)
+        return rp.finalize(plan, request, **values)
+
+    def evidence_ref(self, evidence: dict, name: str = "evidence.json") -> dict:
+        path, mark = self.object_file(name, evidence)
+        return {"receipt_path": path, "receipt_sha256": mark}
+
+    def test_git_derived_scope_cannot_claim_security_bytes_as_docs(self) -> None:
+        plan = self.plan({"docs/readme.md": "docs\n", "src/security/auth.ts": "unsafe\n"})
+        self.assertEqual("high", plan["tier"])
+        self.assertEqual(["docs/readme.md", "src/security/auth.ts"], plan["changed_paths"])
+        self.assertEqual(plan["changed_paths"], plan["candidate"]["changed_paths"])
+        forged = copy.deepcopy(plan); forged["changed_paths"] = ["docs/readme.md"]
+        forged["candidate"]["changed_paths"] = ["docs/readme.md"]
+        forged["tier"] = "low"; forged["reasons"] = ["docs_only"]
+        forged["reviewer_sequence"] = []; forged["min_reviews"] = forged["max_reviews"] = 0
+        forged["full_suite_required"] = False
+        with self.assertRaisesRegex(rp.RiskPolicyError, "drifted"):
+            self.finish(forged)
+
+    def test_security_rename_to_docs_is_still_high_risk(self) -> None:
+        self.git("switch", "main")
+        security = self.repo / "src/security/auth.ts"; security.parent.mkdir(parents=True)
+        security.write_text("guard\n"); self.git("add", "src/security/auth.ts")
+        self.git("commit", "-m", "security base"); self.base_sha = self.git("rev-parse", "HEAD")
+        self.counter += 1; self.git("switch", "-c", f"rename-{self.counter}")
+        (self.repo / "docs").mkdir(); self.git("mv", "src/security/auth.ts", "docs/auth.md")
+        self.git("commit", "-m", "hide security as docs"); self.candidate_sha = self.git("rev-parse", "HEAD")
+        plan = rp.classify(self.policy, self.request())
+        self.assertEqual("high", plan["tier"])
+        self.assertEqual(["docs/auth.md", "src/security/auth.ts"], plan["changed_paths"])
+
+    def test_docs_normal_high_and_release_are_derived(self) -> None:
+        docs = self.plan({"docs/flow.md": "docs\n"})
+        self.assertEqual(("low", 0), (docs["tier"], docs["max_reviews"]))
+        self.assertEqual("passed", self.finish(docs)["status"])
+        normal = self.plan({"src/runtime.ts": "runtime\n"})
+        self.assertEqual("passed", self.finish(normal)["status"])
+        high = self.plan({"src/security/auth.ts": "auth\n"})
+        self.assertEqual("passed", self.finish(high, self.high_reviews(high))["status"])
+        released = self.plan({"src/security/auth.ts": "auth\n"}, ["release"])
+        self.assertEqual(("high", 2, True, True),
+                         (released["tier"], released["min_reviews"],
+                          released["full_suite_required"], released["release_gate_required"]))
+        released_evidence = self.finish(
+            released, self.high_reviews(released), release_gate=self.gate(released))
+        self.assertEqual("passed", released_evidence["status"])
+        verified = rp.verify_candidate_evidence(
+            self.policy,
+            self.request(candidate_sha=released["candidate"]["candidate_sha"]),
+            ["release"], self.evidence_ref(released_evidence, "released-evidence.json"))
+        self.assertTrue(verified["eligible"])
+
+    def test_target_ref_grammar_and_multi_commit_direct_tip(self) -> None:
+        for ref in ("main", "refs/remotes/origin/main", "refs/heads/main~1",
+                    "refs/heads/main@{0}", "refs/heads/../main", "refs/tags/main"):
+            with self.assertRaises(rp.RiskPolicyError):
+                rp.classify(self.policy, self.request(target_ref=ref))
+        with self.assertRaisesRegex(rp.RiskPolicyError, "exact current"):
+            rp.classify(self.policy, self.request(expected_target_sha=self.candidate_sha))
+        self.git("switch", "-C", "stacked", self.candidate_sha)
+        (self.repo / "second.ts").write_text("second\n"); self.git("add", "second.ts")
+        self.git("commit", "-m", "stacked")
+        stacked = self.git("rev-parse", "HEAD")
+        plan = rp.classify(self.policy, self.request(candidate_sha=stacked))
+        self.assertEqual("direct_descendant", plan["candidate"]["candidate_kind"])
+        self.assertEqual(stacked, plan["candidate"]["source_feature_tip"])
+        self.assertEqual(["second.ts", "src/runtime.ts"], plan["changed_paths"])
+        self.assertEqual("passed", self.finish(
+            plan, candidate_request=self.request(candidate_sha=stacked))["status"])
+
+        tree = self.git("rev-parse", stacked + "^{tree}")
+        unrelated_root = subprocess.check_output(
+            ["git", "-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@i",
+             "commit-tree", tree, "-m", "unrelated root"], text=True).strip()
+        unrelated = subprocess.check_output(
+            ["git", "-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@i",
+             "commit-tree", tree, "-p", unrelated_root, "-m", "unrelated"], text=True).strip()
+        with self.assertRaisesRegex(rp.RiskPolicyError, "not descended"):
+            rp.classify(self.policy, self.request(candidate_sha=unrelated))
+
+    def test_ordinary_two_parent_target_first_merge_is_bound(self) -> None:
+        feature = self.candidate_sha
+        tree = self.git("rev-parse", feature + "^{tree}")
+        merge = subprocess.check_output(
+            ["git", "-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@i",
+             "commit-tree", tree, "-p", self.base_sha, "-p", feature, "-m", "merge"],
+            text=True).strip()
+        plan = rp.classify(self.policy, self.request(candidate_sha=merge))
+        self.assertEqual([self.base_sha, feature], plan["candidate"]["parents"])
+        self.assertEqual(feature, plan["candidate"]["source_feature_tip"])
+        self.assertEqual("target_first_merge", plan["candidate"]["candidate_kind"])
+
+    def test_moved_target_two_parent_merge_remains_composition_candidate(self) -> None:
+        feature = self.candidate_sha
+        self.git("switch", "main"); (self.repo / "target-moved.ts").write_text("target\n")
+        self.git("add", "target-moved.ts"); self.git("commit", "-m", "move target")
+        moved_target = self.git("rev-parse", "HEAD")
+        tree = self.git("rev-parse", feature + "^{tree}")
+        merge = subprocess.check_output(
+            ["git", "-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@i",
+             "commit-tree", tree, "-p", moved_target, "-p", feature, "-m", "moved merge"],
+            text=True).strip()
+        request = self.request(candidate_sha=merge, expected_target_sha=moved_target)
+        plan = rp.classify(self.policy, request)
+        self.assertEqual("target_first_merge", plan["candidate"]["candidate_kind"])
+        self.assertEqual([moved_target, feature], plan["candidate"]["parents"])
+
+    def test_feature_internal_merge_is_a_direct_descendant_candidate(self) -> None:
+        first = self.candidate_sha
+        self.git("switch", "-c", "feature-side", first)
+        (self.repo / "side.ts").write_text("side\n"); self.git("add", "side.ts")
+        self.git("commit", "-m", "side"); side = self.git("rev-parse", "HEAD")
+        self.git("switch", "-c", "feature-main", first)
+        (self.repo / "main.ts").write_text("main\n"); self.git("add", "main.ts")
+        self.git("commit", "-m", "main"); feature_main = self.git("rev-parse", "HEAD")
+        tree = self.git("rev-parse", feature_main + "^{tree}")
+        internal_merge = subprocess.check_output(
+            ["git", "-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@i",
+             "commit-tree", tree, "-p", feature_main, "-p", side, "-m", "internal merge"],
+            text=True).strip()
+        plan = rp.classify(self.policy, self.request(candidate_sha=internal_merge))
+        self.assertEqual("direct_descendant", plan["candidate"]["candidate_kind"])
+        self.assertEqual(internal_merge, plan["candidate"]["source_feature_tip"])
+
+    def test_target_movement_invalidates_plan_before_validation(self) -> None:
+        plan = self.plan({"docs/flow.md": "docs\n"})
+        self.git("switch", "main"); (self.repo / "target").write_text("moved\n")
+        self.git("add", "target"); self.git("commit", "-m", "move target")
+        with self.assertRaisesRegex(rp.RiskPolicyError, "exact current"):
+            self.finish(plan)
+
+    def test_review_is_response_derived_and_a_findings_short_circuit(self) -> None:
+        normal = self.plan({"src/runtime.ts": "runtime\n"})
+        finding = self.review(normal, "reviewer", 1, "finding", findings=1)
+        result = self.finish(normal, [finding])
+        self.assertEqual(("failed", 1), (result["status"], result["reviews"][0]["finding_count"]))
+        claimed = dict(finding, verdict="pass")
+        with self.assertRaisesRegex(rp.RiskPolicyError, "strict schema"):
+            self.finish(normal, [claimed])
+        high = self.plan({"src/security/auth.ts": "auth\n"})
+        first = self.review(high, "reviewer_a", 1, "a-find", findings=1)
+        result = self.finish(high, [first, {"transcript": "never read"}])
+        self.assertEqual(1, result["validation"]["review_dispatches"])
+
+    def test_reuse_requires_canonical_receipt_reference_and_reopens_artifacts(self) -> None:
+        plan = self.plan({"src/security/auth.ts": "auth\n"})
+        reviews = self.high_reviews(plan)
+        prior = self.finish(plan, reviews)
+        prior_ref = self.evidence_ref(prior)
+        reused = self.finish(plan, previous=prior_ref, full_suite_passed=None,
+                             reviews={"transcript": "ignored"})
+        self.assertEqual("passed", reused["status"])
+        with self.assertRaisesRegex(rp.RiskPolicyError, "exact canonical receipt reference"):
+            self.finish(plan, previous=prior, full_suite_passed=None)
+        fabricated = copy.deepcopy(prior); fabricated["reviews"][0]["finding_count"] = 99
+        fabricated_ref = self.evidence_ref(fabricated, "fabricated.json")
+        with self.assertRaises(rp.RiskPolicyError):
+            self.finish(plan, previous=fabricated_ref, full_suite_passed=None)
+        Path(reviews[0]["runner_receipt_path"]).unlink()
+        with self.assertRaisesRegex(rp.RiskPolicyError, "missing|unreadable"):
+            self.finish(plan, previous=prior_ref, full_suite_passed=None)
+
+    def test_reuse_rejects_changed_response_and_supports_verified_chain(self) -> None:
+        plan = self.plan({"src/security/auth.ts": "auth\n"})
+        reviews = self.high_reviews(plan); prior = self.finish(plan, reviews)
+        prior_ref = self.evidence_ref(prior)
+        reused = self.finish(plan, previous=prior_ref, full_suite_passed=None)
+        reused_ref = self.evidence_ref(reused, "reused.json")
+        repeated = self.finish(plan, previous=reused_ref, full_suite_passed=None)
+        self.assertEqual(reused["semantic_evidence_reused"]["origin_reviews"],
+                         repeated["semantic_evidence_reused"]["origin_reviews"])
+        receipt = json.loads(Path(reviews[0]["runner_receipt_path"]).read_text())
+        Path(receipt["artifacts"]["response"]["path"]).write_text("{}\n")
+        with self.assertRaisesRegex(rp.RiskPolicyError, "digest does not match"):
+            self.finish(plan, previous=prior_ref, full_suite_passed=None)
+
+    def test_previous_schema_producer_and_policy_are_strict(self) -> None:
+        plan = self.plan({"src/security/auth.ts": "auth\n"})
+        prior = self.finish(plan, self.high_reviews(plan))
+        for mutation in ("unknown", "producer", "policy", "transcript"):
+            bad = copy.deepcopy(prior)
+            if mutation == "unknown": bad["unknown"] = True
+            elif mutation == "producer": bad["producer"]["tool_id"] = "caller"
+            elif mutation == "policy": bad["policy"]["policy_identity"] = "f" * 64
+            else: bad["transcript"] = "forbidden"
+            with self.assertRaisesRegex(rp.RiskPolicyError, "previous|policy"):
+                self.finish(plan, previous=self.evidence_ref(bad, mutation + ".json"),
+                            full_suite_passed=None)
+
+    def test_merge_queue_callable_freshly_verifies_eligibility(self) -> None:
+        plan = self.plan({"src/security/auth.ts": "auth\n"})
+        request = self.request(candidate_sha=plan["candidate"]["candidate_sha"])
+        evidence = self.finish(plan, self.high_reviews(plan))
+        reference = self.evidence_ref(evidence, "queue-evidence.json")
+        verified = rp.verify_candidate_evidence(self.policy, request, [], reference)
+        self.assertTrue(verified["eligible"])
+        self.assertEqual(plan, verified["plan"])
+
+        forged = copy.deepcopy(evidence); forged["validation"]["review_dispatches"] = 0
+        with self.assertRaisesRegex(rp.RiskPolicyError, "dispatch count"):
+            rp.verify_candidate_evidence(
+                self.policy, request, [], self.evidence_ref(forged, "queue-forged.json"))
+        failed = self.finish(plan, affected_tests_passed=False, full_suite_passed=None)
+        self.assertFalse(rp.verify_candidate_evidence(
+            self.policy, request, [], self.evidence_ref(failed, "queue-failed.json"))["eligible"])
+
+    def test_validation_short_circuit_metrics_and_receipt_bound(self) -> None:
+        plan = self.plan({"src/security/auth.ts": "auth\n"})
+        result = self.finish(plan, affected_tests_passed=False, full_suite_passed=None,
+                             reviews={"transcript": "never read"},
+                             previous={"transcript": "never read"})
+        self.assertEqual(0, result["validation"]["review_dispatches"])
+        with self.assertRaisesRegex(rp.RiskPolicyError, "metrics"):
+            self.finish(plan, metrics={"messages": 1})
+        receipt = self.finish(plan, self.high_reviews(plan))
+        output = self.temp / "bounded.json"; rp.atomic_receipt(output, receipt, self.policy)
+        self.assertLess(output.stat().st_size, self.policy["limits"]["max_receipt_bytes"])
+        self.assertNotIn("transcript", output.read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()

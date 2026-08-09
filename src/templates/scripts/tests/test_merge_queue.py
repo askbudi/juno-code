@@ -19,6 +19,7 @@ TASK = SCRIPTS / "task_workspace.py"
 QUEUE = SCRIPTS / "merge_queue.py"
 sys.path.insert(0, str(SCRIPTS))
 import merge_queue as merge_runtime  # noqa: E402
+import risk_policy as risk_runtime  # noqa: E402
 
 
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -57,6 +58,8 @@ class MergeQueueTests(unittest.TestCase):
             task.parent.mkdir(parents=True, exist_ok=True)
             task.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
         self.write_policy()
+        risk_path = self.controller / ".juno_task/config/risk-policy.json"
+        risk_path.write_bytes((SCRIPTS.parent / "config/risk-policy.json").read_bytes())
         git(self.controller, "add", ".")
         git(self.controller, "commit", "-m", "controller")
         # Queue CAS targets must not be owned by any checkout.
@@ -74,7 +77,7 @@ class MergeQueueTests(unittest.TestCase):
             "schema_version": "juno_task_workspace_config.v1",
             "repository": ".", "target_ref": "refs/heads/product",
             "workspace_root": str(self.workspaces), "branch_prefix": "refs/heads/task-",
-            "allowed_paths": ["src"],
+            "allowed_paths": ["src", "docs"],
             "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs"],
             "focused_validation": [{"id": "affected", "cwd": "src", "argv": [sys.executable, "-c", code],
                                     "timeout_seconds": 10, "max_output_bytes": 4096}],
@@ -125,6 +128,136 @@ class MergeQueueTests(unittest.TestCase):
         tip = git(worktree, "rev-parse", "HEAD")
         self.task("finish", task_id)
         return tip
+
+    def object_file(self, name: str, value: dict) -> tuple[str, str]:
+        path = self.root / "fake-reviews" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = risk_runtime.canonical(value)
+        path.write_bytes(data)
+        return str(path), hashlib.sha256(data).hexdigest()
+
+    def fake_review(self, _controller: Path, _candidate: Path, plan: dict,
+                    _task_id: str, reviewer: str, sequence: int,
+                    predecessor_receipt: Optional[Path], *, findings: bool = False) -> dict[str, str]:
+        predecessor = None
+        if predecessor_receipt is not None:
+            prior = json.loads(predecessor_receipt.read_text())
+            predecessor = {
+                "receipt_sha256": hashlib.sha256(predecessor_receipt.read_bytes()).hexdigest(),
+                "tool_id": prior["tool_id"], "session_id": prior["session_id"],
+                "completed_at": prior["completed_at"],
+                "binding_sha256": prior["review_binding"]["binding_sha256"],
+            }
+        binding = {"schema_version": risk_runtime.REVIEW_BINDING_SCHEMA,
+                   "candidate_sha": plan["candidate"]["candidate_sha"],
+                   "policy_identity": plan["policy_identity"], "reviewer_role": reviewer,
+                   "sequence": sequence, "predecessor": predecessor}
+        binding["binding_sha256"] = risk_runtime.digest(binding)
+        result = {"schema_version": risk_runtime.REVIEW_RESULT_SCHEMA,
+                  "candidate_sha": binding["candidate_sha"],
+                  "policy_identity": binding["policy_identity"], "reviewer_role": reviewer,
+                  "sequence": sequence, "verdict": "findings" if findings else "pass",
+                  "findings": ([{"code": "SEC", "severity": "high", "summary": "finding"}]
+                               if findings else [])}
+        result_path, result_sha = self.object_file(f"result-{reviewer}-{sequence}.json", result)
+        receipt = {"schema_version": risk_runtime.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
+                   "state": "succeeded", "semantic_outcome": "completed",
+                   "session_id": f"session-{reviewer}-{sequence}",
+                   "tool_id": f"bolt_{reviewer}",
+                   "completed_at": f"2026-08-09T00:00:0{sequence}Z",
+                   "identity": {"candidate_sha": binding["candidate_sha"]},
+                   "review_binding": binding,
+                   "artifacts": {"response": {"path": result_path,
+                                                "bytes": Path(result_path).stat().st_size,
+                                                "sha256": result_sha}}}
+        receipt_path, receipt_sha = self.object_file(f"runner-{reviewer}-{sequence}.json", receipt)
+        return {"runner_receipt_path": receipt_path, "runner_receipt_sha256": receipt_sha}
+
+    def test_security_candidate_awaits_exact_risk_evidence_and_fake_reviews_resume_cas(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "secure = True\n")
+        waiting = self.queue_payload("next")
+        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
+        self.assertEqual(waiting["candidate_sha"], tip)
+        self.assertEqual(waiting["risk"]["plan"]["tier"], "high")
+        self.assertEqual(waiting["risk"]["plan"]["reviewer_sequence"], ["reviewer_a", "reviewer_b"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+        self.assertIsNone(waiting["candidate_checkout"])
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review) as dispatch:
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(dispatch.call_count, 2)
+        merged = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual(merged["candidate_sha"], tip)
+        self.assertEqual(merged["outcome"], "MERGED")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+
+    def test_forged_pass_and_absent_evidence_never_authorize_security_cas(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "secure = False\n")
+        self.queue_payload("next")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        attempt = state["tasks"]["X"]["queue_attempt"]
+        attempt["risk"]["evidence"] = {"status": "PASS", "candidate_sha": attempt["candidate_sha"]}
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        failed = self.queue("next", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("canonical receipt reference", failed.stderr)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+        self.assertEqual(self.task("status", "X")["state"], "AWAITING_RISK")
+
+    def test_low_risk_docs_candidate_uses_zero_review_canonical_evidence(self) -> None:
+        tip = self.commit_feature("X", "docs/flow.md", "flow\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            merged = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual(merged["outcome"], "MERGED")
+        self.assertEqual(merged["candidate_sha"], tip)
+        self.assertEqual(merged["risk"]["plan"]["tier"], "low")
+        self.assertEqual(merged["risk"]["plan"]["reviewer_sequence"], [])
+        dispatch.assert_not_called()
+
+    def test_multi_commit_direct_candidate_is_planned_from_full_target_diff(self) -> None:
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "src/one.py").write_text("one\n")
+        git(worktree, "add", "."); git(worktree, "commit", "-m", "one")
+        (worktree / "src/two.py").write_text("two\n")
+        git(worktree, "add", "."); git(worktree, "commit", "-m", "two")
+        tip = git(worktree, "rev-parse", "HEAD")
+        self.task("finish", "X")
+        merged = self.queue_payload("next")
+        self.assertEqual(merged["candidate_sha"], tip)
+        self.assertEqual(merged["risk"]["plan"]["candidate"]["changed_paths"],
+                         ["src/one.py", "src/two.py"])
+
+    def test_moved_high_risk_candidate_preserves_one_checkout_and_invalidates_on_target_move(self) -> None:
+        self.commit_feature("X", "src/x.py", "x\n")
+        self.commit_feature("Y", "src/security/auth.py", "auth\n")
+        x = self.queue_payload("next")["candidate_sha"]
+        waiting = self.queue_payload("next")
+        checkout = Path(waiting["candidate_checkout"])
+        candidate = waiting["candidate_sha"]
+        self.assertTrue(checkout.is_dir())
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), candidate)
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", x, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, x)
+        invalidated = self.queue_payload("next")
+        self.assertEqual(invalidated["outcome"], "RISK_TARGET_MOVED")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), moved)
+        self.assertTrue(checkout.is_dir())
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), candidate)
+        self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
+
+    def test_review_finding_preserves_awaiting_truth_and_does_zero_cas(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        def finding(*args: object, **kwargs: object) -> dict[str, str]:
+            return self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+        self.assertEqual(self.task("status", "X")["state"], "AWAITING_RISK")
 
     def test_parallel_x_y_then_moved_target_uses_one_two_parent_composition(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:

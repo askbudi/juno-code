@@ -18,6 +18,8 @@ import time
 from typing import Any
 
 SCHEMA = "juno_managed_agent_runner.v1"
+REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
 CAPTURE_LIMIT = 4 * 1024 * 1024
 TASK_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,64}\Z")
 SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
@@ -25,6 +27,73 @@ SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
 
 class RunnerError(RuntimeError):
     pass
+
+
+def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, Any]:
+    if not data or len(data) > 65536:
+        raise RunnerError("structured review result is empty or unbounded")
+    try: value = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("structured review result is not exact JSON") from exc
+    keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
+            "sequence", "verdict", "findings"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or value.get("schema_version") != REVIEW_RESULT_SCHEMA
+            or value.get("candidate_sha") != binding.get("candidate_sha")
+            or value.get("policy_identity") != binding.get("policy_identity")
+            or value.get("reviewer_role") != binding.get("reviewer_role")
+            or not isinstance(value.get("sequence"), int)
+            or isinstance(value.get("sequence"), bool)
+            or value.get("sequence") != binding.get("sequence")
+            or value.get("verdict") not in {"pass", "findings"}
+            or not isinstance(value.get("findings"), list) or len(value["findings"]) > 32):
+        raise RunnerError("structured review result schema/binding is invalid")
+    finding_keys = {"code", "severity", "summary"}
+    for finding in value["findings"]:
+        if (not isinstance(finding, dict) or set(finding) != finding_keys
+                or not isinstance(finding.get("code"), str) or not finding["code"]
+                or finding.get("severity") not in {"low", "medium", "high", "critical"}
+                or not isinstance(finding.get("summary"), str) or not finding["summary"]
+                or len(finding["code"].encode()) > 64 or len(finding["summary"].encode()) > 512):
+            raise RunnerError("structured review finding is malformed or unbounded")
+    if (value["verdict"] == "pass") != (not value["findings"]):
+        raise RunnerError("structured review verdict/findings are contradictory")
+    return value
+
+
+def receipt_review_result(receipt: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
+    artifacts = receipt.get("artifacts")
+    response = artifacts.get("response") if isinstance(artifacts, dict) else None
+    if (not isinstance(response, dict) or set(response) != {"path", "bytes", "sha256"}
+            or not isinstance(response.get("path"), str)
+            or not isinstance(response.get("bytes"), int) or isinstance(response.get("bytes"), bool)
+            or not isinstance(response.get("sha256"), str)
+            or not __import__("re").fullmatch(r"[0-9a-f]{64}", response["sha256"])):
+        raise RunnerError("predecessor response artifact evidence is missing")
+    try: data = Path(response["path"]).read_bytes()
+    except OSError as exc: raise RunnerError("predecessor response artifact is missing") from exc
+    if sha(data) != response["sha256"] or len(data) != response.get("bytes"):
+        raise RunnerError("predecessor response artifact digest/content mismatch")
+    return structured_review_result(data, binding)
+
+
+def review_prompt_contract(binding: dict[str, Any]) -> bytes:
+    contract = {"schema_version": REVIEW_RESULT_SCHEMA,
+                "candidate_sha": binding["candidate_sha"],
+                "policy_identity": binding["policy_identity"],
+                "reviewer_role": binding["reviewer_role"], "sequence": binding["sequence"],
+                "verdict": "pass", "findings": []}
+    return ("\n\n# Managed structured review output\n"
+            "Return exactly one JSON object with these top-level fields and no unknown fields: "
+            "schema_version, candidate_sha, policy_identity, reviewer_role, sequence, verdict, findings.\n"
+            "Each findings item must contain exactly {code, severity, summary}. "
+            "severity must be one of low, medium, high, critical; code must be 1-64 UTF-8 bytes; "
+            "summary must be 1-512 UTF-8 bytes; findings must contain at most 32 items.\n"
+            "PASS: set verdict to pass and findings to []. "
+            "FAIL: set verdict to findings and include 1-32 valid finding items.\n"
+            "Emit no markdown, code fences, commentary, or text outside the JSON object. "
+            "Terminal whitespace is allowed. Example PASS object:\n"
+            + canonical(contract).decode()).encode()
 
 
 def now() -> str:
@@ -60,6 +129,75 @@ def load_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RunnerError(f"{label} must be one JSON object")
     return value
+
+
+def review_binding(args: argparse.Namespace, identity: dict[str, Any]) -> dict[str, Any] | None:
+    if not args.review_binding:
+        return None
+    path = Path(args.review_binding).resolve()
+    value = load_object(path, "review binding")
+    if path.read_bytes() != canonical(value):
+        raise RunnerError("review binding must use canonical JSON bytes")
+    keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
+            "sequence", "predecessor"}
+    if (set(value) != keys or value.get("schema_version") != REVIEW_BINDING_SCHEMA
+            or value.get("candidate_sha") != identity.get("candidate_sha")
+            or not isinstance(value.get("policy_identity"), str)
+            or not __import__("re").fullmatch(r"[0-9a-f]{64}", value["policy_identity"])
+            or value.get("reviewer_role") not in {"reviewer", "reviewer_a", "reviewer_b"}
+            or value.get("sequence") not in {1, 2}):
+        raise RunnerError("review binding schema or frozen identity is invalid")
+    role, sequence, predecessor = value["reviewer_role"], value["sequence"], value["predecessor"]
+    if role in {"reviewer", "reviewer_a"}:
+        if sequence != 1 or predecessor is not None:
+            raise RunnerError("first reviewer binding requires sequence 1 and no predecessor")
+        normalized_predecessor = None
+    else:
+        if sequence != 2 or not isinstance(predecessor, dict) or set(predecessor) != {
+                "receipt_path", "receipt_sha256"}:
+            raise RunnerError("Reviewer B binding requires one exact Reviewer A predecessor")
+        receipt_path = Path(str(predecessor["receipt_path"])).resolve()
+        if not isinstance(predecessor["receipt_sha256"], str) or not __import__("re").fullmatch(
+                r"[0-9a-f]{64}", predecessor["receipt_sha256"]):
+            raise RunnerError("predecessor receipt digest is invalid")
+        try: receipt_bytes = receipt_path.read_bytes()
+        except OSError as exc: raise RunnerError("predecessor receipt is missing") from exc
+        if len(receipt_bytes) > CAPTURE_LIMIT or sha(receipt_bytes) != predecessor["receipt_sha256"]:
+            raise RunnerError("predecessor receipt digest/content mismatch")
+        prior = load_object(receipt_path, "predecessor receipt")
+        prior_binding = prior.get("review_binding")
+        prior_binding_body = ({k: v for k, v in prior_binding.items() if k != "binding_sha256"}
+                              if isinstance(prior_binding, dict) else {})
+        if (prior.get("schema_version") != SCHEMA or prior.get("mode") != "reviewer"
+                or prior.get("state") != "succeeded" or prior.get("semantic_outcome") != "completed"
+                or not isinstance(prior_binding, dict)
+                or prior_binding.get("schema_version") != REVIEW_BINDING_SCHEMA
+                or prior_binding.get("candidate_sha") != value["candidate_sha"]
+                or prior_binding.get("policy_identity") != value["policy_identity"]
+                or prior_binding.get("reviewer_role") != "reviewer_a"
+                or prior_binding.get("sequence") != 1
+                or prior_binding.get("predecessor") is not None
+                or set(prior_binding) != {"schema_version", "candidate_sha", "policy_identity",
+                                          "reviewer_role", "sequence", "predecessor",
+                                          "binding_sha256"}
+                or prior_binding.get("binding_sha256") != sha(canonical(prior_binding_body))
+                or not isinstance(prior.get("tool_id"), str) or prior["tool_id"] == args.tool_id
+                or not isinstance(prior.get("session_id"), str) or not prior["session_id"]
+                or not isinstance(prior.get("completed_at"), str)):
+            raise RunnerError("predecessor is not a canonical Reviewer A receipt")
+        if receipt_review_result(prior, prior_binding).get("verdict") != "pass":
+            raise RunnerError("Reviewer B requires an exact response-derived Reviewer A PASS")
+        normalized_predecessor = {
+            "receipt_sha256": predecessor["receipt_sha256"], "tool_id": prior["tool_id"],
+            "session_id": prior["session_id"], "completed_at": prior["completed_at"],
+            "binding_sha256": prior_binding.get("binding_sha256"),
+        }
+    normalized = {"schema_version": REVIEW_BINDING_SCHEMA,
+                  "candidate_sha": value["candidate_sha"],
+                  "policy_identity": value["policy_identity"], "reviewer_role": role,
+                  "sequence": sequence, "predecessor": normalized_predecessor}
+    normalized["binding_sha256"] = sha(canonical(normalized))
+    return normalized
 
 
 def git(root: Path, *args: str, check: bool = True) -> str:
@@ -246,7 +384,8 @@ def validate_reviewer(args: argparse.Namespace, controller: dict[str, Any]) -> t
     return {"candidate_sha": args.candidate_sha, "candidate_root": str(candidate), "before": mark}, mark
 
 
-def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path) -> tuple[dict[str, str], dict[str, Any]]:
+def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
+                      binding: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
     removed = sorted(k for k in os.environ if k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
     env = {k: v for k, v in os.environ.items() if k not in removed}
     explicit = {"JUNO_TASK_ROOT": str(Path(args.controller_root).resolve()),
@@ -259,6 +398,8 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path) -
                          "JUNO_WORKSPACE_ROLE": "task"})
         if args.authority_map:
             explicit["JUNO_LIFECYCLE_AUTHORITY_MAP"] = str(Path(args.authority_map).resolve())
+    if binding is not None:
+        explicit["JUNO_REVIEW_BINDING_JSON"] = canonical(binding).decode().strip()
     env.update(explicit)
     contract = {"schema_version": "juno_managed_environment.v1", "removed_key_names": removed,
                 "explicit_key_names": sorted(explicit), "configured_defaults": True}
@@ -309,8 +450,15 @@ def run(args: argparse.Namespace) -> int:
     if controller_before["branch_ref"] != expected_branch:
         raise RunnerError("controller branch identity mismatch")
     identity, subject_before = (validate_worker(args, controller_before) if args.mode == "worker" else validate_reviewer(args, controller_before))
+    if not TASK_RE.fullmatch(args.tool_id):
+        raise RunnerError("tool id is malformed")
+    if args.mode != "reviewer" and args.review_binding:
+        raise RunnerError("review binding is valid only in reviewer mode")
+    binding = review_binding(args, identity) if args.mode == "reviewer" else None
     source_prompt = Path(args.prompt_file).resolve()
     prompt_data = source_prompt.read_bytes()
+    if binding is not None:
+        prompt_data += review_prompt_contract(binding)
     if not prompt_data or len(prompt_data) > CAPTURE_LIMIT:
         raise RunnerError("prompt must be nonempty and bounded")
     try: prompt_echo = prompt_data.decode("utf-8")
@@ -322,10 +470,14 @@ def run(args: argparse.Namespace) -> int:
     launcher = out / "launcher-root"; launcher.mkdir()
     agent_root = Path(args.agent_root).resolve()
     argv = ["yy", "pi", "--config", compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
-    env, env_contract = clean_environment(args, capture, metadata)
+    env, env_contract = clean_environment(args, capture, metadata, binding)
+    prompt_evidence = evidence(prompt)
+    if binding is None:
+        prompt_evidence["echo"] = prompt_echo
     launch = {"schema_version": SCHEMA, "mode": args.mode, "started_at": now(), "controller": controller_before,
               "identity": identity, "launcher_root": str(launcher), "agent_root": str(agent_root),
-              "prompt": {**evidence(prompt), "echo": prompt_echo}, "compatible_config": compatible_config, "argv": argv,
+              "tool_id": args.tool_id, "review_binding": binding,
+              "prompt": prompt_evidence, "compatible_config": compatible_config, "argv": argv,
               "argv_sha256": sha(shlex.join(argv).encode()), "environment_contract": env_contract}
     atomic_json(out / "launch.json", launch)
     active = {"schema_version": SCHEMA, "state": "active", "mode": args.mode, "run_root": str(out), "started_at": launch["started_at"]}
@@ -361,9 +513,15 @@ def run(args: argparse.Namespace) -> int:
         session = payload.get("session_id"); response = payload.get("result")
         if not isinstance(session, str) or not session.strip() or not isinstance(response, str) or not response.strip():
             raise RunnerError("capture session/response is empty or malformed")
+        if (binding is not None and binding.get("predecessor") is not None
+                and binding["predecessor"].get("session_id") == session.strip()):
+            raise RunnerError("Reviewer B session must be distinct from Reviewer A")
         if payload.get("is_error") is True or str(payload.get("subtype", "")).lower() in {"error", "failure", "failed"}:
             raise RunnerError("managed child reported semantic failure")
-        atomic_bytes(response_path, response.encode())
+        structured_result = (structured_review_result(response.encode(), binding)
+                             if binding is not None else None)
+        atomic_bytes(response_path, canonical(structured_result) if structured_result is not None
+                     else response.encode())
         controller_after = controller_identity(controller_root)
         verify_compatible_config(compatible_config)
         subject_after = fingerprint(Path(identity.get("candidate_root") or args.agent_root))
@@ -385,8 +543,10 @@ def run(args: argparse.Namespace) -> int:
         artifacts = {name: evidence(path) for name, path in (("prompt", prompt), ("launch", out / "launch.json"),
                     ("stdout", stdout_path), ("stderr", stderr_path), ("combined", combined_path),
                     ("capture", capture), ("response", response_path))}
-        artifacts["prompt"]["echo"] = prompt_echo
+        if binding is None:
+            artifacts["prompt"]["echo"] = prompt_echo
         receipt = {**terminal, "mode": args.mode, "controller_before": controller_before, "controller_after": controller_after,
+                   "tool_id": args.tool_id, "review_binding": binding,
                    "identity": identity, "subject_after": subject_after, "argv": argv, "argv_sha256": launch["argv_sha256"],
                    "compatible_config": compatible_config,
                    "environment_contract": {**env_contract, "explicitly_set_key_names": env_contract["explicit_key_names"]},
@@ -402,7 +562,7 @@ def run(args: argparse.Namespace) -> int:
                     "compatible_config_sha256": compatible_config["sha256"],
                     "failure_type": type(exc).__name__, "failure": str(exc)[:512],
                     "safe_next_action": "inspect_terminal_and_start_fresh_output_directory"}
-        atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "launch": evidence(out / "launch.json")})
+        atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "tool_id": args.tool_id, "review_binding": binding, "launch": evidence(out / "launch.json")})
         (out / "active.json").unlink(missing_ok=True)
         raise
     finally:
@@ -419,6 +579,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--task-id"); p.add_argument("--create-receipt"); p.add_argument("--task-root-receipt", dest="create_receipt")
     p.add_argument("--verify-receipt"); p.add_argument("--edit-preflight-receipt"); p.add_argument("--authority-map")
     p.add_argument("--candidate-sha"); p.add_argument("--candidate-root")
+    p.add_argument("--review-binding")
     return top
 
 

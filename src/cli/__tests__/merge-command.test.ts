@@ -7,6 +7,7 @@ describe('merge queue CLI', () => {
     { argv: ['status'], expected: ['status'] },
     { argv: ['next'], expected: ['next'] },
     { argv: ['resolve', 'T123'], expected: ['resolve', 'T123'] },
+    { argv: ['review', 'T123'], expected: ['review', 'T123'] },
   ] as const)('forwards merge $argv', async ({ argv, expected }) => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
@@ -16,14 +17,15 @@ describe('merge queue CLI', () => {
     expect(invoke).toHaveBeenCalledWith(...expected);
   });
 
-  it('keeps TASK_ID exclusive to resolve', () => {
+  it('requires TASK_ID only for resolve and review', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
     const merge = program.commands.find((command) => command.name() === 'merge');
-    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'next', 'resolve']);
+    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'next', 'resolve', 'review']);
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[1]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(true);
+    expect(merge?.commands[3]?.registeredArguments[0]?.required).toBe(true);
   });
 
   it('fails closed unless the installed resolver proves the exact controller root', () => {

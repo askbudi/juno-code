@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import secrets
+import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -19,10 +20,12 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import task_workspace as task_runtime
+import risk_policy as risk_runtime
 
 QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
+RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 
 
 class MergeQueueError(RuntimeError):
@@ -310,18 +313,130 @@ def assert_frozen_candidate(controller: Path, config: dict[str, Any], checkout: 
         raise MergeQueueError("candidate checkout became dirty while validation/review was active")
 
 
-def review_candidate(_controller: Path, record: dict[str, Any], candidate_sha: str) -> dict[str, Any]:
-    """Narrow seam for the deterministic risk-policy task; never dispatches a model.
+def risk_policy_path(controller: Path) -> Path:
+    return controller / ".juno_task/config/risk-policy.json"
 
-    If risk policy has attached a gate, it must be bound to this exact candidate.
-    Absence means the current policy classified the task as requiring no receipt.
+
+def risk_request(repository: Path, candidate_sha: str, target_ref: str,
+                 expected_target_sha: str) -> dict[str, str]:
+    return {"repository": str(repository.resolve()), "candidate_sha": candidate_sha,
+            "target_ref": target_ref, "expected_target_sha": expected_target_sha}
+
+
+def risk_flags(record: dict[str, Any]) -> Any:
+    # Risk is derived from Git. An absent optional flag list is never treated as
+    # an asserted low tier; it merely supplies no additional escalation flags.
+    return record.get("risk_flags", [])
+
+
+def evidence_path(controller: Path, task_id: str, candidate_sha: str) -> Path:
+    return (controller / ".juno_task/runtime/merge-queue/evidence" / task_id
+            / f"{candidate_sha}.json")
+
+
+def evidence_reference(path: Path) -> dict[str, str]:
+    return {"receipt_path": str(path.resolve()),
+            "receipt_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def verify_risk_evidence(policy: dict[str, Any], request: dict[str, str], flags: Any,
+                         reference: Any) -> dict[str, Any]:
+    try:
+        return risk_runtime.verify_candidate_evidence(policy, request, flags, reference)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"candidate risk evidence refused: {exc}") from exc
+
+
+def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: str,
+                     repository: Path, target_sha: str, validation_root: Path,
+                     attempt: dict[str, Any]) -> dict[str, Any]:
+    """Plan and strictly verify risk evidence for every frozen candidate.
+
+    Low and optional-review normal candidates get a canonical zero-review
+    receipt immediately. Higher-risk and release candidates are durably paused;
+    absence or a hand-written PASS object can never authorize CAS.
     """
-    gate = record.get("risk_review")
-    if gate is None:
-        return {"required": False, "candidate_sha": candidate_sha}
-    if not isinstance(gate, dict) or gate.get("status") != "PASSED" or gate.get("candidate_sha") != candidate_sha:
-        raise MergeQueueError("risk review gate is not PASSED for the exact candidate")
-    return {"required": True, "candidate_sha": candidate_sha, "evidence": gate}
+    try:
+        policy = risk_runtime.load_policy(risk_policy_path(controller))
+        request = risk_request(repository, candidate_sha, attempt["target_ref"], target_sha)
+        flags = risk_flags(record)
+        plan = risk_runtime.classify(policy, request, flags)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"candidate risk plan refused: {exc}") from exc
+    current = attempt.get("risk")
+    reference = current.get("evidence") if isinstance(current, dict) else None
+    canonical_path = evidence_path(controller, record["task_id"], candidate_sha)
+    if reference is None and canonical_path.is_file():
+        reference = evidence_reference(canonical_path)
+    risk = {"schema_version": RISK_STATE_SCHEMA, "candidate_sha": candidate_sha,
+            "policy_identity": plan["policy_identity"], "plan": plan,
+            "evidence": reference}
+    if reference is not None:
+        verified = verify_risk_evidence(policy, request, flags, reference)
+        if verified["eligible"]:
+            return {**risk, "status": "ELIGIBLE", "evidence": reference}
+    if plan["release_gate_required"]:
+        return {**risk, "status": "AWAITING_RELEASE"}
+    if plan["min_reviews"] or plan["full_suite_required"]:
+        return {**risk, "status": "AWAITING_RISK"}
+    try:
+        receipt = risk_runtime.finalize(
+            plan, request, affected_tests_passed=True, full_suite_passed=None,
+            reviews=[], metrics={"model_calls": 0, "affected_test_runs": 1,
+                                 "full_suite_runs": 0}, policy=policy,
+        )
+        path = canonical_path
+        risk_runtime.atomic_receipt(path, receipt, policy)
+        reference = evidence_reference(path)
+        verified = risk_runtime.verify_candidate_evidence(policy, request, flags, reference)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"candidate zero-review evidence refused: {exc}") from exc
+    if not verified["eligible"]:
+        raise MergeQueueError("candidate zero-review evidence is not eligible")
+    assert_frozen_candidate(controller, task_runtime.load_config(controller), validation_root, candidate_sha)
+    return {**risk, "status": "ELIGIBLE", "evidence": reference}
+
+
+def awaiting_record(controller: Path, config: dict[str, Any]) -> Optional[dict[str, Any]]:
+    with task_runtime.state_lock(controller):
+        tasks = task_runtime.read_state(controller)["tasks"]
+        rows = [row for row in tasks.values() if isinstance(row, dict)
+                and row.get("target_ref") == config["target_ref"]
+                and row.get("state") in {"AWAITING_RISK", "AWAITING_RELEASE"}]
+    return sorted(rows, key=lambda row: row["task_id"])[0] if rows else None
+
+
+def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
+                    record: dict[str, Any]) -> dict[str, Any]:
+    attempt = record.get("queue_attempt")
+    if not isinstance(attempt, dict) or attempt.get("candidate_sha") is None:
+        raise MergeQueueError("awaiting-risk task has no frozen candidate identity")
+    candidate_sha, expected = attempt["candidate_sha"], attempt["expected_target_sha"]
+    current = task_runtime.ref_sha(repository, config["target_ref"])
+    if current != expected:
+        moved = {**attempt, "outcome": "RISK_TARGET_MOVED", "observed_target_sha": current}
+        persist_attempt(controller, moved, state_name="QUEUED")
+        return moved
+    checkout_value = attempt.get("candidate_checkout")
+    root = (task_runtime.exact_root(Path(checkout_value), "awaiting risk candidate")
+            if checkout_value else validate_record(config, repository, record))
+    assert_frozen_candidate(controller, config, root, candidate_sha)
+    decision = review_candidate(controller, record, candidate_sha, repository, expected, root, attempt)
+    attempt = {**attempt, "risk": decision, "review": decision}
+    if decision["status"] != "ELIGIBLE":
+        attempt["outcome"] = decision["status"]
+        persist_attempt(controller, attempt, state_name=decision["status"])
+        return attempt
+    persist_attempt(controller, attempt, state_name="MERGING")
+    assert_target_unchecked_out(repository, config["target_ref"])
+    cas_target(repository, config["target_ref"], candidate_sha, expected)
+    attempt = {**attempt, "outcome": "MERGED",
+               "readback_sha": task_runtime.ref_sha(repository, config["target_ref"])}
+    persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
+    checkout = Path(checkout_value) if checkout_value else None
+    return {**attempt, "cleanup": cleanup_candidate(
+        controller, repository, checkout, config["target_ref"], candidate_sha,
+        attempt.get("candidate_token"))}
 
 
 def cas_target(repository: Path, target_ref: str, candidate_sha: str, expected_sha: str) -> None:
@@ -410,6 +525,9 @@ def merge_next(controller: Path) -> dict[str, Any]:
         recovered = recover_incomplete(controller, config, repository)
         if recovered is not None:
             return recovered
+        waiting = awaiting_record(controller, config)
+        if waiting is not None:
+            return resume_awaiting(controller, config, repository, waiting)
         record = select_next(controller, config)
         feature_worktree = validate_record(config, repository, record)
         target_sha = task_runtime.ref_sha(repository, config["target_ref"])
@@ -475,10 +593,19 @@ def merge_next(controller: Path) -> dict[str, Any]:
         try:
             attempt["validation"] = validation_rows(config, validation_root)
             assert_frozen_candidate(controller, config, validation_root, candidate_sha)
-            attempt["review"] = review_candidate(controller, record, candidate_sha)
-            assert_frozen_candidate(controller, config, validation_root, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != target_sha:
                 raise MergeQueueError("target moved before compare-and-swap; no ref was changed")
+            decision = review_candidate(
+                controller, record, candidate_sha, repository, target_sha,
+                validation_root, attempt,
+            )
+            attempt["risk"] = decision
+            attempt["review"] = decision
+            assert_frozen_candidate(controller, config, validation_root, candidate_sha)
+            if decision["status"] != "ELIGIBLE":
+                attempt["outcome"] = decision["status"]
+                persist_attempt(controller, attempt, state_name=decision["status"])
+                return attempt
             try:
                 persist_attempt(controller, attempt, state_name="MERGING")
             except Exception:
@@ -620,8 +747,20 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         try:
             attempt["validation"] = validation_rows(config, checkout)
             assert_frozen_candidate(controller, config, checkout, candidate_sha)
-            attempt["review"] = review_candidate(controller, record, candidate_sha)
+            if task_runtime.ref_sha(repository, config["target_ref"]) != conflict["expected_target_sha"]:
+                raise MergeQueueError("target moved before compare-and-swap; no ref was changed")
+            decision = review_candidate(
+                controller, record, candidate_sha, repository,
+                conflict["expected_target_sha"], checkout, attempt,
+            )
+            attempt["risk"] = decision
+            attempt["review"] = decision
             assert_frozen_candidate(controller, config, checkout, candidate_sha)
+            if decision["status"] != "ELIGIBLE":
+                attempt["outcome"] = decision["status"]
+                persist_attempt(controller, attempt, state_name=decision["status"],
+                                conflict=resolved_conflict)
+                return attempt
             persist_attempt(controller, attempt, state_name="MERGING")
             assert_target_unchecked_out(repository, config["target_ref"])
             cas_target(repository, config["target_ref"], candidate_sha, conflict["expected_target_sha"])
@@ -642,6 +781,130 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         )}
 
 
+def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, Any],
+                      task_id: str, reviewer: str, sequence: int,
+                      predecessor_receipt: Optional[Path]) -> dict[str, str]:
+    """Launch one canonical reviewer. Tests replace this seam with a fake."""
+    run_root = (controller / ".juno_task/runtime/merge-queue/reviews" / task_id
+                / plan["candidate"]["candidate_sha"] / f"{sequence}-{reviewer}")
+    if run_root.exists():
+        raise MergeQueueError(f"review output already exists; inspect before retry: {run_root}")
+    binding_path = run_root.parent / f"{sequence}-{reviewer}.binding.json"
+    prompt = controller / ".juno_task/prompts/review_commit_parallel_runner.md"
+    if not prompt.is_file():
+        raise MergeQueueError("managed review prompt is missing")
+    try:
+        risk_runtime.write_review_binding(
+            binding_path, candidate_sha=plan["candidate"]["candidate_sha"],
+            policy_identity=plan["policy_identity"], reviewer=reviewer,
+            predecessor_receipt=predecessor_receipt,
+        )
+        branch = task_runtime.git(controller, "symbolic-ref", "-q", "HEAD")
+        command = risk_runtime.reviewer_command(
+            Path(__file__).resolve().parent, controller_root=controller,
+            controller_branch=branch, candidate_root=candidate_root,
+            candidate_sha=plan["candidate"]["candidate_sha"], prompt_file=prompt,
+            out_dir=run_root, reviewer=reviewer, task_id=task_id,
+            review_binding_path=binding_path,
+        )
+        result = subprocess.run(command, cwd=controller, stdin=subprocess.DEVNULL,
+                                text=True, capture_output=True)
+        if result.returncode:
+            raise MergeQueueError(
+                f"managed {reviewer} failed: {(result.stderr or result.stdout)[-512:]}"
+            )
+        payload = json.loads(result.stdout)
+        receipt = Path(payload["receipt"]).resolve()
+        return {"runner_receipt_path": str(receipt),
+                "runner_receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
+    except (risk_runtime.RiskPolicyError, OSError, KeyError, json.JSONDecodeError) as exc:
+        raise MergeQueueError(f"managed {reviewer} evidence failed: {exc}") from exc
+
+
+def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with target_lock(controller, repository, config["target_ref"]):
+        with task_runtime.state_lock(controller):
+            record = task_runtime.read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") not in {
+                "AWAITING_RISK", "AWAITING_RELEASE"}:
+            raise MergeQueueError("task has no frozen candidate awaiting risk evidence")
+        attempt = record.get("queue_attempt")
+        if not isinstance(attempt, dict):
+            raise MergeQueueError("awaiting task has no queue attempt")
+        if record["state"] == "AWAITING_RELEASE":
+            raise MergeQueueError("release candidate requires separate owner-authorized release gate evidence")
+        candidate_sha, expected = attempt.get("candidate_sha"), attempt.get("expected_target_sha")
+        if task_runtime.ref_sha(repository, config["target_ref"]) != expected:
+            moved = {**attempt, "outcome": "RISK_TARGET_MOVED",
+                     "observed_target_sha": task_runtime.ref_sha(repository, config["target_ref"])}
+            persist_attempt(controller, moved, state_name="QUEUED")
+            return moved
+        checkout_value = attempt.get("candidate_checkout")
+        candidate_root = (task_runtime.exact_root(Path(checkout_value), "review candidate")
+                          if checkout_value else validate_record(config, repository, record))
+        assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
+        try:
+            policy = risk_runtime.load_policy(risk_policy_path(controller))
+            request = risk_request(repository, candidate_sha, config["target_ref"], expected)
+            plan = risk_runtime.classify(policy, request, risk_flags(record))
+            stored = attempt.get("risk")
+            if (not isinstance(stored, dict) or stored.get("candidate_sha") != candidate_sha
+                    or stored.get("policy_identity") != plan["policy_identity"]
+                    or stored.get("plan") != plan):
+                raise MergeQueueError("stored awaiting-risk plan does not match fresh Git policy")
+            if plan["release_gate_required"]:
+                raise MergeQueueError("release candidate cannot use semantic review as release authority")
+            # One bounded second validation pass is the high-risk full-suite
+            # gate. Projects choose its exact command in task-workspace policy.
+            validation_rows(config, candidate_root)
+            reviews: list[dict[str, str]] = []
+            predecessor: Optional[Path] = None
+            for sequence, reviewer in enumerate(plan["reviewer_sequence"], 1):
+                reference = dispatch_reviewer(
+                    controller, candidate_root, plan, task_id, reviewer,
+                    sequence, predecessor,
+                )
+                reviews.append(reference)
+                predecessor = Path(reference["runner_receipt_path"])
+                assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
+                compact = risk_runtime._compact_review(  # canonical verifier; no receipt shortcut
+                    reference, reviewer, sequence, candidate_sha,
+                    plan["policy_identity"], plan,
+                )
+                if compact["verdict"] != "pass" or compact["finding_count"]:
+                    break
+            receipt = risk_runtime.finalize(
+                plan, request, affected_tests_passed=True,
+                full_suite_passed=True if plan["full_suite_required"] else None,
+                reviews=reviews,
+                metrics={"model_calls": len(reviews), "affected_test_runs": 1,
+                         "full_suite_runs": 1 if plan["full_suite_required"] else 0},
+                policy=policy,
+            )
+            path = evidence_path(controller, task_id, candidate_sha)
+            risk_runtime.atomic_receipt(path, receipt, policy)
+            reference = evidence_reference(path)
+            verified = risk_runtime.verify_candidate_evidence(
+                policy, request, risk_flags(record), reference)
+        except MergeValidationError as exc:
+            failed = {**attempt, "validation": exc.evidence, "outcome": "FAILED_FULL_SUITE"}
+            persist_attempt(controller, failed, state_name="AWAITING_RISK")
+            raise
+        except (risk_runtime.RiskPolicyError, MergeQueueError) as exc:
+            failed = {**attempt, "outcome": "REVIEW_FAILED", "risk_failure": str(exc)[:512]}
+            persist_attempt(controller, failed, state_name="AWAITING_RISK")
+            raise MergeQueueError(str(exc)) from exc
+        outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
+        risk_state = {**stored, "status": outcome, "evidence": reference}
+        updated = {**attempt, "risk": risk_state, "review": risk_state, "outcome": outcome}
+        persist_attempt(controller, updated, state_name="AWAITING_RISK")
+        return updated
+
+
 def status(controller: Path) -> dict[str, Any]:
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
@@ -649,10 +912,19 @@ def status(controller: Path) -> dict[str, Any]:
         state = task_runtime.read_state(controller)
         tasks = state["tasks"]
         entry = target_entry(state, repository, config["target_ref"])
-        rows = [{"task_id": task_id, "state": row.get("state"), "tip_sha": row.get("tip_sha")}
+        rows = [{"task_id": task_id, "state": row.get("state"), "tip_sha": row.get("tip_sha"),
+                 "candidate_sha": ((row.get("queue_attempt") or {}).get("candidate_sha")
+                                   if isinstance(row.get("queue_attempt"), dict) else None),
+                 "candidate_checkout": ((row.get("queue_attempt") or {}).get("candidate_checkout")
+                                        if isinstance(row.get("queue_attempt"), dict) else None),
+                 "risk_status": (((row.get("queue_attempt") or {}).get("risk") or {}).get("status")
+                                 if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None),
+                 "risk_policy_identity": (((row.get("queue_attempt") or {}).get("risk") or {}).get("policy_identity")
+                                          if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None)}
                 for task_id, row in sorted(tasks.items()) if isinstance(row, dict)
                 and row.get("target_ref") == config["target_ref"]
-                and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED", "MERGED"}]
+                and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
+                                         "AWAITING_RISK", "AWAITING_RELEASE", "MERGED"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
             "tasks": rows, "last_attempt": entry["last_attempt"],
@@ -666,6 +938,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("next")
     resolve = sub.add_parser("resolve")
     resolve.add_argument("task_id")
+    review = sub.add_parser("review")
+    review.add_argument("task_id")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
 
@@ -678,11 +952,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = status(controller)
         elif args.operation == "next":
             result = merge_next(controller)
-        else:
+        elif args.operation == "resolve":
             result = merge_resolve(controller, args.task_id)
+        else:
+            result = merge_review(controller, args.task_id)
         print(canonical(result))
         return 0
-    except (MergeQueueError, task_runtime.TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:
+    except (MergeQueueError, task_runtime.TaskWorkspaceError, risk_runtime.RiskPolicyError,
+            OSError, json.JSONDecodeError) as exc:
         print(f"merge queue: error: {exc}", file=sys.stderr)
         return 2
 

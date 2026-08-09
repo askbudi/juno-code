@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import hashlib, json, os
+import hashlib, importlib.util, json, os
 from pathlib import Path
 import shutil, subprocess, sys, tempfile, time, unittest
 
 RUNNER = Path(__file__).resolve().parents[1] / "managed_agent_runner.py"
+RUNNER_SPEC = importlib.util.spec_from_file_location("managed_agent_runner_for_test", RUNNER)
+assert RUNNER_SPEC and RUNNER_SPEC.loader
+runner = importlib.util.module_from_spec(RUNNER_SPEC); RUNNER_SPEC.loader.exec_module(runner)
+RISK = RUNNER.with_name("risk_policy.py")
+RISK_SPEC = importlib.util.spec_from_file_location("risk_policy_for_runner_test", RISK)
+assert RISK_SPEC and RISK_SPEC.loader
+risk = importlib.util.module_from_spec(RISK_SPEC); RISK_SPEC.loader.exec_module(risk)
 
 
 def git(root: Path, *args: str) -> str:
@@ -30,6 +37,11 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         (self.candidate / "allowed.txt").write_text("base\n")
         subprocess.run(["git", "-C", str(self.candidate), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.candidate), "branch", "target"], check=True)
+        (self.candidate / "src/security").mkdir(parents=True)
+        (self.candidate / "src/security/auth.ts").write_text("candidate\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "candidate"], check=True, stdout=subprocess.DEVNULL)
         self.bin = self.tmp / "bin"; self.bin.mkdir()
         fake = self.bin / "yy"
         fake.write_text("""#!/usr/bin/env python3
@@ -46,7 +58,17 @@ prompt=pathlib.Path(sys.argv[sys.argv.index('-f')+1]).read_text()
 print('out-before', flush=True); print('err-before', file=sys.stderr, flush=True)
 time.sleep(10 if 'signal-wait' in prompt else .35)
 if 'transport-fail' in prompt: raise SystemExit(7)
-payload={'session_id':'session-one','result':'answer'}
+tool_id=os.environ.get('JUNO_TOOL_ID','managed_agent_runner')
+binding=json.loads(os.environ['JUNO_REVIEW_BINDING_JSON']) if os.environ.get('JUNO_REVIEW_BINDING_JSON') else None
+findings=([{'code':'FAKE_FINDING','severity':'high','summary':'fixture finding'}]
+          if binding and 'review-findings' in prompt else [])
+review_result=({'schema_version':'juno_managed_review_result.v1','candidate_sha':binding['candidate_sha'],
+ 'policy_identity':binding['policy_identity'],'reviewer_role':binding['reviewer_role'],
+ 'sequence':binding['sequence'],'verdict':'findings' if findings else 'pass','findings':findings} if binding else 'answer')
+if binding:
+ raw=json.dumps(review_result,sort_keys=True,separators=(',',':'))
+ review_result=(raw+'\\r\\n \\t' if 'fixture-crlf' in prompt else raw+'\\n')
+payload={'session_id':'session-one' if tool_id=='managed_agent_runner' else 'session-'+tool_id,'result':review_result}
 if 'semantic-fail' in prompt: payload['is_error']=True
 if 'empty' in prompt: payload['result']=''
 pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(payload)+'\\n')
@@ -97,6 +119,170 @@ print('out-after', flush=True)
             started = time.monotonic(); result = subprocess.run(self.command(self.tmp / ("out-" + text), prompt), env=self.env(), capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0); self.assertLess(time.monotonic() - started, 1.5)
             terminal = json.loads((self.tmp / ("out-" + text) / "terminal.json").read_text()); self.assertEqual(terminal["state"], "failed")
+
+    def test_structured_review_parser_accepts_terminal_whitespace_and_is_strict(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_a", "sequence": 1}
+        passing = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                   "candidate_sha": binding["candidate_sha"],
+                   "policy_identity": binding["policy_identity"],
+                   "reviewer_role": "reviewer_a", "sequence": 1,
+                   "verdict": "pass", "findings": []}
+        raw = json.dumps(passing, separators=(",", ":")).encode()
+        for data in (raw, raw + b"\n", raw + b"\r\n \t"):
+            self.assertEqual(passing, runner.structured_review_result(data, binding))
+        finding = {**passing, "verdict": "findings", "findings": [
+            {"code": "AUTH_BYPASS", "severity": "critical", "summary": "Missing guard"}]}
+        self.assertEqual(finding, runner.structured_review_result(json.dumps(finding).encode(), binding))
+
+        unknown = {**passing, "unknown": True}
+        bad_severity = json.loads(json.dumps(finding))
+        bad_severity["findings"][0]["severity"] = "urgent"
+        invalid = (json.dumps(unknown).encode(), json.dumps(bad_severity).encode(),
+                   raw + b" trailing", b"prefix " + raw, raw + b"\n" + raw,
+                   b"{malformed", json.dumps({**passing, "sequence": True}).encode())
+        for data in invalid:
+            with self.assertRaises(runner.RunnerError):
+                runner.structured_review_result(data, binding)
+
+    def test_bound_review_canonicalizes_accepted_crlf_response_artifact(self):
+        candidate_sha = git(self.candidate, "rev-parse", "HEAD")
+        policy = risk.load_policy(RUNNER.parents[1] / "config/risk-policy.json")
+        request = {"repository": str(self.candidate), "candidate_sha": candidate_sha,
+                   "target_ref": "refs/heads/target",
+                   "expected_target_sha": git(self.candidate, "rev-parse", "target")}
+        plan = risk.classify(policy, request)
+        binding_path = self.tmp / "crlf-binding.json"
+        risk.write_review_binding(binding_path, candidate_sha=candidate_sha,
+                                  policy_identity=plan["policy_identity"],
+                                  reviewer="reviewer_a")
+        prompt = self.tmp / "crlf.md"; prompt.write_text("fixture-crlf\n" + "large-secret-marker-" * 5000)
+        out = self.tmp / "crlf-review"
+        command = risk.reviewer_command(
+            RUNNER.parent, controller_root=self.controller,
+            controller_branch="refs/heads/controller", candidate_root=self.candidate,
+            candidate_sha=candidate_sha, prompt_file=prompt, out_dir=out,
+            reviewer="reviewer_a", task_id="T1", review_binding_path=binding_path,
+        )
+        result = subprocess.run(command, env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        response = (out / "response.txt").read_bytes()
+        parsed = json.loads(response)
+        self.assertEqual(runner.canonical(parsed), response)
+        self.assertNotIn(b"\r", response)
+        shipped_prompt = (out / "prompt.md").read_text()
+        for instruction in ("{code, severity, summary}", "low, medium, high, critical",
+                            "PASS:", "FAIL:", "no markdown", "at most 32"):
+            self.assertIn(instruction, shipped_prompt)
+        receipt_path = out / "receipt.json"
+        self.assertLess(receipt_path.stat().st_size, policy["limits"]["max_receipt_bytes"])
+        receipt_text = receipt_path.read_text()
+        self.assertNotIn("large-secret-marker", receipt_text)
+        self.assertNotIn('"echo"', receipt_text)
+        compact = risk._compact_review(
+            {"runner_receipt_path": str(receipt_path),
+             "runner_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()},
+            "reviewer_a", 1, candidate_sha, plan["policy_identity"], plan,
+        )
+        self.assertEqual("pass", compact["verdict"])
+
+    def test_risk_reviewer_command_executes_canonical_a_then_bound_b(self):
+        candidate_sha = git(self.candidate, "rev-parse", "HEAD")
+        policy = risk.load_policy(RUNNER.parents[1] / "config/risk-policy.json")
+        request = {"repository": str(self.candidate), "candidate_sha": candidate_sha,
+                   "target_ref": "refs/heads/target",
+                   "expected_target_sha": git(self.candidate, "rev-parse", "target")}
+        plan = risk.classify(policy, request); policy_id = plan["policy_identity"]
+        binding_a = self.tmp / "binding-a.json"
+        risk.write_review_binding(binding_a, candidate_sha=candidate_sha,
+                                  policy_identity=policy_id, reviewer="reviewer_a")
+        out_a = self.tmp / "review-a"
+        command_a = risk.reviewer_command(
+            RUNNER.parent, controller_root=self.controller,
+            controller_branch="refs/heads/controller", candidate_root=self.candidate,
+            candidate_sha=candidate_sha, prompt_file=self.prompt, out_dir=out_a,
+            reviewer="reviewer_a", task_id="T1", review_binding_path=binding_a,
+        )
+        first = subprocess.run(command_a, env=self.env(), capture_output=True, text=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        receipt_a = json.loads((out_a / "receipt.json").read_text())
+        self.assertEqual(("reviewer_a", 1, None),
+                         (receipt_a["review_binding"]["reviewer_role"],
+                          receipt_a["review_binding"]["sequence"],
+                          receipt_a["review_binding"]["predecessor"]))
+
+        binding_b = self.tmp / "binding-b.json"
+        risk.write_review_binding(binding_b, candidate_sha=candidate_sha,
+                                  policy_identity=policy_id, reviewer="reviewer_b",
+                                  predecessor_receipt=out_a / "receipt.json")
+        out_b = self.tmp / "review-b"
+        command_b = risk.reviewer_command(
+            RUNNER.parent, controller_root=self.controller,
+            controller_branch="refs/heads/controller", candidate_root=self.candidate,
+            candidate_sha=candidate_sha, prompt_file=self.prompt, out_dir=out_b,
+            reviewer="reviewer_b", task_id="T1", review_binding_path=binding_b,
+        )
+        second = subprocess.run(command_b, env=self.env(), capture_output=True, text=True)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        receipt_b = json.loads((out_b / "receipt.json").read_text())
+        predecessor = receipt_b["review_binding"]["predecessor"]
+        self.assertEqual(hashlib.sha256((out_a / "receipt.json").read_bytes()).hexdigest(),
+                         predecessor["receipt_sha256"])
+        self.assertEqual(receipt_a["session_id"], predecessor["session_id"])
+        self.assertNotEqual(receipt_a["tool_id"], receipt_b["tool_id"])
+        review_inputs = []
+        for out in (out_a, out_b):
+            receipt_path = out / "receipt.json"
+            review_inputs.append({"runner_receipt_path": str(receipt_path),
+                                  "runner_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()})
+        evidence = risk.finalize(
+            plan, request,
+            affected_tests_passed=True, full_suite_passed=True, reviews=review_inputs,
+            metrics={"model_calls": 2}, policy=policy,
+        )
+        self.assertEqual("passed", evidence["status"])
+        self.assertEqual([1, 2], [item["sequence"] for item in evidence["reviews"]])
+
+    def test_reviewer_b_refuses_when_a_response_contains_findings(self):
+        candidate_sha = git(self.candidate, "rev-parse", "HEAD")
+        policy = risk.load_policy(RUNNER.parents[1] / "config/risk-policy.json")
+        request = {"repository": str(self.candidate), "candidate_sha": candidate_sha,
+                   "target_ref": "refs/heads/target",
+                   "expected_target_sha": git(self.candidate, "rev-parse", "target")}
+        plan = risk.classify(policy, request)
+        finding_prompt = self.tmp / "finding.md"; finding_prompt.write_text("review-findings\n")
+        binding_a = self.tmp / "finding-binding-a.json"
+        risk.write_review_binding(binding_a, candidate_sha=candidate_sha,
+                                  policy_identity=plan["policy_identity"],
+                                  reviewer="reviewer_a")
+        out_a = self.tmp / "finding-review-a"
+        command_a = risk.reviewer_command(
+            RUNNER.parent, controller_root=self.controller,
+            controller_branch="refs/heads/controller", candidate_root=self.candidate,
+            candidate_sha=candidate_sha, prompt_file=finding_prompt, out_dir=out_a,
+            reviewer="reviewer_a", task_id="T1", review_binding_path=binding_a,
+        )
+        first = subprocess.run(command_a, env=self.env(), capture_output=True, text=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        response = json.loads((out_a / "response.txt").read_text())
+        self.assertEqual("findings", response["verdict"])
+
+        binding_b = self.tmp / "finding-binding-b.json"
+        risk.write_review_binding(binding_b, candidate_sha=candidate_sha,
+                                  policy_identity=plan["policy_identity"],
+                                  reviewer="reviewer_b",
+                                  predecessor_receipt=out_a / "receipt.json")
+        out_b = self.tmp / "finding-review-b"
+        command_b = risk.reviewer_command(
+            RUNNER.parent, controller_root=self.controller,
+            controller_branch="refs/heads/controller", candidate_root=self.candidate,
+            candidate_sha=candidate_sha, prompt_file=self.prompt, out_dir=out_b,
+            reviewer="reviewer_b", task_id="T1", review_binding_path=binding_b,
+        )
+        second = subprocess.run(command_b, env=self.env(), capture_output=True, text=True)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("Reviewer A PASS", second.stderr)
+        self.assertFalse((out_b / "launch.json").exists())
 
     def test_signal_is_forwarded_and_interruption_evidence_is_typed(self):
         prompt = self.tmp / "signal.md"; prompt.write_text("signal-wait")

@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { resolveController } from '../../utils/controller-resolver.js';
 import type { ControllerResolution } from '../../utils/controller-resolver.js';
 
-export type MergeQueueOperation = 'status' | 'next' | 'resolve';
+export type MergeQueueOperation = 'status' | 'next' | 'resolve' | 'review';
 export type MergeQueueInvoker = (operation: MergeQueueOperation, taskId?: string) => Promise<void>;
 
 export function requireExactMergeController(resolution: ControllerResolution): string {
@@ -57,4 +57,5 @@ export function configureMergeQueueCommand(
   merge.command('status').action(() => invoke('status'));
   merge.command('next').action(() => invoke('next'));
   merge.command('resolve').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('resolve', taskId));
+  merge.command('review').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('review', taskId));
 }
