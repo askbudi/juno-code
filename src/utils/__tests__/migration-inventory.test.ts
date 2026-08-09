@@ -20,7 +20,7 @@ describe('Juno 2.1 migration inventory', () => {
     await fs.ensureDir(project);
     expect(git(project, 'init', '-q', '-b', 'product').status).toBe(0);
     git(project, 'config', 'user.name', 'Test'); git(project, 'config', 'user.email', 'test@example.com');
-    await fs.outputFile(path.join(project, '.gitignore'), 'cache/\n.env*\nvendor/\n');
+    await fs.outputFile(path.join(project, '.gitignore'), 'cache/\n.env*\nvendor/\n**/__pycache__/\n');
     await fs.outputFile(path.join(project, '.juno_task/tasks/aa/AA1.md'), 'task\n');
     await fs.outputFile(path.join(project, '.juno_task/ledger/aa/AA1/000001.ndjson'), '{}\n');
     await fs.outputFile(path.join(project, '.juno_task/scripts/kanban.sh'), '#!/bin/sh\n');
@@ -47,6 +47,7 @@ describe('Juno 2.1 migration inventory', () => {
     await fs.outputFile(path.join(project, 'cache/heavy.bin'), 'x'.repeat(64));
     await fs.writeFile(path.join(project, 'ordinary-heavy.bin'), 'y'.repeat(64));
     await fs.writeFile(path.join(project, '.env.secret'), 'SUPER_SECRET_VALUE\n');
+    await fs.outputFile(path.join(project, '.juno_task/scripts/__pycache__/generated.pyc'), 'generated\n');
     await fs.writeFile(path.join(project, '.git/hooks/custom-hook'), '#!/bin/sh\nexit 0\n');
     await fs.outputJson(path.join(project, '.claude/settings.json'), { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'DO_NOT_PRINT_ME' }] }] } });
     const nested = path.join(project, 'vendor/nested'); await fs.ensureDir(nested);
@@ -80,6 +81,7 @@ describe('Juno 2.1 migration inventory', () => {
     expect(text).not.toContain('JUNO_CONFIG_SECRET_COMMAND'); expect(text).not.toContain('/owner/private');
     expect(receipt.policy_generation_blocked).toBe(true);
     expect(receipt.policy_generation_block_reasons).toContain('explicit_product_ref_required');
+    expect(receipt.required_owner_answers.automatic_classifications).toContainEqual(expect.objectContaining({ path: '.juno_task/scripts/__pycache__/generated.pyc', handling: 'automatic', reason: 'generated_rebuildable_cache' }));
   });
 
   it('refuses unresolved answers and validates a complete generic policy bundle', async () => {
@@ -165,16 +167,18 @@ describe('Juno 2.1 migration inventory', () => {
     expect(receipt.git.selected_product_ahead).toBe(1); expect(receipt.git.selected_product_behind).toBe(0);
   });
 
-  it('refuses policy generation when the inspected checkout differs from the selected product ref', async () => {
-    git(project, 'update-ref', 'refs/heads/product', 'HEAD^');
+  it('records checkout mismatch without requiring ref movement for receipt-only policy drafting', async () => {
+    await fs.writeFile(path.join(project, 'detached-only.txt'), 'not on product ref\n');
+    git(project, 'add', 'detached-only.txt'); expect(git(project, 'commit', '-qm', 'detached-only').status).toBe(0);
     const receiptPath = path.join(temporary, 'mismatch.json'); const answersPath = path.join(temporary, 'mismatch-answers.json');
     expect(run(project, 'inventory', '--project', project, '--product-ref', 'refs/heads/product', '--output', receiptPath).status).toBe(0);
     const receipt = await fs.readJson(receiptPath);
     expect(receipt.git.checkout_matches_selected_product).toBe(false);
-    expect(receipt.policy_generation_block_reasons).toContain('inspected_checkout_does_not_match_selected_product_ref');
+    expect(receipt.inventory_warnings).toContain('inspected_checkout_does_not_match_selected_product_ref');
+    expect(receipt.policy_generation_block_reasons).not.toContain('inspected_checkout_does_not_match_selected_product_ref');
     expect(run(project, 'owner-template', '--inventory', receiptPath, '--output', answersPath).status).toBe(0);
     const refused = run(project, 'generate-policy', '--inventory', receiptPath, '--answers', answersPath, '--output', path.join(temporary, 'mismatch-policy.json'));
-    expect(refused.status).toBe(2); expect(refused.stderr).toContain('exact selected product ref commit');
+    expect(refused.status).toBe(2); expect(refused.stderr).toContain('owner answers unresolved');
   });
 
   it('protects child repositories, rejects fake controller roots, and never executes runtime candidates', async () => {

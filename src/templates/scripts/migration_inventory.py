@@ -214,7 +214,7 @@ def ignored_and_heavy(root: Path, threshold: int) -> tuple[list[dict[str, Any]],
     for name in sorted(set(tracked + ignored + untracked)):
         path = root / name
         try:
-            if path.is_file() and path.stat().st_size >= threshold:
+            if path.is_file() and not path.is_symlink() and path.stat().st_size >= threshold:
                 heavy.append({"tracked": name in tracked, **safe_path(root, name)})
         except OSError:
             continue
@@ -328,6 +328,14 @@ def controller_identity(root: Path, override: Path | None) -> dict[str, Any]:
                        "tracked_count": len(names), "tracked_product_path_count": len(product_paths),
                        "tracked_product_roots": sorted({name.split("/", 1)[0] for name in product_paths}),
                        "metadata_only": not product_paths})
+        result["override_disagrees_with_registration"] = bool(override and registered and Path(registered).resolve() != selected)
+        actual_branch = result.get("branch")
+        expected_full_branch = f"refs/heads/{branch}" if branch and not branch.startswith("refs/") else branch
+        result["registration_path_matches_selected"] = bool(registered and Path(registered).resolve() == selected)
+        result["registration_branch_matches_selected"] = bool(expected_full_branch and expected_full_branch == actual_branch)
+        result["registration_valid"] = bool(result["registration_path_matches_selected"]
+                                             and result["registration_branch_matches_selected"]
+                                             and not result["override_disagrees_with_registration"])
     else:
         result["available"] = False
         if selected and selected.exists(): result["invalid_reason"] = "selected path is not an exact Git worktree root"
@@ -379,28 +387,59 @@ def managed_assets(root: Path) -> list[dict[str, Any]]:
 
 
 def required_decisions(payload: dict[str, Any]) -> dict[str, Any]:
-    paths: list[dict[str, str]] = []
-    def add(kind: str, name: str) -> None:
-        paths.append({"id": hashlib.sha256(f"{kind}\0{name}".encode()).hexdigest()[:16], "kind": kind, "path": name})
-    for row in payload["controller_private_roots"]: add("controller_private", row["path"])
+    paths: dict[tuple[str, str], dict[str, Any]] = {}
+    automatic: list[dict[str, Any]] = []
+    generated_markers = ("/__pycache__/", "/.pytest_cache/", "/node_modules/", "/.cache/", "/dist/")
+    generated_groups = {".venv_juno", ".pytest_cache", "node_modules", ".juno_task/logs", ".juno_task/runtime"}
+
+    def add(kind: str, name: str, recommendation: str = "keep", reason: str = "owner_policy_required") -> None:
+        key = (kind, name)
+        row = paths.setdefault(key, {"id": hashlib.sha256(f"{kind}\0{name}".encode()).hexdigest()[:16],
+                                     "kind": kind, "path": name, "handling": "owner_review",
+                                     "recommended_disposition": recommendation, "reason": reason, "member_count": 0})
+        row["member_count"] += 1
+
+    def auto(kind: str, name: str, recommendation: str, reason: str) -> None:
+        automatic.append({"id": hashlib.sha256(f"{kind}\0{name}".encode()).hexdigest()[:16], "kind": kind,
+                          "path": name, "handling": "automatic", "recommended_disposition": recommendation,
+                          "reason": reason})
+
+    for row in payload["controller_private_roots"]: add("controller_private", row["path"], "keep", "durable_controller_state")
     for row in payload["managed_assets"]:
-        if row["state"] != "managed": add("managed_asset", row["path"])
+        if row["state"] != "managed": add("managed_asset", row["path"], "keep", "customized_or_missing_managed_asset")
     for row in payload["custom_project_assets"]:
-        add("custom_project_asset", row.get("path") or f"redacted:{row['path_sha256']}")
+        name = row.get("path") or f"redacted:{row['path_sha256']}"
+        if any(marker in f"/{name}" for marker in generated_markers):
+            auto("custom_project_asset", name, "retire", "generated_rebuildable_cache")
+        elif name.startswith(".juno_task/scripts/"):
+            family = ".juno_task/scripts/tests" if Path(name).name.startswith("test") else ".juno_task/scripts/runtime"
+            add("custom_project_asset_group", family, "keep", "review_grouped_legacy_scripts")
+        else:
+            add("custom_project_asset", name, "keep", "project_specific_asset")
     for row in payload["hook_config_shapes"]: add("hook_config", row["path"])
-    for row in payload["gitlinks"]: add("gitlink", row["path"])
+    for row in payload["gitlinks"]: add("gitlink", row["path"], "keep", "child_first_repository_policy")
     for row in payload["nested_repositories"]: add("nested_repository", row["path"])
     for row in payload["heavy_paths"]:
         add("heavy_path", row.get("path") or f"redacted:{row['path_sha256']}")
-    for row in payload["ignored_paths"]: add("ignored_group", f"group:{row['group']}")
-    for row in payload["status"]["entries"]:
-        if row["code"] == "??": add("untracked_path", row.get("path") or f"redacted:{row['path_sha256']}")
+    for row in payload["ignored_paths"]:
+        name = f"group:{row['group']}"
+        if row["group"] in generated_groups:
+            auto("ignored_group", name, "retire", "generated_rebuildable_group")
+        else:
+            add("ignored_group", name, "keep", "ignored_data_requires_owner_retention_decision")
+    untracked_count = sum(1 for row in payload["status"]["entries"] if row["code"] == "??")
+    if untracked_count:
+        add("untracked_group", "all_untracked_paths", "keep", "review_status_inventory_as_one_group")
+        paths[("untracked_group", "all_untracked_paths")]["member_count"] = untracked_count
+    owner_rows = sorted(paths.values(), key=lambda row: (row["kind"], row["path"]))
     return {
         "identity_fields": ["product_ref", "expected_product_head", "controller_branch", "controller_path",
                             "integration_path", "task_workspace_root", "branch_prefix", "rollback_owner", "cleanup_owner"],
         "policy_fields": ["allowed_paths", "controller_private_paths", "copied_metadata", "focused_validation",
                           "full_suite_validation", "risk_policy"],
-        "disposition_choices": list(DISPOSITIONS), "dispositions": sorted(paths, key=lambda row: (row["kind"], row["path"])),
+        "disposition_choices": list(DISPOSITIONS), "dispositions": owner_rows,
+        "automatic_classifications": sorted(automatic, key=lambda row: (row["kind"], row["path"])),
+        "classification_counts": {"owner_review": len(owner_rows), "automatic": len(automatic)},
         "separate_authorities": ["prepare_controller", "evacuate_product_metadata", "register_controller", "move_product_ref",
                                  "cleanup_old_controller", "tag_publish_push_deploy"],
     }
@@ -425,13 +464,19 @@ def inventory(args: argparse.Namespace) -> dict[str, Any]:
             pass
     before = mutation_sentinel(root, args.controller, gitlinks, nested)
     kanban = root / ".juno_task/scripts/kanban.sh"
+    controller_record = controller_identity(root, args.controller)
+    controller_store = Path(controller_record["selected_path"]) if controller_record.get("available", True) and controller_record.get("selected_path") else root
+    task_store = controller_store / ".juno_task/tasks"
+    ledger_store = controller_store / ".juno_task/ledger"
     payload: dict[str, Any] = {
         "schema_version": SCHEMA, "operation": "inventory", "outcome": "planned_no_mutation",
         "source_mutation_authorized": False, "git": git_identity(root, args.product_ref), "status": status_inventory(root),
-        "controller": controller_identity(root, args.controller), "runtime": runtime_identity(root, args.runtime),
+        "controller": controller_record, "runtime": runtime_identity(root, args.runtime),
         "kanban": {"wrapper": str(kanban) if kanban.is_file() else None, "wrapper_sha256": digest(kanban),
                    "runtime": executable_identity(args.kanban_runtime, "juno-kanban"),
-                   "task_store_present": (root / ".juno_task/tasks").is_dir(), "ledger_present": (root / ".juno_task/ledger").is_dir()},
+                   "canonical_store_root": str(controller_store),
+                   "task_store_present": task_store.is_dir(), "task_file_count": sum(1 for _ in task_store.rglob("*.md")) if task_store.is_dir() else 0,
+                   "ledger_present": ledger_store.is_dir(), "ledger_file_count": sum(1 for _ in ledger_store.rglob("*.ndjson")) if ledger_store.is_dir() else 0},
         "controller_private_roots": tracked_controller_roots(root), "managed_assets": managed_assets(root),
         "custom_project_assets": custom_project_assets(root),
         "hook_config_shapes": hook_config_shapes(root),
@@ -442,8 +487,9 @@ def inventory(args: argparse.Namespace) -> dict[str, Any]:
     blockers = []
     if not payload["git"]["selected_product_ref"]:
         blockers.append("explicit_product_ref_required")
-    elif not payload["git"]["checkout_matches_selected_product"]:
-        blockers.append("inspected_checkout_does_not_match_selected_product_ref")
+    payload["inventory_warnings"] = (["inspected_checkout_does_not_match_selected_product_ref"]
+                                     if payload["git"]["selected_product_ref"] and
+                                     not payload["git"]["checkout_matches_selected_product"] else [])
     payload["policy_generation_block_reasons"] = blockers + ["owner_answers_unresolved"]
     payload["policy_generation_blocked"] = True
     after = mutation_sentinel(root, args.controller, gitlinks, nested)
@@ -485,9 +531,8 @@ def validated_answers(receipt: dict[str, Any], answers: dict[str, Any], inventor
     frozen_refs = frozen_git.get("local_product_refs", {})
     if (not isinstance(selected_ref, str) or not selected_ref.startswith("refs/heads/")
             or selected_ref not in frozen_refs
-            or frozen_git.get("selected_product_head") != frozen_git.get("head")
-            or frozen_git.get("checkout_matches_selected_product") is not True):
-        raise InventoryError("policy generation requires an inspected checkout at the exact selected product ref commit")
+            or frozen_git.get("selected_product_head") != frozen_refs.get(selected_ref)):
+        raise InventoryError("policy generation requires one explicitly frozen local product ref")
     required = receipt["required_owner_answers"]
     missing = [name for name in required["identity_fields"] + required["policy_fields"] if answers.get(name) in (None, "", [])]
     decisions = answers.get("dispositions", {})
