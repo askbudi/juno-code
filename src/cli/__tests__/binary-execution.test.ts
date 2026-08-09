@@ -255,6 +255,31 @@ describe('Binary Execution Tests', () => {
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
     });
 
+    it('ships a runnable migration inventory engine with the bundled CLI', async () => {
+      const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-migrate-binary-'));
+      const project = path.join(sandbox, 'project');
+      const receipt = path.join(sandbox, 'inventory.json');
+      try {
+        await fs.ensureDir(project);
+        execFileSync('git', ['init', '-q', '-b', 'product', project]);
+        execFileSync('git', ['-C', project, 'config', 'user.name', 'Test']);
+        execFileSync('git', ['-C', project, 'config', 'user.email', 'test@example.com']);
+        await fs.writeFile(path.join(project, 'README.md'), 'fixture\n');
+        execFileSync('git', ['-C', project, 'add', 'README.md']);
+        execFileSync('git', ['-C', project, 'commit', '-qm', 'fixture']);
+
+        const result = await executeCLI([
+          'migrate', 'inventory', '--project', project,
+          '--product-ref', 'refs/heads/product', '--output', receipt,
+        ], { cwd: project });
+
+        expect(result.exitCode).toBe(0);
+        expect((await fs.readJson(receipt)).schema_version).toBe('juno_migration_inventory.v1');
+      } finally {
+        await fs.remove(sandbox);
+      }
+    });
+
     it('keeps an exact linked task worktree byte-clean before agent dispatch', async () => {
       const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-bootstrap-clean-'));
       const controller = path.join(sandbox, 'controller');

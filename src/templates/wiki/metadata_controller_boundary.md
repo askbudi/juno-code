@@ -30,6 +30,23 @@ Controller execution comes from one released `juno-code` installation outside ev
 
 ## Preservation-first migration
 
+Existing Juno Code 2.0 projects first freeze project facts and owner decisions;
+they do not begin with `metadata_controller.py prepare`. The packaged inventory
+is read-only and its receipt must live outside the inspected repository:
+
+```bash
+yy migrate inventory --project /absolute/project --output /durable/inventory.json
+yy migrate owner-template --inventory /durable/inventory.json \
+  --output /durable/owner-answers.json
+yy migrate generate-policy --inventory /durable/inventory.json \
+  --answers /durable/owner-answers.json --output /durable/policy-bundle.json
+```
+
+Policy generation refuses unresolved or `block` dispositions and runs the
+canonical metadata-controller, task-workspace and risk-policy validators. The
+result is still a candidate: it grants no prepare, registration, ref movement,
+cleanup, or release authority. See `@@migrate_juno_code_v2_to_v2_1`.
+
 The boundary helper deliberately does not register the new controller:
 
 ```bash
@@ -55,6 +72,40 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
 Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. Registration mutation is outside this helper and requires explicit owner authorization.
 
 Rollback is equally explicit: preserve the prior controller worktree/ref, verify the active metadata controller, create a `rollback-plan`, then use the separately authorized registrar. Neither transition merges controller commits into product history, rewrites history, deletes a worktree, pushes, or releases.
+
+## Operating topology after cutover
+
+The controller branch remains separate because it owns Kanban state. A separate
+long-lived integration branch is not required merely to synchronize controller
+and product state. `integration-owner` is a clean worktree role attached to the
+real product target ref; a project may still choose a staging branch as an
+explicit product policy, but the controller never merges into it.
+
+```text
+metadata controller branch/worktree (Kanban, ledger, decisions, receipts)
+        | task start X                         | task start Y
+        v                                      v
+feature/X branch + worktree              feature/Y branch + worktree
+  agent edits + focused tests              agent edits + focused tests
+        | task finish                         | task finish
+        +---------------- merge queue --------+
+                              |
+                              v
+                  real product target ref (CAS guarded)
+                              |
+                              v
+             clean integration-owner worktree at exact target SHA
+                full suite, shared local stack, deploy manager
+```
+
+Run Kanban and task/merge orchestration from the metadata controller. Run agent
+development and focused tests from the returned feature worktree. Run the full
+multi-service stack, integration/E2E validation, release build, and deploy
+manager from the clean integration-owner worktree after queued changes merge.
+Deployment remains a separate authority. Never deploy from the controller or
+from an unfinished feature worktree. If feature worktrees need local servers,
+give each isolated ports and state; otherwise keep the shared stack solely in
+the integration-owner worktree.
 
 ## Refusal rules
 

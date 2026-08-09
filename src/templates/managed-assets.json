@@ -67,6 +67,13 @@
       "macro": "migrate_juno_code_v1_to_v2"
     },
     {
+      "source": "prompts/migrate_juno_code_v2_to_v2_1.md",
+      "destination": ".juno_task/prompts/migrate_juno_code_v2_to_v2_1.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "migrate_juno_code_v2_to_v2_1"
+    },
+    {
       "source": "prompts/migrate_juno_kanban_v1_to_v2.md",
       "destination": ".juno_task/prompts/migrate_juno_kanban_v1_to_v2.md",
       "installClass": "project",
@@ -100,6 +107,12 @@
     {
       "source": "scripts/metadata_controller.py",
       "destination": ".juno_task/scripts/metadata_controller.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/migration_inventory.py",
+      "destination": ".juno_task/scripts/migration_inventory.py",
       "installClass": "script",
       "type": "script"
     },

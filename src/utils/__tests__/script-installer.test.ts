@@ -221,6 +221,7 @@ describe('ScriptInstaller', () => {
       expect(newlyManaged.sort()).toEqual([
         'managed_agent_runner.py',
         'merge_queue.py',
+        'migration_inventory.py',
         'release_gate.py',
         'risk_policy.py',
         'task_workspace.py',
@@ -320,6 +321,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_flow.py', installed: false },
         { name: 'wiki_lint.py', installed: false },
         { name: 'metadata_controller.py', installed: false },
+        { name: 'migration_inventory.py', installed: false },
         { name: 'risk_policy.py', installed: false },
         { name: 'release_gate.py', installed: false },
         { name: 'tests/test_release_gate.py', installed: false },
@@ -506,6 +508,7 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'merge_queue.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'migration_inventory.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(
         path.join(scriptsDir, 'tests/test_merge_queue.py'),
         '#!/usr/bin/env python3\nprint("merge queue")',
@@ -545,6 +548,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_flow.py', installed: true },
         { name: 'wiki_lint.py', installed: true },
         { name: 'metadata_controller.py', installed: true },
+        { name: 'migration_inventory.py', installed: true },
         { name: 'risk_policy.py', installed: true },
         { name: 'release_gate.py', installed: true },
         { name: 'tests/test_release_gate.py', installed: true },

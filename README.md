@@ -508,6 +508,9 @@ Legacy continuity cleanup is explicit and reversible:
 ```bash
 juno-code continuity doctor --json
 juno-code continuity clean                         # dry-run inventory only
+juno-code migrate inventory --project . --output /durable/inventory.json
+juno-code migrate owner-template --inventory /durable/inventory.json --output /durable/answers.json
+juno-code migrate generate-policy --inventory /durable/inventory.json --answers /durable/answers.json --output /durable/policies.json
 juno-code continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
 juno-code continuity clean --apply /tmp/review.json
 juno-code continuity rollback <receipt-path>
