@@ -110,6 +110,11 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
         self.assertTrue((self.new_controller / ".juno_task/scripts/controller_resolver.py").is_file())
         self.assertEqual(payload["runtime_scripts"]["file_count"], 2)
+        self.assertTrue((self.new_controller / ".gitignore").is_file())
+        self.assertTrue((self.new_controller / ".juno_task/state/tasks.json").is_file())
+        self.assertTrue((self.new_controller / ".juno_task/receipts/controller-boundary.json").is_file())
+        self.assertEqual(command("git", "config", "--worktree", "--get", "core.sparseCheckout",
+                                 cwd=self.new_controller), "false")
         self.assertIn(".juno_task/scripts/", (self.new_controller / ".gitignore").read_text())
         generated_config = json.loads((self.new_controller / ".juno_task/config.json").read_text())
         self.assertEqual(
@@ -126,6 +131,8 @@ class MetadataControllerTest(unittest.TestCase):
         boundary = json.loads((self.new_controller / ".juno_task/receipts/controller-boundary.json").read_text())
         self.assertGreater(len(boundary["preserved_metadata"]["entries"]), 2)
         write(self.new_controller / ".juno_task/scripts/generated.py", "print('generated')\n")
+        write(self.new_controller / ".juno_task/cache/kanban.sqlite3", "cache\n")
+        write(self.new_controller / ".juno_task/locks/task.lock", "lock\n")
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
         self.assertEqual(
             command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo),
