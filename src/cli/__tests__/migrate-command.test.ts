@@ -26,4 +26,19 @@ describe('migration CLI', () => {
     await program.parseAsync(['node', 'yy', 'migrate', 'owner-template', '--inventory', '/r/i.json', '--output', '/r/a.json']);
     expect(invoke).toHaveBeenCalledWith(['owner-template', '--inventory', '/r/i.json', '--output', '/r/a.json']);
   });
+
+  it('routes metadata evacuation plan, apply, and verify commands', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride(); configureMigrationCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'migrate', 'evacuation-plan', '--inventory', '/r/i.json', '--policy', '/r/p.json', '--project', '/product', '--output', '/r/plan.json']);
+    expect(invoke).toHaveBeenCalledWith(['evacuation-plan', '--inventory', '/r/i.json', '--policy', '/r/p.json', '--project', '/product', '--output', '/r/plan.json']);
+
+    const applyProgram = new Command().exitOverride(); configureMigrationCommand(applyProgram, invoke);
+    await applyProgram.parseAsync(['node', 'yy', 'migrate', 'evacuation-apply', '--plan', '/r/plan.json', '--candidate', '/candidate', '--output', '/r/apply.json', '--allow-disposable-mutation']);
+    expect(invoke).toHaveBeenCalledWith(['evacuation-apply', '--plan', '/r/plan.json', '--candidate', '/candidate', '--output', '/r/apply.json', '--allow-disposable-mutation']);
+
+    const verifyProgram = new Command().exitOverride(); configureMigrationCommand(verifyProgram, invoke);
+    await verifyProgram.parseAsync(['node', 'yy', 'migrate', 'evacuation-verify', '--plan', '/r/plan.json', '--candidate', '/candidate', '--output', '/r/verify.json']);
+    expect(invoke).toHaveBeenCalledWith(['evacuation-verify', '--plan', '/r/plan.json', '--candidate', '/candidate', '--output', '/r/verify.json']);
+  });
 });

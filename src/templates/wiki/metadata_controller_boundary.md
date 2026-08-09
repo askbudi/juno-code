@@ -47,6 +47,28 @@ canonical metadata-controller, task-workspace and risk-policy validators. The
 result is still a candidate: it grants no prepare, registration, ref movement,
 cleanup, or release authority. See `@@migrate_juno_code_v2_to_v2_1`.
 
+After review, generate the product metadata-removal diff in a disposable linked
+worktree. Planning is read-only; apply refuses the inventoried source, the protected
+target branch, dirty candidates, unrelated repositories, and stale base commits:
+
+```bash
+yy migrate evacuation-plan --inventory /durable/inventory.json \
+  --policy /durable/policy-bundle.json --project /absolute/source \
+  --output /durable/evacuation-plan.json
+yy migrate evacuation-apply --plan /durable/evacuation-plan.json \
+  --candidate /absolute/disposable-linked-worktree \
+  --output /durable/evacuation-apply.json --allow-disposable-mutation
+yy migrate evacuation-verify --plan /durable/evacuation-plan.json \
+  --candidate /absolute/disposable-linked-worktree \
+  --output /durable/evacuation-verify.json
+```
+
+Every controller-private root needs an owner disposition. Product-owned prompts,
+config, docs, tests and code outside those roots remain untouched. Only the retired
+top-level `lifecycle` and `controllerWorkspace` config keys are removed. Nested
+repository or gitlink boundary crossings fail closed. The commands never stage,
+commit, move a ref, register a controller, or delete rollback evidence.
+
 The boundary helper deliberately does not register the new controller:
 
 ```bash

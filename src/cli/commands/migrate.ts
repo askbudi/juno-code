@@ -6,23 +6,24 @@ import { Command } from 'commander';
 
 export type MigrationInvocation = (args: string[]) => Promise<void>;
 
-function packagedEngine(): string {
+function packagedEngine(name = 'migration_inventory.py'): string {
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     // Bundled CLI: dist/bin/cli.mjs -> dist/templates/scripts.
-    path.resolve(directory, '../templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../templates/scripts/${name}`),
     // Source execution: src/cli/commands -> src/templates/scripts.
-    path.resolve(directory, '../../templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../../templates/scripts/${name}`),
     // Bundled CLI executed from a source checkout before packaging.
-    path.resolve(directory, '../../src/templates/scripts/migration_inventory.py'),
+    path.resolve(directory, `../../src/templates/scripts/${name}`),
   ];
   const engine = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!engine) throw new Error('The packaged migration inventory engine is missing');
+  if (!engine) throw new Error(`The packaged migration engine is missing: ${name}`);
   return engine;
 }
 
 export async function invokeMigration(args: string[]): Promise<void> {
-  const engine = packagedEngine();
+  const evacuation = args[0]?.startsWith('evacuation-');
+  const engine = packagedEngine(evacuation ? 'metadata_evacuation.py' : 'migration_inventory.py');
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', [engine, ...args], {
       cwd: process.cwd(),
@@ -76,4 +77,27 @@ export function configureMigrationCommand(
     .requiredOption('--answers <path>', 'Completed owner answers JSON')
     .requiredOption('--output <path>', 'New policy bundle receipt')
     .action((options) => invoke(['generate-policy', '--inventory', options.inventory, '--answers', options.answers, '--output', options.output]));
+  migrate
+    .command('evacuation-plan')
+    .description('Create a byte-stable controller-metadata evacuation plan')
+    .requiredOption('--inventory <path>', 'Reviewed immutable inventory receipt')
+    .requiredOption('--policy <path>', 'Reviewed generated migration policy bundle')
+    .requiredOption('--project <path>', 'Exact product source worktree')
+    .requiredOption('--output <path>', 'New plan receipt outside all repositories')
+    .action((options) => invoke(['evacuation-plan', '--inventory', options.inventory, '--policy', options.policy, '--project', options.project, '--output', options.output]));
+  migrate
+    .command('evacuation-apply')
+    .description('Apply an evacuation plan only to a clean disposable linked worktree')
+    .requiredOption('--plan <path>', 'Reviewed evacuation plan')
+    .requiredOption('--candidate <path>', 'Disposable linked candidate worktree')
+    .requiredOption('--output <path>', 'New apply receipt outside all repositories')
+    .requiredOption('--allow-disposable-mutation', 'Acknowledge mutation of the disposable candidate')
+    .action((options) => invoke(['evacuation-apply', '--plan', options.plan, '--candidate', options.candidate, '--output', options.output, '--allow-disposable-mutation']));
+  migrate
+    .command('evacuation-verify')
+    .description('Verify an applied candidate has only the planned metadata changes')
+    .requiredOption('--plan <path>', 'Reviewed evacuation plan')
+    .requiredOption('--candidate <path>', 'Candidate worktree to verify')
+    .requiredOption('--output <path>', 'New verification receipt outside all repositories')
+    .action((options) => invoke(['evacuation-verify', '--plan', options.plan, '--candidate', options.candidate, '--output', options.output]));
 }
