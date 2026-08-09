@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -23,6 +24,10 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from git_index_lock import IndexLockError, diagnose_index_lock, require_index_unlocked
 import controller_resolver
+try:
+    import controller_workspace
+except ImportError:  # installed generations before sparse-controller support
+    controller_workspace = None
 
 SCHEMA_VERSION = "juno_controller_checkpoint.v1"
 AGENT_SCHEMA_VERSION = "juno_controller_checkpoint_agent.v1"
@@ -222,8 +227,53 @@ def selected(path: str, includes: tuple[str, ...]) -> bool:
     return any(path == entry or path.startswith(entry + "/") for entry in includes)
 
 
+def scoped_includes(includes: tuple[str, ...], task_id: str | None) -> tuple[str, ...]:
+    """Narrow broad task/ledger roots to one canonical task namespace."""
+    if task_id is None:
+        return includes
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
+        raise CheckpointError("--task-id is invalid")
+    prefix = task_id[:2].lower()
+    replacements = {
+        ".juno_task/tasks": f".juno_task/tasks/{prefix}/{task_id}.md",
+        ".juno_task/ledger": f".juno_task/ledger/{prefix}/{task_id}",
+    }
+    return tuple(replacements.get(item, item) for item in includes)
+
+
+def workspace_policy(root: Path) -> dict[str, Any] | None:
+    pointer = root / ".juno_task/config/controller-workspace.json"
+    if not pointer.is_file():
+        return None
+    if controller_workspace is None:
+        raise CheckpointError("controller workspace authority is not installed")
+    try:
+        return controller_workspace.load_policy(pointer)
+    except controller_workspace.WorkspaceError as exc:
+        raise CheckpointError(f"controller workspace policy refused: {exc}") from exc
+
+
+def require_sparse_controller(root: Path) -> dict[str, Any] | None:
+    policy = workspace_policy(root)
+    if policy is None:
+        return None
+    try:
+        evidence = controller_workspace.inspect(root, policy)
+    except controller_workspace.WorkspaceError as exc:
+        raise CheckpointError(f"sparse controller verification failed: {exc}") from exc
+    if not evidence["passed"]:
+        failed = sorted(key for key, value in evidence["checks"].items() if not value)
+        raise CheckpointError("sparse controller policy drift blocks checkpoint: " + ",".join(failed))
+    return evidence
+
+
 def status_names(item: Dirty) -> tuple[str, ...]:
     return (item.path, item.original) if item.original else (item.path,)
+
+
+def unrelated_task_residue(path: str, includes: tuple[str, ...]) -> bool:
+    scoped = any(item.startswith(".juno_task/tasks/") for item in includes)
+    return scoped and path.startswith((".juno_task/tasks/", ".juno_task/ledger/")) and not selected(path, includes)
 
 
 def inspect_boundary(root: Path, relative: str) -> None:
@@ -302,7 +352,8 @@ def inspect(
         for name in status_names(item):
             inspect_boundary(root, name)
     chosen = sorted({name for item in dirt for name in status_names(item) if selected(name, includes)})
-    blocked = sorted({name for item in dirt for name in status_names(item) if not selected(name, includes)})
+    blocked = sorted({name for item in dirt for name in status_names(item)
+                      if not selected(name, includes) and not unrelated_task_residue(name, includes)})
     if blocked:
         raise CheckpointError(f"blocked non-controller paths: {blocked}")
     return {
@@ -356,6 +407,15 @@ def classify_paths(
         elif role == "controller" and not selected(path, includes):
             reason = "product_path"
         if role == "controller":
+            policy = workspace_policy(root)
+            if policy is not None:
+                try:
+                    ownership = controller_workspace.classify(policy, path)
+                    if ownership == "product_canonical": reason = "product_path"
+                    elif ownership == "local_ignored": reason = "local_ignored_path"
+                except controller_workspace.WorkspaceError:
+                    reason = "unclassified_path"
+
             # Inspect both endpoints of every audited delta. A deleted or replaced
             # gitlink may be absent from both the filesystem and the new tree.
             modes = {
@@ -436,7 +496,8 @@ def assert_staged_boundary(
         raise CheckpointError("conflict appeared during checkpoint staging")
     if any(item.dirty_submodule for item in dirt):
         raise CheckpointError("dirty submodule state appeared during checkpoint staging")
-    blocked = sorted({name for item in dirt for name in status_names(item) if not selected(name, includes)})
+    blocked = sorted({name for item in dirt for name in status_names(item)
+                      if not selected(name, includes) and not unrelated_task_residue(name, includes)})
     if blocked:
         raise CheckpointError(f"blocked non-controller paths appeared during checkpoint: {blocked}")
     actual_staged = sorted({name for item in dirt if item.staged for name in status_names(item)})
@@ -444,7 +505,8 @@ def assert_staged_boundary(
         raise CheckpointError(
             f"staged path set escaped frozen group: expected={sorted(staged_paths)} actual={actual_staged}"
         )
-    dirty_paths = sorted({name for item in dirt for name in status_names(item)})
+    dirty_paths = sorted({name for item in dirt for name in status_names(item)
+                          if not unrelated_task_residue(name, includes)})
     if dirty_paths != sorted(remaining):
         raise CheckpointError("dirty path set changed after staging")
     if any(fingerprint(root, path) != frozen["fingerprints"][path] for path in remaining):
@@ -807,6 +869,7 @@ def emit(payload: dict[str, Any], as_json: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=os.getcwd(), help="Exact repository top level")
+    parser.add_argument("--task-id", help="Limit task and ledger selection to one canonical task namespace")
     sub = parser.add_subparsers(dest="command", required=True)
     plan = sub.add_parser("plan", help="Inspect without mutation")
     plan.add_argument("--json", action="store_true")
@@ -829,6 +892,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = repo_root(args.root)
     includes, agent_config = load_config(root)
+    includes = scoped_includes(includes, args.task_id)
+    persisted_role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False).strip()
+    if persisted_role == "controller":
+        require_sparse_controller(root)
     if args.command == "staged-check":
         payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
     if args.command == "committed-check":

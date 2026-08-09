@@ -1,123 +1,102 @@
 ---
 wiki_contract:
   line_limit: 250
-  purpose: "One public exact-base implementation, review, CAS, target-verification, and cleanup state machine."
-  failure_mode_prevented: "Controller edits, stale integration, review ping-pong, fictional PASS, target ambiguity, and unsafe cleanup."
-  runtime_contract_enforced: "yy lifecycle owns task-level phase ordering while low-level Git helpers remain internal."
-  validation_gate: "python3 -m unittest .juno_task/scripts/tests/test_task_lifecycle.py && python3 .juno_task/scripts/tests/test_integration_concurrency.py"
+  purpose: "One task-derived root/direct-child implementation, review, CAS, verification, controller-closure, and cleanup lifecycle."
+  failure_mode_prevented: "User-authored choreography, stale refs, wrong checkout review, fictional PASS, repeated child CAS, and unsafe cleanup."
+  runtime_contract_enforced: "yy lifecycle owns the immutable plan and every task-level transition; low-level helpers are not public UX."
+  validation_gate: "python3 .juno_task/scripts/tests/test_task_lifecycle.py"
   related_sots:
     - "parallel_runner_and_spec_review.md"
 ---
 
-# Single-repository task lifecycle
+# Task-derived root/direct-child lifecycle
 
 ## Public interface
 
 ```bash
-yy lifecycle run --manifest /absolute/task-lifecycle.yaml
-yy lifecycle status --state /absolute/artifacts/state.json
-yy lifecycle resume --state /absolute/artifacts/state.json
+yy lifecycle run --task TASK_ID
+yy lifecycle resume --task TASK_ID
+yy lifecycle status --task TASK_ID
 ```
 
-These are operations of one public lifecycle. `worktree_lifecycle.py`, `integration_candidate.py`, and `integration_owner_preflight.py` remain internal proven phase primitives. Operators do not sequence them.
+`run` reads the canonical Kanban task and project policy, then freezes one internal plan. `resume` verifies that plan and the compact attempt hash chain before choosing the first incomplete phase. `status` is bounded and read-only: it does not create state, refresh caches, dispatch agents, or acquire target authority. Old manifest/state syntax is rejected rather than adapted.
 
-Minimal JSON manifest (YAML is accepted when controller PyYAML is available):
+Project policy lives at `.juno_task/config/lifecycle.json`:
 
 ```json
 {
-  "schema_version": "juno_task_lifecycle.v1",
-  "task_id": "T123",
-  "controller_root": "/absolute/controller",
-  "objective_risk": "high",
-  "owner_risk_escalation": null,
-  "repositories": [{
-    "id": "root",
-    "path": "/absolute/integration-owner",
-    "target_ref": "refs/heads/integration",
-    "approved_base_sha": "FULL_40_CHARACTER_SHA",
-    "task_worktree": "/absolute/new-task-worktree",
-    "task_branch_ref": "refs/heads/juno/task-T123",
-    "expected_paths": ["src/owned-area", "tests/owned-test.ts"]
-  }],
-  "artifact_root": "/absolute/controller-artifacts/T123/run-1",
-  "cleanup_owner": "logical-orchestrator",
-  "requirements_checklist": "/absolute/T123-requirements.md",
-  "validation_commands": ["npm test", "npm run typecheck", "npm run build"],
-  "review": {"initial_pair_limit": 1, "replacement_pair_limit": 1}
+  "schema_version": "juno_task_lifecycle_config.v2",
+  "default_topology": "root-only",
+  "repositories": {
+    "root": {"path": ".", "target_ref": "refs/heads/main", "parent": null, "expected_paths": ["src"]},
+    "child": {"path": "child", "target_ref": "refs/heads/main", "parent": "root", "mount_path": "child", "expected_paths": ["src"]}
+  },
+  "topologies": {
+    "root-only": {"root": "root", "children": []},
+    "root-child": {"root": "root", "children": ["child"]}
+  },
+  "candidate_gate": {"rows": [{"id": "full-suite", "command": "npm test"}]}
 }
 ```
 
-Optional `parity_pairs` contains two-path arrays whose bytes must match. Agent commands normally use fresh `yy pi` with inherited defaults; configured implementation/repair/review commands are accepted only when they remain fresh canonical `yy pi` argv without provider/model overrides. Timeouts are bounded under `timeouts.agent_seconds` and `timeouts.validation_seconds`.
+The repository registry owns identities, full target refs, parent edges, mount paths, default path authority, objective risk, and candidate-gate rows. Task fields may select topology and exact existing/future paths; they cannot replace repository identities or refs. One root plus any number of direct children is supported. Duplicate identities, unknown children, a parent above the selected root, or a child of a child fails before the first worktree mutation.
 
-Release, push, publication, deployment, production mutation, restart, and post-deploy E2E are intentionally outside this reusable lifecycle.
+## Canonical sparse controller
 
-## Exact-base topology
+The canonical controller is a fresh same-repository linked worktree governed by `.juno_task/config/controller-workspace.json`. Its versioned ownership manifest classifies every tracked path as controller canonical, shared managed distribution, product canonical, or local ignored. Normalization rejects overlap, unsafe paths, symlinks, nested repositories, and unclassified tracked bytes. Canonical checkout is non-cone, worktree-scoped, and uses `index.sparse=false`; its normalized selected paths and exact patterns are digest-bound. Required controller/shared paths must be present while product and unexpected tracked paths are unmaterialized.
 
-The controller owns Kanban, prompts, and durable state. It is never the product implementation base. The manifest names an explicit repository checkout, full `refs/heads/...` target, approved SHA, task path/ref, and complete expected paths. `prepare` rereads the target and creates the task worktree from that exact integration SHA. A controller branch or controller `HEAD` cannot substitute for it.
+Controller CWD is orchestration-only. Every managed edit/build/test/commit/candidate/review/integration/release operation names an explicit product root. Task work requires exact lifecycle registration and admission evidence; candidate/review/integration roots are full exact-tip checkouts; release is a clean strict full integration owner. Controller checkpoints classify controller/shared paths, narrow task-bound writes to that task's task/ledger namespace, reject product paths even after manual materialization or `--no-verify`, and recheck sparse policy around mutation.
 
-Expected paths are hash-bound authority. They may identify planned new files; edit preflight records `existing` versus `planned_new` rather than making pre-existence a prerequisite for creating a file. Candidate admission still rejects every changed path outside the declared file or subtree.
+Controller synchronization still constructs and validates the full two-parent candidate in an isolated full checkout. After expected-HEAD CAS it reapplies and reads back the exact sparse policy. A moved ref with failed restoration is durable `controller_ref_moved_sparse_restore_pending` truth: COMPLETE and release remain blocked until restoration-only resume succeeds. Cutover and rollback are expected-identity plans; the prior full controller remains read-only and no product ref moves.
 
-The v1 schema uses a `repositories` array constrained to one `id: root` entry. Future root/child composition extends that cardinality and adds edges; it does not create another lifecycle.
+## Exact-base admission and workers
 
-## State flow
+Prepare resolves every target SHA, Git common directory, path disposition, dependency, and collision before creating anything. Worktrees are then created once in deterministic root/child registry order. A failed create removes only exact-base, clean, inactive worktrees created by that attempt; uncertain state is preserved.
 
-```text
-PLANNED -> IMPLEMENT_READY -> IMPLEMENTING
- -> CANDIDATE_FROZEN -> CLOSURE_AUDITED -> CANDIDATE_VALIDATED
- -> Reviewer A -> Reviewer B when high -> REVIEWED_PASS
- -> expected-SHA CAS -> ACTUAL_TARGET_VERIFIED
- -> delivery-sensitive semantic review when required
- -> reachability-safe cleanup -> COMPLETE
-```
+Future paths are exact. Traversal may use the nearest existing parent, but write authority never expands to that parent. Candidate changed-path readback must remain within admitted existing/future paths, so creating a new file does not require recreating a worktree.
 
-Findings produce `REPAIR_REQUIRED`, one consolidated repair, one replacement validation, and one replacement review pair. Remaining findings produce `REVIEW_BUDGET_EXHAUSTED`; the lifecycle does not silently start a third pair.
+One fresh implementation worker normally owns the coherent multi-root authority map. At most three workers run sequentially; concurrent product workers are forbidden. Workers commit coherent child/root tips, update final root gitlinks, and stop at `REVIEW_READY`. They never dispatch reviewers, move targets, clean, release, or push.
 
-Every update is atomic and records the previous phase, next phase, generation, timestamp, and receipt hash. The compact result keeps candidate, integrated, and release identities separate. Release fields remain null because release is project-specific.
+## Candidate and evidence gate
 
-## Risk and review truth
+Composition occurs before review. The immutable candidate receipt binds every root/child tip, changed path, root tree, and expected gitlink. A missing or wrong child gitlink fails rather than creating a helper-owned product commit.
 
-Deterministic risk is the minimum. Ambiguous/unclassified changes and Git/ref/CAS/cleanup, lifecycle/review authority, security, runtime/package delivery, release, deployment, or destructive surfaces are high. Other behavioral work is medium; documentation-only/non-behavioral test work may be low. Owners may escalate but never downgrade.
+The candidate gate creates detached exact-tip checkouts with controller routing unset. Its nonempty matrix emits one bounded row per invariant with ID, command digest, expected/actual result, exit status, evidence path, evidence digest, and pass/fail/not-applicable status. An empty matrix or a matrix with no applicable row cannot pass. Project policy includes built public run/resume/status dogfood, dangerous real-Git scenarios, full suites, typecheck/build, runtime/template/generated/package parity, and changed-path confinement. A changed candidate byte creates a new generation and invalidates prior gate/review evidence.
 
-Low/medium requires one independent review. High requires Reviewer A then Reviewer B sequentially on exactly the same frozen base/tip. Both are fresh `yy pi` contexts, read-only, and inherit configured provider/model defaults. No repair or product commit may occur between them. Strict output is one or more `JUNO_REVIEW_FINDING` lines or exactly `JUNO_REVIEW_VERDICT: PASS`.
+## Canonical review trust
 
-The orchestrator waits for every required reviewer before deduplicating findings by requirement/root cause. Implementation and repair workers never launch review subloops.
+Every pre-CAS, composed, and delivery-sensitive actual-target review uses the same pipeline:
 
-An owner waiver is read only from the canonical Kanban task field `fields.lifecycle_review` and must bind `status: waived_by_owner` to the exact candidate SHA. The lifecycle never authors or infers it. Objective/effective risk remains unchanged and `review_passed` remains false. This truth is independent from validation and integration status.
+1. create one external detached exact-tip checkout set;
+2. prove each HEAD and porcelain-v2 tracked/staged/untracked state before dispatch;
+3. launch fresh canonical `yy pi` with inherited provider/model defaults and a capture path;
+4. parse verdict only from captured final response—not prompt echo, argv, stdout, stderr, progress, or footer;
+5. require a fresh nonempty session ID bound to the process receipt;
+6. prove HEAD and tracked, staged, untracked state unchanged immediately after dispatch;
+7. remove the frozen checkout only after evidence is durable.
 
-## Candidate boundary
+Low/medium uses Reviewer A. High uses Reviewer A then Reviewer B sequentially on exactly the same frozen base/tip, with distinct sessions and no repair between. Both results complete before one consolidated repair packet. One initial and one replacement round are autonomous; further work requires owner action. Missing/duplicate sessions, prompt echoes, contradictory verdicts, wrong HEAD, or any reviewer mutation fail closed.
 
-Focused tests are the editing loop. Before semantic review, the lifecycle:
+A candidate-bound owner waiver preserves objective/effective risk and `review_passed=false`. It must bind the exact candidate digest, target refs/expected SHAs, package scope, and separate integration/local-release permissions. Waiver is never PASS; release remains an optional operation after core COMPLETE.
 
-1. requires one committed clean candidate;
-2. audits expected paths, authority/order claims, forbidden architecture, and declared parity pairs;
-3. creates a detached exact-tip validation clone with independent Git configuration;
-4. unsets controller routing variables;
-5. runs the declared candidate-boundary suite once;
-6. stores bounded stdout/stderr and exact command/tip receipts;
-7. removes only the validation checkout through ordinary Git worktree removal.
+## Attempts, CAS, and resume
 
-Reviewers consume the compact receipt and run only diagnostic checks needed for findings. They do not rerun the full suite by default.
+Each task owns a disjoint `<git-common-dir>/juno-lifecycle/tasks/TASK_ID` operational namespace, keeping receipts out of product/controller dirt. Atomic attempts form a task-local hash chain and bind phase, generation, root/child identities, expected controller HEAD, normalized failure, artifact digests, and next action. Symlinks, same-task writers, schema drift, product/staged/submodule dirt, conflicting namespaces, and controller-head races refuse without broad staging.
 
-## Candidate, CAS, and target truth
+Integration preflights every target, then moves children in deterministic order and root last using exact-old-SHA `git update-ref`. Every successful movement is persisted before the next. A later failure records `PARTIAL_INTEGRATION`; resume verifies moved refs and continues forward from the first incomplete repository. It never repeats, rewinds, or silently adopts an unreceipted moved child.
 
-After PASS, the lifecycle coordinates the existing candidate planner/builder/verifier. A direct unchanged candidate reuses exact-tip semantic truth. If target composition changes candidate meaning, fresh candidate review is required; the lifecycle refuses rather than pretending the old review covers new bytes.
+Actual-target verification is unconditional: refs, trees, root gitlinks, parity, and deterministic smoke/readback must match. Semantic actual-target review occurs only when objective delivery conditions can change reviewed meaning; byte-identical delivery records `not_required` with policy evidence.
 
-Integration uses the expected target SHA and channel lock. A moved target fails closed; no ref is rewound. Deterministic actual-target readback and validation are unconditional. Post-CAS semantic review is required for high risk, delivery/runtime/package surfaces, composed bytes, or any actual-target identity differing from the reviewed candidate.
+## Controller closure and cleanup
 
-Partial target movement, validation failure, review failure, controller synchronization failure, checkpoint failure, and cleanup refusal remain separate terminal dimensions. Integration never implies cleanup or release.
+Core COMPLETE requires actual-target truth, required review/waiver/not-required truth, expected-HEAD controller synchronization, terminal checkpoint/readback, and typed cleanup. Optional release is independent and cannot make an incomplete core lifecycle complete.
 
-## Cleanup
-
-Cleanup uses the existing typed reachability-safe helper. It requires the exact task/candidate HEAD, clean inactive checkout, target reachability, nested-worktree safety, and exact-old-SHA branch deletion. Unknown activity, initialized nested worktrees, dirty state, wrong identity, or unreachable commits block cleanup without force. A refusal reports `CLEANUP_BLOCKED` and preserves evidence.
+Cleanup is child-first/root-last and binds each repository's reviewed task tip. Exact HEAD, clean tracked/staged/untracked state, target reachability, registration, and administration must agree. Any mismatch preserves evidence and refuses without force; there is no force lane or automatic rollback.
 
 ## Hard cut and history
 
-`workflow_class: local_integration` is no longer executable. Workflow Runner rejects old lint, start, `--from-step` resume, recovery, and amendment with a pointer to `yy lifecycle`. Historical artifacts remain immutable and readable through `workflow_runner.sh doctor`; generic non-lifecycle workflows remain supported. There is no adapter, schema translation, or dual integration runtime.
-
-## Canonical worker distribution
-
-`src/templates/skills/canonical/ralph-loop/references/implement.md` is the sole implementation-worker contract. `npm run generate:implementation-contract` deterministically renders Claude, Codex, and Pi template/project copies. Build runs `--check`, and drift fails parity validation. Generated destinations identify their canonical source and must not be edited independently.
+`workflow_class: local_integration` and old lifecycle manifest/state execution, resume, recovery, lint, and amendment are rejected with task-command guidance. Historical state, receipts, and logs remain readable and immutable through `workflow_runner.sh doctor`. There is no adapter, schema translation, or dual integration runtime. There is no migration executor; permanently partial historical lifecycles remain untouched.
 
 ## Why implementation and tests both matter
 
-Instructions explain roles and why review waits for a stable candidate. The backing state machine enforces phase order, review budget, exact SHA identities, bounded evidence, CAS coordination, target verification, and cleanup. Real Git/worktree tests matter because prose cannot prove ref CAS, detached validation, or reachability-safe removal. Package-install tests matter because source-only checks cannot prove users receive the command, scripts, prompts, and generated worker contract together. Unit tests protect schemas and verdict truth; medium/high canaries prove one-review and same-tip A/B user flows without helper syntax discovery.
+The Python state machine enforces topology, authority, immutable review, CAS ordering, controller closure, and cleanup. Real Git/worktree tests matter because they prove those boundaries survive actual ref races, partial movement, dirty checkouts, and forward resume. Review-capture tests prove transport text cannot become semantic truth. Package-install tests matter because source-only checks cannot prove users receive the same runtime and schema. Release, push, publication, deployment, production mutation, restart, and post-deploy E2E remain separate authority. Documentation captures why these backing tests are release-critical rather than treating prose or self-authored receipts as sufficient evidence.

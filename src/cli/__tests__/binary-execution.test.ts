@@ -225,16 +225,16 @@ describe('Binary Execution Tests', () => {
         await fs.ensureDir(scriptDir);
         const script = path.join(scriptDir, 'task_lifecycle.py');
         await fs.writeFile(script, 'import json,sys; print(json.dumps({"forwarded":sys.argv[1:]}))\n');
-        const state = path.join(sandbox, 'state.json');
-        await fs.writeJson(state, {});
-
         const help = await executeCLI(['--help'], { cwd: sandbox });
         expect(help.exitCode).toBe(0);
         expect(help.stdout).toContain('lifecycle');
 
-        const status = await executeCLI(['lifecycle', 'status', '--state', state], { cwd: sandbox });
+        const status = await executeCLI(['lifecycle', 'status', '--task', 'T123'], { cwd: sandbox });
         expect(status.exitCode).toBe(0);
-        expect(JSON.parse(status.stdout.trim())).toEqual({ forwarded: ['status', '--state', state] });
+        expect(JSON.parse(status.stdout.trim())).toEqual({ forwarded: ['status', '--task', 'T123'] });
+
+        const retired = await executeCLI(['lifecycle', 'run', '--manifest', 'old.json'], { cwd: sandbox, expectError: true });
+        expect(retired.exitCode).not.toBe(0);
       } finally {
         await fs.remove(sandbox);
       }

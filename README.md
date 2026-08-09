@@ -57,7 +57,7 @@ Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local c
 | Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
 | Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
 
-Choose the smallest lane that satisfies the work. Controller dirt and unrelated agents do not gate exact-base creation or a disjoint target channel. Every product change uses a named worktree. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
+Choose the smallest lane that satisfies the work. The canonical controller can be a non-cone sparse linked worktree whose versioned four-class ownership policy materializes only controller/shared bytes. Sparse policy, required-path, branch, registration, or managed-generation drift fails closed. Every managed product operation receives an explicit verified task/candidate/integration-owner root; release is sourced only from a clean strict full integration owner. Controller sync validates the full candidate externally and records resumable partial truth if post-CAS sparse restoration fails. Controller dirt and unrelated agents do not gate exact-base creation or a disjoint target channel. Every product change uses a named worktree. See `.juno_task/wiki/git_worktree_lifecycle.md` for the single lifecycle contract rather than duplicating it here.
 
 ### Integration/controller Git flow
 
@@ -291,12 +291,12 @@ The first attempt writes `run_contract.json`, the single checkpoint and attempt 
 Product mutation now uses one public task lifecycle rather than Workflow Runner integration choreography:
 
 ```bash
-yy lifecycle run --manifest /absolute/task-lifecycle.yaml
-yy lifecycle status --state /absolute/artifacts/state.json
-yy lifecycle resume --state /absolute/artifacts/state.json
+yy lifecycle run --task TASK_ID
+yy lifecycle status --task TASK_ID
+yy lifecycle resume --task TASK_ID
 ```
 
-The v1 manifest names exactly one repository, full target ref and approved integration SHA, a new task worktree/ref, complete expected paths, objective risk, validation commands, requirement checklist, artifact root, and cleanup owner. The state machine owns exact-base admission, implementation-worker dispatch, deterministic closure audit, isolated exact-tip validation, risk-tiered independent review, one bounded consolidated repair, expected-SHA CAS coordination, unconditional actual-target verification, delivery-sensitive review, and reachability-safe cleanup. Candidate, integrated, and release identities remain distinct; release is outside this reusable lifecycle.
+The project-owned `.juno_task/config/lifecycle.json` registry names repository identities, direct-child topology, target refs, path policy, objective risk, and the evidence-bearing candidate gate. Task fields only select configured topology and exact existing/future paths; the first run freezes resolved SHAs and authority in an immutable internal plan. The state machine owns exact-base admission, implementation-worker dispatch, deterministic closure audit, isolated exact-tip validation, risk-tiered independent review, one bounded consolidated repair, expected-SHA CAS coordination, unconditional actual-target verification, delivery-sensitive review, and reachability-safe cleanup. Candidate, integrated, and release identities remain distinct; release is outside this reusable lifecycle.
 
 Low/medium uses one fresh read-only reviewer. High or ambiguous work runs Reviewer A then Reviewer B sequentially on the same frozen tip with no repair between them. One replacement pair is the autonomous maximum. An owner waiver is read from candidate-bound Kanban task fields, remains `review_passed: false`, and never lowers risk. The shipped helpers remain internal phase primitives rather than operator syntax.
 

@@ -28,9 +28,16 @@ describe('packaged worktree lifecycle', () => {
     expect(source).not.toContain('force');
   });
 
+  it('excludes transient lifecycle logs and Python caches from built/package bytes', async () => {
+    const pkg = await fs.readJson(path.resolve(process.cwd(), 'package.json'));
+    expect(pkg.scripts['build:copy-templates']).toContain("dist/templates/scripts/logs");
+    expect(pkg.scripts['build:copy-templates']).toContain("dist/templates/scripts/__pycache__");
+    expect(pkg.scripts['build:copy-templates']).toContain('removeSync');
+  });
+
   it('documents one public lifecycle, backing tests, and separate release authority', async () => {
     const guidance = await fs.readFile(wiki, 'utf8');
-    expect(guidance).toContain('yy lifecycle run --manifest');
+    expect(guidance).toContain('yy lifecycle run --task TASK_ID');
     expect(guidance).toContain('Real Git/worktree tests matter');
     expect(guidance).toContain('Package-install tests matter');
     expect(guidance).toContain('Release, push, publication, deployment');

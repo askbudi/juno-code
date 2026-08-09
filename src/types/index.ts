@@ -116,6 +116,18 @@ export interface JunoTaskConfig {
     policy: '.juno_task/config/git-flow.json';
   };
 
+  // Task-derived lifecycle; detailed topology/risk policy stays in the versioned file.
+  lifecycle?: {
+    enabled: boolean;
+    policy: '.juno_task/config/lifecycle.json';
+  };
+
+  // Canonical sparse-controller policy remains Python-owned and versioned.
+  controllerWorkspace?: {
+    enabled: true;
+    policy: '.juno_task/config/controller-workspace.json';
+  };
+
   // Explicit, source-project authorization for cross-project Kanban aliases
   kanbanRegistry?: KanbanRegistryConfig;
 

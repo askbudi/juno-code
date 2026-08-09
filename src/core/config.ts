@@ -160,6 +160,14 @@ const GitFlowSchema = z
   .strict()
   .optional();
 
+const ControllerWorkspaceSchema = z
+  .object({
+    enabled: z.literal(true),
+    policy: z.literal('.juno_task/config/controller-workspace.json'),
+  })
+  .strict()
+  .optional();
+
 const KanbanProjectAliasSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'must be a lowercase project alias');
@@ -294,6 +302,19 @@ export const JunoTaskConfigSchema = z
 
     gitFlow: GitFlowSchema.describe(
       'Enablement and canonical policy pointer for the Python-owned Git-flow engine',
+    ),
+
+    lifecycle: z
+      .object({
+        enabled: z.boolean(),
+        policy: z.literal('.juno_task/config/lifecycle.json'),
+      })
+      .strict()
+      .optional()
+      .describe('Task-derived lifecycle enablement; topology and risk policy remain project-owned'),
+
+    controllerWorkspace: ControllerWorkspaceSchema.describe(
+      'Canonical sparse-controller ownership and checkout policy pointer',
     ),
 
     kanbanRegistry: KanbanRegistrySchema.describe(

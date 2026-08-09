@@ -3,13 +3,13 @@ import * as path from 'node:path';
 import { existsSync as requireExists } from 'node:fs';
 import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
 
-export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 'session-write';
+export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 'session-write' | 'product-edit';
 
 export interface ControllerResolution {
   path: string;
   current_root: string;
   resolver: 'installed' | 'missing';
-  source: 'environment' | 'registration' | 'current-root';
+  source: 'environment' | 'registration' | 'primary-worktree' | 'non-git-current-root' | 'current-root';
   expected_branch: string | null;
   actual_branch: string | null;
   role: 'controller' | 'task' | 'integration-owner';
@@ -17,6 +17,7 @@ export interface ControllerResolution {
   operation: ControllerOperation;
   valid: boolean;
   diagnostics: string[];
+  controller_workspace?: { passed: boolean; checks: Record<string, boolean> } | null;
 }
 
 /** Invoke the installed shared resolver so wrappers, runners, and Node use one contract. */
@@ -58,7 +59,7 @@ export function resolveController(
 export interface AutomaticProjectBootstrapPolicy {
   allowed: boolean;
   resolution: ControllerResolution;
-  reason: 'controller' | 'resolver-missing' | 'non-controller-worktree';
+  reason: 'controller' | 'resolver-missing' | 'non-controller-worktree' | 'sparse-controller-managed';
 }
 
 /**
@@ -81,6 +82,11 @@ export function resolveAutomaticProjectBootstrap(
   const currentRoot = path.resolve(resolution.current_root);
   if (resolution.role !== 'controller' || controllerRoot !== currentRoot) {
     return { allowed: false, resolution, reason: 'non-controller-worktree' };
+  }
+  // Sparse controllers are generation-pinned and verified by the resolver.
+  // Implicit startup must not create an unexpected tracked/local expansion.
+  if (resolution.controller_workspace?.passed) {
+    return { allowed: false, resolution, reason: 'sparse-controller-managed' };
   }
   return { allowed: true, resolution, reason: 'controller' };
 }

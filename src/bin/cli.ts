@@ -15,7 +15,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
-import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
+import { resolveAutomaticProjectBootstrap, resolveController } from '../utils/controller-resolver.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -1218,21 +1218,30 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
 }
 
 function setupTaskLifecycleCommand(program: Command): void {
-  const invoke = async (operation: 'run' | 'resume' | 'status', options: { manifest?: string; state?: string }) => {
+  const invoke = async (operation: 'run' | 'resume' | 'status', options: { task: string }) => {
     const [{ spawn }, path, fs] = await Promise.all([
       import('node:child_process'),
       import('node:path'),
       import('fs-extra'),
     ]);
-    const script = path.resolve(process.cwd(), '.juno_task', 'scripts', 'task_lifecycle.py');
+    const resolution = resolveController(process.cwd(), 'orchestration');
+    if (!resolution.valid || resolution.role === 'integration-owner') {
+      throw new Error('Lifecycle requires the exact canonical controller workspace');
+    }
+    const controllerRoot = path.resolve(resolution.path);
+    const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_lifecycle.py');
     if (!(await fs.pathExists(script))) {
       throw new Error('Missing managed lifecycle runtime. Run `yy scripts update` and retry.');
     }
-    const args = [script, operation];
-    if (options.manifest) args.push('--manifest', path.resolve(options.manifest));
-    if (options.state) args.push('--state', path.resolve(options.state));
+    const args = [script, operation, '--task', options.task];
+    const lifecycleEnv = {
+      ...process.env,
+      JUNO_TASK_ROOT: controllerRoot,
+      JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+    };
     const exitCode = await new Promise<number>((resolve, reject) => {
-      const child = spawn('python3', args, { cwd: process.cwd(), env: process.env, stdio: 'inherit' });
+      const child = spawn('python3', args, { cwd: controllerRoot, env: lifecycleEnv, stdio: 'inherit' });
       child.once('error', reject);
       child.once('exit', (code, signal) => {
         if (signal) reject(new Error(`Lifecycle terminated by signal ${signal}`));
@@ -1244,10 +1253,10 @@ function setupTaskLifecycleCommand(program: Command): void {
 
   const lifecycle = program
     .command('lifecycle')
-    .description('Run one resumable single-repository task lifecycle');
-  lifecycle.command('run').requiredOption('--manifest <path>').option('--state <path>').action((options) => invoke('run', options));
-  lifecycle.command('resume').requiredOption('--state <path>').action((options) => invoke('resume', options));
-  lifecycle.command('status').requiredOption('--state <path>').action((options) => invoke('status', options));
+    .description('Run one task-derived root/direct-child lifecycle');
+  for (const operation of ['run', 'resume', 'status'] as const) {
+    lifecycle.command(operation).requiredOption('--task <task-id>', 'Canonical Kanban task ID').action((options) => invoke(operation, options));
+  }
 }
 
 function setupCompletion(program: Command): void {

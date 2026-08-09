@@ -688,6 +688,41 @@ def detach_controller_with_lifecycle(ctl: Path, target_ref: str, target_tip: str
         os.chdir(previous_cwd)
 
 
+def sparse_controller_policy(ctl: Path) -> tuple[Any, dict[str, Any]] | None:
+    path = ctl / ".juno_task/config/controller-workspace.json"
+    if not path.is_file(): return None
+    try: import controller_workspace
+    except ImportError as exc: raise FlowError("controller_workspace.py is required for sparse controller sync") from exc
+    try: return controller_workspace, controller_workspace.load_policy(path)
+    except controller_workspace.WorkspaceError as exc: raise FlowError(f"invalid sparse controller policy: {exc}") from exc
+
+
+def restore_sparse_controller(ctl: Path, expected_head: str) -> dict[str, Any]:
+    authority = sparse_controller_policy(ctl)
+    if authority is None:
+        return {"required": False, "status": "not_configured"}
+    module, policy = authority
+    if os.environ.get("JUNO_INJECT_SPARSE_RESTORATION_FAILURE") == "1":
+        raise FlowError("injected sparse restoration failure")
+    module.configure(ctl, policy, expected_head)
+    evidence = module.inspect(ctl, policy)
+    if resolve(ctl, policy["controller_branch"]) != expected_head or resolve(ctl, "HEAD") != expected_head or not evidence["passed"]:
+        raise FlowError("sparse restoration readback mismatch")
+    return {"required": True, "status": "restored_and_verified", "evidence": evidence}
+
+
+def record_sparse_restoration(receipt: dict[str, Any], ctl: Path, candidate_head: str) -> bool:
+    """Record success or durable ref-moved partial truth without rewriting the moved ref."""
+    try:
+        receipt["sparseRestoration"] = restore_sparse_controller(ctl, candidate_head)
+    except FlowError as exc:
+        receipt.update({"outcome": "controller_ref_moved_sparse_restore_pending", "resumable": True,
+                        "refusal": str(exc)})
+        return False
+    receipt.update({"outcome": "synced_local", "resumable": False})
+    return True
+
+
 def sync_receipt_base(ctl: Path, policy: dict[str, Any], policy_path: Path, source_ref: str, target_ref: str,
                       source_tip: str, target_tip: str, integration_receipt: Path | None,
                       integration_receipt_sha: str | None = None) -> dict[str, Any]:
@@ -717,6 +752,7 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                 "planOnly": True, "processEvidence": process, "wouldMutate": False}
     integration_receipt: Path
     resume_path: Path | None = None
+    prior: dict[str, Any] | None = None
     expected_integration_sha: str | None = None
     if args.resume:
         resume_path = args.resume.expanduser().resolve()
@@ -737,6 +773,19 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
     integration_value, receipt_hash = load_integration_receipt(
         integration_receipt, ctl, source_ref, source_tip, expected_sha256=expected_integration_sha)
     policy_digest = digest_json(policy)
+    if prior is not None and prior.get("outcome") == "controller_ref_moved_sparse_restore_pending":
+        candidate_head = str(prior.get("candidateSha") or "")
+        if not re.fullmatch(r"[0-9a-f]{40,64}", candidate_head) or resolve(ctl, target_ref) != candidate_head:
+            raise FlowError("sparse restoration resume controller ref identity mismatch")
+        restored_path = resume_path.with_name(resume_path.stem + "-restored.json")
+        resumed = {**prior, "createdAt": utc_now(), "resumeReceipt": {"path": str(resume_path), "sha256": file_sha(resume_path)}}
+        try:
+            resumed["sparseRestoration"] = restore_sparse_controller(ctl, candidate_head)
+            resumed.update({"outcome": "synced_local", "resumable": False})
+        except FlowError as exc:
+            resumed.update({"outcome": "controller_ref_moved_sparse_restore_pending", "resumable": True, "refusal": str(exc)})
+        atomic_write(restored_path, resumed, replace=restored_path.exists())
+        return {**resumed, "receiptPath": str(restored_path)}
     resume_hash = "" if resume_path is None else file_sha(resume_path)
     operation_id = hashlib.sha256(f"{receipt_hash}\0{target_tip}\0{source_tip}\0{policy_digest}\0{resume_hash}".encode()).hexdigest()[:24]
     store = project_store(ctl, policy); receipt_path = store / "receipts" / f"{operation_id}.json"
@@ -867,13 +916,13 @@ def controller_sync(invocation: Path, args: argparse.Namespace) -> dict[str, Any
                                                                 "exitCode": restored.returncode}})
                     else:
                         restored = run(["git", "-C", str(ctl), "switch", short_ref(target_ref)], ctl, False)
+                        receipt["cas"]["after"] = resolve(ctl, target_ref)
                         if restored.returncode:
-                            rollback = authority.run(ctl, "update-ref", target_ref, target_tip, candidate_head, check=False)
-                            run(["git", "-C", str(ctl), "symbolic-ref", "HEAD", target_ref], ctl, False)
-                            if rollback.returncode: raise FlowError("controller restoration failed with partial CAS truth")
-                            receipt.update({"outcome": "failed_preserved", "resumable": True, "pendingRef": pending_ref, "refusal": "checkout restoration rolled back"})
+                            receipt.update({"outcome": "controller_ref_moved_sparse_restore_pending", "resumable": True,
+                                            "pendingRef": pending_ref, "refusal": "controller ref moved but checkout restoration failed"})
                         else:
-                            receipt["cas"]["after"] = resolve(ctl, target_ref); receipt.update({"outcome": "synced_local", "resumable": False})
+                            if not record_sparse_restoration(receipt, ctl, candidate_head):
+                                receipt["pendingRef"] = pending_ref
         cleanup_target = target_ref if receipt["outcome"] == "synced_local" else pending_ref
         persist_then_cleanup(receipt_path, receipt, ctl, candidate, branch, candidate_head, cleanup_target, store, operation_id)
         if receipt["outcome"] == "synced_local": git(ctl, "update-ref", "-d", pending_ref, candidate_head)
@@ -889,6 +938,8 @@ def auto_after_integration(repository: Path, integration_receipt: Path) -> dict[
     # assertion, or every generated integration path would report a false bridge
     # failure before it can even observe disabled policy.
     asserted_role = os.environ.pop("JUNO_WORKSPACE_ROLE", None)
+    asserted_branch = os.environ.pop("JUNO_CONTROLLER_BRANCH", None)
+    asserted_root = os.environ.pop("JUNO_TASK_ROOT", None)
     try:
         try:
             ctl = controller(repository); policy, _ = config(ctl)
@@ -905,6 +956,8 @@ def auto_after_integration(repository: Path, integration_receipt: Path) -> dict[
             return {"outcome": "failed_preserved", "integrationRemainsSuccessful": True, "error": str(exc)}
     finally:
         if asserted_role is not None: os.environ["JUNO_WORKSPACE_ROLE"] = asserted_role
+        if asserted_branch is not None: os.environ["JUNO_CONTROLLER_BRANCH"] = asserted_branch
+        if asserted_root is not None: os.environ["JUNO_TASK_ROOT"] = asserted_root
 
 
 def parser() -> argparse.ArgumentParser:

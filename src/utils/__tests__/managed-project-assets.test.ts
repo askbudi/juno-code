@@ -62,10 +62,10 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
     expect(dictionary.reflect).toContain('complete reflection table');
     expect(dictionary.new_task_workflow).toContain('# New task lifecycle');
-    expect(dictionary.new_task_workflow).toContain('juno_task_lifecycle.v1');
+    expect(dictionary.new_task_workflow).toContain('juno_task_lifecycle_config.v2');
     expect(dictionary.new_task_workflow).toContain('one initial review pair budget');
     expect(dictionary.new_task_workflow).toContain('one frozen tip');
-    expect(dictionary.new_task_workflow).toContain('yy lifecycle run --manifest PATH');
+    expect(dictionary.new_task_workflow).toContain('yy lifecycle run --task TASK_ID');
     expect(dictionary.run_workflow).toContain('# Run a workflow or task lifecycle');
     expect(dictionary.run_workflow).toContain('workflow_runner.sh doctor');
     expect(dictionary.run_workflow).toContain('waived_by_owner');

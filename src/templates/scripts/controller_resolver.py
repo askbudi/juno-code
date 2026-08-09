@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+sys.dont_write_bytecode = True
+
 VALID_ROLES = {"controller", "task", "integration-owner"}
 VALID_ENFORCEMENT = {"off", "warn", "strict"}
 
@@ -111,7 +113,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         "create_receipt_sha256": create_receipt_sha256,
         "expected_paths_sha256": expected_paths_sha256, "role_authority": role_authority,
         "role_assertion": asserted_role, "enforcement": enforcement,
-        "operation": operation, "valid": True, "diagnostics": [],
+        "operation": operation, "valid": True, "diagnostics": [], "controller_workspace": None,
     }
 
     errors: list[str] = []
@@ -129,6 +131,28 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
                 errors.append("configured controller is not a linked worktree of the invoking repository")
         if expected_branch and actual_branch != expected_branch:
             errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {actual_branch or 'detached HEAD'!r}")
+        workspace_pointer = controller / ".juno_task/config.json"
+        try:
+            project_config = json.loads(workspace_pointer.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            project_config = {}
+        workspace = project_config.get("controllerWorkspace")
+        if isinstance(workspace, dict) and workspace.get("enabled") is True:
+            policy_relative = workspace.get("policy")
+            expected_policy = ".juno_task/config/controller-workspace.json"
+            if policy_relative != expected_policy:
+                errors.append("controller workspace policy pointer is missing or noncanonical")
+            else:
+                try:
+                    import controller_workspace
+                    policy = controller_workspace.load_policy(controller / expected_policy)
+                    evidence = controller_workspace.inspect(controller, policy)
+                    result["controller_workspace"] = evidence
+                    if not evidence["passed"]:
+                        failed = sorted(name for name, passed in evidence["checks"].items() if not passed)
+                        errors.append("canonical sparse controller policy refused: " + ",".join(failed))
+                except (ImportError, controller_workspace.WorkspaceError, OSError) as exc:
+                    errors.append(f"canonical sparse controller verification failed: {exc}")
     if asserted_controller and persisted_controller and asserted_controller != persisted_controller:
         errors.append(f"JUNO_TASK_ROOT assertion mismatch: persisted={persisted_controller} asserted={asserted_controller}")
     if asserted_branch and expected_branch and asserted_branch != expected_branch:

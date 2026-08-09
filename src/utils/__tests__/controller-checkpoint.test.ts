@@ -87,6 +87,20 @@ describe('controller_checkpoint.py template script', () => {
     expect(JSON.parse(explicit.stdout).selected).toEqual(expected);
   });
 
+  it('task-scoped checkpoints exclude another task namespace residue', async () => {
+    await fs.ensureDir(path.join(repo, '.juno_task', 'tasks', 't1'));
+    await fs.ensureDir(path.join(repo, '.juno_task', 'ledger', 't1', 'T1'));
+    await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 't1', 'T1.md'), 'one\n');
+    await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 't2', 'T2.md'), 'two\n').catch(async () => {
+      await fs.ensureDir(path.join(repo, '.juno_task', 'tasks', 't2'));
+      await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 't2', 'T2.md'), 'two\n');
+    });
+    const scoped = run(repo, '--task-id', 'T1', 'plan', '--json');
+    expect(scoped.status, scoped.stderr).toBe(0);
+    expect(JSON.parse(scoped.stdout).selected).toEqual(['.juno_task/tasks/t1/T1.md']);
+    expect(git(repo, 'status', '--porcelain')).toContain('.juno_task/tasks/t2/');
+  });
+
   it('blocks dirty product paths and leaves both worktree and index untouched', async () => {
     await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'controller\n');
     await fs.writeFile(path.join(repo, 'product.txt'), 'product\n');

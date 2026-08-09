@@ -216,13 +216,20 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     const fixtureBin = path.join(workflowFixtureController, '.venv_juno', 'bin');
     await fs.ensureDir(fixtureBin);
     const pythonExecutable = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
-    await fs.symlink(pythonExecutable, path.join(fixtureBin, 'python'));
-    const pythonVersion = spawnSync(pythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
+    // Resolve the executable before linking it into the synthetic venv. On
+    // macOS, /usr/bin/python3 and version-manager launchers can themselves be
+    // links/shims; linking that spelling instead of the real interpreter makes
+    // adjacent pyvenv.cfg selection depend on /var -> /private/var aliases.
+    const realPythonExecutable = spawnSync(pythonExecutable, ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    await fs.symlink(realPythonExecutable, path.join(fixtureBin, 'python'));
+    const pythonVersion = spawnSync(realPythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
       encoding: 'utf8',
     }).stdout.trim();
     await fs.writeFile(
       path.join(workflowFixtureController, '.venv_juno', 'pyvenv.cfg'),
-      `home = ${path.dirname(await fs.realpath(pythonExecutable))}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
+      `home = ${path.dirname(realPythonExecutable)}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
     );
     const yamlPackage = spawnSync(pythonExecutable, ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)'], {
       encoding: 'utf8',
@@ -459,7 +466,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(accepted.stderr + accepted.stdout).toContain(
       'legacy local_integration execution was retired by the task lifecycle hard cut',
     );
-    expect(accepted.stderr + accepted.stdout).toContain('yy lifecycle run --manifest PATH');
+    expect(accepted.stderr + accepted.stdout).toContain('yy lifecycle run --task TASK_ID');
     return;
 
     for (const reviewStepId of ['pre_merge_review', 'candidate_review']) {
@@ -1073,7 +1080,7 @@ print('PASS')
     );
   });
 
-  it('re-execs when ambient and managed Python resolve alike but only the managed prefix has PyYAML', async () => {
+  it('re-execs when only the managed prefix has PyYAML', async () => {
     const controller = await fs.realpath(workflowFixtureController!);
     const venv = path.join(controller, '.venv_juno');
     const python = path.join(venv, 'bin', 'python');
@@ -1114,7 +1121,8 @@ summary:
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(await fs.realpath(python)).toBe(await fs.realpath(spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim()));
+    const effectiveAmbientPython = spawnSync('python3', ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], { encoding: 'utf8' }).stdout.trim();
+    expect(await fs.realpath(python)).toBe(effectiveAmbientPython);
     expect(result.stderr).toContain(`[DEBUG] workflow_runner.sh Python runtime: ${python}`);
     expect(result.stderr).toContain(`prefix: ${venv}`);
     expect(result.stderr).toContain(`PyYAML:`);

@@ -71,6 +71,10 @@ Old symbol/path | New symbol/path | Allowed remaining callers | Removal decision
 
 Search definitions, imports, route registrations, configuration, tests, and generated/public surfaces. A replacement is incomplete while an obsolete mapper, reader, endpoint, fallback, or alternate owner remains outside the explicitly allowed caller list. Finish with a deletion grep scoped to the affected paths.
 
+## Controller/workspace replacement boundary
+
+When the replaced runtime is controller-facing, freeze one four-class ownership manifest (controller, shared managed distribution, product, local ignored) before migration. Create a fresh sparse linked controller and retain the prior full controller for rollback; never convert the active controller in place. Validate full product bytes externally, require explicit admitted product roots for edit-capable dispatch, and persist ref-moved/restoration-failed states as resumable partial truth. A sparse controller is an accident-prevention boundary, not an OS sandbox.
+
 ## Validation ownership convention
 
 Use one deliberate validation owner per level:

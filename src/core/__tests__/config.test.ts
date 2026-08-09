@@ -251,6 +251,21 @@ describe('Configuration Module', () => {
       })).toThrow(/gitFlow/);
     });
 
+    it('should accept only the canonical sparse-controller policy pointer', () => {
+      const config = validateConfig({
+        ...DEFAULT_CONFIG,
+        controllerWorkspace: {
+          enabled: true,
+          policy: '.juno_task/config/controller-workspace.json',
+        },
+      });
+      expect(config.controllerWorkspace?.enabled).toBe(true);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        controllerWorkspace: { enabled: true, policy: './other.json' },
+      })).toThrow(/controllerWorkspace/);
+    });
+
     it('should accept an enabled cross-project Kanban alias allowlist', () => {
       const config = validateConfig({
         ...DEFAULT_CONFIG,

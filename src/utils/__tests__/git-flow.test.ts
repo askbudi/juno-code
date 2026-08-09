@@ -39,7 +39,7 @@ describe('configured Git flow', () => {
   let remote: string;
   let childRemote: string;
   let childSeed: string;
-  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_WORKSPACE_ROLE: '', JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3', GIT_ALLOW_PROTOCOL: 'file' });
+  const env = () => ({ JUNO_TASK_ROOT: controller, JUNO_CONTROLLER_BRANCH: '', JUNO_WORKSPACE_ROLE: '', JUNO_WORKSPACE_ENFORCEMENT: '', JUNO_GIT_FLOW_PYTHON: process.env.PYTHON || 'python3', GIT_ALLOW_PROTOCOL: 'file' });
 
   beforeEach(async () => {
     sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-git-flow-'));
@@ -100,6 +100,30 @@ describe('configured Git flow', () => {
     const checked = run('python3', ['-c', probe], integration, { ...env(), JUNO_WORKSPACE_ROLE: 'controller' });
     expect(checked.status, checked.stderr).toBe(0);
     expect(JSON.parse(checked.stdout)).toEqual({ result: { outcome: 'not_enabled' }, role: 'controller' });
+  });
+
+  it('records sparse restoration failure as resumable partial truth without moving refs', () => {
+    const policySource = path.resolve(process.cwd(), 'src/templates/config/controller-workspace.json');
+    fs.ensureDirSync(path.join(controller, '.juno_task/config'));
+    fs.copyFileSync(policySource, path.join(controller, '.juno_task/config/controller-workspace.json'));
+    const before = git(controller, 'show-ref');
+    const probe = [
+      'import json, os, sys',
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(engine))})`,
+      'import git_flow',
+      `receipt={"candidateSha":${JSON.stringify(git(controller, 'rev-parse', 'HEAD'))}}`,
+      `ok=git_flow.record_sparse_restoration(receipt,__import__('pathlib').Path(${JSON.stringify(controller)}),receipt["candidateSha"])`,
+      'print(json.dumps({"ok":ok,"receipt":receipt}))',
+    ].join('; ');
+    const checked = run('python3', ['-c', probe], controller, {
+      ...env(), JUNO_INJECT_SPARSE_RESTORATION_FAILURE: '1', JUNO_CONTROLLER_BRANCH: '',
+    });
+    expect(checked.status, checked.stderr).toBe(0);
+    expect(JSON.parse(checked.stdout)).toMatchObject({ ok: false, receipt: {
+      outcome: 'controller_ref_moved_sparse_restore_pending', resumable: true,
+      refusal: 'injected sparse restoration failure',
+    } });
+    expect(git(controller, 'show-ref')).toBe(before);
   });
 
   it('configures explicit policy and reports detached integration identity', () => {
