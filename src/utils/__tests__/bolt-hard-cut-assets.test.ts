@@ -8,6 +8,9 @@ const retired = [
   'scripts/integration_candidate.py',
   'scripts/integration_owner_preflight.py',
   'scripts/worktree_lifecycle.py',
+  'scripts/tests/test_task_lifecycle.py',
+  'scripts/tests/test_controller_workspace.py',
+  'scripts/tests/test_integration_concurrency.py',
   'config/lifecycle.json',
   'config/controller-workspace.json',
 ];
@@ -40,12 +43,22 @@ describe('Bolt shipped hard cut', () => {
       ...textFiles(join(sourceRoot, 'skills')),
       resolve(process.cwd(), 'README.md'),
       resolve(process.cwd(), '..', 'README.md'),
+      resolve(process.cwd(), '..', 'AGENTS.md'),
     ];
     for (const file of files) {
       const text = readFileSync(file, 'utf8');
       expect(text, file).not.toMatch(/yy lifecycle(?:\s|`)/i);
       expect(text, file).not.toMatch(/controller[- ]sync/i);
-      expect(text, file).not.toMatch(/integration_(?:candidate|owner_preflight)\.py/i);
+      if (!file.endsWith('AGENTS.md')) {
+        expect(text, file).not.toMatch(/integration_(?:candidate|owner_preflight)\.py/i);
+        expect(text, file).not.toMatch(/controller-workspace\.json/i);
+      } else {
+        for (const line of text.split('\n').filter((entry) =>
+          /integration_candidate\.py|controller-workspace\.json/i.test(entry),
+        )) {
+          expect(line, file).toMatch(/rollback-only/i);
+        }
+      }
       expect(text, file).not.toMatch(/task_lifecycle\.py/i);
       expect(text, file).not.toMatch(/worktree_lifecycle\.py/i);
     }
@@ -57,6 +70,7 @@ describe('Bolt shipped hard cut', () => {
     expect(cli).toContain('yy task start|status|finish');
     expect(cli).not.toContain("scripts', 'task_lifecycle.py");
     expect(cli).not.toContain("spawn('python3', args");
+    expect(cli).not.toContain('specialize-clean-worktree');
     const workflowRunner = readFileSync(join(sourceRoot, 'scripts/workflow_runner.sh'), 'utf8');
     expect(workflowRunner).not.toMatch(/yy lifecycle(?:\s|`)/i);
     expect(workflowRunner).toContain('yy task start TASK_ID');

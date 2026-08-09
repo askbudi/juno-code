@@ -50,6 +50,24 @@ export interface ManagedAssetUpdateResult {
   macroConflicts: string[];
 }
 
+// Version-bound migration inventory for installations created before the Bolt
+// task-worktree generation. Every removed byte is copied to managed-conflicts.
+const RETIRED_BEFORE_BOLT_2_0_32 = [
+  '.juno_task/scripts/task_lifecycle.py',
+  '.juno_task/scripts/integration_candidate.py',
+  '.juno_task/scripts/integration_owner_preflight.py',
+  '.juno_task/scripts/worktree_lifecycle.py',
+  '.juno_task/scripts/tests/test_task_lifecycle.py',
+  '.juno_task/scripts/tests/test_controller_workspace.py',
+  '.juno_task/scripts/tests/test_integration_concurrency.py',
+  '.juno_task/config/lifecycle.json',
+  '.juno_task/config/controller-workspace.json',
+] as const;
+
+const RETIRED_SPECIALIZATION_RECEIPT =
+  '.juno_task/managed-specializations/clean-worktree.json';
+const BOLT_PROMPT = '.juno_task/prompts/clean_worktree.md';
+
 export type ManagedAssetGenerationState =
   | 'current'
   | 'specialized'
@@ -136,6 +154,8 @@ export class ManagedProjectAssets {
       }
       manifest = parsed as ManagedAssetManifest;
     }
+
+    await this.migrateRetiredGeneration(projectDir, manifest, result, Boolean(options.force));
 
     for (const asset of MANAGED_PROJECT_ASSETS) {
       const sourcePath = path.join(templatesDir, asset.source);
@@ -228,6 +248,107 @@ export class ManagedProjectAssets {
     return result;
   }
 
+  private static async archiveRetired(
+    projectDir: string,
+    destination: string,
+    content: Buffer,
+    result: ManagedAssetUpdateResult,
+  ): Promise<void> {
+    const backupRelative = path.join(
+      '.juno_task',
+      'managed-conflicts',
+      `bolt-${safeVersion(packageVersion)}`,
+      `${destination}.backup`,
+    );
+    await writeAtomic(path.join(projectDir, backupRelative), content);
+    result.backups.push({ destination, backup: backupRelative });
+  }
+
+  private static async migrateRetiredGeneration(
+    projectDir: string,
+    manifest: ManagedAssetManifest,
+    result: ManagedAssetUpdateResult,
+    force: boolean,
+  ): Promise<void> {
+    // Refuse before mutating anything so an ordinary update cannot leave a
+    // partially migrated generation.
+    for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
+      const destinationPath = path.join(projectDir, destination);
+      if (!(await fs.pathExists(destinationPath))) continue;
+      const content = await fs.readFile(destinationPath);
+      const managed = manifest.assets[destination]?.installedSha256 === sha256(content);
+      if (!managed && !force) {
+        throw new Error(
+          `Refusing to migrate customized retired asset ${destination}; ` +
+            'run `yy scripts update --force` to archive it and complete the Bolt migration',
+        );
+      }
+    }
+    const preflightReceiptPath = path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT);
+    if (await fs.pathExists(preflightReceiptPath)) {
+      const preflightReceiptContent = await fs.readFile(preflightReceiptPath);
+      let preflightReceipt: { promptSha256?: unknown } = {};
+      try {
+        preflightReceipt = JSON.parse(preflightReceiptContent.toString('utf8')) as {
+          promptSha256?: unknown;
+        };
+      } catch {
+        // Invalid receipt bytes are customized state and require explicit force.
+      }
+      const preflightPromptPath = path.join(projectDir, BOLT_PROMPT);
+      const preflightPromptContent = (await fs.pathExists(preflightPromptPath))
+        ? await fs.readFile(preflightPromptPath)
+        : null;
+      const generated =
+        preflightPromptContent !== null &&
+        typeof preflightReceipt.promptSha256 === 'string' &&
+        preflightReceipt.promptSha256 === sha256(preflightPromptContent);
+      if (!generated && !force) {
+        throw new Error(
+          `Refusing to migrate customized retired specialization ${RETIRED_SPECIALIZATION_RECEIPT}; ` +
+            'run `yy scripts update --force` to archive it and install the Bolt prompt',
+        );
+      }
+    }
+    for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
+      const destinationPath = path.join(projectDir, destination);
+      if (!(await fs.pathExists(destinationPath))) continue;
+      const content = await fs.readFile(destinationPath);
+      await this.archiveRetired(projectDir, destination, content, result);
+      await fs.remove(destinationPath);
+      delete manifest.assets[destination];
+    }
+
+    const receiptPath = path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT);
+    if (!(await fs.pathExists(receiptPath))) return;
+    const receiptContent = await fs.readFile(receiptPath);
+    let receipt: { promptSha256?: unknown } = {};
+    try {
+      receipt = JSON.parse(receiptContent.toString('utf8')) as { promptSha256?: unknown };
+    } catch {
+      // Invalid receipt bytes are customized state and require explicit force.
+    }
+    const promptPath = path.join(projectDir, BOLT_PROMPT);
+    const promptContent = (await fs.pathExists(promptPath)) ? await fs.readFile(promptPath) : null;
+    const generated =
+      promptContent !== null &&
+      typeof receipt.promptSha256 === 'string' &&
+      receipt.promptSha256 === sha256(promptContent);
+    if (!generated && !force) {
+      throw new Error(
+        `Refusing to migrate customized retired specialization ${RETIRED_SPECIALIZATION_RECEIPT}; ` +
+          'run `yy scripts update --force` to archive it and install the Bolt prompt',
+      );
+    }
+    if (promptContent !== null) {
+      await this.archiveRetired(projectDir, BOLT_PROMPT, promptContent, result);
+      await fs.remove(promptPath);
+    }
+    await this.archiveRetired(projectDir, RETIRED_SPECIALIZATION_RECEIPT, receiptContent, result);
+    await fs.remove(receiptPath);
+    delete manifest.assets[BOLT_PROMPT];
+  }
+
   /** Inspect the installed lifecycle bundle without changing project files. */
   static async inspectGeneration(projectDir: string): Promise<ManagedAssetGenerationReport> {
     const templatesDir = this.getTemplatesDirectory();
@@ -254,6 +375,7 @@ export class ManagedProjectAssets {
       'managed-specializations',
       'clean-worktree.json',
     );
+    const retiredSpecializationPresent = await fs.pathExists(specializationReceipt);
     const entries: ManagedAssetGenerationReport['entries'] = [];
     for (const asset of MANAGED_ASSET_DEFINITIONS) {
       const sourceContent = await fs.readFile(path.join(templatesDir, asset.source));
@@ -296,7 +418,8 @@ export class ManagedProjectAssets {
     );
     const scriptsCurrent = scripts.every((entry) => entry.state === 'current');
     const guidanceCurrent = guidance.every((entry) => entry.state === 'current');
-    const cleanCurrent = cleanPolicy?.state === 'current' || cleanPolicy?.state === 'specialized';
+    // A retired specialization receipt can never certify a coherent Bolt generation.
+    const cleanCurrent = cleanPolicy?.state === 'current' && !retiredSpecializationPresent;
     const coherent = scriptsCurrent && guidanceCurrent && cleanCurrent;
     const anyMissing = entries.some((entry) => entry.state === 'missing');
     const someScriptsCurrent = scripts.some((entry) => entry.state === 'current');

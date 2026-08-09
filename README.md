@@ -1166,9 +1166,9 @@ Notes:
 - `path` loads UTF-8 text/markdown from an absolute path or a path relative to the project working directory where `juno-code` is executed.
 - Loaded/inline macro text still flows through normal `@@key` macro expansion and `!'cmd'` prompt command substitution according to `order`.
 
-#### Managed V2 lifecycle macros
+#### Managed Bolt prompts
 
-Fresh `juno-code init` installs portable, file-backed lifecycle prompts and guidance. Existing projects install or refresh the same assets with:
+Fresh `juno-code init` installs portable, file-backed Bolt prompts and guidance. Existing projects install or refresh the same assets with:
 
 ```bash
 yy scripts update
@@ -1176,19 +1176,11 @@ yy scripts update
 yy scripts update --force
 ```
 
-The public mappings are `@@clean_worktree`, `@@new_task_workflow`, `@@run_workflow`, `@@migrate_juno_code_v1_to_v2`, and `@@migrate_juno_kanban_v1_to_v2`. Their files live under `.juno_task/prompts/`; lifecycle guidance lives under `.juno_task/wiki/`.
+The public mappings are `@@clean_worktree`, `@@new_task_workflow`, `@@run_workflow`, `@@migrate_juno_code_v1_to_v2`, and `@@migrate_juno_kanban_v1_to_v2`. Their files live under `.juno_task/prompts/`; operator guidance lives under `.juno_task/wiki/`.
 
-Safe updates are checksum-based through `.juno_task/managed-assets.json`. Missing and unchanged managed files update automatically. Locally customized or migration-specialized files are preserved, while the package candidate is written under `.juno_task/managed-conflicts/<version>/`. `--force` first writes a timestamped backup. Existing local macro overrides remain authoritative.
+Safe updates are checksum-based through `.juno_task/managed-assets.json`. Missing and unchanged managed files update automatically. Locally customized files are preserved, while the package candidate is written under `.juno_task/managed-conflicts/<version>/`. `--force` archives every replaced or retired file first. Upgrades archive and remove pre-Bolt executors, tests, configuration, and generated specialization receipts before installing the Bolt prompt; customized retired state requires explicit `--force`. Existing local macro overrides remain authoritative.
 
-Architecture migration must render exact repository targets rather than guessing a conventional branch:
-
-```bash
-yy prompts specialize-clean-worktree --policy-file /absolute/reviewed-policy.json --cwd /absolute/project
-```
-
-The renderer validates one root and every changed nested repository, writes exact targets into `clean_worktree.md`, and records a hash receipt. Local reviewed integration never implies push, publication, deployment, production mutation, or post-deploy E2E authority.
-
-Why tests and backing implementation matter: prose alone cannot prove npm packaging, detect whether a file still matches its managed base, preserve a specialized integration target, or reject an incomplete nested-repository policy. Build/pack parity, clean-install macro expansion, update-conflict, and nonstandard-target fixtures exercise those runtime boundaries.
+Why tests and backing implementation matter: prose alone cannot prove npm packaging, detect whether a file still matches its managed base, or ensure retired executors are absent after upgrade. Build/pack parity, clean-install macro expansion, update-conflict, and disposable old-generation upgrade fixtures exercise those runtime boundaries.
 
 ### Project Env Bootstrap (`.env.juno`)
 

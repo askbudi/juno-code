@@ -46,7 +46,8 @@ export class ScriptInstaller {
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     const assets = await ManagedProjectAssets.update(projectDir, { force, silent });
     const blocking = assets.conflicts.filter((conflict) =>
-      COHERENCE_BLOCKING_PROJECT_ASSETS.has(conflict.destination),
+      COHERENCE_BLOCKING_PROJECT_ASSETS.has(conflict.destination) ||
+      conflict.destination === '.juno_task/prompts/clean_worktree.md',
     );
     if (blocking.length === 0) return true;
 

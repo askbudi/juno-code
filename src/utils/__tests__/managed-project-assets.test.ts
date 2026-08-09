@@ -322,6 +322,71 @@ describe('ManagedProjectAssets', () => {
     expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Clean Bolt task workspaces');
   });
 
+  it('archives retired managed and customized assets during the Bolt upgrade', async () => {
+    const retiredManaged = '.juno_task/scripts/task_lifecycle.py';
+    const retiredCustomized = '.juno_task/config/lifecycle.json';
+    const managedBytes = '# old managed executor\n';
+    const customizedBytes = '{"owner":"custom"}\n';
+    await fs.ensureDir(path.join(projectDir, '.juno_task/scripts'));
+    await fs.ensureDir(path.join(projectDir, '.juno_task/config'));
+    await fs.writeFile(path.join(projectDir, retiredManaged), managedBytes);
+    await fs.writeFile(path.join(projectDir, retiredCustomized), customizedBytes);
+    await fs.writeJson(path.join(projectDir, '.juno_task/managed-assets.json'), {
+      schemaVersion: 1,
+      packageName: 'juno-code',
+      packageVersion: '2.0.31',
+      assets: {
+        [retiredManaged]: {
+          type: 'script',
+          templateVersion: '2.0.31',
+          sourceSha256: sha256(managedBytes),
+          installedSha256: sha256(managedBytes),
+        },
+      },
+    });
+
+    await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
+      'customized retired asset',
+    );
+    expect(await fs.pathExists(path.join(projectDir, retiredCustomized))).toBe(true);
+
+    const forced = await ManagedProjectAssets.update(projectDir, { force: true, silent: true });
+    expect(await fs.pathExists(path.join(projectDir, retiredManaged))).toBe(false);
+    expect(await fs.pathExists(path.join(projectDir, retiredCustomized))).toBe(false);
+    for (const retired of [retiredManaged, retiredCustomized]) {
+      const backup = forced.backups.find((entry) => entry.destination === retired);
+      expect(backup).toBeDefined();
+      expect(await fs.pathExists(path.join(projectDir, backup!.backup))).toBe(true);
+    }
+  });
+
+  it('archives a generated specialization receipt and installs the Bolt prompt', async () => {
+    const prompt = 'generated exact-target specialization\n';
+    const promptPath = path.join(projectDir, '.juno_task/prompts/clean_worktree.md');
+    const receiptPath = path.join(
+      projectDir,
+      '.juno_task/managed-specializations/clean-worktree.json',
+    );
+    await fs.ensureDir(path.dirname(promptPath));
+    await fs.ensureDir(path.dirname(receiptPath));
+    await fs.writeFile(promptPath, prompt);
+    await fs.writeJson(receiptPath, {
+      schemaVersion: 2,
+      promptPath: '.juno_task/prompts/clean_worktree.md',
+      promptSha256: sha256(prompt),
+    });
+
+    const result = await ManagedProjectAssets.update(projectDir, { silent: true });
+    expect(await fs.pathExists(receiptPath)).toBe(false);
+    expect(await fs.readFile(promptPath, 'utf8')).toContain('# Clean Bolt task workspaces');
+    expect(result.backups.map((entry) => entry.destination)).toEqual(
+      expect.arrayContaining([
+        '.juno_task/prompts/clean_worktree.md',
+        '.juno_task/managed-specializations/clean-worktree.json',
+      ]),
+    );
+  });
+
   it('preserves a conflicting macro unless force is explicit', async () => {
     const configPath = path.join(projectDir, '.juno_task', 'config.json');
     const config = await fs.readJson(configPath);

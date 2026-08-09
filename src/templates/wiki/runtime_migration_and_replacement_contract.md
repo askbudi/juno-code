@@ -77,7 +77,7 @@ When replacing controller-facing runtime, freeze metadata, product, installed-ru
 
 ## Canonical managed-agent execution
 
-Lifecycle workers/reviewers and typed workflow `managed_agent` steps delegate process ownership to
+Bolt workers/reviewers and typed workflow `managed_agent` steps delegate process ownership to
 `.juno_task/scripts/managed_agent_runner.py`. Call `run --mode worker|reviewer` with absolute controller,
 agent, prompt, and output roots plus worker admission receipts or reviewer candidate identity. The runner
 uses only fresh configured-default `yy pi`, closes stdin, sanitizes outer agent routing, and stays foreground.
@@ -91,11 +91,11 @@ Use one deliberate validation owner per level:
 
 ```text
 implementation worker -> targeted changed-path tests
-independent reviewer  -> one full task-specific gate
-root reviewer         -> targeted high-risk smoke + evidence review
+candidate gate        -> one full task-specific gate
+merge owner           -> deterministic evidence readback
 ```
 
-This is a convention, not automatic test-impact inference or an acceptance mechanism. Rerun the full gate when evidence is missing, stale, failed, or contradicted by review. Human semantic review remains required; tests must prove the backing producer/storage/reader behavior and cleanup, not only the new visible output.
+This is a convention, not automatic test-impact inference or an acceptance mechanism. Rerun the full gate when evidence is missing, stale, failed, or contradicted. Low risk has zero semantic reviews, normal risk has at most one, and high risk has exactly Reviewer A then Reviewer B against one frozen candidate. Tests must prove the backing producer/storage/reader behavior and cleanup, not only the new visible output.
 
 ## Required task evidence
 

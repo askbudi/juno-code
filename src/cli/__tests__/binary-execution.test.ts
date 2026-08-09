@@ -218,23 +218,21 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('Commands:');
     });
 
-    it('exposes one lifecycle command and forwards run state operations to the managed runtime', async () => {
+    it('keeps every retired lifecycle operation as an explicit refusal', async () => {
       const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-lifecycle-cli-'));
       try {
-        const scriptDir = path.join(sandbox, '.juno_task', 'scripts');
-        await fs.ensureDir(scriptDir);
-        const script = path.join(scriptDir, 'task_lifecycle.py');
-        await fs.writeFile(script, 'import json,sys; print(json.dumps({"forwarded":sys.argv[1:]}))\n');
         const help = await executeCLI(['--help'], { cwd: sandbox });
         expect(help.exitCode).toBe(0);
         expect(help.stdout).toContain('lifecycle');
 
-        const status = await executeCLI(['lifecycle', 'status', '--task', 'T123'], { cwd: sandbox });
-        expect(status.exitCode).toBe(0);
-        expect(JSON.parse(status.stdout.trim())).toEqual({ forwarded: ['status', '--task', 'T123'] });
-
-        const retired = await executeCLI(['lifecycle', 'run', '--manifest', 'old.json'], { cwd: sandbox, expectError: true });
-        expect(retired.exitCode).not.toBe(0);
+        for (const operation of ['run', 'resume', 'status']) {
+          const retired = await executeCLI(['lifecycle', operation, '--task', 'T123'], {
+            cwd: sandbox,
+            expectError: true,
+          });
+          expect(retired.exitCode).toBe(2);
+          expect(retired.stderr).toContain('legacy lifecycle executor was removed');
+        }
       } finally {
         await fs.remove(sandbox);
       }
@@ -343,13 +341,21 @@ describe('Binary Execution Tests', () => {
       try {
         await fs.ensureDir(path.join(targetDir, '.juno_task'));
         await fs.writeJson(path.join(targetDir, '.juno_task', 'config.json'), {});
-
         const result = await executeCLI(['scripts', 'update', '--cwd', targetDir]);
         expect(result.exitCode).toBe(0);
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'managed-assets.json'))).toBe(true);
         expect(await fs.pathExists(path.join(targetDir, '.juno_task', 'prompts', 'clean_worktree.md'))).toBe(true);
         expect(
           await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle.py')),
+        ).toBe(false);
+        expect(
+          await fs.pathExists(path.join(targetDir, '.juno_task', 'config', 'lifecycle.json')),
+        ).toBe(false);
+        expect(
+          await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'task_workspace.py')),
+        ).toBe(true);
+        expect(
+          await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'merge_queue.py')),
         ).toBe(true);
         expect(
           await fs.pathExists(path.join(targetDir, '.juno_task', 'scripts', 'worktree_lifecycle_audit.py')),
