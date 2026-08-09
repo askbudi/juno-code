@@ -37,6 +37,6 @@ Review, candidate construction, conflict handling, target mutation, release, pus
 
 ## Configuration
 
-The policy contains one repository, one full local target ref, one explicit worktree root, one branch prefix, allowed product roots, controller-private roots, and argv-based focused validation rows. Commands are argv arrays rather than shell strings. The installed Juno Code package owns the runtime template; the controller receives an ignored generated runtime copy.
+The policy contains one repository, one full local target ref, one explicit worktree root, one branch prefix, allowed product roots, controller-private roots, and argv-based focused validation rows. Commands are argv arrays rather than shell strings; stdin is closed, every row has a bounded timeout, and only configured-size stdout/stderr tails enter task evidence. The installed Juno Code package owns the runtime template; the controller receives an ignored generated runtime copy.
 
 Historical lifecycle evidence remains read-only during the Bolt migration. New task work uses this interface and does not extend the former controller-sync path.

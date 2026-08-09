@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
 
@@ -54,10 +57,12 @@ class TaskWorkspaceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_policy(self, *, validation_ok: bool = True) -> None:
+    def write_policy(self, *, validation_ok: bool = True, validation_code: Optional[str] = None,
+                     timeout_seconds: int = 5, max_output_bytes: int = 1024,
+                     extra_args: Optional[list[str]] = None) -> None:
         config = self.controller / ".juno_task/config/task-workspace.json"
         config.parent.mkdir(parents=True, exist_ok=True)
-        code = "import sys; sys.exit(0)" if validation_ok else "import sys; sys.exit(7)"
+        code = validation_code or ("import sys; sys.exit(0)" if validation_ok else "import sys; sys.exit(7)")
         config.write_text(json.dumps({
             "schema_version": "juno_task_workspace_config.v1",
             "repository": ".",
@@ -66,7 +71,9 @@ class TaskWorkspaceTests(unittest.TestCase):
             "branch_prefix": "refs/heads/task-",
             "allowed_paths": ["src"],
             "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs", ".juno_task/ledger"],
-            "focused_validation": [{"id": "focused", "cwd": "src", "argv": ["python3", "-c", code]}],
+            "focused_validation": [{"id": "focused", "cwd": "src",
+                                    "timeout_seconds": timeout_seconds, "max_output_bytes": max_output_bytes,
+                                    "argv": [sys.executable, "-c", code, *(extra_args or [])]}],
         }, indent=2) + "\n")
 
     def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -153,11 +160,16 @@ class TaskWorkspaceTests(unittest.TestCase):
     def test_finish_refuses_failed_focused_validation_without_state_advance(self) -> None:
         self.payload("start", "X")
         self.commit_task("X")
-        self.write_policy(validation_ok=False)
+        self.write_policy(validation_code="import sys; print('failure-out'); print('failure-err', file=sys.stderr); sys.exit(7)")
         failed = self.command("finish", "X", False)
         self.assertEqual(failed.returncode, 2)
         self.assertIn("focused validation failed", failed.stderr)
-        self.assertEqual(self.payload("status", "X")["state"], "WORKING")
+        status = self.payload("status", "X")
+        self.assertEqual(status["state"], "WORKING")
+        self.assertEqual(status["last_validation_outcome"], "FAILED")
+        self.assertEqual(status["validation"][0]["exit_code"], 7)
+        self.assertIn("failure-out", status["validation"][0]["stdout_tail"])
+        self.assertIn("failure-err", status["validation"][0]["stderr_tail"])
         self.assertTrue((self.workspaces / "X").is_dir())
 
     def test_finish_queues_clean_committed_tip_without_merging_or_cleanup(self) -> None:
@@ -172,6 +184,71 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertTrue((self.workspaces / "X").is_dir())
         self.assertEqual(self.payload("finish", "X")["outcome"], "already_queued")
 
+    def test_empty_commit_is_not_a_finished_feature(self) -> None:
+        self.payload("start", "X")
+        git(self.workspaces / "X", "commit", "--allow-empty", "-m", "empty")
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("no product diff", failed.stderr)
+        self.assertEqual(self.payload("status", "X")["state"], "WORKING")
+
+    def test_timeout_closes_stdin_and_persists_bounded_truncated_evidence(self) -> None:
+        self.payload("start", "X")
+        self.commit_task("X")
+        code = ("import sys,time; assert sys.stdin.buffer.read() == b''; "
+                "print('A'*5000,flush=True); print('B'*5000,file=sys.stderr,flush=True); time.sleep(5)")
+        self.write_policy(validation_code=code, timeout_seconds=1, max_output_bytes=1024)
+        started = time.monotonic()
+        failed = self.command("finish", "X", False)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("timed out", failed.stderr)
+        evidence = self.payload("status", "X")["validation"][0]
+        self.assertTrue(evidence["timed_out"])
+        self.assertGreater(evidence["stdout_truncated_bytes"], 0)
+        self.assertGreater(evidence["stderr_truncated_bytes"], 0)
+        self.assertLessEqual(len(evidence["stdout_tail"].encode()), 1024)
+        self.assertLessEqual(len(evidence["stderr_tail"].encode()), 1024)
+
+    def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
+        counter = self.root / "validation-counter.txt"
+        code = f"from pathlib import Path; import time; time.sleep(.8); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
+        self.write_policy(validation_code=code, timeout_seconds=5)
+        self.payload("start", "X")
+        self.payload("start", "Y")
+        self.commit_task("X")
+        self.commit_task("Y")
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            x, y = [future.result() for future in
+                    [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]]
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual({x["outcome"], y["outcome"]}, {"queued"})
+        self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
+
+        # A fresh task receives two simultaneous finish requests. Its task lease
+        # runs validation once and the follower reuses the durable queued result.
+        self.payload("start", "Z")
+        self.commit_task("Z")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = [future.result() for future in
+                       [pool.submit(self.payload, "finish", "Z") for _ in range(2)]]
+        self.assertEqual({item["outcome"] for item in results}, {"queued", "already_queued"})
+        self.assertEqual(counter.read_text().splitlines(), ["run", "run", "run"])
+
+    def test_validation_argv_is_not_a_shell_and_policy_bounds_refuse(self) -> None:
+        marker = self.root / "injected"
+        self.write_policy(validation_code="import sys; assert sys.argv[1].startswith(';')",
+                          extra_args=[f"; touch {marker}"])
+        self.payload("start", "X")
+        self.commit_task("X")
+        self.assertEqual(self.payload("finish", "X")["outcome"], "queued")
+        self.assertFalse(marker.exists())
+        self.write_policy(timeout_seconds=0)
+        failed = self.command("status", "Y", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("timeout_seconds", failed.stderr)
+
     def test_product_tree_with_controller_private_data_refuses_before_creation(self) -> None:
         private = self.repository / ".juno_task/tasks/xx/X.md"
         private.parent.mkdir(parents=True)
@@ -182,6 +259,28 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("controller-private data", failed.stderr)
         self.assertFalse((self.workspaces / "X").exists())
+
+    def test_forbidden_tree_check_is_targeted_and_error_is_bounded(self) -> None:
+        private = self.repository / ".juno_task/tasks/xx"
+        private.mkdir(parents=True)
+        for index in range(250):
+            (private / f"task-{index:04d}-{'x' * 80}.md").write_text("controller data\n")
+        git(self.repository, "add", ".juno_task/tasks")
+        git(self.repository, "commit", "-m", "large forbidden tree")
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn(".juno_task/tasks", failed.stderr)
+        self.assertLess(len(failed.stderr), 1000)
+
+    def test_status_reports_unavailable_target_without_calling_it_unmoved(self) -> None:
+        self.payload("start", "X")
+        git(self.repository, "checkout", "--detach", self.base)
+        git(self.repository, "branch", "-D", "product")
+        status = self.payload("status", "X")
+        self.assertFalse(status["target_available"])
+        self.assertIsNone(status["target_moved"])
+        self.assertIsNone(status["current_target_sha"])
+        self.assertEqual(status["target_error"], "target_ref_unavailable")
 
 
 if __name__ == "__main__":

@@ -13,12 +13,15 @@ import fcntl
 import json
 import os
 import re
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 CONFIG_SCHEMA = "juno_task_workspace_config.v1"
 STATE_SCHEMA = "juno_task_workspace_state.v1"
@@ -84,13 +87,17 @@ def load_config(controller: Path) -> dict[str, Any]:
     if not isinstance(validations, list) or not validations:
         raise TaskWorkspaceError("focused_validation must contain at least one command")
     for row in validations:
-        if not isinstance(row, dict) or set(row) != {"id", "cwd", "argv"}:
-            raise TaskWorkspaceError("focused validation rows require exactly id, cwd, and argv")
+        if not isinstance(row, dict) or set(row) != {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}:
+            raise TaskWorkspaceError("focused validation rows require exactly id, cwd, argv, timeout_seconds, and max_output_bytes")
         normalized_relative(row["cwd"], "validation cwd")
         if not isinstance(row["id"], str) or not row["id"] or not isinstance(row["argv"], list) or not row["argv"]:
             raise TaskWorkspaceError("focused validation id and argv must be non-empty")
         if any(not isinstance(part, str) or not part for part in row["argv"]):
             raise TaskWorkspaceError("focused validation argv entries must be non-empty strings")
+        if not isinstance(row["timeout_seconds"], int) or not 1 <= row["timeout_seconds"] <= 3600:
+            raise TaskWorkspaceError("focused validation timeout_seconds must be an integer from 1 through 3600")
+        if not isinstance(row["max_output_bytes"], int) or not 1024 <= row["max_output_bytes"] <= 1048576:
+            raise TaskWorkspaceError("focused validation max_output_bytes must be an integer from 1024 through 1048576")
     return value
 
 
@@ -161,6 +168,72 @@ def state_lock(controller: Path) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def finish_lock(controller: Path, task_id: str) -> Iterator[None]:
+    lock = controller / ".juno_task/runtime/task-workspace" / f"{task_id}.finish.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def _append_tail(buffer: bytearray, data: bytes, limit: int) -> None:
+    buffer.extend(data)
+    if len(buffer) > limit:
+        del buffer[:len(buffer) - limit]
+
+
+def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
+    """Run argv-only validation with stdin closed and bounded output tails."""
+    limit = row["max_output_bytes"]
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(row["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
+    except OSError as exc:
+        message = str(exc).encode("utf-8", errors="replace")
+        tail = message[-limit:]
+        return {"id": row["id"], "argv": row["argv"], "exit_code": 127,
+                "timed_out": False, "timeout_seconds": row["timeout_seconds"], "duration_ms": 0,
+                "stdout_tail": "", "stderr_tail": tail.decode("utf-8", errors="replace"),
+                "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail)}
+    selector = selectors.DefaultSelector()
+    stdout_tail = bytearray()
+    stderr_tail = bytearray()
+    stream_info = {process.stdout: ("stdout", stdout_tail), process.stderr: ("stderr", stderr_tail)}
+    totals = {"stdout": 0, "stderr": 0}
+    for stream in stream_info:
+        if stream is not None:
+            selector.register(stream, selectors.EVENT_READ)
+    deadline = started + row["timeout_seconds"]
+    timed_out = False
+    while selector.get_map():
+        if time.monotonic() >= deadline and not timed_out:
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for key, _ in selector.select(0.05 if not timed_out else 0.01):
+            stream = key.fileobj
+            data = os.read(stream.fileno(), 65536)
+            if not data:
+                selector.unregister(stream)
+                continue
+            name, tail = stream_info[stream]
+            totals[name] += len(data)
+            _append_tail(tail, data, limit)
+    exit_code = process.wait()
+    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
+            "timed_out": timed_out, "timeout_seconds": row["timeout_seconds"],
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "stdout_tail": bytes(stdout_tail).decode("utf-8", errors="replace"),
+            "stderr_tail": bytes(stderr_tail).decode("utf-8", errors="replace"),
+            "stdout_truncated_bytes": totals["stdout"] - len(stdout_tail),
+            "stderr_truncated_bytes": totals["stderr"] - len(stderr_tail)}
+
+
 def path_within(path: str, roots: list[str]) -> bool:
     return any(path == root or path.startswith(root + "/") for root in roots)
 
@@ -176,12 +249,15 @@ def ref_sha(repository: Path, ref: str) -> str:
     return sha
 
 
-def tree_paths(repository: Path, sha: str) -> list[str]:
-    return [item for item in git(repository, "ls-tree", "-r", "--name-only", sha).splitlines() if item]
+def optional_ref_sha(repository: Path, ref: str) -> Optional[str]:
+    result = run(["git", "-C", str(repository), "rev-parse", f"{ref}^{{commit}}"], repository, check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and SHA_RE.fullmatch(value) else None
 
 
 def assert_no_controller_data(repository: Path, sha: str, forbidden: list[str]) -> None:
-    offenders = [path for path in tree_paths(repository, sha) if path_within(path, forbidden)]
+    # Exact non-recursive prefix lookups avoid enumerating a potentially huge tree.
+    offenders = [root for root in forbidden if git(repository, "ls-tree", "--name-only", sha, "--", root)]
     if offenders:
         sample = ", ".join(offenders[:5])
         raise TaskWorkspaceError(f"product target contains controller-private data ({sample}); hard-cut it before task start")
@@ -250,7 +326,18 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
     return {**record, "outcome": "started"}
 
 
-def finish(controller: Path, task_id: str) -> dict[str, Any]:
+def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str, Any], validations: list[dict[str, Any]]) -> None:
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != frozen:
+            raise TaskWorkspaceError("task state changed during focused validation; inspect status and retry")
+        state["tasks"][task_id] = {**current, "validation": validations,
+                                   "last_validation_outcome": "TIMEOUT" if validations[-1]["timed_out"] else "FAILED"}
+        write_state(controller, state)
+
+
+def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     with state_lock(controller):
@@ -280,6 +367,8 @@ def finish(controller: Path, task_id: str) -> dict[str, Any]:
     if run(["git", "-C", str(repository), "merge-base", "--is-ancestor", record["base_sha"], head], repository, check=False).returncode:
         raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
     changed = sorted(set(git(worktree, "diff", "--name-only", f"{record['base_sha']}..{head}").splitlines()))
+    if not changed:
+        raise TaskWorkspaceError("task has no product diff from its exact recorded base")
     forbidden = [path for path in changed if path_within(path, config["controller_private_paths"])]
     outside = [path for path in changed if not path_within(path, config["allowed_paths"])]
     if forbidden or outside:
@@ -291,16 +380,20 @@ def finish(controller: Path, task_id: str) -> dict[str, Any]:
             cwd.relative_to(worktree)
         except ValueError as exc:
             raise TaskWorkspaceError("focused validation cwd escaped task worktree") from exc
-        result = run(row["argv"], cwd, check=False)
-        validations.append({"id": row["id"], "argv": row["argv"], "exit_code": result.returncode})
-        if result.returncode:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise TaskWorkspaceError(f"focused validation failed ({row['id']}): {detail[-2000:]}")
+        evidence = run_validation(row, cwd)
+        validations.append(evidence)
+        if evidence["timed_out"] or evidence["exit_code"]:
+            _persist_failed_validation(controller, task_id, frozen_record, validations)
+            if evidence["timed_out"]:
+                raise TaskWorkspaceError(f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
+            detail = evidence["stderr_tail"] or evidence["stdout_tail"]
+            raise TaskWorkspaceError(f"focused validation failed ({row['id']}, exit {evidence['exit_code']}): {detail}")
     if load_config(controller) != config:
         raise TaskWorkspaceError("task workspace policy changed during focused validation")
     if git(worktree, "rev-parse", "HEAD") != head or git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
         raise TaskWorkspaceError("task tip or worktree changed during focused validation")
-    queued = {**record, "state": "QUEUED", "tip_sha": head, "changed_paths": changed, "validation": validations}
+    queued = {**record, "state": "QUEUED", "tip_sha": head, "changed_paths": changed,
+              "validation": validations, "last_validation_outcome": "PASSED"}
     with state_lock(controller):
         state = read_state(controller)
         current = state["tasks"].get(task_id)
@@ -313,6 +406,15 @@ def finish(controller: Path, task_id: str) -> dict[str, Any]:
     return {**queued, "outcome": "queued"}
 
 
+def finish(controller: Path, task_id: str) -> dict[str, Any]:
+    # Same-task finish calls serialize across validation; different task IDs use
+    # different leases and continue in parallel.
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    with finish_lock(controller, task_id):
+        return _finish_once(controller, task_id)
+
+
 def status(controller: Path, task_id: str) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
@@ -323,9 +425,15 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
     result = {**record, "outcome": "status"}
     repository = Path(record.get("repository", ""))
     if repository.is_dir():
-        current = git(repository, "rev-parse", record.get("target_ref", ""), check=False)
+        current = optional_ref_sha(repository, record.get("target_ref", ""))
         result["current_target_sha"] = current or None
-        result["target_moved"] = bool(current and current != record.get("base_sha"))
+        result["target_available"] = bool(current)
+        result["target_moved"] = (current != record.get("base_sha")) if current else None
+        if not current:
+            result["target_error"] = "target_ref_unavailable"
+    else:
+        result.update({"current_target_sha": None, "target_available": False,
+                       "target_moved": None, "target_error": "repository_unavailable"})
     return result
 
 

@@ -28,6 +28,8 @@
     {
       "id": "task-workspace",
       "cwd": "juno-code",
+      "timeout_seconds": 900,
+      "max_output_bytes": 32768,
       "argv": [
         "npm",
         "test",
