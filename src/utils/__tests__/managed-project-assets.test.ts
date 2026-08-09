@@ -413,10 +413,13 @@ describe('ManagedProjectAssets', () => {
     const destination = '.juno_task/scripts/metadata_controller.py';
     const customized = '# customized before unsafe backup\n';
     await fs.writeFile(path.join(projectDir, destination), customized);
+    const installedManifest = await fs.readJson(
+      path.join(projectDir, '.juno_task/managed-assets.json'),
+    );
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-backup-outside-'));
     const unsafeParent = path.join(
       projectDir,
-      '.juno_task/managed-conflicts/bolt-2.1.1/.juno_task/scripts',
+      `.juno_task/managed-conflicts/bolt-${installedManifest.packageVersion}/.juno_task/scripts`,
     );
     try {
       await fs.ensureDir(path.dirname(unsafeParent));
@@ -426,6 +429,24 @@ describe('ManagedProjectAssets', () => {
       ).rejects.toThrow('symbolic-link managed path component');
       expect(await fs.readdir(outside)).toEqual([]);
       expect(await fs.readFile(path.join(projectDir, destination), 'utf8')).toBe(customized);
+    } finally {
+      await fs.remove(outside);
+    }
+  });
+
+  it('rejects a symlinked managed-specializations parent before receipt access', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-specialization-outside-'));
+    try {
+      await fs.symlink(
+        outside,
+        path.join(projectDir, '.juno_task/managed-specializations'),
+        'dir',
+      );
+      await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
+        'symbolic-link managed path component',
+      );
+      expect(await fs.readdir(outside)).toEqual([]);
+      expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
     } finally {
       await fs.remove(outside);
     }

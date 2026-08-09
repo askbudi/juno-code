@@ -203,6 +203,10 @@ export class ManagedProjectAssets {
     // unsafe as a symlinked leaf.
     await assertSafeProjectWritePath(projectDir, projectConfigPath);
     await assertSafeProjectWritePath(projectDir, manifestPath);
+    await assertSafeProjectWritePath(
+      projectDir,
+      path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT),
+    );
     for (const asset of MANAGED_ASSET_DEFINITIONS) {
       await assertSafeProjectWritePath(projectDir, path.join(projectDir, asset.destination));
       await assertSafeProjectWritePath(
@@ -236,7 +240,11 @@ export class ManagedProjectAssets {
         if (await fs.pathExists(destinationPath)) {
           const currentHash = sha256(await fs.readFile(destinationPath));
           const sourceHash = sha256(sourceContent);
-          if (currentHash !== sourceHash && currentHash !== record?.installedSha256) {
+          const generatedSpecialization =
+            asset.destination === BOLT_PROMPT &&
+            await fs.pathExists(path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT));
+          if (!generatedSpecialization &&
+              currentHash !== sourceHash && currentHash !== record?.installedSha256) {
             const candidateRelative = path.join(
               '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
               `${asset.destination}.candidate`,
@@ -244,16 +252,6 @@ export class ManagedProjectAssets {
             await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
             result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
           }
-        } else if (
-          asset.destination === BOLT_PROMPT &&
-          await fs.pathExists(path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT))
-        ) {
-          const candidateRelative = path.join(
-            '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
-            `${asset.destination}.candidate`,
-          );
-          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
-          result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
         }
       }
       const config = projectConfig;
