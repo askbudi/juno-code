@@ -1154,7 +1154,9 @@ function setupScriptManagementCommands(program: Command): void {
       ? { installed: [], updated: [], conflicts: [] }
       : await ManagedProjectAssets.update(workingDirectory, { silent: false });
     if (!scriptsUpdated && assets.installed.length + assets.updated.length === 0 && assets.conflicts.length === 0) {
-      console.log(chalk.green('✓ Managed project assets are already up to date'));
+      console.log(chalk.green(metadataOnlyController
+        ? '✓ Metadata-controller runtime scripts are already up to date'
+        : '✓ Managed project assets are already up to date'));
     }
   };
 
