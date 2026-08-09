@@ -74,6 +74,13 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def validate_metadata_policy(value: dict[str, Any]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="juno-metadata-policy-") as temporary:
+        path = Path(temporary) / "metadata-controller.json"
+        path.write_bytes(canonical(value))
+        return load_policy(path)
+
+
 def load_sibling(name: str) -> Any:
     path = Path(__file__).resolve().with_name(name)
     spec = importlib.util.spec_from_file_location(f"juno_metadata_{path.stem}", path)
@@ -124,7 +131,7 @@ def reviewed_policies_from_sources(
         policies = bundle["policies"]
         if set(policies) != {"metadata_controller", "task_workspace", "risk"}:
             raise BoundaryError("policy bundle must contain exactly metadata_controller, task_workspace, and risk")
-        if digest(load_policy_value(policies["metadata_controller"])) != digest(metadata_policy):
+        if digest(validate_metadata_policy(load_policy_value(policies["metadata_controller"]))) != digest(metadata_policy):
             raise BoundaryError("policy bundle metadata controller policy differs from --policy")
         task_value = validate_task_policy(load_policy_value(policies["task_workspace"]))
         risk_value = validate_risk_policy(load_policy_value(policies["risk"]))

@@ -185,12 +185,17 @@ class MetadataControllerTest(unittest.TestCase):
 
     def test_policy_bundle_is_accepted_and_missing_reviewed_policies_are_refused(self) -> None:
         bundle = self.temp / "reviewed/policy-bundle.json"
+        unordered_metadata = json.loads(json.dumps(self.policy))
+        for field in ("copied_metadata", "generated_metadata", "product_forbidden", "tracked_exact",
+                      "tracked_recursive", "tracked_top_level_files"):
+            unordered_metadata[field].reverse()
+        unordered_metadata["runtime"]["ignored_roots"].reverse()
         bundle_value = {
             "schema_version": "juno_migration_policy_bundle.v1",
             "operation": "generate-policy",
             "outcome": "generated_from_reviewed_answers",
             "policies": {
-                "metadata_controller": self.policy,
+                "metadata_controller": unordered_metadata,
                 "task_workspace": json.loads(self.task_policy.read_text()),
                 "risk": json.loads(self.risk_policy.read_text()),
             },
