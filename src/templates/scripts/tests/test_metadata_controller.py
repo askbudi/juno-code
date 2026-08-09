@@ -205,6 +205,7 @@ class MetadataControllerTest(unittest.TestCase):
             policy_bundle=bundle, task_workspace_policy=None, risk_policy=None), self.policy)
         self.assertEqual(planned["reviewed_policies"]["source"]["path"], str(bundle.resolve()))
         self.assertEqual(planned["reviewed_policies"]["source"]["kind"], "policy_bundle")
+        self.assertEqual(mc.policy_from_plan_bundle(self.plan_path), self.policy)
 
         self.plan_path = self.temp / "missing-plan.json"
         with self.assertRaisesRegex(mc.BoundaryError, "requires --policy-bundle"):
