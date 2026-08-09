@@ -55,6 +55,7 @@
     "test:full": "vitest run",
     "test:managed-assets": "node scripts/verify-managed-assets.mjs",
     "test:config-migration-package": "node scripts/verify-config-migration.mjs",
+    "test:bolt-package-canary": "node scripts/verify-bolt-package-canary.mjs",
     "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",
     "help:test:binary": "bash ./scripts/test-usage.sh binary",
     "test:unit": "vitest run src/__tests__/unit",

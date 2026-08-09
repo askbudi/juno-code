@@ -399,6 +399,9 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(calls, [("reviewer_a", 1), ("reviewer_b", 1)])
         self.assertEqual(retry_calls, [("reviewer_b", 2)])
         self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        status_row = next(row for row in self.queue_payload("status")["tasks"]
+                          if row["task_id"] == "X")
+        self.assertEqual(status_row["review_attempt_counter"], 2)
         self.assertEqual(merge_runtime.merge_next(self.controller.resolve(), "X")["candidate_sha"], tip)
 
     def test_reviewer_a_transport_failure_retries_fresh_a_then_b(self) -> None:

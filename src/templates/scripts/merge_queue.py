@@ -1731,7 +1731,7 @@ def status(controller: Path) -> dict[str, Any]:
                  "risk_policy_identity": (((row.get("queue_attempt") or {}).get("risk") or {}).get("policy_identity")
                                           if isinstance((row.get("queue_attempt") or {}).get("risk"), dict) else None),
                  "review_attempt_counter": (((((row.get("queue_attempt") or {}).get("risk") or {})
-                                               .get("review_progress") or {}).get("attempt_counter"))
+                                               .get("review_progress") or {}).get("review_attempt_counter"))
                                             if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
                                                            .get("review_progress")), dict) else None),
                  "completed_reviewers": ([step.get("reviewer") for step in

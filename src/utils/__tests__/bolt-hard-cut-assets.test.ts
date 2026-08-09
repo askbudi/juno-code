@@ -45,6 +45,7 @@ describe('Bolt shipped hard cut', () => {
       resolve(process.cwd(), '..', 'README.md'),
       resolve(process.cwd(), '..', 'AGENTS.md'),
       resolve(process.cwd(), '..', 'CLAUDE.md'),
+      resolve(process.cwd(), 'docs', 'bolt-package-acceptance.md'),
     ];
     for (const file of files) {
       const text = readFileSync(file, 'utf8');
