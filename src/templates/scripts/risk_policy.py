@@ -32,6 +32,8 @@ EVIDENCE_TOOL_ID = "juno-code.risk-policy"
 FULL_SUITE_SCHEMA = "juno_merge_queue_full_suite_receipt.v1"
 FULL_SUITE_PRODUCER_SCHEMA = "juno_merge_queue_full_suite_producer.v1"
 FULL_SUITE_TOOL_ID = "juno-code.merge-queue"
+FULL_SUITE_CLAIM_SCHEMA = "juno_merge_queue_full_suite_claim.v1"
+FULL_SUITE_ADMISSION_SCHEMA = "juno_merge_queue_full_suite_admission.v1"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 ALLOWED_METRICS = {
@@ -384,6 +386,7 @@ def _bounded_object(path_value: Any, expected_sha256: Any, plan: dict[str, Any],
 def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
                               expected_validation_identity: Any = None,
                               expected_command: Any = None,
+                              expected_claim: Any = None,
                               *, candidate: Any = None) -> dict[str, Any]:
     """Reopen and strictly validate one immutable full-suite authority receipt."""
     if not isinstance(reference, dict) or set(reference) != {"receipt_path", "receipt_sha256"}:
@@ -397,7 +400,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             or not isinstance(expected_candidate.get("candidate_tree"), str)
             or not SHA_RE.fullmatch(expected_candidate["candidate_tree"])):
         raise RiskPolicyError("full-suite expected candidate identity is invalid")
-    keys = {"schema_version", "producer", "candidate", "policy_identity",
+    keys = {"schema_version", "producer", "candidate", "policy_identity", "claim",
             "validation_identity", "command", "started_at", "completed_at", "result"}
     command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
     result_keys = {"exit_code", "timed_out", "stdout", "stderr"}
@@ -406,12 +409,22 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
                      "task_validation_commands_sha256"}
     command, result = receipt.get("command"), receipt.get("result")
     identity = receipt.get("validation_identity")
+    claim = receipt.get("claim")
+    claim_keys = {"claim_path", "claim_sha256", "token", "attempt_number"}
     if (set(receipt) != keys or receipt.get("schema_version") != FULL_SUITE_SCHEMA
             or receipt.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
                                              "tool_id": FULL_SUITE_TOOL_ID}
             or receipt.get("candidate") != {"candidate_sha": expected_candidate["candidate_sha"],
                                               "candidate_tree": expected_candidate["candidate_tree"]}
             or receipt.get("policy_identity") != plan["policy_identity"]
+            or not isinstance(claim, dict) or set(claim) != claim_keys
+            or not isinstance(claim.get("claim_path"), str) or not claim["claim_path"]
+            or not isinstance(claim.get("claim_sha256"), str)
+            or not DIGEST_RE.fullmatch(claim["claim_sha256"])
+            or not isinstance(claim.get("token"), str) or len(claim["token"]) != 48
+            or not isinstance(claim.get("attempt_number"), int)
+            or isinstance(claim.get("attempt_number"), bool) or claim["attempt_number"] <= 0
+            or (expected_claim is not None and claim != expected_claim)
             or not isinstance(identity, dict) or set(identity) != identity_keys
             or any(not isinstance(identity.get(key), str) or not DIGEST_RE.fullmatch(identity[key])
                    for key in identity_keys)
@@ -451,6 +464,62 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
         raise RiskPolicyError("full-suite receipt is not successful")
     return {"receipt_path": str(Path(reference["receipt_path"]).resolve()),
             "receipt_sha256": reference["receipt_sha256"]}
+
+
+def verify_full_suite_admission(admission: Any, plan: dict[str, Any],
+                                expected_validation_identity: Any = None,
+                                expected_command: Any = None,
+                                *, candidate: Any = None) -> dict[str, Any]:
+    """Verify bounded claim + receipt provenance; queue code adds containment checks."""
+    keys = {"schema_version", "state", "attempt_number", "token", "claim",
+            "receipt"}
+    if (not isinstance(admission, dict) or set(admission) != keys
+            or admission.get("schema_version") != FULL_SUITE_ADMISSION_SCHEMA
+            or admission.get("state") != "COMPLETE"
+            or not isinstance(admission.get("attempt_number"), int)
+            or isinstance(admission.get("attempt_number"), bool)
+            or admission["attempt_number"] <= 0
+            or not isinstance(admission.get("token"), str)
+            or len(admission["token"]) != 48
+            or not isinstance(admission.get("claim"), dict)
+            or set(admission["claim"]) != {"claim_path", "claim_sha256"}
+            or not isinstance(admission.get("receipt"), dict)
+            or set(admission["receipt"]) != {"receipt_path", "receipt_sha256"}):
+        raise RiskPolicyError("full-suite admission provenance is invalid")
+    claim_ref = admission["claim"]
+    claim = _bounded_object(claim_ref.get("claim_path"), claim_ref.get("claim_sha256"),
+                            plan, "full-suite claim")
+    claim_keys = {"schema_version", "producer", "task_id", "candidate",
+                  "policy_identity", "validation_identity", "command", "token",
+                  "attempt_number", "expected_receipt_path"}
+    expected_candidate = candidate if candidate is not None else plan["candidate"]
+    expected_compact = {"candidate_sha": expected_candidate.get("candidate_sha"),
+                        "candidate_tree": expected_candidate.get("candidate_tree")}
+    if (set(claim) != claim_keys or claim.get("schema_version") != FULL_SUITE_CLAIM_SCHEMA
+            or claim.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
+                                          "tool_id": FULL_SUITE_TOOL_ID}
+            or not isinstance(claim.get("task_id"), str) or not claim["task_id"]
+            or claim.get("candidate") != expected_compact
+            or claim.get("policy_identity") != plan["policy_identity"]
+            or (expected_validation_identity is not None
+                and claim.get("validation_identity") != expected_validation_identity)
+            or (expected_command is not None and claim.get("command") != expected_command)
+            or claim.get("token") != admission["token"]
+            or claim.get("attempt_number") != admission["attempt_number"]
+            or claim.get("expected_receipt_path") != admission["receipt"]["receipt_path"]):
+        raise RiskPolicyError("full-suite claim provenance is invalid")
+    compact_claim = {"claim_path": str(Path(claim_ref["claim_path"]).resolve()),
+                     "claim_sha256": claim_ref["claim_sha256"],
+                     "token": admission["token"],
+                     "attempt_number": admission["attempt_number"]}
+    receipt = verify_full_suite_receipt(
+        admission["receipt"], plan, expected_validation_identity, expected_command,
+        compact_claim, candidate=expected_candidate)
+    return {"schema_version": FULL_SUITE_ADMISSION_SCHEMA, "state": "COMPLETE",
+            "attempt_number": admission["attempt_number"], "token": admission["token"],
+            "claim": {"claim_path": compact_claim["claim_path"],
+                      "claim_sha256": compact_claim["claim_sha256"]},
+            "receipt": receipt}
 
 
 def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
@@ -505,7 +574,7 @@ def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, 
     validation = previous.get("validation")
     reviews = previous.get("reviews")
     if (not isinstance(validation, dict)
-            or set(validation) != {"affected", "full_suite", "full_suite_receipt",
+            or set(validation) != {"affected", "full_suite", "full_suite_admission",
                                    "review_dispatches"}
             or validation.get("affected") != "passed"
             or not isinstance(reviews, list)
@@ -514,7 +583,7 @@ def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, 
                 and validation.get("full_suite") not in {"passed", "reused"})
             or (not plan["full_suite_required"]
                 and (validation.get("full_suite") != "not_required"
-                     or validation.get("full_suite_receipt") is not None))):
+                     or validation.get("full_suite_admission") is not None))):
         raise RiskPolicyError("previous validation evidence is invalid")
     if (previous.get("release_gate") is not None or plan["release_gate_required"]
             or not isinstance(previous.get("metrics"), dict)
@@ -539,9 +608,9 @@ def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, 
         raise RiskPolicyError("previous reuse projection is malformed")
     if plan["full_suite_required"]:
         source_sha = reused["origin_candidate_sha"] if reused is not None else prior["candidate_sha"]
-        verify_full_suite_receipt(validation.get("full_suite_receipt"), plan,
-                                  candidate={"candidate_sha": source_sha,
-                                             "candidate_tree": prior["candidate_tree"]})
+        verify_full_suite_admission(validation.get("full_suite_admission"), plan,
+                                    candidate={"candidate_sha": source_sha,
+                                               "candidate_tree": prior["candidate_tree"]})
     evidence_reviews = reused["origin_reviews"] if reused is not None else reviews
     evidence_candidate = reused["origin_candidate_sha"] if reused is not None else prior["candidate_sha"]
     if not (plan["min_reviews"] <= len(evidence_reviews) <= plan["max_reviews"]):
@@ -801,7 +870,7 @@ def verify_candidate_evidence(policy: dict[str, Any], candidate_request: dict[st
     expected_full_suite = (("reused" if reused is not None else "passed")
                            if plan["full_suite_required"] else "not_required")
     if (not isinstance(validation, dict)
-            or set(validation) != {"affected", "full_suite", "full_suite_receipt",
+            or set(validation) != {"affected", "full_suite", "full_suite_admission",
                                    "review_dispatches"}
             or validation.get("affected") != "passed"
             or validation.get("full_suite") != expected_full_suite
@@ -812,9 +881,9 @@ def verify_candidate_evidence(policy: dict[str, Any], candidate_request: dict[st
         if reused is not None:
             receipt_candidate = {"candidate_sha": reused.get("origin_candidate_sha"),
                                  "candidate_tree": identity["candidate_tree"]}
-        verify_full_suite_receipt(validation.get("full_suite_receipt"), plan,
-                                  candidate=receipt_candidate)
-    elif validation.get("full_suite_receipt") is not None:
+        verify_full_suite_admission(validation.get("full_suite_admission"), plan,
+                                    candidate=receipt_candidate)
+    elif validation.get("full_suite_admission") is not None:
         raise RiskPolicyError("full-suite receipt is forbidden when the suite is not required")
     _metrics(plan, evidence["metrics"])
     if reused is not None:
@@ -839,7 +908,7 @@ def verify_candidate_evidence(policy: dict[str, Any], candidate_request: dict[st
 
 def _evidence(plan: dict[str, Any], identity: dict[str, str], metrics: dict[str, int],
               *, status: str, failure: str | None, affected: str, full_suite: str,
-              full_suite_receipt: dict[str, str] | None = None,
+              full_suite_admission: dict[str, Any] | None = None,
               reviews: list[dict[str, Any]] | None = None,
               release_gate: dict[str, Any] | None = None,
               reused: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -849,14 +918,14 @@ def _evidence(plan: dict[str, Any], identity: dict[str, str], metrics: dict[str,
             "created_at": utc_now(), "status": status,
             "failure": failure, "candidate": identity, "policy": _policy_binding(plan),
             "validation": {"affected": affected, "full_suite": full_suite,
-                           "full_suite_receipt": full_suite_receipt,
+                           "full_suite_admission": full_suite_admission,
                            "review_dispatches": len(reviews or [])},
             "reviews": reviews or [], "release_gate": release_gate, "metrics": metrics,
             "post_cas": plan["post_cas"], "semantic_evidence_reused": reused}
 
 
 def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affected_tests_passed: bool,
-             full_suite_receipt: Any, reviews: Any, metrics: Any,
+             full_suite_admission: Any, reviews: Any, metrics: Any,
              previous: dict[str, Any] | None = None,
              release_gate: Any = None, policy: dict[str, Any]) -> dict[str, Any]:
     _policy_binding(plan)
@@ -887,12 +956,12 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
         previous = _bounded_object(previous.get("receipt_path"), previous_sha, plan,
                                    "previous risk receipt")
     reusable = _validate_previous(previous, plan, identity)
-    suite_reference = None
-    if plan["full_suite_required"] and full_suite_receipt is not None:
-        suite_reference = verify_full_suite_receipt(full_suite_receipt, plan)
-    elif not plan["full_suite_required"] and full_suite_receipt is not None:
+    suite_admission = None
+    if plan["full_suite_required"] and full_suite_admission is not None:
+        suite_admission = verify_full_suite_admission(full_suite_admission, plan)
+    elif not plan["full_suite_required"] and full_suite_admission is not None:
         raise RiskPolicyError("full-suite receipt is forbidden when the suite is not required")
-    if plan["full_suite_required"] and suite_reference is None and not reusable:
+    if plan["full_suite_required"] and suite_admission is None and not reusable:
         return _evidence(plan, identity, compact_metrics, status="failed",
                          failure="full_suite_failed_or_missing", affected="passed",
                          full_suite="missing")
@@ -906,8 +975,8 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
         return _evidence(
             plan, identity, compact_metrics, status="passed", failure=None, affected="passed",
             full_suite="reused" if plan["full_suite_required"] else "not_required",
-            full_suite_receipt=(previous["validation"]["full_suite_receipt"]
-                                if plan["full_suite_required"] else None),
+            full_suite_admission=(previous["validation"]["full_suite_admission"]
+                                  if plan["full_suite_required"] else None),
             reused={"reason": "product_and_composition_bytes_identical",
                     "source_candidate_sha": prior["candidate_sha"],
                     "source_evidence_sha256": previous_sha,
@@ -927,7 +996,7 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
             return _evidence(plan, identity, compact_metrics, status="failed",
                              failure="review_findings", affected="passed",
                              full_suite="passed" if plan["full_suite_required"] else "not_required",
-                             full_suite_receipt=suite_reference,
+                             full_suite_admission=suite_admission,
                              reviews=compact_reviews)
     if len(compact_reviews) < plan["min_reviews"]:
         raise RiskPolicyError("review count violates the deterministic policy bounds")
@@ -939,7 +1008,7 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
     return _evidence(plan, identity, compact_metrics, status="passed", failure=None,
                      affected="passed",
                      full_suite="passed" if plan["full_suite_required"] else "not_required",
-                     full_suite_receipt=suite_reference,
+                     full_suite_admission=suite_admission,
                      reviews=compact_reviews, release_gate=gate)
 
 

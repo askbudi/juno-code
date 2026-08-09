@@ -180,6 +180,44 @@ class MergeQueueTests(unittest.TestCase):
         receipt_path, receipt_sha = self.object_file(f"runner-{reviewer}-{sequence}.json", receipt)
         return {"runner_receipt_path": receipt_path, "runner_receipt_sha256": receipt_sha}
 
+    def external_full_suite_admission(self, plan: dict, identity: dict,
+                                      command: dict) -> dict:
+        claim_path = (self.root / "attacker-claim.json").resolve()
+        receipt_path = (self.root / "attacker-receipt.json").resolve()
+        token = "a" * 48
+        claim = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_SCHEMA,
+                 "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                              "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                 "task_id": "X",
+                 "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                               "candidate_tree": plan["candidate"]["candidate_tree"]},
+                 "policy_identity": plan["policy_identity"],
+                 "validation_identity": identity, "command": command,
+                 "token": token, "attempt_number": 1,
+                 "expected_receipt_path": str(receipt_path)}
+        claim_path.write_bytes(risk_runtime.canonical(claim))
+        claim_ref = {"claim_path": str(claim_path),
+                     "claim_sha256": hashlib.sha256(claim_path.read_bytes()).hexdigest()}
+        receipt = {"schema_version": risk_runtime.FULL_SUITE_SCHEMA,
+                   "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                                "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                   "candidate": claim["candidate"], "policy_identity": plan["policy_identity"],
+                   "claim": {**claim_ref, "token": token, "attempt_number": 1},
+                   "validation_identity": identity, "command": command,
+                   "started_at": "2026-08-09T00:00:00Z",
+                   "completed_at": "2026-08-09T00:00:01Z",
+                   "result": {"exit_code": 0, "timed_out": False,
+                              "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                         "tail": "", "truncated_bytes": 0},
+                              "stderr": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                         "tail": "", "truncated_bytes": 0}}}
+        receipt_path.write_bytes(risk_runtime.canonical(receipt))
+        return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                "state": "COMPLETE", "attempt_number": 1, "token": token,
+                "claim": claim_ref,
+                "receipt": {"receipt_path": str(receipt_path),
+                            "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}}
+
     def prepare_moved_finding_reopen(self) -> tuple[Path, Path]:
         self.commit_feature("X", "src/x.py", "x\n")
         self.commit_feature("Y", "src/security/auth.py", "bad\n")
@@ -366,8 +404,8 @@ class MergeQueueTests(unittest.TestCase):
         self.queue_payload("next")
         state_path = self.controller / ".juno_task/state/tasks.json"
         state = json.loads(state_path.read_text())
-        progress = {"schema_version": "juno_merge_queue_review_progress.v2",
-                    "attempt_counter": 0, "full_suite_receipt": None, "steps": [],
+        progress = {"schema_version": "juno_merge_queue_review_progress.v3",
+                    "attempt_counter": 0, "full_suite_admission": None, "steps": [],
                     "full_validation_passed": True,
                     "validation_identity": {"sha256": "f" * 64}}
         state["tasks"]["X"]["queue_attempt"]["risk"]["review_progress"] = progress
@@ -393,17 +431,16 @@ class MergeQueueTests(unittest.TestCase):
         candidate = (self.workspaces / "X").resolve()
         identity = merge_runtime.full_validation_identity(
             self.controller.resolve(), config, record, candidate, tip)
-        suite_ref = merge_runtime.full_suite_validation(
-            config, candidate, plan, identity, self.root / "seed-full-suite.json")
+        admission = self.external_full_suite_admission(
+            plan, identity, merge_runtime.full_suite_command(config))
         reviews = [self.fake_review(self.controller, candidate, plan, "X", "reviewer_a", 1, None, 1)]
         reviews.append(self.fake_review(
             self.controller, candidate, plan, "X", "reviewer_b", 2,
             Path(reviews[0]["runner_receipt_path"]), 1))
         forged = risk_runtime.finalize(
-            plan, request, affected_tests_passed=True, full_suite_receipt=suite_ref,
+            plan, request, affected_tests_passed=True, full_suite_admission=admission,
             reviews=reviews, metrics={"model_calls": 2, "affected_test_runs": 1,
                                       "full_suite_runs": 1}, policy=policy)
-        forged["validation"]["full_suite_receipt"] = None
         seed_path = merge_runtime.evidence_path(self.controller.resolve(), "X", tip)
         risk_runtime.atomic_receipt(seed_path, forged, policy)
         self.full_counter.write_text("")
@@ -413,6 +450,89 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
+    def test_external_state_admission_is_ignored_and_queue_suite_runs_once(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        config = merge_runtime.task_runtime.load_config(self.controller.resolve())
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        record = state["tasks"]["X"]
+        plan = record["queue_attempt"]["risk"]["plan"]
+        identity = merge_runtime.full_validation_identity(
+            self.controller.resolve(), config, record, (self.workspaces / "X").resolve(), tip)
+        external = self.external_full_suite_admission(
+            plan, identity, merge_runtime.full_suite_command(config))
+        record["queue_attempt"]["risk"]["review_progress"] = {
+            "schema_version": "juno_merge_queue_review_progress.v3",
+            "attempt_counter": 0, "full_suite_admission": external, "steps": []}
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        admitted = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertIn("/.juno_task/state/merge-queue/full-suite/", admitted["claim"]["claim_path"])
+
+    def test_preexisting_canonical_claim_collision_refuses_then_fresh_attempt_succeeds(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        waiting = self.queue_payload("next")
+        claim, _ = merge_runtime.full_suite_attempt_paths(
+            self.controller.resolve(), "X", waiting["candidate_sha"], 1)
+        claim.parent.mkdir(parents=True, exist_ok=True); claim.write_text("attacker\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "already exists"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        self.assertFalse(self.full_counter.exists())
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        self.assertEqual(ready["risk"]["review_progress"]["full_suite_admission"]["attempt_number"], 2)
+
+    def test_claimed_receipt_crash_recovers_without_rerunning_suite(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        original = merge_runtime.persist_attempt
+        failed = False
+        def fail_complete(*args: object, **kwargs: object) -> None:
+            nonlocal failed
+            attempt = args[1]
+            admission = ((attempt.get("risk") or {}).get("review_progress") or {}).get(
+                "full_suite_admission")
+            if not failed and isinstance(admission, dict) and admission.get("state") == "COMPLETE":
+                failed = True
+                raise OSError("complete state crash")
+            original(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "persist_attempt", side_effect=fail_complete):
+            with self.assertRaisesRegex(OSError, "complete state crash"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        status = self.task("status", "X")
+        self.assertEqual(status["queue_attempt"]["risk"]["review_progress"]
+                         ["full_suite_admission"]["state"], "CLAIMED")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+
+    def test_claimed_without_receipt_retries_at_fresh_attempt(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+            merge_runtime, "full_suite_validation",
+            side_effect=merge_runtime.MergeQueueError("crash before suite"),
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "crash before suite"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        claimed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual(claimed["full_suite_admission"]["state"], "CLAIMED")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        complete = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
     def test_missing_risk_policy_fails_closed_before_reviewer(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")
