@@ -151,6 +151,93 @@ class RealGitLifecycleTests(Fixture):
             state=self.state(plan);candidate={"generation":1,"candidate_digest":"candidate","candidate_shas":{"root":tip},"changed_paths":{"root":["product.txt"]}}
             receipt=life.candidate_gate(plan,candidate,root/"ns",state);self.assertEqual(2,receipt["applicable"]);self.assertTrue(all(row.get("evidence_sha256") for row in receipt["rows"]))
 
+    def fake_worker_yy(self, directory: Path) -> Path:
+        path=directory/"yy";path.write_text('''#!/usr/bin/env python3
+import json,os,pathlib,subprocess,sys,time
+args=sys.argv[1:];mode=os.environ.get("WORKER_MODE","allowed");capture=pathlib.Path(os.environ["JUNO_SUBAGENT_CAPTURE_PATH"])
+prompt_file=pathlib.Path(args[args.index("-f")+1]);prompt=prompt_file.read_text();authority_path=pathlib.Path(os.environ["JUNO_LIFECYCLE_AUTHORITY_MAP"]);authority=json.loads(authority_path.read_text())
+repo=pathlib.Path(authority["repositories"][0]["root"]);base=authority["repositories"][0]["approved_base_sha"];allowed=repo/authority["repositories"][0]["paths"][0]
+config=pathlib.Path(args[args.index("--config")+1]);controller=config.parents[1]
+if mode in {"allowed","controller","prompt-tamper"}: allowed.write_text("worker change\\n");subprocess.run(["git","-C",str(repo),"add",str(allowed)]);subprocess.run(["git","-C",str(repo),"commit","-m","fake worker"])
+elif mode=="unadmitted": (repo/"forbidden.txt").write_text("bad\\n");subprocess.run(["git","-C",str(repo),"add","forbidden.txt"]);subprocess.run(["git","-C",str(repo),"commit","-m","bad"])
+elif mode=="dirty": allowed.write_text("dirty\\n")
+elif mode=="wrong-branch": subprocess.run(["git","-C",str(repo),"checkout","-b","wrong"])
+elif mode=="rewritten": subprocess.run(["git","-C",str(repo),"checkout","--detach",base]);allowed.write_text("rewrite\\n");subprocess.run(["git","-C",str(repo),"add",str(allowed)]);subprocess.run(["git","-C",str(repo),"commit","-m","rewrite"])
+if mode=="controller": (controller/"controller-dirt.txt").write_text("bad")
+if mode=="prompt-tamper": prompt_file.write_text(prompt+"tampered")
+observed={"argv":args,"cwd":os.getcwd(),"stdin":sys.stdin.read(),"prompt":prompt,"keys":sorted(k for k in os.environ if k.startswith(("PI_","JUNO_")) or k=="TASK_ROOT"),"values":{k:os.environ.get(k) for k in ("TASK_ROOT","JUNO_TASK_ROOT","JUNO_CONTROLLER_BRANCH","JUNO_WORKSPACE_ROLE","JUNO_WORKSPACE_ENFORCEMENT","JUNO_LIFECYCLE_AUTHORITY_MAP")},"model":os.environ.get("PI_MODEL"),"provider":os.environ.get("PI_PROVIDER")}
+payload={"result":"fake worker response","session_id":"worker-session","observed":observed}
+if mode=="process-fail": raise SystemExit(7)
+if mode=="missing": raise SystemExit(0)
+if mode=="no-session": payload.pop("session_id")
+capture.write_text(json.dumps(payload))
+if mode=="stale": os.utime(capture,(1,1))
+''');path.chmod(0o755);return path
+
+    def worker_fixture(self, mode: str = "allowed", repair: bool = False):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);root=Path(temporary.name)
+        controller,_=self.repo(root,"controller");(controller/".juno_task").mkdir();(controller/".juno_task/config.json").write_text("{}\n");self.git(controller,"add",".");self.git(controller,"commit","-m","controller config")
+        repo,base=self.repo(root,"repo");plan=self.plan(root,[("root",repo,base)],"high");plan["controller_root"]=str(controller);plan["controller_branch"]="refs/heads/main";plan["expected_controller_head"]=self.git(controller,"rev-parse","HEAD")
+        state=self.state(plan);ns=root/"ns";life.prepare_worktrees(plan,ns,state)
+        task=Path(plan["repositories"][0]["task_worktree"]);self.git(task,"config","user.name","Worker");self.git(task,"config","user.email","worker@example.com")
+        if repair: (ns/"repair-packet.json").write_text(json.dumps({"findings":["fix"]}))
+        bin_dir=root/"bin";bin_dir.mkdir();self.fake_worker_yy(bin_dir)
+        env={**os.environ,"PATH":str(bin_dir)+os.pathsep+os.environ["PATH"],"WORKER_MODE":mode}
+        return root,plan,state,ns,env
+
+    def dispatch_fake_worker(self, mode: str = "allowed", repair: bool = False, state_hook=None):
+        root,plan,state,ns,env=self.worker_fixture(mode,repair)
+        if state_hook: state_hook(state)
+        poisoned={key:"outer-secret" for key in life.REVIEW_ENV_BLOCKED};poisoned.update({"PI_FUTURE_OVERRIDE":"outer","JUNO_FUTURE_STATE":"outer","TASK_ROOT":"outer"})
+        with mock.patch.object(life,"product_dispatch_preflight",side_effect=lambda _root,_op,path:path.write_text('{"passed":true}\n')), \
+             mock.patch.dict(os.environ,{**env,**poisoned},clear=True):
+            life.dispatch_worker(plan,ns,state,repair)
+        return root,plan,state,ns
+
+    def test_worker_launch_provenance_sanitation_prompt_file_roots_capture_and_audit(self):
+        root,plan,state,ns=self.dispatch_fake_worker()
+        receipt=json.loads((ns/"worker-1/receipt.json").read_text());capture=json.loads(Path(receipt["capture"]["path"]).read_text());observed=capture["observed"]
+        self.assertIsNone(observed["model"]);self.assertIsNone(observed["provider"]);self.assertEqual("",observed["stdin"])
+        self.assertEqual(sorted(life.WORKER_ENV_SET),observed["keys"])
+        self.assertNotIn("-p",observed["argv"]);self.assertIn("-f",observed["argv"]);self.assertEqual(str(Path(plan["repositories"][0]["task_worktree"]).resolve()),observed["values"]["TASK_ROOT"])
+        self.assertEqual("task",observed["values"]["JUNO_WORKSPACE_ROLE"]);self.assertEqual(receipt["launcher_cwd"],observed["cwd"]);self.assertEqual(receipt["prompt"]["echo"],observed["prompt"])
+        self.assertEqual(receipt["prompt"]["sha256"],life.file_digest(Path(receipt["prompt"]["path"])));self.assertEqual("worker-session",receipt["session_id"])
+        self.assertTrue(receipt["capture"]["created_after_dispatch"]);self.assertTrue(receipt["changed_path_audit"]["root"]["passed"]);self.assertFalse(receipt["changed_path_audit"]["root"]["unexpected_paths"])
+        self.assertEqual(set(life.WORKER_ENV_SET),set(receipt["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",receipt["environment_contract"]["removed_key_names"])
+        authority=json.loads(Path(receipt["authority_map"]["path"]).read_text());self.assertTrue(authority["repositories"][0]["create_receipt"]["sha256"])
+        self.assertEqual("implementation",receipt["kind"]);self.assertEqual(1,state["worker_count"]);self.assertEqual("worker-session",state["worker_launches"][0]["session_id"])
+
+    def test_worker_allowed_commit_and_repair_share_canonical_launcher_and_evidence(self):
+        _,_,_,ns1=self.dispatch_fake_worker();_,_,_,ns2=self.dispatch_fake_worker(repair=True)
+        a=json.loads((ns1/"worker-1/receipt.json").read_text());b=json.loads((ns2/"worker-1/receipt.json").read_text())
+        self.assertEqual("implementation",a["kind"]);self.assertEqual("repair",b["kind"]);self.assertIsNone(a["repair_packet"]);self.assertIsNotNone(b["repair_packet"])
+        self.assertEqual(["yy","pi","--config"],a["command"][:3]);self.assertEqual(a["command"][:3],b["command"][:3]);self.assertEqual(set(a),set(b))
+
+    def test_worker_unadmitted_controller_branch_rewrite_dirty_no_commit_prompt_and_capture_refuse(self):
+        cases=(("unadmitted","outside authority"),("controller","controller"),("wrong-branch","branch/common"),("rewritten","branch/common|non-descendant"),
+               ("dirty","dirty/conflicted"),("no-commit","no descendant commit"),("prompt-tamper","prompt"),("process-fail","process failed"),
+               ("missing","capture"),("no-session","session"),("stale","stale"))
+        for mode,pattern in cases:
+            root,plan,state,ns,env=self.worker_fixture(mode)
+            with self.subTest(mode=mode), mock.patch.object(life,"product_dispatch_preflight",side_effect=lambda _root,_op,path:path.write_text('{"passed":true}\n')), \
+                 mock.patch.dict(os.environ,env,clear=True), self.assertRaisesRegex(life.LifecycleError,pattern):
+                life.dispatch_worker(plan,ns,state)
+
+    def test_worker_duplicate_session_forbidden_argv_and_wrong_common_refuse(self):
+        root,plan,state,ns,env=self.worker_fixture("allowed");state["worker_sessions"]=["worker-session"]
+        with mock.patch.object(life,"product_dispatch_preflight",side_effect=lambda _root,_op,path:path.write_text('{"passed":true}\n')),mock.patch.dict(os.environ,env,clear=True),self.assertRaisesRegex(life.LifecycleError,"duplicate"):
+            life.dispatch_worker(plan,ns,state)
+        root,plan,state,ns,env=self.worker_fixture("allowed");plan["worker_command"]=["yy","pi","--model","bad"]
+        with mock.patch.object(life,"product_dispatch_preflight",side_effect=lambda _root,_op,path:path.write_text('{"passed":true}\n')),mock.patch.dict(os.environ,env,clear=True),self.assertRaisesRegex(life.LifecycleError,"noncanonical|forbidden"):
+            life.dispatch_worker(plan,ns,state)
+        root,plan,state,ns,env=self.worker_fixture("allowed");original=life.worktree_identity
+        def wrong_common(path):
+            value=original(path)
+            if Path(path).resolve()==Path(plan["repositories"][0]["task_worktree"]).resolve(): value["git_common_dir"]="/wrong/common"
+            return value
+        with mock.patch.object(life,"product_dispatch_preflight",side_effect=lambda _root,_op,path:path.write_text('{"passed":true}\n')),mock.patch.object(life,"worktree_identity",side_effect=wrong_common),mock.patch.dict(os.environ,env,clear=True),self.assertRaisesRegex(life.LifecycleError,"identity|common"):
+            life.dispatch_worker(plan,ns,state)
+
     def fake_yy(self, directory: Path) -> Path:
         path=directory/"yy";path.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,re,subprocess,sys

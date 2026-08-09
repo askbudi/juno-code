@@ -64,6 +64,10 @@ REVIEW_ENV_SET = frozenset({
     "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT",
     "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID",
 })
+WORKER_ENV_SET = frozenset({
+    "TASK_ROOT", "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE",
+    "JUNO_WORKSPACE_ENFORCEMENT", "JUNO_LIFECYCLE_AUTHORITY_MAP", "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID",
+})
 
 
 class LifecycleError(RuntimeError):
@@ -350,6 +354,15 @@ def fingerprint(repo: Path) -> dict[str, str]:
     return {"head": git(repo, "rev-parse", "HEAD"), "tracked_staged_untracked": git(repo, "status", "--porcelain=v2", "--untracked-files=all")}
 
 
+def worktree_identity(repo: Path) -> dict[str, Any]:
+    status = git(repo, "status", "--porcelain=v2", "--untracked-files=all")
+    conflicts = sorted(filter(None, git(repo, "diff", "--name-only", "--diff-filter=U").splitlines()))
+    branch = git(repo, "symbolic-ref", "HEAD", check=False)
+    return {"root": str(repo.resolve()), "head": git(repo, "rev-parse", "HEAD"), "branch_ref": branch,
+            "git_common_dir": git_common(repo), "index_sha256": hashlib.sha256(git(repo, "ls-files", "--stage").encode()).hexdigest(),
+            "tracked_staged_untracked": status, "conflicts": conflicts, "clean": not status and not conflicts}
+
+
 def changed_paths(repo: Path, base: str, tip: str) -> list[str]:
     return sorted(set(filter(None, git(repo, "diff", "--name-only", base, tip).splitlines())))
 
@@ -400,11 +413,18 @@ def prepare_worktrees(plan: dict[str, Any], ns: Path, state: dict[str, Any]) -> 
         raise
 
 
-def worker_authority(plan: dict[str, Any]) -> dict[str, Any]:
-    return {"schema_version": "juno_multi_root_worker_authority.v2", "task_id": plan["task_id"], "max_sequential_workers": 3,
-            "concurrent_product_workers": False, "repositories": [{"id": r["id"], "root": r["task_worktree"],
-            "base": r["approved_base_sha"], "paths": r["expected_paths"]} for r in plan["repositories"]],
-            "forbidden": ["semantic review", "target integration", "cleanup", "release", "push"]}
+def worker_authority(plan: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    prepare = state.get("receipts", {}).get("prepare", {})
+    prepare_value = load_json(Path(prepare["path"])) if prepare.get("path") else {}
+    create_receipts = {x.get("id"): x.get("create_receipt") for x in prepare_value.get("repositories", []) if isinstance(x, dict)}
+    return {"schema_version": "juno_multi_root_worker_authority.v3", "task_id": plan["task_id"], "max_sequential_workers": 3,
+            "concurrent_product_workers": False, "controller_root": str(Path(plan["controller_root"]).resolve()),
+            "controller_branch": plan["controller_branch"], "plan_sha256": plan["plan_sha256"],
+            "prepare_receipt": prepare, "repositories": [{"id": r["id"], "root": str(Path(r["task_worktree"]).resolve()),
+            "branch_ref": r["task_branch_ref"], "git_common_dir": r["git_common_dir"], "approved_base_sha": r["approved_base_sha"],
+            "paths": r["expected_paths"], "path_dispositions": r["path_dispositions"], "create_receipt": create_receipts.get(r["id"])}
+            for r in plan["repositories"]], "forbidden": ["reviewer or canary dispatch", "target integration", "cutover", "cleanup",
+            "release", "push", "publication", "deployment"]}
 
 
 def product_dispatch_preflight(root: Path, operation: str, artifact: Path, *, role: str = "task", require_clean: bool = False) -> None:
@@ -420,24 +440,97 @@ def product_dispatch_preflight(root: Path, operation: str, artifact: Path, *, ro
 def dispatch_worker(plan: dict[str, Any], ns: Path, state: dict[str, Any], repair: bool = False) -> None:
     count = state.get("worker_count", 0)
     if count >= 3: raise LifecycleError("sequential worker limit exhausted")
-    authority = worker_authority(plan); authority_path = ns / f"worker-authority-{count+1}.json"; atomic_json(authority_path, authority)
+    number = count + 1; kind = "repair" if repair else "implementation"
+    artifact = ns / f"worker-{number}"
+    if artifact.exists(): raise LifecycleError("worker artifact/capture collision")
+    artifact.mkdir(parents=True)
+    authority = worker_authority(plan, state); authority_path = artifact / "authority-map.json"; atomic_json(authority_path, authority)
+    authority_evidence = {"path": str(authority_path.resolve()), "sha256": file_digest(authority_path)}
+    repair_evidence = None
+    if repair:
+        repair_path = (ns / "repair-packet.json").resolve()
+        if not repair_path.is_file(): raise LifecycleError("immutable repair packet is missing")
+        repair_evidence = {"path": str(repair_path), "sha256": file_digest(repair_path)}
     root_repo = next(r for r in plan["repositories"] if r["id"] == plan["root_repository"])
+    controller = Path(plan["controller_root"]).resolve(); controller_before = controller_fingerprint(controller)
+    if controller_before["tracked_staged_untracked"]: raise LifecycleError("worker controller is dirty")
+    before: dict[str, Any] = {}
     for repo in plan["repositories"]:
-        product_dispatch_preflight(Path(repo["task_worktree"]), "edit", ns / f"worker-{count+1}-{repo['id']}-dispatch.json")
-    prompt = (f"Implement Kanban task {plan['task_id']} completely across the authority map at {authority_path}. "
-              "Commit coherent child and root bytes, compose final gitlinks, run focused checks, and stop at REVIEW_READY. "
-              "Do not launch reviewers, integrate, clean, release, or push.")
-    if repair: prompt = f"Repair the consolidated findings at {ns / 'repair-packet.json'} using {authority_path}. " + prompt
-    command = [str(x) for x in (plan.get("worker_command") or ["yy", "pi", "-p", prompt])]
-    if command[:2] != ["yy", "pi"] or any(x.startswith(("--provider", "--model", "--resume")) or x in {"cc", "--continue"} for x in command[2:]):
-        raise LifecycleError("worker must use a fresh canonical yy pi context")
-    env = dict(os.environ); env.update({"TASK_ROOT": root_repo["task_worktree"], "JUNO_TASK_ROOT": plan["controller_root"],
-                                       "JUNO_WORKSPACE_ROLE": "task", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
-                                       "JUNO_LIFECYCLE_AUTHORITY_MAP": str(authority_path)})
+        task = Path(repo["task_worktree"]).resolve()
+        product_dispatch_preflight(task, "edit", artifact / f"{repo['id']}-dispatch-preflight.json")
+        mark = worktree_identity(task)
+        if mark["branch_ref"] != repo["task_branch_ref"] or mark["git_common_dir"] != repo["git_common_dir"] or not mark["clean"]:
+            raise LifecycleError(f"worker pre-dispatch identity/clean refusal: {repo['id']}")
+        if subprocess.run(["git", "-C", str(task), "merge-base", "--is-ancestor", repo["approved_base_sha"], mark["head"]],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            raise LifecycleError(f"worker pre-dispatch HEAD is not descended from approved base: {repo['id']}")
+        before[repo["id"]] = mark
+    prompt = (f"Managed lifecycle worker. Task ID: {plan['task_id']}. Worker kind: {kind}.\n"
+              f"Immutable authority map: {authority_path.resolve()} sha256={authority_evidence['sha256']}\n"
+              f"Exact registered root task worktree: {Path(root_repo['task_worktree']).resolve()}\n"
+              f"Exact authority: {json.dumps(authority, sort_keys=True)}\n"
+              f"Repair packet: {json.dumps(repair_evidence, sort_keys=True) if repair_evidence else 'not-applicable'}\n"
+              "Edit only admitted paths. Create coherent descendant commits and leave every task worktree clean. "
+              "Do not dispatch workers/reviewers/canaries, integrate targets, cut over, clean worktrees, release, push, publish, deploy, or mutate the controller.\n")
+    prompt_file = artifact / "prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8")); prompt_before = exact_prompt_evidence(prompt_file, prompt, "worker")
+    capture = artifact / "capture.json"; launcher_cwd = neutral_directory(artifact / "launcher-cwd")
+    agent_root = Path(root_repo["task_worktree"]).resolve()
+    tool_id = f"lifecycle_worker_{plan['task_id']}_{number}_{kind}_{hashlib.sha256(str(artifact).encode()).hexdigest()[:12]}"
+    env, environment_contract = managed_agent_environment(controller, plan["controller_branch"], capture, tool_id,
+        {"TASK_ROOT": str(agent_root), "JUNO_WORKSPACE_ROLE": "task", "JUNO_LIFECYCLE_AUTHORITY_MAP": str(authority_path.resolve())}, "worker")
+    command = canonical_managed_command(controller, agent_root, prompt_file, plan.get("worker_command"), "worker")
+    command_sha256 = hashlib.sha256(shlex.join(command).encode()).hexdigest()
     save_state(ns, state, "IMPLEMENTING")
-    result = run_command(command, Path(root_repo["task_worktree"]), ns / f"worker-{count+1}", 7200, env)
-    if result["timed_out"] or result["exit_code"] != 0: raise LifecycleError("implementation worker failed")
-    state["worker_count"] = count + 1
+    started_ns = time.time_ns()
+    result = run_command(command, launcher_cwd, artifact / "process", 7200, env)
+    process_receipt = load_json(artifact / "process/receipt.json")
+    if process_receipt.get("command_sha256") != command_sha256 or process_receipt.get("cwd") != str(launcher_cwd):
+        raise LifecycleError("worker process provenance is malformed")
+    prompt_after = exact_prompt_evidence(prompt_file, prompt, "worker")
+    if prompt_before != prompt_after: raise LifecycleError("worker prompt changed during dispatch")
+    if result["timed_out"] or result["exit_code"] != 0: raise LifecycleError("implementation worker process failed")
+    if not capture.is_file() or capture.stat().st_mtime_ns < started_ns: raise LifecycleError("worker capture is missing or stale")
+    payload = load_json(capture); session = str(payload.get("session_id") or "").strip(); response = payload.get("result")
+    prior_sessions = set(state.get("worker_sessions", [])) | {str(x.get("session_id")) for x in state.get("worker_launches", []) if x.get("session_id")}
+    for old_receipt in ns.glob("worker-*/receipt.json"):
+        if old_receipt != artifact / "receipt.json": prior_sessions.add(str(load_json(old_receipt).get("session_id") or ""))
+    if not session or session in prior_sessions or not isinstance(response, str):
+        raise LifecycleError("worker session is missing, duplicate, stale, or response is unbound")
+    after: dict[str, Any] = {}; audits: dict[str, Any] = {}; committed = False
+    for repo in plan["repositories"]:
+        task = Path(repo["task_worktree"]).resolve(); mark = worktree_identity(task); old = before[repo["id"]]
+        if mark["branch_ref"] != repo["task_branch_ref"] or mark["git_common_dir"] != repo["git_common_dir"]:
+            raise LifecycleError(f"worker changed branch/common directory: {repo['id']}")
+        if not mark["clean"]: raise LifecycleError(f"worker left dirty/conflicted residue: {repo['id']}")
+        if subprocess.run(["git", "-C", str(task), "merge-base", "--is-ancestor", old["head"], mark["head"]],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            raise LifecycleError(f"worker rewrote or produced non-descendant HEAD: {repo['id']}")
+        paths = changed_paths(task, repo["approved_base_sha"], mark["head"])
+        unexpected = [x for x in paths if not any(x == p or x.startswith(p.rstrip("/") + "/") for p in repo["expected_paths"])]
+        if unexpected: raise LifecycleError(f"worker changed paths outside authority for {repo['id']}: {','.join(unexpected)}")
+        committed = committed or mark["head"] != old["head"]
+        after[repo["id"]] = mark; audits[repo["id"]] = {"approved_base_sha": repo["approved_base_sha"],
+            "before_head": old["head"], "after_head": mark["head"], "changed_paths": paths,
+            "expected_paths": repo["expected_paths"], "unexpected_paths": unexpected, "passed": not unexpected}
+    if not committed: raise LifecycleError("worker produced no descendant commit")
+    controller_after = controller_fingerprint(controller)
+    if controller_before != controller_after: raise LifecycleError("worker mutated controller HEAD, index, tracked, or untracked state")
+    receipt = {"schema_version": "juno_lifecycle_worker_launch.v1", "task_id": plan["task_id"], "worker_number": number,
+        "kind": kind, "session_id": session, "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+        "authority_map": authority_evidence, "repair_packet": repair_evidence, "prompt": prompt_before, "prompt_after": prompt_after,
+        "command": command, "command_sha256": command_sha256, "environment_contract": environment_contract,
+        "launcher_cwd": str(launcher_cwd), "agent_task_root": str(agent_root),
+        "capture": {"path": str(capture.resolve()), "sha256": file_digest(capture), "created_after_dispatch": True},
+        "process_receipt": {"path": str((artifact / 'process/receipt.json').resolve()), "sha256": file_digest(artifact / "process/receipt.json")},
+        "controller_before": controller_before, "controller_after": controller_after, "worktrees_before": before,
+        "worktrees_after": after, "changed_path_audit": audits,
+        "preflight_receipts": [{"path": str(x.resolve()), "sha256": file_digest(x)} for x in sorted(artifact.glob("*-dispatch-preflight.json"))]}
+    atomic_json(artifact / "receipt.json", receipt)
+    state["worker_count"] = number; state.setdefault("worker_sessions", []).append(session)
+    state["last_worker_result"] = {"kind": kind, "session_id": session, "worktrees_before": before, "worktrees_after": after,
+                                   "changed_path_audit": audits, "controller_before": controller_before, "controller_after": controller_after}
+    state.setdefault("worker_launches", []).append({"path": str((artifact / "receipt.json").resolve()), "sha256": file_digest(artifact / "receipt.json"),
+                                                     "session_id": session, "kind": kind})
 
 
 def compose_candidate(plan: dict[str, Any], ns: Path, state: dict[str, Any]) -> dict[str, Any]:
@@ -545,7 +638,8 @@ def controller_fingerprint(controller: Path) -> dict[str, str]:
     if not controller.is_dir() or not (controller / ".juno_task/config.json").is_file():
         raise LifecycleError("canonical review controller/config is missing")
     return {
-        "head": git(controller, "rev-parse", "HEAD"),
+        "head": git(controller, "rev-parse", "HEAD"), "branch_ref": git(controller, "symbolic-ref", "HEAD", check=False),
+        "git_common_dir": git_common(controller), "config_sha256": file_digest(controller / ".juno_task/config.json"),
         "index_sha256": hashlib.sha256(git(controller, "ls-files", "--stage").encode()).hexdigest(),
         "tracked_staged_untracked": git(controller, "status", "--porcelain=v2", "--untracked-files=all"),
     }
@@ -558,38 +652,48 @@ def neutral_directory(path: Path) -> Path:
     return path.resolve()
 
 
-def reviewer_environment(controller: Path, branch: str, capture: Path, tool_id: str) -> tuple[dict[str, str], dict[str, Any]]:
-    # Remove every Pi/Juno value, not only today's known selectors: future outer
-    # state must not silently become reviewer authority.
-    removed = sorted(k for k in os.environ if k in REVIEW_ENV_BLOCKED or k.startswith(("PI_", "JUNO_")))
-    env = {k: v for k, v in os.environ.items() if k not in removed and k != "TASK_ROOT"}
-    explicit = {
-        "JUNO_TASK_ROOT": str(controller.resolve()), "JUNO_CONTROLLER_BRANCH": branch.removeprefix("refs/heads/"),
-        "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
-        "JUNO_SUBAGENT_CAPTURE_PATH": str(capture.resolve()), "JUNO_TOOL_ID": tool_id,
-    }
+def managed_agent_environment(controller: Path, branch: str, capture: Path, tool_id: str,
+                              routing: dict[str, str] | None, kind: str) -> tuple[dict[str, str], dict[str, Any]]:
+    # Future Pi/Juno selectors are denied by prefix. Only the exact routing map
+    # below is restored, so configured provider/model defaults stay authoritative.
+    removed = sorted(k for k in os.environ if k in REVIEW_ENV_BLOCKED or k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
+    env = {k: v for k, v in os.environ.items() if k not in removed}
+    explicit = {"JUNO_TASK_ROOT": str(controller.resolve()), "JUNO_CONTROLLER_BRANCH": branch.removeprefix("refs/heads/"),
+                "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
+                "JUNO_SUBAGENT_CAPTURE_PATH": str(capture.resolve()), "JUNO_TOOL_ID": tool_id}
+    explicit.update(routing or {})
+    allowed = WORKER_ENV_SET if kind == "worker" else REVIEW_ENV_SET
+    if set(explicit) != set(allowed): raise LifecycleError(f"{kind} routing environment is not exact")
     env.update(explicit)
-    contract = {"schema_version": "juno_review_environment.v1", "removed_key_names": removed,
-                "blocked_key_names": sorted(REVIEW_ENV_BLOCKED), "explicitly_set_key_names": sorted(explicit)}
+    contract = {"schema_version": "juno_managed_agent_environment.v1", "kind": kind,
+                "removed_key_names": removed, "blocked_key_names": sorted(REVIEW_ENV_BLOCKED),
+                "explicitly_set_key_names": sorted(explicit)}
     contract["sha256"] = digest(contract)
     return env, contract
 
 
-def canonical_review_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any = None) -> list[str]:
+def reviewer_environment(controller: Path, branch: str, capture: Path, tool_id: str) -> tuple[dict[str, str], dict[str, Any]]:
+    return managed_agent_environment(controller, branch, capture, tool_id, None, "review")
+
+
+def canonical_managed_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any, kind: str) -> list[str]:
     expected = ["yy", "pi", "--config", str((controller / ".juno_task/config.json").resolve()),
                 "-w", str(agent_cwd.resolve()), "-f", str(prompt_file.resolve())]
     command = expected if override is None else override
     if not isinstance(command, list) or command != expected:
-        raise LifecycleError("review launch command is noncanonical or contains forbidden flags")
+        raise LifecycleError(f"{kind} launch command is noncanonical or contains forbidden flags")
     return command
 
 
-def exact_prompt_evidence(prompt_file: Path, prompt: str) -> dict[str, Any]:
+def canonical_review_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any = None) -> list[str]:
+    return canonical_managed_command(controller, agent_cwd, prompt_file, override, "review")
+
+
+def exact_prompt_evidence(prompt_file: Path, prompt: str, kind: str = "review") -> dict[str, Any]:
     data = prompt_file.read_bytes()
     try: echo = data.decode("utf-8")
-    except UnicodeDecodeError as exc: raise LifecycleError("review prompt is not exact UTF-8") from exc
-    if echo != prompt:
-        raise LifecycleError("review prompt bytes were tampered")
+    except UnicodeDecodeError as exc: raise LifecycleError(f"{kind} prompt is not exact UTF-8") from exc
+    if echo != prompt: raise LifecycleError(f"{kind} prompt bytes were tampered")
     return {"path": str(prompt_file.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
             "byte_count": len(data), "echo": echo}
 
