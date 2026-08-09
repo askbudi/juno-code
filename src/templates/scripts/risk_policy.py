@@ -387,6 +387,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
                               expected_validation_identity: Any = None,
                               expected_command: Any = None,
                               expected_claim: Any = None,
+                              require_success: bool = True,
                               *, candidate: Any = None) -> dict[str, Any]:
     """Reopen and strictly validate one immutable full-suite authority receipt."""
     if not isinstance(reference, dict) or set(reference) != {"receipt_path", "receipt_sha256"}:
@@ -460,7 +461,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             raise RiskPolicyError("full-suite receipt stream provenance is invalid")
     if _time(receipt["completed_at"]) < _time(receipt["started_at"]):
         raise RiskPolicyError("full-suite receipt completion precedes its start")
-    if result["timed_out"] or result["exit_code"] != 0:
+    if require_success and (result["timed_out"] or result["exit_code"] != 0):
         raise RiskPolicyError("full-suite receipt is not successful")
     return {"receipt_path": str(Path(reference["receipt_path"]).resolve()),
             "receipt_sha256": reference["receipt_sha256"]}
@@ -469,6 +470,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
 def verify_full_suite_admission(admission: Any, plan: dict[str, Any],
                                 expected_validation_identity: Any = None,
                                 expected_command: Any = None,
+                                require_success: bool = True,
                                 *, candidate: Any = None) -> dict[str, Any]:
     """Verify bounded claim + receipt provenance; queue code adds containment checks."""
     keys = {"schema_version", "state", "attempt_number", "token", "claim",
@@ -514,7 +516,7 @@ def verify_full_suite_admission(admission: Any, plan: dict[str, Any],
                      "attempt_number": admission["attempt_number"]}
     receipt = verify_full_suite_receipt(
         admission["receipt"], plan, expected_validation_identity, expected_command,
-        compact_claim, candidate=expected_candidate)
+        compact_claim, require_success, candidate=expected_candidate)
     return {"schema_version": FULL_SUITE_ADMISSION_SCHEMA, "state": "COMPLETE",
             "attempt_number": admission["attempt_number"], "token": admission["token"],
             "claim": {"claim_path": compact_claim["claim_path"],

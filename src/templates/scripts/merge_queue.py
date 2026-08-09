@@ -34,9 +34,11 @@ class MergeQueueError(RuntimeError):
 
 
 class MergeValidationError(MergeQueueError):
-    def __init__(self, message: str, evidence: list[dict[str, Any]]) -> None:
+    def __init__(self, message: str, evidence: list[dict[str, Any]],
+                 receipt_reference: Optional[dict[str, str]] = None) -> None:
         super().__init__(message)
         self.evidence = evidence
+        self.receipt_reference = receipt_reference
 
 
 def canonical(value: Any) -> str:
@@ -384,7 +386,8 @@ def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[st
                               plan["evidence_limits"]["max_receipt_bytes"])
     if evidence["timed_out"] or evidence["exit_code"]:
         detail = evidence["stderr_tail"] or evidence["stdout_tail"]
-        raise MergeValidationError(f"full-suite validation failed ({row['id']}): {detail}", [evidence])
+        raise MergeValidationError(f"full-suite validation failed ({row['id']}): {detail}",
+                                   [evidence], evidence_reference(receipt_path))
     reference = evidence_reference(receipt_path)
     return risk_runtime.verify_full_suite_receipt(
         reference, plan, identity, full_suite_command(config), claim)
@@ -1100,6 +1103,39 @@ def verify_queue_full_suite_admission(controller: Path, task_id: str, plan: dict
         raise MergeQueueError(f"full-suite admission refused: {exc}") from exc
 
 
+def failed_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                identity: dict[str, str], command: dict[str, Any],
+                                claimed: dict[str, Any],
+                                receipt_reference: dict[str, str]) -> dict[str, Any]:
+    attempt_number = claimed.get("attempt_number")
+    claim_path, receipt_path = full_suite_attempt_paths(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    if (claimed.get("claim", {}).get("claim_path") != str(claim_path)
+            or claimed.get("expected_receipt_path") != str(receipt_path)
+            or receipt_reference.get("receipt_path") != str(receipt_path)):
+        raise MergeQueueError("failed full-suite admission is not at its canonical path")
+    complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                "state": "COMPLETE", "attempt_number": attempt_number,
+                "token": claimed.get("token"), "claim": claimed.get("claim"),
+                "receipt": receipt_reference}
+    try:
+        risk_runtime.verify_full_suite_admission(
+            complete, plan, identity, command, False)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"failed full-suite receipt refused: {exc}") from exc
+    receipt = json.loads(receipt_path.read_text())
+    result = receipt["result"]
+    if not result["timed_out"] and result["exit_code"] == 0:
+        raise MergeQueueError("successful full-suite receipt cannot enter FAILED admission")
+    failure = {"exit_code": result["exit_code"], "timed_out": result["timed_out"],
+               "stdout_tail": result["stdout"]["tail"],
+               "stderr_tail": result["stderr"]["tail"]}
+    return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+            "state": "FAILED", "attempt_number": attempt_number,
+            "token": claimed["token"], "claim": claimed["claim"],
+            "receipt": receipt_reference, "failure": failure}
+
+
 def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, Any],
                                identity: dict[str, str], command: dict[str, Any],
                                admission: Any) -> Optional[dict[str, Any]]:
@@ -1122,8 +1158,16 @@ def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, A
                 "state": "COMPLETE", "attempt_number": attempt_number,
                 "token": admission.get("token"), "claim": admission.get("claim"),
                 "receipt": evidence_reference(receipt_path)}
-    return verify_queue_full_suite_admission(
-        controller, task_id, plan, identity, command, complete)
+    try:
+        return verify_queue_full_suite_admission(
+            controller, task_id, plan, identity, command, complete)
+    except MergeQueueError as success_error:
+        try:
+            return failed_full_suite_admission(
+                controller, task_id, plan, identity, command, admission,
+                complete["receipt"])
+        except MergeQueueError:
+            raise success_error
 
 
 def review_target_checkpoint(controller: Path, config: dict[str, Any], repository: Path,
@@ -1174,6 +1218,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         candidate_root = (task_runtime.exact_root(Path(checkout_value), "review candidate")
                           if checkout_value else validate_record(config, repository, record))
         assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
+        claimed: Optional[dict[str, Any]] = None
         try:
             policy = risk_runtime.load_policy(risk_policy_path(controller))
             request = risk_request(repository, candidate_sha, config["target_ref"], expected)
@@ -1234,6 +1279,12 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                         stored = {**stored, "review_progress": progress}
                         attempt = {**attempt, "risk": stored, "review": stored}
                         persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+                        if suite_admission.get("state") == "FAILED":
+                            failure = suite_admission["failure"]
+                            detail = failure["stderr_tail"] or failure["stdout_tail"]
+                            raise MergeValidationError(
+                                f"recovered full-suite attempt failed: {detail}", [failure],
+                                suite_admission["receipt"])
             if plan["full_suite_required"] and suite_admission is None:
                 claimed, attempt = persist_full_suite_claim(
                     controller, attempt,
@@ -1343,6 +1394,13 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             verified = risk_runtime.verify_candidate_evidence(
                 policy, request, risk_flags(record), reference)
         except MergeValidationError as exc:
+            if claimed is not None and exc.receipt_reference is not None:
+                failed_admission = failed_full_suite_admission(
+                    controller, task_id, plan, current_validation_identity,
+                    full_suite_command(config), claimed, exc.receipt_reference)
+                progress = {**progress, "full_suite_admission": failed_admission}
+                stored = {**stored, "review_progress": progress}
+                attempt = {**attempt, "risk": stored, "review": stored}
             failed = {**attempt, "validation": exc.evidence, "outcome": "FAILED_FULL_SUITE"}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise

@@ -418,7 +418,114 @@ class MergeQueueTests(unittest.TestCase):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
         dispatch.assert_not_called()
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        admission = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual(admission["full_suite_admission"]["state"], "FAILED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
+    def test_failed_suite_then_success_uses_fresh_attempt_and_reaches_reviewers(self) -> None:
+        flaky = (f"from pathlib import Path; import sys; p=Path({str(self.full_counter)!r}); "
+                 "n=len(p.read_text().splitlines()) if p.exists() else 0; "
+                 "p.open('a').write('run\\n'); sys.exit(23 if n == 0 else 0)")
+        self.write_policy(full_code=flaky)
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeValidationError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        failed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual((failed["full_suite_admission"]["state"],
+                          failed["full_suite_admission"]["attempt_number"]), ("FAILED", 1))
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review) as dispatch:
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual((ready["outcome"], dispatch.call_count), ("RISK_EVIDENCE_READY", 2))
+        complete = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
+
+    def test_timeout_then_success_uses_fresh_attempt(self) -> None:
+        self.write_policy(full_code="import time; time.sleep(3)")
+        config_path = self.controller / ".juno_task/config/task-workspace.json"
+        config = json.loads(config_path.read_text()); config["full_suite_validation"]["timeout_seconds"] = 1
+        config_path.write_text(json.dumps(config) + "\n")
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeValidationError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        failed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertTrue(failed["full_suite_admission"]["failure"]["timed_out"])
+        self.write_policy()
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(ready["risk"]["review_progress"]["full_suite_admission"]["attempt_number"], 2)
+
+    def test_repeated_failed_suites_keep_distinct_immutable_attempts(self) -> None:
+        fail = (f"from pathlib import Path; Path({str(self.full_counter)!r}).open('a').write('run\\n'); "
+                "raise SystemExit(19)")
+        self.write_policy(full_code=fail)
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            for _ in range(2):
+                with self.assertRaises(merge_runtime.MergeValidationError):
+                    merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        root = self.controller / ".juno_task/state/merge-queue/full-suite/X"
+        attempts = sorted(path.name for path in next(root.iterdir()).iterdir())
+        self.assertEqual(attempts, ["attempt-1", "attempt-2"])
+        for name in attempts:
+            self.assertTrue((next(root.iterdir()) / name / "claim.json").is_file())
+            self.assertTrue((next(root.iterdir()) / name / "receipt.json").is_file())
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
+
+    def test_restart_from_claimed_failed_receipt_marks_failed_without_reviewer(self) -> None:
+        self.write_policy(full_code="raise SystemExit(31)")
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        original = merge_runtime.persist_attempt
+        def crash_failed_write(*args: object, **kwargs: object) -> None:
+            admission = ((((args[1].get("risk") or {}).get("review_progress") or {})
+                          .get("full_suite_admission")) or {})
+            if admission.get("state") == "FAILED":
+                raise OSError("crash before failed admission")
+            original(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "persist_attempt", side_effect=crash_failed_write):
+            with self.assertRaisesRegex(OSError, "crash before failed admission"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+                         ["full_suite_admission"]["state"], "CLAIMED")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeValidationError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        recovered = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual(recovered["full_suite_admission"]["state"], "FAILED")
+
+    def test_tampered_claimed_failed_receipt_fails_closed_without_retry(self) -> None:
+        self.write_policy(full_code="raise SystemExit(31)")
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        original = merge_runtime.persist_attempt
+        def crash_failed_write(*args: object, **kwargs: object) -> None:
+            admission = ((((args[1].get("risk") or {}).get("review_progress") or {})
+                          .get("full_suite_admission")) or {})
+            if admission.get("state") == "FAILED":
+                raise OSError("crash before failed admission")
+            original(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "persist_attempt", side_effect=crash_failed_write):
+            with self.assertRaises(OSError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        claimed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        Path(claimed["full_suite_admission"]["expected_receipt_path"]).write_text("{}\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeQueueError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        current = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        self.assertEqual(current["full_suite_admission"]["state"], "CLAIMED")
 
     def test_external_boolean_only_risk_receipt_is_replaced_by_real_full_suite(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "auth\n")
