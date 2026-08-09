@@ -1,0 +1,40 @@
+{
+  "schema_version": "juno_task_workspace_config.v1",
+  "repository": ".",
+  "target_ref": "refs/heads/juno-mono-002",
+  "workspace_root": "/private/tmp/juno-code/task-worktrees",
+  "branch_prefix": "refs/heads/juno/task-",
+  "allowed_paths": [
+    ".juno_task/config",
+    ".juno_task/prompts",
+    ".juno_task/wiki",
+    "AGENTS.md",
+    "README.md",
+    "juno-code",
+    "scripts"
+  ],
+  "controller_private_paths": [
+    ".juno_task/artifacts",
+    ".juno_task/ledger",
+    ".juno_task/logs",
+    ".juno_task/receipts",
+    ".juno_task/specs",
+    ".juno_task/state",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md",
+    ".juno_task/workflows"
+  ],
+  "focused_validation": [
+    {
+      "id": "task-workspace",
+      "cwd": "juno-code",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "src/utils/__tests__/task-workspace.test.ts",
+        "src/cli/__tests__/task-command.test.ts"
+      ]
+    }
+  ]
+}

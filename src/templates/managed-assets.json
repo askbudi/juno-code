@@ -8,6 +8,12 @@
       "type": "config"
     },
     {
+      "source": "config/task-workspace.json",
+      "destination": ".juno_task/config/task-workspace.json",
+      "installClass": "project",
+      "type": "config"
+    },
+    {
       "source": "wiki/metadata_controller_boundary.md",
       "destination": ".juno_task/wiki/metadata_controller_boundary.md",
       "installClass": "project",
@@ -160,6 +166,18 @@
     {
       "source": "scripts/task_lifecycle.py",
       "destination": ".juno_task/scripts/task_lifecycle.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/task_workspace.py",
+      "destination": ".juno_task/scripts/task_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_task_workspace.py",
+      "destination": ".juno_task/scripts/tests/test_task_workspace.py",
       "installClass": "script",
       "type": "script"
     },

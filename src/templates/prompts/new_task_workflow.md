@@ -1,14 +1,19 @@
-# New task lifecycle
+# Start a feature task
 
-Create one task-level lifecycle policy and Kanban selection, not a user-authored manifest or low-level integration workflow. Prefer the metadata-only controller boundary when it is registered: the controller owns only Kanban/task state, compact receipts, and orchestration; installed released Juno Code owns generated runtime; workers receive only the admitted product `TASK_ROOT`. Controller commits never merge or synchronize to the product target, and no command silently switches controller or target branches. During the Bolt migration, a registered legacy sparse controller remains valid only for the existing lifecycle and rollback—it must not be extended as replacement architecture.
+Use the canonical controller to select one Kanban task, then run:
 
-1. Confirm the task, exact controller registration/mode/policy/runtime identity, exact product target ref/SHA, explicit admitted `TASK_ROOT`, objective risk, owner escalation (if any), changed-surface matrix, expected paths, validation profile, requirement checklist, artifact root, and cleanup owner. Product paths must be absent from a metadata-only controller; controller-private task/ledger/spec/state/receipt paths must be absent from a product worktree.
-2. The project policy has `schema_version: juno_task_lifecycle_config.v2`, one named root, and zero or more configured direct children. Task fields select entries; deeper nesting and identity/ref overrides fail before mutation.
-3. Deterministic risk is a minimum: ambiguous/unclassified, Git/CAS/cleanup, lifecycle/review authority, security, runtime/package delivery, and destructive work are high. An owner may escalate but never downgrade.
-4. Configure exactly one initial review pair budget and one replacement pair budget. Low/medium uses Reviewer A; high uses Reviewer A then Reviewer B sequentially on one frozen tip. Repair waits for all required results.
-5. Use the canonical managed review template and fresh `yy pi` contexts inheriting project provider/model defaults. Reviewers are read-only.
-6. Run only `yy lifecycle run --task TASK_ID` from the canonical controller; observe or resume with the same task ID. Every managed product operation is dispatched to an exact verified task/candidate/integration-owner root, never controller CWD.
+```text
+yy task start TASK_ID
+```
 
-Old `workflow_class: local_integration` execution is retired. Historical doctor/readback remains available, but lint/start/resume/recover/amend cannot be used as a migration path.
+The project-owned task-workspace policy supplies the full product target ref, allowed product paths, focused validation, branch prefix, and worktree root. Start freezes the exact current target SHA, creates one task branch and one product worktree, and writes a compact controller record. It is idempotent only while that worktree is still clean at the exact frozen base; any branch, path, target, or record drift refuses.
 
-Why tests and implementation both matter: the project-owned policy and immutable derived plan make authority reviewable, while schema, real-Git, exact-tip validation, review-budget, CAS, target-verification, and cleanup tests prove the declared lifecycle is mechanically enforced.
+Implement and commit only inside the returned product worktree. The controller keeps Kanban and task artifacts; those files are never copied into product worktrees. Other tasks may start from the same target in their own worktrees while this task is active.
+
+When implementation is committed, run:
+
+```text
+yy task finish TASK_ID
+```
+
+Finish checks the exact task identity, clean committed tip, allowed paths, and configured focused validation, then records the task as `QUEUED`. It does not review, merge, release, push, deploy, clean up, or synchronize controller and product branches. Use `yy task status TASK_ID` for bounded read-only observation.

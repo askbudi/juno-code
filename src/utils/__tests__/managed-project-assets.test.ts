@@ -70,11 +70,12 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.reflect).toContain('# End-of-session reflection');
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
     expect(dictionary.reflect).toContain('complete reflection table');
-    expect(dictionary.new_task_workflow).toContain('# New task lifecycle');
-    expect(dictionary.new_task_workflow).toContain('juno_task_lifecycle_config.v2');
-    expect(dictionary.new_task_workflow).toContain('one initial review pair budget');
-    expect(dictionary.new_task_workflow).toContain('one frozen tip');
-    expect(dictionary.new_task_workflow).toContain('yy lifecycle run --task TASK_ID');
+    expect(dictionary.new_task_workflow).toContain('# Start a feature task');
+    expect(dictionary.new_task_workflow).toContain('task-workspace policy');
+    expect(dictionary.new_task_workflow).toContain('one task branch and one product worktree');
+    expect(dictionary.new_task_workflow).toContain('exact frozen base');
+    expect(dictionary.new_task_workflow).toContain('yy task start TASK_ID');
+    expect(dictionary.new_task_workflow).toContain('yy task finish TASK_ID');
     expect(dictionary.run_workflow).toContain('# Run a workflow or task lifecycle');
     expect(dictionary.run_workflow).toContain('workflow_runner.sh doctor');
     expect(dictionary.run_workflow).toContain('waived_by_owner');
@@ -95,6 +96,7 @@ describe('ManagedProjectAssets', () => {
     expect(metadataPolicy.product_forbidden).toContain('.juno_task/tasks');
     expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/scripts');
     expect(metadataPolicy.tracked_exact).toContain('.juno_task/state/queue.json');
+    expect(metadataPolicy.tracked_exact).toContain('.juno_task/state/tasks.json');
     expect(metadataPolicy.tracked_top_level_files).toContain('.juno_task/receipts');
     expect(
       await fs.readFile(
@@ -115,7 +117,7 @@ describe('ManagedProjectAssets', () => {
     ).toContain('Reviewer launcher identity');
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
-    ).toContain('Reviewer A then Reviewer B sequentially on exactly the same frozen base/tip');
+    ).toContain('yy task finish TASK_ID');
 
     const canonicalImplementationReference = await fs.readFile(
       path.join(process.cwd(), 'src/templates/skills/canonical/ralph-loop/references/implement.md'),

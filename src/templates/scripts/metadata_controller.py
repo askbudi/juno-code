@@ -295,13 +295,20 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
                 "runtime": {"package": "juno-code", "version": plan["runtime"]["version"]},
                 "policy_sha256": plan["policy_sha256"], "controller_commits_integrate_to_product": False,
                 "preserved_metadata": {"entries": preserved_entries, "sha256": digest(preserved_entries)}}
+    task_policy_path = Path(__file__).resolve().parents[1] / "config/task-workspace.json"
+    try:
+        task_policy_bytes = canonical(json.loads(task_policy_path.read_text()))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"installed task workspace policy is invalid: {exc}") from exc
     generated = {
         ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n*.log\n__pycache__/\n",
         ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}),
         ".juno_task/config/metadata-controller.json": canonical(policy),
+        ".juno_task/config/task-workspace.json": task_policy_bytes,
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
         ".juno_task/state/lifecycle.json": canonical({"schema_version": "juno_task_lifecycle_state.v1", "tasks": {}}),
         ".juno_task/state/queue.json": canonical({"schema_version": "juno_merge_queue_state.v1", "targets": {}}),
+        ".juno_task/state/tasks.json": canonical({"schema_version": "juno_task_workspace_state.v1", "tasks": {}}),
     }
     with tempfile.TemporaryDirectory(prefix="juno-metadata-index-") as temporary:
         index_env = {"GIT_INDEX_FILE": str(Path(temporary) / "index")}
@@ -414,15 +421,20 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
         try:
             config_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/config.json"], root).stdout)
             policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/metadata-controller.json"], root).stdout
+            task_policy_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/task-workspace.json"], root).stdout)
             lifecycle_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/lifecycle.json"], root).stdout)
             queue_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/queue.json"], root).stdout)
+            tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
             generated_contract_ok = (
                 config_value == {"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
                 and policy_text == canonical(policy).decode()
+                and task_policy_value.get("schema_version") == "juno_task_workspace_config.v1"
                 and lifecycle_value.get("schema_version") == "juno_task_lifecycle_state.v1"
                 and isinstance(lifecycle_value.get("tasks"), dict)
                 and queue_value.get("schema_version") == "juno_merge_queue_state.v1"
                 and isinstance(queue_value.get("targets"), dict)
+                and tasks_value.get("schema_version") == "juno_task_workspace_state.v1"
+                and isinstance(tasks_value.get("tasks"), dict)
                 and current_boundary_text == root_boundary_text
             )
         except (BoundaryError, KeyError, TypeError, json.JSONDecodeError):

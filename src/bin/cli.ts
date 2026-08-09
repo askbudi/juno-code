@@ -33,6 +33,7 @@ import { configureHelpCommand } from '../cli/commands/help.js';
 import { createServicesCommand } from '../cli/commands/services.js';
 import { createSkillsCommand } from '../cli/commands/skills.js';
 import { createAuthCommand } from '../cli/commands/auth.js';
+import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -1817,8 +1818,10 @@ async function main(): Promise<void> {
   const cliArgs = process.argv.slice(2);
   const isReadOnlyVersionRequest = cliArgs.some((arg) => arg === '--version' || arg === '-V');
   const isLifecycleCommand = cliArgs[0] === 'lifecycle';
+  const isTaskWorkspaceCommand = cliArgs[0] === 'task';
   const isReadOnlyLifecycleStatus = isLifecycleCommand && cliArgs[1] === 'status';
-  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus;
+  const isReadOnlyTaskStatus = isTaskWorkspaceCommand && cliArgs[1] === 'status';
+  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
@@ -1829,7 +1832,7 @@ async function main(): Promise<void> {
   // closed before command parsing or agent dispatch. Explicit update commands
   // retain their documented authority in every initialized workspace.
   const mayAutoUpdateProjectAssets =
-    !isReadOnlyIdentityRequest && !isLifecycleCommand &&
+    !isReadOnlyIdentityRequest && !isLifecycleCommand && !isTaskWorkspaceCommand &&
     (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
@@ -1975,6 +1978,7 @@ async function main(): Promise<void> {
   program.addCommand(createAuthCommand());
   setupScriptManagementCommands(program);
   setupTaskLifecycleCommand(program);
+  configureTaskWorkspaceCommand(program);
 
   // Setup completion
   setupCompletion(program);

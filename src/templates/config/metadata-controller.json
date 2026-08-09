@@ -14,9 +14,11 @@
     ".gitignore",
     ".juno_task/config.json",
     ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
-    ".juno_task/state/queue.json"
+    ".juno_task/state/queue.json",
+    ".juno_task/state/tasks.json"
   ],
   "product_forbidden": [
     ".juno_task/artifacts",
@@ -35,9 +37,11 @@
     ".juno_task/config.json",
     ".juno_task/cutover.json",
     ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
     ".juno_task/state/queue.json",
+    ".juno_task/state/tasks.json",
     ".juno_task/tasks.md"
   ],
   "tracked_recursive": [

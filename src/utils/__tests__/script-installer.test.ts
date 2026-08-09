@@ -227,10 +227,12 @@ describe('ScriptInstaller', () => {
       expect(newlyManaged.sort()).toEqual([
         'managed_agent_runner.py',
         'task_lifecycle.py',
+        'task_workspace.py',
         'tests/test_controller_workspace.py',
         'tests/test_managed_agent_runner.py',
         'tests/test_metadata_controller.py',
         'tests/test_task_lifecycle.py',
+        'tests/test_task_workspace.py',
       ]);
       for (const relative of newlyManaged) {
         const destination = path.join(scriptsDir, relative);
@@ -332,6 +334,8 @@ describe('ScriptInstaller', () => {
         { name: 'tests/test_controller_workspace.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
         { name: 'task_lifecycle.py', installed: false },
+        { name: 'task_workspace.py', installed: false },
+        { name: 'tests/test_task_workspace.py', installed: false },
         { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
         { name: 'worktree_lifecycle.py', installed: false },
@@ -469,6 +473,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("task lifecycle")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_task_workspace.py'),
+        '#!/usr/bin/env python3\nprint("task workspace")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'tests/test_controller_workspace.py'),
         '#!/usr/bin/env python3\nprint("controller workspace")',
       );
@@ -485,6 +493,7 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\n',
       );
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
 
@@ -531,6 +540,8 @@ describe('ScriptInstaller', () => {
         { name: 'tests/test_controller_workspace.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
         { name: 'task_lifecycle.py', installed: true },
+        { name: 'task_workspace.py', installed: true },
+        { name: 'tests/test_task_workspace.py', installed: true },
         { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },
         { name: 'worktree_lifecycle.py', installed: true },
@@ -825,7 +836,7 @@ describe('ScriptInstaller', () => {
 
       expect(updated).toBe(true);
       expect(await fs.readFile(wikiPath, 'utf8')).toContain(
-        '# Task-derived root/direct-child lifecycle',
+        '# Task worktrees',
       );
       expect(await fs.readFile(scriptPath, 'utf8')).toContain('def main(');
       const backupRoot = path.join(testDir, '.juno_task/managed-conflicts');
