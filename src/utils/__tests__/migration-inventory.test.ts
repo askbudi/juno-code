@@ -167,7 +167,7 @@ describe('Juno 2.1 migration inventory', () => {
     expect(receipt.git.selected_product_ahead).toBe(1); expect(receipt.git.selected_product_behind).toBe(0);
   });
 
-  it('records checkout mismatch without requiring ref movement for receipt-only policy drafting', async () => {
+  it('records checkout mismatch and refuses policy generation from the wrong tree', async () => {
     await fs.writeFile(path.join(project, 'detached-only.txt'), 'not on product ref\n');
     git(project, 'add', 'detached-only.txt'); expect(git(project, 'commit', '-qm', 'detached-only').status).toBe(0);
     const receiptPath = path.join(temporary, 'mismatch.json'); const answersPath = path.join(temporary, 'mismatch-answers.json');
@@ -175,10 +175,10 @@ describe('Juno 2.1 migration inventory', () => {
     const receipt = await fs.readJson(receiptPath);
     expect(receipt.git.checkout_matches_selected_product).toBe(false);
     expect(receipt.inventory_warnings).toContain('inspected_checkout_does_not_match_selected_product_ref');
-    expect(receipt.policy_generation_block_reasons).not.toContain('inspected_checkout_does_not_match_selected_product_ref');
+    expect(receipt.policy_generation_block_reasons).toContain('inspected_checkout_does_not_match_selected_product_ref');
     expect(run(project, 'owner-template', '--inventory', receiptPath, '--output', answersPath).status).toBe(0);
     const refused = run(project, 'generate-policy', '--inventory', receiptPath, '--answers', answersPath, '--output', path.join(temporary, 'mismatch-policy.json'));
-    expect(refused.status).toBe(2); expect(refused.stderr).toContain('owner answers unresolved');
+    expect(refused.status).toBe(2); expect(refused.stderr).toContain('exact selected product ref commit');
   });
 
   it('protects child repositories, rejects fake controller roots, and never executes runtime candidates', async () => {

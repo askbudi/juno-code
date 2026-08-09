@@ -17,7 +17,11 @@ cleanup.
 3. Review Git/controller/runtime/Kanban identity, detached/ahead/diverged refs,
    dirty state, worktrees, gitlinks/nested repositories, controller-private
    tracked roots, ignored/heavy paths, and customized managed assets. Never
-   resolve an ambiguous product ref by guessing.
+   resolve an ambiguous product ref by guessing. The inspected checkout must be
+   at the exact selected product-ref commit before policy generation; never mix
+   one ref's identity with another checkout's filesystem. Review grouped legacy
+   assets and automatic generated-cache classifications instead of answering
+   once per cache file. Runtime candidates are fingerprinted, not executed.
 4. Create a byte-bound owner template, then complete every identity, policy,
    authority, and per-path disposition. Use only `keep`, `replace`, `retire`,
    `externalize`, or `block`; preserve child-first ordering for gitlinks.

@@ -487,6 +487,8 @@ def inventory(args: argparse.Namespace) -> dict[str, Any]:
     blockers = []
     if not payload["git"]["selected_product_ref"]:
         blockers.append("explicit_product_ref_required")
+    elif not payload["git"]["checkout_matches_selected_product"]:
+        blockers.append("inspected_checkout_does_not_match_selected_product_ref")
     payload["inventory_warnings"] = (["inspected_checkout_does_not_match_selected_product_ref"]
                                      if payload["git"]["selected_product_ref"] and
                                      not payload["git"]["checkout_matches_selected_product"] else [])
@@ -531,8 +533,10 @@ def validated_answers(receipt: dict[str, Any], answers: dict[str, Any], inventor
     frozen_refs = frozen_git.get("local_product_refs", {})
     if (not isinstance(selected_ref, str) or not selected_ref.startswith("refs/heads/")
             or selected_ref not in frozen_refs
-            or frozen_git.get("selected_product_head") != frozen_refs.get(selected_ref)):
-        raise InventoryError("policy generation requires one explicitly frozen local product ref")
+            or frozen_git.get("selected_product_head") != frozen_refs.get(selected_ref)
+            or frozen_git.get("selected_product_head") != frozen_git.get("head")
+            or frozen_git.get("checkout_matches_selected_product") is not True):
+        raise InventoryError("policy generation requires an inspected checkout at the exact selected product ref commit")
     required = receipt["required_owner_answers"]
     missing = [name for name in required["identity_fields"] + required["policy_fields"] if answers.get(name) in (None, "", [])]
     decisions = answers.get("dispositions", {})
