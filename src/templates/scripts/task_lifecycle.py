@@ -62,11 +62,10 @@ REVIEW_ENV_BLOCKED = frozenset({
 })
 REVIEW_ENV_SET = frozenset({
     "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT",
-    "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID",
+    "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID", "JUNO_CODE_SESSION_METADATA_DIRECTORY",
 })
 WORKER_ENV_SET = frozenset({
-    "TASK_ROOT", "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE",
-    "JUNO_WORKSPACE_ENFORCEMENT", "JUNO_LIFECYCLE_AUTHORITY_MAP", "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID",
+    *REVIEW_ENV_SET, "TASK_ROOT", "JUNO_AGENT_TASK_ID", "JUNO_LIFECYCLE_AUTHORITY_MAP",
 })
 
 
@@ -437,7 +436,30 @@ def product_dispatch_preflight(root: Path, operation: str, artifact: Path, *, ro
     if result.returncode: raise LifecycleError(f"managed {operation} dispatch refused before launch: {result.stderr.strip()}")
 
 
+def invoke_managed_agent_runner(arguments: list[str], artifact: Path, timeout: float = 7200) -> dict[str, Any]:
+    """Delegate managed yy/pi process ownership to the canonical runner."""
+    runner = SCRIPT_DIR / "managed_agent_runner.py"
+    if not runner.is_file():
+        raise LifecycleError("canonical managed-agent runner is missing")
+    result = subprocess.run([sys.executable, str(runner), "run", *arguments], cwd=artifact,
+                            text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout)
+    out_dir = Path(arguments[arguments.index("--out-dir") + 1])
+    if result.returncode:
+        failure = result.stderr.strip()[-2000:]
+        receipt_path = out_dir / "receipt.json"
+        if receipt_path.is_file():
+            failure = str(load_json(receipt_path).get("failure") or failure)
+        raise LifecycleError("canonical managed-agent runner failed: " + failure)
+    receipt_path = out_dir / "receipt.json"
+    receipt = load_json(receipt_path)
+    if receipt.get("state") != "succeeded" or receipt.get("exit_code") != 0:
+        raise LifecycleError("canonical managed-agent receipt is not successful")
+    return receipt
+
+
 def dispatch_worker(plan: dict[str, Any], ns: Path, state: dict[str, Any], repair: bool = False) -> None:
+    if plan.get("worker_command") is not None:
+        raise LifecycleError("worker launch command is noncanonical or contains forbidden flags")
     count = state.get("worker_count", 0)
     if count >= 3: raise LifecycleError("sequential worker limit exhausted")
     number = count + 1; kind = "repair" if repair else "implementation"
@@ -472,25 +494,31 @@ def dispatch_worker(plan: dict[str, Any], ns: Path, state: dict[str, Any], repai
               f"Repair packet: {json.dumps(repair_evidence, sort_keys=True) if repair_evidence else 'not-applicable'}\n"
               "Edit only admitted paths. Create coherent descendant commits and leave every task worktree clean. "
               "Do not dispatch workers/reviewers/canaries, integrate targets, cut over, clean worktrees, release, push, publish, deploy, or mutate the controller.\n")
-    prompt_file = artifact / "prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8")); prompt_before = exact_prompt_evidence(prompt_file, prompt, "worker")
-    capture = artifact / "capture.json"; launcher_cwd = neutral_directory(artifact / "launcher-cwd")
+    prompt_file = artifact / "input-prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8"))
     agent_root = Path(root_repo["task_worktree"]).resolve()
-    tool_id = f"lifecycle_worker_{plan['task_id']}_{number}_{kind}_{hashlib.sha256(str(artifact).encode()).hexdigest()[:12]}"
-    env, environment_contract = managed_agent_environment(controller, plan["controller_branch"], capture, tool_id,
-        {"TASK_ROOT": str(agent_root), "JUNO_WORKSPACE_ROLE": "task", "JUNO_LIFECYCLE_AUTHORITY_MAP": str(authority_path.resolve())}, "worker")
-    command = canonical_managed_command(controller, agent_root, prompt_file, plan.get("worker_command"), "worker")
-    command_sha256 = hashlib.sha256(shlex.join(command).encode()).hexdigest()
+    root_create = authority["repositories"][0].get("create_receipt") or {}
+    create_path = Path(str(root_create.get("path") or ""))
+    verify_path = artifact / "runner-verify.json"
+    atomic_json(verify_path, {"passed": True, "task_id": plan["task_id"], "source": "lifecycle pre-dispatch identity"})
+    edit_path = artifact / f"{root_repo['id']}-dispatch-preflight.json"
+    managed_out = artifact / "managed-run"
     save_state(ns, state, "IMPLEMENTING")
-    started_ns = time.time_ns()
-    result = run_command(command, launcher_cwd, artifact / "process", 7200, env)
-    process_receipt = load_json(artifact / "process/receipt.json")
-    if process_receipt.get("command_sha256") != command_sha256 or process_receipt.get("cwd") != str(launcher_cwd):
-        raise LifecycleError("worker process provenance is malformed")
-    prompt_after = exact_prompt_evidence(prompt_file, prompt, "worker")
-    if prompt_before != prompt_after: raise LifecycleError("worker prompt changed during dispatch")
-    if result["timed_out"] or result["exit_code"] != 0: raise LifecycleError("implementation worker process failed")
-    if not capture.is_file() or capture.stat().st_mtime_ns < started_ns: raise LifecycleError("worker capture is missing or stale")
-    payload = load_json(capture); session = str(payload.get("session_id") or "").strip(); response = payload.get("result")
+    runner_receipt = invoke_managed_agent_runner([
+        "--mode", "worker", "--controller-root", str(controller), "--controller-branch", plan["controller_branch"],
+        "--agent-root", str(agent_root), "--prompt-file", str(prompt_file), "--out-dir", str(managed_out),
+        "--task-id", plan["task_id"], "--create-receipt", str(create_path), "--verify-receipt", str(verify_path),
+        "--edit-preflight-receipt", str(edit_path), "--authority-map", str(authority_path),
+        "--tool-id", f"lifecycle_worker_{plan['task_id']}_{number}_{kind}",
+    ], artifact)
+    session = str(runner_receipt.get("session_id") or "").strip()
+    response = (managed_out / "response.txt").read_text(encoding="utf-8")
+    prompt_before = runner_receipt["artifacts"]["prompt"]
+    prompt_after = prompt_before
+    command = runner_receipt["argv"]
+    command_sha256 = runner_receipt["argv_sha256"]
+    environment_contract = runner_receipt["environment_contract"]
+    launcher_cwd = managed_out / "launcher-root"
+    capture = managed_out / "capture.json"
     prior_sessions = set(state.get("worker_sessions", [])) | {str(x.get("session_id")) for x in state.get("worker_launches", []) if x.get("session_id")}
     for old_receipt in ns.glob("worker-*/receipt.json"):
         if old_receipt != artifact / "receipt.json": prior_sessions.add(str(load_json(old_receipt).get("session_id") or ""))
@@ -521,7 +549,8 @@ def dispatch_worker(plan: dict[str, Any], ns: Path, state: dict[str, Any], repai
         "command": command, "command_sha256": command_sha256, "environment_contract": environment_contract,
         "launcher_cwd": str(launcher_cwd), "agent_task_root": str(agent_root),
         "capture": {"path": str(capture.resolve()), "sha256": file_digest(capture), "created_after_dispatch": True},
-        "process_receipt": {"path": str((artifact / 'process/receipt.json').resolve()), "sha256": file_digest(artifact / "process/receipt.json")},
+        "process_receipt": {"path": str((managed_out / 'receipt.json').resolve()), "sha256": file_digest(managed_out / "receipt.json")},
+        "managed_agent_runner": {"path": str((managed_out / 'receipt.json').resolve()), "sha256": file_digest(managed_out / "receipt.json")},
         "controller_before": controller_before, "controller_after": controller_after, "worktrees_before": before,
         "worktrees_after": after, "changed_path_audit": audits,
         "preflight_receipts": [{"path": str(x.resolve()), "sha256": file_digest(x)} for x in sorted(artifact.glob("*-dispatch-preflight.json"))]}
@@ -652,53 +681,9 @@ def neutral_directory(path: Path) -> Path:
     return path.resolve()
 
 
-def managed_agent_environment(controller: Path, branch: str, capture: Path, tool_id: str,
-                              routing: dict[str, str] | None, kind: str) -> tuple[dict[str, str], dict[str, Any]]:
-    # Future Pi/Juno selectors are denied by prefix. Only the exact routing map
-    # below is restored, so configured provider/model defaults stay authoritative.
-    removed = sorted(k for k in os.environ if k in REVIEW_ENV_BLOCKED or k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
-    env = {k: v for k, v in os.environ.items() if k not in removed}
-    explicit = {"JUNO_TASK_ROOT": str(controller.resolve()), "JUNO_CONTROLLER_BRANCH": branch.removeprefix("refs/heads/"),
-                "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
-                "JUNO_SUBAGENT_CAPTURE_PATH": str(capture.resolve()), "JUNO_TOOL_ID": tool_id}
-    explicit.update(routing or {})
-    allowed = WORKER_ENV_SET if kind == "worker" else REVIEW_ENV_SET
-    if set(explicit) != set(allowed): raise LifecycleError(f"{kind} routing environment is not exact")
-    env.update(explicit)
-    contract = {"schema_version": "juno_managed_agent_environment.v1", "kind": kind,
-                "removed_key_names": removed, "blocked_key_names": sorted(REVIEW_ENV_BLOCKED),
-                "explicitly_set_key_names": sorted(explicit)}
-    contract["sha256"] = digest(contract)
-    return env, contract
-
-
-def reviewer_environment(controller: Path, branch: str, capture: Path, tool_id: str) -> tuple[dict[str, str], dict[str, Any]]:
-    return managed_agent_environment(controller, branch, capture, tool_id, None, "review")
-
-
-def canonical_managed_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any, kind: str) -> list[str]:
-    expected = ["yy", "pi", "--config", str((controller / ".juno_task/config.json").resolve()),
-                "-w", str(agent_cwd.resolve()), "-f", str(prompt_file.resolve())]
-    command = expected if override is None else override
-    if not isinstance(command, list) or command != expected:
-        raise LifecycleError(f"{kind} launch command is noncanonical or contains forbidden flags")
-    return command
-
-
-def canonical_review_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any = None) -> list[str]:
-    return canonical_managed_command(controller, agent_cwd, prompt_file, override, "review")
-
-
-def exact_prompt_evidence(prompt_file: Path, prompt: str, kind: str = "review") -> dict[str, Any]:
-    data = prompt_file.read_bytes()
-    try: echo = data.decode("utf-8")
-    except UnicodeDecodeError as exc: raise LifecycleError(f"{kind} prompt is not exact UTF-8") from exc
-    if echo != prompt: raise LifecycleError(f"{kind} prompt bytes were tampered")
-    return {"path": str(prompt_file.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
-            "byte_count": len(data), "echo": echo}
-
-
 def review_pipeline(plan: dict[str, Any], candidate: dict[str, Any], ns: Path, state: dict[str, Any], kind: str = "pre_cas") -> list[dict[str, Any]]:
+    if plan.get("review_command") is not None:
+        raise LifecycleError("review launch command is noncanonical or contains forbidden flags")
     round_number = state.get("review_round", 0) + 1
     if kind == "pre_cas" and round_number > 2: raise LifecycleError("autonomous review budget exhausted")
     review_root = ns / f"review-{kind}-{round_number}"
@@ -727,22 +712,23 @@ def review_pipeline(plan: dict[str, Any], candidate: dict[str, Any], ns: Path, s
                       f"Frozen exact-tip checkouts: {json.dumps(absolute_checkouts, sort_keys=True)}\n"
                       "Inspect only those absolute frozen checkout paths. Do not edit them. Return response-only exactly one "
                       "JUNO_REVIEW_VERDICT: PASS or one or more JUNO_REVIEW_FINDING: severity; requirement; evidence; acceptance lines.\n")
-            prompt_file = artifact / "prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8")); prompt_before = exact_prompt_evidence(prompt_file, prompt)
-            capture = artifact / "capture.json"
-            env, environment_contract = reviewer_environment(controller, plan["controller_branch"], capture,
-                                                               f"lifecycle_review_{kind}_{round_number}_{reviewer}")
-            command = canonical_review_command(controller, agent_cwd, prompt_file, plan.get("review_command"))
-            command_sha256 = hashlib.sha256(shlex.join(command).encode()).hexdigest()
-            result = run_command(command, launcher_cwd, artifact / "process", 7200, env)
-            process_receipt = load_json(artifact / "process/receipt.json")
-            if process_receipt.get("command_sha256") != command_sha256 or process_receipt.get("cwd") != str(launcher_cwd):
-                raise LifecycleError("review process provenance is malformed")
-            prompt_after = exact_prompt_evidence(prompt_file, prompt)
-            if prompt_before != prompt_after: raise LifecycleError("review prompt changed during dispatch")
-            if (launcher_cwd / ".git").exists() or (launcher_cwd / ".juno_task").exists() or (agent_cwd / ".git").exists() or (agent_cwd / ".juno_task").exists():
-                raise LifecycleError("review launch roots lost neutrality")
-            if result["timed_out"] or result["exit_code"] != 0 or not capture.is_file(): raise LifecycleError("review process/capture failed")
-            payload = load_json(capture); session = str(payload.get("session_id") or "").strip(); response = payload.get("result")
+            prompt_file = artifact / "input-prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8"))
+            # The canonical runner owns both neutral roots and all process/capture artifacts.
+            shutil.rmtree(launcher_cwd); shutil.rmtree(agent_cwd)
+            managed_out = artifact / "managed-run"
+            runner_receipt = invoke_managed_agent_runner([
+                "--mode", "reviewer", "--controller-root", str(controller), "--controller-branch", plan["controller_branch"],
+                "--agent-root", str(managed_out / "agent-root"), "--prompt-file", str(prompt_file), "--out-dir", str(managed_out),
+                "--candidate-sha", candidate["candidate_shas"][plan["root_repository"]],
+                "--candidate-root", str(checkouts[plan["root_repository"]]),
+                "--tool-id", f"lifecycle_review_{kind}_{round_number}_{reviewer}",
+            ], artifact)
+            session = str(runner_receipt.get("session_id") or "").strip()
+            response = (managed_out / "response.txt").read_text(encoding="utf-8")
+            prompt_before = runner_receipt["artifacts"]["prompt"]; prompt_after = prompt_before
+            command = runner_receipt["argv"]; command_sha256 = runner_receipt["argv_sha256"]
+            environment_contract = runner_receipt["environment_contract"]
+            launcher_cwd = managed_out / "launcher-root"; agent_cwd = managed_out / "agent-root"; capture = managed_out / "capture.json"
             if not session or session in sessions or not isinstance(response, str): raise LifecycleError("review session is missing, duplicate, or response is unbound")
             sessions.add(session); verdict, findings = strict_verdict(response)
             after = review_fingerprint(checkouts, candidate["candidate_shas"]); controller_after = controller_fingerprint(controller)
@@ -755,8 +741,10 @@ def review_pipeline(plan: dict[str, Any], candidate: dict[str, Any], ns: Path, s
                        "prompt": prompt_before, "prompt_after": prompt_after, "command": command, "command_sha256": command_sha256,
                        "launcher_cwd": str(launcher_cwd), "agent_cwd": str(agent_cwd), "environment_contract": environment_contract,
                        "capture": {"path": str(capture.resolve()), "sha256": file_digest(capture)},
-                       "process_receipt": {"path": str((artifact / 'process/receipt.json').resolve()),
-                                           "sha256": file_digest(artifact / "process/receipt.json")},
+                       "process_receipt": {"path": str((managed_out / 'receipt.json').resolve()),
+                                           "sha256": file_digest(managed_out / "receipt.json")},
+                       "managed_agent_runner": {"path": str((managed_out / 'receipt.json').resolve()),
+                                                  "sha256": file_digest(managed_out / "receipt.json")},
                        "checkout_before": before, "checkout_after": after,
                        "controller_before": controller_before, "controller_after": controller_after}
             atomic_json(artifact / "receipt.json", receipt); outcomes.append(receipt)

@@ -269,6 +269,63 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).not.toContain('--checkpoint-controller');
   });
 
+  it('delegates managed-agent steps, binds live artifacts, fails closed, and recovery detects drift', async () => {
+    const controller = await fs.realpath(workflowFixtureController!);
+    const scripts = path.join(controller, '.juno_task', 'scripts');
+    await fs.copyFile(path.resolve(process.cwd(), 'src/templates/scripts/managed_agent_runner.py'), path.join(scripts, 'managed_agent_runner.py'));
+    await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {});
+    await fs.writeFile(path.join(controller, '.gitignore'), '.venv_juno/\n.test-metadata/\n__pycache__/\n*.pyc\n');
+    spawnSync('git', ['add', '.'], { cwd: controller });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'controller'], { cwd: controller });
+    const candidate = path.join(testDir, 'candidate');
+    await fs.ensureDir(candidate); spawnSync('git', ['init', '-b', 'candidate'], { cwd: candidate });
+    await fs.writeFile(path.join(candidate, 'tracked.txt'), 'candidate\n'); spawnSync('git', ['add', '.'], { cwd: candidate });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'candidate'], { cwd: candidate });
+    const candidateSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: candidate, encoding: 'utf8' }).stdout.trim();
+    const fake = await installFakeJunoExecutable(testDir);
+    await fs.writeFile(fake.executablePath, `#!/usr/bin/env python3
+import json,os,pathlib,sys,time
+prompt=pathlib.Path(sys.argv[sys.argv.index('-f')+1]).read_text()
+print('live stdout',flush=True);print('live stderr',file=sys.stderr,flush=True);time.sleep(.05)
+payload={'session_id':'managed-session','result':'managed response'}
+if 'semantic-failure' in prompt: payload['is_error']=True
+pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(payload)+'\\n')
+`); await fs.chmod(fake.executablePath, 0o755);
+    const execute = async (name: string, promptText: string) => {
+      const prompt = path.join(testDir, `${name}.md`); await fs.writeFile(prompt, promptText);
+      const runDir = path.join(testDir, name);
+      const workflowPath = path.join(testDir, `${name}.json`);
+      await fs.writeJson(workflowPath, { schema_version: 1, workflow_id: `managed_${name}`, steps: [{
+        id: 'agent', fail_workflow: false, capture_session: false,
+        managed_agent: { mode: 'reviewer', controller_root: controller, controller_branch: 'fixture-controller',
+          agent_root: '{{ out_dir }}/managed/agent-root', prompt_file: prompt, out_dir: '{{ out_dir }}/managed',
+          candidate_sha: candidateSha, candidate_root: candidate },
+      }] });
+      const result = runWorkflow(['--workflow', workflowPath, '--out-dir', runDir, '--print-output', 'none'], undefined,
+        { PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}` });
+      return { result, runDir, workflowPath };
+    };
+    const success = await execute('success', 'review');
+    expect(success.result.status, success.result.stderr).toBe(0);
+    const receipt = await fs.readJson(path.join(success.runDir, 'managed', 'receipt.json'));
+    expect(receipt.session_id).toBe('managed-session');
+    expect(await fs.readFile(path.join(success.runDir, 'managed', 'stdout.log'), 'utf8')).toContain('live stdout');
+    expect(await fs.readFile(path.join(success.runDir, 'managed', 'stderr.log'), 'utf8')).toContain('live stderr');
+    expect(await fs.readFile(path.join(success.runDir, 'managed', 'combined.log'), 'utf8')).toContain('[stdout] live stdout');
+    const contractPath = path.join(success.runDir, 'run_contract.json');
+    const contract = await fs.readJson(contractPath);
+    expect(contract.completed_steps.agent.managed_agent.sha256).toMatch(/^[a-f0-9]{64}$/);
+    contract.attempts[contract.attempts.length - 1].status = 'interrupted';
+    await fs.writeJson(contractPath, contract);
+    const recovered = runWorkflow(['recover-attempt', success.runDir, '--dry-run']);
+    expect(recovered.status, recovered.stderr).toBe(0);
+    await fs.appendFile(path.join(success.runDir, 'managed', 'response.txt'), 'drift');
+    const drifted = runWorkflow(['recover-attempt', success.runDir, '--dry-run']);
+    expect(drifted.status).not.toBe(0); expect(drifted.stderr).toContain('managed-agent artifact response drifted');
+    const failure = await execute('failure', 'semantic-failure');
+    expect(failure.result.status).not.toBe(0);
+  }, 60_000);
+
   it('rechecks persisted task authority before every generated write dispatch', async () => {
     const controller = await fs.realpath(workflowFixtureController!);
     await fs.writeFile(path.join(controller, 'tracked.txt'), 'base\n');

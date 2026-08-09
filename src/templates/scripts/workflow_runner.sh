@@ -704,7 +704,20 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         step_name = str(step.get("name") or "").strip()
         if step_name:
             step_names.add(step_name)
-        if "command" not in step:
+        managed = step.get("managed_agent")
+        if managed is not None:
+            if not isinstance(managed, dict):
+                raise WorkflowError(f"step {step_id} managed_agent must be a mapping")
+            required = {"mode", "controller_root", "controller_branch", "agent_root", "prompt_file", "out_dir"}
+            if not required.issubset(managed):
+                raise WorkflowError(f"step {step_id} managed_agent is missing required identity fields")
+            if managed.get("mode") not in {"worker", "reviewer"}:
+                raise WorkflowError(f"step {step_id} managed_agent.mode must be worker or reviewer")
+            if step.get("capture_session") not in {None, False} or step.get("capture") not in {None, False}:
+                raise WorkflowError(f"step {step_id} managed_agent outer capture must be disabled")
+            if "command" in step:
+                raise WorkflowError(f"step {step_id} managed_agent cannot also declare command")
+        elif "command" not in step:
             raise WorkflowError(f"step {step_id} is missing required command")
         requires_receipts = step.get("requires_receipts") or []
         if not isinstance(requires_receipts, list) or not all(isinstance(item, str) for item in requires_receipts):
@@ -724,6 +737,8 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
 
     for step in steps:
+        if step.get("managed_agent") is not None:
+            continue
         helper_tokens = effective_command_argv(step.get("command"))
         helper_index = 1 if helper_tokens and Path(helper_tokens[0]).name in {"python", "python3"} else 0
         helper_executable = Path(helper_tokens[helper_index]).name if len(helper_tokens) > helper_index else ""
@@ -1570,6 +1585,8 @@ def parse_vars(values: list[str]) -> dict[str, str]:
 
 
 def step_should_fail_process(step: dict[str, Any]) -> bool:
+    if step.get("managed_agent") is not None:
+        return True
     for key in ("fail_workflow", "fail_on_error", "exit_on_failure", "fail_fast"):
         if bool(step.get(key, False)):
             return True
@@ -1577,6 +1594,8 @@ def step_should_fail_process(step: dict[str, Any]) -> bool:
 
 
 def step_capture_enabled(step: dict[str, Any], command: Any) -> bool:
+    if step.get("managed_agent") is not None:
+        return False
     if "capture_session" in step and not bool(step.get("capture_session")):
         return False
     if "capture" in step and not bool(step.get("capture")):
@@ -2272,10 +2291,13 @@ def workflow_model_bindings(
 ) -> dict[str, Any]:
     steps: dict[str, Any] = {}
     for step in workflow["steps"]:
-        command = render(step["command"], context)
-        steps[str(step["id"])] = validate_pi_launch_policy(
-            {"command": command}, context=f"step {step['id']}", policy=policy
-        )
+        if step.get("managed_agent") is not None:
+            steps[str(step["id"])] = {"managed_agent": True, "configured_defaults": True}
+        else:
+            command = render(step["command"], context)
+            steps[str(step["id"])] = validate_pi_launch_policy(
+                {"command": command}, context=f"step {step['id']}", policy=policy
+            )
     summary = workflow.get("summary")
     summary_selection = None
     if isinstance(summary, dict) and "command" in summary:
@@ -2322,8 +2344,8 @@ def build_run_contract(
         "step_order": [str(step["id"]) for step in workflow["steps"]],
         "steps": {
             str(step["id"]): {
-                "template_sha256": canonical_sha256(step["command"]),
-                "initial_rendered_sha256": canonical_sha256(render(step["command"], context)),
+                "template_sha256": canonical_sha256(step.get("managed_agent", step.get("command"))),
+                "initial_rendered_sha256": canonical_sha256(render(step.get("managed_agent", step.get("command")), context)),
                 "candidate_read_only_template_sha256": (
                     canonical_sha256(step["candidate_read_only"])
                     if step.get("candidate_read_only") is not None else None
@@ -2831,7 +2853,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         step_id = str(step["id"])
         if index - 1 < start_index:
             if not is_resume and not is_selective_amendment:
-                command = render(step["command"], context)
+                command = render(step.get("command", ["managed_agent"]), context)
                 skipped_result: dict[str, Any] = {
                     "id": step_id,
                     "command": command,
@@ -2886,8 +2908,8 @@ def run_workflow(args: argparse.Namespace) -> int:
             reused_status = "amendment_revalidated" if is_selective_amendment else "reused_verified"
             skipped_result: dict[str, Any] = {
                 "id": step_id,
-                "command": previous.get("command", render(step["command"], context)),
-                "command_preview": previous.get("command_preview", command_preview(render(step["command"], context))),
+                "command": previous.get("command", render(step.get("command", ["managed_agent"]), context)),
+                "command_preview": previous.get("command_preview", command_preview(render(step.get("command", ["managed_agent"]), context))),
                 "status": reused_status,
                 "exit_code": previous.get("exit_code", 0),
                 "transport_status": previous.get("transport_status", previous.get("status")),
@@ -2913,14 +2935,32 @@ def run_workflow(args: argparse.Namespace) -> int:
             context["steps"][step_id] = skipped_result
             manifest["steps"].append({k: v for k, v in skipped_result.items() if k not in {"stdout", "stderr"}})
             continue
-        command = render(step["command"], context)
-        model_selection = validate_pi_launch_policy(
-            {"command": command}, context=f"step {step_id}", policy=model_policy
-        )
+        managed_spec = render(step.get("managed_agent"), context) if step.get("managed_agent") is not None else None
+        if managed_spec is not None:
+            runner = project_root / ".juno_task/scripts/managed_agent_runner.py"
+            if not runner.is_file():
+                raise WorkflowError(f"step[{step_id}]: canonical managed-agent runner is missing")
+            allowed = {"mode", "controller_root", "controller_branch", "agent_root", "prompt_file", "out_dir", "tool_id",
+                       "task_id", "create_receipt", "task_root_receipt", "verify_receipt", "edit_preflight_receipt",
+                       "authority_map", "candidate_sha", "candidate_root"}
+            unknown = sorted(set(managed_spec) - allowed)
+            if unknown:
+                raise WorkflowError(f"step[{step_id}]: unsupported managed_agent fields: {unknown}")
+            command = [sys.executable, str(runner), "run"]
+            for key, value in managed_spec.items():
+                if value is not None and str(value) != "":
+                    command.extend(["--" + key.replace("_", "-"), str(value)])
+            model_selection = {"managed_agent": True, "configured_defaults": True}
+        else:
+            command = render(step["command"], context)
+            model_selection = validate_pi_launch_policy(
+                {"command": command}, context=f"step {step_id}", policy=model_policy
+            )
         preview = command_preview(command)
         command_digest = canonical_sha256(command)
         is_juno_command = detect_juno_command(command)
         capture_enabled = step_capture_enabled(step, command)
+        is_managed_agent = managed_spec is not None
         step_slug = safe_id(step_id, f"step-{index}")
         stdout_path = out_dir / f"{index:03d}_{step_slug}.stdout.txt"
         stderr_path = out_dir / f"{index:03d}_{step_slug}.stderr.txt"
@@ -3131,6 +3171,32 @@ def run_workflow(args: argparse.Namespace) -> int:
                 use_capture_result_as_response=True,
             )
             inject_interruption("capture_before_checkpoint")
+        managed_receipt_path: Path | None = None
+        managed_receipt: dict[str, Any] | None = None
+        if is_managed_agent and not args.dry_run:
+            try:
+                managed_root = Path(str(managed_spec["out_dir"])).resolve()
+                managed_root.relative_to(out_dir.resolve())
+                managed_receipt_path = managed_root / "receipt.json"
+                managed_receipt = load_json_object(managed_receipt_path, f"step[{step_id}] managed-agent receipt")
+                if managed_receipt.get("state") != "succeeded" or managed_receipt.get("exit_code") != 0:
+                    raise WorkflowError(f"step[{step_id}]: managed-agent receipt is not successful")
+                artifact_map = managed_receipt.get("artifacts")
+                if not isinstance(artifact_map, dict):
+                    raise WorkflowError(f"step[{step_id}]: managed-agent artifacts are missing")
+                for artifact_id in ("prompt", "launch", "stdout", "stderr", "combined", "capture", "response"):
+                    item = artifact_map.get(artifact_id)
+                    path = Path(str(item.get("path") if isinstance(item, dict) else ""))
+                    path.resolve().relative_to(managed_root)
+                    if not path.is_file() or file_sha256(path) != item.get("sha256"):
+                        raise WorkflowError(f"step[{step_id}]: managed-agent artifact {artifact_id} drifted")
+                result["response"] = Path(artifact_map["response"]["path"]).read_text(encoding="utf-8")
+                result["session_id"] = str(managed_receipt.get("session_id") or "")
+                if not result["session_id"] or not str(result["response"]).strip():
+                    raise WorkflowError(f"step[{step_id}]: managed-agent session/response is empty")
+                result["managed_agent"] = {"receipt": str(managed_receipt_path), "sha256": file_sha256(managed_receipt_path)}
+            except (WorkflowError, OSError, ValueError, KeyError) as exc:
+                result["status"] = "failed"; result["failure_reason"] = str(exc)
         apply_semantic_outcome_contract(step, result, bool(args.dry_run))
         status = str(result.get("status", status))
         if is_juno_command and not args.dry_run and status == "success" and not str(result.get("response", "")).strip():
@@ -3191,6 +3257,14 @@ def run_workflow(args: argparse.Namespace) -> int:
                     artifacts["capture"] = {
                         "path": str(capture_path.resolve()), "sha256": file_sha256(capture_path)
                     }
+                managed_anchor: dict[str, Any] | None = None
+                if is_managed_agent:
+                    if managed_receipt_path is None or managed_receipt is None:
+                        raise WorkflowError(f"step[{step_id}]: successful managed-agent step lacks receipt")
+                    managed_anchor = {"path": str(managed_receipt_path), "sha256": file_sha256(managed_receipt_path),
+                                      "run_root": str(managed_receipt_path.parent), "artifacts": managed_receipt["artifacts"],
+                                      "session_id": managed_receipt["session_id"]}
+                    artifacts["managed_agent_receipt"] = {"path": str(managed_receipt_path), "sha256": managed_anchor["sha256"]}
                 checkpoint = {
                     "checkpoint_schema": "juno_workflow_step_checkpoint.v1",
                     "checkpoint_complete": True,
@@ -3212,6 +3286,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "receipts": produced_receipts,
                     "child_steps": child_steps,
                     "candidate_read_only": candidate_anchor,
+                    "managed_agent": managed_anchor,
                     "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
                     "workflow_model_policy_sha256": model_policy["workflow_models_sha256"],
                     "workflow_model_selection": model_selection,
@@ -3790,15 +3865,21 @@ def verify_checkpoint(
     policy = contract.get("workflow_model_policy")
     if not isinstance(policy, dict) or checkpoint.get("workflow_model_policy_sha256") != policy.get("workflow_models_sha256"):
         raise WorkflowError(f"recovery checkpoint[{step_id}]: workflow model policy evidence mismatch")
-    selection = validate_pi_launch_policy(
-        {"command": checkpoint.get("command")}, context=f"recovery checkpoint[{step_id}]", policy=policy
-    )
+    if checkpoint.get("managed_agent") is not None:
+        selection = {"managed_agent": True, "configured_defaults": True}
+    else:
+        selection = validate_pi_launch_policy(
+            {"command": checkpoint.get("command")}, context=f"recovery checkpoint[{step_id}]", policy=policy
+        )
     if checkpoint.get("workflow_model_selection") != selection:
         raise WorkflowError(f"recovery checkpoint[{step_id}]: workflow model selection evidence mismatch")
     artifacts = checkpoint.get("artifacts")
     if not isinstance(artifacts, dict):
         raise WorkflowError(f"recovery checkpoint[{step_id}]: artifact evidence missing")
-    for artifact_id in ("stdout", "stderr", "response"):
+    required_artifact_ids = ["stdout", "stderr", "response"]
+    if checkpoint.get("managed_agent") is not None:
+        required_artifact_ids.append("managed_agent_receipt")
+    for artifact_id in required_artifact_ids:
         evidence = artifacts.get(artifact_id)
         if not isinstance(evidence, dict):
             raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: evidence missing")
@@ -3809,6 +3890,29 @@ def verify_checkpoint(
             raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: cross-run path")
         if not path.is_file() or file_sha256(path) != evidence.get("sha256"):
             raise WorkflowError(f"recovery checkpoint[{step_id}].artifact[{artifact_id}]: hash mismatch")
+    managed_anchor = checkpoint.get("managed_agent")
+    if managed_anchor is not None:
+        if not isinstance(managed_anchor, dict):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent evidence malformed")
+        managed_root = Path(str(managed_anchor.get("run_root") or "")).resolve()
+        try: managed_root.relative_to(run_dir.resolve())
+        except ValueError: raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent evidence is cross-run")
+        receipt_path = Path(str(managed_anchor.get("path") or ""))
+        if not receipt_path.is_file() or file_sha256(receipt_path) != managed_anchor.get("sha256"):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent receipt drifted")
+        managed_receipt = load_json_object(receipt_path, f"recovery checkpoint[{step_id}] managed-agent receipt")
+        if managed_receipt.get("state") != "succeeded" or managed_receipt.get("session_id") != managed_anchor.get("session_id"):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent terminal/session evidence invalid")
+        if (managed_root / "active.json").exists():
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent child remains active")
+        if managed_receipt.get("artifacts") != managed_anchor.get("artifacts"):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent artifact binding drifted")
+        for artifact_id, item in managed_anchor["artifacts"].items():
+            path = Path(str(item.get("path") if isinstance(item, dict) else ""))
+            try: path.resolve().relative_to(managed_root)
+            except ValueError: raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent artifact is cross-run")
+            if not path.is_file() or file_sha256(path) != item.get("sha256"):
+                raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent artifact {artifact_id} drifted")
     declared = contract.get("receipt_contracts") or {}
     produced = {rid: value for rid, value in declared.items() if value.get("producer") == step_id}
     evidence_map = checkpoint.get("receipts") or {}

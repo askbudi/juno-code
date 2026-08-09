@@ -92,6 +92,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/tests/test_managed_agent_runner.py",
+      "destination": ".juno_task/scripts/tests/test_managed_agent_runner.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/tests/test_task_lifecycle.py",
       "destination": ".juno_task/scripts/tests/test_task_lifecycle.py",
       "installClass": "script",
@@ -118,6 +124,12 @@
     {
       "source": "scripts/tests/test_controller_workspace.py",
       "destination": ".juno_task/scripts/tests/test_controller_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/managed_agent_runner.py",
+      "destination": ".juno_task/scripts/managed_agent_runner.py",
       "installClass": "script",
       "type": "script"
     },

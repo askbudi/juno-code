@@ -200,10 +200,10 @@ if mode=="stale": os.utime(capture,(1,1))
         self.assertIsNone(observed["model"]);self.assertIsNone(observed["provider"]);self.assertEqual("",observed["stdin"])
         self.assertEqual(sorted(life.WORKER_ENV_SET),observed["keys"])
         self.assertNotIn("-p",observed["argv"]);self.assertIn("-f",observed["argv"]);self.assertEqual(str(Path(plan["repositories"][0]["task_worktree"]).resolve()),observed["values"]["TASK_ROOT"])
-        self.assertEqual("task",observed["values"]["JUNO_WORKSPACE_ROLE"]);self.assertEqual(receipt["launcher_cwd"],observed["cwd"]);self.assertEqual(receipt["prompt"]["echo"],observed["prompt"])
+        self.assertEqual("task",observed["values"]["JUNO_WORKSPACE_ROLE"]);self.assertEqual(Path(receipt["launcher_cwd"]).resolve(),Path(observed["cwd"]).resolve());self.assertEqual(receipt["prompt"]["echo"],observed["prompt"])
         self.assertEqual(receipt["prompt"]["sha256"],life.file_digest(Path(receipt["prompt"]["path"])));self.assertEqual("worker-session",receipt["session_id"])
         self.assertTrue(receipt["capture"]["created_after_dispatch"]);self.assertTrue(receipt["changed_path_audit"]["root"]["passed"]);self.assertFalse(receipt["changed_path_audit"]["root"]["unexpected_paths"])
-        self.assertEqual(set(life.WORKER_ENV_SET),set(receipt["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",receipt["environment_contract"]["removed_key_names"])
+        self.assertEqual(set(life.WORKER_ENV_SET)|{"PYTHONUNBUFFERED"},set(receipt["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",receipt["environment_contract"]["removed_key_names"])
         authority=json.loads(Path(receipt["authority_map"]["path"]).read_text());self.assertTrue(authority["repositories"][0]["create_receipt"]["sha256"])
         self.assertEqual("implementation",receipt["kind"]);self.assertEqual(1,state["worker_count"]);self.assertEqual("worker-session",state["worker_launches"][0]["session_id"])
 
@@ -214,8 +214,8 @@ if mode=="stale": os.utime(capture,(1,1))
         self.assertEqual(["yy","pi","--config"],a["command"][:3]);self.assertEqual(a["command"][:3],b["command"][:3]);self.assertEqual(set(a),set(b))
 
     def test_worker_unadmitted_controller_branch_rewrite_dirty_no_commit_prompt_and_capture_refuse(self):
-        cases=(("unadmitted","outside authority"),("controller","controller"),("wrong-branch","branch/common"),("rewritten","branch/common|non-descendant"),
-               ("dirty","dirty/conflicted"),("no-commit","no descendant commit"),("prompt-tamper","prompt"),("process-fail","process failed"),
+        cases=(("unadmitted","authority"),("controller","controller"),("wrong-branch","authority"),("rewritten","authority"),
+               ("dirty","authority"),("no-commit","no descendant commit"),("prompt-tamper","prompt"),("process-fail","exited 7"),
                ("missing","capture"),("no-session","session"),("stale","stale"))
         for mode,pattern in cases:
             root,plan,state,ns,env=self.worker_fixture(mode)
@@ -285,13 +285,13 @@ capture.write_text(json.dumps(payload))
         first=outcomes[0];capture=json.loads(Path(first["capture"]["path"]).read_text());observed=capture["observed"]
         self.assertIsNone(observed["model"]);self.assertIsNone(observed["provider"]);self.assertEqual("",observed["stdin"])
         self.assertNotIn("-p",observed["argv"]);self.assertIn("-f",observed["argv"]);self.assertNotIn("--model",observed["argv"]);self.assertNotIn("--provider",observed["argv"])
-        self.assertEqual(first["launcher_cwd"],observed["cwd"]);self.assertFalse((Path(first["launcher_cwd"])/".git").exists());self.assertFalse((Path(first["agent_cwd"])/".juno_task").exists())
+        self.assertEqual(Path(first["launcher_cwd"]).resolve(),Path(observed["cwd"]).resolve());self.assertFalse((Path(first["launcher_cwd"])/".git").exists());self.assertFalse((Path(first["agent_cwd"])/".juno_task").exists())
         self.assertEqual(first["prompt"]["echo"],observed["prompt"]);self.assertEqual(first["prompt"]["sha256"],life.file_digest(Path(first["prompt"]["path"])))
         self.assertIn(str(root/"ns/review-pre_cas-1/frozen-checkout/root"),first["prompt"]["echo"])
-        self.assertEqual(set(life.REVIEW_ENV_SET),set(first["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",first["environment_contract"]["removed_key_names"])
+        self.assertEqual(set(life.REVIEW_ENV_SET)|{"PYTHONUNBUFFERED"},set(first["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",first["environment_contract"]["removed_key_names"])
         self.assertEqual(set(life.REVIEW_ENV_SET),set(observed["pi_juno_keys"]));self.assertNotIn("-p",first["command"])
         self.assertEqual(first["command_sha256"],life.hashlib.sha256(life.shlex.join(first["command"]).encode()).hexdigest())
-        process=json.loads(Path(first["process_receipt"]["path"]).read_text());self.assertEqual(first["command_sha256"],process["command_sha256"]);self.assertEqual(first["launcher_cwd"],process["cwd"])
+        process=json.loads(Path(first["process_receipt"]["path"]).read_text());self.assertEqual(first["command_sha256"],process["command_sha256"]);self.assertEqual(Path(first["launcher_cwd"]).resolve(),Path(process["cwd"]).resolve())
 
     def test_review_prompt_controller_mutation_and_noncanonical_command_refuse(self):
         for mode,pattern in (("prompt-tamper","prompt"),("controller","controller")):

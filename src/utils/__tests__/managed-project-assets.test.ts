@@ -186,6 +186,8 @@ describe('ManagedProjectAssets', () => {
         '.juno_task/scripts/wiki_lint.sh',
         '.juno_task/scripts/wiki_lint.py',
         '.juno_task/scripts/tests/test_integration_concurrency.py',
+        '.juno_task/scripts/managed_agent_runner.py',
+        '.juno_task/scripts/tests/test_managed_agent_runner.py',
         '.juno_task/wiki/runtime_migration_and_replacement_contract.md',
       ]) {
         expect(await fs.pathExists(path.join(projectDir, requiredPath)), requiredPath).toBe(true);

@@ -75,6 +75,16 @@ Search definitions, imports, route registrations, configuration, tests, and gene
 
 When the replaced runtime is controller-facing, freeze one four-class ownership manifest (controller, shared managed distribution, product, local ignored) before migration. Create a fresh sparse linked controller and retain the prior full controller for rollback; never convert the active controller in place. Validate full product bytes externally, require explicit admitted product roots for edit-capable dispatch, and persist ref-moved/restoration-failed states as resumable partial truth. A sparse controller is an accident-prevention boundary, not an OS sandbox.
 
+## Canonical managed-agent execution
+
+Lifecycle workers/reviewers and typed workflow `managed_agent` steps delegate process ownership to
+`.juno_task/scripts/managed_agent_runner.py`. Call `run --mode worker|reviewer` with absolute controller,
+agent, prompt, and output roots plus worker admission receipts or reviewer candidate identity. The runner
+uses only fresh configured-default `yy pi`, closes stdin, sanitizes outer agent routing, and stays foreground.
+Its live `stdout.log`, `stderr.log`, and labelled `combined.log` are canonical while `receipt.json` hash-binds
+prompt, capture, session, response, identity, and terminal truth. Never wrap it with another capture owner,
+provider/model override, shell/eval, detached producer, or manually reconstructed receipt.
+
 ## Validation ownership convention
 
 Use one deliberate validation owner per level:

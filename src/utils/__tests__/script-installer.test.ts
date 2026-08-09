@@ -216,8 +216,10 @@ describe('ScriptInstaller', () => {
 
       const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
       expect(newlyManaged.sort()).toEqual([
+        'managed_agent_runner.py',
         'task_lifecycle.py',
         'tests/test_controller_workspace.py',
+        'tests/test_managed_agent_runner.py',
         'tests/test_task_lifecycle.py',
       ]);
       for (const relative of newlyManaged) {
@@ -310,11 +312,13 @@ describe('ScriptInstaller', () => {
         { name: 'wiki_lint.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_integration_concurrency.py', installed: false },
+        { name: 'tests/test_managed_agent_runner.py', installed: false },
         { name: 'tests/test_task_lifecycle.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'controller_workspace.py', installed: false },
         { name: 'tests/test_controller_workspace.py', installed: false },
+        { name: 'managed_agent_runner.py', installed: false },
         { name: 'task_lifecycle.py', installed: false },
         { name: 'integration_candidate.py', installed: false },
         { name: 'integration_owner_preflight.py', installed: false },
@@ -445,6 +449,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("integration concurrency")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_managed_agent_runner.py'),
+        '#!/usr/bin/env python3\nprint("managed agent")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'tests/test_task_lifecycle.py'),
         '#!/usr/bin/env python3\nprint("task lifecycle")',
       );
@@ -452,6 +460,7 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'tests/test_controller_workspace.py'),
         '#!/usr/bin/env python3\nprint("controller workspace")',
       );
+      await fs.writeFile(path.join(scriptsDir, 'managed_agent_runner.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
@@ -489,11 +498,13 @@ describe('ScriptInstaller', () => {
         { name: 'wiki_lint.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_integration_concurrency.py', installed: true },
+        { name: 'tests/test_managed_agent_runner.py', installed: true },
         { name: 'tests/test_task_lifecycle.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'controller_workspace.py', installed: true },
         { name: 'tests/test_controller_workspace.py', installed: true },
+        { name: 'managed_agent_runner.py', installed: true },
         { name: 'task_lifecycle.py', installed: true },
         { name: 'integration_candidate.py', installed: true },
         { name: 'integration_owner_preflight.py', installed: true },

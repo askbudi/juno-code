@@ -11,8 +11,15 @@ describe('task lifecycle managed-agent launch provenance', () => {
     const template = resolve(repository, 'juno-code/src/templates/scripts/task_lifecycle.py');
     const runtimeTests = resolve(repository, '.juno_task/scripts/tests/test_task_lifecycle.py');
     const templateTests = resolve(repository, 'juno-code/src/templates/scripts/tests/test_task_lifecycle.py');
+    const runner = resolve(repository, '.juno_task/scripts/managed_agent_runner.py');
+    const runnerTemplate = resolve(repository, 'juno-code/src/templates/scripts/managed_agent_runner.py');
     expect(readFileSync(runtime)).toEqual(readFileSync(template));
     expect(readFileSync(runtimeTests)).toEqual(readFileSync(templateTests));
+    expect(readFileSync(runner)).toEqual(readFileSync(runnerTemplate));
+    const lifecycleSource = readFileSync(runtime, 'utf8');
+    expect(lifecycleSource).toContain('invoke_managed_agent_runner');
+    expect(lifecycleSource).not.toContain('["yy", "pi"');
+    expect(lifecycleSource).not.toContain('subprocess.Popen');
     execFileSync('python3', [runtimeTests,
       'RealGitLifecycleTests.test_worker_launch_provenance_sanitation_prompt_file_roots_capture_and_audit',
       'RealGitLifecycleTests.test_worker_allowed_commit_and_repair_share_canonical_launcher_and_evidence',
