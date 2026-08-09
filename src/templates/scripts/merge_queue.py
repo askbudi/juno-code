@@ -1057,18 +1057,39 @@ def create_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any]
 
 
 def persist_full_suite_claim(controller: Path, attempt: dict[str, Any],
+                             suite_attempt_number: int,
                              create: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Create the exclusive claim and admit it in one brief state-lock section."""
     with task_runtime.state_lock(controller):
         state = task_runtime.read_state(controller)
         current = state["tasks"].get(attempt["task_id"])
-        if (not isinstance(current, dict) or current.get("queue_attempt") != attempt
-                or current.get("tip_sha") != attempt["feature_sha"]):
+        current_attempt = current.get("queue_attempt") if isinstance(current, dict) else None
+        if (not isinstance(current_attempt, dict)
+                or current.get("tip_sha") != attempt["feature_sha"]
+                or any(current_attempt.get(key) != attempt.get(key) for key in
+                       ("task_id", "feature_sha", "candidate_sha", "expected_target_sha"))):
             raise MergeQueueError("task review claim changed before full-suite admission")
-        claimed = create()
+        try:
+            claimed = create()
+        except MergeQueueError as exc:
+            if "exists" not in str(exc) and "collided" not in str(exc):
+                raise
+            stored = {**attempt["risk"], "review_progress": {
+                **attempt["risk"]["review_progress"],
+                "collision_floor": suite_attempt_number}}
+            updated = {**attempt, "risk": stored, "review": stored}
+            state["tasks"][attempt["task_id"]] = {
+                **current, "state": "AWAITING_RISK", "queue_attempt": updated,
+                "last_queue_outcome": "FULL_SUITE_CLAIM_COLLISION"}
+            config = task_runtime.load_config(controller)
+            repository = task_runtime.product_repository(controller, config)
+            target_entry(state, repository, config["target_ref"])["last_attempt"] = updated
+            task_runtime.write_state(controller, state)
+            raise
         stored = {**attempt["risk"], "review_progress": {
-            **attempt["risk"]["review_progress"], "full_suite_admission": claimed}}
-        updated = {**attempt, "risk": stored, "review": stored}
+            **attempt["risk"]["review_progress"], "attempt_counter": suite_attempt_number,
+            "full_suite_admission": claimed}}
+        updated = {**attempt, "risk": stored, "review": stored, "outcome": "REVIEWING"}
         state["tasks"][attempt["task_id"]] = {
             **current, "state": "AWAITING_RISK", "queue_attempt": updated,
             "last_queue_outcome": updated["outcome"]}
@@ -1077,6 +1098,50 @@ def persist_full_suite_claim(controller: Path, attempt: dict[str, Any],
         target_entry(state, repository, config["target_ref"])["last_attempt"] = updated
         task_runtime.write_state(controller, state)
     return claimed, updated
+
+
+def verify_queue_claimed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                    identity: dict[str, str], command: dict[str, Any],
+                                    admission: Any) -> dict[str, Any]:
+    keys = {"schema_version", "state", "attempt_number", "token", "claim",
+            "expected_receipt_path"}
+    if (not isinstance(admission, dict) or set(admission) != keys
+            or admission.get("schema_version") != risk_runtime.FULL_SUITE_ADMISSION_SCHEMA
+            or admission.get("state") != "CLAIMED"
+            or not isinstance(admission.get("attempt_number"), int)
+            or isinstance(admission.get("attempt_number"), bool)
+            or admission["attempt_number"] <= 0
+            or not isinstance(admission.get("token"), str)
+            or len(admission["token"]) != 48
+            or not isinstance(admission.get("claim"), dict)
+            or set(admission["claim"]) != {"claim_path", "claim_sha256"}):
+        raise MergeQueueError("stored CLAIMED full-suite admission is malformed")
+    claim_path, receipt_path = full_suite_attempt_paths(
+        controller, task_id, plan["candidate"]["candidate_sha"], admission["attempt_number"])
+    if (admission["claim"].get("claim_path") != str(claim_path)
+            or admission.get("expected_receipt_path") != str(receipt_path)):
+        raise MergeQueueError("stored CLAIMED full-suite admission is not canonical")
+    try:
+        claim = risk_runtime._bounded_object(
+            admission["claim"]["claim_path"], admission["claim"]["claim_sha256"],
+            plan, "full-suite claim")
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"stored CLAIMED full-suite admission refused: {exc}") from exc
+    expected = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_SCHEMA,
+                "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                             "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                "task_id": task_id,
+                "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                              "candidate_tree": plan["candidate"]["candidate_tree"]},
+                "policy_identity": plan["policy_identity"],
+                "validation_identity": identity, "command": command,
+                "token": admission["token"], "attempt_number": admission["attempt_number"],
+                "expected_receipt_path": str(receipt_path)}
+    if claim != expected:
+        raise MergeQueueError("stored CLAIMED full-suite claim identity drifted")
+    return {**admission, "claim": {"claim_path": str(claim_path),
+                                    "claim_sha256": admission["claim"]["claim_sha256"]},
+            "expected_receipt_path": str(receipt_path)}
 
 
 def verify_queue_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
@@ -1136,24 +1201,53 @@ def failed_full_suite_admission(controller: Path, task_id: str, plan: dict[str, 
             "receipt": receipt_reference, "failure": failure}
 
 
+def verify_queue_failed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                   identity: dict[str, str], command: dict[str, Any],
+                                   admission: Any) -> dict[str, Any]:
+    keys = {"schema_version", "state", "attempt_number", "token", "claim",
+            "receipt", "failure"}
+    if (not isinstance(admission, dict) or set(admission) != keys
+            or admission.get("schema_version") != risk_runtime.FULL_SUITE_ADMISSION_SCHEMA
+            or admission.get("state") != "FAILED"):
+        raise MergeQueueError("stored FAILED full-suite admission is malformed")
+    attempt_number = admission.get("attempt_number")
+    _, receipt_path = full_suite_attempt_paths(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    try:
+        historical_claim = risk_runtime._bounded_object(
+            admission.get("claim", {}).get("claim_path"),
+            admission.get("claim", {}).get("claim_sha256"), plan, "failed full-suite claim")
+        historical_identity = historical_claim["validation_identity"]
+        historical_command = historical_claim["command"]
+    except (risk_runtime.RiskPolicyError, KeyError, TypeError) as exc:
+        raise MergeQueueError(f"stored FAILED full-suite claim refused: {exc}") from exc
+    claimed = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+               "state": "CLAIMED", "attempt_number": attempt_number,
+               "token": admission.get("token"), "claim": admission.get("claim"),
+               "expected_receipt_path": str(receipt_path)}
+    verify_queue_claimed_admission(
+        controller, task_id, plan, historical_identity, historical_command, claimed)
+    rebuilt = failed_full_suite_admission(
+        controller, task_id, plan, historical_identity, historical_command,
+        claimed, admission.get("receipt"))
+    if rebuilt != admission:
+        raise MergeQueueError("stored FAILED full-suite admission projection drifted")
+    return rebuilt
+
+
 def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, Any],
                                identity: dict[str, str], command: dict[str, Any],
                                admission: Any) -> Optional[dict[str, Any]]:
-    keys = {"schema_version", "state", "attempt_number", "token", "claim",
-            "expected_receipt_path"}
-    if (not isinstance(admission, dict) or set(admission) != keys
-            or admission.get("schema_version") != risk_runtime.FULL_SUITE_ADMISSION_SCHEMA
-            or admission.get("state") != "CLAIMED"):
-        return None
-    attempt_number = admission.get("attempt_number")
-    if not isinstance(attempt_number, int) or isinstance(attempt_number, bool):
-        return None
+    admission = verify_queue_claimed_admission(
+        controller, task_id, plan, identity, command, admission)
+    attempt_number = admission["attempt_number"]
     claim_path, receipt_path = full_suite_attempt_paths(
         controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
     if (admission.get("claim", {}).get("claim_path") != str(claim_path)
-            or admission.get("expected_receipt_path") != str(receipt_path)
-            or not receipt_path.is_file()):
-        return None
+            or admission.get("expected_receipt_path") != str(receipt_path)):
+        raise MergeQueueError("stored CLAIMED full-suite admission path drifted")
+    if not receipt_path.exists():
+        return admission
     complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
                 "state": "COMPLETE", "attempt_number": attempt_number,
                 "token": admission.get("token"), "claim": admission.get("claim"),
@@ -1232,67 +1326,105 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 raise MergeQueueError("release candidate cannot use semantic review as release authority")
             progress = stored.get("review_progress")
             if progress is None:
-                progress = {"schema_version": "juno_merge_queue_review_progress.v3",
-                            "attempt_counter": 0, "full_suite_admission": None,
+                progress = {"schema_version": "juno_merge_queue_review_progress.v4",
+                            "attempt_counter": 0, "review_attempt_counter": 0,
+                            "collision_floor": 0,
+                            "full_suite_admission": None,
                             "steps": []}
-            if isinstance(progress, dict) and progress.get("schema_version") == "juno_merge_queue_review_progress.v2":
-                progress = {"schema_version": "juno_merge_queue_review_progress.v3",
+            if isinstance(progress, dict) and progress.get("schema_version") in {
+                    "juno_merge_queue_review_progress.v2", "juno_merge_queue_review_progress.v3"}:
+                progress = {"schema_version": "juno_merge_queue_review_progress.v4",
                             "attempt_counter": progress.get("attempt_counter"),
+                            "review_attempt_counter": progress.get("attempt_counter"),
+                            "collision_floor": 0,
                             "full_suite_admission": None, "steps": progress.get("steps")}
-            allowed_progress = {"schema_version", "attempt_counter", "full_suite_admission", "steps",
+            allowed_progress = {"schema_version", "attempt_counter", "review_attempt_counter",
+                                "collision_floor",
+                                "full_suite_admission", "steps",
                                 "full_validation_passed", "validation_identity"}
             if (not isinstance(progress, dict) or not set(progress).issubset(allowed_progress)
-                    or not {"schema_version", "attempt_counter", "full_suite_admission", "steps"}.issubset(progress)
-                    or progress.get("schema_version") != "juno_merge_queue_review_progress.v3"
+                    or not {"schema_version", "attempt_counter", "review_attempt_counter",
+                            "collision_floor", "full_suite_admission", "steps"}.issubset(progress)
+                    or progress.get("schema_version") != "juno_merge_queue_review_progress.v4"
                     or not isinstance(progress.get("attempt_counter"), int)
                     or isinstance(progress.get("attempt_counter"), bool)
                     or not 0 <= progress["attempt_counter"] <= 10000
+                    or not isinstance(progress.get("review_attempt_counter"), int)
+                    or isinstance(progress.get("review_attempt_counter"), bool)
+                    or not 0 <= progress["review_attempt_counter"] <= 10000
+                    or not isinstance(progress.get("collision_floor"), int)
+                    or isinstance(progress.get("collision_floor"), bool)
+                    or not 0 <= progress["collision_floor"] <= 10000
                     or (progress.get("full_suite_admission") is not None
                         and not isinstance(progress.get("full_suite_admission"), dict))
                     or not isinstance(progress.get("steps"), list)):
                 raise MergeQueueError("stored reviewer continuation is malformed")
             # Deprecated booleans/projections are explicitly non-authoritative.
             progress = {key: progress[key] for key in
-                        ("schema_version", "attempt_counter", "full_suite_admission", "steps")}
+                        ("schema_version", "attempt_counter", "review_attempt_counter",
+                         "collision_floor", "full_suite_admission", "steps")}
             current_validation_identity = full_validation_identity(
                 controller, config, record, candidate_root, candidate_sha)
-            if progress["attempt_counter"] == 10000:
-                raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
-            attempt_number = progress["attempt_counter"] + 1
-            progress = {**progress, "attempt_counter": attempt_number}
             stored = {**stored, "review_progress": progress}
-            attempt = {**attempt, "risk": stored, "review": stored,
-                       "outcome": "REVIEWING"}
-            persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+            attempt = {**attempt, "risk": stored, "review": stored}
             suite_admission = None
-            if plan["full_suite_required"] and progress["full_suite_admission"] is not None:
-                try:
-                    suite_admission = verify_queue_full_suite_admission(
+            prior_attempt = max(progress["attempt_counter"], progress["collision_floor"])
+            existing_admission = progress["full_suite_admission"]
+            if plan["full_suite_required"] and existing_admission is not None:
+                admission_state = existing_admission.get("state")
+                if admission_state == "COMPLETE":
+                    try:
+                        suite_admission = verify_queue_full_suite_admission(
+                            controller, task_id, plan, current_validation_identity,
+                            full_suite_command(config), existing_admission)
+                    except MergeQueueError:
+                        suite_admission = None
+                elif admission_state == "FAILED":
+                    verified_failed = verify_queue_failed_admission(
                         controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), progress["full_suite_admission"])
-                except MergeQueueError:
-                    suite_admission = recover_claimed_full_suite(
+                        full_suite_command(config), existing_admission)
+                    prior_attempt = max(prior_attempt, verified_failed["attempt_number"])
+                    progress = {**progress, "full_suite_admission": verified_failed}
+                    stored = {**stored, "review_progress": progress}
+                    attempt = {**attempt, "risk": stored, "review": stored}
+                elif admission_state == "CLAIMED":
+                    recovered = recover_claimed_full_suite(
                         controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), progress["full_suite_admission"])
-                    if suite_admission is not None:
-                        progress = {**progress, "full_suite_admission": suite_admission}
+                        full_suite_command(config), existing_admission)
+                    prior_attempt = max(prior_attempt, recovered["attempt_number"])
+                    if recovered["state"] == "COMPLETE":
+                        suite_admission = recovered
+                        progress = {**progress, "full_suite_admission": recovered}
                         stored = {**stored, "review_progress": progress}
                         attempt = {**attempt, "risk": stored, "review": stored}
                         persist_attempt(controller, attempt, state_name="AWAITING_RISK")
-                        if suite_admission.get("state") == "FAILED":
-                            failure = suite_admission["failure"]
-                            detail = failure["stderr_tail"] or failure["stdout_tail"]
-                            raise MergeValidationError(
-                                f"recovered full-suite attempt failed: {detail}", [failure],
-                                suite_admission["receipt"])
-            if plan["full_suite_required"] and suite_admission is None:
+                    elif recovered["state"] == "FAILED":
+                        progress = {**progress, "full_suite_admission": recovered,
+                                    "attempt_counter": prior_attempt}
+                        stored = {**stored, "review_progress": progress}
+                        attempt = {**attempt, "risk": stored, "review": stored}
+                        persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+                        failure = recovered["failure"]
+                        detail = failure["stderr_tail"] or failure["stdout_tail"]
+                        raise MergeValidationError(
+                            f"recovered full-suite attempt failed: {detail}", [failure],
+                            recovered["receipt"])
+                    else:
+                        claimed = recovered
+                else:
+                    suite_admission = None
+            if plan["full_suite_required"] and suite_admission is None and claimed is None:
+                if prior_attempt >= 10000:
+                    raise MergeQueueError("bounded full-suite attempt namespace is exhausted")
+                suite_attempt_number = prior_attempt + 1
                 claimed, attempt = persist_full_suite_claim(
-                    controller, attempt,
+                    controller, attempt, suite_attempt_number,
                     lambda: create_full_suite_claim(
                         controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), attempt_number))
+                        full_suite_command(config), suite_attempt_number))
                 stored = attempt["risk"]
                 progress = stored["review_progress"]
+            if plan["full_suite_required"] and suite_admission is None:
                 claim_binding = {"claim_path": claimed["claim"]["claim_path"],
                                  "claim_sha256": claimed["claim"]["claim_sha256"],
                                  "token": claimed["token"],
@@ -1321,6 +1453,13 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 controller, config, repository, task_id, candidate_sha, expected)
             if stale is not None:
                 return stale
+            if progress["review_attempt_counter"] >= 10000:
+                raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
+            review_attempt_number = progress["review_attempt_counter"] + 1
+            progress = {**progress, "review_attempt_counter": review_attempt_number}
+            stored = {**stored, "review_progress": progress}
+            attempt = {**attempt, "risk": stored, "review": stored, "outcome": "REVIEWING"}
+            persist_attempt(controller, attempt, state_name="AWAITING_RISK")
             reviews: list[dict[str, str]] = []
             predecessor: Optional[Path] = None
             steps = progress["steps"]
@@ -1346,7 +1485,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                     plan["reviewer_sequence"][len(reviews):], len(reviews) + 1):
                 reference = dispatch_reviewer(
                     controller, candidate_root, plan, task_id, reviewer,
-                    sequence, predecessor, attempt_number,
+                    sequence, predecessor, review_attempt_number,
                 )
                 reviews.append(reference)
                 predecessor = Path(reference["runner_receipt_path"])
@@ -1386,7 +1525,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                          "full_suite_runs": 1 if plan["full_suite_required"] else 0},
                 policy=policy,
             )
-            path = evidence_path(controller, task_id, candidate_sha, attempt_number)
+            path = evidence_path(controller, task_id, candidate_sha, review_attempt_number)
             if path.exists():
                 raise MergeQueueError("review evidence attempt path already exists")
             risk_runtime.atomic_receipt(path, receipt, policy)
@@ -1405,6 +1544,9 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise
         except (risk_runtime.RiskPolicyError, MergeQueueError) as exc:
+            if "queue admission canonical path already exists" in str(exc) \
+                    or "queue admission receipt path collided" in str(exc):
+                raise MergeQueueError(str(exc)) from exc
             failed = {**attempt, "outcome": "REVIEW_FAILED", "risk_failure": str(exc)[:512]}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise MergeQueueError(str(exc)) from exc
