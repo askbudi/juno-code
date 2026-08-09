@@ -214,7 +214,9 @@ describe('canonical controller resolver', () => {
     await fs.chmod(path.join(bin, 'juno-kanban'), 0o755);
     const result = run(path.join(task, '.juno_task/scripts/kanban.sh'), ['mark', 'done', '--id', 'ABC123'], task);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe(`${controller}|mark done --id ABC123`);
+    expect(result.stdout.trim()).toBe(
+      `${controller}|--config ${path.join(controller, '.juno_task', 'config.json')} mark done --id ABC123`,
+    );
     expect(await fs.pathExists(path.join(task, '.venv_juno'))).toBe(false);
   });
 });
