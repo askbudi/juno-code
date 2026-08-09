@@ -50,7 +50,7 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
   --output /durable/path/prepare.json
 ```
 
-`migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, and rollback identity. It is receipt-only. `prepare` creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The old sparse/full controller remains intact.
+`migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, and rollback identity. It is receipt-only. `prepare` requires a fresh output receipt path before mutation, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, and blob identity. The old sparse/full controller remains intact.
 
 Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. Registration mutation is outside this helper and requires explicit owner authorization.
 
@@ -69,4 +69,4 @@ Refuse when any of these identities drift:
 - metadata-only root/tree boundary or local runtime binding;
 - product target expected SHA or controller-private path absence.
 
-Verification accepts ordinary descendants of the prepared root while checking both the unique root tree and current tree against the narrow boundary. Creating or staging a product path, nested spec/receipt evidence, or unrecognized state/config path makes verification fail. Runtime updates are local generation changes, not controller/product synchronization work.
+Verification accepts ordinary descendants of the prepared root while checking the unique root tree against the receipt-bound source bytes and the current tree against the narrow boundary. Current tasks, ledger, and top-level specs must each remain nonempty; optional metadata classes are not invented as requirements. Canonical config/policy, state files, and the immutable root boundary receipt must remain present and structurally valid. Creating or staging a product path, deleting the whole canonical board, deleting a generated control, adding nested spec/receipt evidence, or adding an unrecognized state/config path makes verification fail. Runtime updates are local generation changes, not controller/product synchronization work.

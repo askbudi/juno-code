@@ -275,6 +275,8 @@ def add_blob(root: Path, index_env: dict[str, str], path: str, data: bytes, mode
 
 def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     plan = read_plan(args.plan.resolve())
+    if args.output.expanduser().resolve().exists():
+        raise BoundaryError("prepare receipt path must be fresh before mutation")
     old = exact_worktree(Path(plan["old_controller"]))
     resolve_commit(old, plan["old_branch"], plan["old_head"], "old controller ref")
     resolve_commit(old, plan["product_ref"], plan["product_head"], "product target")
@@ -287,10 +289,12 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     if destination.exists() or ref_exists(old, plan["new_branch"]):
         raise BoundaryError("metadata destination or branch is no longer fresh")
     entries = selected_entries(old, plan["old_head"], policy)
+    preserved_entries = [{"mode": mode, "oid": oid, "path": name} for mode, oid, name in entries]
     boundary = {"schema_version": RECEIPT_SCHEMA, "operation": "controller-boundary", "source_head": plan["old_head"],
                 "product_ref": plan["product_ref"], "product_head_at_plan": plan["product_head"],
                 "runtime": {"package": "juno-code", "version": plan["runtime"]["version"]},
-                "policy_sha256": plan["policy_sha256"], "controller_commits_integrate_to_product": False}
+                "policy_sha256": plan["policy_sha256"], "controller_commits_integrate_to_product": False,
+                "preserved_metadata": {"entries": preserved_entries, "sha256": digest(preserved_entries)}}
     generated = {
         ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n*.log\n__pycache__/\n",
         ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}),
@@ -376,10 +380,53 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     branch = git(root, "symbolic-ref", "-q", "HEAD", check=False) or None
     head = git(root, "rev-parse", "HEAD")
     ancestry_roots = git(root, "rev-list", "--max-parents=0", head).splitlines()
-    names = [name for _, _, name in listed_tree(root, head)]
+    current_entries = listed_tree(root, head)
+    names = [name for _, _, name in current_entries]
+    unsafe_modes = [name for mode, _, name in current_entries if mode not in {"100644", "100755"}]
     forbidden = [name for name in names if not tracked_allowed(name, policy)]
     root_names = [name for _, _, name in listed_tree(root, ancestry_roots[0])] if len(ancestry_roots) == 1 else []
     forbidden_root = [name for name in root_names if not tracked_allowed(name, policy)]
+    root_entry_map = {name: {"mode": mode, "oid": oid} for mode, oid, name in listed_tree(root, ancestry_roots[0])} if len(ancestry_roots) == 1 else {}
+    boundary_path = ".juno_task/receipts/controller-boundary.json"
+    root_boundary_text = run(["git", "-C", str(root), "show", f"{ancestry_roots[0]}:{boundary_path}"], root, False).stdout if len(ancestry_roots) == 1 else ""
+    current_boundary_text = run(["git", "-C", str(root), "show", f"{head}:{boundary_path}"], root, False).stdout
+    preservation_receipt_ok = False
+    preservation_missing: list[str] = []
+    try:
+        boundary = json.loads(root_boundary_text)
+        if boundary.get("schema_version") != RECEIPT_SCHEMA or boundary.get("operation") != "controller-boundary":
+            raise ValueError("invalid boundary receipt identity")
+        preservation = boundary["preserved_metadata"]
+        expected_entries = preservation["entries"]
+        if not isinstance(expected_entries, list) or preservation["sha256"] != digest(expected_entries):
+            raise ValueError("invalid preserved metadata digest")
+        for entry in expected_entries:
+            if set(entry) != {"mode", "oid", "path"} or root_entry_map.get(entry["path"]) != {"mode": entry["mode"], "oid": entry["oid"]}:
+                preservation_missing.append(entry.get("path", "<invalid>"))
+        preservation_receipt_ok = not preservation_missing
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        preservation_receipt_ok = False
+    canonical_prefixes = (".juno_task/tasks", ".juno_task/ledger", ".juno_task/specs")
+    missing_canonical = [prefix for prefix in canonical_prefixes if not any(name.startswith(prefix + "/") for name in names)]
+    missing_generated = [name for name in policy["generated_metadata"] if name not in names]
+    generated_contract_ok = False
+    if not missing_generated:
+        try:
+            config_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/config.json"], root).stdout)
+            policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/metadata-controller.json"], root).stdout
+            lifecycle_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/lifecycle.json"], root).stdout)
+            queue_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/queue.json"], root).stdout)
+            generated_contract_ok = (
+                config_value == {"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
+                and policy_text == canonical(policy).decode()
+                and lifecycle_value.get("schema_version") == "juno_task_lifecycle_state.v1"
+                and isinstance(lifecycle_value.get("tasks"), dict)
+                and queue_value.get("schema_version") == "juno_merge_queue_state.v1"
+                and isinstance(queue_value.get("targets"), dict)
+                and current_boundary_text == root_boundary_text
+            )
+        except (BoundaryError, KeyError, TypeError, json.JSONDecodeError):
+            generated_contract_ok = False
     product_markers = [name for name in names if name == "README.md" or name.startswith(("juno-code/", "juno_kanban/", "frontend/", "scripts/", ".github/"))]
     staged = git(root, "diff", "--cached", "--name-only", check=False).splitlines()
     role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
@@ -396,7 +443,12 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             runtime_ok = False
     checks = {"branch_exact": expected_branch is None or branch == expected_branch, "single_root_ancestry": len(ancestry_roots) == 1,
               "root_boundary": not forbidden_root,
+              "root_preservation": preservation_receipt_ok,
+              "canonical_metadata_present": not missing_canonical,
+              "required_generated_present": not missing_generated,
+              "generated_contract": generated_contract_ok,
               "tracked_boundary": not forbidden, "product_absent": not product_markers,
+              "regular_files_only": not unsafe_modes,
               "staged_boundary": all(tracked_allowed(name, policy) for name in staged),
               "runtime_bound": runtime_ok, "runtime_untracked": policy["runtime"]["identity_file"] not in names,
               "role": role == ("controller" if require_active else "controller-pending"),
@@ -404,6 +456,9 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     return {"root": str(root), "branch_ref": branch, "head": head, "root_commit": ancestry_roots[0] if len(ancestry_roots) == 1 else None,
             "tracked_paths": names, "forbidden_tracked": forbidden,
             "forbidden_root_tracked": forbidden_root, "product_markers": product_markers,
+            "unsafe_tracked_modes": unsafe_modes,
+            "missing_preserved_root_paths": preservation_missing, "missing_canonical_prefixes": missing_canonical,
+            "missing_required_generated": missing_generated,
             "checks": checks, "passed": all(checks.values())}
 
 

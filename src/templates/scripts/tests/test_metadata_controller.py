@@ -106,6 +106,8 @@ class MetadataControllerTest(unittest.TestCase):
             ".juno_task/config/metadata-controller.json",
         )
         self.assertTrue((self.new_controller / ".juno_task/config/metadata-controller.json").is_file())
+        boundary = json.loads((self.new_controller / ".juno_task/receipts/controller-boundary.json").read_text())
+        self.assertGreater(len(boundary["preserved_metadata"]["entries"]), 2)
         write(self.new_controller / ".juno_task/scripts/generated.py", "print('generated')\n")
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
         self.assertEqual(
@@ -186,6 +188,50 @@ class MetadataControllerTest(unittest.TestCase):
                 ".juno_task/receipts/nested/arbitrary.json",
             },
         )
+
+    def test_verification_rejects_deletion_of_all_canonical_metadata(self) -> None:
+        self.prepare()
+        command("git", "rm", "-r", ".juno_task/tasks", ".juno_task/ledger", ".juno_task/specs", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "delete canonical metadata", cwd=self.new_controller)
+        evidence = mc.inspect(
+            self.new_controller,
+            self.policy,
+            expected_branch="refs/heads/juno/controller-metadata-v1",
+            require_active=False,
+        )
+        self.assertFalse(evidence["passed"])
+        self.assertFalse(evidence["checks"]["canonical_metadata_present"])
+        self.assertEqual(
+            set(evidence["missing_canonical_prefixes"]),
+            {".juno_task/tasks", ".juno_task/ledger", ".juno_task/specs"},
+        )
+
+    def test_verification_rejects_required_generated_file_deletion(self) -> None:
+        self.prepare()
+        command("git", "rm", ".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "delete generated controls", cwd=self.new_controller)
+        evidence = mc.inspect(
+            self.new_controller,
+            self.policy,
+            expected_branch="refs/heads/juno/controller-metadata-v1",
+            require_active=False,
+        )
+        self.assertFalse(evidence["passed"])
+        self.assertFalse(evidence["checks"]["required_generated_present"])
+        self.assertEqual(
+            set(evidence["missing_required_generated"]),
+            {".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json"},
+        )
+
+    def test_prepare_receipt_collision_refuses_before_branch_or_worktree_mutation(self) -> None:
+        mc.migration_plan(self.migration_args(), self.policy)
+        prepare_output = self.temp / "prepare.json"
+        prepare_output.write_text("{}\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "receipt path must be fresh"):
+            mc.prepare(argparse.Namespace(plan=self.plan_path, output=prepare_output), self.policy)
+        self.assertFalse(self.new_controller.exists())
+        self.assertFalse(mc.ref_exists(self.repo, "refs/heads/juno/controller-metadata-v1"))
+        self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
 
     def test_runtime_inside_any_linked_worktree_is_rejected(self) -> None:
         linked = self.temp / "linked-product"
