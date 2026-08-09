@@ -61,6 +61,6 @@ Text conflicts become durable `CONFLICT` records containing exact target/feature
 
 ## Configuration
 
-The policy contains one repository, one full local target ref, one explicit worktree root, one branch prefix, allowed product roots, controller-private roots, and argv-based focused validation rows. Commands are argv arrays rather than shell strings; stdin is closed, every row has a bounded timeout, and only configured-size stdout/stderr tails enter task evidence. The installed Juno Code package owns the runtime template; the controller receives an ignored generated runtime copy.
+The policy contains one repository, one full local target ref, one explicit worktree root, one branch prefix, allowed product roots, controller-private roots, argv-based focused validation rows, and one distinct `full_suite_validation` row. `merge next` runs affected validation once; only a risk plan that requires the full suite runs the separately configured full-suite command, exactly once for an unchanged candidate/config identity. Commands are argv arrays rather than shell strings; stdin is closed, every row has a bounded timeout, pipes are closed, and only configured-size stdout/stderr tails enter task evidence. The installed Juno Code package owns the runtime template; the controller receives an ignored generated runtime copy.
 
 Historical lifecycle evidence remains read-only during the Bolt migration. New task work uses this interface and does not extend the former controller-sync path.

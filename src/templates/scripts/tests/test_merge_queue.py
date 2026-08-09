@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,7 @@ class MergeQueueTests(unittest.TestCase):
         self.controller = self.root / "controller"
         self.workspaces = self.root / "features"
         self.counter = self.root / "validation.log"
+        self.full_counter = self.root / "full-validation.log"
         self.repository.mkdir()
         git(self.repository, "init", "-b", "product")
         git(self.repository, "config", "user.email", "test@example.com")
@@ -68,7 +70,7 @@ class MergeQueueTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_policy(self, code: Optional[str] = None) -> None:
+    def write_policy(self, code: Optional[str] = None, full_code: Optional[str] = None) -> None:
         if code is None:
             code = f"from pathlib import Path; Path({str(self.counter)!r}).open('a').write('run\\n')"
         path = self.controller / ".juno_task/config/task-workspace.json"
@@ -81,6 +83,10 @@ class MergeQueueTests(unittest.TestCase):
             "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs"],
             "focused_validation": [{"id": "affected", "cwd": "src", "argv": [sys.executable, "-c", code],
                                     "timeout_seconds": 10, "max_output_bytes": 4096}],
+            "full_suite_validation": {"id": "full-suite", "cwd": "src",
+                                       "argv": [sys.executable, "-c", full_code or
+                                                f"from pathlib import Path; Path({str(self.full_counter)!r}).open('a').write('run\\n')"],
+                                       "timeout_seconds": 10, "max_output_bytes": 4096},
         }) + "\n")
 
     def command(self, script: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -192,6 +198,7 @@ class MergeQueueTests(unittest.TestCase):
 
     def test_security_candidate_awaits_exact_risk_evidence_and_fake_reviews_resume_cas(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "secure = True\n")
+        self.counter.write_text("")
         waiting = self.queue_payload("next")
         self.assertEqual(waiting["outcome"], "AWAITING_RISK")
         self.assertEqual(waiting["candidate_sha"], tip)
@@ -207,6 +214,8 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(merged["candidate_sha"], tip)
         self.assertEqual(merged["outcome"], "MERGED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+        self.assertEqual(self.counter.read_text().splitlines(), ["run"])
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
     def test_forged_pass_and_absent_evidence_never_authorize_security_cas(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "secure = False\n")
@@ -261,9 +270,19 @@ class MergeQueueTests(unittest.TestCase):
         invalidated = self.queue_payload("next", "Y")
         self.assertEqual(invalidated["outcome"], "RISK_TARGET_MOVED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), moved)
-        self.assertTrue(checkout.is_dir())
-        self.assertEqual(git(checkout, "rev-parse", "HEAD"), candidate)
+        self.assertFalse(checkout.exists())
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
         self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
+        waiting_again = self.queue_payload("next")
+        checkout_again = Path(waiting_again["candidate_checkout"])
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved_again = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external again")
+        git(self.repository, "update-ref", "refs/heads/product", moved_again, current)
+        self.assertEqual(self.queue_payload("next", "Y")["outcome"], "RISK_TARGET_MOVED")
+        self.assertFalse(checkout_again.exists())
+        self.assertEqual(self.registered_candidate_paths(), [])
 
     def test_review_finding_preserves_awaiting_truth_and_does_zero_cas(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")
@@ -332,7 +351,7 @@ class MergeQueueTests(unittest.TestCase):
         with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=fail_b):
             with self.assertRaisesRegex(merge_runtime.MergeQueueError, "B down"):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
-        self.write_policy("import sys; sys.exit(17)")
+        self.write_policy(full_code="import sys; sys.exit(17)")
         with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
             with self.assertRaises(merge_runtime.MergeValidationError):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
@@ -377,6 +396,33 @@ class MergeQueueTests(unittest.TestCase):
         merged = self.queue_payload("next")
         self.assertEqual((merged["task_id"], merged["candidate_sha"]), ("Y", y_tip))
         self.assertEqual(self.task("status", "X")["state"], "AWAITING_RELEASE")
+
+    def test_long_x_review_does_not_hold_target_lock_and_moved_x_cleans_safely(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        y_tip = self.commit_feature("Y", "docs/y.md", "y\n")
+        waiting = self.queue_payload("next")
+        self.assertEqual(waiting["task_id"], "X")
+        started, release = threading.Event(), threading.Event()
+        def blocked(*args: object, **kwargs: object) -> dict[str, str]:
+            if args[4] == "reviewer_a":
+                started.set()
+                if not release.wait(10):
+                    raise AssertionError("test reviewer was not released")
+            return self.fake_review(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=blocked):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future = pool.submit(merge_runtime.merge_review, self.controller.resolve(), "X")
+                self.assertTrue(started.wait(10))
+                with self.assertRaisesRegex(merge_runtime.MergeQueueError, "another reviewer owns"):
+                    merge_runtime.merge_review(self.controller.resolve(), "X")
+                merged_y = merge_runtime.merge_next(self.controller.resolve())
+                self.assertEqual(merged_y["candidate_sha"], y_tip)
+                release.set()
+                moved_x = future.result(timeout=20)
+        self.assertEqual(moved_x["outcome"], "RISK_TARGET_MOVED")
+        self.assertEqual(self.task("status", "X")["state"], "QUEUED")
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
 
     def test_finding_reopen_new_tip_discards_exact_owned_moved_candidate_and_requeues(self) -> None:
         checkout, marker = self.prepare_moved_finding_reopen()

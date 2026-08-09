@@ -38,5 +38,12 @@
         "src/cli/__tests__/task-command.test.ts"
       ]
     }
-  ]
+  ],
+  "full_suite_validation": {
+    "id": "full-suite",
+    "cwd": "juno-code",
+    "timeout_seconds": 3600,
+    "max_output_bytes": 65536,
+    "argv": ["npm", "test"]
+  }
 }

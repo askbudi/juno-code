@@ -61,7 +61,8 @@ def load_config(controller: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise TaskWorkspaceError(f"invalid task workspace policy: {exc}") from exc
     required = {"schema_version", "repository", "target_ref", "workspace_root", "branch_prefix",
-                "allowed_paths", "controller_private_paths", "focused_validation"}
+                "allowed_paths", "controller_private_paths", "focused_validation",
+                "full_suite_validation"}
     if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != CONFIG_SCHEMA:
         raise TaskWorkspaceError(f"task workspace policy must contain exactly the {CONFIG_SCHEMA} fields")
     repository = Path(value["repository"])
@@ -98,6 +99,19 @@ def load_config(controller: Path) -> dict[str, Any]:
             raise TaskWorkspaceError("focused validation timeout_seconds must be an integer from 1 through 3600")
         if not isinstance(row["max_output_bytes"], int) or not 1024 <= row["max_output_bytes"] <= 1048576:
             raise TaskWorkspaceError("focused validation max_output_bytes must be an integer from 1024 through 1048576")
+    full_suite = value["full_suite_validation"]
+    if not isinstance(full_suite, dict) or set(full_suite) != {
+            "id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}:
+        raise TaskWorkspaceError("full_suite_validation requires exactly id, cwd, argv, timeout_seconds, and max_output_bytes")
+    normalized_relative(full_suite["cwd"], "full-suite validation cwd")
+    if (not isinstance(full_suite["id"], str) or not full_suite["id"]
+            or not isinstance(full_suite["argv"], list) or not full_suite["argv"]
+            or any(not isinstance(part, str) or not part for part in full_suite["argv"])
+            or not isinstance(full_suite["timeout_seconds"], int)
+            or not 1 <= full_suite["timeout_seconds"] <= 3600
+            or not isinstance(full_suite["max_output_bytes"], int)
+            or not 1024 <= full_suite["max_output_bytes"] <= 1048576):
+        raise TaskWorkspaceError("full_suite_validation bounds or argv are invalid")
     return value
 
 
@@ -246,6 +260,11 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
             totals[name] += len(data)
             _append_tail(tail, data, limit)
     exit_code = process.wait()
+    selector.close()
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
     return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
             "timed_out": timed_out, "timeout_seconds": row["timeout_seconds"],
             "duration_ms": int((time.monotonic() - started) * 1000),

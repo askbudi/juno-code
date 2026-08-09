@@ -116,6 +116,20 @@ def target_lock(_controller: Path, repository: Path, target_ref: str) -> Iterato
         yield
 
 
+@contextmanager
+def review_lock(repository: Path, task_id: str) -> Iterator[None]:
+    lock = Path(repository_identity(repository)) / "juno-locks/review" / f"{task_id}.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise MergeQueueError("another reviewer owns this task review claim") from exc
+            raise
+        yield
+
+
 def persist_attempt(controller: Path, attempt: dict[str, Any], *, state_name: Optional[str] = None,
                     conflict: Optional[dict[str, Any]] = None, remove_conflict: bool = False) -> None:
     with task_runtime.state_lock(controller):
@@ -310,6 +324,20 @@ def validation_rows(config: dict[str, Any], candidate: Path) -> list[dict[str, A
     return evidence
 
 
+def full_suite_validation(config: dict[str, Any], candidate: Path) -> dict[str, Any]:
+    row = config["full_suite_validation"]
+    cwd = (candidate / row["cwd"]).resolve()
+    try:
+        cwd.relative_to(candidate)
+    except ValueError as exc:
+        raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
+    evidence = task_runtime.run_validation(row, cwd)
+    if evidence["timed_out"] or evidence["exit_code"]:
+        detail = evidence["stderr_tail"] or evidence["stdout_tail"]
+        raise MergeValidationError(f"full-suite validation failed ({row['id']}): {detail}", [evidence])
+    return evidence
+
+
 def assert_frozen_candidate(controller: Path, config: dict[str, Any], checkout: Path, candidate_sha: str) -> None:
     if task_runtime.load_config(controller) != config:
         raise MergeQueueError("task workspace policy changed while candidate validation was active")
@@ -353,6 +381,68 @@ def verify_risk_evidence(policy: dict[str, Any], request: dict[str, str], flags:
         return risk_runtime.verify_candidate_evidence(policy, request, flags, reference)
     except risk_runtime.RiskPolicyError as exc:
         raise MergeQueueError(f"candidate risk evidence refused: {exc}") from exc
+
+
+def requeue_stale_candidate(controller: Path, config: dict[str, Any], repository: Path,
+                            record: dict[str, Any], observed_target_sha: str) -> dict[str, Any]:
+    attempt = record.get("queue_attempt")
+    if record.get("state") != "REQUEUING_STALE":
+        if not isinstance(attempt, dict):
+            raise MergeQueueError("stale awaiting task has no candidate attempt")
+        checkout_value = attempt.get("candidate_checkout")
+        owner = read_candidate_owner(controller, Path(checkout_value)) if checkout_value else None
+        stale = {"schema_version": "juno_merge_queue_stale_requeue.v1",
+                 "task_id": record["task_id"], "old_candidate_sha": attempt["candidate_sha"],
+                 "old_candidate_checkout": checkout_value,
+                 "old_candidate_token": attempt.get("candidate_token"),
+                 "old_candidate_owner": owner, "observed_target_sha": observed_target_sha}
+        reopening = {**record, "state": "REQUEUING_STALE", "stale_requeue": stale}
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            if state["tasks"].get(record["task_id"]) != record:
+                raise MergeQueueError("task changed before stale-candidate admission")
+            state["tasks"][record["task_id"]] = reopening
+            task_runtime.write_state(controller, state)
+        record = reopening
+    stale = record.get("stale_requeue")
+    if not isinstance(stale, dict) or stale.get("schema_version") != "juno_merge_queue_stale_requeue.v1":
+        raise MergeQueueError("REQUEUING_STALE recovery identity is invalid")
+    checkout_value, token = stale.get("old_candidate_checkout"), stale.get("old_candidate_token")
+    if checkout_value:
+        checkout = Path(checkout_value)
+        if checkout.exists():
+            if read_candidate_owner(controller, checkout) != stale.get("old_candidate_owner"):
+                raise MergeQueueError("stale candidate ownership drifted")
+            rollback_unadmitted_candidate(controller, repository, checkout, token)
+        else:
+            marker = owner_marker(controller, checkout)
+            if any(Path(row.get("worktree", "")).resolve() == checkout.resolve()
+                   for row in registered_worktrees(repository)):
+                raise MergeQueueError("absent stale checkout remains registered")
+            if marker.exists():
+                owner = read_candidate_owner(controller, checkout)
+                if (owner != stale.get("old_candidate_owner") or owner.get("token") != token
+                        or owner.get("task_id") != stale.get("task_id")
+                        or owner.get("repository_identity") != repository_identity(repository)):
+                    raise MergeQueueError("stale orphan marker ownership mismatched")
+                parents = task_runtime.git(repository, "show", "-s", "--format=%P",
+                                           stale["old_candidate_sha"], check=False).split()
+                if parents != [owner.get("target_sha"), owner.get("feature_sha")]:
+                    raise MergeQueueError("stale orphan marker candidate binding mismatched")
+                marker.unlink()
+    queued = {key: value for key, value in record.items()
+              if key not in {"queue_attempt", "last_queue_outcome", "stale_requeue"}}
+    queued.update({"state": "QUEUED", "last_queue_outcome": "RISK_TARGET_MOVED",
+                   "observed_target_sha": observed_target_sha})
+    with task_runtime.state_lock(controller):
+        state = task_runtime.read_state(controller)
+        if state["tasks"].get(record["task_id"]) != record:
+            raise MergeQueueError("task changed during stale-candidate cleanup")
+        queued["enqueue_sequence"] = task_runtime.assign_enqueue_sequence(state)
+        state["tasks"][record["task_id"]] = queued
+        target_entry(state, repository, config["target_ref"])["conflicts"].pop(record["task_id"], None)
+        task_runtime.write_state(controller, state)
+    return {**queued, "outcome": "RISK_TARGET_MOVED"}
 
 
 def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: str,
@@ -413,9 +503,7 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
     candidate_sha, expected = attempt["candidate_sha"], attempt["expected_target_sha"]
     current = task_runtime.ref_sha(repository, config["target_ref"])
     if current != expected:
-        moved = {**attempt, "outcome": "RISK_TARGET_MOVED", "observed_target_sha": current}
-        persist_attempt(controller, moved, state_name="QUEUED")
-        return moved
+        return requeue_stale_candidate(controller, config, repository, record, current)
     checkout_value = attempt.get("candidate_checkout")
     root = (task_runtime.exact_root(Path(checkout_value), "awaiting risk candidate")
             if checkout_value else validate_record(config, repository, record))
@@ -530,7 +618,7 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             with task_runtime.state_lock(controller):
                 record = task_runtime.read_state(controller)["tasks"].get(task_id)
             if not isinstance(record, dict) or record.get("state") not in {
-                    "AWAITING_RISK", "AWAITING_RELEASE"}:
+                    "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE"}:
                 raise MergeQueueError("explicit next task is not awaiting risk or release evidence")
             return resume_awaiting(controller, config, repository, record)
         record = select_next(controller, config)
@@ -868,12 +956,16 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         raise MergeQueueError("unsafe task id")
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
-    with target_lock(controller, repository, config["target_ref"]):
+    with review_lock(repository, task_id):
         with task_runtime.state_lock(controller):
             record = task_runtime.read_state(controller)["tasks"].get(task_id)
         if not isinstance(record, dict) or record.get("state") not in {
-                "AWAITING_RISK", "AWAITING_RELEASE"}:
+                "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE"}:
             raise MergeQueueError("task has no frozen candidate awaiting risk evidence")
+        if record.get("state") == "REQUEUING_STALE":
+            return requeue_stale_candidate(
+                controller, config, repository, record,
+                task_runtime.ref_sha(repository, config["target_ref"]))
         attempt = record.get("queue_attempt")
         if not isinstance(attempt, dict):
             raise MergeQueueError("awaiting task has no queue attempt")
@@ -881,10 +973,9 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             raise MergeQueueError("release candidate requires separate owner-authorized release gate evidence")
         candidate_sha, expected = attempt.get("candidate_sha"), attempt.get("expected_target_sha")
         if task_runtime.ref_sha(repository, config["target_ref"]) != expected:
-            moved = {**attempt, "outcome": "RISK_TARGET_MOVED",
-                     "observed_target_sha": task_runtime.ref_sha(repository, config["target_ref"])}
-            persist_attempt(controller, moved, state_name="QUEUED")
-            return moved
+            return requeue_stale_candidate(
+                controller, config, repository, record,
+                task_runtime.ref_sha(repository, config["target_ref"]))
         checkout_value = attempt.get("candidate_checkout")
         candidate_root = (task_runtime.exact_root(Path(checkout_value), "review candidate")
                           if checkout_value else validate_record(config, repository, record))
@@ -904,10 +995,11 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             if progress is None:
                 progress = {"schema_version": "juno_merge_queue_review_progress.v1",
                             "attempt_counter": 0, "full_validation_passed": False,
-                            "validation_identity": None, "steps": []}
+                            "validation_identity": None, "full_suite_receipt": None,
+                            "steps": []}
             if (not isinstance(progress, dict) or set(progress) != {
                     "schema_version", "attempt_counter", "full_validation_passed",
-                    "validation_identity", "steps"}
+                    "validation_identity", "full_suite_receipt", "steps"}
                     or progress.get("schema_version") != "juno_merge_queue_review_progress.v1"
                     or not isinstance(progress.get("attempt_counter"), int)
                     or isinstance(progress.get("attempt_counter"), bool)
@@ -922,7 +1014,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             if (progress["full_validation_passed"]
                     and progress["validation_identity"] != current_validation_identity):
                 progress = {**progress, "full_validation_passed": False,
-                            "validation_identity": None}
+                            "validation_identity": None, "full_suite_receipt": None}
             if progress["attempt_counter"] == 10000:
                 raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
             attempt_number = progress["attempt_counter"] + 1
@@ -932,15 +1024,15 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                        "outcome": "REVIEWING"}
             persist_attempt(controller, attempt, state_name="AWAITING_RISK")
             if not progress["full_validation_passed"]:
-                # Projects choose the exact high-risk command in task policy.
-                validation_rows(config, candidate_root)
+                suite_receipt = full_suite_validation(config, candidate_root)
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)
                 if after_validation_identity != current_validation_identity:
                     raise MergeQueueError("validation identity changed during full validation")
                 progress = {**progress, "full_validation_passed": True,
-                            "validation_identity": current_validation_identity}
+                            "validation_identity": current_validation_identity,
+                            "full_suite_receipt": suite_receipt}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
                 persist_attempt(controller, attempt, state_name="AWAITING_RISK")
@@ -988,6 +1080,15 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 # A PASS is durable before Reviewer B starts. A transport
                 # failure therefore retries only the missing suffix.
                 persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+            with target_lock(controller, repository, config["target_ref"]):
+                current_target = task_runtime.ref_sha(repository, config["target_ref"])
+                if current_target != expected:
+                    with task_runtime.state_lock(controller):
+                        current_record = task_runtime.read_state(controller)["tasks"].get(task_id)
+                    if not isinstance(current_record, dict):
+                        raise MergeQueueError("review claim task disappeared before stale cleanup")
+                    return requeue_stale_candidate(
+                        controller, config, repository, current_record, current_target)
             receipt = risk_runtime.finalize(
                 plan, request, affected_tests_passed=True,
                 full_suite_passed=True if plan["full_suite_required"] else None,
@@ -1014,8 +1115,17 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
         risk_state = {**stored, "status": outcome, "evidence": reference}
         updated = {**attempt, "risk": risk_state, "review": risk_state, "outcome": outcome}
-        persist_attempt(controller, updated, state_name=(
-            "AWAITING_RISK" if verified["eligible"] else "REVIEW_FINDINGS"))
+        with target_lock(controller, repository, config["target_ref"]):
+            with task_runtime.state_lock(controller):
+                current_record = task_runtime.read_state(controller)["tasks"].get(task_id)
+            current_target = task_runtime.ref_sha(repository, config["target_ref"])
+            if current_target != expected:
+                if not isinstance(current_record, dict):
+                    raise MergeQueueError("review claim task disappeared before stale cleanup")
+                return requeue_stale_candidate(
+                    controller, config, repository, current_record, current_target)
+            persist_attempt(controller, updated, state_name=(
+                "AWAITING_RISK" if verified["eligible"] else "REVIEW_FINDINGS"))
         return updated
 
 
@@ -1186,7 +1296,7 @@ def status(controller: Path) -> dict[str, Any]:
                 and row.get("target_ref") == config["target_ref"]
                 and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
                                          "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
-                                         "REOPENING", "MERGED"}]
+                                         "REOPENING", "REQUEUING_STALE", "MERGED"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
             "tasks": rows, "last_attempt": entry["last_attempt"],

@@ -74,6 +74,9 @@ class TaskWorkspaceTests(unittest.TestCase):
             "focused_validation": [{"id": "focused", "cwd": "src",
                                     "timeout_seconds": timeout_seconds, "max_output_bytes": max_output_bytes,
                                     "argv": [sys.executable, "-c", code, *(extra_args or [])]}],
+            "full_suite_validation": {"id": "full-suite", "cwd": "src",
+                                       "timeout_seconds": 10, "max_output_bytes": 4096,
+                                       "argv": [sys.executable, "-c", "pass"]},
         }, indent=2) + "\n")
 
     def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
