@@ -11,10 +11,46 @@ Juno Code executable/version, Kanban storage identity, worktrees, dirty state,
 and rollback owner. Resolve each required dependency to an exact reviewed source
 commit and executable. A compatible but older binary is stale.
 
+Persist an owner-answer manifest before mutation. It must contain:
+
+- absolute project root and Git common directory; nested repositories/gitlinks;
+  remotes without embedded credentials; current ref/HEAD; exact full product
+  target ref and expected base SHA;
+- desired absolute fresh controller path and full controller branch, existing
+  path/ref disposition, checkpoint owner, and controller-only durable roots;
+- desired absolute integration-owner worktree, whether it checks out the product
+  target directly or an explicitly named product integration ref, current
+  checkout conflicts, and expected-SHA local-integration owner;
+- task-worktree parent, full branch-prefix convention, concurrency needs,
+  repositories expected to change, and cleanup owner;
+- separate yes/no authorities for bootstrap, local integration, controller
+  preparation, registration, product-ref movement, push, publication,
+  release/tag, deployment, production mutation, cleanup, and E2E.
+
+Inventory top-level plus unusually large/ignored paths and ask the owner to
+classify every meaningful group as product-required, controller-only durable,
+external durable evidence, generated/rebuildable excluded, or unresolved
+blocker. Explicitly cover artifacts, screenshots, recordings, reports,
+workflow receipts, logs, caches, generated builds, local datasets,
+exports/backups, and design assets. Record count/size, rationale, retention,
+and owner. Never move, delete, ignore, or make tracked product input
+controller-only merely because it is large. Ordinary Git worktrees share the
+tracked tree; lighter checkouts require a reviewed sparse/external policy plus
+build and test proof.
+
+Apply the shared package preflight before any canonical board access: reject Juno
+Kanban 2.0.5 because its sdist could omit `Requires-Dist: ruamel.yaml`; select
+the reviewed 2.0.6 source commit
+`1ed2de072a52c7c9ae0559d62e097a04af595a73`, bind a separately reviewed wheel
+SHA, inspect bounded `ruamel.yaml>=0.18.6,<0.19` metadata, and prove normal
+clean-environment install/import/public-CLI smoke. A `--no-deps` fixture must
+fail before board access. Ambient dependency leakage is not acceptance.
+
 ## 2. Create the metadata controller
 
 Use the installed metadata-controller migration command and its reviewed policy
-to create a fresh unrelated-root controller checkout. It contains only Kanban,
+to create a fresh unrelated-root controller checkout on the owner-selected full
+ref. It contains only Kanban,
 task state/specs, compact receipts, and configuration. Runtime scripts are
 ignored installed bytes. Product paths must be absent. Preserve the old
 controller read-only until canaries and owner acceptance complete.

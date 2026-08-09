@@ -14,6 +14,35 @@ Own a safety-gated migration of this project's canonical juno-kanban board from 
 8. Require an immutable, hash-bound, non-editable executable/package identity. When building from source, use a clean disposable clone/worktree at an exact reviewed commit rather than a protected canonical source checkout with stale or unwritable build state. Do not assume Python wheels are the only valid packaging format.
 9. Before selecting or installing v2, fetch (without switching branches) the owner-approved Juno Kanban v2 source ref, resolve its latest reviewed commit, and record both the full ref and 40-character SHA. Require the source worktree, built artifact, selected executable, and migration receipt to bind that same SHA; a merely compatible but older installed v2 is stale and must not be used. If the approved ref cannot be fetched or its latest commit cannot be reviewed and frozen, stop. Never install or execute a floating branch name during conversion.
 
+## Package integrity preflight — before any canonical board access
+
+The Juno Kanban 2.0.5 sdist omitted its requirements source, so an
+sdist-derived wheel could install without declaring `ruamel.yaml` and then fail
+on the first YAML-backed import. Do not use 2.0.5 as migration authority and do
+not accept an import that succeeds only because the operator environment already
+contains the dependency.
+
+The reviewed fixed candidate is Juno Kanban 2.0.6 at source commit
+`1ed2de072a52c7c9ae0559d62e097a04af595a73`. Freeze the owner-approved artifact
+SHA separately; a version string or source SHA alone is insufficient. Before
+reading the board:
+
+1. Inspect wheel `METADATA` and require exactly the bounded runtime declaration
+   `Requires-Dist: ruamel.yaml (<0.19,>=0.18.6)` (normalization-equivalent
+   spacing is acceptable).
+2. Create a clean virtual environment, prove `ruamel.yaml` is initially absent,
+   install the reviewed wheel with normal dependency resolution, and verify
+   installed metadata, `import kanban.codec`, and a minimal public CLI YAML
+   create/get smoke on a disposable board.
+3. Run a negative disposable `--no-deps` installation and prove the preflight
+   stops on the missing dependency before any canonical board command.
+4. Record source commit, wheel SHA-256, installed executable SHA/version, clean
+   environment path, commands, exits, and bounded stdout/stderr hashes.
+
+Never repair dependencies mid-conversion, use `--no-deps` for the selected
+runtime, or mutate the canonical board to diagnose packaging. This package
+identity/dependency preflight is shared with the Juno Code migration prompt.
+
 ## Required flow
 
 ```text
