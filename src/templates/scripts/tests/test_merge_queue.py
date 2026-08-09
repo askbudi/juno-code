@@ -111,6 +111,47 @@ class MergeQueueTests(unittest.TestCase):
         root = self.controller / ".juno_task/runtime/merge-queue/candidates"
         return sorted(root.iterdir()) if root.exists() else []
 
+    def assert_malformed_admission_states_refuse(self, canonical_state: dict) -> None:
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        expected_target = git(self.repository, "rev-parse", "refs/heads/product")
+        expected_suite_runs = (self.full_counter.read_text().splitlines()
+                               if self.full_counter.exists() else [])
+        for mutation in ("unsupported", "missing", "nonstring"):
+            with self.subTest(mutation=mutation):
+                state = json.loads(json.dumps(canonical_state))
+                admission = state["tasks"]["X"]["queue_attempt"]["risk"] \
+                    ["review_progress"]["full_suite_admission"]
+                review_admission = state["tasks"]["X"]["queue_attempt"]["review"] \
+                    ["review_progress"]["full_suite_admission"]
+                if mutation == "unsupported":
+                    admission["state"] = "BROKEN"
+                    review_admission["state"] = "BROKEN"
+                elif mutation == "missing":
+                    admission.pop("state")
+                    review_admission.pop("state")
+                else:
+                    admission["state"] = ["FAILED"]
+                    review_admission["state"] = ["FAILED"]
+                state_path.write_text(
+                    json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+                before = state_path.read_bytes()
+                with (mock.patch.object(merge_runtime, "full_suite_validation") as suite,
+                      mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch,
+                      mock.patch.object(merge_runtime, "cas_target") as cas):
+                    with self.assertRaisesRegex(
+                            merge_runtime.MergeQueueError,
+                            "admission state is malformed or unsupported"):
+                        merge_runtime.merge_review(self.controller.resolve(), "X")
+                suite.assert_not_called()
+                dispatch.assert_not_called()
+                cas.assert_not_called()
+                self.assertEqual(state_path.read_bytes(), before)
+                self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"),
+                                 expected_target)
+                self.assertEqual(
+                    self.full_counter.read_text().splitlines()
+                    if self.full_counter.exists() else [], expected_suite_runs)
+
     def registered_candidate_paths(self) -> list[Path]:
         root = (self.controller / ".juno_task/runtime/merge-queue/candidates").resolve()
         result = []
@@ -561,6 +602,48 @@ class MergeQueueTests(unittest.TestCase):
         progress = canonical_state["tasks"]["X"]["queue_attempt"]["risk"]["review_progress"]
         self.assertEqual(progress["attempt_counter"], 1)
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+
+    def test_malformed_failed_admission_state_hard_refuses_without_work(self) -> None:
+        self.write_policy(full_code="raise SystemExit(19)")
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with self.assertRaises(merge_runtime.MergeValidationError):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        canonical_state = json.loads(state_path.read_text())
+        admission = canonical_state["tasks"]["X"]["queue_attempt"]["risk"] \
+            ["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["state"], "FAILED")
+        self.assert_malformed_admission_states_refuse(canonical_state)
+
+    def test_malformed_complete_admission_state_hard_refuses_without_work(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=merge_runtime.MergeQueueError("stop after complete")):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "stop after complete"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        canonical_state = json.loads(state_path.read_text())
+        admission = canonical_state["tasks"]["X"]["queue_attempt"]["risk"] \
+            ["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["state"], "COMPLETE")
+        self.assert_malformed_admission_states_refuse(canonical_state)
+
+    def test_malformed_claimed_admission_state_hard_refuses_without_work(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "full_suite_validation", side_effect=OSError("crash after claim")):
+            with self.assertRaisesRegex(OSError, "crash after claim"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        canonical_state = json.loads(state_path.read_text())
+        admission = canonical_state["tasks"]["X"]["queue_attempt"]["risk"] \
+            ["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["state"], "CLAIMED")
+        self.assert_malformed_admission_states_refuse(canonical_state)
 
     def test_external_boolean_only_risk_receipt_is_replaced_by_real_full_suite(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "auth\n")

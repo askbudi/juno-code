@@ -33,6 +33,10 @@ class MergeQueueError(RuntimeError):
     pass
 
 
+class AdmissionStateError(MergeQueueError):
+    """A persisted admission tag is unsafe to interpret or replace."""
+
+
 class MergeValidationError(MergeQueueError):
     def __init__(self, message: str, evidence: list[dict[str, Any]],
                  receipt_reference: Optional[dict[str, str]] = None) -> None:
@@ -1370,8 +1374,13 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             suite_admission = None
             prior_attempt = max(progress["attempt_counter"], progress["collision_floor"])
             existing_admission = progress["full_suite_admission"]
-            if plan["full_suite_required"] and existing_admission is not None:
+            if existing_admission is not None:
                 admission_state = existing_admission.get("state")
+                if (not isinstance(admission_state, str)
+                        or admission_state not in {"COMPLETE", "FAILED", "CLAIMED"}):
+                    raise AdmissionStateError(
+                        "stored full-suite admission state is malformed or unsupported")
+            if plan["full_suite_required"] and existing_admission is not None:
                 if admission_state == "COMPLETE":
                     try:
                         suite_admission = verify_queue_full_suite_admission(
@@ -1411,8 +1420,6 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                             recovered["receipt"])
                     else:
                         claimed = recovered
-                else:
-                    suite_admission = None
             if plan["full_suite_required"] and suite_admission is None and claimed is None:
                 if prior_attempt >= 10000:
                     raise MergeQueueError("bounded full-suite attempt namespace is exhausted")
@@ -1542,6 +1549,8 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 attempt = {**attempt, "risk": stored, "review": stored}
             failed = {**attempt, "validation": exc.evidence, "outcome": "FAILED_FULL_SUITE"}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
+            raise
+        except AdmissionStateError:
             raise
         except (risk_runtime.RiskPolicyError, MergeQueueError) as exc:
             if "queue admission canonical path already exists" in str(exc) \
