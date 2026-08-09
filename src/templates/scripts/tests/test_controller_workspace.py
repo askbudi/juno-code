@@ -36,7 +36,9 @@ class ControllerWorkspaceTests(unittest.TestCase):
             path = self.repo / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(relative + "\n")
         # Ensure each ownership class has tracked evidence and product bytes can be proven absent.
         for relative in (".juno_task/tasks/T1.md", ".juno_task/ledger/T1.ndjson", ".juno_task/prompts/p.md",
-                         ".agents/skills/readme.md", "juno-code/package.json", "README.md"):
+                         ".juno_task/managed-assets.json", ".juno_task/managed-conflicts/2.0.31/prompt.candidate",
+                         ".agents/skills/readme.md", "juno-code/package.json", "README.md",
+                         "frontend/app/docs/juno-code/scripts/[slug]/page.tsx"):
             path = self.repo / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(relative + "\n")
         self.policy = self.repo / ".juno_task/config/controller-workspace.json"
         self.policy.write_text(json.dumps(policy, indent=2) + "\n")
@@ -69,6 +71,9 @@ class ControllerWorkspaceTests(unittest.TestCase):
         self.assertEqual(identities["selected_path_count"], len(policy["sparse_policy"]["selected_paths"]))
         self.assertRegex(identities["sparse_patterns_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(cw.classify(policy, "juno-code/package.json"), "product_canonical")
+        self.assertEqual(cw.classify(policy, "frontend/app/docs/[slug]/page.tsx"), "product_canonical")
+        self.assertEqual(cw.classify(policy, ".juno_task/managed-assets.json"), "controller_canonical")
+        self.assertEqual(cw.classify(policy, ".juno_task/managed-conflicts/2.0.31/prompt.candidate"), "controller_canonical")
         bad = json.loads(self.policy.read_text()); bad["ownership"]["product_canonical"].append(".juno_task")
         path = self.temp / "bad.json"; path.write_text(json.dumps(bad))
         with self.assertRaisesRegex(cw.WorkspaceError, "overlap"):
@@ -82,6 +87,10 @@ class ControllerWorkspaceTests(unittest.TestCase):
         self.assertTrue(evidence["checks"]["product_absent"]); self.assertTrue(evidence["checks"]["required_present"])
         self.assertTrue(evidence["checks"]["patterns_exact"]); self.assertTrue(evidence["checks"]["sparse_index_disabled"])
         self.assertFalse((sparse / "juno-code/package.json").exists()); self.assertFalse((sparse / "README.md").exists())
+        self.assertFalse((sparse / "frontend/app/docs/juno-code/scripts/[slug]/page.tsx").exists())
+        self.assertTrue((sparse / ".juno_task/managed-assets.json").exists())
+        self.assertTrue((sparse / ".juno_task/managed-conflicts/2.0.31/prompt.candidate").exists())
+        self.assertTrue(evidence["checks"]["tracked_classified"])
         self.assertEqual(git(sparse, "config", "--worktree", "--bool", "--get", "core.sparseCheckout"), "true")
         self.assertEqual(git(sparse, "config", "--worktree", "--bool", "--get", "core.sparseCheckoutCone"), "false")
         self.assertNotEqual(git(sparse, "rev-parse", "--git-dir"), git(sparse, "rev-parse", "--git-common-dir"))

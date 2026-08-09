@@ -66,6 +66,18 @@ def safe_path(value: Any) -> str:
         raise WorkspaceError(f"unsafe workspace path: {value!r}")
     return value.rstrip("/")
 
+def concrete_path(value: Any) -> str:
+    """Validate a literal Git path without treating route brackets as patterns."""
+    if not isinstance(value, str) or value != value.strip() or not value:
+        raise WorkspaceError("tracked paths must be non-empty normalized strings")
+    path = PurePosixPath(value)
+    if (path.is_absolute() or value != path.as_posix() or value in {".", ".git"} or ".git" in path.parts
+            or ".." in path.parts or "\\" in value or any(c in value for c in "*?{}!#")
+            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise WorkspaceError(f"unsafe tracked path: {value!r}")
+    return value.rstrip("/")
+
+
 def overlap(left: str, right: str) -> bool:
     return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
@@ -122,7 +134,7 @@ def load_policy(path: Path) -> dict[str, Any]:
             "sparse_policy": {**sparse, "selected_paths": selected, "required_paths": required}}
 
 def classify(policy: dict[str, Any], relative: str) -> str:
-    value = safe_path(relative)
+    value = concrete_path(relative)
     matches = [name for name in CLASSES for prefix in policy["ownership"][name]
                if value == prefix or value.startswith(prefix + "/")]
     if len(matches) != 1: raise WorkspaceError(f"path must have exactly one ownership class: {relative} ({matches})")

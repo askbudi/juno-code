@@ -4,6 +4,7 @@
   "ownership": {
     "schema_version": "juno_workspace_ownership.v1",
     "controller_canonical": [
+      ".juno_task/USER_FEEDBACK.md",
       ".juno_task/config",
       ".juno_task/config.json",
       ".juno_task/continue_scope_runtime.json",
@@ -12,13 +13,14 @@
       ".juno_task/init.md",
       ".juno_task/ledger",
       ".juno_task/locks",
+      ".juno_task/managed-assets.json",
+      ".juno_task/managed-conflicts",
       ".juno_task/plan.md",
       ".juno_task/prompt.md",
       ".juno_task/session_history.json",
       ".juno_task/specs",
       ".juno_task/tasks",
       ".juno_task/tasks.md",
-      ".juno_task/USER_FEEDBACK.md",
       ".juno_task/workflows"
     ],
     "shared_managed_distribution": [
@@ -65,6 +67,8 @@
       ".juno_task/init.md",
       ".juno_task/ledger",
       ".juno_task/locks",
+      ".juno_task/managed-assets.json",
+      ".juno_task/managed-conflicts",
       ".juno_task/plan.md",
       ".juno_task/prompt.md",
       ".juno_task/prompts",
