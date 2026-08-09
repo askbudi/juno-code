@@ -60,6 +60,12 @@ def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def preflight_receipt(path: Path, value: dict[str, Any]) -> None:
+    path = path.expanduser().resolve()
+    if path.exists() and path.read_bytes() != canonical(value):
+        raise BoundaryError(f"immutable receipt collision: {path}")
+
+
 def safe_relative(value: Any) -> str:
     if not isinstance(value, str) or value != value.strip() or not value:
         raise BoundaryError("policy paths must be non-empty normalized strings")
@@ -82,14 +88,14 @@ def load_policy(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise BoundaryError(f"invalid metadata controller policy: {exc}") from exc
-    required = {"schema_version", "controller_branch", "product_ref", "spec_copy_mode", "copied_metadata", "generated_metadata", "product_forbidden", "tracked_roots", "runtime"}
+    required = {"schema_version", "controller_branch", "product_ref", "spec_copy_mode", "copied_metadata", "generated_metadata", "product_forbidden", "tracked_exact", "tracked_recursive", "tracked_top_level_files", "runtime"}
     if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != SCHEMA:
         raise BoundaryError(f"policy must contain exactly the {SCHEMA} fields")
     value["controller_branch"] = safe_ref(value["controller_branch"], "controller_branch")
     value["product_ref"] = safe_ref(value["product_ref"], "product_ref")
     if value["spec_copy_mode"] != "top_level_files_only":
         raise BoundaryError("spec_copy_mode must exclude nested workflow and lifecycle evidence")
-    for field in ("copied_metadata", "generated_metadata", "product_forbidden", "tracked_roots"):
+    for field in ("copied_metadata", "generated_metadata", "product_forbidden", "tracked_exact", "tracked_recursive", "tracked_top_level_files"):
         items = value[field]
         if not isinstance(items, list) or not items:
             raise BoundaryError(f"{field} must be a non-empty array")
@@ -103,7 +109,7 @@ def load_policy(path: Path) -> dict[str, Any]:
     runtime["identity_file"] = safe_relative(runtime["identity_file"])
     runtime["ignored_roots"] = sorted(safe_relative(item) for item in runtime["ignored_roots"])
     for item in value["copied_metadata"] + value["generated_metadata"]:
-        if not any(item == root or item.startswith(root + "/") for root in value["tracked_roots"]):
+        if not policy_path_allowed(item, value, container=True):
             raise BoundaryError(f"metadata path is outside tracked roots: {item}")
     return value
 
@@ -137,18 +143,27 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
         raise BoundaryError("runtime version must be an exact released semantic version")
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise BoundaryError(f"runtime executable is not executable: {executable}")
+    # A released installation must not resolve into this repository, any of its
+    # linked worktrees, its administration directory, or another Git checkout.
+    repo = repository.resolve()
+    prohibited = {repo, Path(common_dir(repo)).resolve()}
+    listing = run(["git", "-C", str(repo), "worktree", "list", "--porcelain", "-z"], repo)
+    for record in listing.stdout.split("\0"):
+        if record.startswith("worktree "):
+            prohibited.add(Path(record.removeprefix("worktree ")).resolve())
+    for root in prohibited:
+        try:
+            executable.relative_to(root)
+        except ValueError:
+            continue
+        raise BoundaryError("runtime executable must be an installed distribution outside every linked worktree and Git administration directory")
+    containing_repo = git(executable.parent, "rev-parse", "--show-toplevel", check=False)
+    if containing_repo:
+        raise BoundaryError("runtime executable must not come from a mutable Git worktree")
     result = run([str(executable), "--version"], executable.parent, False)
     match = VERSION_RE.search(result.stdout + "\n" + result.stderr)
     if result.returncode or not match or match.group(1) != expected_version:
         raise BoundaryError(f"runtime identity mismatch: expected juno-code {expected_version}")
-    # A released installation must not resolve to tracked product source or a worktree-local node_modules.
-    repo = repository.resolve()
-    try:
-        executable.relative_to(repo)
-    except ValueError:
-        pass
-    else:
-        raise BoundaryError("runtime executable must be an installed distribution outside the repository worktree")
     return {"package": "juno-code", "version": expected_version, "executable": str(executable),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
 
@@ -277,9 +292,9 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
                 "runtime": {"package": "juno-code", "version": plan["runtime"]["version"]},
                 "policy_sha256": plan["policy_sha256"], "controller_commits_integrate_to_product": False}
     generated = {
-        ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/tmp/\n*.log\n__pycache__/\n",
-        ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/controller.json"}}),
-        ".juno_task/config/controller.json": canonical(policy),
+        ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n*.log\n__pycache__/\n",
+        ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}),
+        ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
         ".juno_task/state/lifecycle.json": canonical({"schema_version": "juno_task_lifecycle_state.v1", "tasks": {}}),
         ".juno_task/state/queue.json": canonical({"schema_version": "juno_merge_queue_state.v1", "targets": {}}),
@@ -328,8 +343,21 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def policy_path_allowed(name: str, policy: dict[str, Any], *, container: bool = False) -> bool:
+    if name in policy["tracked_exact"]:
+        return True
+    if any(name == root or name.startswith(root + "/") for root in policy["tracked_recursive"]):
+        return True
+    for root in policy["tracked_top_level_files"]:
+        if name == root:
+            return container
+        if name.startswith(root + "/"):
+            return "/" not in name.removeprefix(root + "/")
+    return False
+
+
 def tracked_allowed(name: str, policy: dict[str, Any]) -> bool:
-    return any(name == root or name.startswith(root + "/") for root in policy["tracked_roots"])
+    return policy_path_allowed(name, policy)
 
 
 def product_boundary(root: Path, product_ref: str, expected_head: str, policy: dict[str, Any]) -> dict[str, Any]:
@@ -347,9 +375,11 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     root = exact_worktree(root)
     branch = git(root, "symbolic-ref", "-q", "HEAD", check=False) or None
     head = git(root, "rev-parse", "HEAD")
-    parents = git(root, "rev-list", "--parents", "-n", "1", head).split()
+    ancestry_roots = git(root, "rev-list", "--max-parents=0", head).splitlines()
     names = [name for _, _, name in listed_tree(root, head)]
     forbidden = [name for name in names if not tracked_allowed(name, policy)]
+    root_names = [name for _, _, name in listed_tree(root, ancestry_roots[0])] if len(ancestry_roots) == 1 else []
+    forbidden_root = [name for name in root_names if not tracked_allowed(name, policy)]
     product_markers = [name for name in names if name == "README.md" or name.startswith(("juno-code/", "juno_kanban/", "frontend/", "scripts/", ".github/"))]
     staged = git(root, "diff", "--cached", "--name-only", check=False).splitlines()
     role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
@@ -364,14 +394,17 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             runtime_ok = identity == {**checked, "source": "installed-release", "tracked": False}
         except (BoundaryError, OSError, json.JSONDecodeError):
             runtime_ok = False
-    checks = {"branch_exact": expected_branch is None or branch == expected_branch, "root_commit": len(parents) == 1,
+    checks = {"branch_exact": expected_branch is None or branch == expected_branch, "single_root_ancestry": len(ancestry_roots) == 1,
+              "root_boundary": not forbidden_root,
               "tracked_boundary": not forbidden, "product_absent": not product_markers,
               "staged_boundary": all(tracked_allowed(name, policy) for name in staged),
               "runtime_bound": runtime_ok, "runtime_untracked": policy["runtime"]["identity_file"] not in names,
               "role": role == ("controller" if require_active else "controller-pending"),
               "clean": git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False) == ""}
-    return {"root": str(root), "branch_ref": branch, "head": head, "tracked_paths": names, "forbidden_tracked": forbidden,
-            "product_markers": product_markers, "checks": checks, "passed": all(checks.values())}
+    return {"root": str(root), "branch_ref": branch, "head": head, "root_commit": ancestry_roots[0] if len(ancestry_roots) == 1 else None,
+            "tracked_paths": names, "forbidden_tracked": forbidden,
+            "forbidden_root_tracked": forbidden_root, "product_markers": product_markers,
+            "checks": checks, "passed": all(checks.values())}
 
 
 def runtime_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
@@ -381,22 +414,61 @@ def runtime_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str
         raise BoundaryError("runtime rebind refused for wrong controller branch")
     if git(root, "config", "--worktree", "--get", "juno.controller.mode", check=False) != "metadata-only":
         raise BoundaryError("runtime rebind refused for non-metadata controller")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("runtime rebind requires a clean metadata controller")
+    output = args.output.expanduser().resolve()
+    try:
+        output.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise BoundaryError("runtime rebind receipt must be outside the controller worktree")
     before_head = git(root, "rev-parse", "HEAD")
     before_tree = git(root, "write-tree")
     identity = runtime_identity(args.runtime, args.runtime_version, root)
     local_identity = {**identity, "source": "installed-release", "tracked": False}
-    git(root, "config", "--worktree", "juno.controller.runtimeVersion", identity["version"])
-    git(root, "config", "--worktree", "juno.controller.runtimeExecutable", identity["executable"])
     runtime_file = root / policy["runtime"]["identity_file"]
-    runtime_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary = runtime_file.with_name(f".{runtime_file.name}.tmp-{os.getpid()}")
-    temporary.write_bytes(canonical(local_identity)); os.replace(temporary, runtime_file)
-    if git(root, "rev-parse", "HEAD") != before_head or git(root, "write-tree") != before_tree or git(root, "status", "--porcelain=v2", "--untracked-files=all"):
-        raise BoundaryError("runtime rebind created tracked controller synchronization work")
     payload = {"schema_version": RECEIPT_SCHEMA, "operation": "runtime-rebind", "outcome": "local_runtime_rebound",
                "root": str(root), "branch": expected_branch, "head": before_head, "tree": before_tree,
                "runtime": identity, "tracked_changes": False, "product_ref_mutation": False}
-    atomic_receipt(args.output, payload)
+    preflight_receipt(output, payload)
+    old_version_result = run(["git", "-C", str(root), "config", "--worktree", "--get", "juno.controller.runtimeVersion"], root, False)
+    old_executable_result = run(["git", "-C", str(root), "config", "--worktree", "--get", "juno.controller.runtimeExecutable"], root, False)
+    old_identity = runtime_file.read_bytes() if runtime_file.exists() else None
+
+    def restore_config(key: str, previous: subprocess.CompletedProcess[str]) -> None:
+        if previous.returncode == 0:
+            git(root, "config", "--worktree", key, previous.stdout.rstrip("\n"))
+        else:
+            git(root, "config", "--worktree", "--unset-all", key, check=False)
+
+    try:
+        git(root, "config", "--worktree", "juno.controller.runtimeVersion", identity["version"])
+        git(root, "config", "--worktree", "juno.controller.runtimeExecutable", identity["executable"])
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = runtime_file.with_name(f".{runtime_file.name}.tmp-{os.getpid()}")
+        temporary.write_bytes(canonical(local_identity)); os.replace(temporary, runtime_file)
+        if git(root, "rev-parse", "HEAD") != before_head or git(root, "write-tree") != before_tree or git(root, "status", "--porcelain=v2", "--untracked-files=all"):
+            raise BoundaryError("runtime rebind created tracked controller synchronization work")
+        atomic_receipt(output, payload)
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        try:
+            restore_config("juno.controller.runtimeVersion", old_version_result)
+            restore_config("juno.controller.runtimeExecutable", old_executable_result)
+        except Exception as rollback_exc:
+            rollback_errors.append(f"config: {rollback_exc}")
+        try:
+            if old_identity is None:
+                runtime_file.unlink(missing_ok=True)
+            else:
+                runtime_file.parent.mkdir(parents=True, exist_ok=True)
+                runtime_file.write_bytes(old_identity)
+        except OSError as rollback_exc:
+            rollback_errors.append(f"identity: {rollback_exc}")
+        if rollback_errors:
+            raise BoundaryError(f"runtime rebind failed ({exc}); rollback failed: {', '.join(rollback_errors)}") from exc
+        raise
     return payload
 
 

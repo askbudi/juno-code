@@ -93,6 +93,9 @@ describe('ManagedProjectAssets', () => {
     );
     expect(metadataPolicy.schema_version).toBe('juno_metadata_controller_policy.v1');
     expect(metadataPolicy.product_forbidden).toContain('.juno_task/tasks');
+    expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/scripts');
+    expect(metadataPolicy.tracked_exact).toContain('.juno_task/state/queue.json');
+    expect(metadataPolicy.tracked_top_level_files).toContain('.juno_task/receipts');
     expect(
       await fs.readFile(
         path.join(projectDir, '.juno_task/wiki/metadata_controller_boundary.md'),

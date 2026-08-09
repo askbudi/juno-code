@@ -13,7 +13,7 @@
   "generated_metadata": [
     ".gitignore",
     ".juno_task/config.json",
-    ".juno_task/config/controller.json",
+    ".juno_task/config/metadata-controller.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
     ".juno_task/state/queue.json"
@@ -30,23 +30,30 @@
     ".juno_task/tasks.md",
     ".juno_task/workflows"
   ],
-  "tracked_roots": [
+  "tracked_exact": [
     ".gitignore",
     ".juno_task/config.json",
-    ".juno_task/config",
     ".juno_task/cutover.json",
-    ".juno_task/ledger",
-    ".juno_task/receipts",
-    ".juno_task/specs",
-    ".juno_task/state",
-    ".juno_task/tasks",
+    ".juno_task/config/metadata-controller.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/lifecycle.json",
+    ".juno_task/state/queue.json",
     ".juno_task/tasks.md"
+  ],
+  "tracked_recursive": [
+    ".juno_task/ledger",
+    ".juno_task/tasks"
+  ],
+  "tracked_top_level_files": [
+    ".juno_task/receipts",
+    ".juno_task/specs"
   ],
   "runtime": {
     "package": "juno-code",
     "identity_file": ".juno_task/runtime/identity.json",
     "ignored_roots": [
       ".juno_task/runtime",
+      ".juno_task/scripts",
       ".venv_juno",
       ".env.juno"
     ]

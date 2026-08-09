@@ -99,6 +99,14 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue((self.new_controller / ".juno_task/tasks/TASK.md").is_file())
         self.assertFalse((self.new_controller / ".juno_task/specs/workflows").exists())
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
+        self.assertIn(".juno_task/scripts/", (self.new_controller / ".gitignore").read_text())
+        generated_config = json.loads((self.new_controller / ".juno_task/config.json").read_text())
+        self.assertEqual(
+            generated_config["controllerWorkspace"]["policy"],
+            ".juno_task/config/metadata-controller.json",
+        )
+        self.assertTrue((self.new_controller / ".juno_task/config/metadata-controller.json").is_file())
+        write(self.new_controller / ".juno_task/scripts/generated.py", "print('generated')\n")
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
         self.assertEqual(
             command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo),
@@ -117,6 +125,15 @@ class MetadataControllerTest(unittest.TestCase):
         write(self.new_controller / ".juno_task/tasks/TASK.md", "updated task\n")
         command("git", "add", ".juno_task/tasks/TASK.md", cwd=self.new_controller)
         command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "update task", cwd=self.new_controller)
+        descendant = mc.inspect(
+            self.new_controller,
+            self.policy,
+            expected_branch="refs/heads/juno/controller-metadata-v1",
+            require_active=False,
+        )
+        self.assertTrue(descendant["passed"])
+        self.assertTrue(descendant["checks"]["root_boundary"])
+        self.assertNotEqual(descendant["root_commit"], descendant["head"])
         self.assertEqual(command("git", "status", "--porcelain", cwd=product_worktree), "")
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=product_worktree), self.product_head)
 
@@ -137,6 +154,49 @@ class MetadataControllerTest(unittest.TestCase):
             mc.migration_plan(
                 self.migration_args(new_branch="refs/heads/unreviewed-controller"), self.policy
             )
+
+    def test_continuing_boundary_rejects_nested_specs_and_arbitrary_state_receipts(self) -> None:
+        self.prepare()
+        write(self.new_controller / ".juno_task/specs/workflows/run.json", "{}\n")
+        write(self.new_controller / ".juno_task/state/arbitrary.json", "{}\n")
+        write(self.new_controller / ".juno_task/receipts/nested/arbitrary.json", "{}\n")
+        command("git", "add", "-f", ".juno_task/specs/workflows/run.json", ".juno_task/state/arbitrary.json",
+                ".juno_task/receipts/nested/arbitrary.json", cwd=self.new_controller)
+        staged = mc.inspect(
+            self.new_controller,
+            self.policy,
+            expected_branch="refs/heads/juno/controller-metadata-v1",
+            require_active=False,
+        )
+        self.assertFalse(staged["passed"])
+        self.assertFalse(staged["checks"]["staged_boundary"])
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "invalid metadata", cwd=self.new_controller)
+        committed = mc.inspect(
+            self.new_controller,
+            self.policy,
+            expected_branch="refs/heads/juno/controller-metadata-v1",
+            require_active=False,
+        )
+        self.assertFalse(committed["passed"])
+        self.assertEqual(
+            set(committed["forbidden_tracked"]),
+            {
+                ".juno_task/specs/workflows/run.json",
+                ".juno_task/state/arbitrary.json",
+                ".juno_task/receipts/nested/arbitrary.json",
+            },
+        )
+
+    def test_runtime_inside_any_linked_worktree_is_rejected(self) -> None:
+        linked = self.temp / "linked-product"
+        command("git", "worktree", "add", "--detach", str(linked), self.product_head, cwd=self.repo)
+        mutable_runtime = linked / "bin/yy"
+        execution_marker = self.temp / "mutable-runtime-executed"
+        write(mutable_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.32\\n'\n")
+        mutable_runtime.chmod(mutable_runtime.stat().st_mode | stat.S_IXUSR)
+        with self.assertRaisesRegex(mc.BoundaryError, "linked worktree|mutable Git worktree"):
+            mc.runtime_identity(mutable_runtime, "2.0.32", self.repo)
+        self.assertFalse(execution_marker.exists())
 
     def test_runtime_rebind_is_local_and_rollback_is_plan_only(self) -> None:
         self.prepare()
@@ -174,6 +234,48 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(rollback["outcome"], "planned_no_mutation")
         self.assertFalse(rollback["product_ref_mutation"])
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
+
+    def test_runtime_rebind_preflight_and_failure_restore_identity(self) -> None:
+        self.prepare()
+        runtime_file = self.new_controller / ".juno_task/runtime/identity.json"
+        old_identity = runtime_file.read_bytes()
+        old_version = command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller)
+        old_executable = command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller)
+        newer = self.temp / "installed-transaction/bin/yy"
+        write(newer, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
+
+        args = argparse.Namespace(
+            root=self.new_controller,
+            branch="refs/heads/juno/controller-metadata-v1",
+            runtime=newer,
+            runtime_version="2.0.33",
+            output=self.temp / "rebind-collision.json",
+        )
+        write(self.new_controller / "dirty.txt", "dirty\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "requires a clean"):
+            mc.runtime_rebind(args, self.policy)
+        (self.new_controller / "dirty.txt").unlink()
+
+        args.output.write_text("{}\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "immutable receipt collision"):
+            mc.runtime_rebind(args, self.policy)
+        self.assertEqual(runtime_file.read_bytes(), old_identity)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller), old_version)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), old_executable)
+
+        failing_args = argparse.Namespace(**{**vars(args), "output": self.temp / "rebind-write-failure.json"})
+        original_atomic = mc.atomic_receipt
+        try:
+            mc.atomic_receipt = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("receipt write failed"))
+            with self.assertRaisesRegex(OSError, "receipt write failed"):
+                mc.runtime_rebind(failing_args, self.policy)
+        finally:
+            mc.atomic_receipt = original_atomic
+        self.assertEqual(runtime_file.read_bytes(), old_identity)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller), old_version)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), old_executable)
+        self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
 
 
 if __name__ == "__main__":

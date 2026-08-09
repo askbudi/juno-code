@@ -19,14 +19,14 @@ The controller is a state store, never a product source or integration participa
 .juno_task/tasks/       canonical current Kanban tasks
 .juno_task/ledger/      canonical task history
 .juno_task/specs/       top-level task plans and decisions
-.juno_task/state/       compact task and merge-queue state
-.juno_task/receipts/    final boundary/transition receipts
+.juno_task/state/       exact lifecycle.json and queue.json state
+.juno_task/receipts/    top-level final boundary/transition receipts
 .juno_task/config/      minimal controller policy
 ```
 
-Product source, tests, package metadata, release tooling, generated product assets, and bulky workflow attempts are absent. Only top-level spec files cross the migration boundary; nested workflow/lifecycle/task-set evidence stays in the preserved rollback controller instead of bloating every future controller commit. A product branch may retain minimal project lifecycle config, prompts, and install inputs, but it must not contain the controller-private roots declared by `product_forbidden`.
+Product source, tests, package metadata, release tooling, generated product assets, and bulky workflow attempts are absent. Only top-level spec and final-receipt files cross the migration boundary; nested workflow/lifecycle/task-set evidence, nested receipt trees, and arbitrary state files are rejected. They stay in the preserved rollback controller instead of bloating every future controller commit. Task and ledger directories remain recursive because they are canonical segmented stores. A product branch may retain minimal project lifecycle config, prompts, and install inputs, but it must not contain the controller-private roots declared by `product_forbidden`.
 
-Controller execution comes from one released `juno-code` installation outside the repository worktree. `.juno_task/runtime/identity.json` and generated scripts are ignored local state. Rebinding that installed runtime must leave controller `HEAD`, tree, index, and product refs unchanged.
+Controller execution comes from one released `juno-code` installation outside every linked or unrelated mutable Git worktree. `.juno_task/runtime/identity.json` and installed `.juno_task/scripts/` are ignored local state. Rebinding that installed runtime preflights controller cleanliness and receipt immutability, rolls identity/config back on any failure, and must leave controller `HEAD`, tree, index, and product refs unchanged.
 
 ## Preservation-first migration
 
@@ -69,4 +69,4 @@ Refuse when any of these identities drift:
 - metadata-only root/tree boundary or local runtime binding;
 - product target expected SHA or controller-private path absence.
 
-Creating or staging a product path in the metadata worktree makes verification fail. Runtime updates are local generation changes, not controller/product synchronization work.
+Verification accepts ordinary descendants of the prepared root while checking both the unique root tree and current tree against the narrow boundary. Creating or staging a product path, nested spec/receipt evidence, or unrecognized state/config path makes verification fail. Runtime updates are local generation changes, not controller/product synchronization work.
