@@ -254,14 +254,41 @@ export class ManagedProjectAssets {
     content: Buffer,
     result: ManagedAssetUpdateResult,
   ): Promise<void> {
-    const backupRelative = path.join(
+    const backupRoot = path.join(
       '.juno_task',
       'managed-conflicts',
       `bolt-${safeVersion(packageVersion)}`,
-      `${destination}.backup`,
     );
-    await writeAtomic(path.join(projectDir, backupRelative), content);
-    result.backups.push({ destination, backup: backupRelative });
+    const baseRelative = path.join(backupRoot, `${destination}.backup`);
+    const contentRelative = path.join(
+      backupRoot,
+      `${destination}.${sha256(content).slice(0, 16)}.backup`,
+    );
+
+    for (let attempt = 0; ; attempt += 1) {
+      const backupRelative =
+        attempt === 0
+          ? baseRelative
+          : attempt === 1
+            ? contentRelative
+            : `${contentRelative}.${attempt - 1}`;
+      const backupPath = path.join(projectDir, backupRelative);
+      if (await fs.pathExists(backupPath)) {
+        if ((await fs.readFile(backupPath)).equals(content)) {
+          result.backups.push({ destination, backup: backupRelative });
+          return;
+        }
+        continue;
+      }
+      await fs.ensureDir(path.dirname(backupPath));
+      try {
+        await fs.writeFile(backupPath, content, { flag: 'wx' });
+        result.backups.push({ destination, backup: backupRelative });
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
   }
 
   private static async migrateRetiredGeneration(

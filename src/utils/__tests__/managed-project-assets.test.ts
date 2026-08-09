@@ -360,6 +360,71 @@ describe('ManagedProjectAssets', () => {
     }
   });
 
+  it('reuses identical retired archives and never overwrites collisions on reappearance', async () => {
+    const destination = '.juno_task/scripts/task_lifecycle.py';
+    const destinationPath = path.join(projectDir, destination);
+    const firstBytes = '# retired generation A\n';
+    const secondBytes = '# retired generation B\n';
+    await fs.ensureDir(path.dirname(destinationPath));
+    await fs.writeFile(destinationPath, firstBytes);
+    await fs.writeJson(path.join(projectDir, '.juno_task/managed-assets.json'), {
+      schemaVersion: 1,
+      packageName: 'juno-code',
+      packageVersion: '2.0.31',
+      assets: {
+        [destination]: {
+          type: 'script',
+          templateVersion: '2.0.31',
+          sourceSha256: sha256(firstBytes),
+          installedSha256: sha256(firstBytes),
+        },
+      },
+    });
+
+    const initial = await ManagedProjectAssets.update(projectDir, { silent: true });
+    const initialBackup = initial.backups.find((entry) => entry.destination === destination)!;
+    expect(await fs.readFile(path.join(projectDir, initialBackup.backup), 'utf8')).toBe(firstBytes);
+
+    await fs.writeFile(destinationPath, firstBytes);
+    const identicalRetry = await ManagedProjectAssets.update(projectDir, {
+      force: true,
+      silent: true,
+    });
+    expect(identicalRetry.backups.find((entry) => entry.destination === destination)?.backup).toBe(
+      initialBackup.backup,
+    );
+    expect(await fs.readFile(path.join(projectDir, initialBackup.backup), 'utf8')).toBe(firstBytes);
+
+    const manifest = await fs.readJson(path.join(projectDir, '.juno_task/managed-assets.json'));
+    const collisionRelative = path.join(
+      '.juno_task',
+      'managed-conflicts',
+      `bolt-${manifest.packageVersion}`,
+      `${destination}.${sha256(secondBytes).slice(0, 16)}.backup`,
+    );
+    await fs.ensureDir(path.dirname(path.join(projectDir, collisionRelative)));
+    await fs.writeFile(path.join(projectDir, collisionRelative), 'preserve collision bytes\n');
+    await fs.writeFile(destinationPath, secondBytes);
+
+    const differingRetry = await ManagedProjectAssets.update(projectDir, {
+      force: true,
+      silent: true,
+    });
+    const differingBackup = differingRetry.backups.find(
+      (entry) => entry.destination === destination,
+    )!;
+    expect(differingBackup.backup).not.toBe(initialBackup.backup);
+    expect(differingBackup.backup).not.toBe(collisionRelative);
+    expect(await fs.readFile(path.join(projectDir, initialBackup.backup), 'utf8')).toBe(firstBytes);
+    expect(await fs.readFile(path.join(projectDir, collisionRelative), 'utf8')).toBe(
+      'preserve collision bytes\n',
+    );
+    expect(await fs.readFile(path.join(projectDir, differingBackup.backup), 'utf8')).toBe(
+      secondBytes,
+    );
+    expect(await fs.pathExists(destinationPath)).toBe(false);
+  });
+
   it('archives a generated specialization receipt and installs the Bolt prompt', async () => {
     const prompt = 'generated exact-target specialization\n';
     const promptPath = path.join(projectDir, '.juno_task/prompts/clean_worktree.md');
