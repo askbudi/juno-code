@@ -216,6 +216,64 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "QUEUED")
 
+    def test_moved_candidate_checked_out_target_ref_rolls_back_then_retries_once(self) -> None:
+        self.commit_feature("X", "src/x.txt", "x\n")
+        self.commit_feature("Y", "src/y.txt", "y\n")
+        self.queue_payload("next")
+        git(self.repository, "switch", "product")
+        failed = self.queue("next", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("target ref is checked out", failed.stderr)
+        self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
+        git(self.repository, "switch", "--detach", "refs/heads/product")
+        merged = self.queue_payload("next")
+        self.assertEqual(merged["outcome"], "MERGED")
+        self.assertEqual(merged["strategy"], "merge_both_parents")
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
+
+    def test_generic_pre_cas_policy_refusal_rolls_back_unadmitted_candidate(self) -> None:
+        self.commit_feature("X", "src/x.txt", "x\n")
+        self.commit_feature("Y", "src/y.txt", "y\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+            merge_runtime, "review_candidate", side_effect=merge_runtime.MergeQueueError("injected policy refusal")
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "injected policy refusal"):
+                merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual(self.task("status", "Y")["state"], "QUEUED")
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
+        self.assertEqual(self.queue_payload("next")["outcome"], "MERGED")
+
+    def test_durable_resolved_conflict_is_preserved_across_pre_cas_refusal(self) -> None:
+        self.commit_feature("A", "src/shared.txt", "A\n")
+        self.commit_feature("B", "src/shared.txt", "B\n")
+        self.queue_payload("next")
+        conflict = self.queue_payload("next")
+        checkout = Path(conflict["candidate_checkout"])
+        (checkout / "src/shared.txt").write_text("kept\n")
+        git(checkout, "add", "src/shared.txt")
+        before_registered = self.registered_candidate_paths()
+        git(self.repository, "switch", "product")
+        failed = self.queue("resolve", "B", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("target ref is checked out", failed.stderr)
+        status = self.task("status", "B")
+        self.assertEqual(status["state"], "CONFLICT_RESOLVED")
+        candidate = status["queue_attempt"]["candidate_sha"]
+        self.assertEqual(self.registered_candidate_paths(), before_registered)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(merge_runtime.owner_marker(self.controller.resolve(), checkout).is_file())
+        git(self.repository, "switch", "--detach", "refs/heads/product")
+        resolved = self.queue_payload("resolve", "B")
+        self.assertEqual(resolved["candidate_sha"], candidate)
+        self.assertEqual(resolved["outcome"], "MERGED")
+        self.assertEqual(self.registered_candidate_paths(), [])
+        self.assertEqual(self.candidate_artifacts(), [])
+
     def test_atomic_state_write_failure_preserves_task_and_queue_truth_together(self) -> None:
         tip = self.commit_feature("X", "src/x.txt", "x\n")
         path = self.controller / ".juno_task/state/tasks.json"

@@ -497,8 +497,21 @@ def merge_next(controller: Path) -> dict[str, Any]:
                 attempt.update({"candidate_checkout": None, "candidate_token": None})
             persist_attempt(controller, attempt, state_name="QUEUED")
             raise
-        except MergeQueueError:
-            attempt["outcome"] = "STALE_TARGET"
+        except MergeQueueError as exc:
+            attempt["outcome"] = "STALE_TARGET" if "target moved" in str(exc) else "PRE_CAS_FAILED"
+            # MERGING is a crash-recovery window, not long-lived admission of a
+            # clean composition checkout. Any ordinary pre-CAS refusal removes
+            # the exact owned internal candidate before returning task truth to
+            # QUEUED. Durable CONFLICT/CONFLICT_RESOLVED paths return elsewhere
+            # and are intentionally never handled here.
+            integrated = task_runtime.ref_sha(repository, config["target_ref"]) == candidate_sha
+            if integrated:
+                attempt["outcome"] = "MERGING_READBACK_FAILED"
+                persist_attempt(controller, attempt, state_name="MERGING")
+                raise
+            if checkout is not None and attempt.get("candidate_token"):
+                rollback_unadmitted_candidate(controller, repository, checkout, attempt["candidate_token"])
+                attempt.update({"candidate_checkout": None, "candidate_token": None})
             persist_attempt(controller, attempt, state_name="QUEUED")
             raise
         attempt["outcome"] = "MERGED"
