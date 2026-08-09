@@ -22,13 +22,8 @@ const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
     return scriptName;
   });
 
-const COHERENCE_BLOCKING_PROJECT_ASSETS = new Set(
+const COHERENCE_BLOCKING_MANAGED_ASSETS = new Set(
   managedAssetManifest.assets
-    .filter(
-      (asset) =>
-        asset.installClass === 'project' &&
-        asset.destination !== '.juno_task/prompts/clean_worktree.md',
-    )
     .map((asset) => asset.destination),
 );
 
@@ -46,8 +41,7 @@ export class ScriptInstaller {
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     const assets = await ManagedProjectAssets.update(projectDir, { force, silent });
     const blocking = assets.conflicts.filter((conflict) =>
-      COHERENCE_BLOCKING_PROJECT_ASSETS.has(conflict.destination) ||
-      conflict.destination === '.juno_task/prompts/clean_worktree.md',
+      COHERENCE_BLOCKING_MANAGED_ASSETS.has(conflict.destination),
     );
     if (blocking.length === 0) return true;
 

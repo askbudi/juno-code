@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigLoader, getPromptMacroDictionary } from '../../core/config.js';
 import { ScriptInstaller } from '../script-installer.js';
 import {
-  MANAGED_PROJECT_ASSETS,
+  MANAGED_ASSETS,
   MANAGED_PROMPT_MACROS,
   ManagedProjectAssets,
 } from '../managed-project-assets.js';
@@ -34,7 +34,7 @@ describe('ManagedProjectAssets', () => {
 
   it('installs every managed asset and registers resolvable file-backed macros', async () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
-    expect(result.installed).toHaveLength(MANAGED_PROJECT_ASSETS.length);
+    expect(result.installed).toHaveLength(MANAGED_ASSETS.length);
 
     const configJson = await fs.readJson(path.join(projectDir, '.juno_task', 'config.json'));
     expect(configJson.promptMacros.global.existing).toBe('keep me');
@@ -179,7 +179,7 @@ describe('ManagedProjectAssets', () => {
     }
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
-    expect(unchanged.unchanged).toHaveLength(MANAGED_PROJECT_ASSETS.length);
+    expect(unchanged.unchanged).toHaveLength(MANAGED_ASSETS.length);
   });
 
   it('installs an operationally closed managed wiki generation', async () => {
@@ -330,6 +330,26 @@ describe('ManagedProjectAssets', () => {
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup), 'utf8')).toBe(customized);
     expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Clean Bolt task workspaces');
+  });
+
+  it('preserves a customized managed runtime until force creates a byte-exact archive', async () => {
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const destination = '.juno_task/scripts/metadata_controller.py';
+    const destinationPath = path.join(projectDir, destination);
+    const customized = Buffer.from('# owner-customized runtime\n', 'utf8');
+    await fs.writeFile(destinationPath, customized);
+
+    const ordinary = await ManagedProjectAssets.update(projectDir, { silent: true });
+    expect(ordinary.conflicts).toContainEqual(
+      expect.objectContaining({ destination }),
+    );
+    expect(await fs.readFile(destinationPath)).toEqual(customized);
+
+    const forced = await ManagedProjectAssets.update(projectDir, { force: true, silent: true });
+    const backup = forced.backups.find((entry) => entry.destination === destination);
+    expect(backup).toBeDefined();
+    expect(await fs.readFile(path.join(projectDir, backup!.backup))).toEqual(customized);
+    expect((await fs.stat(destinationPath)).mode & 0o111).not.toBe(0);
   });
 
   it('archives retired managed and customized assets during the Bolt upgrade', async () => {

@@ -15,6 +15,8 @@ type ManagedAssetDefinition = {
 
 const MANAGED_ASSET_DEFINITIONS = managedAssetManifest.assets as ManagedAssetDefinition[];
 
+export const MANAGED_ASSETS = MANAGED_ASSET_DEFINITIONS;
+
 export const MANAGED_PROJECT_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
   (asset) => asset.installClass === 'project',
 );
@@ -157,7 +159,10 @@ export class ManagedProjectAssets {
 
     await this.migrateRetiredGeneration(projectDir, manifest, result, Boolean(options.force));
 
-    for (const asset of MANAGED_PROJECT_ASSETS) {
+    // Scripts and project guidance are one migration generation.  Handling only
+    // prompts/config here and letting ScriptInstaller overwrite scripts later
+    // would bypass checksum conflict detection for customized runtime bytes.
+    for (const asset of MANAGED_ASSET_DEFINITIONS) {
       const sourcePath = path.join(templatesDir, asset.source);
       if (!(await fs.pathExists(sourcePath))) {
         throw new Error(`Missing managed package asset: ${sourcePath}`);
@@ -189,6 +194,7 @@ export class ManagedProjectAssets {
           continue;
         }
         await writeAtomic(destinationPath, sourceContent);
+        if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
         result.installed.push(asset.destination);
       } else {
         const currentContent = await fs.readFile(destinationPath);
@@ -199,17 +205,10 @@ export class ManagedProjectAssets {
           result.unchanged.push(asset.destination);
         } else if (safelyManaged || options.force) {
           if (options.force && !safelyManaged) {
-            const backupRelative = path.join(
-              '.juno_task',
-              'managed-conflicts',
-              new Date().toISOString().replace(/[:.]/g, '-'),
-              `${asset.destination}.backup`,
-            );
-            const backupPath = path.join(projectDir, backupRelative);
-            await writeAtomic(backupPath, currentContent);
-            result.backups.push({ destination: asset.destination, backup: backupRelative });
+            await this.archiveRetired(projectDir, asset.destination, currentContent, result);
           }
           await writeAtomic(destinationPath, sourceContent);
+          if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
           result.updated.push(asset.destination);
         } else {
           const candidateRelative = path.join(
@@ -251,9 +250,10 @@ export class ManagedProjectAssets {
   private static async archiveRetired(
     projectDir: string,
     destination: string,
-    content: Buffer,
+    content: Buffer | string,
     result: ManagedAssetUpdateResult,
   ): Promise<void> {
+    const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
     const backupRoot = path.join(
       '.juno_task',
       'managed-conflicts',
@@ -262,7 +262,7 @@ export class ManagedProjectAssets {
     const baseRelative = path.join(backupRoot, `${destination}.backup`);
     const contentRelative = path.join(
       backupRoot,
-      `${destination}.${sha256(content).slice(0, 16)}.backup`,
+      `${destination}.${sha256(bytes).slice(0, 16)}.backup`,
     );
 
     for (let attempt = 0; ; attempt += 1) {
@@ -274,7 +274,7 @@ export class ManagedProjectAssets {
             : `${contentRelative}.${attempt - 1}`;
       const backupPath = path.join(projectDir, backupRelative);
       if (await fs.pathExists(backupPath)) {
-        if ((await fs.readFile(backupPath)).equals(content)) {
+        if ((await fs.readFile(backupPath)).equals(bytes)) {
           result.backups.push({ destination, backup: backupRelative });
           return;
         }
@@ -282,7 +282,7 @@ export class ManagedProjectAssets {
       }
       await fs.ensureDir(path.dirname(backupPath));
       try {
-        await fs.writeFile(backupPath, content, { flag: 'wx' });
+        await fs.writeFile(backupPath, bytes, { flag: 'wx' });
         result.backups.push({ destination, backup: backupRelative });
         return;
       } catch (error) {
@@ -526,14 +526,12 @@ export class ManagedProjectAssets {
     config.promptMacros = promptMacros;
 
     if (force && result.macroConflicts.length > 0) {
-      const backupRelative = path.join(
-        '.juno_task',
-        'managed-conflicts',
-        new Date().toISOString().replace(/[:.]/g, '-'),
-        '.juno_task/config.json.backup',
+      await this.archiveRetired(
+        projectDir,
+        '.juno_task/config.json',
+        original,
+        result,
       );
-      await writeAtomic(path.join(projectDir, backupRelative), original);
-      result.backups.push({ destination: '.juno_task/config.json', backup: backupRelative });
     }
     await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
   }
