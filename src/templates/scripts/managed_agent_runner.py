@@ -118,6 +118,96 @@ def evidence(path: Path) -> dict[str, Any]:
     return {"path": str(path.resolve()), "bytes": len(data), "sha256": sha(data)}
 
 
+def configured_file_evidence(path: Path, lexical_path: Path, label: str) -> dict[str, Any]:
+    try:
+        lexical_stat = lexical_path.lstat()
+        resolved_stat = path.stat()
+        if not path.is_file():
+            raise RunnerError(f"{label} is not a regular file")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RunnerError(f"{label} is missing or unreadable") from exc
+    if len(data) > CAPTURE_LIMIT:
+        raise RunnerError(f"{label} exceeds size limit")
+    return {"lexical_path": str(lexical_path), "resolved_path": str(path), "bytes": len(data),
+            "sha256": sha(data), "lexical_mode": lexical_stat.st_mode,
+            "lexical_mtime_ns": lexical_stat.st_mtime_ns, "resolved_device": resolved_stat.st_dev,
+            "resolved_inode": resolved_stat.st_ino, "resolved_mtime_ns": resolved_stat.st_mtime_ns,
+            "symlink_target": os.readlink(lexical_path) if lexical_path.is_symlink() else None}
+
+
+def resolve_configured_file(controller_root: Path, raw: Any, label: str) -> tuple[str, dict[str, Any]]:
+    if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
+        raise RunnerError(f"{label} has malformed path form")
+    supplied = Path(raw)
+    if supplied.is_absolute():
+        lexical = Path(os.path.abspath(supplied))
+    else:
+        lexical = Path(os.path.abspath(controller_root / supplied))
+        try:
+            lexical.relative_to(controller_root)
+        except ValueError as exc:
+            raise RunnerError(f"{label} traverses outside controller root") from exc
+    resolved = lexical.resolve(strict=False)
+    file_mark = configured_file_evidence(resolved, lexical, label)
+    return str(lexical), {"setting": label, "configured_path": raw, **file_mark}
+
+
+def derive_compatible_config(controller_root: Path, out: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    source = controller_root / ".juno_task/config.json"
+    source_mark = configured_file_evidence(source.resolve(strict=False), source, "controller config")
+    config = load_object(source, "controller config")
+    mappings: list[dict[str, Any]] = []
+    if "envFilePath" in config:
+        config["envFilePath"], mark = resolve_configured_file(controller_root, config["envFilePath"], "envFilePath")
+        mappings.append(mark)
+    macros = config.get("promptMacros")
+    if macros is not None:
+        if not isinstance(macros, dict):
+            raise RunnerError("promptMacros must be an object")
+        for scope in ("global", "local"):
+            dictionary = macros.get(scope)
+            if dictionary is None:
+                continue
+            if not isinstance(dictionary, dict):
+                raise RunnerError(f"promptMacros.{scope} must be an object")
+            for name, value in dictionary.items():
+                label = f"promptMacros.{scope}.{name}.path"
+                if isinstance(value, str):
+                    continue
+                if not isinstance(value, dict):
+                    raise RunnerError(f"promptMacros.{scope}.{name} has malformed value")
+                has_path = isinstance(value.get("path"), str) and bool(value["path"].strip())
+                has_text = isinstance(value.get("text"), str) and bool(value["text"].strip())
+                if has_path == has_text:
+                    raise RunnerError(f"promptMacros.{scope}.{name} must define exactly one of path or text")
+                if has_path:
+                    value["path"], mark = resolve_configured_file(controller_root, value["path"], label)
+                    mappings.append(mark)
+    derived = out / "compatible-config.json"
+    atomic_json(derived, config)
+    derived_mark = evidence(derived)
+    derived_mark["identity"] = configured_file_evidence(derived.resolve(), derived, "derived config")
+    contract = {"schema_version": "juno_managed_compatible_config.v1", "source": source_mark,
+                "derived": derived_mark, "path_mappings": mappings}
+    contract["sha256"] = sha(canonical(contract))
+    return contract, mappings
+
+
+def verify_compatible_config(contract: dict[str, Any]) -> None:
+    source = contract["source"]
+    current_source = configured_file_evidence(Path(source["resolved_path"]), Path(source["lexical_path"]), "controller config")
+    derived = contract["derived"]
+    current_derived = evidence(Path(derived["path"]))
+    current_derived["identity"] = configured_file_evidence(Path(derived["path"]), Path(derived["path"]), "derived config")
+    if current_source != source or current_derived != derived:
+        raise RunnerError("controller or derived config identity drifted during launch")
+    for expected in contract["path_mappings"]:
+        current = configured_file_evidence(Path(expected["resolved_path"]), Path(expected["lexical_path"]), expected["setting"])
+        if {"setting": expected["setting"], "configured_path": expected["configured_path"], **current} != expected:
+            raise RunnerError(f"configured source file identity drifted: {expected['setting']}")
+
+
 def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     if not args.task_id or not TASK_RE.fullmatch(args.task_id):
         raise RunnerError("worker mode requires a safe task ID")
@@ -228,13 +318,14 @@ def run(args: argparse.Namespace) -> int:
     prompt = out / "prompt.md"; atomic_bytes(prompt, prompt_data)
     capture = out / "capture.json"; response_path = out / "response.txt"
     stdout_path, stderr_path, combined_path = out / "stdout.log", out / "stderr.log", out / "combined.log"
+    compatible_config, _ = derive_compatible_config(controller_root, out)
     launcher = out / "launcher-root"; launcher.mkdir()
     agent_root = Path(args.agent_root).resolve()
-    argv = ["yy", "pi", "--config", str((controller_root / ".juno_task/config.json").resolve()), "-w", str(agent_root), "-f", str(prompt)]
+    argv = ["yy", "pi", "--config", compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     env, env_contract = clean_environment(args, capture, metadata)
     launch = {"schema_version": SCHEMA, "mode": args.mode, "started_at": now(), "controller": controller_before,
               "identity": identity, "launcher_root": str(launcher), "agent_root": str(agent_root),
-              "prompt": {**evidence(prompt), "echo": prompt_echo}, "argv": argv,
+              "prompt": {**evidence(prompt), "echo": prompt_echo}, "compatible_config": compatible_config, "argv": argv,
               "argv_sha256": sha(shlex.join(argv).encode()), "environment_contract": env_contract}
     atomic_json(out / "launch.json", launch)
     active = {"schema_version": SCHEMA, "state": "active", "mode": args.mode, "run_root": str(out), "started_at": launch["started_at"]}
@@ -274,6 +365,7 @@ def run(args: argparse.Namespace) -> int:
             raise RunnerError("managed child reported semantic failure")
         atomic_bytes(response_path, response.encode())
         controller_after = controller_identity(controller_root)
+        verify_compatible_config(compatible_config)
         subject_after = fingerprint(Path(identity.get("candidate_root") or args.agent_root))
         if controller_after != controller_before:
             raise RunnerError("controller mutated during managed launch")
@@ -288,13 +380,15 @@ def run(args: argparse.Namespace) -> int:
             identity["changed_paths"] = changed; identity["unexpected_paths"] = unexpected
         terminal = {"schema_version": SCHEMA, "state": "succeeded", "completed_at": now(), "exit_code": 0,
                     "elapsed_seconds": round(time.monotonic() - started, 3), "session_id": session.strip(),
-                    "semantic_outcome": "completed", "safe_next_action": "consume_receipt"}
+                    "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
+                    "safe_next_action": "consume_receipt"}
         artifacts = {name: evidence(path) for name, path in (("prompt", prompt), ("launch", out / "launch.json"),
                     ("stdout", stdout_path), ("stderr", stderr_path), ("combined", combined_path),
                     ("capture", capture), ("response", response_path))}
         artifacts["prompt"]["echo"] = prompt_echo
         receipt = {**terminal, "mode": args.mode, "controller_before": controller_before, "controller_after": controller_after,
                    "identity": identity, "subject_after": subject_after, "argv": argv, "argv_sha256": launch["argv_sha256"],
+                   "compatible_config": compatible_config,
                    "environment_contract": {**env_contract, "explicitly_set_key_names": env_contract["explicit_key_names"]},
                    "command_sha256": launch["argv_sha256"], "cwd": str(launcher), "artifacts": artifacts}
         atomic_json(out / "receipt.json", receipt); atomic_json(out / "terminal.json", terminal); (out / "active.json").unlink()
@@ -305,6 +399,7 @@ def run(args: argparse.Namespace) -> int:
         terminal = {"schema_version": SCHEMA, "state": "interrupted" if interrupted else "failed", "completed_at": now(),
                     "exit_code": proc.returncode if proc and proc.returncode is not None else 1,
                     "elapsed_seconds": round(time.monotonic() - started, 3), "semantic_outcome": "failed",
+                    "compatible_config_sha256": compatible_config["sha256"],
                     "failure_type": type(exc).__name__, "failure": str(exc)[:512],
                     "safe_next_action": "inspect_terminal_and_start_fresh_output_directory"}
         atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "launch": evidence(out / "launch.json")})

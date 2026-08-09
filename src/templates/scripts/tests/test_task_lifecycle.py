@@ -157,7 +157,7 @@ import json,os,pathlib,subprocess,sys,time
 args=sys.argv[1:];mode=os.environ.get("WORKER_MODE","allowed");capture=pathlib.Path(os.environ["JUNO_SUBAGENT_CAPTURE_PATH"])
 prompt_file=pathlib.Path(args[args.index("-f")+1]);prompt=prompt_file.read_text();authority_path=pathlib.Path(os.environ["JUNO_LIFECYCLE_AUTHORITY_MAP"]);authority=json.loads(authority_path.read_text())
 repo=pathlib.Path(authority["repositories"][0]["root"]);base=authority["repositories"][0]["approved_base_sha"];allowed=repo/authority["repositories"][0]["paths"][0]
-config=pathlib.Path(args[args.index("--config")+1]);controller=config.parents[1]
+config=pathlib.Path(args[args.index("--config")+1]);controller=pathlib.Path(os.environ["JUNO_TASK_ROOT"])
 if mode in {"allowed","controller","prompt-tamper"}: allowed.write_text("worker change\\n");subprocess.run(["git","-C",str(repo),"add",str(allowed)]);subprocess.run(["git","-C",str(repo),"commit","-m","fake worker"])
 elif mode=="unadmitted": (repo/"forbidden.txt").write_text("bad\\n");subprocess.run(["git","-C",str(repo),"add","forbidden.txt"]);subprocess.run(["git","-C",str(repo),"commit","-m","bad"])
 elif mode=="dirty": allowed.write_text("dirty\\n")
@@ -243,7 +243,7 @@ if mode=="stale": os.utime(capture,(1,1))
 import json,os,pathlib,re,subprocess,sys
 args=sys.argv[1:];capture=pathlib.Path(os.environ["JUNO_SUBAGENT_CAPTURE_PATH"]);mode=os.environ.get("REVIEW_MODE","pass");reviewer=os.environ["JUNO_TOOL_ID"].rsplit("_",1)[-1]
 prompt_file=pathlib.Path(args[args.index("-f")+1]);prompt=prompt_file.read_text();match=re.search(r"Frozen exact-tip checkouts: (.+)",prompt);checkouts=json.loads(match.group(1));product=pathlib.Path(checkouts[sorted(checkouts)[0]])
-config=pathlib.Path(args[args.index("--config")+1]);controller=config.parents[1]
+config=pathlib.Path(args[args.index("--config")+1]);controller=pathlib.Path(os.environ["JUNO_TASK_ROOT"])
 if mode=="tracked": (product/"product.txt").write_text("mutated\\n")
 elif mode=="staged": (product/"product.txt").write_text("mutated\\n");subprocess.run(["git","-C",str(product),"add","product.txt"])
 elif mode=="untracked": (product/"untracked.txt").write_text("x")
@@ -263,7 +263,7 @@ capture.write_text(json.dumps(payload))
 
     def review_fixture(self, mode: str, wrong_head: bool = False):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);root=Path(temporary.name)
-        controller,_=self.repo(root,"controller");(controller/".juno_task").mkdir();(controller/".juno_task/config.json").write_text("{}\\n");self.git(controller,"add",".");self.git(controller,"commit","-m","controller config")
+        controller,_=self.repo(root,"controller");(controller/".juno_task").mkdir();(controller/".juno_task/config.json").write_text("{}\n");self.git(controller,"add",".");self.git(controller,"commit","-m","controller config")
         repo,base=self.repo(root,"repo");tip=self.commit(repo,"candidate\n");plan=self.plan(root,[("root",repo,base)],"high")
         plan["controller_root"]=str(controller);plan["controller_branch"]="refs/heads/main";plan["expected_controller_head"]=self.git(controller,"rev-parse","HEAD")
         state=self.state(plan);state["candidate_shas"]={"root":tip};state["receipts"]["candidate_gate"]={"path":str(root/"gate.json"),"sha256":"x"};(root/"candidate.json").write_text("{}")
