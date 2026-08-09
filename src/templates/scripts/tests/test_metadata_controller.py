@@ -64,6 +64,10 @@ class MetadataControllerTest(unittest.TestCase):
         self.new_controller = self.temp / "metadata-controller"
         self.policy = mc.load_policy(POLICY)
         self.plan_path = self.temp / "plan.json"
+        self.task_policy = self.temp / "reviewed/task-workspace.json"
+        self.risk_policy = self.temp / "reviewed/risk-policy.json"
+        write(self.task_policy, (POLICY.parent / "task-workspace.json").read_text())
+        write(self.risk_policy, (POLICY.parent / "risk-policy.json").read_text())
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp, ignore_errors=True)
@@ -80,6 +84,9 @@ class MetadataControllerTest(unittest.TestCase):
             "runtime": self.runtime,
             "runtime_version": "2.0.32",
             "output": self.plan_path,
+            "policy_bundle": None,
+            "task_workspace_policy": self.task_policy,
+            "risk_policy": self.risk_policy,
         }
         values.update(changes)
         return argparse.Namespace(**values)
@@ -108,8 +115,8 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue((self.new_controller / ".juno_task/config/metadata-controller.json").is_file())
         risk_policy = self.new_controller / ".juno_task/config/risk-policy.json"
         self.assertTrue(risk_policy.is_file())
-        self.assertEqual(risk_policy.read_bytes(),
-                         (POLICY.parent / "risk-policy.json").read_bytes())
+        self.assertEqual(json.loads(risk_policy.read_text()),
+                         json.loads(self.risk_policy.read_text()))
         self.assertIn(".juno_task/config/risk-policy.json",
                       command("git", "ls-files", cwd=self.new_controller).splitlines())
         boundary = json.loads((self.new_controller / ".juno_task/receipts/controller-boundary.json").read_text())
@@ -162,6 +169,42 @@ class MetadataControllerTest(unittest.TestCase):
             mc.migration_plan(
                 self.migration_args(new_branch="refs/heads/unreviewed-controller"), self.policy
             )
+
+    def test_plan_binds_reviewed_policy_content_and_prepare_rejects_source_drift(self) -> None:
+        planned = mc.migration_plan(self.migration_args(), self.policy)
+        reviewed = planned["reviewed_policies"]
+        self.assertEqual(reviewed["source"]["kind"], "explicit_paths")
+        self.assertEqual(reviewed["task_workspace"]["sha256"],
+                         mc.digest(json.loads(self.task_policy.read_text())))
+        task = json.loads(self.task_policy.read_text())
+        task["workspace_root"] = str(self.temp / "different-task-worktrees")
+        self.task_policy.write_text(json.dumps(task))
+        with self.assertRaisesRegex(mc.BoundaryError, "changed after planning"):
+            mc.prepare(argparse.Namespace(plan=self.plan_path, output=self.temp / "prepare.json"), self.policy)
+        self.assertFalse(self.new_controller.exists())
+
+    def test_policy_bundle_is_accepted_and_missing_reviewed_policies_are_refused(self) -> None:
+        bundle = self.temp / "reviewed/policy-bundle.json"
+        bundle_value = {
+            "schema_version": "juno_migration_policy_bundle.v1",
+            "operation": "generate-policy",
+            "outcome": "generated_from_reviewed_answers",
+            "policies": {
+                "metadata_controller": self.policy,
+                "task_workspace": json.loads(self.task_policy.read_text()),
+                "risk": json.loads(self.risk_policy.read_text()),
+            },
+        }
+        write(bundle, json.dumps(bundle_value))
+        planned = mc.migration_plan(self.migration_args(
+            policy_bundle=bundle, task_workspace_policy=None, risk_policy=None), self.policy)
+        self.assertEqual(planned["reviewed_policies"]["source"]["path"], str(bundle.resolve()))
+        self.assertEqual(planned["reviewed_policies"]["source"]["kind"], "policy_bundle")
+
+        self.plan_path = self.temp / "missing-plan.json"
+        with self.assertRaisesRegex(mc.BoundaryError, "requires --policy-bundle"):
+            mc.migration_plan(self.migration_args(
+                task_workspace_policy=None, risk_policy=None), self.policy)
 
     def test_continuing_boundary_rejects_nested_specs_and_arbitrary_state_receipts(self) -> None:
         self.prepare()
