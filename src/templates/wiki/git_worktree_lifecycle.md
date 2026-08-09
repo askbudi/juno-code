@@ -10,7 +10,7 @@ juno_wiki:
 The controller is a metadata store. It owns Kanban, compact task state, and task artifacts, but it is not a product checkout and never merges or synchronizes into the product target.
 
 ```text
-controller: Kanban + .juno_task/state/tasks.json
+controller: Kanban + atomic .juno_task/state/tasks.json (tasks + queues/conflicts)
        |
        +-- yy task start X --> product worktree X -- implement/commit
        |
@@ -43,9 +43,9 @@ yy merge resolve TASK_ID
 
 `finish` requires a clean branch tip that descends from the frozen base and contains committed changes only under configured allowed product paths. Controller-private paths always refuse. Every configured focused command must pass. Success records the tip and changed paths as `QUEUED`; refusal preserves the branch and worktree as `WORKING`.
 
-Neither `start` nor `finish` mutates the target. `merge next` is the only normal target writer: a nonblocking lock is scoped to the repository identity and full target ref, direct descendants reuse the feature tip, and a moved target gets one ordinary both-parent merge in a temporary checkout. It runs affected validation once and advances the ref with an expected-old-SHA compare-and-swap followed by exact ref/tree readback. It never rebases, squashes, force-updates, pushes, releases, or synchronizes the controller.
+Neither `start` nor `finish` mutates the target. `merge next` is the only normal target writer: a nonblocking lock lives in the repository Git common directory and is scoped to the full target ref, so every controller for that repository contends on the same lock. Direct descendants reuse the feature tip, and a moved target gets one ordinary both-parent merge in a temporary checkout. It runs affected validation once and advances the ref with an expected-old-SHA compare-and-swap followed by exact ref/tree readback. The full target ref must be unowned by every worktree (use a detached integration checkout); the queue fails closed before CAS rather than making a checked-out branch incoherent. It never rebases, squashes, force-updates, pushes, releases, or synchronizes the controller.
 
-Text conflicts become durable `CONFLICT` records containing exact target/feature identities, conflict paths, and the preserved checkout. Resolve only those paths, stage them, and run `yy merge resolve TASK_ID`. Unrelated drift refuses. Resolution reuses the preserved checkout, validates the new candidate, and performs the same CAS; it never recreates or cleans the feature worktree. `yy merge status` is bounded deterministic observation.
+Text conflicts become durable `CONFLICT` records containing exact target/feature identities, conflict paths, and the preserved checkout. Resolve only those paths, stage them, and run `yy merge resolve TASK_ID`. Unrelated drift refuses. If affected validation fails, `CONFLICT_RESOLVED` retains the same resolved commit and checkout; retrying `merge resolve` revalidates it without recreating the worktree or repeating the merge. Task, queue, attempt, and conflict truth share one atomic `tasks.json` replacement—there is no second queue ledger. Cleanup only removes the exact registered, detached, clean queue-owned checkout whose HEAD is the reachable candidate. `yy merge status` is bounded deterministic observation.
 
 ## Configuration
 

@@ -132,12 +132,19 @@ def state_path(controller: Path) -> Path:
 def read_state(controller: Path) -> dict[str, Any]:
     path = state_path(controller)
     if not path.exists():
-        return {"schema_version": STATE_SCHEMA, "tasks": {}}
+        return {"schema_version": STATE_SCHEMA, "tasks": {}, "queues": {}}
     try:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise TaskWorkspaceError(f"invalid task state: {exc}") from exc
-    if not isinstance(value, dict) or set(value) != {"schema_version", "tasks"} or value.get("schema_version") != STATE_SCHEMA or not isinstance(value.get("tasks"), dict):
+    # Pre-queue Bolt controllers have the same task-record schema without the
+    # canonical queues section. Reading adds the empty section; the next atomic
+    # state write performs the one-way, data-preserving schema completion.
+    if isinstance(value, dict) and set(value) == {"schema_version", "tasks"} and value.get("schema_version") == STATE_SCHEMA:
+        value = {**value, "queues": {}}
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "tasks", "queues"}
+            or value.get("schema_version") != STATE_SCHEMA
+            or not isinstance(value.get("tasks"), dict) or not isinstance(value.get("queues"), dict)):
         raise TaskWorkspaceError("invalid task workspace state schema")
     return value
 

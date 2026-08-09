@@ -108,6 +108,17 @@ class TaskWorkspaceTests(unittest.TestCase):
         for task_id in ("X", "Y"):
             self.assertFalse((self.workspaces / task_id / ".juno_task").exists())
 
+    def test_task_mutations_preserve_atomic_queue_sections(self) -> None:
+        self.payload("start", "X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["queues"]["fixture-target"] = {"last_attempt": {"task_id": "Q"}, "conflicts": {}}
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        self.payload("start", "Y")
+        after = json.loads(state_path.read_text())
+        self.assertEqual(after["queues"], state["queues"])
+        self.assertEqual(set(after["tasks"]), {"X", "Y"})
+
     def test_start_is_idempotent_only_for_unchanged_clean_identity(self) -> None:
         self.assertEqual(self.payload("start", "X")["outcome"], "started")
         self.assertEqual(self.payload("start", "X")["outcome"], "already_started")

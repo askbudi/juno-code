@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -56,11 +57,10 @@ class MergeQueueTests(unittest.TestCase):
             task.parent.mkdir(parents=True, exist_ok=True)
             task.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
         self.write_policy()
-        queue = self.controller / ".juno_task/state/queue.json"
-        queue.parent.mkdir(parents=True, exist_ok=True)
-        queue.write_text('{"schema_version":"juno_merge_queue_state.v1","targets":{}}\n')
         git(self.controller, "add", ".")
         git(self.controller, "commit", "-m", "controller")
+        # Queue CAS targets must not be owned by any checkout.
+        git(self.repository, "switch", "--detach", self.base)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -171,7 +171,7 @@ class MergeQueueTests(unittest.TestCase):
         self.commit_feature("X", "src/x.txt", "x\n")
         common = Path(git(self.repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
         key = hashlib.sha256(f"{common}\0refs/heads/product".encode()).hexdigest()
-        lock = self.controller / ".juno_task/runtime/merge-queue" / f"{key}.lock"
+        lock = common / "juno-locks/merge-queue" / f"{key}.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
         before_state = (self.controller / ".juno_task/state/tasks.json").read_bytes()
         with lock.open("a+b") as handle:
@@ -181,6 +181,38 @@ class MergeQueueTests(unittest.TestCase):
         self.assertIn("another worker owns", failed.stderr)
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), before_state)
+
+    def test_distinct_controllers_share_the_git_common_dir_target_lock(self) -> None:
+        other_controller = self.root / "other-controller"
+        git(self.repository, "branch", "controller-two", self.base)
+        run(["git", "-C", str(self.repository), "worktree", "add", str(other_controller), "controller-two"], self.repository)
+        with merge_runtime.target_lock(self.controller, self.controller, "refs/heads/product"):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "another worker owns"):
+                with merge_runtime.target_lock(other_controller, self.controller, "refs/heads/product"):
+                    self.fail("second controller unexpectedly acquired the shared target lock")
+
+    def test_checked_out_target_ref_fails_closed_before_cas(self) -> None:
+        self.commit_feature("X", "src/x.txt", "x\n")
+        git(self.repository, "switch", "product")
+        failed = self.queue("next", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("target ref is checked out", failed.stderr)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+        self.assertEqual(self.task("status", "X")["state"], "QUEUED")
+
+    def test_atomic_state_write_failure_preserves_task_and_queue_truth_together(self) -> None:
+        tip = self.commit_feature("X", "src/x.txt", "x\n")
+        path = self.controller / ".juno_task/state/tasks.json"
+        before = path.read_bytes()
+        attempt = {"task_id": "X", "feature_sha": tip, "outcome": "MERGING"}
+        with mock.patch.object(merge_runtime.task_runtime.os, "replace", side_effect=OSError("injected")):
+            with self.assertRaisesRegex(OSError, "injected"):
+                merge_runtime.persist_attempt(self.controller, attempt, state_name="MERGING")
+        self.assertEqual(path.read_bytes(), before)
+        state = merge_runtime.task_runtime.read_state(self.controller)
+        self.assertEqual(state["tasks"]["X"]["state"], "QUEUED")
+        self.assertEqual(state["queues"], {})
+        self.assertFalse((self.controller / ".juno_task/state/queue.json").exists())
 
     def test_failed_validation_and_target_movement_do_zero_queue_cas(self) -> None:
         tip = self.commit_feature("X", "src/x.txt", "x\n")
@@ -217,25 +249,80 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), result["readback_sha"])
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product^{tree}"), result["candidate_tree"])
 
-        checkout = self.root / "dirty-reachable"
+        checkout = merge_runtime.candidate_directory(
+            self.controller, "Z", result["candidate_sha"], result["candidate_sha"]
+        )
+        checkout.rmdir()
         run(["git", "-C", str(self.repository), "worktree", "add", "--detach", str(checkout), result["candidate_sha"]], self.repository)
         (checkout / "dirty.txt").write_text("preserve\n")
-        cleanup = merge_runtime.cleanup_candidate(self.controller, checkout, "refs/heads/product", result["candidate_sha"])
+        cleanup = merge_runtime.cleanup_candidate(self.controller, self.controller, checkout, "refs/heads/product", result["candidate_sha"])
         self.assertEqual(cleanup["outcome"], "preserved")
         self.assertEqual(cleanup["reason"], "dirty")
         self.assertTrue(checkout.is_dir())
 
     def test_cleanup_refuses_unreachable_candidate(self) -> None:
-        checkout = self.root / "unreachable-candidate"
+        checkout = merge_runtime.candidate_directory(self.controller, "Z", self.base, self.base)
+        checkout.rmdir()
         run(["git", "-C", str(self.repository), "worktree", "add", "--detach", str(checkout), self.base], self.repository)
         (checkout / "src/unreachable.txt").write_text("candidate\n")
         git(checkout, "add", ".")
         git(checkout, "commit", "-m", "unreachable candidate")
         candidate = git(checkout, "rev-parse", "HEAD")
-        result = merge_runtime.cleanup_candidate(self.controller, checkout, "refs/heads/product", candidate)
+        result = merge_runtime.cleanup_candidate(self.controller, self.controller, checkout, "refs/heads/product", candidate)
         self.assertEqual(result["outcome"], "preserved")
         self.assertEqual(result["reason"], "candidate_unreachable_from_target")
         self.assertTrue(checkout.is_dir())
+
+    def test_cleanup_refuses_an_unrelated_registered_checkout(self) -> None:
+        checkout = self.root / "unrelated-checkout"
+        run(["git", "-C", str(self.repository), "worktree", "add", "--detach", str(checkout), self.base], self.repository)
+        result = merge_runtime.cleanup_candidate(
+            self.controller, self.controller, checkout, "refs/heads/product", self.base
+        )
+        self.assertEqual(result["outcome"], "preserved")
+        self.assertEqual(result["reason"], "unowned_path")
+        self.assertTrue(checkout.is_dir())
+
+    def test_failed_resolved_candidate_retries_same_commit_without_remerge(self) -> None:
+        self.commit_feature("A", "src/shared.txt", "A\n")
+        self.commit_feature("B", "src/shared.txt", "B\n")
+        self.queue_payload("next")
+        conflict = self.queue_payload("next")
+        checkout = Path(conflict["candidate_checkout"])
+        (checkout / "src/shared.txt").write_text("A+B\n")
+        git(checkout, "add", "src/shared.txt")
+        self.write_policy("import sys; sys.exit(13)")
+        failed = self.queue("resolve", "B", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("affected validation failed", failed.stderr)
+        status = self.task("status", "B")
+        self.assertEqual(status["state"], "CONFLICT_RESOLVED")
+        candidate = status["queue_attempt"]["candidate_sha"]
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), candidate)
+        self.assertTrue(checkout.is_dir())
+        self.write_policy()
+        resolved = self.queue_payload("resolve", "B")
+        self.assertEqual(resolved["candidate_sha"], candidate)
+        self.assertEqual(resolved["outcome"], "MERGED")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), candidate)
+
+    def test_resolution_state_write_failure_adopts_exact_committed_candidate_on_retry(self) -> None:
+        self.commit_feature("A", "src/shared.txt", "A\n")
+        self.commit_feature("B", "src/shared.txt", "B\n")
+        self.queue_payload("next")
+        conflict = self.queue_payload("next")
+        checkout = Path(conflict["candidate_checkout"])
+        (checkout / "src/shared.txt").write_text("recovered\n")
+        git(checkout, "add", "src/shared.txt")
+        with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=OSError("injected")):
+            with self.assertRaisesRegex(OSError, "injected"):
+                merge_runtime.merge_resolve(self.controller, "B")
+        candidate = git(checkout, "rev-parse", "HEAD")
+        self.assertEqual(self.task("status", "B")["state"], "CONFLICT")
+        self.assertNotEqual(run(["git", "-C", str(checkout), "rev-parse", "MERGE_HEAD"], checkout, False).returncode, 0)
+        recovered = self.queue_payload("resolve", "B")
+        self.assertEqual(recovered["candidate_sha"], candidate)
+        self.assertEqual(recovered["outcome"], "MERGED")
 
     def test_durable_merging_window_recovers_landed_cas_without_revalidation(self) -> None:
         tip = self.commit_feature("X", "src/x.txt", "x\n")

@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
-import { configureMergeQueueCommand } from '../commands/merge.js';
+import { configureMergeQueueCommand, requireExactMergeController } from '../commands/merge.js';
 
 describe('merge queue CLI', () => {
   it.each([
@@ -24,5 +24,25 @@ describe('merge queue CLI', () => {
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[1]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(true);
+  });
+
+  it('fails closed unless the installed resolver proves the exact controller root', () => {
+    const valid = {
+      resolver: 'installed', valid: true, role: 'controller', path: '/controller',
+      current_root: '/controller', source: 'registration', expected_branch: null,
+      actual_branch: null, enforcement: 'strict', operation: 'orchestration', diagnostics: [],
+    } as const;
+    expect(requireExactMergeController(valid)).toBe('/controller');
+    for (const patch of [
+      { resolver: 'missing' },
+      { valid: false },
+      { role: 'task' },
+      { role: 'integration-owner' },
+      { path: '/controller', current_root: '/task' },
+    ] as const) {
+      expect(() => requireExactMergeController({ ...valid, ...patch } as never)).toThrow(
+        'installed resolver and the exact canonical controller root',
+      );
+    }
   });
 });

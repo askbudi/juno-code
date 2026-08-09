@@ -19,7 +19,7 @@ The controller is a state store, never a product source or integration participa
 .juno_task/tasks/       canonical current Kanban tasks
 .juno_task/ledger/      canonical task history
 .juno_task/specs/       top-level task plans and decisions
-.juno_task/state/       exact lifecycle.json and queue.json state
+.juno_task/state/       lifecycle.json plus atomic tasks.json task/queue state
 .juno_task/receipts/    top-level final boundary/transition receipts
 .juno_task/config/      minimal controller policy
 ```

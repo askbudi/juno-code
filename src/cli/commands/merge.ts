@@ -3,16 +3,30 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { Command } from 'commander';
 import { resolveController } from '../../utils/controller-resolver.js';
+import type { ControllerResolution } from '../../utils/controller-resolver.js';
 
 export type MergeQueueOperation = 'status' | 'next' | 'resolve';
 export type MergeQueueInvoker = (operation: MergeQueueOperation, taskId?: string) => Promise<void>;
 
+export function requireExactMergeController(resolution: ControllerResolution): string {
+  const controllerRoot = path.resolve(resolution.path);
+  const currentRoot = path.resolve(resolution.current_root);
+  if (
+    resolution.resolver !== 'installed' ||
+    !resolution.valid ||
+    resolution.role !== 'controller' ||
+    controllerRoot !== currentRoot
+  ) {
+    throw new Error(
+      'Merge queue commands require an installed resolver and the exact canonical controller root',
+    );
+  }
+  return controllerRoot;
+}
+
 export async function invokeMergeQueue(operation: MergeQueueOperation, taskId?: string): Promise<void> {
   const resolution = resolveController(process.cwd(), operation === 'status' ? 'kanban' : 'orchestration');
-  if (!resolution.valid || resolution.role === 'integration-owner') {
-    throw new Error('Merge queue commands require the exact canonical controller workspace');
-  }
-  const controllerRoot = path.resolve(resolution.path);
+  const controllerRoot = requireExactMergeController(resolution);
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'merge_queue.py');
   if (!(await fs.pathExists(script))) {
     throw new Error('Missing managed merge queue runtime. Run `yy scripts update` and retry.');

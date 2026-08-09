@@ -208,7 +208,7 @@ class MetadataControllerTest(unittest.TestCase):
 
     def test_verification_rejects_required_generated_file_deletion(self) -> None:
         self.prepare()
-        command("git", "rm", ".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json", cwd=self.new_controller)
+        command("git", "rm", ".juno_task/config/metadata-controller.json", ".juno_task/state/tasks.json", cwd=self.new_controller)
         command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "delete generated controls", cwd=self.new_controller)
         evidence = mc.inspect(
             self.new_controller,
@@ -220,7 +220,7 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(evidence["checks"]["required_generated_present"])
         self.assertEqual(
             set(evidence["missing_required_generated"]),
-            {".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json"},
+            {".juno_task/config/metadata-controller.json", ".juno_task/state/tasks.json"},
         )
 
     def test_prepare_receipt_collision_refuses_before_branch_or_worktree_mutation(self) -> None:

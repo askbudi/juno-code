@@ -17,7 +17,6 @@
     ".juno_task/config/task-workspace.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
-    ".juno_task/state/queue.json",
     ".juno_task/state/tasks.json"
   ],
   "product_forbidden": [
@@ -40,7 +39,6 @@
     ".juno_task/config/task-workspace.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
-    ".juno_task/state/queue.json",
     ".juno_task/state/tasks.json",
     ".juno_task/tasks.md"
   ],
