@@ -190,11 +190,17 @@ class MetadataControllerTest(unittest.TestCase):
             "operation": "generate-policy",
             "outcome": "generated_from_reviewed_answers",
             "policies": {
-                "metadata_controller": self.policy,
+                "metadata_controller": json.loads(json.dumps(self.policy)),
                 "task_workspace": json.loads(self.task_policy.read_text()),
                 "risk": json.loads(self.risk_policy.read_text()),
             },
         }
+        bundle_value["policies"]["metadata_controller"]["generated_metadata"] = list(
+            reversed(bundle_value["policies"]["metadata_controller"]["generated_metadata"])
+        )
+        bundle_value["policies"]["metadata_controller"]["runtime"]["ignored_roots"] = list(
+            reversed(bundle_value["policies"]["metadata_controller"]["runtime"]["ignored_roots"])
+        )
         write(bundle, json.dumps(bundle_value))
         planned = mc.migration_plan(self.migration_args(
             policy_bundle=bundle, task_workspace_policy=None, risk_policy=None), self.policy)

@@ -124,7 +124,7 @@ def reviewed_policies_from_sources(
         policies = bundle["policies"]
         if set(policies) != {"metadata_controller", "task_workspace", "risk"}:
             raise BoundaryError("policy bundle must contain exactly metadata_controller, task_workspace, and risk")
-        if digest(load_policy_value(policies["metadata_controller"])) != digest(metadata_policy):
+        if digest(metadata_policy_from_bundle(bundle_path)) != digest(metadata_policy):
             raise BoundaryError("policy bundle metadata controller policy differs from --policy")
         task_value = validate_task_policy(load_policy_value(policies["task_workspace"]))
         risk_value = validate_risk_policy(load_policy_value(policies["risk"]))
