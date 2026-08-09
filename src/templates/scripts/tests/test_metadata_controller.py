@@ -116,6 +116,8 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "config", "--worktree", "--get", "core.sparseCheckout",
                                  cwd=self.new_controller), "false")
         self.assertIn(".juno_task/scripts/", (self.new_controller / ".gitignore").read_text())
+        self.assertIn(".juno_task/cache/", (self.new_controller / ".gitignore").read_text())
+        self.assertIn(".juno_task/locks/", (self.new_controller / ".gitignore").read_text())
         generated_config = json.loads((self.new_controller / ".juno_task/config.json").read_text())
         self.assertEqual(
             generated_config["controllerWorkspace"]["policy"],
@@ -217,6 +219,7 @@ class MetadataControllerTest(unittest.TestCase):
             policy_bundle=bundle, task_workspace_policy=None, risk_policy=None), self.policy)
         self.assertEqual(planned["reviewed_policies"]["source"]["path"], str(bundle.resolve()))
         self.assertEqual(planned["reviewed_policies"]["source"]["kind"], "policy_bundle")
+        self.assertEqual(mc.policy_from_plan_bundle(self.plan_path), self.policy)
 
         self.plan_path = self.temp / "missing-plan.json"
         with self.assertRaisesRegex(mc.BoundaryError, "requires --policy-bundle"):

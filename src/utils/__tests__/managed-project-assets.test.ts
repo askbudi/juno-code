@@ -107,6 +107,8 @@ describe('ManagedProjectAssets', () => {
     expect(metadataPolicy.schema_version).toBe('juno_metadata_controller_policy.v1');
     expect(metadataPolicy.product_forbidden).toContain('.juno_task/tasks');
     expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/scripts');
+    expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/cache');
+    expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/locks');
     expect(metadataPolicy.tracked_exact).not.toContain('.juno_task/state/queue.json');
     expect(metadataPolicy.tracked_exact).toContain('.juno_task/state/tasks.json');
     expect(metadataPolicy.tracked_exact).toContain('.juno_task/config/task-workspace.json');

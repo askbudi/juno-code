@@ -2,9 +2,9 @@
 """Protected, receipt-bound metadata-controller registration and rollback.
 
 This helper is deliberately narrower than controller preparation.  It changes
-only repository-local controller routing and the prepared controller's
-worktree role.  Product refs, controller refs, tracked files, and worktrees are
-read-only inputs.
+only repository-local controller routing and the protected roles of the old
+controller, prepared controller, and integration-owner worktrees.  Product
+refs, controller refs, tracked files, and worktrees are read-only inputs.
 """
 from __future__ import annotations
 
@@ -226,21 +226,21 @@ def registration_state(root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     source_role_state = snapshot(single_config(Path(plan["source"]["path"]), "juno.workspace.role", worktree=True))
     product_role_state = snapshot(single_config(root, "juno.workspace.role", worktree=True))
     product_authority_state = snapshot(single_config(root, "juno.workspace.roleAuthority", worktree=True))
-    product_role_base_state = snapshot(single_config(root, "juno.workspace.roleBase", worktree=True))
+    product_base_state = snapshot(single_config(root, "juno.workspace.roleBase", worktree=True))
     before = plan["before"]
     after = {"path": {"present": True, "value": plan["target"]["path"]},
              "branch": {"present": True, "value": plan["target"]["ref"]},
              "target_role": {"present": True, "value": "controller"},
              "source_role": {"present": True, "value": "controller-retired"},
              "product_role": {"present": True, "value": "integration-owner"},
-             "product_authority": {"present": True, "value": "protected-integration.v1"},
+             "product_role_authority": {"present": True, "value": "protected-integration.v1"},
              "product_role_base": {"present": True, "value": plan["product"]["head"]}}
     observed = {"path": path_state, "branch": branch_state, "target_role": role_state,
                 "source_role": source_role_state, "product_role": product_role_state,
-                "product_authority": product_authority_state, "product_role_base": product_role_base_state}
+                "product_role_authority": product_authority_state, "product_role_base": product_base_state}
     before_state = {"path": before["path"], "branch": before["branch"], "target_role": before["target_role"],
                     "source_role": before["source_role"], "product_role": before["product_role"],
-                    "product_authority": before["product_authority"],
+                    "product_role_authority": before["product_role_authority"],
                     "product_role_base": before["product_role_base"]}
     if observed == before_state:
         classification = "before"
@@ -333,17 +333,17 @@ def plan_command(args: argparse.Namespace) -> dict[str, Any]:
     if target_role != {"present": True, "value": "controller-pending"}:
         raise RegistrationError("target controller is not in the prepared pending role")
     source_role = snapshot(single_config(source, "juno.workspace.role", worktree=True))
-    if source_role not in ({"present": True, "value": "controller"}, {"present": False, "value": None}):
-        raise RegistrationError("source controller carries a foreign workspace role")
+    if source_role not in ({"present": False, "value": None}, {"present": True, "value": "controller"}):
+        raise RegistrationError("source controller has a foreign persisted role")
     source_routing = resolver_evidence(source)
     if source_routing != {"valid": True, "path": str(source), "role": "controller", "source": "registration", "operation": "kanban"}:
         raise RegistrationError("source controller does not pass active Kanban routing preflight")
     product_role = snapshot(single_config(product, "juno.workspace.role", worktree=True))
     product_authority = snapshot(single_config(product, "juno.workspace.roleAuthority", worktree=True))
-    product_role_base = snapshot(single_config(product, "juno.workspace.roleBase", worktree=True))
+    product_base = snapshot(single_config(product, "juno.workspace.roleBase", worktree=True))
     absent = {"present": False, "value": None}
-    if any(value != absent for value in (product_role, product_authority, product_role_base)):
-        raise RegistrationError("product integration owner must be fresh and carry no role, authority, or role base")
+    if any(value != absent for value in (product_role, product_authority, product_base)):
+        raise RegistrationError("product integration owner already carries workspace authority; use a fresh worktree")
     output = args.output.resolve(); outside_repositories(output, [source, target, product], common)
     runtime = runtime_identity(args.runtime, args.runtime_version)
     payload = {
@@ -358,7 +358,7 @@ def plan_command(args: argparse.Namespace) -> dict[str, Any]:
         "pending_verification": pending_verification_identity(args.pending_verification.resolve(), target, target_ref, args.expected_target_head),
         "before": {"path": registered_path, "branch": registered_branch, "target_role": target_role,
                    "source_role": source_role, "product_role": product_role,
-                   "product_authority": product_authority, "product_role_base": product_role_base},
+                   "product_role_authority": product_authority, "product_role_base": product_base},
         "registration_authorized": False, "product_ref_mutation": False,
         "preserve_source_controller": True, "source_routing": source_routing,
     }
@@ -383,39 +383,42 @@ def resolver_evidence(target: Path) -> dict[str, Any]:
             "source": value.get("source"), "operation": value.get("operation")}
 
 
-def strict_product_kanban_refusal(product: Path, controller: Path) -> dict[str, Any]:
-    """Prove the registered integration owner routes correctly but cannot write Kanban."""
+def integration_owner_evidence(product: Path, controller: Path, expected_base: str) -> dict[str, Any]:
     sibling = Path(__file__).resolve().with_name("controller_resolver.py")
-    spec = importlib.util.spec_from_file_location("juno_registration_strict_resolver", sibling)
+    spec = importlib.util.spec_from_file_location("juno_registration_integration_resolver", sibling)
     if spec is None or spec.loader is None:
         raise RegistrationError("packaged controller resolver is unavailable")
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-    controlled = ("JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT")
-    saved = {key: os.environ.pop(key) for key in controlled if key in os.environ}
+    names = ("JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT")
+    saved = {key: os.environ.get(key) for key in names}
+    for key in names:
+        os.environ.pop(key, None)
     os.environ["JUNO_WORKSPACE_ENFORCEMENT"] = "strict"
+    refused = False
     try:
-        try:
-            module.resolve(product, "kanban")
-        except module.ResolverError as exc:
-            value = exc.result
-        else:
-            raise RegistrationError("strict integration-owner Kanban write was not refused")
+        value = module.resolve(product, "kanban")
+    except module.ResolverError as exc:
+        value = exc.result
+        refused = "integration-owner workspace refuses kanban writes" in str(exc)
+    except Exception as exc:
+        raise RegistrationError(f"integration-owner routing verification failed: {exc}") from exc
     finally:
-        for key in controlled:
-            os.environ.pop(key, None)
-        os.environ.update(saved)
-    diagnostics = value.get("diagnostics", [])
-    expected_message = "integration-owner workspace refuses kanban writes"
-    passed = (value.get("valid") is False and value.get("path") == str(controller)
-              and value.get("source") == "registration" and value.get("role") == "integration-owner"
-              and value.get("role_authority") == "protected-integration.v1"
-              and value.get("role_base") == git(product, "rev-parse", "HEAD")
-              and value.get("operation") == "kanban"
-              and any(expected_message in str(message) for message in diagnostics))
-    return {"passed": passed, "valid": value.get("valid"), "path": value.get("path"),
-            "source": value.get("source"), "role": value.get("role"),
+        for key, prior in saved.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+    return {"valid": value.get("valid"), "path": value.get("path"),
+            "current_root": value.get("current_root"), "role": value.get("role"),
             "role_authority": value.get("role_authority"), "role_base": value.get("role_base"),
-            "operation": value.get("operation"), "diagnostics": diagnostics}
+            "source": value.get("source"), "operation": value.get("operation"),
+            "strict_write_refused": refused,
+            "passed": value.get("valid") is False and value.get("path") == str(controller)
+                      and value.get("current_root") == str(product)
+                      and value.get("role") == "integration-owner"
+                      and value.get("role_authority") == "protected-integration.v1"
+                      and value.get("role_base") == expected_base
+                      and value.get("source") == "registration" and refused}
 
 
 def checkpoint_evidence(target: Path) -> dict[str, Any]:
@@ -437,20 +440,19 @@ def verify_direction(plan: dict[str, Any], direction: str, *, run_checkpoint: bo
     expected = "after" if direction == "apply" else "before"
     route_root = target if direction == "apply" else source
     routing = resolver_evidence(route_root) if state["classification"] == expected else None
-    strict_refusal = (strict_product_kanban_refusal(product, target)
-                      if direction == "apply" and state["classification"] == expected else None)
+    integration_owner = (integration_owner_evidence(product, target, plan["product"]["head"])
+                         if direction == "apply" and state["classification"] == expected else None)
     checkpoint = checkpoint_evidence(route_root) if routing and run_checkpoint else None
     passed = state["classification"] == expected and routing == {
         "valid": True, "path": str(route_root), "role": "controller", "source": "registration", "operation": "kanban"
-    } and (direction != "apply" or bool(strict_refusal and strict_refusal["passed"]))
+    } and (direction != "apply" or bool(integration_owner and integration_owner["passed"]))
     return {"direction": direction, "passed": passed, "registration": state,
             "routing": routing, "product_ref": plan["product"]["ref"],
             "product_head": git(product, "rev-parse", f"{plan['product']['ref']}^{{commit}}"),
             "controllers_clean": not git(source, "status", "--porcelain=v2", "--untracked-files=all", check=False)
                                  and not git(target, "status", "--porcelain=v2", "--untracked-files=all", check=False),
             "checkpoint_admission": checkpoint, "kanban_write_route_verified": bool(routing),
-            "strict_product_kanban_refusal": strict_refusal,
-            "kanban_mutation_performed": False}
+            "integration_owner": integration_owner, "kanban_mutation_performed": False}
 
 
 def maybe_crash(boundary: str) -> None:
@@ -497,17 +499,17 @@ def transition(args: argparse.Namespace, direction: str) -> dict[str, Any]:
         if direction == "apply":
             set_config(source, "juno.workspace.role", "controller-retired", worktree=True); maybe_crash("source-role")
             set_config(target, "juno.workspace.role", "controller", worktree=True); maybe_crash("target-role")
+            set_config(product, "juno.workspace.role", "integration-owner", worktree=True); maybe_crash("product-role")
+            set_config(product, "juno.workspace.roleAuthority", "protected-integration.v1", worktree=True); maybe_crash("product-role-authority")
+            set_config(product, "juno.workspace.roleBase", plan["product"]["head"], worktree=True); maybe_crash("product-role-base")
             set_config(product, "juno.controller.path", plan["target"]["path"]); maybe_crash("controller-path")
             set_config(product, "juno.controller.branch", plan["target"]["ref"]); maybe_crash("controller-branch")
-            set_config(product, "juno.workspace.role", "integration-owner", worktree=True); maybe_crash("product-role")
-            set_config(product, "juno.workspace.roleAuthority", "protected-integration.v1", worktree=True); maybe_crash("product-authority")
-            set_config(product, "juno.workspace.roleBase", plan["product"]["head"], worktree=True); maybe_crash("product-role-base")
         else:
-            restore_config(product, "juno.workspace.roleBase", plan["before"]["product_role_base"], worktree=True); maybe_crash("product-role-base")
-            restore_config(product, "juno.workspace.roleAuthority", plan["before"]["product_authority"], worktree=True); maybe_crash("product-authority")
-            restore_config(product, "juno.workspace.role", plan["before"]["product_role"], worktree=True); maybe_crash("product-role")
             restore_config(product, "juno.controller.path", plan["before"]["path"]); maybe_crash("controller-path")
             restore_config(product, "juno.controller.branch", plan["before"]["branch"]); maybe_crash("controller-branch")
+            restore_config(product, "juno.workspace.roleBase", plan["before"]["product_role_base"], worktree=True); maybe_crash("product-role-base")
+            restore_config(product, "juno.workspace.roleAuthority", plan["before"]["product_role_authority"], worktree=True); maybe_crash("product-role-authority")
+            restore_config(product, "juno.workspace.role", plan["before"]["product_role"], worktree=True); maybe_crash("product-role")
             restore_config(target, "juno.workspace.role", plan["before"]["target_role"], worktree=True); maybe_crash("target-role")
             restore_config(source, "juno.workspace.role", plan["before"]["source_role"], worktree=True); maybe_crash("source-role")
         evidence = verify_direction(plan, direction, run_checkpoint=False)

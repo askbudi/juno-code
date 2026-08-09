@@ -247,6 +247,18 @@ def metadata_policy_from_bundle(path: Path) -> dict[str, Any]:
         return load_policy(policy_path)
 
 
+def policy_from_plan_bundle(path: Path) -> dict[str, Any] | None:
+    plan = read_json(path.expanduser().resolve(), "migration plan")
+    reviewed = plan.get("reviewed_policies")
+    source = reviewed.get("source") if isinstance(reviewed, dict) else None
+    if not isinstance(source, dict) or source.get("kind") != "policy_bundle":
+        return None
+    bundle_path = source.get("path")
+    if not isinstance(bundle_path, str) or not bundle_path:
+        raise BoundaryError("migration plan has an invalid reviewed policy bundle path")
+    return metadata_policy_from_bundle(Path(bundle_path))
+
+
 def ref_exists(root: Path, ref: str) -> bool:
     return run(["git", "-C", str(root), "show-ref", "--verify", "--quiet", ref], root, False).returncode == 0
 
@@ -766,6 +778,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "migration-plan" and args.policy_bundle is not None and args.policy is None:
         policy = metadata_policy_from_bundle(args.policy_bundle)
+    elif args.command in {"prepare", "cutover-plan", "rollback-plan"} and args.policy is None:
+        policy = policy_from_plan_bundle(args.plan)
+        if policy is None:
+            policy = load_policy((Path(__file__).resolve().parents[1] / "config/metadata-controller.json").resolve())
     else:
         policy_path = (args.policy or Path(__file__).resolve().parents[1] / "config/metadata-controller.json").resolve()
         policy = load_policy(policy_path)

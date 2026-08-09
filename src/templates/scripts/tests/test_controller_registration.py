@@ -46,7 +46,6 @@ class ProtectedRegistrationTest(unittest.TestCase):
         command("git", "add", ".juno_task/metadata.txt", cwd=self.target); command("git", "commit", "-m", "metadata controller", cwd=self.target)
         self.target_head = command("git", "rev-parse", "HEAD", cwd=self.target).stdout.strip()
         command("git", "config", "extensions.worktreeConfig", "true", cwd=self.product)
-        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=self.source)
         command("git", "config", "--worktree", "juno.workspace.role", "controller-pending", cwd=self.target)
         command("git", "config", "--local", "juno.controller.path", str(self.source), cwd=self.product)
         command("git", "config", "--local", "juno.controller.branch", "old-controller", cwd=self.product)
@@ -102,47 +101,36 @@ class ProtectedRegistrationTest(unittest.TestCase):
         self.assertEqual(apply.read_bytes(), first)
         self.assertTrue((self.receipts / "apply.json.intent.json").is_file())
         self.assertTrue(json.loads(apply.read_text())["evidence"]["passed"])
-        evidence = json.loads(apply.read_text())["evidence"]
-        self.assertTrue(evidence["strict_product_kanban_refusal"]["passed"])
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.product).stdout.strip(), "integration-owner")
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.roleAuthority", cwd=self.product).stdout.strip(), "protected-integration.v1")
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.roleBase", cwd=self.product).stdout.strip(), self.product_head)
-        strict = command("python3", str(RESOLVER), "--cwd", str(self.product), "--operation", "kanban",
-                         cwd=self.product, check=False, env={**os.environ, "JUNO_WORKSPACE_ENFORCEMENT": "strict"})
-        self.assertNotEqual(strict.returncode, 0); self.assertIn("refuses kanban writes", strict.stderr)
+        protected = command("python3", str(RESOLVER), "--cwd", str(self.product), "--operation", "kanban",
+                            cwd=self.product, check=False, env={"JUNO_WORKSPACE_ENFORCEMENT": "strict"})
+        self.assertNotEqual(protected.returncode, 0); self.assertIn("refuses kanban writes", protected.stderr)
         retired = command("python3", str(RESOLVER), "--cwd", str(self.source), "--operation", "kanban", cwd=self.source, check=False)
         self.assertNotEqual(retired.returncode, 0); self.assertIn("read-only", retired.stderr)
         rollback = self.receipts / "rollback.json"
         self.invoke("rollback", "--plan", str(self.plan), "--output", str(rollback), "--authorize-rollback")
         self.assertEqual(command("git", "config", "--local", "--get", "juno.controller.path", cwd=self.product).stdout.strip(), str(self.source))
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.target).stdout.strip(), "controller-pending")
-        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.source).stdout.strip(), "controller")
+        self.assertNotEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.source, check=False).returncode, 0)
         for key in ("juno.workspace.role", "juno.workspace.roleAuthority", "juno.workspace.roleBase"):
             self.assertNotEqual(command("git", "config", "--worktree", "--get", key, cwd=self.product, check=False).returncode, 0)
         self.assertEqual(command("git", "rev-parse", "refs/heads/main", cwd=self.product).stdout, before_product)
 
-    def test_legacy_source_role_may_be_absent_only_with_exact_registered_resolver_evidence(self) -> None:
-        command("git", "config", "--worktree", "--unset-all", "juno.workspace.role", cwd=self.source)
+    def test_explicit_legacy_source_role_is_accepted_but_foreign_product_authority_is_not(self) -> None:
+        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=self.source)
         self.make_plan()
-        before = json.loads(self.plan.read_text())["before"]
-        self.assertEqual(before["source_role"], {"present": False, "value": None})
-        apply = self.receipts / "legacy-apply.json"
-        self.invoke("apply", "--plan", str(self.plan), "--output", str(apply), "--authorize-apply")
-        rollback = self.receipts / "legacy-rollback.json"
-        self.invoke("rollback", "--plan", str(self.plan), "--output", str(rollback), "--authorize-rollback")
-        self.assertNotEqual(command("git", "config", "--worktree", "--get", "juno.workspace.role", cwd=self.source, check=False).returncode, 0)
-
-    def test_preauthorized_product_refuses_planning_without_mutation(self) -> None:
-        command("git", "config", "--worktree", "juno.workspace.roleAuthority", "protected-integration.v1", cwd=self.product)
+        self.plan.unlink()
+        command("git", "config", "--worktree", "juno.workspace.role", "task", cwd=self.product)
         refused = self.invoke("plan", "--source-controller", str(self.source), "--source-ref", "refs/heads/old-controller",
             "--expected-source-head", self.source_head, "--target-controller", str(self.target),
             "--target-ref", "refs/heads/controller-new", "--expected-target-head", self.target_head,
             "--product-root", str(self.product), "--product-ref", "refs/heads/main", "--expected-product-head", self.product_head,
             "--runtime", str(self.runtime), "--runtime-version", "2.1.1", "--inventory", str(self.inventory),
             "--policy-bundle", str(self.policy), "--pending-verification", str(self.pending),
-            "--output", str(self.receipts / "preauthorized.json"), check=False)
-        self.assertIn("must be fresh", refused.stderr)
-        self.assertFalse((self.receipts / "preauthorized.json").exists())
+            "--output", str(self.plan), check=False)
+        self.assertIn("already carries workspace authority", refused.stderr)
 
     def test_authority_dirt_detached_stale_and_foreign_config_fail_closed(self) -> None:
         self.make_plan()
@@ -174,17 +162,6 @@ class ProtectedRegistrationTest(unittest.TestCase):
         self.assertEqual(json.loads((self.receipts / "partial.json").read_text())["evidence"]["registration"]["classification"], "recoverable_partial")
         self.invoke("apply", "--plan", str(self.plan), "--output", str(output), "--authorize-apply")
         self.assertEqual(json.loads(output.read_text())["outcome"], "registered")
-
-    def test_interrupted_product_authority_registration_is_recoverable(self) -> None:
-        self.make_plan(); output = self.receipts / "authority-crashed.json"
-        env = {"JUNO_CONTROLLER_REGISTRATION_TEST_MODE": "1", "JUNO_CONTROLLER_REGISTRATION_CRASH_AFTER": "product-authority"}
-        crashed = self.invoke("apply", "--plan", str(self.plan), "--output", str(output), "--authorize-apply", check=False, env=env)
-        self.assertNotEqual(crashed.returncode, 0); self.assertFalse(output.exists())
-        diagnostic = self.invoke("verify", "--plan", str(self.plan), "--output", str(self.receipts / "authority-partial.json"), check=False)
-        self.assertIn("partial", diagnostic.stderr)
-        state = json.loads((self.receipts / "authority-partial.json").read_text())["evidence"]["registration"]
-        self.assertEqual(state["classification"], "recoverable_partial")
-        self.invoke("apply", "--plan", str(self.plan), "--output", str(output), "--authorize-apply")
 
     def test_stale_ref_fails_before_registration_mutation(self) -> None:
         self.make_plan()

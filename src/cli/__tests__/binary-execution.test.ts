@@ -577,6 +577,72 @@ describe('Binary Execution Tests', () => {
       expect(await fs.pathExists(path.join(tempDir, '.claude'))).toBe(false);
     });
 
+    it('keeps metadata-controller script updates runtime-only and Git-clean', async () => {
+      const junoTaskDir = path.join(tempDir, '.juno_task');
+      const policyDir = path.join(junoTaskDir, 'config');
+      const configPath = path.join(junoTaskDir, 'config.json');
+      const policyPath = path.join(policyDir, 'metadata-controller.json');
+      const configBytes = `${JSON.stringify({
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+      }, null, 2)}\n`;
+      const policyBytes = '{"preserved":"reviewed-project-policy"}\n';
+      await fs.ensureDir(policyDir);
+      await fs.writeFile(configPath, configBytes);
+      await fs.writeFile(policyPath, policyBytes);
+      await fs.writeFile(path.join(tempDir, '.gitignore'), [
+        '.juno_task/scripts/',
+        '.venv_juno/',
+        '.env.juno',
+        'built-cli-session-metadata/',
+        '',
+      ].join('\n'));
+      execFileSync('git', ['init', '-q'], { cwd: tempDir });
+      execFileSync('git', ['add', '.'], { cwd: tempDir });
+      execFileSync('git', [
+        '-c', 'user.name=Juno Test',
+        '-c', 'user.email=juno-test@example.invalid',
+        'commit', '-qm', 'metadata controller fixture',
+      ], { cwd: tempDir });
+
+      const update = await executeCLI(['scripts', 'update']);
+
+      expect(update.exitCode).toBe(0);
+      expect(update.stdout).toContain('ignored metadata-controller runtime scripts');
+      expect(await fs.pathExists(path.join(junoTaskDir, 'scripts/task_workspace.py'))).toBe(true);
+      expect(await fs.readFile(configPath, 'utf8')).toBe(configBytes);
+      expect(await fs.readFile(policyPath, 'utf8')).toBe(policyBytes);
+      for (const forbidden of [
+        '.juno_task/managed-assets.json',
+        '.juno_task/managed-conflicts',
+        '.juno_task/prompts',
+        '.juno_task/wiki',
+        'scripts/git-flow.sh',
+        '.agents',
+        '.claude',
+        '.pi',
+        '.codex',
+      ]) {
+        expect(await fs.pathExists(path.join(tempDir, forbidden))).toBe(false);
+      }
+      expect(execFileSync(
+        'git',
+        ['status', '--porcelain=v2', '--untracked-files=all'],
+        { cwd: tempDir, encoding: 'utf8' },
+      )).toBe('');
+
+      const doctor = await executeCLI(['scripts', 'doctor']);
+      expect(doctor.exitCode).toBe(0);
+      expect(doctor.stdout).toContain('Metadata-controller runtime scripts are coherent');
+      expect(execFileSync(
+        'git',
+        ['status', '--porcelain=v2', '--untracked-files=all'],
+        { cwd: tempDir, encoding: 'utf8' },
+      )).toBe('');
+    });
+
     it.skip('should handle invalid commands gracefully', async () => {
       // TODO: CLI design consideration - current behavior treats unknown arguments as main command input
       // Current CLI design: unknown commands like 'invalid-command' are treated as arguments to the main command
