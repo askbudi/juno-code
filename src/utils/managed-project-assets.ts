@@ -95,7 +95,28 @@ function safeVersion(version: string): string {
   return version.replace(/[^A-Za-z0-9_.-]/g, '_');
 }
 
-async function writeAtomic(destination: string, content: Buffer | string): Promise<void> {
+async function assertSafeProjectWritePath(projectRoot: string, destination: string): Promise<void> {
+  const root = path.resolve(projectRoot);
+  const target = path.resolve(destination);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Managed asset path escapes project root: ${destination}`);
+  }
+  const relative = path.relative(root, target);
+  let cursor = root;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, part);
+    if (await fs.pathExists(cursor) && (await fs.lstat(cursor)).isSymbolicLink()) {
+      throw new Error(`Refusing symbolic-link managed path component: ${path.relative(root, cursor)}`);
+    }
+  }
+}
+
+async function writeAtomic(
+  destination: string,
+  content: Buffer | string,
+  projectRoot: string,
+): Promise<void> {
+  await assertSafeProjectWritePath(projectRoot, destination);
   await fs.ensureDir(path.dirname(destination));
   const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(temporary, content);
@@ -177,12 +198,27 @@ export class ManagedProjectAssets {
 
     await this.assertRetiredGenerationSafe(projectDir, manifest, Boolean(options.force));
 
+    // Validate all possible install/candidate/backup parents before the first
+    // generation write. A missing leaf below a symlinked directory is just as
+    // unsafe as a symlinked leaf.
+    await assertSafeProjectWritePath(projectDir, projectConfigPath);
+    await assertSafeProjectWritePath(projectDir, manifestPath);
     for (const asset of MANAGED_ASSET_DEFINITIONS) {
-      const destinationPath = path.join(projectDir, asset.destination);
-      if (await fs.pathExists(destinationPath) &&
-          (await fs.lstat(destinationPath)).isSymbolicLink()) {
-        throw new Error(`Refusing symbolic-link managed asset: ${asset.destination}`);
-      }
+      await assertSafeProjectWritePath(projectDir, path.join(projectDir, asset.destination));
+      await assertSafeProjectWritePath(
+        projectDir,
+        path.join(
+          projectDir, '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+          `${asset.destination}.candidate`,
+        ),
+      );
+      await assertSafeProjectWritePath(
+        projectDir,
+        path.join(
+          projectDir, '.juno_task', 'managed-conflicts', `bolt-${safeVersion(packageVersion)}`,
+          `${asset.destination}.backup`,
+        ),
+      );
     }
 
     // Discover every ordinary managed conflict before changing the installed
@@ -205,7 +241,7 @@ export class ManagedProjectAssets {
               '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
               `${asset.destination}.candidate`,
             );
-            await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+            await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
             result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
           }
         } else if (
@@ -216,7 +252,7 @@ export class ManagedProjectAssets {
             '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
             `${asset.destination}.candidate`,
           );
-          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
           result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
         }
       }
@@ -244,6 +280,7 @@ export class ManagedProjectAssets {
         await writeAtomic(
           path.join(projectDir, candidateRelative),
           `${JSON.stringify(candidateConfig, null, 2)}\n`,
+          projectDir,
         );
         result.conflicts.push({
           destination: '.juno_task/config.json',
@@ -285,11 +322,11 @@ export class ManagedProjectAssets {
             safeVersion(packageVersion),
             `${asset.destination}.candidate`,
           );
-          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
           result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
           continue;
         }
-        await writeAtomic(destinationPath, sourceContent);
+        await writeAtomic(destinationPath, sourceContent, projectDir);
         if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
         result.installed.push(asset.destination);
       } else {
@@ -303,7 +340,7 @@ export class ManagedProjectAssets {
           if (options.force && !safelyManaged) {
             await this.archiveRetired(projectDir, asset.destination, currentContent, result);
           }
-          await writeAtomic(destinationPath, sourceContent);
+          await writeAtomic(destinationPath, sourceContent, projectDir);
           if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
           result.updated.push(asset.destination);
         } else {
@@ -313,7 +350,7 @@ export class ManagedProjectAssets {
             safeVersion(packageVersion),
             `${asset.destination}.candidate`,
           );
-          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent);
+          await writeAtomic(path.join(projectDir, candidateRelative), sourceContent, projectDir);
           result.conflicts.push({ destination: asset.destination, candidate: candidateRelative });
           continue;
         }
@@ -329,7 +366,7 @@ export class ManagedProjectAssets {
 
     await this.registerPromptMacros(projectDir, result, Boolean(options.force));
     manifest.packageVersion = packageVersion;
-    await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, projectDir);
 
     if (!options.silent) {
       console.log(
@@ -369,6 +406,7 @@ export class ManagedProjectAssets {
             ? contentRelative
             : `${contentRelative}.${attempt - 1}`;
       const backupPath = path.join(projectDir, backupRelative);
+      await assertSafeProjectWritePath(projectDir, backupPath);
       if (await fs.pathExists(backupPath)) {
         if ((await fs.lstat(backupPath)).isSymbolicLink()) {
           throw new Error(`Refusing symbolic-link managed backup: ${backupRelative}`);
@@ -400,6 +438,7 @@ export class ManagedProjectAssets {
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
       if (!(await fs.pathExists(destinationPath))) continue;
+      await assertSafeProjectWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
       }
@@ -447,6 +486,7 @@ export class ManagedProjectAssets {
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
       if (!(await fs.pathExists(destinationPath))) continue;
+      await assertSafeProjectWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
       }
@@ -625,6 +665,7 @@ export class ManagedProjectAssets {
       await writeAtomic(
         path.join(projectDir, candidateRelative),
         `${JSON.stringify(candidateConfig, null, 2)}\n`,
+        projectDir,
       );
       result.conflicts.push({
         destination: '.juno_task/config.json',
@@ -644,6 +685,6 @@ export class ManagedProjectAssets {
         result,
       );
     }
-    await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`, projectDir);
   }
 }
