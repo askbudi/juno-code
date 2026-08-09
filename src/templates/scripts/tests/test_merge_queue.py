@@ -429,6 +429,40 @@ class MergeQueueTests(unittest.TestCase):
         recovered = merge_runtime.merge_reopen(self.controller.resolve(), "Y")
         self.assertEqual(recovered["state"], "QUEUED")
 
+    def test_reopen_recovers_exact_marker_after_remove_succeeds_and_unlink_crashes(self) -> None:
+        checkout, marker = self.prepare_moved_finding_reopen()
+        original_unlink = Path.unlink
+        def fail_exact_marker(path: Path, *args: object, **kwargs: object) -> None:
+            if path.resolve() == marker.resolve():
+                raise OSError("marker unlink crash")
+            original_unlink(path, *args, **kwargs)
+        with mock.patch.object(Path, "unlink", new=fail_exact_marker):
+            with self.assertRaisesRegex(OSError, "marker unlink crash"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
+        self.assertFalse(checkout.exists()); self.assertTrue(marker.exists())
+        recovered = merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(recovered["state"], "QUEUED")
+        self.assertFalse(marker.exists())
+
+    def test_reopen_mismatched_orphan_marker_refuses_and_preserves_it(self) -> None:
+        checkout, marker = self.prepare_moved_finding_reopen()
+        original_unlink = Path.unlink
+        def fail_exact_marker(path: Path, *args: object, **kwargs: object) -> None:
+            if path.resolve() == marker.resolve():
+                raise OSError("marker unlink crash")
+            original_unlink(path, *args, **kwargs)
+        with mock.patch.object(Path, "unlink", new=fail_exact_marker):
+            with self.assertRaisesRegex(OSError, "marker unlink crash"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        value = json.loads(marker.read_text())
+        value["token"] = "0" * 48
+        marker.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "ownership mismatched"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "Y")
+        self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
+        self.assertTrue(marker.exists()); self.assertFalse(checkout.exists())
+
     def test_parallel_x_y_then_moved_target_uses_one_two_parent_composition(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:
             x = pool.submit(self.commit_feature, "X", "src/x.txt", "x\n")

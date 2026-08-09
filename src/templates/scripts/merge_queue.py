@@ -1069,6 +1069,7 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             policy_bytes = (controller / ".juno_task/config/task-workspace.json").read_bytes()
             reopen_attempt = {
                 "schema_version": "juno_merge_queue_reopen.v1",
+                "task_id": task_id,
                 "old_candidate_sha": old_attempt["candidate_sha"],
                 "old_candidate_checkout": checkout_value,
                 "old_candidate_token": token,
@@ -1114,8 +1115,29 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                 marker = owner_marker(controller, checkout)
                 registered = any(Path(row.get("worktree", "")).resolve() == checkout.resolve()
                                  for row in registered_worktrees(repository))
-                if marker.exists() or registered:
-                    raise MergeQueueError("old candidate cleanup is incomplete or orphaned")
+                if registered:
+                    raise MergeQueueError("old candidate path is absent but remains registered")
+                if marker.exists():
+                    observed_owner = read_candidate_owner(controller, checkout)
+                    expected_owner = reopen_attempt.get("old_candidate_owner")
+                    if (observed_owner != expected_owner
+                            or reopen_attempt.get("task_id") != task_id
+                            or observed_owner.get("task_id") != task_id
+                            or observed_owner.get("token") != token
+                            or observed_owner.get("candidate_checkout") != str(checkout.resolve())
+                            or observed_owner.get("repository_identity") != repository_identity(repository)):
+                        raise MergeQueueError("orphaned old candidate marker ownership mismatched")
+                    candidate_sha = reopen_attempt.get("old_candidate_sha")
+                    parents = task_runtime.git(
+                        repository, "show", "-s", "--format=%P", candidate_sha,
+                        check=False,
+                    ).split()
+                    if parents != [observed_owner.get("target_sha"), observed_owner.get("feature_sha")]:
+                        raise MergeQueueError("orphaned marker does not bind the persisted candidate SHA")
+                    # Git removal already succeeded. Delete only the strictly
+                    # matched marker; an unlink failure leaves REOPENING truth
+                    # intact for another identical retry.
+                    marker.unlink()
         queued = {key: value for key, value in record.items()
                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
         queued.update({"state": "QUEUED", "tip_sha": new_tip,
