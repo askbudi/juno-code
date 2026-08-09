@@ -5,7 +5,6 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigLoader, getPromptMacroDictionary } from '../../core/config.js';
-import { CleanWorktreeSpecializer } from '../clean-worktree-specializer.js';
 import { ScriptInstaller } from '../script-installer.js';
 import {
   MANAGED_PROJECT_ASSETS,
@@ -17,15 +16,6 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
 
 describe('ManagedProjectAssets', () => {
   let projectDir: string;
-
-  it('keeps sparse-controller generation aligned with the package version', async () => {
-    const packageJson = await fs.readJson(path.resolve(process.cwd(), 'package.json'));
-    const policy = await fs.readJson(
-      path.resolve(process.cwd(), 'src/templates/config/controller-workspace.json'),
-    );
-    expect(policy.generation.package_name).toBe('juno-code');
-    expect(policy.generation.package_version).toBe(packageJson.version);
-  });
 
   beforeEach(async () => {
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-managed-assets-'));
@@ -63,10 +53,10 @@ describe('ManagedProjectAssets', () => {
     const freshLoader = new ConfigLoader(projectDir);
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
-    expect(dictionary.clean_worktree).toContain('# Clean task lifecycle');
-    expect(dictionary.clean_worktree).toContain('REVIEW_READY');
-    expect(dictionary.clean_worktree).toContain('Reviewer A followed by Reviewer B');
-    expect(dictionary.clean_worktree).toContain('one replacement pair');
+    expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
+    expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
+    expect(dictionary.clean_worktree).toContain('Low risk needs no semantic review');
+    expect(dictionary.clean_worktree).toContain('expected-SHA CAS');
     expect(dictionary.reflect).toContain('# End-of-session reflection');
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
     expect(dictionary.reflect).toContain('complete reflection table');
@@ -76,9 +66,9 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.new_task_workflow).toContain('exact frozen base');
     expect(dictionary.new_task_workflow).toContain('yy task start TASK_ID');
     expect(dictionary.new_task_workflow).toContain('yy task finish TASK_ID');
-    expect(dictionary.run_workflow).toContain('# Run a workflow or task lifecycle');
-    expect(dictionary.run_workflow).toContain('workflow_runner.sh doctor');
-    expect(dictionary.run_workflow).toContain('waived_by_owner');
+    expect(dictionary.run_workflow).toContain('# Run a workflow or Bolt task');
+    expect(dictionary.run_workflow).toContain('read-only doctor support');
+    expect(dictionary.run_workflow).toContain('low zero, normal at most one');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
@@ -149,25 +139,12 @@ describe('ManagedProjectAssets', () => {
         'utf8',
       );
       expect(implementationReference).toBe(canonicalImplementationReference);
-      expect(implementationReference).toContain('# Implementation worker contract');
-      expect(implementationReference).toContain('Do not launch subagents or semantic reviewers');
-      expect(implementationReference).toContain('Stop and hand off at `REVIEW_READY`');
-      expect(implementationReference).not.toContain('Wait for both, consolidate findings');
-      expect(implementationReference).not.toContain('--mark done');
-      expect(implementationReference).not.toContain('--ID');
-      expect(implementationReference).toContain('Do not mark the task done');
-      expect(implementationReference.indexOf('create a coherent product commit')).toBeLessThan(
-        implementationReference.indexOf('Run the required full suite once'),
-      );
-      expect(implementationReference.indexOf('Record the product commit')).toBeLessThan(
-        implementationReference.indexOf('controller_checkpoint.py commit'),
-      );
-      expect(implementationReference.lastIndexOf('mark in_progress --id {task_id}')).toBeLessThan(
-        implementationReference.indexOf('controller_checkpoint.py commit'),
-      );
-      expect(implementationReference.indexOf('controller_checkpoint.py commit')).toBeLessThan(
-        implementationReference.indexOf('Stop and hand off at `REVIEW_READY`'),
-      );
+      expect(implementationReference).toContain('# Bolt implementation worker contract');
+      expect(implementationReference).toContain('yy task start TASK_ID');
+      expect(implementationReference).toContain('yy task finish TASK_ID');
+      expect(implementationReference).toContain('low zero');
+      expect(implementationReference).toContain('expected-SHA CAS');
+      expect(implementationReference).toContain('controller checkpoint');
     }
 
     const distributedSkills = [
@@ -234,7 +211,6 @@ describe('ManagedProjectAssets', () => {
     for (const requiredPath of [
       '.juno_task/scripts/wiki_lint.sh',
       '.juno_task/scripts/wiki_lint.py',
-      '.juno_task/scripts/tests/test_integration_concurrency.py',
       '.juno_task/scripts/managed_agent_runner.py',
       '.juno_task/scripts/tests/test_managed_agent_runner.py',
       '.juno_task/scripts/metadata_controller.py',
@@ -256,7 +232,7 @@ describe('ManagedProjectAssets', () => {
       './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md',
       // Keep the fast suite bounded: this proves the installed lifecycle modules load;
       // the exact installed concurrency gate is exercised by the package acceptance loop.
-      'python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py',
+      'python3 -m py_compile .juno_task/scripts/task_workspace.py .juno_task/scripts/merge_queue.py .juno_task/scripts/risk_policy.py',
       'python3 .juno_task/scripts/tests/test_metadata_controller.py',
       'python3 .juno_task/scripts/tests/test_risk_policy.py',
       'python3 .juno_task/scripts/tests/test_release_gate.py',
@@ -313,7 +289,7 @@ describe('ManagedProjectAssets', () => {
     expect(result.updated).toContain(destination);
     expect(result.installed).toContain('.juno_task/prompts/new_task_workflow.md');
     expect(await fs.readFile(destinationPath, 'utf8')).toContain(
-      '# Run a workflow or task lifecycle',
+      '# Run a workflow or Bolt task',
     );
   });
 
@@ -328,7 +304,7 @@ describe('ManagedProjectAssets', () => {
     expect(conflict).toBeDefined();
     expect(await fs.readFile(destinationPath, 'utf8')).toContain('refs/heads/customer-release');
     expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      '# Clean task lifecycle',
+      '# Clean Bolt task workspaces',
     );
   });
 
@@ -343,7 +319,7 @@ describe('ManagedProjectAssets', () => {
     const backup = result.backups.find((entry) => entry.destination === destination);
     expect(backup).toBeDefined();
     expect(await fs.readFile(path.join(projectDir, backup!.backup), 'utf8')).toBe(customized);
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Clean task lifecycle');
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Clean Bolt task workspaces');
   });
 
   it('preserves a conflicting macro unless force is explicit', async () => {
@@ -364,108 +340,6 @@ describe('ManagedProjectAssets', () => {
     );
     expect(forced.backups.some((entry) => entry.destination === '.juno_task/config.json')).toBe(
       true,
-    );
-  });
-});
-
-describe('CleanWorktreeSpecializer', () => {
-  let projectDir: string;
-
-  beforeEach(async () => {
-    projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-clean-policy-'));
-    await fs.ensureDir(path.join(projectDir, '.juno_task'));
-    await fs.writeJson(path.join(projectDir, '.juno_task', 'config.json'), {});
-  });
-
-  afterEach(async () => fs.remove(projectDir));
-
-  const policy = {
-    schemaVersion: 2 as const,
-    controller: { checkoutPath: '/workspace/controller', branch: 'refs/heads/juno/controller-v2' },
-    taskWorktree: {
-      pathConvention: '/tmp/juno/tasks/{run-id}',
-      branchConvention: 'juno/{task-id}-{run-id}',
-    },
-    repositories: [
-      {
-        name: 'root',
-        kind: 'root' as const,
-        repositoryPath: '/workspace/product',
-        targetRef: 'refs/heads/release/customer-a',
-        remoteTarget: 'refs/remotes/upstream/release/customer-a',
-        exactBasePolicy: 'approved_target_sha_or_narrow_fetch_head' as const,
-        integrationChannel: 'git_common_dir_and_target_ref' as const,
-        targetMovement: 'rebuild_and_rereview' as const,
-        preMergeValidation: ['npm test'],
-        actualTargetValidation: ['npm test', 'npm run build'],
-      },
-      {
-        name: 'nested-api',
-        kind: 'nested' as const,
-        repositoryPath: '/workspace/product/api',
-        targetRef: 'refs/heads/integration/api-v7',
-        remoteTarget: 'refs/remotes/vendor/integration/api-v7',
-        exactBasePolicy: 'approved_target_sha_or_narrow_fetch_head' as const,
-        integrationChannel: 'git_common_dir_and_target_ref' as const,
-        targetMovement: 'rebuild_and_rereview' as const,
-        preMergeValidation: ['python -m pytest -q'],
-        actualTargetValidation: ['python -m pytest -q'],
-      },
-    ],
-    cleanup: {
-      reachabilityPolicy: 'remove only after every reviewed tip is reachable from its exact target',
-      fallback: 'preserve_with_owner_and_reason' as const,
-    },
-  };
-
-  it('renders exact nonstandard root and nested targets while preserving authority boundaries', async () => {
-    const result = await CleanWorktreeSpecializer.specialize(projectDir, policy);
-    const prompt = await fs.readFile(path.join(projectDir, result.promptPath), 'utf8');
-    expect(prompt).toContain('refs/heads/release/customer-a');
-    expect(prompt).toContain('refs/heads/integration/api-v7');
-    expect(prompt).toContain('refs/remotes/upstream/release/customer-a');
-    expect(prompt).not.toContain('refs/heads/<local-target>');
-    expect(prompt).not.toContain('origin/<target>');
-    expect(prompt).toContain('git_common_dir_and_target_ref');
-    expect(prompt).toContain('preserve_with_owner_and_reason');
-    expect(prompt).toContain('grants no authority to push, publish, deploy');
-    expect(prompt).not.toContain('002-e-mail-services');
-  });
-
-  it('rejects an absent nested target and retired repository-wide integration policy', async () => {
-    const invalid: any = structuredClone(policy);
-    invalid.repositories[1].targetRef = '';
-    await expect(CleanWorktreeSpecializer.specialize(projectDir, invalid)).rejects.toThrow();
-
-    const mismatch: any = structuredClone(policy);
-    mismatch.repositories[1].integrationChannel = 'repository_wide_lease';
-    await expect(CleanWorktreeSpecializer.specialize(projectDir, mismatch)).rejects.toThrow();
-  });
-
-  it('leaves specialization customized so routine update preserves exact targets', async () => {
-    await CleanWorktreeSpecializer.specialize(projectDir, policy);
-    const update = await ManagedProjectAssets.update(projectDir, { silent: true });
-    expect(update.conflicts.some((entry) => entry.destination.endsWith('clean_worktree.md'))).toBe(
-      true,
-    );
-    expect(
-      await fs.readFile(path.join(projectDir, '.juno_task/prompts/clean_worktree.md'), 'utf8'),
-    ).toContain('refs/heads/release/customer-a');
-  });
-
-  it('fails closed instead of replacing a missing specialized policy with the portable default', async () => {
-    await CleanWorktreeSpecializer.specialize(projectDir, policy);
-    const promptPath = path.join(projectDir, '.juno_task/prompts/clean_worktree.md');
-    await fs.remove(promptPath);
-
-    const update = await ManagedProjectAssets.update(projectDir, { silent: true });
-    const conflict = update.conflicts.find((entry) =>
-      entry.destination.endsWith('clean_worktree.md'),
-    );
-    expect(conflict).toBeDefined();
-    expect(await fs.pathExists(promptPath)).toBe(false);
-    expect(await fs.readFile(path.join(projectDir, conflict!.candidate), 'utf8')).toContain(
-      '# Clean task lifecycle',
     );
   });
 });

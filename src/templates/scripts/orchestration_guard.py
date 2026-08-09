@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Visible singleton/ownership guard for cron and workflow launch.
 
-This guard serializes orchestration only. It never changes Git refs and does not
-confer integration authority; target advancement still uses
-integration_owner_preflight.py and its repository leases.
+This guard serializes generic orchestration only. It never changes Git refs or
+confers merge authority; Bolt target advancement is owned by ``yy merge``.
 """
 from __future__ import annotations
 

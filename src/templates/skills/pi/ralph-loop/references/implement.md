@@ -1,36 +1,46 @@
 <!-- GENERATED DESTINATIONS: edit this canonical source, then run `npm run generate:implementation-contract`. -->
 ---
-description: Implement exactly one assigned Kanban task in its admitted exact-base worktree and stop at REVIEW_READY.
+description: Implement exactly one assigned Kanban task in its admitted Bolt product worktree and stop after queueing it.
 ---
 
-# Implementation worker contract
+# Bolt implementation worker contract
 
-An implementation worker owns one explicitly assigned Kanban task. It does not choose a different task, create follow-up tasks, edit the project plan, orchestrate reviews, integrate, release, deploy, or clean lifecycle worktrees.
+An implementation worker owns one explicitly assigned task. It does not select
+other work, mutate the product target, merge, release, deploy, or clean another
+task's workspace.
 
-## 1. Resolve the assignment
+## 1. Resolve and preserve admission
 
-1. Read `AGENTS.md` and the complete assigned task with `./.juno_task/scripts/kanban.sh get {task_id}`.
-2. Treat current user input and that task as the scope authority. Read related tasks only when their complete content is required.
-3. Verify that `TASK_ROOT` is the admitted task worktree, that its Git root/base/branch match the handoff, and that expected product paths are explicit. Stop on missing or contradictory lifecycle evidence.
-4. Write a bounded progress response file and mark the task in progress through the controller wrapper: `./.juno_task/scripts/kanban.sh mark in_progress --id {task_id} --response-file {response_file}`.
+1. Read `AGENTS.md` and the complete assigned task from the canonical controller.
+2. Run `yy task start TASK_ID` unless the handoff already contains the matching
+   active Bolt task record. Verify the returned worktree, branch, full target ref,
+   and exact base SHA before editing; stop on missing or contradictory evidence.
+3. Work only in that product worktree. Never edit product files in the controller
+   or copy controller ledgers, specs, state, or artifacts into a task worktree.
+4. During the live-controller transition, all existing controller checkpoint and
+   controller-identity checks remain mandatory. Do not weaken or bypass them.
 
-## 2. Implement the task
+## 2. Implement
 
-1. Work only under the admitted `TASK_ROOT`; never edit product files in the controller or integration-owner checkout.
-2. Implement only requested behavior and owned paths. Preserve project single sources of truth and synchronize runtime/template pairs whenever one changes.
-3. Use focused affected tests as the edit loop. Complete the ordinary happy path and required dangerous-path checks before the candidate boundary.
-4. Do not launch subagents or semantic reviewers. If the task cannot be completed within scope, leave a bounded blocker response and stop without claiming success.
+1. Edit only requested product paths and preserve project sources of truth.
+2. Use focused affected tests in the edit loop. Other feature worktrees may run
+   concurrently; do not wait for or modify them.
+3. Do not launch semantic reviewers. Candidate review is risk-based: low zero,
+   normal at most one, high exactly two sequential reviewers on one frozen tip.
+4. If blocked, record bounded truthful state and stop without claiming success.
 
-## 3. Freeze the candidate boundary
+## 3. Queue and hand off
 
-1. Confirm focused tests, lifecycle checks, runtime/template parity, and `git diff --check` pass.
-2. Explicitly stage only task-owned product paths and create a coherent product commit. Never use broad staging and never push without separate authorization.
-3. Run the required full suite once in the lifecycle-owned detached exact-tip validation checkout, with controller routing unset. If it fails, repair the implementation, rerun focused tests, create a replacement commit, and validate that replacement boundary.
-4. `REVIEW_READY` requires the requested behavior, ordinary happy path, focused checks, one passing isolated exact-tip full suite, a clean task worktree, and no known TODO or accepted open finding.
+1. Run focused tests, required dangerous-path checks, parity checks, and
+   `git diff --check`.
+2. Stage only task-owned paths, commit coherently, and leave the worktree clean.
+3. Run `yy task finish TASK_ID`; it validates the exact tip and records `QUEUED`.
+4. Record the commit and bounded response in Kanban. Run the guarded controller
+   checkpoint after controller metadata updates; product dirt, staged work,
+   conflicts, symlinks, nested repositories, or submodule dirt must still block.
 
-## 4. Record and hand off
-
-1. Write a bounded `REVIEW_READY` response file containing the exact base/tip, changed paths, and focused validation results; keep the task in progress with `./.juno_task/scripts/kanban.sh mark in_progress --id {task_id} --response-file {response_file}`.
-2. Record the product commit with `./.juno_task/scripts/kanban.sh update {task_id} --commit {commit_hash}`.
-3. Run `./.juno_task/scripts/controller_checkpoint.py commit --message "chore(controller): checkpoint task state"` after both Kanban updates. Product dirt, pre-staged work, conflicts, symlinks, nested repositories, or submodule dirt block the checkpoint rather than being absorbed.
-4. Stop and hand off at `REVIEW_READY`. Do not mark the task done, wait for reviewers, consolidate findings, dispatch repair, move refs, integrate, release, push, publish, deploy, mutate production, restart services, run post-deploy E2E, or clean worktrees. The `yy lifecycle` logical orchestrator owns all later states.
+Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
+moved targets/conflicts, applies risk-based review, advances by expected-SHA CAS,
+and performs deterministic readback. Never push, publish, deploy, mutate
+production, restart services, run post-deploy E2E, or clean worktrees without
+separate authority.

@@ -15,7 +15,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
-import { resolveAutomaticProjectBootstrap, resolveController } from '../utils/controller-resolver.js';
+import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -1201,63 +1201,21 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
       await runUpdate(options);
     });
 
-  const promptsCommand = program.command('prompts').description('Manage installed Juno prompt policies');
-  promptsCommand
-    .command('specialize-clean-worktree')
-    .description('Render exact migration-approved repository integration targets into clean_worktree.md')
-    .requiredOption('--policy-file <path>', 'JSON file containing exact controller/task/repository integration policy')
-    .option('-w, --cwd <path>', 'Project directory (default: current working directory)')
-    .action(async (options: { policyFile: string; cwd?: string }) => {
-      const argvCwd = extractOptionValueFromArgv(process.argv.slice(2), '--cwd', '-w');
-      const workingDirectory = options.cwd?.trim() || argvCwd?.trim() || process.cwd();
-      const { CleanWorktreeSpecializer } = await import('../utils/clean-worktree-specializer.js');
-      const result = await CleanWorktreeSpecializer.specializeFromFile(workingDirectory, options.policyFile);
-      console.log(chalk.green(`✓ Specialized ${result.promptPath}`));
-      console.log(chalk.gray(`  SHA-256: ${result.promptSha256}`));
-      console.log(chalk.gray(`  Receipt: ${result.receiptPath}`));
-      if (result.backupPath) console.log(chalk.yellow(`  Backup: ${result.backupPath}`));
-    });
 }
 
 function setupTaskLifecycleCommand(program: Command): void {
-  const invoke = async (operation: 'run' | 'resume' | 'status', options: { task: string }) => {
-    const [{ spawn }, path, fs] = await Promise.all([
-      import('node:child_process'),
-      import('node:path'),
-      import('fs-extra'),
-    ]);
-    const resolution = resolveController(process.cwd(), 'orchestration');
-    if (!resolution.valid || resolution.role === 'integration-owner') {
-      throw new Error('Lifecycle requires the exact canonical controller workspace');
-    }
-    const controllerRoot = path.resolve(resolution.path);
-    const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_lifecycle.py');
-    if (!(await fs.pathExists(script))) {
-      throw new Error('Missing managed lifecycle runtime. Run `yy scripts update` and retry.');
-    }
-    const args = [script, operation, '--task', options.task];
-    const lifecycleEnv = {
-      ...process.env,
-      JUNO_TASK_ROOT: controllerRoot,
-      JUNO_WORKSPACE_ROLE: 'controller',
-      JUNO_WORKSPACE_ENFORCEMENT: 'strict',
-    };
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      const child = spawn('python3', args, { cwd: controllerRoot, env: lifecycleEnv, stdio: 'inherit' });
-      child.once('error', reject);
-      child.once('exit', (code, signal) => {
-        if (signal) reject(new Error(`Lifecycle terminated by signal ${signal}`));
-        else resolve(code ?? 1);
-      });
-    });
-    if (exitCode !== 0) process.exitCode = exitCode;
-  };
-
   const lifecycle = program
     .command('lifecycle')
-    .description('Run one task-derived root/direct-child lifecycle');
+    .description('Removed command; migrate to the Bolt task and merge interfaces');
   for (const operation of ['run', 'resume', 'status'] as const) {
-    lifecycle.command(operation).requiredOption('--task <task-id>', 'Canonical Kanban task ID').action((options) => invoke(operation, options));
+    lifecycle
+      .command(operation)
+      .allowUnknownOption(true)
+      .option('--task <task-id>', 'Legacy task ID (ignored)')
+      .action(() => {
+        console.error('The legacy lifecycle executor was removed. Use `yy task start|status|finish` and `yy merge status|next|resolve`.');
+        process.exitCode = 2;
+      });
   }
 }
 

@@ -413,18 +413,9 @@ def render_workflow(manifest: dict[str, Any]) -> str:
         write_contract = generated_write_contract(task)
         write_capable = generated_task_requires_admission(task)
         if write_capable:
-            admission = task["edit_admission"]
-            command = ["python3", ".juno_task/scripts/worktree_lifecycle.py", "edit-preflight",
-                       "--repository", admission["repository"], "--target-ref", admission["target_ref"],
-                       "--approved-base", admission["approved_base"], "--task-id", task_id,
-                       "--path", admission["task_worktree"], "--manifest", admission["manifest"],
-                       "--verify-receipt", admission["verify_receipt"], "--task-worktree", admission["task_worktree"],
-                       "--task-branch-ref", admission["task_branch_ref"], "--cleanup-owner", admission["cleanup_owner"],
-                       "--next-receipt", admission["next_receipt"], "--output", "{{ receipts." + receipt_id + ".path }}"]
-            for expected_path in admission["expected_paths"]: command.extend(["--expected-path", expected_path])
-            lines.extend([f"  - id: pre_edit_{idx}_{task_id}", "    description: Read-only exact task-worktree edit admission",
-                          "    capture_session: false", "    fail_workflow: true", "    command:"])
-            lines.extend(f"      - {json.dumps(argument)}" for argument in command)
+            raise ValueError(
+                f"task {task_id} uses retired workflow edit admission; start it with `yy task start {task_id}`"
+            )
         title = task.get("title") or f"Run Kanban task {task_id}"
         if "read_first" in task:
             read_first = task["read_first"]

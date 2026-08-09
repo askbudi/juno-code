@@ -248,11 +248,9 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     await fs.remove(testDir);
   }, 30_000);
 
-  it('exists in template scripts and remains synced with runtime script', async () => {
+  it('keeps the packaged template as the Workflow Runner source of truth', async () => {
     expect(await fs.pathExists(templateScript)).toBe(true);
-    expect(await fs.pathExists(runtimeScript)).toBe(true);
     const templateContent = await fs.readFile(templateScript, 'utf8');
-    expect(templateContent).toBe(await fs.readFile(runtimeScript, 'utf8'));
     expect(templateContent).not.toContain('_dt.UTC');
     expect(templateContent).not.toContain('def canonicalize_working_directory');
     expect(templateContent).not.toContain('def resolve_parent_pid');
@@ -263,7 +261,9 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
     expect(templateContent).toContain('--parent-pid');
     expect(templateContent).not.toContain('def command_owns_actual_review_child');
     expect(templateContent).not.toContain('env["JUNO_WORKFLOW_DIRECT_OWNER"]');
-    expect(templateContent).toContain('legacy local_integration execution was retired by the task lifecycle hard cut');
+    expect(templateContent).toContain('legacy local_integration execution is read-only');
+    expect(templateContent).toContain('yy task start TASK_ID');
+    expect(templateContent).toContain('yy merge next');
     expect(templateContent).not.toContain('local_integration requires schema_version: 2');
     expect(templateContent).toContain('required_fields must include producer_step_digest');
     expect(templateContent).not.toContain('--checkpoint-controller');
@@ -521,9 +521,10 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     const accepted = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(accepted.status).not.toBe(0);
     expect(accepted.stderr + accepted.stdout).toContain(
-      'legacy local_integration execution was retired by the task lifecycle hard cut',
+      'legacy local_integration execution is read-only',
     );
-    expect(accepted.stderr + accepted.stdout).toContain('yy lifecycle run --task TASK_ID');
+    expect(accepted.stderr + accepted.stdout).toContain('yy task start TASK_ID');
+    expect(accepted.stderr + accepted.stdout).toContain('yy merge next');
     return;
 
     for (const reviewStepId of ['pre_merge_review', 'candidate_review']) {
@@ -752,7 +753,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     for (const extra of [[], ['--from-step', 'old'], ['--amends-run', path.join(testDir, 'prior-run')]]) {
       const result = runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, `retired-${extra.length}`), ...extra]);
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain('task lifecycle hard cut');
+      expect(result.stderr).toContain('legacy local_integration execution is read-only');
     }
     const historical = path.join(testDir, 'historical-local-run');
     await fs.ensureDir(historical);
@@ -761,7 +762,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     });
     const recovery = runWorkflow(['recover-attempt', historical, '--dry-run']);
     expect(recovery.status).toBe(2);
-    expect(recovery.stderr).toContain('task lifecycle hard cut');
+    expect(recovery.stderr).toContain('legacy local_integration execution is read-only');
     await fs.writeJson(path.join(historical, 'manifest.json'), {
       schema_version: '1.0', workflow_class: 'local_integration', steps: [], status: 'failed',
     });
@@ -1688,7 +1689,7 @@ summary: |
     });
     const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(result.stderr).toContain('legacy local_integration execution is read-only');
     expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 
@@ -1709,7 +1710,7 @@ summary: |
     });
     const result = runWorkflowScript(managedRunner, ['--project-root', projectRoot, '--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(result.stderr).toContain('legacy local_integration execution is read-only');
     expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 
@@ -1733,7 +1734,7 @@ summary: |
     });
     const result = runWorkflowScript(managedRunner, ['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('task lifecycle hard cut');
+    expect(result.stderr).toContain('legacy local_integration execution is read-only');
     expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
   });
 

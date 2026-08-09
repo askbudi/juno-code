@@ -308,7 +308,6 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
         ".juno_task/config/risk-policy.json": (
             Path(__file__).resolve().parents[1] / "config/risk-policy.json").read_bytes(),
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
-        ".juno_task/state/lifecycle.json": canonical({"schema_version": "juno_task_lifecycle_state.v1", "tasks": {}}),
         ".juno_task/state/tasks.json": canonical({"schema_version": "juno_task_workspace_state.v1", "tasks": {}, "queues": {}}),
     }
     with tempfile.TemporaryDirectory(prefix="juno-metadata-index-") as temporary:
@@ -428,15 +427,12 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             )).decode()
             risk_policy_text = run(["git", "-C", str(root), "show", f"{head}:.juno_task/config/risk-policy.json"], root).stdout
             expected_risk_policy = (Path(__file__).resolve().parents[1] / "config/risk-policy.json").read_text()
-            lifecycle_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/lifecycle.json"], root).stdout)
             tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
             generated_contract_ok = (
                 config_value == {"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
                 and policy_text == canonical(policy).decode()
                 and task_policy_text == expected_task_policy
                 and risk_policy_text == expected_risk_policy
-                and lifecycle_value.get("schema_version") == "juno_task_lifecycle_state.v1"
-                and isinstance(lifecycle_value.get("tasks"), dict)
                 and tasks_value.get("schema_version") == "juno_task_workspace_state.v1"
                 and isinstance(tasks_value.get("tasks"), dict)
                 and isinstance(tasks_value.get("queues"), dict)

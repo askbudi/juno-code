@@ -26,12 +26,6 @@
       "type": "wiki"
     },
     {
-      "source": "config/controller-workspace.json",
-      "destination": ".juno_task/config/controller-workspace.json",
-      "installClass": "project",
-      "type": "config"
-    },
-    {
       "source": "prompts/clean_worktree.md",
       "destination": ".juno_task/prompts/clean_worktree.md",
       "installClass": "project",
@@ -146,20 +140,8 @@
       "type": "script"
     },
     {
-      "source": "scripts/tests/test_integration_concurrency.py",
-      "destination": ".juno_task/scripts/tests/test_integration_concurrency.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
       "source": "scripts/tests/test_managed_agent_runner.py",
       "destination": ".juno_task/scripts/tests/test_managed_agent_runner.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_task_lifecycle.py",
-      "destination": ".juno_task/scripts/tests/test_task_lifecycle.py",
       "installClass": "script",
       "type": "script"
     },
@@ -176,26 +158,8 @@
       "type": "script"
     },
     {
-      "source": "scripts/controller_workspace.py",
-      "destination": ".juno_task/scripts/controller_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_controller_workspace.py",
-      "destination": ".juno_task/scripts/tests/test_controller_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
       "source": "scripts/managed_agent_runner.py",
       "destination": ".juno_task/scripts/managed_agent_runner.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/task_lifecycle.py",
-      "destination": ".juno_task/scripts/task_lifecycle.py",
       "installClass": "script",
       "type": "script"
     },
@@ -220,24 +184,6 @@
     {
       "source": "scripts/tests/test_merge_queue.py",
       "destination": ".juno_task/scripts/tests/test_merge_queue.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/integration_candidate.py",
-      "destination": ".juno_task/scripts/integration_candidate.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/integration_owner_preflight.py",
-      "destination": ".juno_task/scripts/integration_owner_preflight.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/worktree_lifecycle.py",
-      "destination": ".juno_task/scripts/worktree_lifecycle.py",
       "installClass": "script",
       "type": "script"
     },

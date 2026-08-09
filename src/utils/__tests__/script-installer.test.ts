@@ -83,16 +83,10 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('workflow_assert.py');
       expect(missing).toContain('git_index_lock.py');
       expect(missing).toContain('controller_checkpoint.py');
-      expect(missing).toContain('task_lifecycle.py');
-      expect(missing).toContain('integration_owner_preflight.py');
-      expect(missing).toContain('integration_candidate.py');
-      expect(missing).toContain('worktree_lifecycle.py');
       expect(missing).toContain('task_workflow_helper.py');
       expect(missing).toContain('workflow_run_evidence.py');
       expect(missing).toContain('wiki_lint.py');
       expect(missing).toContain('wiki_lint.sh');
-      expect(missing).toContain('tests/test_integration_concurrency.py');
-      expect(missing).toContain('tests/test_task_lifecycle.py');
     });
 
     it('should return empty array when all required scripts exist', async () => {
@@ -229,15 +223,12 @@ describe('ScriptInstaller', () => {
         'merge_queue.py',
         'release_gate.py',
         'risk_policy.py',
-        'task_lifecycle.py',
         'task_workspace.py',
-        'tests/test_controller_workspace.py',
         'tests/test_managed_agent_runner.py',
         'tests/test_merge_queue.py',
         'tests/test_metadata_controller.py',
         'tests/test_release_gate.py',
         'tests/test_risk_policy.py',
-        'tests/test_task_lifecycle.py',
         'tests/test_task_workspace.py',
       ]);
       for (const relative of newlyManaged) {
@@ -335,22 +326,14 @@ describe('ScriptInstaller', () => {
         { name: 'tests/test_risk_policy.py', installed: false },
         { name: 'tests/test_metadata_controller.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
-        { name: 'tests/test_integration_concurrency.py', installed: false },
         { name: 'tests/test_managed_agent_runner.py', installed: false },
-        { name: 'tests/test_task_lifecycle.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
-        { name: 'controller_workspace.py', installed: false },
-        { name: 'tests/test_controller_workspace.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
-        { name: 'task_lifecycle.py', installed: false },
         { name: 'task_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
         { name: 'tests/test_task_workspace.py', installed: false },
         { name: 'tests/test_merge_queue.py', installed: false },
-        { name: 'integration_candidate.py', installed: false },
-        { name: 'integration_owner_preflight.py', installed: false },
-        { name: 'worktree_lifecycle.py', installed: false },
         { name: 'task_workflow_helper.py', installed: false },
         { name: 'workflow_run_evidence.py', installed: false },
       ]);
@@ -568,22 +551,14 @@ describe('ScriptInstaller', () => {
         { name: 'tests/test_risk_policy.py', installed: true },
         { name: 'tests/test_metadata_controller.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
-        { name: 'tests/test_integration_concurrency.py', installed: true },
         { name: 'tests/test_managed_agent_runner.py', installed: true },
-        { name: 'tests/test_task_lifecycle.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
-        { name: 'controller_workspace.py', installed: true },
-        { name: 'tests/test_controller_workspace.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
-        { name: 'task_lifecycle.py', installed: true },
         { name: 'task_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },
         { name: 'tests/test_task_workspace.py', installed: true },
         { name: 'tests/test_merge_queue.py', installed: true },
-        { name: 'integration_candidate.py', installed: true },
-        { name: 'integration_owner_preflight.py', installed: true },
-        { name: 'worktree_lifecycle.py', installed: true },
         { name: 'task_workflow_helper.py', installed: true },
         { name: 'workflow_run_evidence.py', installed: true },
       ]);
@@ -812,7 +787,7 @@ describe('ScriptInstaller', () => {
         await fs.pathExists(path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md')),
       ).toBe(true);
       expect(
-        await fs.pathExists(path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py')),
+        await fs.pathExists(path.join(testDir, '.juno_task/scripts/task_workspace.py')),
       ).toBe(true);
       const installedTaskHelper = await fs.readFile(
         path.join(testDir, '.juno_task/scripts/task_workflow_helper.py'),
@@ -838,7 +813,7 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await ManagedProjectAssets.update(testDir, { silent: true });
       const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
-      const scriptPath = path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py');
+      const scriptPath = path.join(testDir, '.juno_task/scripts/task_workspace.py');
       await fs.writeFile(wikiPath, '# owner-specific lifecycle policy\n');
       await fs.ensureDir(path.dirname(scriptPath));
       await fs.writeFile(scriptPath, '# old lifecycle generation\n');
@@ -866,7 +841,7 @@ describe('ScriptInstaller', () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await ManagedProjectAssets.update(testDir, { silent: true });
       const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
-      const scriptPath = path.join(testDir, '.juno_task/scripts/worktree_lifecycle.py');
+      const scriptPath = path.join(testDir, '.juno_task/scripts/task_workspace.py');
       await fs.writeFile(wikiPath, '# owner-specific lifecycle policy\n');
       await fs.ensureDir(path.dirname(scriptPath));
       await fs.writeFile(scriptPath, '# old lifecycle generation\n');
@@ -875,7 +850,7 @@ describe('ScriptInstaller', () => {
 
       expect(updated).toBe(true);
       expect(await fs.readFile(wikiPath, 'utf8')).toContain(
-        '# Task worktrees',
+        '# Bolt task worktrees',
       );
       expect(await fs.readFile(scriptPath, 'utf8')).toContain('def main(');
       const backupRoot = path.join(testDir, '.juno_task/managed-conflicts');

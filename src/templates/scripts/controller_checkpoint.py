@@ -473,7 +473,7 @@ def boundary_payload(root: Path, includes: tuple[str, ...], paths: list[str], *,
             "root": str(root), "branch": git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or None,
             "head": git(root, "rev-parse", "HEAD"), "role": resolution["role"],
             "role_source": resolution.get("role_source"), "paths": paths, "offending": offending,
-            "safe_next_action": "run worktree_lifecycle.py edit-preflight with the owner-approved full target ref/base, then create/verify the named exact-base task worktree"}
+            "safe_next_action": "run `yy task start TASK_ID` from the registered controller to create an exact-base task worktree"}
 
 
 def require_boundary(payload: dict[str, Any]) -> None:
@@ -806,7 +806,7 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
                "paths": sorted_paths[:MAX_COMMITTED_PATHS], "path_count": len(sorted_paths),
                "offending": diagnostics, "offending_count": offending_total,
                "diagnostics_truncated": offending_total > len(diagnostics), "commits_checked": len(commits),
-               "safe_next_action": "run worktree_lifecycle.py edit-preflight with the owner-approved full target ref/base, then create/verify the named exact-base task worktree",
+               "safe_next_action": "run `yy task start TASK_ID` from the registered controller to create an exact-base task worktree",
                "base": base, "classification": classification}
     require_boundary(payload)
     return payload

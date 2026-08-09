@@ -57,33 +57,28 @@ Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local c
 | Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
 | Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
 
-Choose the smallest lane that satisfies the work. The Bolt replacement is a fresh metadata-only linked controller with an unrelated root: it tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed Juno Code release. Controller commits never merge or synchronize to product history. Migration is plan-first and keeps the old sparse controller read-only for rollback. The sparse/controller-sync lifecycle remains available only during canary migration; replacement work must not add dependencies on it. Every product change still uses an explicit named worktree. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
+Choose the smallest lane that satisfies the work. The metadata-only linked controller tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed Juno Code release. Controller commits never merge or synchronize to product history. Every product change uses a dedicated `yy task` worktree; `yy merge` serializes only target mutation. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
 
-### Integration/controller Git flow
-
-Initialized projects receive a canonical `.juno_task/scripts/git-flow.sh` and a managed `scripts/git-flow.sh` delegate. Existing unrelated root delegates are preserved. Git-flow mutations stay disabled until explicit configuration:
+### Bolt task and merge flow
 
 ```bash
-./scripts/git-flow.sh configure \
-  --integration-branch integration \
-  --controller-branch controller \
-  --integration-checkout /absolute/path/to/detached-integration \
-  --project-id my-project \
-  --enable-controller-sync \
-  --validation-command 'npm test' \
-  --remote origin
+yy task start TASK_ID
+# implement, run focused tests, and commit in the returned worktree
+yy task finish TASK_ID
 
-./scripts/git-flow.sh status
-./scripts/git-flow.sh sync
-./scripts/git-flow.sh push
-./scripts/git-flow.sh controller-sync --plan --json
-./scripts/git-flow.sh controller-sync --integration-receipt /path/to/integration.json
-./scripts/git-flow.sh controller-sync --resume /path/to/controller-sync-receipt.json
+yy merge status
+yy merge next
+# if a conflict is preserved, resolve only listed paths, then:
+yy merge resolve TASK_ID
 ```
 
-Configuration is split between `.juno_task/config.json`, the versioned `.juno_task/config/git-flow.json` v2 policy, and machine-local `juno.gitFlow.integrationCheckout` Git configuration. The integration checkout must be detached and linked to the registered controller. `sync` is fast-forward-only and `push` publishes integration branches only. The receipt-backed `controller-sync` is local-only: it proves product bytes equal the exact integrated tip, reconciles explicit controller/shared paths without implicit ours/theirs resolution, validates an isolated lifecycle-managed two-parent candidate, and advances through the canonical expected-SHA target lock or persists a typed resumable pending receipt. Receipts and retained candidates are stored per `projectId` below the Git common directory, so they do not dirty a checkout. Successful integration automatically attempts the same engine only after its integration receipt is final and locks are released; bridge refusal never changes integration success.
-
-Existing `juno_git_flow.v1` projects are never silently changed or enabled. Run `./scripts/git-flow.sh configure --migrate-policy [--project-id ID]` explicitly; migration records a stable project ID (defaulting once to the current folder name) and leaves controller sync disabled until reviewed configuration explicitly enables it. Submodules use exact gitlinks by default; configured branch advancement remains opt-in and child-first.
+Feature worktrees are independent, so X and Y can implement concurrently from
+recorded exact bases. The per-target queue freezes the latest target and feature
+tip, composes moved targets, preserves conflicts, runs affected validation and
+risk-based review, then advances by expected-old-SHA CAS. Post-CAS work verifies
+identity/readback only. Controller metadata never synchronizes into product
+history. The legacy Git-flow helper retains only explicit status/sync/push for
+older disabled configurations; its controller reconciliation command refuses.
 
 Rollback operations are intentionally separate:
 
@@ -300,17 +295,20 @@ For mutation or integration workflows, declare `frozen_inputs`, typed `receipts`
 
 The first attempt writes `run_contract.json`, the single checkpoint and attempt index. A successful step becomes reusable only after stdout, stderr, response, optional capture, and every declared receipt are atomically persisted and hash-bound with command/run/attempt identity. If the producer is interrupted before terminal metadata, run `workflow_runner.sh recover-attempt RUN_DIR --dry-run`, then `recover-attempt RUN_DIR`; recovery refuses active, partial, non-contiguous, cross-run, or drifted evidence, appends an `interrupted` manifest, and never infers semantic completion. Resume exactly at its reported first invalid step. `workflow_runner.sh doctor`, workflow review packets, and `task_workflow_helper.py finalize-review` all use the same `workflow_run_evidence.py` resolver, preferring the newest hash-bound contract attempt while retaining root `manifest.json` only as the legacy fallback. Resuming the same output directory with `--from-step` verifies the unchanged workflow, variables, rendered commands, frozen inputs, producer digests, and receipt hashes before marking predecessors `reused_verified`. A harness-only correction instead uses a fresh output directory, `amendment_mode: harness_only_validation`, and `--amends-run PRIOR_RUN`. Add `--from-step STEP` to make that amendment selective: before dispatch, the runner hash-verifies the prior successful prefix, exact attempt/manifest lineage, completed command identity, frozen inputs/templates/variables, and receipt bytes/contracts. Only receipt-path relocation is allowed; missing, tampered, ambiguous, added, removed, reassigned, or weakened evidence fails closed. The printed execution plan and `manifest.json.amendment_plan` list revalidated/reused and executed steps; imported steps are recorded as `amendment_revalidated`. Omit `--from-step` when a full fresh amendment replay is intended. Never edit a historical run to make evidence reusable.
 
-Product mutation now uses one public task lifecycle rather than Workflow Runner integration choreography:
+Product mutation uses the Bolt task and merge interfaces rather than Workflow Runner integration choreography:
 
 ```bash
-yy lifecycle run --task TASK_ID
-yy lifecycle status --task TASK_ID
-yy lifecycle resume --task TASK_ID
+yy task start TASK_ID
+yy task status TASK_ID
+yy task finish TASK_ID
+yy merge status
+yy merge next
+yy merge resolve TASK_ID
 ```
 
-The project-owned `.juno_task/config/lifecycle.json` registry names repository identities, direct-child topology, target refs, path policy, objective risk, and the evidence-bearing candidate gate. Task fields only select configured topology and exact existing/future paths; the first run freezes resolved SHAs and authority in an immutable internal plan. The state machine owns exact-base admission, implementation-worker dispatch, deterministic closure audit, isolated exact-tip validation, risk-tiered independent review, one bounded consolidated repair, expected-SHA CAS coordination, unconditional actual-target verification, delivery-sensitive review, and reachability-safe cleanup. Candidate, integrated, and release identities remain distinct; release is outside this reusable lifecycle.
+The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Task start freezes the target SHA; task finish queues a clean committed tip. The merge queue owns moved-target composition, conflict preservation, affected validation, risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. Release remains outside this reusable flow.
 
-Low/medium uses one fresh read-only reviewer. High or ambiguous work runs Reviewer A then Reviewer B sequentially on the same frozen tip with no repair between them. One replacement pair is the autonomous maximum. An owner waiver is read from candidate-bound Kanban task fields, remains `review_passed: false`, and never lowers risk. The shipped helpers remain internal phase primitives rather than operator syntax.
+Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only reviewer. High risk runs Reviewer A then Reviewer B sequentially on the same frozen tip. A replacement tip invalidates prior evidence. Byte-identical post-CAS delivery does not trigger another semantic review.
 
 `workflow_class: local_integration` is hard-rejected for lint/start/resume/recovery/amendment. Existing artifacts remain immutable and doctor-readable, and generic non-lifecycle workflows remain supported. There is no adapter or dual integration runtime. Why tests and implementation both matter: the state machine enforces phase/ref/review/cleanup boundaries, while real-Git, exact-tip clone, package-parity, and medium/high canary tests prove installed users receive those guarantees.
 

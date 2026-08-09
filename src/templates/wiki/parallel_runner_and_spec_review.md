@@ -25,7 +25,7 @@ Use this guide after `./.juno_task/scripts/parallel_runner.sh` finishes, before 
 
 ## Workflow and task-lifecycle guidance ownership
 
-Workflow Runner owns generic ordered workflows only. Product implementation/review/integration/cleanup uses `yy lifecycle`; `git_worktree_lifecycle.md` is its semantic source and `task_lifecycle.py --help` owns exact runtime syntax. Historical `workflow_class: local_integration` artifacts remain doctor-readable but cannot lint/start/resume/recover/amend. This page owns only post-run/spec review shared with Parallel Runner. Tests bind those surfaces to installed scripts; copying their full contracts here would create drift.
+Workflow Runner owns generic ordered workflows only. Product implementation uses `yy task`; serialized delivery uses `yy merge`; `git_worktree_lifecycle.md` is their semantic source. Historical `workflow_class: local_integration` artifacts remain doctor-readable but cannot lint/start/resume/recover/amend. This page owns only post-run/spec review shared with Parallel Runner.
 
 ## Why this matters
 Parallel/subagent runs can finish with mixed outcomes: failed tasks may leave useful diffs, successful tasks may miss a MUST/MUST NOT, and submodules may be committed without the parent pointer. A reviewer must independently prove that the implementation matches the selected kanban/spec contract.
@@ -57,7 +57,7 @@ parallel_runner_wait.sh returns
 
 Do not use the implementation summary as the checklist. Read it after the matrix exists so the review does not inherit the same blind spots.
 
-**Independent reviewer boundary:** Review only. An independent reviewer never edits, commits, updates Kanban, launches another reviewer, repairs findings, or mutates refs/worktrees. High-risk Reviewer A and Reviewer B run sequentially against one frozen base/tip; no repair occurs until both finish. The terminal orchestrator consolidates both outputs by root cause and assigns one separate repair owner. A replacement tip invalidates the old round and receives fresh required reviews.
+**Independent reviewer boundary:** Review only. An independent reviewer never edits, commits, updates Kanban, launches another reviewer, repairs findings, or mutates refs/worktrees. Low risk has no semantic reviewer; normal risk has at most one; high-risk Reviewer A and Reviewer B run sequentially against one frozen base/tip. A replacement tip invalidates prior review evidence.
 
 **Managed launcher boundary:** Lifecycle worker/reviewer dispatch and typed Workflow Runner `managed_agent` steps use `managed_agent_runner.py run --mode worker|reviewer`. It alone owns fresh `yy pi`, prompt/capture/response receipts, foreground process groups, and live separate/labelled channel logs. Tmux may observe those files but never owns or detaches the producer. Parallel Runner is intentionally not migrated in this generation.
 
