@@ -153,24 +153,34 @@ class RealGitLifecycleTests(Fixture):
 
     def fake_yy(self, directory: Path) -> Path:
         path=directory/"yy";path.write_text('''#!/usr/bin/env python3
-import json,os,pathlib,subprocess
-capture=pathlib.Path(os.environ["JUNO_SUBAGENT_CAPTURE_PATH"]);mode=os.environ.get("REVIEW_MODE","pass");reviewer=os.environ["JUNO_TOOL_ID"].rsplit("_",1)[-1]
-if mode=="tracked": pathlib.Path("product.txt").write_text("mutated\\n")
-elif mode=="staged": pathlib.Path("product.txt").write_text("mutated\\n");subprocess.run(["git","add","product.txt"])
-elif mode=="untracked": pathlib.Path("untracked.txt").write_text("x")
+import json,os,pathlib,re,subprocess,sys
+args=sys.argv[1:];capture=pathlib.Path(os.environ["JUNO_SUBAGENT_CAPTURE_PATH"]);mode=os.environ.get("REVIEW_MODE","pass");reviewer=os.environ["JUNO_TOOL_ID"].rsplit("_",1)[-1]
+prompt_file=pathlib.Path(args[args.index("-f")+1]);prompt=prompt_file.read_text();match=re.search(r"Frozen exact-tip checkouts: (.+)",prompt);checkouts=json.loads(match.group(1));product=pathlib.Path(checkouts[sorted(checkouts)[0]])
+config=pathlib.Path(args[args.index("--config")+1]);controller=config.parents[1]
+if mode=="tracked": (product/"product.txt").write_text("mutated\\n")
+elif mode=="staged": (product/"product.txt").write_text("mutated\\n");subprocess.run(["git","-C",str(product),"add","product.txt"])
+elif mode=="untracked": (product/"untracked.txt").write_text("x")
 elif mode=="head":
- subprocess.run(["git","config","user.name","Review"]);subprocess.run(["git","config","user.email","review@example.com"]);pathlib.Path("product.txt").write_text("head\\n");subprocess.run(["git","add","."]);subprocess.run(["git","commit","-m","bad"])
+ subprocess.run(["git","-C",str(product),"config","user.name","Review"]);subprocess.run(["git","-C",str(product),"config","user.email","review@example.com"]);(product/"product.txt").write_text("head\\n");subprocess.run(["git","-C",str(product),"add","."]);subprocess.run(["git","-C",str(product),"commit","-m","bad"])
+elif mode=="controller": (controller/"controller-dirt.txt").write_text("bad")
+elif mode=="prompt-tamper": prompt_file.write_text(prompt+"tampered")
 response="JUNO_REVIEW_VERDICT: PASS"
 if mode=="echo": response="prompt JUNO_REVIEW_VERDICT: PASS\\nJUNO_REVIEW_FINDING: high; trust; echo; reject"
 if mode=="contradict": response="JUNO_REVIEW_VERDICT: PASS\\nJUNO_REVIEW_FINDING: high; trust; x; y"
 session="same" if mode=="duplicate" else f"session-{reviewer}"
-payload={"result":response}
+observed={"argv":args,"cwd":os.getcwd(),"stdin":sys.stdin.read(),"prompt":prompt,"pi_juno_keys":sorted(k for k in os.environ if k.startswith(("PI_","JUNO_"))),"model":os.environ.get("PI_MODEL"),"provider":os.environ.get("PI_PROVIDER")}
+payload={"result":response,"observed":observed}
 if mode!="missing": payload["session_id"]=session
 capture.write_text(json.dumps(payload))
 ''');path.chmod(0o755);return path
 
     def review_fixture(self, mode: str, wrong_head: bool = False):
-        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);root=Path(temporary.name);repo,base=self.repo(root,"repo");tip=self.commit(repo,"candidate\n");plan=self.plan(root,[("root",repo,base)],"high");state=self.state(plan);state["candidate_shas"]={"root":tip};state["receipts"]["candidate_gate"]={"path":"gate","sha256":"x"};candidate={"candidate_digest":"digest","candidate_shas":{"root":base if wrong_head else tip},"changed_paths":{"root":["product.txt"]}}
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);root=Path(temporary.name)
+        controller,_=self.repo(root,"controller");(controller/".juno_task").mkdir();(controller/".juno_task/config.json").write_text("{}\\n");self.git(controller,"add",".");self.git(controller,"commit","-m","controller config")
+        repo,base=self.repo(root,"repo");tip=self.commit(repo,"candidate\n");plan=self.plan(root,[("root",repo,base)],"high")
+        plan["controller_root"]=str(controller);plan["controller_branch"]="refs/heads/main";plan["expected_controller_head"]=self.git(controller,"rev-parse","HEAD")
+        state=self.state(plan);state["candidate_shas"]={"root":tip};state["receipts"]["candidate_gate"]={"path":str(root/"gate.json"),"sha256":"x"};(root/"candidate.json").write_text("{}")
+        candidate={"candidate_digest":"digest","candidate_shas":{"root":base if wrong_head else tip},"changed_paths":{"root":["product.txt"]}}
         bin_dir=root/"bin";bin_dir.mkdir();self.fake_yy(bin_dir)
         env={**os.environ,"PATH":str(bin_dir)+os.pathsep+os.environ["PATH"],"REVIEW_MODE":mode}
         return root,plan,state,candidate,env
@@ -180,6 +190,28 @@ capture.write_text(json.dumps(payload))
         with mock.patch.dict(os.environ,env,clear=True): outcomes=life.review_pipeline(plan,candidate,root/"ns",state)
         self.assertEqual(["session-A","session-B"],[x["session_id"] for x in outcomes]);self.assertEqual(outcomes[0]["frozen_checkout_identity"],outcomes[1]["frozen_checkout_identity"])
         self.assertFalse((root/"ns/review-pre_cas-1/frozen-checkout").exists())
+
+    def test_review_launch_sanitizes_env_uses_prompt_file_devnull_and_neutral_roots(self):
+        root,plan,state,candidate,env=self.review_fixture("pass")
+        poisoned={key:"outer-secret" for key in life.REVIEW_ENV_BLOCKED};poisoned.update({"PI_FUTURE_OVERRIDE":"outer","JUNO_FUTURE_STATE":"outer"})
+        with mock.patch.dict(os.environ,{**env,**poisoned},clear=True): outcomes=life.review_pipeline(plan,candidate,root/"ns",state)
+        first=outcomes[0];capture=json.loads(Path(first["capture"]["path"]).read_text());observed=capture["observed"]
+        self.assertIsNone(observed["model"]);self.assertIsNone(observed["provider"]);self.assertEqual("",observed["stdin"])
+        self.assertNotIn("-p",observed["argv"]);self.assertIn("-f",observed["argv"]);self.assertNotIn("--model",observed["argv"]);self.assertNotIn("--provider",observed["argv"])
+        self.assertEqual(first["launcher_cwd"],observed["cwd"]);self.assertFalse((Path(first["launcher_cwd"])/".git").exists());self.assertFalse((Path(first["agent_cwd"])/".juno_task").exists())
+        self.assertEqual(first["prompt"]["echo"],observed["prompt"]);self.assertEqual(first["prompt"]["sha256"],life.file_digest(Path(first["prompt"]["path"])))
+        self.assertIn(str(root/"ns/review-pre_cas-1/frozen-checkout/root"),first["prompt"]["echo"])
+        self.assertEqual(set(life.REVIEW_ENV_SET),set(first["environment_contract"]["explicitly_set_key_names"]));self.assertIn("PI_FUTURE_OVERRIDE",first["environment_contract"]["removed_key_names"])
+        self.assertEqual(set(life.REVIEW_ENV_SET),set(observed["pi_juno_keys"]));self.assertNotIn("-p",first["command"])
+        self.assertEqual(first["command_sha256"],life.hashlib.sha256(life.shlex.join(first["command"]).encode()).hexdigest())
+        process=json.loads(Path(first["process_receipt"]["path"]).read_text());self.assertEqual(first["command_sha256"],process["command_sha256"]);self.assertEqual(first["launcher_cwd"],process["cwd"])
+
+    def test_review_prompt_controller_mutation_and_noncanonical_command_refuse(self):
+        for mode,pattern in (("prompt-tamper","prompt"),("controller","controller")):
+            root,plan,state,candidate,env=self.review_fixture(mode)
+            with mock.patch.dict(os.environ,env,clear=True),self.assertRaisesRegex(life.LifecycleError,pattern):life.review_pipeline(plan,candidate,root/"ns",state)
+        root,plan,state,candidate,env=self.review_fixture("pass");plan["review_command"]=["yy","pi","--model","bad"]
+        with mock.patch.dict(os.environ,env,clear=True),self.assertRaisesRegex(life.LifecycleError,"noncanonical|forbidden"):life.review_pipeline(plan,candidate,root/"ns",state)
 
     def test_review_missing_duplicate_echo_contradiction_and_wrong_head_refuse(self):
         for mode,pattern in (("missing","session"),("duplicate","duplicate"),("echo","contradictory"),("contradict","contradictory")):

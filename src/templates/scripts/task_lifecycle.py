@@ -53,6 +53,17 @@ PHASES = (
     "CONTROLLER_SYNCED", "TERMINAL_CHECKPOINTED", "CLEANUP_COMPLETE", "COMPLETE",
 )
 TERMINAL = {"COMPLETE", "REVIEW_BUDGET_EXHAUSTED"}
+REVIEW_ENV_BLOCKED = frozenset({
+    "PI_MODEL", "PI_PROVIDER", "PI_REASONING_LEVEL", "PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROJECT_PATH",
+    "PI_THINKING", "PI_AUTO_INSTRUCTION", "PI_SYSTEM_PROMPT", "PI_APPEND_SYSTEM_PROMPT", "PI_TOOLS",
+    "PI_NO_SESSION", "PI_PRETTY", "PI_VERBOSE", "JUNO_MODEL", "JUNO_PROJECT_PATH",
+    "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID", "TASK_ROOT", "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH",
+    "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT",
+})
+REVIEW_ENV_SET = frozenset({
+    "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT",
+    "JUNO_SUBAGENT_CAPTURE_PATH", "JUNO_TOOL_ID",
+})
 
 
 class LifecycleError(RuntimeError):
@@ -530,46 +541,128 @@ def review_fingerprint(checkouts: dict[str, Path], candidates: dict[str, str]) -
     return value
 
 
+def controller_fingerprint(controller: Path) -> dict[str, str]:
+    if not controller.is_dir() or not (controller / ".juno_task/config.json").is_file():
+        raise LifecycleError("canonical review controller/config is missing")
+    return {
+        "head": git(controller, "rev-parse", "HEAD"),
+        "index_sha256": hashlib.sha256(git(controller, "ls-files", "--stage").encode()).hexdigest(),
+        "tracked_staged_untracked": git(controller, "status", "--porcelain=v2", "--untracked-files=all"),
+    }
+
+
+def neutral_directory(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=False)
+    if (path / ".git").exists() or (path / ".juno_task").exists():
+        raise LifecycleError("review launch roots must be neutral")
+    return path.resolve()
+
+
+def reviewer_environment(controller: Path, branch: str, capture: Path, tool_id: str) -> tuple[dict[str, str], dict[str, Any]]:
+    # Remove every Pi/Juno value, not only today's known selectors: future outer
+    # state must not silently become reviewer authority.
+    removed = sorted(k for k in os.environ if k in REVIEW_ENV_BLOCKED or k.startswith(("PI_", "JUNO_")))
+    env = {k: v for k, v in os.environ.items() if k not in removed and k != "TASK_ROOT"}
+    explicit = {
+        "JUNO_TASK_ROOT": str(controller.resolve()), "JUNO_CONTROLLER_BRANCH": branch.removeprefix("refs/heads/"),
+        "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
+        "JUNO_SUBAGENT_CAPTURE_PATH": str(capture.resolve()), "JUNO_TOOL_ID": tool_id,
+    }
+    env.update(explicit)
+    contract = {"schema_version": "juno_review_environment.v1", "removed_key_names": removed,
+                "blocked_key_names": sorted(REVIEW_ENV_BLOCKED), "explicitly_set_key_names": sorted(explicit)}
+    contract["sha256"] = digest(contract)
+    return env, contract
+
+
+def canonical_review_command(controller: Path, agent_cwd: Path, prompt_file: Path, override: Any = None) -> list[str]:
+    expected = ["yy", "pi", "--config", str((controller / ".juno_task/config.json").resolve()),
+                "-w", str(agent_cwd.resolve()), "-f", str(prompt_file.resolve())]
+    command = expected if override is None else override
+    if not isinstance(command, list) or command != expected:
+        raise LifecycleError("review launch command is noncanonical or contains forbidden flags")
+    return command
+
+
+def exact_prompt_evidence(prompt_file: Path, prompt: str) -> dict[str, Any]:
+    data = prompt_file.read_bytes()
+    try: echo = data.decode("utf-8")
+    except UnicodeDecodeError as exc: raise LifecycleError("review prompt is not exact UTF-8") from exc
+    if echo != prompt:
+        raise LifecycleError("review prompt bytes were tampered")
+    return {"path": str(prompt_file.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
+            "byte_count": len(data), "echo": echo}
+
+
 def review_pipeline(plan: dict[str, Any], candidate: dict[str, Any], ns: Path, state: dict[str, Any], kind: str = "pre_cas") -> list[dict[str, Any]]:
     round_number = state.get("review_round", 0) + 1
     if kind == "pre_cas" and round_number > 2: raise LifecycleError("autonomous review budget exhausted")
     review_root = ns / f"review-{kind}-{round_number}"
     checkout_root = review_root / "frozen-checkout"
     if checkout_root.exists(): raise LifecycleError("frozen review checkout collision")
-    checkouts = {}
+    controller = Path(plan["controller_root"]).resolve(); controller_before_round = controller_fingerprint(controller)
+    if controller_before_round["tracked_staged_untracked"]: raise LifecycleError("review controller is dirty")
+    checkouts: dict[str, Path] = {}
     outcomes = []; sessions: set[str] = set()
     try:
         for repo in plan["repositories"]:
             checkout = checkout_root / repo["id"]
             result = subprocess.run(["git", "clone", "--no-local", "--no-checkout", repo["path"], str(checkout)], text=True, capture_output=True, stdin=subprocess.DEVNULL)
             if result.returncode: raise LifecycleError("frozen review checkout creation failed")
-            git(checkout, "checkout", "--detach", candidate["candidate_shas"][repo["id"]]); checkouts[repo["id"]] = checkout
-        frozen_identity = digest(review_fingerprint(checkouts, candidate["candidate_shas"]))
+            git(checkout, "checkout", "--detach", candidate["candidate_shas"][repo["id"]]); checkouts[repo["id"]] = checkout.resolve()
+        frozen_before_round = review_fingerprint(checkouts, candidate["candidate_shas"])
+        frozen_identity = digest({"candidate_shas": candidate["candidate_shas"], "checkouts": frozen_before_round})
+        absolute_checkouts = {repo_id: str(path) for repo_id, path in sorted(checkouts.items())}
         for reviewer in plan["review_policy"]["reviewers"]:
-            before = review_fingerprint(checkouts, candidate["candidate_shas"])
+            before = review_fingerprint(checkouts, candidate["candidate_shas"]); controller_before = controller_fingerprint(controller)
             artifact = review_root / f"reviewer-{reviewer.lower()}"; artifact.mkdir(parents=True, exist_ok=True)
-            prompt = (f"Independently review task {plan['task_id']} kind={kind} reviewer={reviewer}. Candidate receipt: {ns / 'candidate.json'}. "
-                      f"Gate receipt: {state['receipts'].get('candidate_gate', {}).get('path')}. Inspect only the frozen exact-tip checkouts. "
-                      "Return response-only exactly one JUNO_REVIEW_VERDICT: PASS or one or more JUNO_REVIEW_FINDING: severity; requirement; evidence; acceptance lines.")
-            capture = artifact / "capture.json"; env = {k: v for k, v in os.environ.items() if k not in {"TASK_ROOT", "JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT"}}
-            env.update({"JUNO_SUBAGENT_CAPTURE_PATH": str(capture), "JUNO_TOOL_ID": f"lifecycle_review_{kind}_{round_number}_{reviewer}"})
-            command = plan.get("review_command") or ["yy", "pi", "-p", prompt]
-            if command[:2] != ["yy", "pi"] or any(x.startswith(("--provider", "--model", "--resume")) or x in {"cc", "--continue"} for x in command[2:]):
-                raise LifecycleError("review must use a fresh canonical yy pi context")
-            result = run_command(command, checkouts[plan["root_repository"]], artifact / "process", 7200, env)
+            launcher_cwd = neutral_directory(artifact / "launcher-cwd"); agent_cwd = neutral_directory(artifact / "agent-cwd")
+            prompt = (f"Independently review task {plan['task_id']} kind={kind} reviewer={reviewer}.\n"
+                      f"Candidate receipt: {Path(ns / 'candidate.json').resolve()}\n"
+                      f"Gate receipt: {Path(state['receipts'].get('candidate_gate', {}).get('path', '')).resolve()}\n"
+                      f"Frozen exact-tip checkouts: {json.dumps(absolute_checkouts, sort_keys=True)}\n"
+                      "Inspect only those absolute frozen checkout paths. Do not edit them. Return response-only exactly one "
+                      "JUNO_REVIEW_VERDICT: PASS or one or more JUNO_REVIEW_FINDING: severity; requirement; evidence; acceptance lines.\n")
+            prompt_file = artifact / "prompt.md"; prompt_file.write_bytes(prompt.encode("utf-8")); prompt_before = exact_prompt_evidence(prompt_file, prompt)
+            capture = artifact / "capture.json"
+            env, environment_contract = reviewer_environment(controller, plan["controller_branch"], capture,
+                                                               f"lifecycle_review_{kind}_{round_number}_{reviewer}")
+            command = canonical_review_command(controller, agent_cwd, prompt_file, plan.get("review_command"))
+            command_sha256 = hashlib.sha256(shlex.join(command).encode()).hexdigest()
+            result = run_command(command, launcher_cwd, artifact / "process", 7200, env)
+            process_receipt = load_json(artifact / "process/receipt.json")
+            if process_receipt.get("command_sha256") != command_sha256 or process_receipt.get("cwd") != str(launcher_cwd):
+                raise LifecycleError("review process provenance is malformed")
+            prompt_after = exact_prompt_evidence(prompt_file, prompt)
+            if prompt_before != prompt_after: raise LifecycleError("review prompt changed during dispatch")
+            if (launcher_cwd / ".git").exists() or (launcher_cwd / ".juno_task").exists() or (agent_cwd / ".git").exists() or (agent_cwd / ".juno_task").exists():
+                raise LifecycleError("review launch roots lost neutrality")
             if result["timed_out"] or result["exit_code"] != 0 or not capture.is_file(): raise LifecycleError("review process/capture failed")
             payload = load_json(capture); session = str(payload.get("session_id") or "").strip(); response = payload.get("result")
             if not session or session in sessions or not isinstance(response, str): raise LifecycleError("review session is missing, duplicate, or response is unbound")
             sessions.add(session); verdict, findings = strict_verdict(response)
-            after = review_fingerprint(checkouts, candidate["candidate_shas"])
+            after = review_fingerprint(checkouts, candidate["candidate_shas"]); controller_after = controller_fingerprint(controller)
             if before != after: raise LifecycleError("reviewer mutated tracked, staged, untracked, or HEAD state")
+            if controller_before != controller_after: raise LifecycleError("reviewer mutated controller HEAD, index, tracked, or untracked state")
             receipt = {"schema_version": REVIEW_SCHEMA, "kind": kind, "round": round_number, "reviewer": reviewer, "session_id": session,
-                       "candidate_digest": candidate["candidate_digest"], "frozen_checkout_identity": frozen_identity,
+                       "candidate_digest": candidate["candidate_digest"], "candidate_shas": candidate["candidate_shas"],
+                       "frozen_checkout_identity": frozen_identity, "frozen_checkout_paths": absolute_checkouts,
                        "response_sha256": hashlib.sha256(response.encode()).hexdigest(), "verdict": verdict, "findings": findings,
-                       "process_receipt_sha256": file_digest(artifact / "process/receipt.json"), "before": before, "after": after}
+                       "prompt": prompt_before, "prompt_after": prompt_after, "command": command, "command_sha256": command_sha256,
+                       "launcher_cwd": str(launcher_cwd), "agent_cwd": str(agent_cwd), "environment_contract": environment_contract,
+                       "capture": {"path": str(capture.resolve()), "sha256": file_digest(capture)},
+                       "process_receipt": {"path": str((artifact / 'process/receipt.json').resolve()),
+                                           "sha256": file_digest(artifact / "process/receipt.json")},
+                       "checkout_before": before, "checkout_after": after,
+                       "controller_before": controller_before, "controller_after": controller_after}
             atomic_json(artifact / "receipt.json", receipt); outcomes.append(receipt)
+        frozen_after_round = review_fingerprint(checkouts, candidate["candidate_shas"]); controller_after_round = controller_fingerprint(controller)
+        if frozen_before_round != frozen_after_round or controller_before_round != controller_after_round:
+            raise LifecycleError("review round mutated frozen checkout or controller")
         pair = {"schema_version": "juno_review_round.v2", "kind": kind, "round": round_number, "same_frozen_checkout": True,
-                "candidate_digest": candidate["candidate_digest"], "outcomes": outcomes, "passed": all(x["verdict"] == "PASS" for x in outcomes)}
+                "candidate_digest": candidate["candidate_digest"], "frozen_checkout_identity": frozen_identity,
+                "controller_before": controller_before_round, "controller_after": controller_after_round,
+                "outcomes": outcomes, "passed": all(x["verdict"] == "PASS" for x in outcomes)}
         atomic_json(review_root / "receipt.json", pair)
         if kind == "pre_cas": state["review_round"] = round_number
         state["review_status"] = "passed" if pair["passed"] else "findings"; state["review_passed"] = pair["passed"]
