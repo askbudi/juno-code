@@ -226,10 +226,14 @@ describe('ScriptInstaller', () => {
       const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
       expect(newlyManaged.sort()).toEqual([
         'managed_agent_runner.py',
+        'release_gate.py',
+        'risk_policy.py',
         'task_lifecycle.py',
         'tests/test_controller_workspace.py',
         'tests/test_managed_agent_runner.py',
         'tests/test_metadata_controller.py',
+        'tests/test_release_gate.py',
+        'tests/test_risk_policy.py',
         'tests/test_task_lifecycle.py',
       ]);
       for (const relative of newlyManaged) {
@@ -321,6 +325,10 @@ describe('ScriptInstaller', () => {
         { name: 'git_flow.py', installed: false },
         { name: 'wiki_lint.py', installed: false },
         { name: 'metadata_controller.py', installed: false },
+        { name: 'risk_policy.py', installed: false },
+        { name: 'release_gate.py', installed: false },
+        { name: 'tests/test_release_gate.py', installed: false },
+        { name: 'tests/test_risk_policy.py', installed: false },
         { name: 'tests/test_metadata_controller.py', installed: false },
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_integration_concurrency.py', installed: false },
@@ -481,6 +489,22 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("metadata controller")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'risk_policy.py'),
+        '#!/usr/bin/env python3\nprint("risk policy")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'release_gate.py'),
+        '#!/usr/bin/env python3\nprint("release gate")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_release_gate.py'),
+        '#!/usr/bin/env python3\nprint("release gate")',
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_risk_policy.py'),
+        '#!/usr/bin/env python3\nprint("risk policy")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'managed_agent_runner.py'),
         '#!/usr/bin/env python3\n',
       );
@@ -520,6 +544,10 @@ describe('ScriptInstaller', () => {
         { name: 'git_flow.py', installed: true },
         { name: 'wiki_lint.py', installed: true },
         { name: 'metadata_controller.py', installed: true },
+        { name: 'risk_policy.py', installed: true },
+        { name: 'release_gate.py', installed: true },
+        { name: 'tests/test_release_gate.py', installed: true },
+        { name: 'tests/test_risk_policy.py', installed: true },
         { name: 'tests/test_metadata_controller.py', installed: true },
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_integration_concurrency.py', installed: true },

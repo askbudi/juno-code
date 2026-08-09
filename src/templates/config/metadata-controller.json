@@ -14,6 +14,7 @@
     ".gitignore",
     ".juno_task/config.json",
     ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/risk-policy.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
     ".juno_task/state/queue.json"
@@ -35,6 +36,7 @@
     ".juno_task/config.json",
     ".juno_task/cutover.json",
     ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/risk-policy.json",
     ".juno_task/receipts/controller-boundary.json",
     ".juno_task/state/lifecycle.json",
     ".juno_task/state/queue.json",

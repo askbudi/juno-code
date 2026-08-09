@@ -106,6 +106,12 @@ class MetadataControllerTest(unittest.TestCase):
             ".juno_task/config/metadata-controller.json",
         )
         self.assertTrue((self.new_controller / ".juno_task/config/metadata-controller.json").is_file())
+        risk_policy = self.new_controller / ".juno_task/config/risk-policy.json"
+        self.assertTrue(risk_policy.is_file())
+        self.assertEqual(risk_policy.read_bytes(),
+                         (POLICY.parent / "risk-policy.json").read_bytes())
+        self.assertIn(".juno_task/config/risk-policy.json",
+                      command("git", "ls-files", cwd=self.new_controller).splitlines())
         boundary = json.loads((self.new_controller / ".juno_task/receipts/controller-boundary.json").read_text())
         self.assertGreater(len(boundary["preserved_metadata"]["entries"]), 2)
         write(self.new_controller / ".juno_task/scripts/generated.py", "print('generated')\n")
@@ -208,7 +214,7 @@ class MetadataControllerTest(unittest.TestCase):
 
     def test_verification_rejects_required_generated_file_deletion(self) -> None:
         self.prepare()
-        command("git", "rm", ".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json", cwd=self.new_controller)
+        command("git", "rm", ".juno_task/config/metadata-controller.json", ".juno_task/config/risk-policy.json", ".juno_task/state/queue.json", cwd=self.new_controller)
         command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "delete generated controls", cwd=self.new_controller)
         evidence = mc.inspect(
             self.new_controller,
@@ -220,8 +226,22 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(evidence["checks"]["required_generated_present"])
         self.assertEqual(
             set(evidence["missing_required_generated"]),
-            {".juno_task/config/metadata-controller.json", ".juno_task/state/queue.json"},
+            {".juno_task/config/metadata-controller.json", ".juno_task/config/risk-policy.json", ".juno_task/state/queue.json"},
         )
+
+    def test_verification_rejects_tracked_risk_policy_byte_drift(self) -> None:
+        self.prepare()
+        risk_path = self.new_controller / ".juno_task/config/risk-policy.json"
+        value = json.loads(risk_path.read_text()); value["release_flags"] = ["forged-release"]
+        risk_path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        command("git", "add", ".juno_task/config/risk-policy.json", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "drift risk policy", cwd=self.new_controller)
+        evidence = mc.inspect(self.new_controller, self.policy,
+                              expected_branch="refs/heads/juno/controller-metadata-v1",
+                              require_active=False)
+        self.assertFalse(evidence["passed"])
+        self.assertFalse(evidence["checks"]["generated_contract"])
 
     def test_prepare_receipt_collision_refuses_before_branch_or_worktree_mutation(self) -> None:
         mc.migration_plan(self.migration_args(), self.policy)

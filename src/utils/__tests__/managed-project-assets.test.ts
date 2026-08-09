@@ -91,11 +91,23 @@ describe('ManagedProjectAssets', () => {
     const metadataPolicy = await fs.readJson(
       path.join(projectDir, '.juno_task/config/metadata-controller.json'),
     );
+    const riskPolicy = await fs.readJson(
+      path.join(projectDir, '.juno_task/config/risk-policy.json'),
+    );
     expect(metadataPolicy.schema_version).toBe('juno_metadata_controller_policy.v1');
     expect(metadataPolicy.product_forbidden).toContain('.juno_task/tasks');
     expect(metadataPolicy.runtime.ignored_roots).toContain('.juno_task/scripts');
     expect(metadataPolicy.tracked_exact).toContain('.juno_task/state/queue.json');
+    expect(metadataPolicy.tracked_exact).toContain('.juno_task/config/risk-policy.json');
+    expect(metadataPolicy.generated_metadata).toContain('.juno_task/config/risk-policy.json');
     expect(metadataPolicy.tracked_top_level_files).toContain('.juno_task/receipts');
+    expect(riskPolicy.schema_version).toBe('juno_bolt_risk_policy.v1');
+    expect(riskPolicy.review_policy).toEqual({
+      low: { sequence: [], min: 0, max: 0 },
+      normal: { sequence: ['reviewer'], min: 0, max: 1 },
+      high: { sequence: ['reviewer_a', 'reviewer_b'], min: 2, max: 2 },
+      release: { sequence: [], min: 0, max: 0 },
+    });
     expect(
       await fs.readFile(
         path.join(projectDir, '.juno_task/wiki/metadata_controller_boundary.md'),
@@ -223,7 +235,12 @@ describe('ManagedProjectAssets', () => {
       '.juno_task/scripts/tests/test_managed_agent_runner.py',
       '.juno_task/scripts/metadata_controller.py',
       '.juno_task/scripts/tests/test_metadata_controller.py',
+      '.juno_task/scripts/risk_policy.py',
+      '.juno_task/scripts/tests/test_risk_policy.py',
+      '.juno_task/scripts/release_gate.py',
+      '.juno_task/scripts/tests/test_release_gate.py',
       '.juno_task/config/metadata-controller.json',
+      '.juno_task/config/risk-policy.json',
       '.juno_task/wiki/metadata_controller_boundary.md',
       '.juno_task/wiki/runtime_migration_and_replacement_contract.md',
     ]) {
@@ -237,6 +254,8 @@ describe('ManagedProjectAssets', () => {
       // the exact installed concurrency gate is exercised by the package acceptance loop.
       'python3 -m py_compile .juno_task/scripts/worktree_lifecycle.py .juno_task/scripts/integration_candidate.py .juno_task/scripts/integration_owner_preflight.py',
       'python3 .juno_task/scripts/tests/test_metadata_controller.py',
+      'python3 .juno_task/scripts/tests/test_risk_policy.py',
+      'python3 .juno_task/scripts/tests/test_release_gate.py',
     ]) {
       const result = spawnSync('/bin/bash', ['-c', command], {
         cwd: projectDir,

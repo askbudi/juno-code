@@ -1,0 +1,883 @@
+#!/usr/bin/env python3
+"""Deterministic Bolt candidate risk, review, and compact-evidence policy."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+SCHEMA = "juno_bolt_risk_policy.v1"
+EVIDENCE_SCHEMA = "juno_bolt_candidate_evidence.v1"
+RELEASE_SCHEMA = "juno_bolt_release_gate.v1"
+RELEASE_AUTH_SCHEMA = "juno_bolt_release_authorization.v1"
+RELEASE_PRODUCER_SCHEMA = "juno_bolt_release_gate_producer.v1"
+RELEASE_TOOL_ID = "juno-code.release-gate"
+MANAGED_RUNNER_SCHEMA = "juno_managed_agent_runner.v1"
+REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
+PLAN_PRODUCER_SCHEMA = "juno_bolt_risk_plan_producer.v1"
+PLAN_TOOL_ID = "juno-code.risk-policy"
+EVIDENCE_PRODUCER_SCHEMA = "juno_bolt_candidate_evidence_producer.v1"
+EVIDENCE_TOOL_ID = "juno-code.risk-policy"
+SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
+DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
+ALLOWED_METRICS = {
+    "model_calls", "tool_calls", "failed_calls", "wall_ms", "uncached_tokens",
+    "cache_read_tokens", "affected_test_runs", "full_suite_runs", "build_runs",
+}
+TRANSCRIPT_KEYS = {"transcript", "stdout", "stderr", "prompt", "response", "messages"}
+PLAN_KEYS = {
+    "schema_version", "producer", "candidate", "policy_identity", "tier", "reasons", "changed_paths", "flags",
+    "unknown_flags", "shared_infrastructure", "affected_validation_required",
+    "full_suite_required", "reviewer_sequence", "min_reviews", "max_reviews",
+    "release_gate_required", "post_cas", "evidence_limits",
+}
+EVIDENCE_KEYS = {
+    "schema_version", "producer", "created_at", "status", "failure", "candidate", "policy",
+    "validation", "reviews", "release_gate", "metrics", "post_cas",
+    "semantic_evidence_reused",
+}
+
+
+class RiskPolicyError(RuntimeError):
+    pass
+
+
+def canonical(value: Any) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+
+def digest(value: Any) -> str:
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def load_policy(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RiskPolicyError("risk policy is missing or malformed") from exc
+    required = {
+        "schema_version", "tiers", "low_risk_paths", "high_risk_paths",
+        "shared_infrastructure_paths", "high_risk_flags", "release_flags",
+        "review_policy", "full_suite_tiers", "post_cas_checks", "limits",
+    }
+    if not isinstance(value, dict) or set(value) != required or value["schema_version"] != SCHEMA:
+        raise RiskPolicyError("risk policy schema is unsupported or ambiguous")
+    if value["tiers"] != ["low", "normal", "high", "release"]:
+        raise RiskPolicyError("risk tier order is unsupported")
+    if value["review_policy"] != {
+        "low": {"sequence": [], "min": 0, "max": 0},
+        "normal": {"sequence": ["reviewer"], "min": 0, "max": 1},
+        "high": {"sequence": ["reviewer_a", "reviewer_b"], "min": 2, "max": 2},
+        "release": {"sequence": [], "min": 0, "max": 0},
+    }:
+        raise RiskPolicyError("review sequence violates Bolt policy")
+    for key in (
+        "low_risk_paths", "high_risk_paths", "shared_infrastructure_paths",
+        "high_risk_flags", "release_flags", "full_suite_tiers", "post_cas_checks",
+    ):
+        if not isinstance(value[key], list) or any(not isinstance(item, str) or not item for item in value[key]):
+            raise RiskPolicyError(f"risk policy {key} must be a nonempty-string list")
+    limits = value["limits"]
+    if not isinstance(limits, dict) or set(limits) != {
+        "max_changed_paths", "max_metrics", "max_receipt_bytes", "max_string_bytes",
+    }:
+        raise RiskPolicyError("risk policy limits are incomplete")
+    if any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in limits.values()):
+        raise RiskPolicyError("risk policy limits are invalid")
+    return value
+
+
+def _matches(path: str, patterns: list[str]) -> bool:
+    # PurePath.match supplies useful ** semantics; fnmatch retains root-file matches.
+    item = PurePosixPath(path)
+    return any(item.match(pattern) or fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+
+def _normalize_paths(paths: Any, maximum: int) -> tuple[list[str], bool]:
+    if not isinstance(paths, list) or len(paths) > maximum:
+        return [], True
+    normalized: list[str] = []
+    ambiguous = False
+    for raw in paths:
+        if not isinstance(raw, str) or not raw or "\x00" in raw:
+            ambiguous = True
+            continue
+        if "\\" in raw:
+            ambiguous = True
+            continue
+        candidate = raw
+        components = candidate.split("/")
+        if (candidate.startswith("/") or re.match(r"^[A-Za-z]:", candidate)
+                or candidate in {"", "."} or ".." in components):
+            ambiguous = True
+            continue
+        normalized_path = str(PurePosixPath(candidate))
+        if normalized_path in {"", "."}:
+            ambiguous = True
+            continue
+        normalized.append(normalized_path)
+    return sorted(set(normalized)), ambiguous or not normalized
+
+
+def _classify_paths(policy: dict[str, Any], identity: dict[str, Any],
+                    changed_paths: Any, flags: Any = None) -> dict[str, Any]:
+    paths, ambiguous = _normalize_paths(changed_paths, policy["limits"]["max_changed_paths"])
+    if flags is None:
+        flags = []
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        flags, ambiguous = [], True
+    flags = sorted(set(flags))
+    known_flags = set(policy["high_risk_flags"]) | set(policy["release_flags"])
+    unknown = sorted(set(flags) - known_flags)
+    release = bool(set(flags) & set(policy["release_flags"]))
+    high_paths = [p for p in paths if _matches(p, policy["high_risk_paths"])]
+    shared_paths = [p for p in paths if _matches(p, policy["shared_infrastructure_paths"])]
+    low_only = bool(paths) and all(_matches(p, policy["low_risk_paths"]) for p in paths)
+    reasons: list[str] = []
+    if ambiguous or unknown:
+        tier = "high"; reasons.append("ambiguous_policy_input")
+    elif high_paths or set(flags) & set(policy["high_risk_flags"]):
+        tier = "high"; reasons.append("high_risk_surface")
+    elif low_only:
+        tier = "low"; reasons.append("docs_only")
+    else:
+        tier = "normal"; reasons.append("ordinary_runtime")
+    if release:
+        reasons.append("release_authority")
+    full_suite = tier in policy["full_suite_tiers"] or bool(shared_paths) or release
+    review = policy["review_policy"][tier]
+    return {
+        "schema_version": SCHEMA,
+        "producer": {"schema_version": PLAN_PRODUCER_SCHEMA, "tool_id": PLAN_TOOL_ID},
+        "candidate": identity,
+        "policy_identity": digest(policy),
+        "tier": tier,
+        "reasons": reasons,
+        "changed_paths": paths,
+        "flags": flags,
+        "unknown_flags": unknown,
+        "shared_infrastructure": shared_paths,
+        "affected_validation_required": True,
+        "full_suite_required": full_suite,
+        "reviewer_sequence": review["sequence"],
+        "min_reviews": review["min"],
+        "max_reviews": review["max"],
+        "release_gate_required": release,
+        "post_cas": {"semantic_review": False, "checks": policy["post_cas_checks"]},
+        "evidence_limits": {"max_metrics": policy["limits"]["max_metrics"],
+                            "max_string_bytes": policy["limits"]["max_string_bytes"],
+                            "max_receipt_bytes": policy["limits"]["max_receipt_bytes"]},
+    }
+
+
+def _candidate_request(value: Any) -> tuple[Path, str, str, str]:
+    keys = {"repository", "candidate_sha", "target_ref", "expected_target_sha"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or not isinstance(value.get("repository"), str)):
+        raise RiskPolicyError("candidate Git identity request contains unknown fields")
+    return (Path(value["repository"]), value.get("candidate_sha", ""),
+            value.get("target_ref", ""), value.get("expected_target_sha", ""))
+
+
+def classify(policy: dict[str, Any], candidate_request: dict[str, Any],
+             flags: Any = None) -> dict[str, Any]:
+    repository, candidate_sha, target_ref, expected_target_sha = _candidate_request(candidate_request)
+    identity = candidate_identity(repository, candidate_sha, target_ref, expected_target_sha)
+    return _classify_paths(policy, identity, identity["changed_paths"], flags)
+
+
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(repository), *args], stdin=subprocess.DEVNULL,
+                            text=True, capture_output=True)
+    if result.returncode:
+        raise RiskPolicyError("Git refused candidate identity resolution")
+    return result.stdout.strip()
+
+
+def candidate_identity(repository: Path, candidate_sha: str, target_ref: str,
+                       expected_target_sha: str) -> dict[str, Any]:
+    repository = repository.resolve()
+    branch_name = target_ref.removeprefix("refs/heads/")
+    if (not repository.is_dir() or not SHA_RE.fullmatch(candidate_sha)
+            or not SHA_RE.fullmatch(expected_target_sha)
+            or not target_ref.startswith("refs/heads/") or not branch_name):
+        raise RiskPolicyError("candidate Git identity request is malformed")
+    ref_check = subprocess.run(["git", "-C", str(repository), "check-ref-format", target_ref],
+                               stdin=subprocess.DEVNULL, capture_output=True)
+    if ref_check.returncode:
+        raise RiskPolicyError("target must be one strict full local branch ref")
+    resolved_candidate = _git(repository, "rev-parse", "--verify", candidate_sha + "^{commit}")
+    resolved_expected = _git(repository, "rev-parse", "--verify", expected_target_sha + "^{commit}")
+    target_sha = _git(repository, "show-ref", "--verify", "--hash", target_ref)
+    if (resolved_candidate != candidate_sha or resolved_expected != expected_target_sha
+            or target_sha != expected_target_sha):
+        raise RiskPolicyError("candidate or expected target is not the exact current commit")
+    candidate_tree = _git(repository, "rev-parse", candidate_sha + "^{tree}")
+    base_tree = _git(repository, "rev-parse", expected_target_sha + "^{tree}")
+    parents = _git(repository, "show", "-s", "--format=%P", candidate_sha).split()
+    if not parents or any(not SHA_RE.fullmatch(parent) for parent in parents):
+        raise RiskPolicyError("candidate parent graph is malformed")
+    if len(parents) == 2 and parents[0] == expected_target_sha:
+        candidate_kind, source_feature_tip = "target_first_merge", parents[1]
+        if _git(repository, "rev-parse", "--verify",
+                source_feature_tip + "^{commit}") != source_feature_tip:
+            raise RiskPolicyError("merge source feature tip is not an exact commit")
+        merge_base = subprocess.run(
+            ["git", "-C", str(repository), "merge-base", expected_target_sha,
+             source_feature_tip], stdin=subprocess.DEVNULL, text=True, capture_output=True)
+        if merge_base.returncode or not SHA_RE.fullmatch(merge_base.stdout.strip()):
+            raise RiskPolicyError("target-first merge source has no ordinary shared ancestry")
+    else:
+        candidate_kind, source_feature_tip = "direct_descendant", candidate_sha
+    ancestry = subprocess.run(
+        ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+         expected_target_sha, candidate_sha], stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if ancestry.returncode != 0:
+        raise RiskPolicyError("candidate/source feature tip is not descended from expected target")
+    changed = _git(repository, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
+                   expected_target_sha, candidate_sha).splitlines()
+    paths, ambiguous = _normalize_paths(changed, 1000000)
+    if ambiguous or paths != sorted(set(changed)):
+        raise RiskPolicyError("Git produced ambiguous changed paths")
+    product = {"candidate_tree": candidate_tree}
+    composition = {"base_sha": expected_target_sha, "base_tree": base_tree,
+                   "target_ref": target_ref, "target_sha": target_sha, "parents": parents,
+                   "candidate_kind": candidate_kind, "source_feature_tip": source_feature_tip}
+    return {"candidate_sha": candidate_sha, "candidate_tree": candidate_tree,
+            "base_sha": expected_target_sha, "base_tree": base_tree, "target_ref": target_ref,
+            "target_sha": target_sha, "parents": parents, "source_feature_tip": source_feature_tip,
+            "candidate_kind": candidate_kind, "changed_paths": paths,
+            "product_digest": digest(product), "composition_digest": digest(composition)}
+
+
+def _validate_candidate_identity(value: Any) -> None:
+    keys = {"candidate_sha", "candidate_tree", "base_sha", "base_tree", "target_ref",
+            "target_sha", "parents", "candidate_kind", "source_feature_tip", "changed_paths",
+            "product_digest", "composition_digest"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or any(not isinstance(value.get(key), str) or not SHA_RE.fullmatch(value[key])
+                   for key in ("candidate_sha", "candidate_tree", "base_sha", "base_tree", "target_sha"))
+            or not isinstance(value.get("target_ref"), str) or not value["target_ref"].startswith("refs/heads/")
+            or not isinstance(value.get("source_feature_tip"), str)
+            or not SHA_RE.fullmatch(value["source_feature_tip"])
+            or not isinstance(value.get("changed_paths"), list)
+            or any(not isinstance(path, str) or not path for path in value["changed_paths"])
+            or not isinstance(value.get("parents"), list)
+            or not value["parents"]
+            or any(not isinstance(parent, str) or not SHA_RE.fullmatch(parent) for parent in value["parents"])
+            or value.get("candidate_kind") not in {"direct_descendant", "target_first_merge"}
+            or (value["candidate_kind"] == "direct_descendant"
+                and value["source_feature_tip"] != value["candidate_sha"])
+            or (value["candidate_kind"] == "target_first_merge"
+                and (len(value["parents"]) != 2 or value["parents"][0] != value["base_sha"]
+                     or value["source_feature_tip"] != value["parents"][1]))
+            or value["changed_paths"] != sorted(set(value["changed_paths"]))
+            or any(not isinstance(value.get(key), str) or not DIGEST_RE.fullmatch(value[key])
+                   for key in ("product_digest", "composition_digest"))):
+        raise RiskPolicyError("candidate Git identity schema is invalid")
+    if (value["product_digest"] != digest({"candidate_tree": value["candidate_tree"]})
+            or value["composition_digest"] != digest({
+                "base_sha": value["base_sha"], "base_tree": value["base_tree"],
+                "target_ref": value["target_ref"], "target_sha": value["target_sha"],
+                "parents": value["parents"], "candidate_kind": value["candidate_kind"],
+                "source_feature_tip": value["source_feature_tip"],
+            })):
+        raise RiskPolicyError("candidate Git identity digests are inconsistent")
+
+
+def _policy_binding(plan: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(plan, dict) or set(plan) != PLAN_KEYS or plan.get("schema_version") != SCHEMA:
+        raise RiskPolicyError("risk plan schema is unsupported or contains unknown fields")
+    if (not isinstance(plan.get("policy_identity"), str)
+            or not DIGEST_RE.fullmatch(plan["policy_identity"])
+            or plan.get("producer") != {"schema_version": PLAN_PRODUCER_SCHEMA,
+                                        "tool_id": PLAN_TOOL_ID}
+            or plan.get("tier") not in {"low", "normal", "high", "release"}
+            or not isinstance(plan.get("reasons"), list)
+            or any(not isinstance(item, str) or not item for item in plan["reasons"])
+            or not isinstance(plan.get("reviewer_sequence"), list)
+            or any(item not in {"reviewer", "reviewer_a", "reviewer_b"}
+                   for item in plan["reviewer_sequence"])
+            or not isinstance(plan.get("min_reviews"), int)
+            or not isinstance(plan.get("max_reviews"), int)
+            or not 0 <= plan["min_reviews"] <= plan["max_reviews"] <= len(plan["reviewer_sequence"])
+            or not isinstance(plan.get("full_suite_required"), bool)
+            or not isinstance(plan.get("release_gate_required"), bool)
+            or plan.get("affected_validation_required") is not True
+            or not isinstance(plan.get("changed_paths"), list)
+            or not isinstance(plan.get("flags"), list)
+            or not isinstance(plan.get("unknown_flags"), list)
+            or not isinstance(plan.get("shared_infrastructure"), list)
+            or not isinstance(plan.get("evidence_limits"), dict)
+            or set(plan["evidence_limits"]) != {"max_metrics", "max_string_bytes", "max_receipt_bytes"}
+            or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0
+                   for value in plan["evidence_limits"].values())
+            or not isinstance(plan.get("post_cas"), dict)
+            or set(plan["post_cas"]) != {"semantic_review", "checks"}
+            or plan["post_cas"].get("semantic_review") is not False
+            or not isinstance(plan["post_cas"].get("checks"), list)):
+        raise RiskPolicyError("risk plan policy binding is malformed")
+    _validate_candidate_identity(plan.get("candidate"))
+    if plan["changed_paths"] != plan["candidate"]["changed_paths"]:
+        raise RiskPolicyError("risk plan paths do not bind its Git candidate")
+    return {key: plan[key] for key in (
+        "producer", "policy_identity", "tier", "reasons", "reviewer_sequence", "min_reviews",
+        "max_reviews", "full_suite_required", "release_gate_required",
+    )}
+
+
+def _metrics(plan: dict[str, Any], metrics: Any) -> dict[str, int]:
+    if (not isinstance(metrics, dict)
+            or len(metrics) > plan["evidence_limits"]["max_metrics"]
+            or set(metrics) - ALLOWED_METRICS):
+        raise RiskPolicyError("metrics are unbounded or contain transcript-like data")
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in metrics.values()):
+        raise RiskPolicyError("metrics must be non-negative integers")
+    return dict(sorted(metrics.items()))
+
+
+def _bounded_object(path_value: Any, expected_sha256: Any, plan: dict[str, Any], label: str) -> dict[str, Any]:
+    if not isinstance(path_value, str) or not path_value or len(path_value.encode()) > plan["evidence_limits"]["max_string_bytes"]:
+        raise RiskPolicyError(f"{label} path is missing or unbounded")
+    if not isinstance(expected_sha256, str) or not DIGEST_RE.fullmatch(expected_sha256):
+        raise RiskPolicyError(f"{label} digest is invalid")
+    path = Path(path_value)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RiskPolicyError(f"{label} is missing or unreadable") from exc
+    if not data or len(data) > plan["evidence_limits"]["max_receipt_bytes"]:
+        raise RiskPolicyError(f"{label} is empty or exceeds the evidence bound")
+    if hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise RiskPolicyError(f"{label} digest does not match its content")
+    try:
+        value = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RiskPolicyError(f"{label} is malformed") from exc
+    if not isinstance(value, dict):
+        raise RiskPolicyError(f"{label} must be one JSON object")
+    if data != canonical(value):
+        raise RiskPolicyError(f"{label} must use canonical JSON bytes")
+    return value
+
+
+def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
+                               reviewer: str, max_string_bytes: int) -> None:
+    keys = {"reviewer", "sequence", "candidate_sha", "session_id", "verdict",
+            "finding_count", "review_result_sha256", "tool_id", "completed_at",
+            "managed_runner", "review_binding"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise RiskPolicyError("persisted review schema is unsupported or contains unknown fields")
+    runner = value.get("managed_runner")
+    binding = value.get("review_binding")
+    if (value.get("reviewer") != reviewer or value.get("sequence") != sequence
+            or value.get("candidate_sha") != candidate_sha
+            or value.get("verdict") not in {"pass", "findings"}
+            or not isinstance(value.get("finding_count"), int)
+            or isinstance(value.get("finding_count"), bool) or value["finding_count"] < 0
+            or not isinstance(value.get("review_result_sha256"), str)
+            or not DIGEST_RE.fullmatch(value["review_result_sha256"])
+            or not isinstance(value.get("session_id"), str) or not value["session_id"]
+            or len(value["session_id"].encode()) > max_string_bytes
+            or not isinstance(value.get("tool_id"), str) or not value["tool_id"]
+            or len(value["tool_id"].encode()) > max_string_bytes
+            or not isinstance(value.get("completed_at"), str) or not value["completed_at"]
+            or len(value["completed_at"].encode()) > max_string_bytes
+            or not isinstance(runner, dict)
+            or set(runner) != {"schema_version", "receipt_path", "receipt_sha256"}
+            or runner.get("schema_version") != MANAGED_RUNNER_SCHEMA
+            or not isinstance(runner.get("receipt_path"), str) or not runner["receipt_path"]
+            or len(runner["receipt_path"].encode()) > max_string_bytes
+            or not isinstance(runner.get("receipt_sha256"), str)
+            or not DIGEST_RE.fullmatch(runner["receipt_sha256"])
+            or not isinstance(binding, dict)
+            or set(binding) != {"binding_sha256", "predecessor"}
+            or not isinstance(binding.get("binding_sha256"), str)
+            or not DIGEST_RE.fullmatch(binding["binding_sha256"])):
+        raise RiskPolicyError("persisted review provenance is invalid")
+
+
+def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, str]) -> bool:
+    if previous is None:
+        return False
+    if (not isinstance(previous, dict) or set(previous) != EVIDENCE_KEYS
+            or previous.get("schema_version") != EVIDENCE_SCHEMA
+            or previous.get("producer") != {"schema_version": EVIDENCE_PRODUCER_SCHEMA,
+                                             "tool_id": EVIDENCE_TOOL_ID}
+            or previous.get("status") != "passed" or previous.get("failure") is not None):
+        raise RiskPolicyError("previous evidence schema/status is invalid or contains unknown fields")
+    if previous.get("policy") != _policy_binding(plan) or previous.get("post_cas") != plan["post_cas"]:
+        raise RiskPolicyError("previous evidence does not bind the current full policy identity")
+    prior = previous.get("candidate")
+    _validate_candidate_identity(prior)
+    validation = previous.get("validation")
+    reviews = previous.get("reviews")
+    if (not isinstance(validation, dict)
+            or set(validation) != {"affected", "full_suite", "review_dispatches"}
+            or validation.get("affected") != "passed"
+            or not isinstance(reviews, list)
+            or validation.get("review_dispatches") != len(reviews)
+            or (plan["full_suite_required"]
+                and validation.get("full_suite") not in {"passed", "reused"})
+            or (not plan["full_suite_required"]
+                and validation.get("full_suite") != "not_required")):
+        raise RiskPolicyError("previous validation evidence is invalid")
+    if (previous.get("release_gate") is not None or plan["release_gate_required"]
+            or not isinstance(previous.get("metrics"), dict)
+            or set(previous["metrics"]) - ALLOWED_METRICS
+            or not isinstance(previous.get("created_at"), str)
+            or len(previous["created_at"].encode()) > plan["evidence_limits"]["max_string_bytes"]):
+        raise RiskPolicyError("previous evidence is not reusable under the current policy")
+    reused = previous.get("semantic_evidence_reused")
+    if reused is not None and (not isinstance(reused, dict) or set(reused) != {
+            "reason", "source_candidate_sha", "source_evidence_sha256",
+            "origin_candidate_sha", "origin_reviews"}):
+        raise RiskPolicyError("previous reuse projection contains unknown fields")
+    if reused is not None and (reused.get("reason") != "product_and_composition_bytes_identical"
+            or not isinstance(reused.get("source_candidate_sha"), str)
+            or not SHA_RE.fullmatch(reused["source_candidate_sha"])
+            or not isinstance(reused.get("source_evidence_sha256"), str)
+            or not DIGEST_RE.fullmatch(reused["source_evidence_sha256"])
+            or not isinstance(reused.get("origin_candidate_sha"), str)
+            or not SHA_RE.fullmatch(reused["origin_candidate_sha"])
+            or not isinstance(reused.get("origin_reviews"), list)
+            or reviews):
+        raise RiskPolicyError("previous reuse projection is malformed")
+    evidence_reviews = reused["origin_reviews"] if reused is not None else reviews
+    evidence_candidate = reused["origin_candidate_sha"] if reused is not None else prior["candidate_sha"]
+    if not (plan["min_reviews"] <= len(evidence_reviews) <= plan["max_reviews"]):
+        raise RiskPolicyError("previous review count violates the current policy")
+    for index, review in enumerate(evidence_reviews):
+        _validate_persisted_review(review, evidence_candidate, index + 1,
+                                   plan["reviewer_sequence"][index],
+                                   plan["evidence_limits"]["max_string_bytes"])
+        rebuilt = _compact_review(
+            {"runner_receipt_path": review["managed_runner"]["receipt_path"],
+             "runner_receipt_sha256": review["managed_runner"]["receipt_sha256"]},
+            plan["reviewer_sequence"][index], index + 1, evidence_candidate,
+            plan["policy_identity"], plan,
+        )
+        if rebuilt != review:
+            raise RiskPolicyError("previous review does not match its immutable source artifacts")
+    _validate_review_chain(evidence_reviews)
+    if any(review["verdict"] != "pass" or review["finding_count"] for review in evidence_reviews):
+        raise RiskPolicyError("previous semantic evidence contains findings")
+    _metrics(plan, previous["metrics"])
+    return (prior["product_digest"] == identity["product_digest"]
+            and prior["composition_digest"] == identity["composition_digest"])
+
+
+def write_review_binding(path: Path, *, candidate_sha: str, policy_identity: str,
+                         reviewer: str, predecessor_receipt: Path | None = None) -> dict[str, str]:
+    if reviewer not in {"reviewer", "reviewer_a", "reviewer_b"}:
+        raise RiskPolicyError("unknown reviewer role")
+    if not SHA_RE.fullmatch(candidate_sha) or not DIGEST_RE.fullmatch(policy_identity):
+        raise RiskPolicyError("review binding identities are malformed")
+    if reviewer == "reviewer_b":
+        if predecessor_receipt is None or not predecessor_receipt.is_file():
+            raise RiskPolicyError("Reviewer B requires the exact Reviewer A receipt")
+        predecessor = {"receipt_path": str(predecessor_receipt.resolve()),
+                       "receipt_sha256": hashlib.sha256(predecessor_receipt.read_bytes()).hexdigest()}
+        sequence = 2
+    else:
+        if predecessor_receipt is not None:
+            raise RiskPolicyError("first reviewer cannot declare a predecessor")
+        predecessor, sequence = None, 1
+    value = {"schema_version": REVIEW_BINDING_SCHEMA, "candidate_sha": candidate_sha,
+             "policy_identity": policy_identity, "reviewer_role": reviewer,
+             "sequence": sequence, "predecessor": predecessor}
+    data = canonical(value); path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def reviewer_command(script_dir: Path, *, controller_root: Path, controller_branch: str,
+                     candidate_root: Path, candidate_sha: str, prompt_file: Path,
+                     out_dir: Path, reviewer: str, task_id: str,
+                     review_binding_path: Path) -> list[str]:
+    if reviewer not in {"reviewer", "reviewer_a", "reviewer_b"}:
+        raise RiskPolicyError("unknown reviewer role")
+    runner = script_dir / "managed_agent_runner.py"
+    return [sys.executable, str(runner), "run", "--mode", "reviewer",
+            "--controller-root", str(controller_root), "--controller-branch", controller_branch,
+            "--agent-root", str(out_dir / "agent-root"), "--candidate-root", str(candidate_root),
+            "--candidate-sha", candidate_sha, "--prompt-file", str(prompt_file),
+            "--out-dir", str(out_dir), "--task-id", task_id,
+            "--review-binding", str(review_binding_path),
+            "--tool-id", f"bolt_{reviewer}"]
+
+
+def _compact_review(value: Any, expected_reviewer: str, sequence: int,
+                    candidate_sha: str, policy_identity: str,
+                    plan: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict) or any(key in value for key in TRANSCRIPT_KEYS):
+        raise RiskPolicyError("review evidence must be compact and transcript-free")
+    allowed = {"runner_receipt_path", "runner_receipt_sha256"}
+    if set(value) != allowed:
+        raise RiskPolicyError("review evidence fields do not match the strict schema")
+    receipt = _bounded_object(value["runner_receipt_path"], value["runner_receipt_sha256"],
+                              plan, "managed runner receipt")
+    identity = receipt.get("identity")
+    binding = receipt.get("review_binding")
+    binding_body = ({k: v for k, v in binding.items() if k != "binding_sha256"}
+                    if isinstance(binding, dict) else {})
+    if (TRANSCRIPT_KEYS & set(receipt)
+            or receipt.get("schema_version") != MANAGED_RUNNER_SCHEMA
+            or receipt.get("mode") != "reviewer" or receipt.get("state") != "succeeded"
+            or receipt.get("semantic_outcome") != "completed"
+            or not isinstance(identity, dict) or identity.get("candidate_sha") != candidate_sha
+            or not isinstance(binding, dict)
+            or set(binding) != {"schema_version", "candidate_sha", "policy_identity",
+                                "reviewer_role", "sequence", "predecessor", "binding_sha256"}
+            or binding.get("schema_version") != REVIEW_BINDING_SCHEMA
+            or binding.get("candidate_sha") != candidate_sha
+            or binding.get("policy_identity") != policy_identity
+            or binding.get("reviewer_role") != expected_reviewer
+            or binding.get("sequence") != sequence
+            or binding.get("binding_sha256") != digest(binding_body)):
+        raise RiskPolicyError("managed runner receipt does not bind the successful frozen candidate")
+    session_id = receipt.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise RiskPolicyError("managed runner session identity is missing")
+    if len(session_id.encode("utf-8")) > plan["evidence_limits"]["max_string_bytes"]:
+        raise RiskPolicyError("review session identity exceeds compact evidence limit")
+    artifacts = receipt.get("artifacts")
+    response = artifacts.get("response") if isinstance(artifacts, dict) else None
+    if (not isinstance(response, dict) or set(response) != {"path", "bytes", "sha256"}
+            or not isinstance(response.get("bytes"), int)
+            or isinstance(response.get("bytes"), bool)):
+        raise RiskPolicyError("managed runner response artifact evidence is missing")
+    result = _bounded_object(response.get("path"), response.get("sha256"), plan,
+                             "managed runner review result")
+    result_keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
+                   "sequence", "verdict", "findings"}
+    if (set(result) != result_keys or result.get("schema_version") != REVIEW_RESULT_SCHEMA
+            or result.get("candidate_sha") != candidate_sha
+            or result.get("policy_identity") != policy_identity
+            or result.get("reviewer_role") != expected_reviewer
+            or result.get("sequence") != sequence
+            or result.get("verdict") not in {"pass", "findings"}
+            or not isinstance(result.get("findings"), list) or len(result["findings"]) > 32
+            or response["bytes"] != Path(response["path"]).stat().st_size):
+        raise RiskPolicyError("managed runner review result schema/binding is invalid")
+    for finding in result["findings"]:
+        if (not isinstance(finding, dict) or set(finding) != {"code", "severity", "summary"}
+                or not isinstance(finding.get("code"), str) or not finding["code"]
+                or finding.get("severity") not in {"low", "medium", "high", "critical"}
+                or not isinstance(finding.get("summary"), str) or not finding["summary"]
+                or len(finding["code"].encode()) > 64
+                or len(finding["summary"].encode()) > 512):
+            raise RiskPolicyError("managed runner review finding is malformed or unbounded")
+    if (result["verdict"] == "pass") != (not result["findings"]):
+        raise RiskPolicyError("managed runner review verdict/findings are contradictory")
+    tool_id, completed_at = receipt.get("tool_id"), receipt.get("completed_at")
+    if (not isinstance(tool_id, str) or not tool_id or not isinstance(completed_at, str)
+            or not completed_at
+            or len(tool_id.encode()) > plan["evidence_limits"]["max_string_bytes"]
+            or len(completed_at.encode()) > plan["evidence_limits"]["max_string_bytes"]):
+        raise RiskPolicyError("managed runner tool/timestamp provenance is missing")
+    return {"reviewer": expected_reviewer, "sequence": sequence,
+            "candidate_sha": candidate_sha, "session_id": session_id,
+            "tool_id": tool_id, "completed_at": completed_at,
+            "verdict": result["verdict"], "finding_count": len(result["findings"]),
+            "review_result_sha256": response["sha256"],
+            "managed_runner": {"schema_version": MANAGED_RUNNER_SCHEMA,
+                               "receipt_path": str(Path(value["runner_receipt_path"]).resolve()),
+                               "receipt_sha256": value["runner_receipt_sha256"]},
+            "review_binding": {"binding_sha256": binding["binding_sha256"],
+                               "predecessor": binding["predecessor"]}}
+
+
+def _time(value: str) -> dt.datetime:
+    try: parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc: raise RiskPolicyError("review completion timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        raise RiskPolicyError("review completion timestamp must include timezone")
+    return parsed
+
+
+def _validate_review_chain(reviews: list[dict[str, Any]]) -> None:
+    if len({review["session_id"] for review in reviews}) != len(reviews):
+        raise RiskPolicyError("review sessions must be distinct and ordered")
+    if len({review["tool_id"] for review in reviews}) != len(reviews):
+        raise RiskPolicyError("review tool identities must be distinct")
+    if not reviews:
+        return
+    if reviews[0]["review_binding"]["predecessor"] is not None:
+        raise RiskPolicyError("first review must not declare a predecessor")
+    _time(reviews[0]["completed_at"])
+    for prior, current in zip(reviews, reviews[1:]):
+        predecessor = current["review_binding"]["predecessor"]
+        expected = {"receipt_sha256": prior["managed_runner"]["receipt_sha256"],
+                    "tool_id": prior["tool_id"], "session_id": prior["session_id"],
+                    "completed_at": prior["completed_at"],
+                    "binding_sha256": prior["review_binding"]["binding_sha256"]}
+        if predecessor != expected or _time(current["completed_at"]) < _time(prior["completed_at"]):
+            raise RiskPolicyError("review predecessor/order provenance is invalid")
+
+
+def _release_gate(value: Any, plan: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+            "receipt_path", "receipt_sha256", "authorization_path"}:
+        raise RiskPolicyError("release gate evidence must identify one exact receipt")
+    receipt = _bounded_object(value["receipt_path"], value["receipt_sha256"], plan,
+                              "release gate receipt")
+    keys = {"schema_version", "producer_schema", "tool_id", "candidate_sha",
+            "policy_identity", "authority_id", "owner_authorization_sha256", "validation"}
+    if (set(receipt) != keys or receipt.get("schema_version") != RELEASE_SCHEMA
+            or receipt.get("producer_schema") != RELEASE_PRODUCER_SCHEMA
+            or receipt.get("tool_id") != RELEASE_TOOL_ID
+            or receipt.get("candidate_sha") != identity["candidate_sha"]
+            or receipt.get("policy_identity") != plan["policy_identity"]
+            or receipt.get("validation") != "passed"
+            or not isinstance(receipt.get("owner_authorization_sha256"), str)
+            or not DIGEST_RE.fullmatch(receipt["owner_authorization_sha256"])
+            or not isinstance(receipt.get("authority_id"), str) or not receipt["authority_id"]
+            or len(receipt["authority_id"].encode()) > plan["evidence_limits"]["max_string_bytes"]):
+        raise RiskPolicyError("release gate receipt lacks identical-candidate policy authority")
+    authorization = _bounded_object(value["authorization_path"],
+                                    receipt["owner_authorization_sha256"], plan,
+                                    "owner authorization")
+    auth_keys = {"schema_version", "candidate_sha", "policy_identity", "owner_id",
+                 "authorized_scopes"}
+    if (set(authorization) != auth_keys
+            or authorization.get("schema_version") != RELEASE_AUTH_SCHEMA
+            or authorization.get("candidate_sha") != identity["candidate_sha"]
+            or authorization.get("policy_identity") != plan["policy_identity"]
+            or authorization.get("owner_id") != receipt["authority_id"]
+            or authorization.get("authorized_scopes") != ["local_release"]):
+        raise RiskPolicyError("release owner authorization provenance is invalid")
+    return {**receipt, "receipt_path": str(Path(value["receipt_path"]).resolve()),
+            "receipt_sha256": value["receipt_sha256"],
+            "authorization_path": str(Path(value["authorization_path"]).resolve())}
+
+
+def _revalidate_evidence_reviews(evidence: dict[str, Any], plan: dict[str, Any],
+                                 candidate_sha: str) -> list[dict[str, Any]]:
+    reviews = evidence.get("reviews")
+    if (not isinstance(reviews, list)
+            or not (plan["min_reviews"] <= len(reviews) <= plan["max_reviews"])):
+        raise RiskPolicyError("candidate evidence review count violates current policy")
+    rebuilt: list[dict[str, Any]] = []
+    for index, review in enumerate(reviews):
+        _validate_persisted_review(review, candidate_sha, index + 1,
+                                   plan["reviewer_sequence"][index],
+                                   plan["evidence_limits"]["max_string_bytes"])
+        compact = _compact_review(
+            {"runner_receipt_path": review["managed_runner"]["receipt_path"],
+             "runner_receipt_sha256": review["managed_runner"]["receipt_sha256"]},
+            plan["reviewer_sequence"][index], index + 1, candidate_sha,
+            plan["policy_identity"], plan,
+        )
+        if compact != review:
+            raise RiskPolicyError("candidate evidence review differs from source artifacts")
+        rebuilt.append(compact)
+    _validate_review_chain(rebuilt)
+    if any(item["verdict"] != "pass" or item["finding_count"] for item in rebuilt):
+        raise RiskPolicyError("candidate evidence contains review findings")
+    return rebuilt
+
+
+def verify_candidate_evidence(policy: dict[str, Any], candidate_request: dict[str, Any],
+                              flags: Any, evidence_reference: dict[str, Any]) -> dict[str, Any]:
+    """Fresh Git + artifact verifier intended for merge-queue import."""
+    plan = classify(policy, candidate_request, flags)
+    if (not isinstance(evidence_reference, dict)
+            or set(evidence_reference) != {"receipt_path", "receipt_sha256"}):
+        raise RiskPolicyError("candidate evidence must be one exact canonical receipt reference")
+    evidence = _bounded_object(evidence_reference.get("receipt_path"),
+                               evidence_reference.get("receipt_sha256"), plan,
+                               "candidate risk receipt")
+    identity = plan["candidate"]
+    if (set(evidence) != EVIDENCE_KEYS or evidence.get("schema_version") != EVIDENCE_SCHEMA
+            or evidence.get("producer") != {"schema_version": EVIDENCE_PRODUCER_SCHEMA,
+                                             "tool_id": EVIDENCE_TOOL_ID}
+            or evidence.get("candidate") != identity
+            or evidence.get("policy") != _policy_binding(plan)
+            or evidence.get("post_cas") != plan["post_cas"]):
+        raise RiskPolicyError("candidate evidence does not bind the fresh Git plan")
+    if evidence.get("status") != "passed" or evidence.get("failure") is not None:
+        return {"plan": plan, "eligible": False}
+    validation = evidence.get("validation")
+    reused = evidence.get("semantic_evidence_reused")
+    expected_full_suite = (("reused" if reused is not None else "passed")
+                           if plan["full_suite_required"] else "not_required")
+    if (not isinstance(validation, dict)
+            or set(validation) != {"affected", "full_suite", "review_dispatches"}
+            or validation.get("affected") != "passed"
+            or validation.get("full_suite") != expected_full_suite
+            or not isinstance(evidence.get("metrics"), dict)):
+        raise RiskPolicyError("candidate evidence validation is incomplete")
+    _metrics(plan, evidence["metrics"])
+    if reused is not None:
+        if not _validate_previous(evidence, plan, identity):
+            raise RiskPolicyError("reused candidate evidence does not match fresh Git identity")
+        return {"plan": plan, "eligible": True}
+    reviews = _revalidate_evidence_reviews(evidence, plan, identity["candidate_sha"])
+    if validation["review_dispatches"] != len(reviews):
+        raise RiskPolicyError("candidate evidence review dispatch count is inconsistent")
+    if plan["release_gate_required"]:
+        gate = evidence.get("release_gate")
+        if not isinstance(gate, dict):
+            raise RiskPolicyError("candidate evidence release authority is missing")
+        gate_input = {key: gate.get(key) for key in
+                      ("receipt_path", "receipt_sha256", "authorization_path")}
+        if _release_gate(gate_input, plan, identity) != gate:
+            raise RiskPolicyError("candidate evidence release authority drifted")
+    elif evidence.get("release_gate") is not None:
+        raise RiskPolicyError("non-release candidate evidence contains release authority")
+    return {"plan": plan, "eligible": True}
+
+
+def _evidence(plan: dict[str, Any], identity: dict[str, str], metrics: dict[str, int],
+              *, status: str, failure: str | None, affected: str, full_suite: str,
+              reviews: list[dict[str, Any]] | None = None,
+              release_gate: dict[str, Any] | None = None,
+              reused: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"schema_version": EVIDENCE_SCHEMA,
+            "producer": {"schema_version": EVIDENCE_PRODUCER_SCHEMA,
+                         "tool_id": EVIDENCE_TOOL_ID},
+            "created_at": utc_now(), "status": status,
+            "failure": failure, "candidate": identity, "policy": _policy_binding(plan),
+            "validation": {"affected": affected, "full_suite": full_suite,
+                           "review_dispatches": len(reviews or [])},
+            "reviews": reviews or [], "release_gate": release_gate, "metrics": metrics,
+            "post_cas": plan["post_cas"], "semantic_evidence_reused": reused}
+
+
+def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affected_tests_passed: bool,
+             full_suite_passed: bool | None, reviews: Any, metrics: Any,
+             previous: dict[str, Any] | None = None,
+             release_gate: Any = None, policy: dict[str, Any]) -> dict[str, Any]:
+    _policy_binding(plan)
+    if digest(policy) != plan["policy_identity"]:
+        raise RiskPolicyError("risk plan does not bind the current full policy identity")
+    try:
+        expected_plan = classify(policy, candidate_request, plan["flags"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RiskPolicyError("current risk policy cannot reproduce the plan") from exc
+    if expected_plan != plan:
+        raise RiskPolicyError("risk plan fields drifted from the current full policy")
+    if (not isinstance(affected_tests_passed, bool)
+            or (full_suite_passed is not None and not isinstance(full_suite_passed, bool))):
+        raise RiskPolicyError("validation outcomes must be strict booleans or null")
+    repository, candidate_sha, target_ref, expected_target_sha = _candidate_request(candidate_request)
+    identity = candidate_identity(repository, candidate_sha, target_ref, expected_target_sha)
+    if identity != plan["candidate"]:
+        raise RiskPolicyError("risk plan no longer binds the frozen Git candidate")
+    compact_metrics = _metrics(plan, metrics)
+    if not affected_tests_passed:
+        return _evidence(plan, identity, compact_metrics, status="failed",
+                         failure="affected_validation_failed", affected="failed",
+                         full_suite="not_run")
+    if plan["full_suite_required"] and full_suite_passed is False:
+        return _evidence(plan, identity, compact_metrics, status="failed",
+                         failure="full_suite_failed_or_missing", affected="passed",
+                         full_suite="failed")
+    previous_sha = None
+    if previous is not None:
+        if not isinstance(previous, dict) or set(previous) != {"receipt_path", "receipt_sha256"}:
+            raise RiskPolicyError("previous evidence must be one exact canonical receipt reference")
+        previous_sha = previous.get("receipt_sha256")
+        previous = _bounded_object(previous.get("receipt_path"), previous_sha, plan,
+                                   "previous risk receipt")
+    reusable = _validate_previous(previous, plan, identity)
+    if plan["full_suite_required"] and full_suite_passed is not True and not reusable:
+        return _evidence(plan, identity, compact_metrics, status="failed",
+                         failure="full_suite_failed_or_missing", affected="passed",
+                         full_suite="missing")
+    if reusable:
+        prior = previous["candidate"]
+        prior_reuse = previous["semantic_evidence_reused"]
+        origin_reviews = (prior_reuse["origin_reviews"] if prior_reuse is not None
+                          else previous["reviews"])
+        origin_candidate = (prior_reuse["origin_candidate_sha"] if prior_reuse is not None
+                            else prior["candidate_sha"])
+        return _evidence(
+            plan, identity, compact_metrics, status="passed", failure=None, affected="passed",
+            full_suite="reused" if plan["full_suite_required"] else "not_required",
+            reused={"reason": "product_and_composition_bytes_identical",
+                    "source_candidate_sha": prior["candidate_sha"],
+                    "source_evidence_sha256": previous_sha,
+                    "origin_candidate_sha": origin_candidate,
+                    "origin_reviews": origin_reviews},
+        )
+    if not isinstance(reviews, list) or len(reviews) > plan["max_reviews"]:
+        raise RiskPolicyError("review count violates the deterministic policy bounds")
+    compact_reviews: list[dict[str, Any]] = []
+    for index, review in enumerate(reviews):
+        compact_reviews.append(_compact_review(
+            review, plan["reviewer_sequence"][index], index + 1,
+            identity["candidate_sha"], plan["policy_identity"], plan,
+        ))
+        _validate_review_chain(compact_reviews)
+        if compact_reviews[-1]["verdict"] != "pass" or compact_reviews[-1]["finding_count"]:
+            return _evidence(plan, identity, compact_metrics, status="failed",
+                             failure="review_findings", affected="passed",
+                             full_suite="passed" if plan["full_suite_required"] else "not_required",
+                             reviews=compact_reviews)
+    if len(compact_reviews) < plan["min_reviews"]:
+        raise RiskPolicyError("review count violates the deterministic policy bounds")
+    gate = None
+    if plan["release_gate_required"]:
+        gate = _release_gate(release_gate, plan, identity)
+    elif release_gate is not None:
+        raise RiskPolicyError("release gate evidence is forbidden for a non-release plan")
+    return _evidence(plan, identity, compact_metrics, status="passed", failure=None,
+                     affected="passed",
+                     full_suite="passed" if plan["full_suite_required"] else "not_required",
+                     reviews=compact_reviews, release_gate=gate)
+
+
+def atomic_receipt(path: Path, value: dict[str, Any], policy: dict[str, Any]) -> None:
+    data = canonical(value)
+    if len(data) > policy["limits"]["max_receipt_bytes"]:
+        raise RiskPolicyError("compact evidence exceeds receipt size limit")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix="." + path.name + ".", delete=False) as out:
+        out.write(data); out.flush(); os.fsync(out.fileno()); temporary = Path(out.name)
+    os.replace(temporary, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--policy", type=Path, required=True)
+    parser.add_argument("--repository", type=Path, required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--target-ref", required=True)
+    parser.add_argument("--expected-target-sha", required=True)
+    parser.add_argument("--flag", action="append", default=[])
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    try:
+        policy = load_policy(args.policy)
+        value = classify(policy, {"repository": str(args.repository),
+                                  "candidate_sha": args.candidate_sha,
+                                  "target_ref": args.target_ref,
+                                  "expected_target_sha": args.expected_target_sha}, args.flag)
+        if args.output: atomic_receipt(args.output, value, policy)
+        else: print(json.dumps(value, sort_keys=True))
+        return 0
+    except RiskPolicyError as exc:
+        print(f"risk_policy.py: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

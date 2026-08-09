@@ -8,6 +8,12 @@
       "type": "config"
     },
     {
+      "source": "config/risk-policy.json",
+      "destination": ".juno_task/config/risk-policy.json",
+      "installClass": "project",
+      "type": "config"
+    },
+    {
       "source": "wiki/metadata_controller_boundary.md",
       "destination": ".juno_task/wiki/metadata_controller_boundary.md",
       "installClass": "project",
@@ -94,6 +100,30 @@
     {
       "source": "scripts/metadata_controller.py",
       "destination": ".juno_task/scripts/metadata_controller.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/risk_policy.py",
+      "destination": ".juno_task/scripts/risk_policy.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/release_gate.py",
+      "destination": ".juno_task/scripts/release_gate.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_release_gate.py",
+      "destination": ".juno_task/scripts/tests/test_release_gate.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_risk_policy.py",
+      "destination": ".juno_task/scripts/tests/test_risk_policy.py",
       "installClass": "script",
       "type": "script"
     },
