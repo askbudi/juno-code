@@ -107,6 +107,8 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse((self.new_controller / ".juno_task/specs/workflows").exists())
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
         self.assertIn(".juno_task/scripts/", (self.new_controller / ".gitignore").read_text())
+        self.assertIn(".juno_task/cache/", (self.new_controller / ".gitignore").read_text())
+        self.assertIn(".juno_task/locks/", (self.new_controller / ".gitignore").read_text())
         generated_config = json.loads((self.new_controller / ".juno_task/config.json").read_text())
         self.assertEqual(
             generated_config["controllerWorkspace"]["policy"],
