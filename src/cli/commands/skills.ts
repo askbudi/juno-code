@@ -38,6 +38,7 @@ Existing files in the destination directories are preserved.
     .action(async (options) => {
       try {
         const projectDir = process.cwd();
+        await SkillInstaller.assertInstallAllowed(projectDir);
 
         if (!options.force) {
           const needsUpdate = await SkillInstaller.needsUpdate(projectDir);

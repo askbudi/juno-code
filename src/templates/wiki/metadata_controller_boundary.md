@@ -136,8 +136,10 @@ common directory and all protected worktrees.
 
 The controller branch remains separate because it owns Kanban state. A separate
 long-lived integration branch is not required merely to synchronize controller
-and product state. `integration-owner` is a clean worktree role attached to the
-real product target ref; a project may still choose a staging branch as an
+and product state. `integration-owner` is a protected clean worktree role for
+the real product target. Its checkout is detached while the merge queue owns the
+target-ref CAS window, then attached to the exact target for shared validation,
+servers, release, or deploy. A project may still choose a staging branch as an
 explicit product policy, but the controller never merges into it.
 
 ```text
@@ -150,11 +152,15 @@ feature/X branch + worktree              feature/Y branch + worktree
         +---------------- merge queue --------+
                               |
                               v
-                  real product target ref (CAS guarded)
+                  real product target ref (CAS guarded;
+                   integration owner detached)
                               |
                               v
-             clean integration-owner worktree at exact target SHA
+             attach clean integration-owner at exact target SHA
                 full suite, shared local stack, deploy manager
+                              |
+                              v
+                detach before the next queue mutation
 ```
 
 Run Kanban and task/merge orchestration from the metadata controller. Run agent
@@ -165,6 +171,12 @@ Deployment remains a separate authority. Never deploy from the controller or
 from an unfinished feature worktree. If feature worktrees need local servers,
 give each isolated ports and state; otherwise keep the shared stack solely in
 the integration-owner worktree.
+
+The transition is serialized: stop shared servers and require a clean checkout,
+detach the integration owner before `yy merge next|resolve`, drain or pause the
+queue, attach the exact target ref for shared validation/deployment, then detach
+again before another queue mutation. Never leave the target ref attached while
+expecting queue CAS to advance it.
 
 ## Refusal rules
 

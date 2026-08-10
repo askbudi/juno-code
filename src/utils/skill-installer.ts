@@ -52,6 +52,21 @@ interface ExtensionGroup {
 }
 
 export class SkillInstaller {
+  static async assertInstallAllowed(projectDir: string): Promise<void> {
+    try {
+      const config = await fs.readJson(path.join(projectDir, '.juno_task/config.json'));
+      if (config?.controllerWorkspace?.mode === 'metadata-only') {
+        throw new Error(
+          'Skill installation is refused in a metadata-only controller; run it from the product or a feature worktree.',
+        );
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Skill installation is refused')) {
+        throw error;
+      }
+    }
+  }
+
   /**
    * Skill groups define which template folders map to which project directories.
    * New agents can be added here without changing any other logic.
@@ -347,6 +362,7 @@ export class SkillInstaller {
    * @returns true if any skill files were installed or updated
    */
   static async install(projectDir: string, silent = false, force = false): Promise<boolean> {
+    await this.assertInstallAllowed(projectDir);
     const debug = process.env.JUNO_CODE_DEBUG === '1';
     let totalInstalled = 0;
 

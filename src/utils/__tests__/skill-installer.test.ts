@@ -75,6 +75,23 @@ describe('SkillInstaller', () => {
   });
 
   describe('install', () => {
+    it('refuses to materialize skills in a metadata-only controller', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+      });
+
+      await expect(SkillInstaller.install(testDir, true)).rejects.toThrow(
+        'Skill installation is refused in a metadata-only controller',
+      );
+      expect(await fs.pathExists(path.join(testDir, '.agents'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, '.claude'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, '.pi'))).toBe(false);
+    });
+
     it('should not fail when templates directory is empty', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       // Even if no skill files exist in templates, install should not throw

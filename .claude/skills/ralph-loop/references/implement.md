@@ -17,8 +17,9 @@ task's workspace.
    and exact base SHA before editing; stop on missing or contradictory evidence.
 3. Work only in that product worktree. Never edit product files in the controller
    or copy controller ledgers, specs, state, or artifacts into a task worktree.
-4. During the live-controller transition, all existing controller checkpoint and
-   controller-identity checks remain mandatory. Do not weaken or bypass them.
+4. Preserve controller identity and workspace-role checks. Controller checkpoints
+   are best-effort local durability warnings after terminal metadata is durable;
+   they are not product inputs or lifecycle gates.
 
 ## 2. Implement
 
@@ -35,9 +36,9 @@ task's workspace.
    `git diff --check`.
 2. Stage only task-owned paths, commit coherently, and leave the worktree clean.
 3. Run `yy task finish TASK_ID`; it validates the exact tip and records `QUEUED`.
-4. Record the commit and bounded response in Kanban. Run the guarded controller
-   checkpoint after controller metadata updates; product dirt, staged work,
-   conflicts, symlinks, nested repositories, or submodule dirt must still block.
+4. Record the commit and bounded response in Kanban. A lifecycle finalizer may
+   attempt a controller checkpoint after terminal metadata is durable; checkpoint
+   failure remains a warning and must not change the task or merge outcome.
 
 Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
 moved targets/conflicts, applies risk-based review, advances by expected-SHA CAS,

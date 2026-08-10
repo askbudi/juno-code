@@ -963,9 +963,7 @@ def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, An
     if run_root.exists():
         raise MergeQueueError(f"review output already exists; inspect before retry: {run_root}")
     binding_path = run_root.parent / f"{sequence}-{reviewer}.binding.json"
-    prompt = controller / ".juno_task/prompts/review_commit_parallel_runner.md"
-    if not prompt.is_file():
-        raise MergeQueueError("managed review prompt is missing")
+    prompt = managed_review_prompt(controller)
     try:
         risk_runtime.write_review_binding(
             binding_path, candidate_sha=plan["candidate"]["candidate_sha"],
@@ -992,6 +990,30 @@ def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, An
                 "runner_receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     except (risk_runtime.RiskPolicyError, OSError, KeyError, json.JSONDecodeError) as exc:
         raise MergeQueueError(f"managed {reviewer} evidence failed: {exc}") from exc
+
+
+def managed_review_prompt(controller: Path) -> Path:
+    """Resolve review guidance without materializing it in a sparse controller."""
+    legacy = controller / ".juno_task/prompts/review_commit_parallel_runner.md"
+    if legacy.is_file():
+        return legacy.resolve()
+
+    identity_path = controller / ".juno_task/runtime/identity.json"
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        executable = Path(identity["executable"]).expanduser().resolve()
+        expected_sha = identity["executable_sha256"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise MergeQueueError("managed review prompt runtime identity is missing or invalid") from exc
+    if not executable.is_file() or not isinstance(expected_sha, str):
+        raise MergeQueueError("managed review prompt runtime identity is missing or invalid")
+    if hashlib.sha256(executable.read_bytes()).hexdigest() != expected_sha:
+        raise MergeQueueError("managed review prompt runtime executable hash drifted")
+
+    prompt = executable.parent.parent / "templates/prompts/review_commit_parallel_runner.md"
+    if not prompt.is_file():
+        raise MergeQueueError("managed review prompt is missing from the installed runtime")
+    return prompt.resolve()
 
 
 def full_validation_identity(controller: Path, config: dict[str, Any],

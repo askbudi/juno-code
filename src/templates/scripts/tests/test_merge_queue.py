@@ -89,6 +89,39 @@ class MergeQueueTests(unittest.TestCase):
                                        "timeout_seconds": 10, "max_output_bytes": 4096},
         }) + "\n")
 
+    def test_managed_review_prompt_resolves_from_bound_runtime(self) -> None:
+        executable = self.root / "installed/dist/bin/juno-code.sh"
+        prompt = self.root / "installed/dist/templates/prompts/review_commit_parallel_runner.md"
+        executable.parent.mkdir(parents=True)
+        prompt.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n")
+        prompt.write_text("read-only reviewer\n")
+        identity = self.controller / ".juno_task/runtime/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text(json.dumps({
+            "executable": str(executable),
+            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        }))
+
+        self.assertEqual(merge_runtime.managed_review_prompt(self.controller), prompt.resolve())
+
+    def test_managed_review_prompt_rejects_runtime_hash_drift(self) -> None:
+        executable = self.root / "installed/dist/bin/juno-code.sh"
+        prompt = self.root / "installed/dist/templates/prompts/review_commit_parallel_runner.md"
+        executable.parent.mkdir(parents=True)
+        prompt.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n")
+        prompt.write_text("read-only reviewer\n")
+        identity = self.controller / ".juno_task/runtime/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text(json.dumps({
+            "executable": str(executable),
+            "executable_sha256": "0" * 64,
+        }))
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "hash drifted"):
+            merge_runtime.managed_review_prompt(self.controller)
+
     def command(self, script: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         # Global argparse options precede merge subcommands.
         argv = ["python3", str(script)]
