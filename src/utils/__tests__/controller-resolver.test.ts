@@ -140,6 +140,21 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
+  it.each(['juno.controller.path', 'juno.controller.branch'])(
+    'rejects duplicate %s registration values',
+    (key) => {
+      const value = key.endsWith('.path') ? controller : 'controller-branch';
+      git(task, 'config', '--local', '--add', key, value);
+      const result = run(
+        'python3',
+        [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task],
+        task,
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`controller registration is ambiguous: ${key} has multiple values`);
+    },
+  );
+
   it('accepts normalized full/short controller refs and routed audit identity', () => {
     git(task, 'config', '--local', 'juno.controller.branch', 'refs/heads/controller-branch');
     const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, {

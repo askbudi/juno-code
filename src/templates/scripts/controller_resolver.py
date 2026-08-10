@@ -46,6 +46,11 @@ def config(cwd: Path, key: str) -> Optional[str]:
     return git(cwd, "config", "--local", "--get", key)
 
 
+def config_values(cwd: Path, key: str) -> list[str]:
+    value = git(cwd, "config", "--local", "--get-all", key)
+    return value.splitlines() if value else []
+
+
 def worktree_config(cwd: Path, key: str) -> Optional[str]:
     """Read checkout-specific persisted identity; never infer it from process env."""
     return git(cwd, "config", "--worktree", "--get", key)
@@ -125,7 +130,16 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         enforcement = "strict"
 
     explicit = os.environ.get("JUNO_TASK_ROOT", "").strip()
-    registered = config(cwd, "juno.controller.path") if repo_root_text else None
+    path_values = config_values(cwd, "juno.controller.path") if repo_root_text else []
+    branch_values = config_values(cwd, "juno.controller.branch") if repo_root_text else []
+    registration_errors: list[str] = []
+    if len(path_values) > 1:
+        registration_errors.append("controller registration is ambiguous: juno.controller.path has multiple values")
+    if len(branch_values) > 1:
+        registration_errors.append("controller registration is ambiguous: juno.controller.branch has multiple values")
+    if bool(path_values) != bool(branch_values):
+        registration_errors.append("controller registration requires exactly one path and one branch value")
+    registered = path_values[0] if len(path_values) == 1 else None
     local_initialized_root = not repo_root_text and (current_root / ".juno_task").is_dir()
     # Environment is routing/assertion only. Persisted controller registration,
     # checkout topology, or an initialized non-Git project determine identity.
@@ -141,7 +155,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
     )
     asserted_controller = canonical(explicit, current_root) if explicit and not local_initialized_root else None
     controller = persisted_controller or asserted_controller or current_root
-    expected_branch = config(cwd, "juno.controller.branch") if registered else None
+    expected_branch = branch_values[0] if registered and len(branch_values) == 1 else None
     asserted_branch = os.environ.get("JUNO_CONTROLLER_BRANCH", "").strip() or None
     persisted_role = worktree_config(cwd, "juno.workspace.role") if repo_root_text else None
     role_base = worktree_config(cwd, "juno.workspace.roleBase") if repo_root_text else None
@@ -171,7 +185,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         "operation": operation, "valid": True, "diagnostics": [], "controller_workspace": None,
     }
 
-    errors: list[str] = []
+    errors: list[str] = list(registration_errors)
     if not controller.is_dir():
         errors.append(f"configured controller path does not exist: {controller}")
     elif not (controller / ".juno_task").is_dir():
@@ -286,8 +300,12 @@ def main() -> None:
         head = git(target, "rev-parse", "HEAD")
         if not head:
             raise SystemExit("controller-resolver: registered controller requires a readable HEAD")
-        existing_path = config(cwd, "juno.controller.path")
-        existing_branch = config(cwd, "juno.controller.branch")
+        existing_paths = config_values(cwd, "juno.controller.path")
+        existing_branches = config_values(cwd, "juno.controller.branch")
+        if len(existing_paths) > 1 or len(existing_branches) > 1:
+            raise SystemExit("controller-resolver: existing controller registration is ambiguous")
+        existing_path = existing_paths[0] if existing_paths else None
+        existing_branch = existing_branches[0] if existing_branches else None
         if existing_path or existing_branch:
             matching_path = bool(existing_path and canonical(existing_path, Path(root)) == target)
             matching_branch = bool(existing_branch and normalized_branch_ref(existing_branch) == normalized_branch_ref(args.branch))

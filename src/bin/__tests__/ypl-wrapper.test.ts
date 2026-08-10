@@ -198,6 +198,17 @@ describe('ypl wrapper', () => {
       expect(JSON.parse(leadingOption.stdout).args).toEqual(['--quiet', 'kanban', 'list']);
       expect((await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration })).stdout).toBe(before.stdout);
 
+      await execa('git', ['config', '--local', '--add', 'juno.controller.path', controller], { cwd: integration });
+      const ambiguous = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
+        cwd: path.join(integration, 'nested'), reject: false,
+      });
+      expect(ambiguous.exitCode).toBe(2);
+      expect(ambiguous.stdout).toBe('');
+      expect(ambiguous.stderr).toContain('controller registration is ambiguous: juno.controller.path has multiple values');
+      expect(await fs.pathExists(path.join(integration, '.venv_juno'))).toBe(false);
+      await execa('git', ['config', '--local', '--unset-all', 'juno.controller.path'], { cwd: integration });
+      await execa('git', ['config', '--local', 'juno.controller.path', controller], { cwd: integration });
+
       const localController = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: controller, reject: false,
       });
