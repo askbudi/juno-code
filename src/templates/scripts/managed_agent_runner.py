@@ -218,6 +218,22 @@ def fingerprint(root: Path) -> dict[str, Any]:
             "index_sha256": sha(git(root, "ls-files", "--stage").encode())}
 
 
+def resolver_policy_passes(result: subprocess.CompletedProcess[str], resolved: Any,
+                           workspace: Any, queue_state_bound: bool) -> bool:
+    if not isinstance(resolved, dict) or not isinstance(workspace, dict) \
+            or not isinstance(workspace.get("checks"), dict):
+        return False
+    if result.returncode == 0:
+        return resolved.get("valid") is True and workspace.get("passed") is True
+    failed = sorted(name for name, passed in workspace["checks"].items() if passed is not True)
+    expected = "canonical sparse controller policy refused: clean"
+    return (queue_state_bound and result.returncode == 2
+            and result.stderr.strip() == "controller-resolver: " + expected
+            and resolved.get("valid") is False
+            and resolved.get("diagnostics") == [expected]
+            and workspace.get("passed") is False and failed == ["clean"])
+
+
 def controller_identity(root: Path) -> dict[str, Any]:
     mark: dict[str, Any] = fingerprint(root)
     config = root / ".juno_task/config.json"
@@ -253,10 +269,15 @@ def controller_identity(root: Path) -> dict[str, Any]:
         try: resolved = json.loads(result.stdout)
         except json.JSONDecodeError: resolved = {}
         workspace = resolved.get("controller_workspace") if isinstance(resolved, dict) else None
-        if result.returncode or resolved.get("valid") is not True or Path(str(resolved.get("path"))).resolve() != root or not isinstance(workspace, dict) or workspace.get("passed") is not True:
+        queue_state_bound = bool(mark.get("queue_state"))
+        if (Path(str(resolved.get("path"))).resolve() != root
+                or resolved.get("role") != "controller"
+                or not resolver_policy_passes(
+                    result, resolved, workspace, queue_state_bound)):
             raise RunnerError("canonical controller resolver/policy refused launch")
         mark["resolver"] = {"source": resolved.get("source"), "role": resolved.get("role"),
-                            "policy_identity": workspace.get("policy_identity"), "passed": True}
+                            "policy_identity": workspace.get("policy_identity"),
+                            "passed": True, "queue_state_bound": queue_state_bound}
     return mark
 
 

@@ -99,6 +99,18 @@ print('out-after', flush=True)
         with self.assertRaisesRegex(runner.RunnerError, "controller is missing"):
             runner.controller_identity(self.controller)
 
+    def test_resolver_policy_accepts_only_exact_bound_cleanliness_failure(self):
+        expected = "canonical sparse controller policy refused: clean"
+        result = subprocess.CompletedProcess([], 2, "", "controller-resolver: " + expected + "\n")
+        resolved = {"valid": False, "diagnostics": [expected]}
+        workspace = {"passed": False, "checks": {"clean": False, "root_exact": True}}
+        self.assertTrue(runner.resolver_policy_passes(result, resolved, workspace, True))
+        self.assertFalse(runner.resolver_policy_passes(result, resolved, workspace, False))
+        wrong = {"passed": False, "checks": {"clean": False, "root_exact": False}}
+        self.assertFalse(runner.resolver_policy_passes(result, resolved, wrong, True))
+        other = subprocess.CompletedProcess([], 2, "", "controller-resolver: another failure\n")
+        self.assertFalse(runner.resolver_policy_passes(other, resolved, workspace, True))
+
     def command(self, out: Path, prompt: Path | None = None):
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
                 "--controller-branch", "refs/heads/controller", "--agent-root", str(out / "agent-root"),
