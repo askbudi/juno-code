@@ -226,8 +226,15 @@ describe('ypl wrapper', () => {
 
   it.each([
     { args: ['kanban', 'list'], operation: 'kanban' },
-    { args: ['task', 'status', 'T1'], operation: 'orchestration' },
-    { args: ['merge', 'status'], operation: 'orchestration' },
+    { args: ['task', 'status', 'T1'], operation: 'kanban' },
+    { args: ['merge', 'status'], operation: 'kanban' },
+    { args: ['task', 'start', 'T1'], operation: 'orchestration' },
+    { args: ['task', 'finish', 'T1'], operation: 'orchestration' },
+    { args: ['merge', 'next'], operation: 'orchestration' },
+    { args: ['merge', 'resolve', 'T1'], operation: 'orchestration' },
+    { args: ['merge', 'review', 'T1'], operation: 'orchestration' },
+    { args: ['merge', 'reopen', 'T1'], operation: 'orchestration' },
+    { args: ['merge', 'mystery'], operation: null },
   ])('authorizes $operation before dispatching controller runtime bytes', async ({ args, operation }) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wrapper-operation-gate-'));
     try {
@@ -266,8 +273,13 @@ describe('ypl wrapper', () => {
       const result = await execa(path.join(launcherBin, 'yy'), args, { cwd: integration, reject: false });
 
       expect(result.exitCode).toBe(2);
-      expect(await fs.readFile(operationMarker, 'utf8')).toBe(operation);
-      expect(result.stderr).toContain('operation-specific controller policy refused dirty state');
+      if (operation === null) {
+        expect(await fs.pathExists(operationMarker)).toBe(false);
+        expect(result.stderr).toContain("control-plane routing refused unknown merge subcommand 'mystery'");
+      } else {
+        expect(await fs.readFile(operationMarker, 'utf8')).toBe(operation);
+        expect(result.stderr).toContain('operation-specific controller policy refused dirty state');
+      }
       expect(await fs.pathExists(runtimeMarker)).toBe(false);
     } finally {
       await fs.remove(tempDir);

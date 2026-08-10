@@ -44,9 +44,10 @@ BOOTSTRAP_SCRIPT=".juno_task/scripts/bootstrap.sh"
 
 classify_prebootstrap_command() {
     PREBOOTSTRAP_COMMAND=""
+    PREBOOTSTRAP_SUBCOMMAND=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --) shift; PREBOOTSTRAP_COMMAND="${1:-}"; break ;;
+            --) shift; PREBOOTSTRAP_COMMAND="${1:-}"; PREBOOTSTRAP_SUBCOMMAND="${2:-}"; break ;;
             -q|--quiet|--silent|--no-color|--enable-feedback|--no-hooks|--no-hook) shift ;;
             -c|--config|-l|--log-file|--log-level|-s|--subagent|-b|--backend|-m|--model|--agents|--mcp-timeout|-r|--resume|--stale-threshold|--on-hourly-limit|--thinking)
                 [ "$#" -ge 2 ] || return 1
@@ -56,7 +57,7 @@ classify_prebootstrap_command() {
                 shift
                 case "${1:-}" in 0|1|2|true|false|yes|no) shift ;; esac ;;
             --verbose=*|-v=*) shift ;;
-            *) PREBOOTSTRAP_COMMAND="$1"; break ;;
+            *) PREBOOTSTRAP_COMMAND="$1"; PREBOOTSTRAP_SUBCOMMAND="${2:-}"; break ;;
         esac
     done
     case "$PREBOOTSTRAP_COMMAND" in
@@ -86,9 +87,15 @@ route_registered_product_control() {
     shift || true
     case "$operation" in kanban|task|merge) ;; *) return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
-    case "$operation" in
-        kanban) effective_operation=kanban ;;
-        task|merge) effective_operation=orchestration ;;
+    case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
+        kanban:*) effective_operation=kanban ;;
+        task:status|task:|task:-h|task:--help) effective_operation=kanban ;;
+        task:start|task:finish) effective_operation=orchestration ;;
+        merge:status|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
+        merge:next|merge:resolve|merge:review|merge:reopen) effective_operation=orchestration ;;
+        *)
+            echo "juno-code: control-plane routing refused unknown $operation subcommand '$PREBOOTSTRAP_SUBCOMMAND'" >&2
+            return 2 ;;
     esac
     [ -f "$PACKAGED_CONTROLLER_RESOLVER" ] || return 1
     if ! resolution="$(JUNO_TASK_ROOT= JUNO_CONTROLLER_BRANCH= JUNO_WORKSPACE_ROLE= JUNO_WORKSPACE_ENFORCEMENT=off \
