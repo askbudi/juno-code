@@ -3,7 +3,10 @@ import fs from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { resolveAutomaticProjectBootstrap } from '../controller-resolver.js';
+import {
+  resolveAutomaticProjectBootstrap,
+  resolveController,
+} from '../controller-resolver.js';
 
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
@@ -156,6 +159,25 @@ describe('canonical controller resolver', () => {
         else process.env[name] = value;
       }
     }
+  });
+
+  it('keeps missing-resolver fallback unmanaged and unavailable to automatic bootstrap', async () => {
+    const project = path.join(sandbox, 'unmanaged git checkout');
+    await fs.ensureDir(project);
+    git(project, 'init');
+
+    expect(resolveController(project)).toMatchObject({
+      path: project,
+      current_root: project,
+      resolver: 'missing',
+      role: 'unregistered',
+      valid: false,
+    });
+    expect(resolveAutomaticProjectBootstrap(project)).toMatchObject({
+      allowed: false,
+      reason: 'resolver-missing',
+      resolution: { role: 'unregistered', valid: false },
+    });
   });
 
   it('keeps an initialized non-Git project local despite an inherited controller route', async () => {

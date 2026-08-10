@@ -29,7 +29,13 @@ export interface WorktreeState {
 export interface WorkspaceTopology {
   schemaVersion: typeof WORKSPACE_TOPOLOGY_SCHEMA;
   repository: { managed: boolean; root: string | null; identity: string | null };
-  invocation: { cwd: string; root: string | null; role: WorkspaceRole; managed: boolean };
+  invocation: {
+    cwd: string;
+    root: string | null;
+    role: WorkspaceRole;
+    roleAuthority: string | null;
+    managed: boolean;
+  };
   resolver: {
     status: 'installed' | 'missing' | 'invalid';
     path: string | null;
@@ -463,7 +469,13 @@ export function inspectWorkspaceTopology(
       root: repo,
       identity,
     },
-    invocation: { cwd, root: repo, role: invocationRole, managed: resolverStatus === 'installed' },
+    invocation: {
+      cwd,
+      root: repo,
+      role: invocationRole,
+      roleAuthority: invocation?.roleAuthority ?? null,
+      managed: resolverStatus === 'installed',
+    },
     resolver: { status: resolverStatus, path: resolverPath, diagnostics: resolverDiagnostics },
     controller: {
       path: controllerPath,

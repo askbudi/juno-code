@@ -21,6 +21,7 @@ function humanInfo(report: WorkspaceTopology): string {
       'Invocation role',
       `${report.invocation.role}${report.invocation.managed ? '' : ' (unmanaged)'}`,
     ),
+    line('Role authority', report.invocation.roleAuthority),
     line('Resolver', report.resolver.status),
     line('Controller', report.controller.path),
     line('Controller ref', report.controller.configuredRef),
