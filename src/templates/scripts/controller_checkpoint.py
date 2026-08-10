@@ -890,7 +890,7 @@ def main(argv: list[str] | None = None) -> int:
     commit.add_argument("--json", action="store_true")
     clean = sub.add_parser("require-clean", help="Require clean state, optionally checkpoint first")
     clean.add_argument("--checkpoint", action="store_true")
-    clean.add_argument("--message", default="chore(controller): checkpoint before integration")
+    clean.add_argument("--message", default="chore(controller): checkpoint eligible metadata")
     clean.add_argument("--json", action="store_true")
     staged = sub.add_parser("staged-check", help="Read-only pre-commit staged-tree boundary")
     staged.add_argument("--json", action="store_true")

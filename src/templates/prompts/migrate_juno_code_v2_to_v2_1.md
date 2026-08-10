@@ -86,7 +86,7 @@ worktree and the Git common directory.
 The reviewed target topology keeps a metadata-only controller branch, feature
 branches/worktrees per task, and a clean integration-owner worktree attached to
 the actual product target ref. It does not create an integration branch solely
-for controller synchronization. Orchestration runs in the controller, coding
+to reconcile controller state. Orchestration runs in the controller, coding
 and focused tests run in feature worktrees, and the full local stack/deploy
 manager runs from the integration-owner worktree at the exact merged target.
 Deploy remains separately authorized.

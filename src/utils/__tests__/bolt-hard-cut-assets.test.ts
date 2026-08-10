@@ -51,6 +51,7 @@ describe('Bolt shipped hard cut', () => {
       const text = readFileSync(file, 'utf8');
       expect(text, file).not.toMatch(/yy lifecycle(?:\s|`)/i);
       expect(text, file).not.toMatch(/controller[- ]sync/i);
+      expect(text, file).not.toMatch(/--checkpoint-controller|--exec-command/i);
       if (!file.endsWith('AGENTS.md')) {
         expect(text, file).not.toMatch(/integration_(?:candidate|owner_preflight)\.py/i);
         expect(text, file).not.toMatch(/controller-workspace\.json/i);
