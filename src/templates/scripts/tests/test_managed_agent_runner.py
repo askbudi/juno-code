@@ -85,8 +85,13 @@ print('out-after', flush=True)
     def test_controller_identity_binds_only_queue_owned_dirty_state(self):
         state = self.controller / runner.QUEUE_STATE_PATH
         state.write_text('{"state":"reviewing"}\n')
+        receipt = self.controller / runner.QUEUE_RECEIPT_ROOT / "T1/candidate/attempt-1/receipt.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text('{"outcome":"passed"}\n')
         before = runner.controller_identity(self.controller)
-        self.assertEqual(before["queue_state"]["path"], runner.QUEUE_STATE_PATH)
+        self.assertEqual([item["path"] for item in before["queue_state"]],
+                         [runner.QUEUE_RECEIPT_ROOT + "T1/candidate/attempt-1/receipt.json",
+                          runner.QUEUE_STATE_PATH])
         state.write_text('{"state":"reviewed"}\n')
         after = runner.controller_identity(self.controller)
         self.assertNotEqual(before, after)

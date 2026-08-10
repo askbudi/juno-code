@@ -21,6 +21,7 @@ SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
 REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
 QUEUE_STATE_PATH = ".juno_task/state/tasks.json"
+QUEUE_RECEIPT_ROOT = ".juno_task/state/merge-queue/"
 CAPTURE_LIMIT = 4 * 1024 * 1024
 TASK_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,64}\Z")
 SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
@@ -227,16 +228,20 @@ def controller_identity(root: Path) -> dict[str, Any]:
         staged = sorted(filter(None, git(root, "diff", "--cached", "--name-only").splitlines()))
         untracked = sorted(filter(None, git(
             root, "ls-files", "--others", "--exclude-standard").splitlines()))
-        queue_state = root / QUEUE_STATE_PATH
-        if unstaged != [QUEUE_STATE_PATH] or staged or untracked or not queue_state.is_file():
+        dirty_paths = sorted(set(unstaged + untracked))
+        allowed = all(path == QUEUE_STATE_PATH or path.startswith(QUEUE_RECEIPT_ROOT)
+                      for path in dirty_paths)
+        files = [root / path for path in dirty_paths]
+        if (not dirty_paths or staged or not allowed
+                or any(path.is_symlink() or not path.is_file() for path in files)):
             raise RunnerError("controller is missing its config or is dirty")
         # The merge queue must durably publish REVIEWING before dispatch.  Bind
         # that one queue-owned worktree change so it may be dirty but cannot
         # mutate while the managed agent is running.
-        mark["queue_state"] = {
-            "path": QUEUE_STATE_PATH,
-            "sha256": sha(queue_state.read_bytes()),
-        }
+        mark["queue_state"] = [
+            {"path": relative, "sha256": sha(path.read_bytes())}
+            for relative, path in zip(dirty_paths, files)
+        ]
     mark["config_sha256"] = sha(config.read_bytes())
     resolver = root / ".juno_task/scripts/controller_resolver.py"
     workspace_policy = root / ".juno_task/config/controller-workspace.json"
