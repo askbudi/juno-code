@@ -7,6 +7,7 @@ import {
   resolveAutomaticProjectBootstrap,
   resolveController,
 } from '../controller-resolver.js';
+import { routeControlPlane } from '../control-plane-router.js';
 
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
@@ -84,9 +85,11 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
-  it('accepts a canonical full controller ref while preserving short-branch diagnostics', () => {
+  it('accepts normalized full/short controller refs and routed audit identity', () => {
     git(task, 'config', '--local', 'juno.controller.branch', 'refs/heads/controller-branch');
-    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task);
+    const result = run('python3', [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task], task, {
+      JUNO_CONTROLLER_BRANCH: 'controller-branch',
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       path: controller,
@@ -94,6 +97,53 @@ describe('canonical controller resolver', () => {
       actual_branch: 'controller-branch',
       valid: true,
     });
+    const routed = routeControlPlane(task, 'orchestration');
+    expect(routed).toMatchObject({
+      controllerRoot: controller,
+      invocationRoot: task,
+      invocationRole: 'task',
+    });
+    expect(routed.env).toMatchObject({
+      JUNO_TASK_ROOT: controller,
+      JUNO_WORKSPACE_ROLE: 'controller',
+      JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      JUNO_CONTROLLER_BRANCH: 'refs/heads/controller-branch',
+      JUNO_CONTROL_INVOCATION_ROOT: task,
+      JUNO_CONTROL_INVOCATION_ROLE: 'task',
+      JUNO_CONTROL_EFFECTIVE_ROOT: controller,
+    });
+  });
+
+  it('re-resolves forwarded routing identity and refuses incomplete, spoofed, or stale origins', async () => {
+    const names = [
+      'JUNO_CONTROL_INVOCATION_ROOT', 'JUNO_CONTROL_INVOCATION_ROLE',
+      'JUNO_CONTROL_EFFECTIVE_ROOT',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.JUNO_CONTROL_INVOCATION_ROOT = task;
+      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
+      process.env.JUNO_CONTROL_EFFECTIVE_ROOT = controller;
+      expect(routeControlPlane(controller, 'kanban')).toMatchObject({
+        controllerRoot: controller, invocationRoot: task, invocationRole: 'task',
+      });
+
+      delete process.env.JUNO_CONTROL_INVOCATION_ROLE;
+      expect(() => routeControlPlane(controller, 'kanban')).toThrow('Incomplete or mismatched');
+
+      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'integration-owner';
+      expect(() => routeControlPlane(controller, 'kanban')).toThrow('no longer matches');
+
+      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
+      process.env.JUNO_CONTROL_INVOCATION_ROOT = path.join(sandbox, 'removed-origin');
+      expect(() => routeControlPlane(controller, 'kanban')).toThrow('no longer matches');
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it('initializes controller audit authority once and exposes no public role assignment', async () => {

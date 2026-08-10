@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { Command } from 'commander';
-import { resolveController } from '../../utils/controller-resolver.js';
+import { routeControlPlane } from '../../utils/control-plane-router.js';
 
 export type TaskWorkspaceOperation = 'start' | 'status' | 'finish';
 export type TaskWorkspaceInvoker = (operation: TaskWorkspaceOperation, taskId: string) => Promise<void>;
@@ -11,24 +11,16 @@ export async function invokeTaskWorkspace(
   operation: TaskWorkspaceOperation,
   taskId: string,
 ): Promise<void> {
-  const resolution = resolveController(
+  const route = routeControlPlane(
     process.cwd(),
     operation === 'status' ? 'kanban' : 'orchestration',
   );
-  if (!resolution.valid || resolution.role === 'integration-owner') {
-    throw new Error('Task workspace commands require the exact canonical controller workspace');
-  }
-  const controllerRoot = path.resolve(resolution.path);
+  const controllerRoot = route.controllerRoot;
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
   if (!(await fs.pathExists(script))) {
     throw new Error('Missing managed task workspace runtime. Run `yy scripts update` and retry.');
   }
-  const taskEnv = {
-    ...process.env,
-    JUNO_TASK_ROOT: controllerRoot,
-    JUNO_WORKSPACE_ROLE: 'controller',
-    JUNO_WORKSPACE_ENFORCEMENT: 'strict',
-  };
+  const taskEnv = route.env;
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', [script, operation, '--task', taskId], {
       cwd: controllerRoot,

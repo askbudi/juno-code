@@ -2,6 +2,7 @@
 """Real-Git contract tests for the small Bolt task-worktree interface."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -109,7 +110,22 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(x["branch_ref"], y["branch_ref"])
         self.assertNotEqual(x["worktree"], y["worktree"])
         for task_id in ("X", "Y"):
-            self.assertFalse((self.workspaces / task_id / ".juno_task").exists())
+            worktree = self.workspaces / task_id
+            self.assertFalse((worktree / ".juno_task").exists())
+            self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.role"), "task")
+            self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.roleBase"), self.base)
+            self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.taskId"), task_id)
+            for key in ("manifestIdentity", "createReceiptSha256", "expectedPathsSha256"):
+                self.assertRegex(git(worktree, "config", "--worktree", "--get", f"juno.workspace.{key}"), r"^[0-9a-f]{64}$")
+            status = self.payload("status", task_id)
+            self.assertEqual(status["routing"], {
+                "invocation_root": str(self.controller.resolve()), "invocation_role": "controller",
+                "effective_root": str(self.controller.resolve()),
+            })
+            receipt_bytes = json.dumps(status["creation_receipt"], sort_keys=True,
+                                       separators=(",", ":")).encode()
+            self.assertEqual(hashlib.sha256(receipt_bytes).hexdigest(),
+                             status["workspace_identity"]["create_receipt_sha256"])
 
     def test_task_mutations_preserve_atomic_queue_sections(self) -> None:
         self.payload("start", "X")

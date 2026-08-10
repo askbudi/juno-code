@@ -34,6 +34,13 @@ def repository_identity(path: Path) -> Optional[str]:
     return str(Path(common).resolve()) if common else None
 
 
+def normalized_branch_ref(value: Optional[str]) -> Optional[str]:
+    """Compare full and short local branch spellings without weakening ref identity."""
+    if not value:
+        return value
+    return value if value.startswith("refs/heads/") else f"refs/heads/{value}"
+
+
 def config(cwd: Path, key: str) -> Optional[str]:
     return git(cwd, "config", "--local", "--get", key)
 
@@ -130,9 +137,8 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
             controller_identity = repository_identity(controller)
             if not current_identity or current_identity != controller_identity:
                 errors.append("configured controller is not a linked worktree of the invoking repository")
-        expected_observed = actual_full_branch if expected_branch and expected_branch.startswith("refs/heads/") else actual_branch
-        if expected_branch and expected_observed != expected_branch:
-            errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {expected_observed or 'detached HEAD'!r}")
+        if expected_branch and normalized_branch_ref(actual_full_branch) != normalized_branch_ref(expected_branch):
+            errors.append(f"controller branch mismatch: expected {expected_branch!r}, found {actual_branch or 'detached HEAD'!r}")
         workspace_pointer = controller / ".juno_task/config.json"
         try:
             project_config = json.loads(workspace_pointer.read_text(encoding="utf-8"))
@@ -157,7 +163,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
                     errors.append(f"canonical sparse controller verification failed: {exc}")
     if asserted_controller and persisted_controller and asserted_controller != persisted_controller:
         errors.append(f"JUNO_TASK_ROOT assertion mismatch: persisted={persisted_controller} asserted={asserted_controller}")
-    if asserted_branch and expected_branch and asserted_branch != expected_branch:
+    if asserted_branch and expected_branch and normalized_branch_ref(asserted_branch) != normalized_branch_ref(expected_branch):
         errors.append(f"JUNO_CONTROLLER_BRANCH assertion mismatch: persisted={expected_branch!r} asserted={asserted_branch!r}")
     if role == "unregistered":
         errors.append("linked worktree has no persisted workspace role registration; register it through the lifecycle owner")
@@ -219,18 +225,16 @@ def main() -> None:
             raise SystemExit("controller-resolver: registered controller has no .juno_task directory")
         actual_branch = git(target, "symbolic-ref", "--quiet", "--short", "HEAD")
         actual_full_branch = git(target, "symbolic-ref", "--quiet", "HEAD")
-        expected_observed = actual_full_branch if args.branch.startswith("refs/heads/") else actual_branch
-        if expected_observed != args.branch:
-            raise SystemExit(f"controller-resolver: controller branch mismatch: expected {args.branch!r}, found {expected_observed or 'detached HEAD'!r}")
+        if normalized_branch_ref(actual_full_branch) != normalized_branch_ref(args.branch):
+            raise SystemExit(f"controller-resolver: controller branch mismatch: expected {args.branch!r}, found {actual_branch or 'detached HEAD'!r}")
         head = git(target, "rev-parse", "HEAD")
         if not head:
             raise SystemExit("controller-resolver: registered controller requires a readable HEAD")
         existing_path = config(cwd, "juno.controller.path")
         existing_branch = config(cwd, "juno.controller.branch")
-        branch_aliases = {args.branch, args.branch.removeprefix("refs/heads/")}
         if existing_path or existing_branch:
             matching_path = bool(existing_path and canonical(existing_path, Path(root)) == target)
-            matching_branch = bool(existing_branch and existing_branch in branch_aliases)
+            matching_branch = bool(existing_branch and normalized_branch_ref(existing_branch) == normalized_branch_ref(args.branch))
             if not (matching_path and matching_branch):
                 raise SystemExit("controller-resolver: changing an existing controller registration requires `yy migrate registration plan` and an explicitly authorized apply")
         # Canonical controller registration establishes initial audit authority

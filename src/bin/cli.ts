@@ -35,6 +35,7 @@ import { createSkillsCommand } from '../cli/commands/skills.js';
 import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
 import { configureMergeQueueCommand } from '../cli/commands/merge.js';
+import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
 import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
 import CompletionCommand from '../cli/commands/completion.js';
@@ -1822,7 +1823,8 @@ async function main(): Promise<void> {
   const isReadOnlyTaskStatus = isTaskWorkspaceCommand && cliArgs[1] === 'status';
   const isScriptsDoctor = cliArgs[0] === 'scripts' && cliArgs[1] === 'doctor';
   const isWorkspaceDiscovery = cliArgs[0] === 'info' || cliArgs[0] === 'where' || (cliArgs[0] === 'doctor' && cliArgs[1] === 'workspace');
-  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery;
+  const isControlPlaneCommand = ['kanban', 'task', 'merge'].includes(cliArgs[0] ?? '');
+  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery || isControlPlaneCommand;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
@@ -1983,6 +1985,7 @@ async function main(): Promise<void> {
   program.addCommand(createAuthCommand());
   setupScriptManagementCommands(program);
   setupTaskLifecycleCommand(program);
+  configureKanbanCommand(program);
   configureTaskWorkspaceCommand(program);
   configureMergeQueueCommand(program);
   configureMigrationCommand(program);
