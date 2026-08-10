@@ -85,10 +85,14 @@ route_registered_product_control() {
     local operation="${1:-}"
     shift || true
     case "$operation" in kanban|task|merge) ;; *) return 1 ;; esac
-    local resolution fields controller invocation role branch source runtime
+    local effective_operation resolution fields controller invocation role branch source runtime
+    case "$operation" in
+        kanban) effective_operation=kanban ;;
+        task|merge) effective_operation=orchestration ;;
+    esac
     [ -f "$PACKAGED_CONTROLLER_RESOLVER" ] || return 1
     if ! resolution="$(JUNO_TASK_ROOT= JUNO_CONTROLLER_BRANCH= JUNO_WORKSPACE_ROLE= JUNO_WORKSPACE_ENFORCEMENT=off \
-        python3 "$PACKAGED_CONTROLLER_RESOLVER" --cwd "$PWD" --operation diagnostic)"; then
+        python3 "$PACKAGED_CONTROLLER_RESOLVER" --cwd "$PWD" --operation "$effective_operation")"; then
         return 2
     fi
     fields="$(printf '%s' "$resolution" | python3 -c 'import json,sys; x=json.load(sys.stdin); print(x["path"]); print(x["current_root"]); print(x["role"]); print(x.get("expected_branch") or ""); print(x["source"])')" || return 2

@@ -224,6 +224,56 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it.each([
+    { args: ['kanban', 'list'], operation: 'kanban' },
+    { args: ['task', 'status', 'T1'], operation: 'orchestration' },
+    { args: ['merge', 'status'], operation: 'orchestration' },
+  ])('authorizes $operation before dispatching controller runtime bytes', async ({ args, operation }) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wrapper-operation-gate-'));
+    try {
+      const controller = path.join(tempDir, 'controller');
+      const integration = path.join(tempDir, 'integration');
+      const launcherBin = path.join(tempDir, 'launcher-bin');
+      const packagedScripts = path.join(tempDir, 'templates', 'scripts');
+      const operationMarker = path.join(tempDir, 'resolver-operation');
+      const runtimeMarker = path.join(tempDir, 'runtime-ran');
+      await fs.ensureDir(controller);
+      await fs.ensureDir(integration);
+      await fs.ensureDir(launcherBin);
+      await fs.ensureDir(packagedScripts);
+      await execa('git', ['init', '-b', 'controller'], { cwd: controller });
+      const runtime = path.join(controller, 'controller-runtime.mjs');
+      await fs.writeFile(runtime, `require('node:fs').writeFileSync(${JSON.stringify(runtimeMarker)}, 'ran')\n`);
+      await execa('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: controller });
+      await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], { cwd: controller });
+      await fs.writeFile(
+        path.join(packagedScripts, 'controller_resolver.py'),
+        [
+          'import json, pathlib, sys',
+          `marker = pathlib.Path(${JSON.stringify(operationMarker)})`,
+          "operation = sys.argv[sys.argv.index('--operation') + 1]",
+          'marker.write_text(operation)',
+          "if operation != 'diagnostic':",
+          "    print('operation-specific controller policy refused dirty state', file=sys.stderr)",
+          '    raise SystemExit(77)',
+          `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
+        ].join('\n'),
+      );
+      await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
+      await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
+
+      const result = await execa(path.join(launcherBin, 'yy'), args, { cwd: integration, reject: false });
+
+      expect(result.exitCode).toBe(2);
+      expect(await fs.readFile(operationMarker, 'utf8')).toBe(operation);
+      expect(result.stderr).toContain('operation-specific controller policy refused dirty state');
+      expect(await fs.pathExists(runtimeMarker)).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('keeps fake-node wrapper assertions compatible with the runtime version probe', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-compatible-node-wrapper-'));
     try {
