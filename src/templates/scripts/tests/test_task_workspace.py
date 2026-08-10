@@ -2,7 +2,9 @@
 """Real-Git contract tests for the small Bolt task-worktree interface."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -275,6 +277,23 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertGreater(evidence["stderr_truncated_bytes"], 0)
         self.assertLessEqual(len(evidence["stdout_tail"].encode()), 1024)
         self.assertLessEqual(len(evidence["stderr_tail"].encode()), 1024)
+
+    def test_validation_can_stream_both_child_channels_without_losing_evidence(self) -> None:
+        row = {
+            "id": "observable",
+            "argv": [sys.executable, "-c", "import sys; print('live-out'); print('live-err', file=sys.stderr)"],
+            "timeout_seconds": 5,
+            "max_output_bytes": 1024,
+        }
+        streamed = io.StringIO()
+        with mock.patch.dict(os.environ, {"JUNO_VALIDATION_STREAM": "1"}), contextlib.redirect_stderr(streamed):
+            evidence = task_runtime.run_validation(row, self.repository)
+
+        self.assertEqual(evidence["exit_code"], 0)
+        self.assertIn("live-out", evidence["stdout_tail"])
+        self.assertIn("live-err", evidence["stderr_tail"])
+        self.assertIn("live-out", streamed.getvalue())
+        self.assertIn("live-err", streamed.getvalue())
 
     def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
         counter = self.root / "validation-counter.txt"

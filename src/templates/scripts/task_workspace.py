@@ -227,6 +227,7 @@ def _append_tail(buffer: bytearray, data: bytes, limit: int) -> None:
 def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
     """Run argv-only validation with stdin closed and bounded output tails."""
     limit = row["max_output_bytes"]
+    stream_live = os.environ.get("JUNO_VALIDATION_STREAM") == "1"
     started = time.monotonic()
     try:
         process = subprocess.Popen(row["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
@@ -269,6 +270,11 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
             totals[name] += len(data)
             hashes[name].update(data)
             _append_tail(tail, data, limit)
+            if stream_live:
+                # Keep stdout reserved for the command's structured result.
+                # A caller can merge stderr into tee for one observable log.
+                sys.stderr.write(data.decode("utf-8", errors="replace"))
+                sys.stderr.flush()
     exit_code = process.wait()
     selector.close()
     if process.stdout is not None:
