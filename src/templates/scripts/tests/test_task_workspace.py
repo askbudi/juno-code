@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Optional
 
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
+sys.path.insert(0, str(SCRIPT.parent))
+import task_workspace as task_runtime  # noqa: E402
 
 
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -129,17 +131,37 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(receipt_bytes).hexdigest(),
                              status["workspace_identity"]["create_receipt_sha256"])
 
-    def test_routing_audit_ignores_a_forwarded_identity_for_another_controller(self) -> None:
+    def test_routing_audit_rejects_a_forwarded_identity_for_another_controller(self) -> None:
         with mock.patch.dict(os.environ, {
             "JUNO_CONTROL_INVOCATION_ROOT": "/outer/integration",
             "JUNO_CONTROL_INVOCATION_ROLE": "integration-owner",
             "JUNO_CONTROL_EFFECTIVE_ROOT": "/outer/controller",
-        }):
-            started = self.payload("start", "Z")
-        expected = {"invocation_root": str(self.controller.resolve()),
-                    "invocation_role": "controller",
-                    "effective_root": str(self.controller.resolve())}
-        self.assertEqual(started["routing"], expected)
+            "JUNO_CONTROL_OPERATION": "kanban",
+        }, clear=False):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "effective root mismatched"):
+                task_runtime.routing_identity(self.controller)
+
+    def test_control_audit_persists_validated_task_worktree_identity(self) -> None:
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        with mock.patch.dict(os.environ, {
+            "JUNO_CONTROL_INVOCATION_ROOT": str(worktree),
+            "JUNO_CONTROL_INVOCATION_ROLE": "task",
+            "JUNO_CONTROL_EFFECTIVE_ROOT": str(self.controller),
+            "JUNO_CONTROL_OPERATION": "kanban",
+        }, clear=False):
+            reference = task_runtime.record_control_audit(
+                self.controller, "task", "status", "X")
+        path = Path(reference["path"])
+        data = path.read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), reference["sha256"])
+        receipt = json.loads(data)
+        self.assertEqual((receipt["surface"], receipt["operation"], receipt["task_id"]),
+                         ("task", "status", "X"))
+        self.assertEqual(receipt["routing"], {
+            "invocation_root": str(worktree.resolve()), "invocation_role": "task",
+            "effective_root": str(self.controller.resolve()),
+        })
 
     def test_task_mutations_preserve_atomic_queue_sections(self) -> None:
         self.payload("start", "X")

@@ -368,6 +368,20 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(self.counter.read_text().splitlines(), ["run"])
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
+    def test_merge_status_returns_a_durable_controller_audit_receipt(self) -> None:
+        result = self.queue_payload("status")
+        reference = result["control_audit"]
+        path = Path(reference["path"])
+        data = path.read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), reference["sha256"])
+        receipt = json.loads(data)
+        self.assertEqual((receipt["surface"], receipt["operation"], receipt["task_id"]),
+                         ("merge", "status", None))
+        self.assertEqual(receipt["routing"], {
+            "invocation_root": str(self.controller.resolve()), "invocation_role": "controller",
+            "effective_root": str(self.controller.resolve()),
+        })
+
     def test_forged_pass_and_absent_evidence_never_authorize_security_cas(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "secure = False\n")
         self.queue_payload("next")

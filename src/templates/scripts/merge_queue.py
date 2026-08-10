@@ -2007,6 +2007,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser().parse_args(argv)
     try:
         controller = task_runtime.exact_root(args.controller, "controller")
+        audit = task_runtime.record_control_audit(
+            controller, "merge", args.operation, getattr(args, "task_id", None))
         if args.operation == "status":
             result = status(controller)
         elif args.operation == "next":
@@ -2017,6 +2019,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = merge_review(controller, args.task_id)
         else:
             result = merge_reopen(controller, args.task_id)
+        result = {**result, "control_audit": audit}
         print(canonical(result))
         return 0
     except (MergeQueueError, task_runtime.TaskWorkspaceError, risk_runtime.RiskPolicyError,

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import selectors
 import signal
 import subprocess
@@ -329,12 +330,55 @@ def routing_identity(controller: Path) -> dict[str, str]:
     invocation = os.environ.get("JUNO_CONTROL_INVOCATION_ROOT", "").strip()
     role = os.environ.get("JUNO_CONTROL_INVOCATION_ROLE", "").strip()
     effective = os.environ.get("JUNO_CONTROL_EFFECTIVE_ROOT", "").strip()
-    if (invocation and role in {"controller", "task", "integration-owner"} and effective
-            and Path(effective).expanduser().resolve() == controller.resolve()):
-        return {"invocation_root": invocation, "invocation_role": role,
+    policy_operation = os.environ.get("JUNO_CONTROL_OPERATION", "").strip()
+    values = (invocation, role, effective, policy_operation)
+    if not any(values):
+        return {"invocation_root": str(controller.resolve()), "invocation_role": "controller",
                 "effective_root": str(controller.resolve())}
-    return {"invocation_root": str(controller.resolve()), "invocation_role": "controller",
-            "effective_root": str(controller.resolve())}
+    if not all(values) or role not in {"controller", "task", "integration-owner"}:
+        raise TaskWorkspaceError("forwarded control audit identity is incomplete or invalid")
+    if Path(effective).expanduser().resolve() != controller.resolve():
+        raise TaskWorkspaceError("forwarded control audit effective root mismatched the controller")
+    invocation_root = exact_root(Path(invocation), "control invocation root")
+    controller_common = git(controller, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    invocation_common = git(invocation_root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    persisted_role = git(invocation_root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+    role_matches = (invocation_root == controller.resolve() if role == "controller"
+                    else persisted_role == role)
+    if Path(controller_common).resolve() != Path(invocation_common).resolve() or not role_matches:
+        raise TaskWorkspaceError("forwarded control audit invocation identity is not registered")
+    return {"invocation_root": str(invocation_root), "invocation_role": role,
+            "effective_root": str(controller.resolve()), "policy_operation": policy_operation}
+
+
+def record_control_audit(controller: Path, surface: str, operation: str,
+                         task_id: Optional[str] = None) -> dict[str, str]:
+    routing = routing_identity(controller)
+    forwarded_policy = routing.get("policy_operation")
+    expected_policy = ("kanban" if operation == "status" else "orchestration")
+    if surface == "task" and operation not in {"start", "status", "finish"}:
+        raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
+    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen"}:
+        raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
+    if forwarded_policy is not None and forwarded_policy != expected_policy:
+        raise TaskWorkspaceError(
+            f"forwarded control audit policy mismatch: expected {expected_policy}, found {forwarded_policy}"
+        )
+    routing = {key: value for key, value in routing.items() if key != "policy_operation"}
+    receipt = {
+        "schema_version": "juno_control_operation_audit.v1",
+        "surface": surface, "operation": operation, "policy_operation": expected_policy,
+        "task_id": task_id,
+        "routing": routing, "recorded_at_unix_ns": time.time_ns(),
+    }
+    data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    root = controller / ".juno_task/runtime/control-audit" / surface
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{receipt['recorded_at_unix_ns']}-{secrets.token_hex(12)}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data); handle.flush(); os.fsync(handle.fileno())
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) -> bool:
@@ -543,7 +587,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         controller = exact_root(args.controller, "controller")
+        audit = record_control_audit(controller, "task", args.operation, args.task)
         result = {"start": start, "status": status, "finish": finish}[args.operation](controller, args.task)
+        result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:
