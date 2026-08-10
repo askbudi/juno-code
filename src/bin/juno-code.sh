@@ -38,21 +38,19 @@ CLI_ENTRYPOINT="${SCRIPT_DIR}/cli.mjs"
 # Path to bootstrap.sh (should be in .juno_task/scripts after init)
 BOOTSTRAP_SCRIPT=".juno_task/scripts/bootstrap.sh"
 
-is_version_request() {
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
-            -V|--version) return 0 ;;
-        esac
-    done
+is_read_only_identity_request() {
+    case "${1:-}" in
+        -V|--version|info|where) return 0 ;;
+        doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
+    esac
     return 1
 }
 
 # Main execution flow
 main() {
-    # Version discovery is a read-only identity probe. Bypass project bootstrap so
-    # it cannot create a venv, chmod project files, or refresh managed assets.
-    if is_version_request "$@"; then
+    # Workspace/version discovery is a read-only identity probe. Bypass project
+    # bootstrap so it cannot create a venv, chmod files, or refresh managed assets.
+    if is_read_only_identity_request "$@"; then
         exec node "$CLI_ENTRYPOINT" "$@"
     fi
 

@@ -36,6 +36,7 @@ import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
 import { configureMergeQueueCommand } from '../cli/commands/merge.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
+import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -1820,7 +1821,8 @@ async function main(): Promise<void> {
   const isReadOnlyLifecycleStatus = isLifecycleCommand && cliArgs[1] === 'status';
   const isReadOnlyTaskStatus = isTaskWorkspaceCommand && cliArgs[1] === 'status';
   const isScriptsDoctor = cliArgs[0] === 'scripts' && cliArgs[1] === 'doctor';
-  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor;
+  const isWorkspaceDiscovery = cliArgs[0] === 'info' || cliArgs[0] === 'where' || (cliArgs[0] === 'doctor' && cliArgs[1] === 'workspace');
+  const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
@@ -1964,7 +1966,7 @@ async function main(): Promise<void> {
         })()
       : undefined, // no -v flag at all → normalizeVerbose returns 1 (default)
   );
-  displayBanner(isVerbose);
+  displayBanner(isWorkspaceDiscovery ? 0 : isVerbose);
 
   // Configure all commands
   configureInitCommand(program);
@@ -1984,6 +1986,7 @@ async function main(): Promise<void> {
   configureTaskWorkspaceCommand(program);
   configureMergeQueueCommand(program);
   configureMigrationCommand(program);
+  configureWorkspaceCommands(program, VERSION);
 
   // Setup completion
   setupCompletion(program);

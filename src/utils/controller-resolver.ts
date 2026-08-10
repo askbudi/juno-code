@@ -4,6 +4,7 @@ import { existsSync as requireExists } from 'node:fs';
 import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
 
 export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 'session-write' | 'product-edit';
+export type WorkspaceRole = 'controller' | 'controller-retired' | 'task' | 'integration-owner' | 'unregistered';
 
 export interface ControllerResolution {
   path: string;
@@ -12,7 +13,7 @@ export interface ControllerResolution {
   source: 'environment' | 'registration' | 'primary-worktree' | 'non-git-current-root' | 'current-root';
   expected_branch: string | null;
   actual_branch: string | null;
-  role: 'controller' | 'task' | 'integration-owner';
+  role: WorkspaceRole;
   enforcement: 'off' | 'warn' | 'strict';
   operation: ControllerOperation;
   valid: boolean;
@@ -24,6 +25,7 @@ export interface ControllerResolution {
 export function resolveController(
   workingDirectory: string,
   operation: ControllerOperation = 'diagnostic',
+  options: { ignoreEnvironmentAssertions?: boolean } = {},
 ): ControllerResolution {
   let search = path.resolve(workingDirectory);
   let resolver = path.join(search, '.juno_task', 'scripts', 'controller_resolver.py');
@@ -40,18 +42,24 @@ export function resolveController(
       source: 'current-root',
       expected_branch: null,
       actual_branch: null,
-      role: 'controller',
+      role: 'unregistered',
       enforcement: 'off',
       operation,
-      valid: true,
-      diagnostics: ['controller resolver is not installed; using backward-compatible current root'],
+      valid: false,
+      diagnostics: ['controller resolver is not installed; workspace is unmanaged'],
     };
+  }
+  const env = buildChildProcessEnvironment();
+  if (options.ignoreEnvironmentAssertions) {
+    delete env.JUNO_TASK_ROOT;
+    delete env.JUNO_CONTROLLER_BRANCH;
+    delete env.JUNO_WORKSPACE_ROLE;
   }
   const output = execFileSync('python3', [resolver, '--cwd', workingDirectory, '--operation', operation], {
     cwd: workingDirectory,
-    env: buildChildProcessEnvironment(),
+    env,
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   return JSON.parse(output) as ControllerResolution;
 }
