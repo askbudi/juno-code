@@ -11,6 +11,42 @@ export type RoutedControlPlane = {
   env: NodeJS.ProcessEnv;
 };
 
+const FLAG_GLOBAL_OPTIONS = new Set([
+  '-q', '--quiet', '--silent', '--no-color', '--enable-feedback', '--no-hooks', '--no-hook',
+]);
+const VALUE_GLOBAL_OPTIONS = new Set([
+  '-c', '--config', '-l', '--log-file', '--log-level', '-s', '--subagent', '-b', '--backend',
+  '-m', '--model', '--agents', '--mcp-timeout', '-r', '--resume', '--stale-threshold',
+  '--on-hourly-limit', '--thinking',
+]);
+const OPTIONAL_VERBOSE_VALUES = new Set(['0', '1', '2', 'true', 'false', 'yes', 'no']);
+
+/** Return the first command after routing-safe global options, without mutating argv. */
+export function classifyLeadingCommand(argv: readonly string[]): { command?: string; index: number } {
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token) continue;
+    if (token === '--') {
+      const command = argv[index + 1];
+      return command === undefined ? { index: argv.length } : { command, index: index + 1 };
+    }
+    if (FLAG_GLOBAL_OPTIONS.has(token)) continue;
+    if (VALUE_GLOBAL_OPTIONS.has(token)) {
+      if (index + 1 >= argv.length) return { index: argv.length };
+      index += 1;
+      continue;
+    }
+    if ([...VALUE_GLOBAL_OPTIONS].some((option) => token.startsWith(`${option}=`))) continue;
+    if (token === '-v' || token === '--verbose') {
+      if (OPTIONAL_VERBOSE_VALUES.has(argv[index + 1]?.toLowerCase() ?? '')) index += 1;
+      continue;
+    }
+    if (token.startsWith('--verbose=') || token.startsWith('-v=')) continue;
+    return { command: token, index };
+  }
+  return { index: argv.length };
+}
+
 /**
  * Resolve an explicitly supported control-plane operation without weakening the
  * resolver's direct-write policy for the invoking product checkout.

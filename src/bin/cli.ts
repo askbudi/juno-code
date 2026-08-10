@@ -16,6 +16,7 @@ import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
 import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
+import { classifyLeadingCommand } from '../utils/control-plane-router.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -1815,21 +1816,23 @@ async function main(): Promise<void> {
 
   // Identity discovery must not refresh scripts, skills, services, or project state.
   const cliArgs = process.argv.slice(2);
+  const leading = classifyLeadingCommand(cliArgs);
+  const commandArgs = cliArgs.slice(leading.index);
   const isReadOnlyVersionRequest = cliArgs.some((arg) => arg === '--version' || arg === '-V');
-  const isLifecycleCommand = cliArgs[0] === 'lifecycle';
-  const isTaskWorkspaceCommand = cliArgs[0] === 'task';
-  const isMigrationCommand = cliArgs[0] === 'migrate';
-  const isReadOnlyLifecycleStatus = isLifecycleCommand && cliArgs[1] === 'status';
-  const isReadOnlyTaskStatus = isTaskWorkspaceCommand && cliArgs[1] === 'status';
-  const isScriptsDoctor = cliArgs[0] === 'scripts' && cliArgs[1] === 'doctor';
-  const isWorkspaceDiscovery = cliArgs[0] === 'info' || cliArgs[0] === 'where' || (cliArgs[0] === 'doctor' && cliArgs[1] === 'workspace');
-  const isControlPlaneCommand = ['kanban', 'task', 'merge'].includes(cliArgs[0] ?? '');
+  const isLifecycleCommand = commandArgs[0] === 'lifecycle';
+  const isTaskWorkspaceCommand = commandArgs[0] === 'task';
+  const isMigrationCommand = commandArgs[0] === 'migrate';
+  const isReadOnlyLifecycleStatus = isLifecycleCommand && commandArgs[1] === 'status';
+  const isReadOnlyTaskStatus = isTaskWorkspaceCommand && commandArgs[1] === 'status';
+  const isScriptsDoctor = commandArgs[0] === 'scripts' && commandArgs[1] === 'doctor';
+  const isWorkspaceDiscovery = commandArgs[0] === 'info' || commandArgs[0] === 'where' || (commandArgs[0] === 'doctor' && commandArgs[1] === 'workspace');
+  const isControlPlaneCommand = ['kanban', 'task', 'merge'].includes(commandArgs[0] ?? '');
   const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery || isControlPlaneCommand;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
     isForceUpdate ||
-    cliArgs[0] === 'install-scripts' ||
-    (cliArgs[0] === 'scripts' && cliArgs[1] === 'update');
+    commandArgs[0] === 'install-scripts' ||
+    (commandArgs[0] === 'scripts' && commandArgs[1] === 'update');
   const { ScriptInstaller: StartupScriptInstaller } = await import('../utils/script-installer.js');
   const isMetadataOnlyController =
     await StartupScriptInstaller.isMetadataOnlyController(process.cwd());

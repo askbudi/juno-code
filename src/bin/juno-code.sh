@@ -38,8 +38,24 @@ CLI_ENTRYPOINT="${SCRIPT_DIR}/cli.mjs"
 # Path to bootstrap.sh (should be in .juno_task/scripts after init)
 BOOTSTRAP_SCRIPT=".juno_task/scripts/bootstrap.sh"
 
-is_prebootstrap_command() {
-    case "${1:-}" in
+classify_prebootstrap_command() {
+    PREBOOTSTRAP_COMMAND=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --) shift; PREBOOTSTRAP_COMMAND="${1:-}"; break ;;
+            -q|--quiet|--silent|--no-color|--enable-feedback|--no-hooks|--no-hook) shift ;;
+            -c|--config|-l|--log-file|--log-level|-s|--subagent|-b|--backend|-m|--model|--agents|--mcp-timeout|-r|--resume|--stale-threshold|--on-hourly-limit|--thinking)
+                [ "$#" -ge 2 ] || return 1
+                shift 2 ;;
+            --config=*|--log-file=*|--log-level=*|--subagent=*|--backend=*|--model=*|--agents=*|--mcp-timeout=*|--resume=*|--stale-threshold=*|--on-hourly-limit=*|--thinking=*|-c=*|-l=*|-s=*|-b=*|-m=*|-r=*) shift ;;
+            -v|--verbose)
+                shift
+                case "${1:-}" in 0|1|2|true|false|yes|no) shift ;; esac ;;
+            --verbose=*|-v=*) shift ;;
+            *) PREBOOTSTRAP_COMMAND="$1"; break ;;
+        esac
+    done
+    case "$PREBOOTSTRAP_COMMAND" in
         -V|--version|info|where|kanban|task|merge) return 0 ;;
         doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
     esac
@@ -62,7 +78,9 @@ require_compatible_node() {
 }
 
 route_registered_product_control() {
-    case "${1:-}" in kanban|task|merge) ;; *) return 1 ;; esac
+    local operation="${1:-}"
+    shift || true
+    case "$operation" in kanban|task|merge) ;; *) return 1 ;; esac
     local search="$PWD" resolver="" resolution fields controller invocation role branch source runtime
     while :; do
         if [ -f "$search/.juno_task/scripts/controller_resolver.py" ]; then
@@ -102,7 +120,7 @@ route_registered_product_control() {
     export JUNO_CONTROL_INVOCATION_ROOT="$invocation"
     export JUNO_CONTROL_INVOCATION_ROLE="$role"
     export JUNO_CONTROL_EFFECTIVE_ROOT="$controller"
-    export JUNO_CONTROL_OPERATION="$1"
+    export JUNO_CONTROL_OPERATION="$operation"
     cd "$controller"
     exec node "$runtime" "$@"
 }
@@ -112,8 +130,8 @@ main() {
     # Classify discovery and control-plane commands before touching checkout
     # bootstrap. Registered product worktrees dispatch through the controller's
     # pinned runtime; controller calls retain the current packaged CLI.
-    if is_prebootstrap_command "$@"; then
-        route_registered_product_control "$@" || {
+    if classify_prebootstrap_command "$@"; then
+        route_registered_product_control "$PREBOOTSTRAP_COMMAND" "$@" || {
             local status=$?
             [ "$status" -eq 1 ] || return "$status"
         }

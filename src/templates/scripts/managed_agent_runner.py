@@ -484,6 +484,41 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
     return env, contract
 
 
+def finalize_managed_capture(capture: Path, stdout_path: Path, metadata: Path,
+                             binding: dict[str, Any] | None, started_ns: int) -> str:
+    if capture.is_file() and capture.stat().st_mtime_ns >= started_ns:
+        return "provider_capture"
+    if binding is None:
+        raise RunnerError("capture is missing or stale")
+    try:
+        response = stdout_path.read_bytes()
+    except OSError as exc:
+        raise RunnerError("capture is missing or stale") from exc
+    if not response or len(response) > CAPTURE_LIMIT:
+        raise RunnerError("capture is missing or stale")
+    # A managed reviewer has an exact JSON response contract.  This permits the
+    # outer process owner to finalize a capture consumed by the inner shell
+    # backend, without accepting logs, prose, or worker output as a substitute.
+    structured_review_result(response, binding)
+    continuity_path = metadata / "session_continuity.v2.json"
+    if not continuity_path.is_file() or continuity_path.stat().st_mtime_ns < started_ns:
+        raise RunnerError("capture is missing or stale")
+    continuity = load_object(continuity_path, "session continuity")
+    scopes = continuity.get("scopes")
+    if continuity.get("version") != 2 or not isinstance(scopes, dict) or len(scopes) != 1:
+        raise RunnerError("capture is missing or stale")
+    scope = next(iter(scopes.values()))
+    active = scope.get("active") if isinstance(scope, dict) else None
+    branches = scope.get("branches") if isinstance(scope, dict) else None
+    branch = branches.get(active) if isinstance(branches, dict) and isinstance(active, str) else None
+    session = branch.get("session_id") if isinstance(branch, dict) else None
+    if not isinstance(session, str) or not session.strip():
+        raise RunnerError("capture is missing or stale")
+    atomic_json(capture, {"session_id": session.strip(), "result": response.decode("utf-8"),
+                          "is_error": False, "capture_source": "managed_stdout_finalizer"})
+    return "managed_stdout_finalizer"
+
+
 def group_active(pgid: int) -> bool:
     try: os.killpg(pgid, 0); return True
     except ProcessLookupError: return False
@@ -585,8 +620,8 @@ def run(args: argparse.Namespace) -> int:
             raise RunnerError(f"managed child exited {code}")
         if prompt.read_bytes() != prompt_data:
             raise RunnerError("prompt drifted during launch")
-        if not capture.is_file() or capture.stat().st_mtime_ns < started_ns:
-            raise RunnerError("capture is missing or stale")
+        capture_source = finalize_managed_capture(
+            capture, stdout_path, metadata, binding, started_ns)
         payload = load_object(capture, "capture")
         session = payload.get("session_id"); response = payload.get("result")
         if not isinstance(session, str) or not session.strip() or not isinstance(response, str) or not response.strip():
@@ -617,6 +652,7 @@ def run(args: argparse.Namespace) -> int:
         terminal = {"schema_version": SCHEMA, "state": "succeeded", "completed_at": now(), "exit_code": 0,
                     "elapsed_seconds": round(time.monotonic() - started, 3), "session_id": session.strip(),
                     "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
+                    "capture_source": capture_source,
                     "safe_next_action": "consume_receipt"}
         artifacts = {name: evidence(path) for name, path in (("prompt", prompt), ("launch", out / "launch.json"),
                     ("stdout", stdout_path), ("stderr", stderr_path), ("combined", combined_path),

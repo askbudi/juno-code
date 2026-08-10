@@ -81,6 +81,31 @@ describe('ypl wrapper', () => {
     },
   );
 
+  it.each([
+    ['--quiet', 'kanban', 'list'],
+    ['--config', 'controller.json', '--no-color', 'task', 'status', 'T1'],
+    ['-v', '0', 'merge', 'status'],
+  ])('classifies a control command after leading global options: %s', async (...args) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-leading-option-wrapper-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
+      const marker = path.join(tempDir, 'bootstrap-ran');
+      await fs.ensureDir(binDir);
+      await fs.ensureDir(scriptsDir);
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
+      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.writeFile(path.join(binDir, 'cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))\n');
+      await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), `#!/usr/bin/env bash\ntouch "${marker}"\nexit 91\n`);
+      const result = await execa(path.join(binDir, 'juno-code.sh'), args, { cwd: tempDir, reject: false });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+      expect(await fs.pathExists(marker)).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('keeps pi on the normal product bootstrap path and cwd', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-pi-wrapper-'));
     try {
@@ -153,6 +178,13 @@ describe('ypl wrapper', () => {
       expect(await fs.pathExists(path.join(integration, '.venv_juno'))).toBe(false);
       const after = await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration });
       expect(after.stdout).toBe(before.stdout);
+
+      const leadingOption = await execa(path.join(launcherBin, 'yy'), ['--quiet', 'kanban', 'list'], {
+        cwd: path.join(integration, 'nested', 'directory'), reject: false,
+      });
+      expect(leadingOption.exitCode).toBe(0);
+      expect(JSON.parse(leadingOption.stdout).args).toEqual(['--quiet', 'kanban', 'list']);
+      expect((await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration })).stdout).toBe(before.stdout);
 
       const localController = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: controller, reject: false,

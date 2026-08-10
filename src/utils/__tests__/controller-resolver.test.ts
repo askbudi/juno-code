@@ -8,7 +8,7 @@ import {
   resolveAutomaticProjectBootstrap,
   resolveController,
 } from '../controller-resolver.js';
-import { routeControlPlane } from '../control-plane-router.js';
+import { classifyLeadingCommand, routeControlPlane } from '../control-plane-router.js';
 
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
@@ -34,6 +34,21 @@ function git(cwd: string, ...args: string[]) {
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim();
 }
+
+describe('control-plane argv classification', () => {
+  it.each([
+    { argv: ['--quiet', 'kanban', 'list'], command: 'kanban', index: 1 },
+    { argv: ['--config', 'controller.json', '--no-color', 'task', 'status'], command: 'task', index: 3 },
+    { argv: ['--verbose=2', 'merge', 'status'], command: 'merge', index: 1 },
+    { argv: ['-v', '0', '--', 'doctor', 'workspace'], command: 'doctor', index: 3 },
+  ])('finds $command after routing-safe global options', ({ argv, command, index }) => {
+    expect(classifyLeadingCommand(argv)).toEqual({ command, index });
+  });
+
+  it('does not classify through unknown or variadic options', () => {
+    expect(classifyLeadingCommand(['--tools', 'Read', 'kanban', 'list'])).toEqual({ command: '--tools', index: 0 });
+  });
+});
 
 describe('canonical controller resolver', () => {
   let sandbox: string;

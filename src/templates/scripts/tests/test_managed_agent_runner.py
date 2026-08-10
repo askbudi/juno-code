@@ -205,6 +205,35 @@ print('out-after', flush=True)
             with self.assertRaises(runner.RunnerError):
                 runner.structured_review_result(data, binding)
 
+    def test_reviewer_stdout_finalizer_requires_exact_result_and_fresh_single_session(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_a", "sequence": 1}
+        passing = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                   "candidate_sha": binding["candidate_sha"],
+                   "policy_identity": binding["policy_identity"],
+                   "reviewer_role": "reviewer_a", "sequence": 1,
+                   "verdict": "pass", "findings": []}
+        root = self.tmp / "stdout-finalizer"; root.mkdir()
+        capture = root / "capture.json"; stdout = root / "stdout.log"
+        metadata = root / "session_metadata"; metadata.mkdir()
+        started_ns = time.time_ns()
+        stdout.write_bytes(runner.canonical(passing))
+        (metadata / "session_continuity.v2.json").write_text(json.dumps({
+            "version": 2, "scopes": {"SCOPE_TEST": {"active": "main", "branches": {
+                "main": {"session_id": "fresh-review-session"}}}}}))
+        self.assertEqual("managed_stdout_finalizer", runner.finalize_managed_capture(
+            capture, stdout, metadata, binding, started_ns))
+        payload = json.loads(capture.read_text())
+        self.assertEqual("fresh-review-session", payload["session_id"])
+        self.assertEqual("managed_stdout_finalizer", payload["capture_source"])
+        self.assertEqual(passing, json.loads(payload["result"]))
+
+        capture.unlink(); stdout.write_text("log prefix\n" + json.dumps(passing))
+        with self.assertRaisesRegex(runner.RunnerError, "structured review result"):
+            runner.finalize_managed_capture(capture, stdout, metadata, binding, started_ns)
+        with self.assertRaisesRegex(runner.RunnerError, "capture is missing"):
+            runner.finalize_managed_capture(capture, stdout, metadata, None, started_ns)
+
     def test_bound_review_canonicalizes_accepted_crlf_response_artifact(self):
         candidate_sha = git(self.candidate, "rev-parse", "HEAD")
         policy = risk.load_policy(RUNNER.parents[1] / "config/risk-policy.json")
