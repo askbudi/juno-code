@@ -664,7 +664,7 @@ This command translates Codex CLI credentials to Pi's `auth.json` format (`type:
 | claude  | `claude-sonnet-4-6`           | `:haiku`, `:sonnet`, `:opus`                                                                                                                                |
 | codex   | `gpt-5.3-codex`               | `:codex`, `:codex-mini`, `:gpt-5`, `:mini`                                                                                                                  |
 | gemini  | `gemini-2.5-pro`              | `:pro`, `:flash`, `:pro-3`, `:flash-3`                                                                                                                      |
-| pi      | `anthropic/claude-sonnet-4-6` | `:pi`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
+| pi      | `:gpt` → `openai-codex/gpt-5.6-sol` | `:pi`, `:default`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
 
 Pi's Codex-provider shortcuts include:
 
@@ -689,8 +689,8 @@ Use live mode when you want Pi's interactive TUI while keeping juno-code iterati
 # Canonical live flow
 juno-code pi --live -p '/skill:ralph-loop' -i 1
 
-# If :pi default model is unavailable in your Pi provider setup, pick an explicit available model
-juno-code pi --live -m :api-codex -p '/skill:ralph-loop' -i 1
+# Override the :gpt default when a different provider or model is required
+juno-code pi --live -m :sonnet -p '/skill:ralph-loop' -i 1
 
 # GPT-5.6 models support Pi's max thinking level
 juno-code pi -m :gpt --thinking max -p 'Analyze and implement this task' -i 1

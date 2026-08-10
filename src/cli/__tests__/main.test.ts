@@ -3130,8 +3130,8 @@ describe('Model Compatibility', () => {
       expect(getDefaultModelForSubagent('cursor')).toBe('auto');
     });
 
-    it('should return :pi for pi', () => {
-      expect(getDefaultModelForSubagent('pi')).toBe(':pi');
+    it('should return :gpt for pi', () => {
+      expect(getDefaultModelForSubagent('pi')).toBe(':gpt');
     });
 
     it('should return :sonnet as default for unknown subagent', () => {

@@ -31,7 +31,7 @@ vi.mock('../../core/config.js', () => ({
     defaultSubagent: 'claude',
     defaultBackend: 'shell',
     defaultMaxIterations: 1,
-    defaultModels: { claude: ':sonnet', pi: ':pi' },
+    defaultModels: { claude: ':sonnet', pi: ':gpt' },
     gitCheckpoint: {
       include: [
         '.juno_task/tasks',

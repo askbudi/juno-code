@@ -295,8 +295,8 @@ juno-code -b shell -s pi -m :sonnet -i 1 -v -p "your task"
 # Run Pi in live interactive mode (auto-exits on non-aborted completion)
 juno-code pi --live -p '/skill:ralph-loop' -i 1
 
-# If :pi default model is unavailable in your provider config, set an explicit model
-juno-code pi --live -m :api-codex -p "your task" -i 1
+# Override the :gpt default when a different provider or model is required
+juno-code pi --live -m :sonnet -p "your task" -i 1
 
 # Quick shortcut
 juno-code pi "your task"

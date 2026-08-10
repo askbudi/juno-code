@@ -95,10 +95,10 @@ class TestModelShorthandExpansion:
         self.svc = _load_pi_service()
 
     def test_shorthand_pi(self):
-        assert self.svc.expand_model_shorthand(":pi") == "anthropic/claude-sonnet-4-6"
+        assert self.svc.expand_model_shorthand(":pi") == "openai-codex/gpt-5.6-sol"
 
     def test_shorthand_default(self):
-        assert self.svc.expand_model_shorthand(":default") == "anthropic/claude-sonnet-4-6"
+        assert self.svc.expand_model_shorthand(":default") == "openai-codex/gpt-5.6-sol"
 
     def test_shorthand_sonnet(self):
         assert self.svc.expand_model_shorthand(":sonnet") == "anthropic/claude-sonnet-4-6"
@@ -1582,7 +1582,7 @@ class TestDefaultModelConstant:
 
     def test_default_model(self):
         svc = _load_pi_service()
-        assert svc.DEFAULT_MODEL == "anthropic/claude-sonnet-4-6"
+        assert svc.DEFAULT_MODEL == ":gpt"
 
     def test_shorthand_count(self):
         svc = _load_pi_service()

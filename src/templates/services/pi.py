@@ -43,14 +43,14 @@ def _positive_int_env(name: str, fallback: int) -> int:
 class PiService:
     """Service wrapper for Pi coding agent headless mode."""
 
-    DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+    DEFAULT_MODEL = ":gpt"
 
     # Model shorthands — Pi is multi-provider so shorthands include provider/model format.
     # All colon-prefixed shorthands are expanded before being passed to pi CLI.
     MODEL_SHORTHANDS: Dict[str, str] = {
         # Meta shorthand
-        ":pi": "anthropic/claude-sonnet-4-6",
-        ":default": "anthropic/claude-sonnet-4-6",
+        ":pi": ":gpt",
+        ":default": ":gpt",
         # Anthropic
         ":sonnet": "anthropic/claude-sonnet-4-6",
         ":opus": "anthropic/claude-opus-4-6",
@@ -376,7 +376,7 @@ Examples:
   %(prog)s -p "Audit code" -m :luna --tools read,bash,edit
 
 Model shorthands:
-  :pi, :default    -> anthropic/claude-sonnet-4-6
+  :pi, :default    -> :gpt -> openai-codex/gpt-5.6-sol
   :sonnet          -> anthropic/claude-sonnet-4-6
   :opus            -> anthropic/claude-opus-4-6
   :haiku           -> anthropic/claude-haiku-4-5-20251001

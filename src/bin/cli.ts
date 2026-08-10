@@ -1348,13 +1348,13 @@ ${chalk.blue.bold('Pi Backend')} — Multi-provider coding agent (Anthropic, Ope
 
 ${chalk.blue('Model Shorthands:')}
   ${chalk.gray('# Anthropic')}
-  :sonnet              anthropic/claude-sonnet-4-6   ${chalk.gray('(default)')}
+  :sonnet              anthropic/claude-sonnet-4-6
   :opus                anthropic/claude-opus-4-6
   :haiku               anthropic/claude-haiku-4-5-20251001
   ${chalk.gray('# OpenAI / OpenAI Codex')}
   :luna                openai-codex/gpt-5.6-luna
   :sol                 openai-codex/gpt-5.6-sol
-  :gpt                 :sol ${chalk.gray('(OpenAI default alias)')}
+  :gpt                 :sol ${chalk.gray('(default)')}
   :gpt5.5              openai-codex/gpt-5.5
   :mini                openai-codex/gpt-5.6-terra
   :gpt-5               openai/gpt-5
@@ -1370,7 +1370,7 @@ ${chalk.blue('Model Shorthands:')}
   ${chalk.gray('# Others')}
   :groq                groq/llama-4-scout-17b-16e-instruct
   :grok                xai/grok-3
-  :pi, :default        anthropic/claude-sonnet-4-6
+  :pi, :default        :gpt ${chalk.gray('(default aliases)')}
 
 ${chalk.blue('Service-Specific Options:')}
   These are forwarded to pi.py and the Pi CLI:
@@ -1388,7 +1388,7 @@ ${chalk.blue('Service-Specific Options:')}
   --live                    Run Pi in interactive TUI mode (auto-exits on non-aborted completion)
 
 ${chalk.blue('Environment Variables:')}
-  PI_MODEL                  Model override (default: anthropic/claude-sonnet-4-6)
+  PI_MODEL                  Model override (default: :gpt → openai-codex/gpt-5.6-sol)
   PI_PROVIDER               Provider override
   PI_PROJECT_PATH           Project directory
   PI_THINKING               Thinking level

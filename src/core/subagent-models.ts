@@ -5,7 +5,7 @@ export const SUBAGENT_DEFAULT_MODELS: Readonly<Record<SubagentType, string>> = {
   codex: ':codex',
   gemini: ':pro',
   cursor: 'auto',
-  pi: ':pi',
+  pi: ':gpt',
 };
 
 /**

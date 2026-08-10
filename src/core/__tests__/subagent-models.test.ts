@@ -14,10 +14,10 @@ describe('subagent-models', () => {
       codex: ':codex',
       gemini: ':pro',
       cursor: 'auto',
-      pi: ':pi',
+      pi: ':gpt',
     });
 
-    expect(getDefaultModelForSubagent('pi')).toBe(':pi');
+    expect(getDefaultModelForSubagent('pi')).toBe(':gpt');
     expect(getDefaultModelForSubagent('claude')).toBe(':sonnet');
   });
 
