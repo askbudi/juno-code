@@ -466,6 +466,7 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "JUNO_SUBAGENT_CAPTURE_PATH": str(capture), "JUNO_TOOL_ID": args.tool_id,
                 "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata),
                 "JUNO_CONTROLLER_CHECKPOINT_ACTIVE": "1", "PYTHONUNBUFFERED": "1"}
+    explicit["JUNO_CODE_PROJECT_BOOTSTRAP_WRITES"] = "0"
     if args.mode == "worker":
         explicit.update({"TASK_ROOT": str(Path(args.agent_root).resolve()), "JUNO_AGENT_TASK_ID": args.task_id,
                          "JUNO_WORKSPACE_ROLE": "task"})
@@ -580,6 +581,13 @@ def run(args: argparse.Namespace) -> int:
     stdout_path, stderr_path, combined_path = out / "stdout.log", out / "stderr.log", out / "combined.log"
     compatible_config, _ = derive_compatible_config(controller_root, out)
     launcher = out / "launcher-root"; launcher.mkdir()
+    launcher_config = launcher / ".juno_task/config.json"
+    launcher_config.parent.mkdir()
+    launcher_payload = load_object(
+        Path(compatible_config["derived"]["path"]), "derived compatible config")
+    launcher_payload["controllerWorkspace"] = {
+        "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
+    atomic_json(launcher_config, launcher_payload)
     agent_root = Path(args.agent_root).resolve()
     argv = ["yy", "pi", "--config", compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     env, env_contract = clean_environment(
@@ -589,6 +597,7 @@ def run(args: argparse.Namespace) -> int:
         prompt_evidence["echo"] = prompt_echo
     launch = {"schema_version": SCHEMA, "mode": args.mode, "started_at": now(), "controller": controller_before,
               "identity": identity, "launcher_root": str(launcher), "agent_root": str(agent_root),
+              "launcher_config": evidence(launcher_config),
               "tool_id": args.tool_id, "review_binding": binding,
               "prompt": prompt_evidence, "compatible_config": compatible_config, "argv": argv,
               "argv_sha256": sha(shlex.join(argv).encode()), "environment_contract": env_contract}

@@ -52,7 +52,12 @@ assert sys.argv[1:3] == ['pi','--config']; assert '-f' in sys.argv and '-p' not 
 assert not sys.stdin.read(1)
 if os.environ.get('PI_MODEL') or os.environ.get('JUNO_MODEL'): raise SystemExit(91)
 assert os.environ.get('JUNO_CONTROLLER_CHECKPOINT_ACTIVE')=='1'
+assert os.environ.get('JUNO_CODE_PROJECT_BOOTSTRAP_WRITES')=='0'
 config=json.loads(pathlib.Path(sys.argv[3]).read_text())
+launcher_config=json.loads((pathlib.Path.cwd()/'.juno_task/config.json').read_text())
+expected_launcher=dict(config)
+expected_launcher['controllerWorkspace']={'mode':'metadata-only','policy':'.juno_task/config/metadata-controller.json'}
+assert launcher_config==expected_launcher
 assert config['defaultModel']==':configured' and config['defaultModels']['pi']==':configured'
 assert pathlib.Path(config['envFilePath']).is_absolute() and pathlib.Path(config['envFilePath']).read_text().startswith('MANAGED_TEST_SECRET=')
 macro=pathlib.Path(config['promptMacros']['global']['reflect']['path'])
@@ -161,9 +166,15 @@ print('out-after', flush=True)
         combined = (out / "combined.log").read_bytes(); self.assertIn(b"[stdout] out-before\n", combined); self.assertIn(b"[stderr] err-before\n", combined)
         receipt = json.loads((out / "receipt.json").read_text()); self.assertEqual(receipt["session_id"], "session-one")
         config_contract = receipt["compatible_config"]
+        derived = json.loads(Path(config_contract["derived"]["path"]).read_text())
+        launch = json.loads((out / "launch.json").read_text())
+        launcher_payload = json.loads(Path(launch["launcher_config"]["path"]).read_text())
+        self.assertEqual("metadata-only", launcher_payload["controllerWorkspace"]["mode"])
+        self.assertEqual(derived["defaultModel"], launcher_payload["defaultModel"])
+        self.assertIn("JUNO_CODE_PROJECT_BOOTSTRAP_WRITES",
+                      launch["environment_contract"]["explicit_key_names"])
         self.assertEqual({x["setting"] for x in config_contract["path_mappings"]},
                          {"envFilePath", "promptMacros.global.reflect.path"})
-        derived = json.loads(Path(config_contract["derived"]["path"]).read_text())
         self.assertEqual(derived["defaultModel"], ":configured")
         self.assertEqual(derived["envFilePath"], str(self.controller.resolve() / ".env.juno"))
         self.assertEqual(derived["promptMacros"]["global"]["reflect"]["path"],
