@@ -211,6 +211,33 @@ describe('canonical controller resolver', () => {
     }
   });
 
+  it('reports sole controller cleanliness drift in diagnostic mode but refuses orchestration', async () => {
+    await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {
+      controllerWorkspace: {
+        enabled: true,
+        policy: '.juno_task/config/controller-workspace.json',
+      },
+    });
+    await fs.ensureDir(path.join(controller, '.juno_task', 'config'));
+    await fs.writeJson(path.join(controller, '.juno_task/config/controller-workspace.json'), {});
+    await fs.writeFile(path.join(controller, '.juno_task/scripts/controller_workspace.py'), `
+def load_policy(_path): return {}
+def inspect(root, _policy):
+    return {'root': str(root), 'passed': False, 'checks': {'root_exact': True, 'clean': False}}
+`);
+    const resolver = path.join(controller, '.juno_task/scripts/controller_resolver.py');
+    const diagnostic = run('python3', [resolver, '--cwd', controller, '--operation', 'diagnostic'], controller);
+    expect(diagnostic.status, diagnostic.stderr).toBe(0);
+    expect(JSON.parse(diagnostic.stdout)).toMatchObject({
+      valid: true,
+      diagnostics: ['canonical sparse controller policy refused: clean'],
+      controller_workspace: { passed: false },
+    });
+    const orchestration = run('python3', [resolver, '--cwd', controller, '--operation', 'orchestration'], controller);
+    expect(orchestration.status).toBe(2);
+    expect(orchestration.stderr).toContain('canonical sparse controller policy refused: clean');
+  });
+
   it('keeps missing-resolver fallback unmanaged and unavailable to automatic bootstrap', async () => {
     const project = path.join(sandbox, 'unmanaged git checkout');
     await fs.ensureDir(project);

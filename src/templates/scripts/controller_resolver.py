@@ -158,7 +158,11 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
                     result["controller_workspace"] = evidence
                     if not evidence["passed"]:
                         failed = sorted(name for name, passed in evidence["checks"].items() if not passed)
-                        errors.append("canonical sparse controller policy refused: " + ",".join(failed))
+                        message = "canonical sparse controller policy refused: " + ",".join(failed)
+                        if operation == "diagnostic" and failed == ["clean"]:
+                            result["diagnostics"].append(message)
+                        else:
+                            errors.append(message)
                 except (ImportError, controller_workspace.WorkspaceError, OSError) as exc:
                     errors.append(f"canonical sparse controller verification failed: {exc}")
     if asserted_controller and persisted_controller and asserted_controller != persisted_controller:
