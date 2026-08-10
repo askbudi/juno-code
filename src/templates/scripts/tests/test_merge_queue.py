@@ -540,6 +540,26 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
         self.assertEqual(self.queue_payload("next")["candidate_sha"], repaired_tip)
 
+    def test_failed_affected_validation_new_tip_reopens_and_requeues_the_repair(self) -> None:
+        self.commit_feature("X", "src/x.py", "broken\n")
+        self.write_policy(code="raise SystemExit(17)")
+        with self.assertRaises(merge_runtime.MergeValidationError):
+            merge_runtime.merge_next(self.controller.resolve())
+        failed = self.task("status", "X")
+        self.assertEqual((failed["state"], failed["last_queue_outcome"]),
+                         ("QUEUED", "FAILED_TEST"))
+        worktree = self.workspaces / "X"
+        (worktree / "src/x.py").write_text("fixed\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "repair affected validation")
+        repaired_tip = git(worktree, "rev-parse", "HEAD")
+        self.write_policy()
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_VALIDATION_FAILURE")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
+
     def test_full_suite_receipt_fits_tails_inside_the_whole_artifact_bound(self) -> None:
         stdout = ("large output ☃\n" * 8000)
         stderr = ("warning\n" * 2000)

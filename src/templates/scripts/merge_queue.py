@@ -1643,15 +1643,17 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             state = task_runtime.read_state(controller)
             record = state["tasks"].get(task_id)
         source_state = record.get("state") if isinstance(record, dict) else None
-        failed_review_repair = (
-            source_state == "AWAITING_RISK"
-            and record.get("last_queue_outcome") in {"FAILED_FULL_SUITE", "REVIEW_FAILED"}
+        failure_outcome = record.get("last_queue_outcome") if isinstance(record, dict) else None
+        failed_queue_repair = (
+            ((source_state == "AWAITING_RISK"
+              and failure_outcome in {"FAILED_FULL_SUITE", "REVIEW_FAILED"})
+             or (source_state == "QUEUED" and failure_outcome == "FAILED_TEST"))
             and isinstance(record.get("queue_attempt"), dict)
-            and record["queue_attempt"].get("outcome") == record.get("last_queue_outcome")
+            and record["queue_attempt"].get("outcome") == failure_outcome
         )
-        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_review_repair:
-            raise MergeQueueError("task has no review findings or failed review repair to reopen")
-        if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK"}:
+        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_queue_repair:
+            raise MergeQueueError("task has no review findings or failed queue repair to reopen")
+        if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK", "QUEUED"}:
             old_attempt = record.get("queue_attempt")
             if not isinstance(old_attempt, dict):
                 raise MergeQueueError("review finding task has no frozen queue attempt")
@@ -1777,7 +1779,8 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             task_runtime.write_state(controller, state)
         source_outcome = reopen_attempt.get("source_outcome")
         outcome = ({"FAILED_FULL_SUITE": "REQUEUED_AFTER_FULL_SUITE_FAILURE",
-                    "REVIEW_FAILED": "REQUEUED_AFTER_REVIEW_FAILURE"}.get(
+                    "REVIEW_FAILED": "REQUEUED_AFTER_REVIEW_FAILURE",
+                    "FAILED_TEST": "REQUEUED_AFTER_VALIDATION_FAILURE"}.get(
                         source_outcome, "REQUEUED_AFTER_FINDINGS"))
         return {**queued, "outcome": outcome}
 
