@@ -50,6 +50,45 @@ describe('control-plane argv classification', () => {
   });
 });
 
+describe('control-plane operation gate', () => {
+  it('validates the effective operation before diagnostic-only origin revalidation', () => {
+    const controller = path.resolve('/controller');
+    const task = path.resolve('/task');
+    const calls: Array<{ cwd: string; operation: string; trusted: boolean | undefined }> = [];
+    const resolver = ((cwd: string, operation: any, options: any) => {
+      calls.push({ cwd: path.resolve(cwd), operation, trusted: options?.trustedResolver });
+      const origin = path.resolve(cwd) === task;
+      return {
+        path: controller, current_root: origin ? task : controller, resolver: 'installed',
+        source: 'registration', expected_branch: 'refs/heads/controller', actual_branch: 'controller',
+        role: origin ? 'task' : 'controller', enforcement: 'strict', operation,
+        valid: true, diagnostics: [],
+      };
+    }) as typeof resolveController;
+    const names = ['JUNO_CONTROL_INVOCATION_ROOT', 'JUNO_CONTROL_INVOCATION_ROLE',
+      'JUNO_CONTROL_EFFECTIVE_ROOT'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.JUNO_CONTROL_INVOCATION_ROOT = task;
+      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
+      process.env.JUNO_CONTROL_EFFECTIVE_ROOT = controller;
+      expect(routeControlPlane(controller, 'orchestration', resolver)).toMatchObject({
+        controllerRoot: controller, invocationRoot: task, invocationRole: 'task',
+      });
+      expect(calls).toEqual([
+        { cwd: controller, operation: 'orchestration', trusted: true },
+        { cwd: task, operation: 'diagnostic', trusted: true },
+      ]);
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
 describe('canonical controller resolver', () => {
   let sandbox: string;
   let controller: string;

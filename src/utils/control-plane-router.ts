@@ -54,10 +54,11 @@ export function classifyLeadingCommand(argv: readonly string[]): { command?: str
 export function routeControlPlane(
   workingDirectory: string,
   operation: ControllerOperation,
+  resolver: typeof resolveController = resolveController,
 ): RoutedControlPlane {
   // Diagnostic resolution validates persisted topology without pretending that
   // the product checkout itself is performing the eventual controller write.
-  const resolution = resolveController(workingDirectory, 'diagnostic', {
+  const resolution = resolver(workingDirectory, operation, {
     ignoreEnvironmentAssertions: true,
     trustedResolver: true,
   });
@@ -73,7 +74,7 @@ export function routeControlPlane(
     }
     let origin: ControllerResolution;
     try {
-      origin = resolveController(forwardedRoot, 'diagnostic', {
+      origin = resolver(forwardedRoot, 'diagnostic', {
         ignoreEnvironmentAssertions: true,
         trustedResolver: true,
       });
