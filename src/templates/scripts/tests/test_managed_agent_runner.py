@@ -111,6 +111,28 @@ print('out-after', flush=True)
         other = subprocess.CompletedProcess([], 2, "", "controller-resolver: another failure\n")
         self.assertFalse(runner.resolver_policy_passes(other, resolved, workspace, True))
 
+    def test_derived_child_config_translates_canonical_sparse_controller_contract(self):
+        config_path = self.controller / ".juno_task/config.json"
+        config = json.loads(config_path.read_text())
+        config["controllerWorkspace"] = {
+            "enabled": True,
+            "policy": ".juno_task/config/controller-workspace.json",
+        }
+        config_path.write_text(json.dumps(config) + "\n")
+        out = self.tmp / "derived-compatibility"; out.mkdir()
+        contract, _ = runner.derive_compatible_config(self.controller, out)
+        derived = json.loads(Path(contract["derived"]["path"]).read_text())
+        self.assertEqual(derived["controllerWorkspace"], {
+            "mode": "metadata-only",
+            "policy": ".juno_task/config/metadata-controller.json",
+        })
+        self.assertEqual(contract["transformations"], [{
+            "setting": "controllerWorkspace",
+            "reason": "neutral managed child compatibility",
+            "source_contract": "canonical-sparse",
+            "derived_contract": "metadata-only",
+        }])
+
     def command(self, out: Path, prompt: Path | None = None):
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
                 "--controller-branch", "refs/heads/controller", "--agent-root", str(out / "agent-root"),

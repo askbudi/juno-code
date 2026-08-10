@@ -338,6 +338,20 @@ def derive_compatible_config(controller_root: Path, out: Path) -> tuple[dict[str
     source_mark = configured_file_evidence(source.resolve(strict=False), source, "controller config")
     config = load_object(source, "controller config")
     mappings: list[dict[str, Any]] = []
+    transformations: list[dict[str, str]] = []
+    workspace = config.get("controllerWorkspace")
+    if (isinstance(workspace, dict) and workspace.get("enabled") is True
+            and workspace.get("policy") == ".juno_task/config/controller-workspace.json"):
+        config["controllerWorkspace"] = {
+            "mode": "metadata-only",
+            "policy": ".juno_task/config/metadata-controller.json",
+        }
+        transformations.append({
+            "setting": "controllerWorkspace",
+            "reason": "neutral managed child compatibility",
+            "source_contract": "canonical-sparse",
+            "derived_contract": "metadata-only",
+        })
     if "envFilePath" in config:
         config["envFilePath"], mark = resolve_configured_file(controller_root, config["envFilePath"], "envFilePath")
         mappings.append(mark)
@@ -369,7 +383,8 @@ def derive_compatible_config(controller_root: Path, out: Path) -> tuple[dict[str
     derived_mark = evidence(derived)
     derived_mark["identity"] = configured_file_evidence(derived.resolve(), derived, "derived config")
     contract = {"schema_version": "juno_managed_compatible_config.v1", "source": source_mark,
-                "derived": derived_mark, "path_mappings": mappings}
+                "derived": derived_mark, "path_mappings": mappings,
+                "transformations": transformations}
     contract["sha256"] = sha(canonical(contract))
     return contract, mappings
 
