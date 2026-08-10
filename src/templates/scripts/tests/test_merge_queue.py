@@ -520,6 +520,26 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
 
+    def test_failed_suite_new_tip_reopens_and_requeues_the_repair(self) -> None:
+        self.write_policy(full_code="raise SystemExit(23)")
+        self.commit_feature("X", "src/security/auth.py", "broken\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaises(merge_runtime.MergeValidationError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("fixed\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "repair full suite")
+        repaired_tip = git(worktree, "rev-parse", "HEAD")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_FULL_SUITE_FAILURE")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
+        self.assertEqual(self.queue_payload("next")["candidate_sha"], repaired_tip)
+
     def test_timeout_then_success_uses_fresh_attempt(self) -> None:
         self.write_policy(full_code="import time; time.sleep(3)")
         config_path = self.controller / ".juno_task/config/task-workspace.json"

@@ -1608,9 +1608,16 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             record = state["tasks"].get(task_id)
-        if not isinstance(record, dict) or record.get("state") not in {"REVIEW_FINDINGS", "REOPENING"}:
-            raise MergeQueueError("task has no review findings to reopen")
-        if record["state"] == "REVIEW_FINDINGS":
+        source_state = record.get("state") if isinstance(record, dict) else None
+        failed_suite_repair = (
+            source_state == "AWAITING_RISK"
+            and record.get("last_queue_outcome") == "FAILED_FULL_SUITE"
+            and isinstance(record.get("queue_attempt"), dict)
+            and record["queue_attempt"].get("outcome") == "FAILED_FULL_SUITE"
+        )
+        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_suite_repair:
+            raise MergeQueueError("task has no review findings or failed full-suite repair to reopen")
+        if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK"}:
             old_attempt = record.get("queue_attempt")
             if not isinstance(old_attempt, dict):
                 raise MergeQueueError("review finding task has no frozen queue attempt")
@@ -1653,6 +1660,7 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                 "old_candidate_checkout": checkout_value,
                 "old_candidate_token": token,
                 "old_candidate_owner": owner,
+                "source_outcome": old_attempt.get("outcome"),
                 "new_feature_tip": new_tip,
                 "changed_paths": changed,
                 "validations": validations,
@@ -1733,7 +1741,10 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             entry = target_entry(state, repository, config["target_ref"])
             entry["conflicts"].pop(task_id, None)
             task_runtime.write_state(controller, state)
-        return {**queued, "outcome": "REQUEUED_AFTER_FINDINGS"}
+        outcome = ("REQUEUED_AFTER_FULL_SUITE_FAILURE"
+                   if reopen_attempt.get("source_outcome") == "FAILED_FULL_SUITE"
+                   else "REQUEUED_AFTER_FINDINGS")
+        return {**queued, "outcome": outcome}
 
 
 def status(controller: Path) -> dict[str, Any]:
