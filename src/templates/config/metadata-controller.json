@@ -54,12 +54,17 @@
     "package": "juno-code",
     "identity_file": ".juno_task/runtime/identity.json",
     "ignored_roots": [
-      ".juno_task/runtime",
-      ".juno_task/scripts",
+      ".agents",
+      ".claude",
+      ".env.juno",
       ".juno_task/cache",
       ".juno_task/locks",
+      ".juno_task/runtime",
+      ".juno_task/scripts",
+      ".pi",
       ".venv_juno",
-      ".env.juno"
+      "AGENTS.md",
+      "CLAUDE.md"
     ]
   }
 }

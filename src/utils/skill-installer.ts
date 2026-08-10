@@ -52,18 +52,38 @@ interface ExtensionGroup {
 }
 
 export class SkillInstaller {
-  static async assertInstallAllowed(projectDir: string): Promise<void> {
+  private static readonly CONTROLLER_AGENT_IGNORES = [
+    '/AGENTS.md',
+    '/CLAUDE.md',
+    '/.agents/',
+    '/.claude/',
+    '/.pi/',
+  ];
+
+  static async isMetadataOnlyController(projectDir: string): Promise<boolean> {
     try {
       const config = await fs.readJson(path.join(projectDir, '.juno_task/config.json'));
-      if (config?.controllerWorkspace?.mode === 'metadata-only') {
-        throw new Error(
-          'Skill installation is refused in a metadata-only controller; run it from the product or a feature worktree.',
-        );
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Skill installation is refused')) {
-        throw error;
-      }
+      return config?.controllerWorkspace?.mode === 'metadata-only'
+        && config.controllerWorkspace.policy === '.juno_task/config/metadata-controller.json';
+    } catch {
+      return false;
+    }
+  }
+
+  static async assertInstallAllowed(projectDir: string): Promise<void> {
+    if (!(await this.isMetadataOnlyController(projectDir))) return;
+    const ignorePath = path.join(projectDir, '.gitignore');
+    const lines = new Set(
+      (await fs.readFile(ignorePath, 'utf8').catch(() => ''))
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    );
+    const missing = this.CONTROLLER_AGENT_IGNORES.filter((entry) => !lines.has(entry));
+    if (missing.length > 0) {
+      throw new Error(
+        `Metadata-controller agent surface requires the reviewed ignored-runtime policy; missing .gitignore entries: ${missing.join(', ')}`,
+      );
     }
   }
 
@@ -137,6 +157,39 @@ export class SkillInstaller {
     }
 
     return null;
+  }
+
+  private static getPackageControllerAgentDir(): string | null {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      path.join(__dirname, '..', '..', 'templates', 'controller-agent'),
+      path.join(__dirname, '..', 'templates', 'controller-agent'),
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  }
+
+  private static async installControllerInstructions(
+    projectDir: string,
+    silent: boolean,
+    force: boolean,
+  ): Promise<number> {
+    if (!(await this.isMetadataOnlyController(projectDir))) return 0;
+    const source = this.getPackageControllerAgentDir();
+    if (!source) throw new Error('Package controller-agent instructions are missing');
+    let installed = 0;
+    for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+      const src = path.join(source, filename);
+      const dest = path.join(projectDir, filename);
+      const same = await fs.pathExists(dest)
+        && (await fs.readFile(src)).equals(await fs.readFile(dest));
+      if (!force && same) continue;
+      await fs.copy(src, dest, { overwrite: true });
+      installed += 1;
+    }
+    if (installed > 0 && !silent) {
+      console.log(`✓ Installed ${installed} ignored controller instruction file(s)`);
+    }
+    return installed;
   }
 
   /**
@@ -239,7 +292,10 @@ export class SkillInstaller {
       }
 
       if (shouldCopy) {
-        await fs.copy(srcPath, destPath, { overwrite: true });
+        // Development templates may use relative symlinks to shared scripts.
+        // Materialize their contents so the installed skill is self-contained
+        // and chmod never targets a dangling link in the project.
+        await fs.copy(srcPath, destPath, { overwrite: true, dereference: true });
 
         // Make executable for .sh and .py files
         if (relFile.endsWith('.sh') || relFile.endsWith('.py')) {
@@ -364,7 +420,7 @@ export class SkillInstaller {
   static async install(projectDir: string, silent = false, force = false): Promise<boolean> {
     await this.assertInstallAllowed(projectDir);
     const debug = process.env.JUNO_CODE_DEBUG === '1';
-    let totalInstalled = 0;
+    let totalInstalled = await this.installControllerInstructions(projectDir, silent, force);
 
     for (const group of this.SKILL_GROUPS) {
       try {
@@ -475,6 +531,17 @@ export class SkillInstaller {
       const packageSkillsDir = this.getPackageSkillsDir();
       if (!packageSkillsDir) {
         return false;
+      }
+
+      if (await this.isMetadataOnlyController(projectDir)) {
+        const source = this.getPackageControllerAgentDir();
+        if (!source) return true;
+        for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+          const src = path.join(source, filename);
+          const dest = path.join(projectDir, filename);
+          if (!(await fs.pathExists(dest))) return true;
+          if (!(await fs.readFile(src)).equals(await fs.readFile(dest))) return true;
+        }
       }
 
       for (const group of this.SKILL_GROUPS) {

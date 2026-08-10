@@ -596,6 +596,11 @@ describe('Binary Execution Tests', () => {
         '.juno_task/scripts/',
         '.venv_juno/',
         '.env.juno',
+        '/AGENTS.md',
+        '/CLAUDE.md',
+        '/.agents/',
+        '/.claude/',
+        '/.pi/',
         'built-cli-session-metadata/',
         '',
       ].join('\n'));
@@ -610,8 +615,13 @@ describe('Binary Execution Tests', () => {
       const update = await executeCLI(['scripts', 'update']);
 
       expect(update.exitCode).toBe(0);
-      expect(update.stdout).toContain('ignored metadata-controller runtime scripts');
+      expect(update.stdout).toContain('ignored metadata-controller runtime scripts and agent surface');
       expect(await fs.pathExists(path.join(junoTaskDir, 'scripts/task_workspace.py'))).toBe(true);
+      expect(await fs.pathExists(path.join(tempDir, 'AGENTS.md'))).toBe(true);
+      expect(await fs.pathExists(path.join(tempDir, 'CLAUDE.md'))).toBe(true);
+      for (const root of ['.agents/skills', '.claude/skills', '.pi/skills']) {
+        expect(await fs.pathExists(path.join(tempDir, root, 'kanban-workflow/SKILL.md'))).toBe(true);
+      }
       expect(await fs.readFile(configPath, 'utf8')).toBe(configBytes);
       expect(await fs.readFile(policyPath, 'utf8')).toBe(policyBytes);
       for (const forbidden of [
@@ -620,9 +630,6 @@ describe('Binary Execution Tests', () => {
         '.juno_task/prompts',
         '.juno_task/wiki',
         'scripts/git-flow.sh',
-        '.agents',
-        '.claude',
-        '.pi',
         '.codex',
       ]) {
         expect(await fs.pathExists(path.join(tempDir, forbidden))).toBe(false);
@@ -635,7 +642,7 @@ describe('Binary Execution Tests', () => {
 
       const doctor = await executeCLI(['scripts', 'doctor']);
       expect(doctor.exitCode).toBe(0);
-      expect(doctor.stdout).toContain('Metadata-controller runtime scripts are coherent');
+      expect(doctor.stdout).toContain('Metadata-controller runtime scripts and agent surface are coherent');
       expect(execFileSync(
         'git',
         ['status', '--porcelain=v2', '--untracked-files=all'],

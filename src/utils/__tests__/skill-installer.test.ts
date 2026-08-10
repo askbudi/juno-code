@@ -75,7 +75,7 @@ describe('SkillInstaller', () => {
   });
 
   describe('install', () => {
-    it('refuses to materialize skills in a metadata-only controller', async () => {
+    const initializeMetadataController = async (withAgentIgnores: boolean) => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
         controllerWorkspace: {
@@ -83,13 +83,41 @@ describe('SkillInstaller', () => {
           policy: '.juno_task/config/metadata-controller.json',
         },
       });
+      if (withAgentIgnores) {
+        await fs.writeFile(
+          path.join(testDir, '.gitignore'),
+          ['/AGENTS.md', '/CLAUDE.md', '/.agents/', '/.claude/', '/.pi/', ''].join('\n'),
+        );
+      }
+    };
+
+    it('refuses controller installation until the ignored agent surface is admitted', async () => {
+      await initializeMetadataController(false);
 
       await expect(SkillInstaller.install(testDir, true)).rejects.toThrow(
-        'Skill installation is refused in a metadata-only controller',
+        'requires the reviewed ignored-runtime policy',
       );
       expect(await fs.pathExists(path.join(testDir, '.agents'))).toBe(false);
       expect(await fs.pathExists(path.join(testDir, '.claude'))).toBe(false);
       expect(await fs.pathExists(path.join(testDir, '.pi'))).toBe(false);
+    });
+
+    it('installs ignored instructions and core skills in a metadata-only controller', async () => {
+      await initializeMetadataController(true);
+
+      expect(await SkillInstaller.install(testDir, true)).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, 'AGENTS.md'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, 'CLAUDE.md'))).toBe(true);
+      const missingSkills: string[] = [];
+      for (const root of ['.agents/skills', '.claude/skills', '.pi/skills']) {
+        for (const skill of ['kanban-workflow', 'plan-kanban-tasks', 'ralph-loop', 'understand-project']) {
+          const relative = path.join(root, skill, 'SKILL.md');
+          if (!(await fs.pathExists(path.join(testDir, relative)))) missingSkills.push(relative);
+        }
+      }
+      expect(missingSkills).toEqual([]);
+      expect(await SkillInstaller.needsUpdate(testDir)).toBe(false);
+      expect(await SkillInstaller.install(testDir, true)).toBe(false);
     });
 
     it('should not fail when templates directory is empty', async () => {
