@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import selectors
 import shlex
 import signal
@@ -447,7 +446,7 @@ def managed_controller_binding(mark: dict[str, Any]) -> dict[str, Any] | None:
         return None
     resolver = mark.get("resolver")
     policy_identity = resolver.get("policy_identity") if isinstance(resolver, dict) else None
-    if not isinstance(policy_identity, str) or not re.fullmatch(r"[0-9a-f]{64}", policy_identity):
+    if not isinstance(policy_identity, dict) or not policy_identity:
         raise RunnerError("queue-owned dirty controller requires canonical resolver identity")
     return {"schema_version": "juno_managed_controller_binding.v1",
             "root": mark["root"], "head": mark["head"],

@@ -94,7 +94,7 @@ print('out-after', flush=True)
                           runner.QUEUE_STATE_PATH])
         with self.assertRaisesRegex(runner.RunnerError, "canonical resolver identity"):
             runner.managed_controller_binding(before)
-        before["resolver"] = {"policy_identity": "a" * 64}
+        before["resolver"] = {"policy_identity": {"fixture": "identity"}}
         binding = runner.managed_controller_binding(before)
         self.assertEqual(binding["schema_version"], "juno_managed_controller_binding.v1")
         self.assertEqual(binding["queue_state"], before["queue_state"])
