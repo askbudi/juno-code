@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -27,6 +28,12 @@ QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
+REVIEW_PROMPT_FIELDS = {
+    "task_id", "review_kind", "reviewer_index", "repository", "base_sha",
+    "tip_sha", "checklist_path", "findings_summary_path",
+    "validation_evidence_path", "requirements_bundle", "findings_summary",
+}
+REVIEW_PLACEHOLDER_RE = re.compile(r"{{\s*([a-z_][a-z0-9_]*)\s*}}")
 
 
 class MergeQueueError(RuntimeError):
@@ -997,7 +1004,10 @@ def dispatch_reviewer(controller: Path, candidate_root: Path, plan: dict[str, An
     if run_root.exists():
         raise MergeQueueError(f"review output already exists; inspect before retry: {run_root}")
     binding_path = run_root.parent / f"{sequence}-{reviewer}.binding.json"
-    prompt = managed_review_prompt(controller)
+    prompt = render_managed_review_prompt(
+        controller, candidate_root, plan, task_id, reviewer, sequence,
+        run_root.parent / f"{sequence}-{reviewer}.prompt.md",
+    )
     try:
         risk_runtime.write_review_binding(
             binding_path, candidate_sha=plan["candidate"]["candidate_sha"],
@@ -1048,6 +1058,162 @@ def managed_review_prompt(controller: Path) -> Path:
     if not prompt.is_file():
         raise MergeQueueError("managed review prompt is missing from the installed runtime")
     return prompt.resolve()
+
+
+def bounded_json_reference(reference: dict[str, Any], limit: int, label: str) -> dict[str, Any]:
+    if (not isinstance(reference, dict)
+            or set(reference) not in ({"path", "sha256"}, {"path", "sha256", "bytes"})):
+        raise MergeQueueError(f"{label} reference is malformed")
+    path = Path(str(reference["path"])).resolve()
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise MergeQueueError(f"{label} is missing") from exc
+    if (not data or len(data) > limit or hashlib.sha256(data).hexdigest() != reference["sha256"]
+            or ("bytes" in reference and reference["bytes"] != len(data))):
+        raise MergeQueueError(f"{label} identity is invalid")
+    try:
+        value = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise MergeQueueError(f"{label} is not JSON") from exc
+    if not isinstance(value, dict):
+        raise MergeQueueError(f"{label} must be one object")
+    return value
+
+
+def prior_findings_summary(controller: Path, record: dict[str, Any],
+                           plan: dict[str, Any]) -> tuple[str, str]:
+    prior_sha = record.get("reopened_from_candidate_sha")
+    if not isinstance(prior_sha, str):
+        return ("No prior reviewed candidate is bound to this exact queue record.",
+                "queue-state:none")
+    evidence_root = controller / ".juno_task/runtime/merge-queue/evidence" / record["task_id"]
+    paths = sorted(evidence_root.glob(f"{prior_sha}.attempt-*.json"))
+    if not paths:
+        raise MergeQueueError("prior review findings evidence is missing")
+    summaries: list[str] = []
+    evidence_refs: list[str] = []
+    limit = plan["evidence_limits"]["max_receipt_bytes"]
+    for evidence_path in paths:
+        data = evidence_path.read_bytes()
+        if not data or len(data) > limit:
+            raise MergeQueueError("prior review evidence exceeds its bound")
+        evidence = json.loads(data)
+        if evidence.get("candidate", {}).get("candidate_sha") != prior_sha:
+            raise MergeQueueError("prior review evidence candidate identity drifted")
+        evidence_refs.append(
+            f"{evidence_path.resolve()} sha256={hashlib.sha256(data).hexdigest()}"
+        )
+        for review in evidence.get("reviews", []):
+            managed = review.get("managed_runner", {})
+            runner = bounded_json_reference(
+                {"path": managed.get("receipt_path"), "sha256": managed.get("receipt_sha256")},
+                limit, "prior managed reviewer receipt",
+            )
+            response = bounded_json_reference(
+                runner.get("artifacts", {}).get("response", {}), limit,
+                "prior managed reviewer response",
+            )
+            for finding in response.get("findings", []):
+                if not isinstance(finding, dict):
+                    raise MergeQueueError("prior reviewer finding is malformed")
+                summaries.append(
+                    f"- {finding.get('code', 'UNKNOWN')} [{finding.get('severity', 'unknown')}]: "
+                    f"{finding.get('summary', '')}"
+                )
+    if not summaries:
+        summaries.append("- The immediate prior candidate had no recorded blocking finding text.")
+    return (f"Immediate prior candidate: {prior_sha}\n" + "\n".join(summaries),
+            "; ".join(evidence_refs))
+
+
+def render_review_template(template: str, fields: dict[str, str]) -> str:
+    names = set(REVIEW_PLACEHOLDER_RE.findall(template))
+    if names != REVIEW_PROMPT_FIELDS or set(fields) != REVIEW_PROMPT_FIELDS:
+        missing = sorted(REVIEW_PROMPT_FIELDS - names)
+        unknown = sorted(names - REVIEW_PROMPT_FIELDS)
+        raise MergeQueueError(
+            f"managed review prompt placeholder contract drifted; missing={missing} unknown={unknown}"
+        )
+    rendered = REVIEW_PLACEHOLDER_RE.sub(lambda match: fields[match.group(1)], template)
+    for name in REVIEW_PROMPT_FIELDS:
+        if re.search(r"{{\s*" + re.escape(name) + r"\s*}}", rendered):
+            raise MergeQueueError(f"managed review prompt retained placeholder {name}")
+    return rendered
+
+
+def render_managed_review_prompt(controller: Path, candidate_root: Path,
+                                 plan: dict[str, Any], task_id: str,
+                                 reviewer: str, sequence: int,
+                                 output_path: Path) -> Path:
+    template_path = managed_review_prompt(controller)
+    template_data = template_path.read_bytes()
+    if not template_data or len(template_data) > 65536:
+        raise MergeQueueError("managed review prompt template is empty or unbounded")
+    with task_runtime.state_lock(controller):
+        record = task_runtime.read_state(controller)["tasks"].get(task_id)
+    attempt = record.get("queue_attempt") if isinstance(record, dict) else None
+    stored = attempt.get("risk") if isinstance(attempt, dict) else None
+    if (not isinstance(record, dict) or record.get("state") != "AWAITING_RISK"
+            or not isinstance(attempt, dict) or not isinstance(stored, dict)
+            or attempt.get("candidate_sha") != plan["candidate"]["candidate_sha"]
+            or stored.get("plan") != plan):
+        raise MergeQueueError("review prompt queue binding changed before dispatch")
+    task_path = task_runtime.task_file(controller, task_id).resolve()
+    task_data = task_path.read_bytes()
+    if not task_data or len(task_data) > 65536:
+        raise MergeQueueError("canonical review task is empty or unbounded")
+    progress = stored.get("review_progress", {})
+    admission = progress.get("full_suite_admission") if isinstance(progress, dict) else None
+    receipt = admission.get("receipt") if isinstance(admission, dict) else None
+    if plan["full_suite_required"]:
+        if not isinstance(receipt, dict) or set(receipt) != {"receipt_path", "receipt_sha256"}:
+            raise MergeQueueError("review prompt full-suite evidence is missing")
+        receipt_path = Path(receipt["receipt_path"]).resolve()
+        receipt_data = receipt_path.read_bytes()
+        if hashlib.sha256(receipt_data).hexdigest() != receipt["receipt_sha256"]:
+            raise MergeQueueError("review prompt full-suite evidence identity drifted")
+        validation_path = f"{receipt_path} sha256={receipt['receipt_sha256']}"
+    else:
+        validation_path = "queue-state: affected validation embedded below"
+    findings_summary, findings_path = prior_findings_summary(controller, record, plan)
+    validation_bundle = canonical({
+        "affected_validation": attempt.get("validation", []),
+        "full_suite_admission": admission,
+    })
+    requirements = (
+        f"Canonical Kanban task ({task_path}, sha256={hashlib.sha256(task_data).hexdigest()}):\n\n"
+        + task_data.decode("utf-8")
+        + "\n\nQueue-bound risk plan:\n\n" + canonical(plan)
+        + "\n\nQueue-bound validation summary:\n\n" + validation_bundle
+    )
+    fields = {
+        "task_id": task_id,
+        "review_kind": f"merge-queue-{plan['tier']}-risk",
+        "reviewer_index": f"{sequence}:{reviewer}",
+        "repository": str(candidate_root.resolve()),
+        "base_sha": plan["candidate"]["base_sha"],
+        "tip_sha": plan["candidate"]["candidate_sha"],
+        "checklist_path": f"{task_path} sha256={hashlib.sha256(task_data).hexdigest()}",
+        "findings_summary_path": findings_path,
+        "validation_evidence_path": validation_path,
+        "requirements_bundle": requirements,
+        "findings_summary": findings_summary,
+    }
+    try:
+        rendered = render_review_template(template_data.decode("utf-8"), fields).encode()
+    except UnicodeDecodeError as exc:
+        raise MergeQueueError("managed review prompt template is not UTF-8") from exc
+    if not rendered or len(rendered) > 524288:
+        raise MergeQueueError("rendered managed review prompt is empty or unbounded")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise MergeQueueError(f"rendered review prompt already exists: {output_path}") from exc
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(rendered); handle.flush(); os.fsync(handle.fileno())
+    return output_path.resolve()
 
 
 def full_validation_identity(controller: Path, config: dict[str, Any],

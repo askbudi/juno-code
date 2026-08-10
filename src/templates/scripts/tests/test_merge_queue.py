@@ -122,6 +122,45 @@ class MergeQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(merge_runtime.MergeQueueError, "hash drifted"):
             merge_runtime.managed_review_prompt(self.controller)
 
+    def test_rendered_reviewer_prompt_contains_exact_queue_bound_context(self) -> None:
+        template = SCRIPTS.parent / "prompts/review_commit_parallel_runner.md"
+        candidate_sha = "b" * 40
+        base_sha = "a" * 40
+        plan = {
+            "tier": "high", "full_suite_required": False,
+            "evidence_limits": {"max_receipt_bytes": 65536},
+            "candidate": {"base_sha": base_sha, "candidate_sha": candidate_sha},
+        }
+        record = {
+            "task_id": "A", "state": "AWAITING_RISK",
+            "queue_attempt": {
+                "candidate_sha": candidate_sha,
+                "validation": [{"id": "affected", "exit_code": 0}],
+                "risk": {"plan": plan, "review_progress": {"full_suite_admission": None}},
+            },
+        }
+        output = self.root / "rendered-review.md"
+        with (mock.patch.object(merge_runtime, "managed_review_prompt", return_value=template),
+              mock.patch.object(merge_runtime.task_runtime, "read_state",
+                                return_value={"tasks": {"A": record}})):
+            rendered = merge_runtime.render_managed_review_prompt(
+                self.controller, self.repository, plan, "A", "reviewer_a", 1, output)
+        text = rendered.read_text()
+        self.assertIn(f"Task: `A`", text)
+        self.assertIn(f"Base: `{base_sha}`", text)
+        self.assertIn(f"Tip: `{candidate_sha}`", text)
+        self.assertIn("Reviewer: `1:reviewer_a`", text)
+        self.assertIn("Queue-bound risk plan", text)
+        self.assertIn('"affected_validation":[{"exit_code":0,"id":"affected"}]', text)
+        self.assertIn("No prior reviewed candidate is bound", text)
+        for field in merge_runtime.REVIEW_PROMPT_FIELDS:
+            self.assertNotRegex(text, r"{{\s*" + field + r"\s*}}")
+
+    def test_rendered_reviewer_prompt_rejects_template_placeholder_drift(self) -> None:
+        fields = {name: name for name in merge_runtime.REVIEW_PROMPT_FIELDS}
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "placeholder contract drifted"):
+            merge_runtime.render_review_template("Task {{ task_id }} {{ unknown }}", fields)
+
     def command(self, script: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         # Global argparse options precede merge subcommands.
         argv = ["python3", str(script)]
