@@ -2,6 +2,8 @@
 
 Use the canonical controller to select one Kanban task, then run:
 
+`TASK_ROOT` names that canonical controller. Control-plane routing never switches or cleans the checkout where the user invoked `yy`.
+
 ```text
 yy task start TASK_ID
 ```

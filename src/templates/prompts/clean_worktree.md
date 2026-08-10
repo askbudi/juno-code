@@ -3,6 +3,10 @@
 The metadata controller owns Kanban, task state, and compact artifacts. Product
 code lives only in the target branch and dedicated feature worktrees.
 
+`TASK_ROOT` names the canonical controller. Control-plane routing never switches or cleans the checkout where the user invoked `yy`.
+
+Independent agents and reviewers use fresh `yy pi` contexts. Bare `pi` and indirect provider/model overrides are forbidden.
+
 1. Start each selected feature with `yy task start TASK_ID`. The command records
    the exact target SHA and creates one task branch/worktree from it.
 2. Implement, run focused tests, and commit only inside the returned worktree.
