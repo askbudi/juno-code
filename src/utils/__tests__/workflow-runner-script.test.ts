@@ -181,7 +181,7 @@ print('  session-' + prompt)
   return { binDir, executablePath };
 }
 
-describe('workflow_runner.sh template script', () => {
+describe('workflow_runner.sh child environment contract', () => {
   it('filters continuity from workflow child environments without dropping routing/config', () => {
     for (const script of [templateScript, runtimeScript]) {
       const code = `
@@ -202,6 +202,9 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
       expect(JSON.parse(result.stdout.trim())).toEqual({ continuity: [], root: '/controller', config: 'preserved' });
     }
   });
+});
+
+describe('workflow_runner.sh template script', () => {
   let testDir: string;
 
   beforeEach(async () => {
