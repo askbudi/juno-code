@@ -20,6 +20,7 @@ from typing import Any
 SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
 REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
+QUEUE_STATE_PATH = ".juno_task/state/tasks.json"
 CAPTURE_LIMIT = 4 * 1024 * 1024
 TASK_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,64}\Z")
 SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
@@ -208,7 +209,7 @@ def git(root: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def fingerprint(root: Path) -> dict[str, str]:
+def fingerprint(root: Path) -> dict[str, Any]:
     return {"root": str(root), "head": git(root, "rev-parse", "HEAD"),
             "branch_ref": git(root, "symbolic-ref", "-q", "HEAD", check=False),
             "git_common_dir": str((root / git(root, "rev-parse", "--git-common-dir")).resolve()),
@@ -219,8 +220,23 @@ def fingerprint(root: Path) -> dict[str, str]:
 def controller_identity(root: Path) -> dict[str, Any]:
     mark: dict[str, Any] = fingerprint(root)
     config = root / ".juno_task/config.json"
-    if not config.is_file() or mark["status"]:
+    if not config.is_file():
         raise RunnerError("controller is missing its config or is dirty")
+    if mark["status"]:
+        unstaged = sorted(filter(None, git(root, "diff", "--name-only").splitlines()))
+        staged = sorted(filter(None, git(root, "diff", "--cached", "--name-only").splitlines()))
+        untracked = sorted(filter(None, git(
+            root, "ls-files", "--others", "--exclude-standard").splitlines()))
+        queue_state = root / QUEUE_STATE_PATH
+        if unstaged != [QUEUE_STATE_PATH] or staged or untracked or not queue_state.is_file():
+            raise RunnerError("controller is missing its config or is dirty")
+        # The merge queue must durably publish REVIEWING before dispatch.  Bind
+        # that one queue-owned worktree change so it may be dirty but cannot
+        # mutate while the managed agent is running.
+        mark["queue_state"] = {
+            "path": QUEUE_STATE_PATH,
+            "sha256": sha(queue_state.read_bytes()),
+        }
     mark["config_sha256"] = sha(config.read_bytes())
     resolver = root / ".juno_task/scripts/controller_resolver.py"
     workspace_policy = root / ".juno_task/config/controller-workspace.json"
@@ -392,7 +408,8 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "JUNO_CONTROLLER_BRANCH": args.controller_branch.removeprefix("refs/heads/"),
                 "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
                 "JUNO_SUBAGENT_CAPTURE_PATH": str(capture), "JUNO_TOOL_ID": args.tool_id,
-                "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata), "PYTHONUNBUFFERED": "1"}
+                "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata),
+                "JUNO_CONTROLLER_CHECKPOINT_ACTIVE": "1", "PYTHONUNBUFFERED": "1"}
     if args.mode == "worker":
         explicit.update({"TASK_ROOT": str(Path(args.agent_root).resolve()), "JUNO_AGENT_TASK_ID": args.task_id,
                          "JUNO_WORKSPACE_ROLE": "task"})

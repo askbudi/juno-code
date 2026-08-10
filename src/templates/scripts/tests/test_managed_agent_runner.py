@@ -30,6 +30,8 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         config = {"defaultSubagent":"pi", "defaultModel":":configured", "defaultModels":{"pi":":configured"},
                   "envFilePath":".env.juno", "promptMacros":{"global":{"reflect":{"path":".juno_task/prompts/reflect.md"}},"local":{}}}
         (self.controller / ".juno_task/config.json").write_text(json.dumps(config) + "\n")
+        (self.controller / ".juno_task/state").mkdir()
+        (self.controller / runner.QUEUE_STATE_PATH).write_text("{}\n")
         subprocess.run(["git", "-C", str(self.controller), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "controller"], check=True, stdout=subprocess.DEVNULL)
         self.candidate = self.tmp / "candidate"; self.candidate.mkdir()
@@ -49,6 +51,7 @@ import json, os, pathlib, sys, time
 assert sys.argv[1:3] == ['pi','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
 assert not sys.stdin.read(1)
 if os.environ.get('PI_MODEL') or os.environ.get('JUNO_MODEL'): raise SystemExit(91)
+assert os.environ.get('JUNO_CONTROLLER_CHECKPOINT_ACTIVE')=='1'
 config=json.loads(pathlib.Path(sys.argv[3]).read_text())
 assert config['defaultModel']==':configured' and config['defaultModels']['pi']==':configured'
 assert pathlib.Path(config['envFilePath']).is_absolute() and pathlib.Path(config['envFilePath']).read_text().startswith('MANAGED_TEST_SECRET=')
@@ -78,6 +81,18 @@ print('out-after', flush=True)
         self.prompt = self.tmp / "input.md"; self.prompt.write_text("ok\n")
 
     def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_controller_identity_binds_only_queue_owned_dirty_state(self):
+        state = self.controller / runner.QUEUE_STATE_PATH
+        state.write_text('{"state":"reviewing"}\n')
+        before = runner.controller_identity(self.controller)
+        self.assertEqual(before["queue_state"]["path"], runner.QUEUE_STATE_PATH)
+        state.write_text('{"state":"reviewed"}\n')
+        after = runner.controller_identity(self.controller)
+        self.assertNotEqual(before, after)
+        (self.controller / ".juno_task/config.json").write_text("{}\n")
+        with self.assertRaisesRegex(runner.RunnerError, "controller is missing"):
+            runner.controller_identity(self.controller)
 
     def command(self, out: Path, prompt: Path | None = None):
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
