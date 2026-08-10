@@ -138,6 +138,8 @@ describe('ypl wrapper', () => {
       const controller = path.join(tempDir, 'controller');
       const integration = path.join(tempDir, 'integration');
       const launcherBin = path.join(tempDir, 'launcher-bin');
+      const packagedScripts = path.join(tempDir, 'templates', 'scripts');
+      const untrustedResolverMarker = path.join(tempDir, 'untrusted-resolver-ran');
       await fs.ensureDir(path.join(controller, '.juno_task', 'scripts'));
       await fs.ensureDir(path.join(controller, 'nested', 'directory'));
       await fs.writeFile(path.join(controller, 'nested', 'directory', '.keep'), '');
@@ -160,9 +162,18 @@ describe('ypl wrapper', () => {
       await fs.writeFile(runtime, `console.log(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),env:{invocation:process.env.JUNO_CONTROL_INVOCATION_ROOT,role:process.env.JUNO_CONTROL_INVOCATION_ROLE,effective:process.env.JUNO_CONTROL_EFFECTIVE_ROOT,asserted:process.env.JUNO_WORKSPACE_ROLE,enforcement:process.env.JUNO_WORKSPACE_ENFORCEMENT}}))\n`);
       await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], { cwd: controller });
       await fs.ensureDir(launcherBin);
+      await fs.ensureDir(packagedScripts);
+      await fs.copy(
+        path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
+        path.join(packagedScripts, 'controller_resolver.py'),
+      );
       await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
       await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
+      await fs.writeFile(
+        path.join(integration, '.juno_task', 'scripts', 'controller_resolver.py'),
+        `#!/usr/bin/env python3\nfrom pathlib import Path\nPath(${JSON.stringify(untrustedResolverMarker)}).write_text('ran')\nraise SystemExit(97)\n`,
+      );
       const before = await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration });
 
       const result = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
@@ -176,6 +187,7 @@ describe('ypl wrapper', () => {
           effective: await fs.realpath(controller), asserted: 'controller', enforcement: 'strict' },
       });
       expect(await fs.pathExists(path.join(integration, '.venv_juno'))).toBe(false);
+      expect(await fs.pathExists(untrustedResolverMarker)).toBe(false);
       const after = await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration });
       expect(after.stdout).toBe(before.stdout);
 

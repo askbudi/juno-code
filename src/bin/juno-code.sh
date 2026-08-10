@@ -35,6 +35,10 @@ fi
 # Path to the actual CLI entrypoint (Node.js)
 CLI_ENTRYPOINT="${SCRIPT_DIR}/cli.mjs"
 
+# Routing must never execute resolver bytes from a mutable product/task
+# checkout. Source and packaged layouts both place templates beside bin/utils.
+PACKAGED_CONTROLLER_RESOLVER="${SCRIPT_DIR}/../templates/scripts/controller_resolver.py"
+
 # Path to bootstrap.sh (should be in .juno_task/scripts after init)
 BOOTSTRAP_SCRIPT=".juno_task/scripts/bootstrap.sh"
 
@@ -81,18 +85,10 @@ route_registered_product_control() {
     local operation="${1:-}"
     shift || true
     case "$operation" in kanban|task|merge) ;; *) return 1 ;; esac
-    local search="$PWD" resolver="" resolution fields controller invocation role branch source runtime
-    while :; do
-        if [ -f "$search/.juno_task/scripts/controller_resolver.py" ]; then
-            resolver="$search/.juno_task/scripts/controller_resolver.py"
-            break
-        fi
-        [ "$search" = "/" ] && break
-        search="$(dirname "$search")"
-    done
-    [ -n "$resolver" ] || return 1
+    local resolution fields controller invocation role branch source runtime
+    [ -f "$PACKAGED_CONTROLLER_RESOLVER" ] || return 1
     if ! resolution="$(JUNO_TASK_ROOT= JUNO_CONTROLLER_BRANCH= JUNO_WORKSPACE_ROLE= JUNO_WORKSPACE_ENFORCEMENT=off \
-        python3 "$resolver" --cwd "$PWD" --operation diagnostic)"; then
+        python3 "$PACKAGED_CONTROLLER_RESOLVER" --cwd "$PWD" --operation diagnostic)"; then
         return 2
     fi
     fields="$(printf '%s' "$resolution" | python3 -c 'import json,sys; x=json.load(sys.stdin); print(x["path"]); print(x["current_root"]); print(x["role"]); print(x.get("expected_branch") or ""); print(x["source"])')" || return 2

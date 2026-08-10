@@ -113,6 +113,11 @@ describe('canonical controller resolver', () => {
       actual_branch: 'controller-branch',
       valid: true,
     });
+    const untrustedMarker = path.join(sandbox, 'untrusted-resolver-ran');
+    fs.writeFileSync(
+      path.join(task, '.juno_task/scripts/controller_resolver.py'),
+      `#!/usr/bin/env python3\nfrom pathlib import Path\nPath(${JSON.stringify(untrustedMarker)}).write_text('ran')\nraise SystemExit(97)\n`,
+    );
     const routed = routeControlPlane(task, 'orchestration');
     expect(routed).toMatchObject({
       controllerRoot: controller,
@@ -128,6 +133,7 @@ describe('canonical controller resolver', () => {
       JUNO_CONTROL_INVOCATION_ROLE: 'task',
       JUNO_CONTROL_EFFECTIVE_ROOT: controller,
     });
+    expect(fs.pathExistsSync(untrustedMarker)).toBe(false);
   });
 
   it('re-resolves forwarded routing identity and refuses incomplete, spoofed, or stale origins', async () => {

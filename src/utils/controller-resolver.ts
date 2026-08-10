@@ -1,7 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { existsSync as requireExists } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
+
+const PACKAGED_CONTROLLER_RESOLVER = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../templates/scripts/controller_resolver.py',
+);
 
 export type ControllerOperation = 'diagnostic' | 'kanban' | 'orchestration' | 'session-write' | 'product-edit';
 export type WorkspaceRole = 'controller' | 'controller-retired' | 'task' | 'integration-owner' | 'unregistered';
@@ -25,11 +31,13 @@ export interface ControllerResolution {
 export function resolveController(
   workingDirectory: string,
   operation: ControllerOperation = 'diagnostic',
-  options: { ignoreEnvironmentAssertions?: boolean } = {},
+  options: { ignoreEnvironmentAssertions?: boolean; trustedResolver?: boolean } = {},
 ): ControllerResolution {
   let search = path.resolve(workingDirectory);
-  let resolver = path.join(search, '.juno_task', 'scripts', 'controller_resolver.py');
-  while (!requireExists(resolver) && search !== path.dirname(search)) {
+  let resolver = options.trustedResolver
+    ? PACKAGED_CONTROLLER_RESOLVER
+    : path.join(search, '.juno_task', 'scripts', 'controller_resolver.py');
+  while (!options.trustedResolver && !requireExists(resolver) && search !== path.dirname(search)) {
     search = path.dirname(search);
     resolver = path.join(search, '.juno_task', 'scripts', 'controller_resolver.py');
   }

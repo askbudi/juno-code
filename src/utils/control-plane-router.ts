@@ -59,6 +59,7 @@ export function routeControlPlane(
   // the product checkout itself is performing the eventual controller write.
   const resolution = resolveController(workingDirectory, 'diagnostic', {
     ignoreEnvironmentAssertions: true,
+    trustedResolver: true,
   });
   const controllerRoot = path.resolve(resolution.path);
   let invocationRoot = path.resolve(resolution.current_root);
@@ -70,9 +71,15 @@ export function routeControlPlane(
     if (!forwardedRoot || !forwardedRole || path.resolve(forwardedEffective ?? '') !== controllerRoot) {
       throw new Error('Incomplete or mismatched forwarded control-plane audit identity.');
     }
-    const origin = resolveController(forwardedRoot, 'diagnostic', {
-      ignoreEnvironmentAssertions: true,
-    });
+    let origin: ControllerResolution;
+    try {
+      origin = resolveController(forwardedRoot, 'diagnostic', {
+        ignoreEnvironmentAssertions: true,
+        trustedResolver: true,
+      });
+    } catch {
+      throw new Error('Forwarded control-plane audit identity no longer matches registered workspace authority.');
+    }
     if (
       !origin.valid || path.resolve(origin.path) !== controllerRoot ||
       origin.role !== forwardedRole || !['controller', 'task', 'integration-owner'].includes(origin.role)
