@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -126,6 +128,18 @@ class TaskWorkspaceTests(unittest.TestCase):
                                        separators=(",", ":")).encode()
             self.assertEqual(hashlib.sha256(receipt_bytes).hexdigest(),
                              status["workspace_identity"]["create_receipt_sha256"])
+
+    def test_routing_audit_ignores_a_forwarded_identity_for_another_controller(self) -> None:
+        with mock.patch.dict(os.environ, {
+            "JUNO_CONTROL_INVOCATION_ROOT": "/outer/integration",
+            "JUNO_CONTROL_INVOCATION_ROLE": "integration-owner",
+            "JUNO_CONTROL_EFFECTIVE_ROOT": "/outer/controller",
+        }):
+            started = self.payload("start", "Z")
+        expected = {"invocation_root": str(self.controller.resolve()),
+                    "invocation_role": "controller",
+                    "effective_root": str(self.controller.resolve())}
+        self.assertEqual(started["routing"], expected)
 
     def test_task_mutations_preserve_atomic_queue_sections(self) -> None:
         self.payload("start", "X")

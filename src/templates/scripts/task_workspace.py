@@ -325,6 +325,18 @@ def worktree_path(config: dict[str, Any], task_id: str) -> Path:
     return (Path(config["workspace_root"]) / task_id).resolve()
 
 
+def routing_identity(controller: Path) -> dict[str, str]:
+    invocation = os.environ.get("JUNO_CONTROL_INVOCATION_ROOT", "").strip()
+    role = os.environ.get("JUNO_CONTROL_INVOCATION_ROLE", "").strip()
+    effective = os.environ.get("JUNO_CONTROL_EFFECTIVE_ROOT", "").strip()
+    if (invocation and role in {"controller", "task", "integration-owner"} and effective
+            and Path(effective).expanduser().resolve() == controller.resolve()):
+        return {"invocation_root": invocation, "invocation_role": role,
+                "effective_root": str(controller.resolve())}
+    return {"invocation_root": str(controller.resolve()), "invocation_role": "controller",
+            "effective_root": str(controller.resolve())}
+
+
 def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) -> bool:
     worktree = Path(record["worktree"])
     branch = record["branch_ref"]
@@ -372,9 +384,7 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
         run(["git", "-C", str(repository), "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(worktree), target_sha], repository)
         manifest_identity = hashlib.sha256(task_file(controller, task_id).read_bytes()).hexdigest()
         expected_paths_sha256 = stable_sha256(config["allowed_paths"])
-        routing = {"invocation_root": os.environ.get("JUNO_CONTROL_INVOCATION_ROOT", str(controller)),
-                   "invocation_role": os.environ.get("JUNO_CONTROL_INVOCATION_ROLE", "controller"),
-                   "effective_root": os.environ.get("JUNO_CONTROL_EFFECTIVE_ROOT", str(controller))}
+        routing = routing_identity(controller)
         creation_receipt = {"schema_version": "juno_task_workspace_creation.v1", "task_id": task_id,
                             "repository": str(repository), "target_ref": config["target_ref"],
                             "base_sha": target_sha, "branch_ref": branch, "worktree": str(worktree),
