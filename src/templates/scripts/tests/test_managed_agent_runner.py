@@ -92,6 +92,12 @@ print('out-after', flush=True)
         self.assertEqual([item["path"] for item in before["queue_state"]],
                          [runner.QUEUE_RECEIPT_ROOT + "T1/candidate/attempt-1/receipt.json",
                           runner.QUEUE_STATE_PATH])
+        with self.assertRaisesRegex(runner.RunnerError, "canonical resolver identity"):
+            runner.managed_controller_binding(before)
+        before["resolver"] = {"policy_identity": "a" * 64}
+        binding = runner.managed_controller_binding(before)
+        self.assertEqual(binding["schema_version"], "juno_managed_controller_binding.v1")
+        self.assertEqual(binding["queue_state"], before["queue_state"])
         state.write_text('{"state":"reviewed"}\n')
         after = runner.controller_identity(self.controller)
         self.assertNotEqual(before, after)

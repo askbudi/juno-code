@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import shlex
 import signal
@@ -441,8 +442,23 @@ def validate_reviewer(args: argparse.Namespace, controller: dict[str, Any]) -> t
     return {"candidate_sha": args.candidate_sha, "candidate_root": str(candidate), "before": mark}, mark
 
 
+def managed_controller_binding(mark: dict[str, Any]) -> dict[str, Any] | None:
+    if not mark.get("queue_state"):
+        return None
+    resolver = mark.get("resolver")
+    policy_identity = resolver.get("policy_identity") if isinstance(resolver, dict) else None
+    if not isinstance(policy_identity, str) or not re.fullmatch(r"[0-9a-f]{64}", policy_identity):
+        raise RunnerError("queue-owned dirty controller requires canonical resolver identity")
+    return {"schema_version": "juno_managed_controller_binding.v1",
+            "root": mark["root"], "head": mark["head"],
+            "branch_ref": mark["branch_ref"], "config_sha256": mark["config_sha256"],
+            "policy_identity": policy_identity,
+            "queue_state": mark["queue_state"]}
+
+
 def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
-                      binding: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
+                      binding: dict[str, Any] | None = None,
+                      controller_mark: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
     removed = sorted(k for k in os.environ if k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
     env = {k: v for k, v in os.environ.items() if k not in removed}
     explicit = {"JUNO_TASK_ROOT": str(Path(args.controller_root).resolve()),
@@ -458,6 +474,10 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
             explicit["JUNO_LIFECYCLE_AUTHORITY_MAP"] = str(Path(args.authority_map).resolve())
     if binding is not None:
         explicit["JUNO_REVIEW_BINDING_JSON"] = canonical(binding).decode().strip()
+    controller_binding = managed_controller_binding(controller_mark or {})
+    if controller_binding is not None:
+        explicit["JUNO_MANAGED_CONTROLLER_BINDING_JSON"] = canonical(
+            controller_binding).decode().strip()
     env.update(explicit)
     contract = {"schema_version": "juno_managed_environment.v1", "removed_key_names": removed,
                 "explicit_key_names": sorted(explicit), "configured_defaults": True}
@@ -528,7 +548,8 @@ def run(args: argparse.Namespace) -> int:
     launcher = out / "launcher-root"; launcher.mkdir()
     agent_root = Path(args.agent_root).resolve()
     argv = ["yy", "pi", "--config", compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
-    env, env_contract = clean_environment(args, capture, metadata, binding)
+    env, env_contract = clean_environment(
+        args, capture, metadata, binding, controller_before)
     prompt_evidence = evidence(prompt)
     if binding is None:
         prompt_evidence["echo"] = prompt_echo

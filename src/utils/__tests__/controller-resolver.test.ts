@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   resolveAutomaticProjectBootstrap,
   resolveController,
@@ -223,8 +224,18 @@ describe('canonical controller resolver', () => {
     await fs.writeFile(path.join(controller, '.juno_task/scripts/controller_workspace.py'), `
 def load_policy(_path): return {}
 def inspect(root, _policy):
-    return {'root': str(root), 'passed': False, 'checks': {'root_exact': True, 'clean': False}}
+    return {'root': str(root), 'passed': False,
+            'policy_identity': {'fixture': 'identity'},
+            'checks': {'root_exact': True, 'clean': False}}
 `);
+    git(controller, 'add', '.juno_task');
+    git(controller, 'commit', '-m', 'canonical sparse fixture');
+    await fs.ensureDir(path.join(controller, '.juno_task/state'));
+    const queueState = path.join(controller, '.juno_task/state/tasks.json');
+    await fs.writeFile(queueState, '{}\n');
+    git(controller, 'add', '.juno_task/state/tasks.json');
+    git(controller, 'commit', '-m', 'queue state fixture');
+    await fs.writeFile(queueState, '{"state":"reviewing"}\n');
     const resolver = path.join(controller, '.juno_task/scripts/controller_resolver.py');
     const diagnostic = run('python3', [resolver, '--cwd', controller, '--operation', 'diagnostic'], controller);
     expect(diagnostic.status, diagnostic.stderr).toBe(0);
@@ -236,6 +247,26 @@ def inspect(root, _policy):
     const orchestration = run('python3', [resolver, '--cwd', controller, '--operation', 'orchestration'], controller);
     expect(orchestration.status).toBe(2);
     expect(orchestration.stderr).toContain('canonical sparse controller policy refused: clean');
+    const digest = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const binding = {
+      schema_version: 'juno_managed_controller_binding.v1',
+      root: controller,
+      head: git(controller, 'rev-parse', 'HEAD'),
+      branch_ref: git(controller, 'symbolic-ref', '-q', 'HEAD'),
+      config_sha256: digest(path.join(controller, '.juno_task/config.json')),
+      policy_identity: { fixture: 'identity' },
+      queue_state: [{ path: '.juno_task/state/tasks.json', sha256: digest(queueState) }],
+    };
+    const bound = run('python3', [resolver, '--cwd', controller, '--operation', 'orchestration'], controller, {
+      JUNO_MANAGED_CONTROLLER_BINDING_JSON: JSON.stringify(binding),
+    });
+    expect(bound.status, bound.stderr).toBe(0);
+    expect(JSON.parse(bound.stdout)).toMatchObject({ valid: true });
+    binding.head = '0'.repeat(40);
+    const stale = run('python3', [resolver, '--cwd', controller, '--operation', 'orchestration'], controller, {
+      JUNO_MANAGED_CONTROLLER_BINDING_JSON: JSON.stringify(binding),
+    });
+    expect(stale.status).toBe(2);
   });
 
   it('keeps missing-resolver fallback unmanaged and unavailable to automatic bootstrap', async () => {
