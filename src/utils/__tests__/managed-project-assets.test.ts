@@ -270,14 +270,18 @@ describe('ManagedProjectAssets', () => {
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPYCACHEPREFIX: '/tmp/juno-managed-assets-pycache',
         },
-        timeout: 30_000,
+        // The metadata-controller fixture is CPU-heavy and runs beside the
+        // rest of Vitest during the canonical full suite.  Preserve a bounded
+        // subprocess timeout without treating normal suite contention as a
+        // killed process (spawnSync reports that as status=null).
+        timeout: 90_000,
       });
       expect(
         result.status,
         `${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       ).toBe(0);
     }
-  }, 60_000);
+  }, 180_000);
 
   it('detects a mixed lifecycle generation without changing project files', async () => {
     await ManagedProjectAssets.update(projectDir, { silent: true });
