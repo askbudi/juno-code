@@ -20,9 +20,12 @@ function gitValue(root: string, args: string[]): string | undefined {
   }
 }
 
-function protectedRoots(): Array<{ identity: string; root: string }> {
-  const productRoot = gitValue(process.cwd(), ['rev-parse', '--show-toplevel']);
-  if (!productRoot) throw new Error(`Juno test mutation sentinel: ${process.cwd()} is not inside a Git checkout`);
+export function protectedRoots(
+  cwd = process.cwd(),
+  environment: NodeJS.ProcessEnv = process.env,
+): Array<{ identity: string; root: string }> {
+  const productRoot = gitValue(cwd, ['rev-parse', '--show-toplevel']);
+  if (!productRoot) throw new Error(`Juno test mutation sentinel: ${cwd} is not inside a Git checkout`);
 
   const roots = new Map<string, { identity: string; root: string }>();
   const add = (identity: string, root: string | undefined) => {
@@ -34,10 +37,13 @@ function protectedRoots(): Array<{ identity: string; root: string }> {
   };
 
   add('product/candidate', productRoot);
-  add('controller(environment)', process.env.JUNO_TASK_ROOT?.trim());
-  add('controller(registration)', gitValue(productRoot, ['config', '--local', '--get', 'juno.controller.path']));
-
-  const extra = process.env.JUNO_CODE_TEST_PROTECTED_GIT_ROOTS?.trim();
+  // The registered controller is shared, live state: users and other yy
+  // sessions may legitimately checkpoint tasks or feedback while this suite
+  // runs. Test processes are rebound below to a suite-owned fixture controller,
+  // so implicitly freezing the shared controller creates a race without adding
+  // isolation. Callers that own an otherwise external root can still opt it in
+  // explicitly through JUNO_CODE_TEST_PROTECTED_GIT_ROOTS.
+  const extra = environment.JUNO_CODE_TEST_PROTECTED_GIT_ROOTS?.trim();
   if (extra) {
     for (const [index, root] of extra.split(path.delimiter).filter(Boolean).entries()) {
       add(`protected[${index}]`, root);

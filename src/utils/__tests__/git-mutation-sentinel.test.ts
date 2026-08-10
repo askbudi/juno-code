@@ -7,6 +7,7 @@ import {
   assertGitMutationSnapshotsUnchanged,
   captureGitMutationSnapshot,
 } from '../../test-utils/git-mutation-sentinel.js';
+import { protectedRoots } from '../../test-utils/global-setup.js';
 
 const temporaryRoots: string[] = [];
 
@@ -31,6 +32,34 @@ afterEach(async () => {
 });
 
 describe('full-suite Git mutation sentinel', () => {
+  it('does not freeze a shared registered controller unless the caller explicitly owns it', async () => {
+    const productRoot = await repositoryFixture();
+    const controllerRoot = await repositoryFixture();
+    git(productRoot, 'config', 'juno.controller.path', controllerRoot);
+    git(productRoot, 'config', 'juno.controller.branch', 'fixture-controller');
+
+    expect(protectedRoots(productRoot, { JUNO_TASK_ROOT: controllerRoot })).toEqual([
+      {
+        identity: 'product/candidate',
+        root: await fs.realpath(productRoot),
+      },
+    ]);
+
+    expect(protectedRoots(productRoot, {
+      JUNO_TASK_ROOT: controllerRoot,
+      JUNO_CODE_TEST_PROTECTED_GIT_ROOTS: controllerRoot,
+    })).toEqual([
+      {
+        identity: 'product/candidate',
+        root: await fs.realpath(productRoot),
+      },
+      {
+        identity: 'protected[0]',
+        root: await fs.realpath(controllerRoot),
+      },
+    ]);
+  });
+
   it('accepts byte-stable protected state', async () => {
     const root = await repositoryFixture();
     const before = captureGitMutationSnapshot('fixture-controller', root);
