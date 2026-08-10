@@ -355,6 +355,39 @@ def full_suite_command(config: dict[str, Any]) -> dict[str, Any]:
             ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
 
 
+def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Fit captured UTF-8 tails inside the whole immutable receipt bound."""
+    if len(risk_runtime.canonical(receipt)) <= limit:
+        return receipt
+    original = {
+        name: receipt["result"][name]["tail"].encode("utf-8")
+        for name in ("stdout", "stderr")
+    }
+
+    def with_cap(cap: int) -> dict[str, Any]:
+        fitted = json.loads(json.dumps(receipt))
+        for name, data in original.items():
+            suffix = data[-cap:] if cap else b""
+            tail = suffix.decode("utf-8", errors="ignore")
+            kept = len(tail.encode("utf-8"))
+            fitted["result"][name]["tail"] = tail
+            fitted["result"][name]["truncated_bytes"] += len(data) - kept
+        return fitted
+
+    low, high = 0, max((len(value) for value in original.values()), default=0)
+    best = with_cap(0)
+    if len(risk_runtime.canonical(best)) > limit:
+        raise MergeQueueError("full-suite receipt metadata exceeds its bound")
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = with_cap(middle)
+        if len(risk_runtime.canonical(candidate)) <= limit:
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[str, Any],
                           identity: dict[str, str], receipt_path: Path,
                           claim: dict[str, Any]) -> dict[str, str]:
@@ -386,6 +419,7 @@ def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[st
                               "tail": evidence["stderr_tail"],
                               "truncated_bytes": evidence["stderr_truncated_bytes"]}},
     }
+    receipt = fit_full_suite_receipt(receipt, plan["evidence_limits"]["max_receipt_bytes"])
     write_canonical_exclusive(receipt_path, receipt,
                               plan["evidence_limits"]["max_receipt_bytes"])
     if evidence["timed_out"] or evidence["exit_code"]:
@@ -1609,14 +1643,14 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             state = task_runtime.read_state(controller)
             record = state["tasks"].get(task_id)
         source_state = record.get("state") if isinstance(record, dict) else None
-        failed_suite_repair = (
+        failed_review_repair = (
             source_state == "AWAITING_RISK"
-            and record.get("last_queue_outcome") == "FAILED_FULL_SUITE"
+            and record.get("last_queue_outcome") in {"FAILED_FULL_SUITE", "REVIEW_FAILED"}
             and isinstance(record.get("queue_attempt"), dict)
-            and record["queue_attempt"].get("outcome") == "FAILED_FULL_SUITE"
+            and record["queue_attempt"].get("outcome") == record.get("last_queue_outcome")
         )
-        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_suite_repair:
-            raise MergeQueueError("task has no review findings or failed full-suite repair to reopen")
+        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_review_repair:
+            raise MergeQueueError("task has no review findings or failed review repair to reopen")
         if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK"}:
             old_attempt = record.get("queue_attempt")
             if not isinstance(old_attempt, dict):
@@ -1741,9 +1775,10 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             entry = target_entry(state, repository, config["target_ref"])
             entry["conflicts"].pop(task_id, None)
             task_runtime.write_state(controller, state)
-        outcome = ("REQUEUED_AFTER_FULL_SUITE_FAILURE"
-                   if reopen_attempt.get("source_outcome") == "FAILED_FULL_SUITE"
-                   else "REQUEUED_AFTER_FINDINGS")
+        source_outcome = reopen_attempt.get("source_outcome")
+        outcome = ({"FAILED_FULL_SUITE": "REQUEUED_AFTER_FULL_SUITE_FAILURE",
+                    "REVIEW_FAILED": "REQUEUED_AFTER_REVIEW_FAILURE"}.get(
+                        source_outcome, "REQUEUED_AFTER_FINDINGS"))
         return {**queued, "outcome": outcome}
 
 

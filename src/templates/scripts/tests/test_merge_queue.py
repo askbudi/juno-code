@@ -540,6 +540,25 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
         self.assertEqual(self.queue_payload("next")["candidate_sha"], repaired_tip)
 
+    def test_full_suite_receipt_fits_tails_inside_the_whole_artifact_bound(self) -> None:
+        stdout = ("large output ☃\n" * 8000)
+        stderr = ("warning\n" * 2000)
+        receipt = {"metadata": "kept", "result": {
+            "stdout": {"tail": stdout, "truncated_bytes": 11},
+            "stderr": {"tail": stderr, "truncated_bytes": 7},
+        }}
+
+        fitted = merge_runtime.fit_full_suite_receipt(receipt, 65_536)
+
+        self.assertLessEqual(len(risk_runtime.canonical(fitted)), 65_536)
+        for name, original, prior in (("stdout", stdout, 11), ("stderr", stderr, 7)):
+            tail = fitted["result"][name]["tail"]
+            self.assertTrue(original.endswith(tail))
+            self.assertEqual(
+                fitted["result"][name]["truncated_bytes"] + len(tail.encode()),
+                prior + len(original.encode()),
+            )
+
     def test_timeout_then_success_uses_fresh_attempt(self) -> None:
         self.write_policy(full_code="import time; time.sleep(3)")
         config_path = self.controller / ".juno_task/config/task-workspace.json"
