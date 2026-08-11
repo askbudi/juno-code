@@ -180,8 +180,9 @@ class MetadataControllerTest(unittest.TestCase):
         config_path = self.new_controller / ".juno_task/config.json"
         retired_config = {
             "defaultSubagent": "pi",
+            "gitCheckpoint": {"include": [".juno_task/tasks"]},
             "promptMacros": {"global": {"owner-instruction": "preserve this evidence"}},
-            **mc.RETIRED_CONTROLLER_CONFIG,
+            "controllerWorkspace": mc.RETIRED_CONTROLLER_WORKSPACE,
         }
         config_path.write_bytes(mc.canonical(retired_config))
         command("git", "add", ".juno_task/config.json", cwd=self.new_controller)
@@ -205,10 +206,20 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(planned["apply_authorized"])
         self.assertFalse(planned["preservation"]["product_ref_mutation"])
 
+        with self.assertRaisesRegex(mc.BoundaryError, "requires --authorize"):
+            mc.config_repair_apply(argparse.Namespace(
+                plan=repair_plan, output=self.temp / "noauth-apply.json", authorize=False), self.policy)
+        self.assertFalse((self.temp / "noauth-apply.json.intent.json").exists())
+        collision = self.temp / "collision-apply.json"; collision.write_text("{}\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "fresh before mutation"):
+            mc.config_repair_apply(argparse.Namespace(
+                plan=repair_plan, output=collision, authorize=True), self.policy)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.new_controller), retired_head)
+
         config_path.write_text("{}\n")
         with self.assertRaisesRegex(mc.BoundaryError, "clean controller"):
             mc.config_repair_apply(argparse.Namespace(
-                plan=repair_plan, output=self.temp / "dirty-apply.json"), self.policy)
+                plan=repair_plan, output=self.temp / "dirty-apply.json", authorize=True), self.policy)
         command("git", "restore", ".juno_task/config.json", cwd=self.new_controller)
 
         task_path = self.new_controller / ".juno_task/tasks/TASK.md"
@@ -216,28 +227,47 @@ class MetadataControllerTest(unittest.TestCase):
         command("git", "add", ".juno_task/tasks/TASK.md", cwd=self.new_controller)
         command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                 "commit", "-m", "advance controller after plan", cwd=self.new_controller)
-        with self.assertRaisesRegex(mc.BoundaryError, "controller ref changed"):
+        with self.assertRaisesRegex(mc.BoundaryError, "neither the frozen"):
             mc.config_repair_apply(argparse.Namespace(
-                plan=repair_plan, output=self.temp / "stale-apply.json"), self.policy)
-        command("git", "reset", "--hard", retired_head, cwd=self.new_controller)
+                plan=repair_plan, output=self.temp / "stale-apply.json", authorize=True), self.policy)
+        retired_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
+        preserved_before = command("git", "ls-tree", "-r", "HEAD", cwd=self.new_controller).splitlines()
+        preserved_before = [row for row in preserved_before if not row.endswith("\t.juno_task/config.json")]
+        repair_plan = self.temp / "config-repair-plan-current.json"
+        plan_args.expected_head = retired_head; plan_args.output = repair_plan
+        mc.config_repair_plan(plan_args, self.policy)
 
         approved_bytes = repair_plan.read_bytes()
         tampered = json.loads(approved_bytes); tampered["correction"]["before_sha256"] = "0" * 64
         repair_plan.write_text(json.dumps(tampered))
         with self.assertRaisesRegex(mc.BoundaryError, "hash-bound"):
             mc.config_repair_apply(argparse.Namespace(
-                plan=repair_plan, output=self.temp / "tampered-apply.json"), self.policy)
+                plan=repair_plan, output=self.temp / "tampered-apply.json", authorize=True), self.policy)
         repair_plan.write_bytes(approved_bytes)
 
+        apply_output = self.temp / "config-repair.json"
         receipt = mc.config_repair_apply(argparse.Namespace(
-            plan=repair_plan, output=self.temp / "config-repair.json"), self.policy)
+            plan=repair_plan, output=apply_output, authorize=True), self.policy)
         self.assertTrue(receipt["preservation_verified"])
+        self.assertTrue((self.temp / "config-repair.json.intent.json").is_file())
+        common = Path(command("git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+                              cwd=self.new_controller))
+        self.assertTrue((common / "juno-repository-writer.lock").is_file())
+        self.assertTrue((common / "juno-controller-config-repair.lock").is_file())
         self.assertEqual(receipt["changed_paths"], [".juno_task/config.json"])
-        self.assertEqual(config_path.read_bytes(), mc.canonical_controller_config_bytes())
+        repaired_config = json.loads(config_path.read_text())
+        self.assertEqual(repaired_config["controllerWorkspace"], mc.CANONICAL_CONTROLLER_WORKSPACE)
+        for key in ("defaultSubagent", "gitCheckpoint", "promptMacros"):
+            self.assertEqual(repaired_config[key], retired_config[key])
         self.assertEqual(json.loads(command(
             "git", "show", f"{retired_head}:.juno_task/config.json", cwd=self.new_controller)),
             retired_config)
         self.assertEqual(json.loads(repair_plan.read_text())["correction"]["before"], retired_config)
+        first_receipt = apply_output.read_bytes(); apply_output.unlink()
+        retried = mc.config_repair_apply(argparse.Namespace(
+            plan=repair_plan, output=apply_output, authorize=True), self.policy)
+        self.assertEqual(retried["new_head"], receipt["new_head"])
+        self.assertEqual(apply_output.read_bytes(), first_receipt)
         preserved_after = command("git", "ls-tree", "-r", "HEAD", cwd=self.new_controller).splitlines()
         preserved_after = [row for row in preserved_after if not row.endswith("\t.juno_task/config.json")]
         self.assertEqual(preserved_after, preserved_before)
@@ -246,6 +276,29 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo),
                          self.product_head)
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+        admitted = mc.inspect(self.new_controller, self.policy,
+                              expected_branch="refs/heads/juno/controller-metadata-v1",
+                              require_active=False)
+        self.assertTrue(admitted["passed"])
+
+    def test_config_repair_refuses_lifecycle_and_unknown_workspace_shapes(self) -> None:
+        self.prepare()
+        config_path = self.new_controller / ".juno_task/config.json"
+        for index, value in enumerate((
+            {"lifecycle": {"enabled": True}, "controllerWorkspace": mc.RETIRED_CONTROLLER_WORKSPACE},
+            {"controllerWorkspace": {"mode": "metadata-only", "policy": "foreign.json"}},
+        )):
+            config_path.write_bytes(mc.canonical(value))
+            command("git", "add", ".juno_task/config.json", cwd=self.new_controller)
+            command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-m", f"invalid config {index}", cwd=self.new_controller)
+            head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
+            with self.assertRaisesRegex(mc.BoundaryError, "limited to the policy-updated"):
+                mc.config_repair_plan(argparse.Namespace(
+                    root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+                    expected_head=head, product_ref="refs/heads/juno-mono-002",
+                    expected_product_head=self.product_head,
+                    output=self.temp / f"invalid-plan-{index}.json"), self.policy)
 
     def test_forbidden_product_path_and_wrong_identity_fail_closed(self) -> None:
         self.prepare()

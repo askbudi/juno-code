@@ -102,12 +102,12 @@ python3 .juno_task/scripts/metadata_controller.py --policy .juno_task/config/met
   --output /durable/config-repair-plan.json
 python3 .juno_task/scripts/metadata_controller.py --policy .juno_task/config/metadata-controller.json \
   config-repair-apply --plan /durable/config-repair-plan.json \
-  --output /durable/config-repair-apply.json
+  --output /durable/config-repair-apply.json --authorize-config-repair
 ```
 
-The plan hash-binds the exact controller head/tree, complete retired config content and bytes, canonical replacement bytes, policy, product ref/head, Git common directory, and branch identity. Apply requires a clean attached controller, rejects stale or edited plans, commits only `.juno_task/config.json`, and reads back unchanged non-config tree entries, branch identity, and product ref. User settings and instruction evidence from the old config remain byte-exact in the parent commit and content-complete in the external plan. A lifecycle-bearing config, a different workspace pointer, or uncommitted manual work is preserved and refused for owner review.
+The plan hash-binds the exact controller head/tree, complete retired config content and bytes, the full derived after object and bytes, policy, product ref/head, Git common directory, and branch identity. The derived correction replaces only `controllerWorkspace`; `gitCheckpoint`, `promptMacros`, and every other config key/value remain semantically identical. Apply requires explicit authorization and a clean attached controller, writes a durable external intent before mutation, serializes on repository/controller writer locks, revalidates all frozen identities inside the lock, commits only `.juno_task/config.json`, and reads back unchanged non-config tree entries, branch identity, and product ref. Exact retry recovers a completed intent-bound commit without creating another commit. A lifecycle-bearing config, a different workspace pointer, or uncommitted manual work is preserved and refused for owner review.
 
-Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Verification and registration planning both require byte-exact canonical generated `.juno_task/config.json`; a forged or stale pending receipt cannot activate the retired shape. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
+Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Verification and registration planning both require the exact canonical `controllerWorkspace` subobject and reject `lifecycle`, while admitting unrelated valid controller settings; a forged or stale pending receipt cannot activate the retired shape. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
 
 ```bash
 yy migrate registration plan \
