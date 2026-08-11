@@ -106,6 +106,31 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it.each([
+    ['please', 'list', 'tasks'],
+    ['debug', 'status', 'endpoint'],
+    ['explain', 'sync', 'behavior'],
+    ['future-command', 'status'],
+  ])('preserves unknown-leading free-form prompt input before bootstrap: %s', async (...args) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-free-prompt-wrapper-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      await fs.ensureDir(binDir);
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'yy'));
+      await fs.chmod(path.join(binDir, 'yy'), 0o755);
+      await fs.writeFile(
+        path.join(binDir, 'cli.mjs'),
+        `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.env.JUNO_CODE_PREFLIGHT_ONLY !== '1') console.log(JSON.stringify(process.argv.slice(2)));\n`,
+      );
+
+      const result = await execa(path.join(binDir, 'yy'), args, { cwd: tempDir, reject: false });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('keeps pi on the normal product bootstrap path and cwd', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-pi-wrapper-'));
     try {
@@ -238,6 +263,26 @@ describe('ypl wrapper', () => {
       expect(invalidRuntime.exitCode).toBe(2);
       expect(invalidRuntime.stderr).toContain('registered controller runtime is missing or stale');
       await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], { cwd: controller });
+
+      const staleRuntimeMarker = path.join(tempDir, 'stale-runtime-ran');
+      await fs.writeFile(
+        path.join(launcherBin, 'cli.mjs'),
+        `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
+      );
+      await fs.writeFile(
+        runtime,
+        `if (process.argv.includes('--version')) console.log('2.1.1'); else require('node:fs').writeFileSync(${JSON.stringify(staleRuntimeMarker)}, 'ran');\n`,
+      );
+      const staleRuntime = await execa(path.join(launcherBin, 'yy'), ['integration', 'sync'], {
+        cwd: path.join(integration, 'nested'), reject: false,
+      });
+      expect(staleRuntime.exitCode).toBe(2);
+      expect(staleRuntime.stderr).toContain('selected controller runtime cannot be proven to support this explicit command');
+      expect(staleRuntime.stderr).toContain(`launcher executable: ${path.join(launcherBin, 'cli.mjs')}`);
+      expect(staleRuntime.stderr).toContain('launcher version: 2.1.2');
+      expect(staleRuntime.stderr).toContain(`effective executable: ${runtime}`);
+      expect(staleRuntime.stderr).toContain('effective version: 2.1.1');
+      expect(await fs.pathExists(staleRuntimeMarker)).toBe(false);
 
       await execa('git', ['config', '--worktree', '--unset-all', 'juno.workspace.role'], { cwd: integration });
       const invalidRole = await execa(path.join(launcherBin, 'yy'), ['task', 'status', 'T1'], {

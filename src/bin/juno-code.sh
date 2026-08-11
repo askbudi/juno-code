@@ -122,6 +122,26 @@ require_compatible_node() {
     return 69
 }
 
+preflight_command_shaped_invocation() {
+    [ "$#" -gt 0 ] || return 0
+    # Older/mock entrypoints do not implement the side-effect-free protocol.
+    # Never probe them with user input: that is the fallback defect itself.
+    grep -q 'JUNO_CODE_PREFLIGHT_ONLY' "$CLI_ENTRYPOINT" 2>/dev/null || return 0
+    case "${1:-}" in -V|--version|-h|--help) return 0 ;; esac
+    # One positional token is always the backwards-compatible prompt form.
+    # Ask the configured Commander surface to classify multi-token/option-led
+    # input before bootstrap can touch project state.
+    if [ "$#" -lt 2 ] && [[ "${1:-}" != -* ]]; then return 0; fi
+    require_compatible_node || return $?
+    JUNO_CODE_PREFLIGHT_ONLY=1 "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+}
+
+read_runtime_version() {
+    local runtime="$1" output
+    output="$(JUNO_CODE_PREFLIGHT_ONLY= "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" --version 2>/dev/null)" || return 1
+    printf '%s\n' "$output" | tail -n 1 | sed -E 's/^juno-code[[:space:]]+//; s/^v//'
+}
+
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
@@ -161,6 +181,20 @@ route_registered_product_control() {
         return 2
     fi
     require_compatible_node || return $?
+    local launcher_version runtime_version
+    if grep -q 'JUNO_CODE_PREFLIGHT_ONLY' "$CLI_ENTRYPOINT" 2>/dev/null; then
+        launcher_version="$(read_runtime_version "$CLI_ENTRYPOINT")" || launcher_version=unknown
+        runtime_version="$(read_runtime_version "$runtime")" || runtime_version=unknown
+        if [ "$launcher_version" = unknown ] || [ "$runtime_version" = unknown ] || [ "$launcher_version" != "$runtime_version" ]; then
+            echo "juno-code: selected controller runtime cannot be proven to support this explicit command" >&2
+            echo "launcher executable: $CLI_ENTRYPOINT" >&2
+            echo "launcher version: $launcher_version" >&2
+            echo "effective executable: $runtime" >&2
+            echo "effective version: $runtime_version" >&2
+            echo "Use the direct candidate CLI or align the registered controller runtime before retrying." >&2
+            return 2
+        fi
+    fi
     export JUNO_TASK_ROOT="$controller"
     export JUNO_CONTROLLER_BRANCH="$branch"
     export JUNO_CONTROLLER_SOURCE="$source"
@@ -176,6 +210,10 @@ route_registered_product_control() {
 
 # Main execution flow
 main() {
+    # Unknown command-shaped input is checked by the compiled command surface
+    # before bootstrap, hooks, providers, config, skills, or installers run.
+    preflight_command_shaped_invocation "$@" || return $?
+
     # Classify discovery and control-plane commands before touching checkout
     # bootstrap. Registered product worktrees dispatch through the controller's
     # pinned runtime; controller calls retain the current packaged CLI.

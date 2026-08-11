@@ -17,6 +17,10 @@ import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
 import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
 import { classifyLeadingCommand } from '../utils/control-plane-router.js';
+import {
+  classifyExplicitInvocation,
+  formatExplicitInvocationError,
+} from '../utils/explicit-command.js';
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -1806,13 +1810,61 @@ function configureEnvironment(): void {
   }
 }
 
+function configureCommandSurface(program: Command): void {
+  program
+    .name('juno-code')
+    .description('TypeScript implementation of juno-code CLI tool for AI subagent orchestration')
+    .version(VERSION, '-V, --version', 'Display version information')
+    .helpOption('-h, --help', 'Display help information');
+  setupGlobalOptions(program);
+  configureInitCommand(program);
+  configureStartCommand(program);
+  configureTestCommand(program);
+  configureFeedbackCommand(program);
+  configureSessionCommand(program);
+  configureSetupGitCommand(program);
+  configureLogsCommand(program);
+  configureViewLogCommand(program);
+  configureHelpCommand(program);
+  program.addCommand(createServicesCommand());
+  program.addCommand(createSkillsCommand());
+  program.addCommand(createAuthCommand());
+  setupScriptManagementCommands(program);
+  setupTaskLifecycleCommand(program);
+  configureKanbanCommand(program);
+  configureTaskWorkspaceCommand(program);
+  configureIntegrationCommand(program);
+  configureMergeQueueCommand(program);
+  configureMigrationCommand(program);
+  configureWorkspaceCommands(program, VERSION);
+  setupCompletion(program);
+  setupAliases(program);
+  setupContinueCommand(program);
+  setupCloneCommand(program);
+  setupNamedBranchCommands(program);
+  setupContinuityCommand(program);
+  setupContinueScopeCommand(program);
+  setupMainCommand(program);
+}
+
 /**
  * Main CLI function
  */
 async function main(): Promise<void> {
   const program = new Command();
+  configureCommandSurface(program);
 
-  // Configure environment
+  // This check deliberately precedes environment/config/bootstrap installers.
+  // The wrapper also invokes it in preflight-only mode before project bootstrap.
+  const explicitInvocation = classifyExplicitInvocation(process.argv.slice(2), program);
+  if (explicitInvocation.kind === 'unknown-command' || explicitInvocation.kind === 'unknown-option') {
+    console.error(formatExplicitInvocationError(explicitInvocation, process.argv[1] ?? __filename, VERSION));
+    process.exitCode = 2;
+    return;
+  }
+  if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1') return;
+
+  // Configure environment only after explicit input has passed the no-mutation preflight.
   configureEnvironment();
 
   // Identity discovery must not refresh scripts, skills, services, or project state.
@@ -1947,16 +1999,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Basic program setup
-  program
-    .name('juno-code')
-    .description('TypeScript implementation of juno-code CLI tool for AI subagent orchestration')
-    .version(VERSION, '-V, --version', 'Display version information')
-    .helpOption('-h, --help', 'Display help information');
-
-  // Setup global options and behaviors
-  setupGlobalOptions(program);
-
   // Determine verbose level from argv (before Commander parses)
   const isQuiet = process.argv.includes('--quiet') || process.argv.includes('-q') || process.argv.includes('--silent');
   const isVerbose: number = isQuiet ? 0 : normalizeVerbose(
@@ -1974,50 +2016,6 @@ async function main(): Promise<void> {
       : undefined, // no -v flag at all → normalizeVerbose returns 1 (default)
   );
   displayBanner(isWorkspaceDiscovery ? 0 : isVerbose);
-
-  // Configure all commands
-  configureInitCommand(program);
-  configureStartCommand(program);
-  configureTestCommand(program);
-  configureFeedbackCommand(program);
-  configureSessionCommand(program);
-  configureSetupGitCommand(program);
-  configureLogsCommand(program);
-  configureViewLogCommand(program);
-  configureHelpCommand(program);
-  program.addCommand(createServicesCommand());
-  program.addCommand(createSkillsCommand());
-  program.addCommand(createAuthCommand());
-  setupScriptManagementCommands(program);
-  setupTaskLifecycleCommand(program);
-  configureKanbanCommand(program);
-  configureTaskWorkspaceCommand(program);
-  configureIntegrationCommand(program);
-  configureMergeQueueCommand(program);
-  configureMigrationCommand(program);
-  configureWorkspaceCommands(program, VERSION);
-
-  // Setup completion
-  setupCompletion(program);
-
-  // Setup aliases
-  setupAliases(program);
-
-  // Continue from latest session snapshot
-  setupContinueCommand(program);
-
-  // Clone the current continue-scope session
-  setupCloneCommand(program);
-
-  // Named Pi session branches for the current continue scope
-  setupNamedBranchCommands(program);
-  setupContinuityCommand(program);
-
-  // Continue scope hash/status endpoint for scripts
-  setupContinueScopeCommand(program);
-
-  // Setup main command (must be last)
-  setupMainCommand(program);
 
   // Add comprehensive help (scoped to root command only — 'before'/'after' not 'beforeAll'/'afterAll')
   program.addHelpText(

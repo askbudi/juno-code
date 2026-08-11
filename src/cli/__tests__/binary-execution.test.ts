@@ -650,16 +650,41 @@ describe('Binary Execution Tests', () => {
       )).toBe('');
     });
 
-    it.skip('should handle invalid commands gracefully', async () => {
-      // TODO: CLI design consideration - current behavior treats unknown arguments as main command input
-      // Current CLI design: unknown commands like 'invalid-command' are treated as arguments to the main command
-      // which shows the welcome help and exits with code 0. This may be intentional design vs. error behavior.
-      const result = await executeCLI(['invalid-command'], { expectError: true });
+    it('fails closed for unknown explicit commands before fixture initialization', async () => {
+      const project = path.join(tempDir, 'unknown-explicit-command');
+      const configDir = path.join(project, '.juno_task');
+      await fs.ensureDir(configDir);
+      const configPath = path.join(configDir, 'config.json');
+      const originalConfig = '{"defaultSubagent":"fixture-provider"}\n';
+      await fs.writeFile(configPath, originalConfig);
 
-      // Current behavior: exits with 0 and shows help
-      // Expected behavior by test: should exit with non-zero and show error
-      // expect(result.exitCode).not.toBe(0);
-      // expect(result.stderr || result.stdout).toMatch(/error|Error|invalid|Invalid/i);
+      const result = await executeCLI(['integration', 'mystery'], {
+        cwd: project,
+        expectError: true,
+        env: { JUNO_CODE_SUBAGENT: 'fixture-provider' },
+      });
+
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain("unknown explicit command 'mystery'");
+      expect(result.stderr).toContain(`effective executable: ${BINARY_MJS}`);
+      expect(result.stderr).toMatch(/effective version: \d+\.\d+\.\d+/);
+      expect(result.stderr).toContain('Use -- <prompt>, -p <prompt>, or -f <path>');
+      expect(await fs.readFile(configPath, 'utf8')).toBe(originalConfig);
+      expect(await fs.pathExists(path.join(project, '.agents'))).toBe(false);
+      expect(await fs.pathExists(path.join(project, '.claude'))).toBe(false);
+    });
+
+    it.each([
+      ['please', 'list', 'tasks'],
+      ['debug', 'status', 'endpoint'],
+      ['explain', 'sync', 'behavior'],
+      ['future-command', 'status'],
+    ])('compiled preflight preserves free-form prompt input: %s', async (...args) => {
+      const result = await executeCLI(args, {
+        env: { JUNO_CODE_PREFLIGHT_ONLY: '1' },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe('');
     });
 
     it('should work with .mjs binary (ESM)', async () => {
