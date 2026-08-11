@@ -43,7 +43,10 @@ class ProtectedRegistrationTest(unittest.TestCase):
         self.source_head = command("git", "rev-parse", "HEAD", cwd=self.source).stdout.strip()
         command("git", "worktree", "add", "-b", "controller-new", str(self.target), "main", cwd=self.product)
         (self.target / ".juno_task").mkdir(); (self.target / ".juno_task" / "metadata.txt").write_text("metadata\n")
-        command("git", "add", ".juno_task/metadata.txt", cwd=self.target); command("git", "commit", "-m", "metadata controller", cwd=self.target)
+        (self.target / ".juno_task" / "config.json").write_bytes(
+            b'{"controllerWorkspace":{"mode":"metadata-only","policy":".juno_task/config/metadata-controller.json"}}\n')
+        command("git", "add", ".juno_task/metadata.txt", ".juno_task/config.json", cwd=self.target)
+        command("git", "commit", "-m", "metadata controller", cwd=self.target)
         self.target_head = command("git", "rev-parse", "HEAD", cwd=self.target).stdout.strip()
         command("git", "config", "extensions.worktreeConfig", "true", cwd=self.product)
         command("git", "config", "--worktree", "juno.workspace.role", "controller-pending", cwd=self.target)
@@ -117,6 +120,32 @@ class ProtectedRegistrationTest(unittest.TestCase):
         for key in ("juno.workspace.role", "juno.workspace.roleAuthority", "juno.workspace.roleBase"):
             self.assertNotEqual(command("git", "config", "--worktree", "--get", key, cwd=self.product, check=False).returncode, 0)
         self.assertEqual(command("git", "rev-parse", "refs/heads/main", cwd=self.product).stdout, before_product)
+
+    def test_registration_refuses_policy_updated_target_with_retired_config_shape(self) -> None:
+        config_path = self.target / ".juno_task/config.json"
+        config_path.write_bytes(
+            b'{"controllerWorkspace":{"enabled":true,"policy":".juno_task/config/controller-workspace.json"}}\n')
+        command("git", "add", ".juno_task/config.json", cwd=self.target)
+        command("git", "commit", "-m", "retired config survived policy update", cwd=self.target)
+        self.target_head = command("git", "rev-parse", "HEAD", cwd=self.target).stdout.strip()
+        self.pending.write_text(json.dumps({
+            **json.loads(self.pending.read_text()), "head": self.target_head,
+        }))
+        refused = self.invoke(
+            "plan", "--source-controller", str(self.source), "--source-ref", "refs/heads/old-controller",
+            "--expected-source-head", self.source_head, "--target-controller", str(self.target),
+            "--target-ref", "refs/heads/controller-new", "--expected-target-head", self.target_head,
+            "--product-root", str(self.product), "--product-ref", "refs/heads/main",
+            "--expected-product-head", self.product_head, "--runtime", str(self.runtime),
+            "--runtime-version", "2.1.1", "--inventory", str(self.inventory),
+            "--policy-bundle", str(self.policy), "--pending-verification", str(self.pending),
+            "--output", str(self.plan), check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("exact canonical metadata-only generated shape", refused.stderr)
+        self.assertFalse(self.plan.exists())
+        self.assertEqual(command("git", "rev-parse", "refs/heads/main", cwd=self.product).stdout.strip(),
+                         self.product_head)
+        self.assertEqual(json.loads(config_path.read_text())["controllerWorkspace"]["enabled"], True)
 
     def test_explicit_legacy_source_role_is_accepted_but_foreign_product_authority_is_not(self) -> None:
         command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=self.source)

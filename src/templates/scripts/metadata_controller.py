@@ -25,6 +25,12 @@ os.environ.setdefault("GIT_OPTIONAL_LOCKS", "0")
 SCHEMA = "juno_metadata_controller_policy.v1"
 PLAN_SCHEMA = "juno_metadata_controller_plan.v1"
 RECEIPT_SCHEMA = "juno_metadata_controller_receipt.v1"
+CONFIG_REPAIR_SCHEMA = "juno_metadata_controller_config_repair.v1"
+CANONICAL_CONTROLLER_CONFIG = {"controllerWorkspace": {
+    "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
+RETIRED_CONTROLLER_CONFIG = {"controllerWorkspace": {
+    "enabled": True, "policy": ".juno_task/config/controller-workspace.json"}}
+CONFIG_PATH = ".juno_task/config.json"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 VERSION_RE = re.compile(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?![-+0-9A-Za-z.])")
 
@@ -54,6 +60,26 @@ def digest(value: Any) -> str:
 
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def bytes_digest(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def canonical_controller_config_bytes() -> bytes:
+    return canonical(CANONICAL_CONTROLLER_CONFIG)
+
+
+def committed_bytes(root: Path, head: str, relative: str) -> bytes:
+    result = run(["git", "-C", str(root), "show", f"{head}:{relative}"], root, False)
+    if result.returncode:
+        raise BoundaryError(f"controller is missing committed {relative}")
+    return result.stdout.encode()
+
+
+def require_canonical_controller_config(root: Path, head: str) -> None:
+    if committed_bytes(root, head, CONFIG_PATH) != canonical_controller_config_bytes():
+        raise BoundaryError("controller config is not the exact canonical metadata-only generated shape")
 
 
 def reviewed_path(path: Path, label: str) -> Path:
@@ -508,7 +534,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
     generated = {
         ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
-        ".juno_task/config.json": canonical({"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}),
+        CONFIG_PATH: canonical_controller_config_bytes(),
         ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/config/task-workspace.json": task_policy_bytes,
         ".juno_task/config/integration-workspace.json": integration_policy_bytes,
@@ -648,7 +674,8 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             risk_policy_value = validate_risk_policy(json.loads(risk_policy_text))
             tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
             generated_contract_ok = (
-                config_value == {"controllerWorkspace": {"mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
+                config_value == CANONICAL_CONTROLLER_CONFIG
+                and committed_bytes(root, head, CONFIG_PATH) == canonical_controller_config_bytes()
                 and policy_text == canonical(policy).decode()
                 and task_policy_text == canonical(task_policy_value).decode()
                 and integration_policy_text == canonical(integration_policy_value).decode()
@@ -696,6 +723,100 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             "missing_preserved_root_paths": preservation_missing, "missing_canonical_prefixes": missing_canonical,
             "missing_required_generated": missing_generated,
             "checks": checks, "passed": all(checks.values())}
+
+
+def config_repair_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    root = exact_worktree(args.root)
+    branch = safe_ref(args.branch, "branch"); product_ref = safe_ref(args.product_ref, "product_ref")
+    if branch != policy["controller_branch"] or product_ref != policy["product_ref"]:
+        raise BoundaryError("controller/product refs do not match the reviewed metadata policy")
+    if git(root, "symbolic-ref", "-q", "HEAD", check=False) != branch:
+        raise BoundaryError("config repair requires the exact attached metadata controller branch")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("config repair requires a clean controller")
+    head = resolve_commit(root, branch, args.expected_head, "controller ref")
+    product_head = resolve_commit(root, product_ref, args.expected_product_head, "product target")
+    current = committed_bytes(root, head, CONFIG_PATH)
+    try:
+        current_value = json.loads(current)
+    except json.JSONDecodeError as exc:
+        raise BoundaryError(f"retired controller config is invalid: {exc}") from exc
+    if (not isinstance(current_value, dict) or current_value.get("controllerWorkspace")
+            != RETIRED_CONTROLLER_CONFIG["controllerWorkspace"] or "lifecycle" in current_value):
+        raise BoundaryError("config repair is limited to the policy-updated controller with the exact retired workspace pointer")
+    output = args.output.expanduser().resolve()
+    try: output.relative_to(root)
+    except ValueError: pass
+    else: raise BoundaryError("config repair plan must be outside the controller worktree")
+    core = {"schema_version": CONFIG_REPAIR_SCHEMA, "operation": "config-repair",
+            "outcome": "planned_no_mutation", "controller": str(root), "branch": branch,
+            "head": head, "tree": git(root, "rev-parse", f"{head}^{{tree}}"),
+            "git_common_dir": common_dir(root), "product_ref": product_ref,
+            "product_head": product_head, "policy_sha256": digest(policy),
+            "correction": {"path": CONFIG_PATH, "before_sha256": bytes_digest(current),
+                           "before": current_value,
+                           "after_sha256": bytes_digest(canonical_controller_config_bytes()),
+                           "after": CANONICAL_CONTROLLER_CONFIG},
+            "preservation": {"controller_paths_except_config": "byte-identical",
+                             "branch_identity": "unchanged", "product_ref_mutation": False,
+                             "user_work": "clean-worktree-required"},
+            "apply_authorized": False}
+    payload = {**core, "plan_sha256": digest(core)}
+    atomic_receipt(output, payload)
+    return payload
+
+
+def config_repair_apply(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    plan_path = args.plan.expanduser().resolve(); plan = read_json(plan_path, "config repair plan")
+    plan_hash = plan.pop("plan_sha256", None)
+    if (plan.get("schema_version") != CONFIG_REPAIR_SCHEMA or plan.get("operation") != "config-repair"
+            or plan.get("outcome") != "planned_no_mutation" or plan.get("apply_authorized") is not False
+            or plan_hash != digest(plan)):
+        raise BoundaryError("config repair requires an exact hash-bound no-mutation plan")
+    root = exact_worktree(Path(plan["controller"])); output = args.output.expanduser().resolve()
+    if output.exists(): raise BoundaryError("config repair receipt path must be fresh before mutation")
+    try: output.relative_to(root)
+    except ValueError: pass
+    else: raise BoundaryError("config repair receipt must be outside the controller worktree")
+    if common_dir(root) != plan["git_common_dir"] or digest(policy) != plan["policy_sha256"]:
+        raise BoundaryError("config repair repository or reviewed policy changed after planning")
+    if git(root, "symbolic-ref", "-q", "HEAD", check=False) != plan["branch"]:
+        raise BoundaryError("config repair controller branch changed after planning")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("config repair requires a clean controller")
+    resolve_commit(root, plan["branch"], plan["head"], "controller ref")
+    resolve_commit(root, plan["product_ref"], plan["product_head"], "product target")
+    if git(root, "rev-parse", "HEAD^{tree}") != plan["tree"]:
+        raise BoundaryError("controller tree changed after config repair planning")
+    current = committed_bytes(root, plan["head"], CONFIG_PATH); correction = plan["correction"]
+    if (bytes_digest(current) != correction.get("before_sha256")
+            or json.loads(current) != correction.get("before")
+            or correction.get("after") != CANONICAL_CONTROLLER_CONFIG
+            or correction.get("after_sha256") != bytes_digest(canonical_controller_config_bytes())):
+        raise BoundaryError("config repair correction identity changed after planning")
+    config_path = root / CONFIG_PATH; before_bytes = config_path.read_bytes()
+    try:
+        config_path.write_bytes(canonical_controller_config_bytes()); git(root, "add", "--", CONFIG_PATH)
+        if git(root, "diff", "--cached", "--name-only").splitlines() != [CONFIG_PATH]:
+            raise BoundaryError("config repair staged paths outside the exact correction")
+        commit_env = {"GIT_AUTHOR_NAME": "Juno Controller Migration", "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
+                      "GIT_COMMITTER_NAME": "Juno Controller Migration", "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
+        run(["git", "-C", str(root), "commit", "-m", "Repair metadata controller config shape"], root, env=commit_env)
+    except Exception:
+        config_path.write_bytes(before_bytes); git(root, "reset", "--mixed", "HEAD", check=False); raise
+    new_head = git(root, "rev-parse", "HEAD"); require_canonical_controller_config(root, new_head)
+    if (git(root, "diff", "--name-only", plan["head"], new_head).splitlines() != [CONFIG_PATH]
+            or git(root, "rev-parse", plan["product_ref"]) != plan["product_head"]
+            or git(root, "symbolic-ref", "-q", "HEAD", check=False) != plan["branch"]
+            or git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False)):
+        raise BoundaryError("config repair preservation readback failed")
+    payload = {"schema_version": CONFIG_REPAIR_SCHEMA, "operation": "config-repair-apply", "outcome": "repaired",
+               "plan_file_sha256": file_digest(plan_path), "plan_sha256": plan_hash, "controller": str(root),
+               "branch": plan["branch"], "old_head": plan["head"], "new_head": new_head,
+               "changed_paths": [CONFIG_PATH], "product_ref": plan["product_ref"], "product_head": plan["product_head"],
+               "product_ref_mutation": False, "preservation_verified": True}
+    atomic_receipt(output, payload)
+    return payload
 
 
 def runtime_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
@@ -812,6 +933,12 @@ def main() -> None:
     product = sub.add_parser("verify-product"); product.add_argument("--root", type=Path, required=True)
     product.add_argument("--product-ref", required=True); product.add_argument("--expected-head", required=True)
     product.add_argument("--output", type=Path, required=True)
+    repair_plan = sub.add_parser("config-repair-plan")
+    repair_plan.add_argument("--root", type=Path, required=True); repair_plan.add_argument("--branch", required=True)
+    repair_plan.add_argument("--expected-head", required=True); repair_plan.add_argument("--product-ref", required=True)
+    repair_plan.add_argument("--expected-product-head", required=True); repair_plan.add_argument("--output", type=Path, required=True)
+    repair_apply = sub.add_parser("config-repair-apply")
+    repair_apply.add_argument("--plan", type=Path, required=True); repair_apply.add_argument("--output", type=Path, required=True)
     rebind = sub.add_parser("runtime-rebind"); rebind.add_argument("--root", type=Path, required=True); rebind.add_argument("--branch", required=True)
     rebind.add_argument("--runtime", type=Path, required=True); rebind.add_argument("--runtime-version", required=True); rebind.add_argument("--output", type=Path, required=True)
     for name in ("cutover-plan", "rollback-plan"):
@@ -841,6 +968,8 @@ def main() -> None:
                    **product_boundary(args.root, args.product_ref, args.expected_head, policy)}
         atomic_receipt(args.output, payload)
         if not payload["passed"]: raise BoundaryError("product tree still contains controller-private paths")
+    elif args.command == "config-repair-plan": payload = config_repair_plan(args, policy)
+    elif args.command == "config-repair-apply": payload = config_repair_apply(args, policy)
     elif args.command == "runtime-rebind": payload = runtime_rebind(args, policy)
     else: payload = transition_plan(args, policy, args.command == "rollback-plan")
     print(json.dumps({"outcome": payload.get("outcome", "verified"), "receipt": str(args.output.resolve())}, sort_keys=True))

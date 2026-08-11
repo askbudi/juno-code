@@ -28,6 +28,10 @@ PLAN_SCHEMA = "juno_controller_registration_plan.v1"
 RECEIPT_SCHEMA = "juno_controller_registration_receipt.v1"
 POLICY_SCHEMA = "juno_migration_policy_bundle.v1"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+CANONICAL_CONTROLLER_CONFIG = {"controllerWorkspace": {
+    "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}}
+CANONICAL_CONTROLLER_CONFIG_BYTES = (json.dumps(
+    CANONICAL_CONTROLLER_CONFIG, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 class RegistrationError(RuntimeError):
@@ -95,6 +99,18 @@ def attached(root: Path, ref: str, label: str) -> None:
 def clean(root: Path, label: str) -> None:
     if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
         raise RegistrationError(f"{label} must be clean")
+
+
+def canonical_target_config(root: Path, head: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", f"{head}:.juno_task/config.json"],
+        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=os.environ.copy(),
+    )
+    if result.returncode or result.stdout != CANONICAL_CONTROLLER_CONFIG_BYTES:
+        raise RegistrationError(
+            "target controller config is not the exact canonical metadata-only generated shape"
+        )
 
 
 def read_json(path: Path, label: str) -> dict[str, Any]:
@@ -277,6 +293,7 @@ def verify_frozen(plan: dict[str, Any]) -> tuple[Path, Path, Path, Path]:
     pending = plan["pending_verification"]
     if file_sha256(Path(pending["path"])) != pending["sha256"]:
         raise RegistrationError("pending controller verification receipt changed")
+    canonical_target_config(target, plan["target"]["head"])
     return source, target, product, common
 
 
@@ -329,6 +346,7 @@ def plan_command(args: argparse.Namespace) -> dict[str, Any]:
                                  {source_ref, source_ref.removeprefix("refs/heads/")})
     if not registered_path_matches or not registered_branch_matches:
         raise RegistrationError(f"source controller is not the exact current registration: path={registered_path!r} branch={registered_branch!r}")
+    canonical_target_config(target, args.expected_target_head)
     target_role = snapshot(single_config(target, "juno.workspace.role", worktree=True))
     if target_role != {"present": True, "value": "controller-pending"}:
         raise RegistrationError("target controller is not in the prepared pending role")

@@ -92,7 +92,22 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
 
 `migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, rollback identity, and canonical reviewed metadata/task/risk policies. A single reviewed policy bundle is preferred; alternatively pass both `--task-workspace-policy` and `--risk-policy` with the global `--policy` metadata policy. `prepare` re-reads those exact sources and refuses source or content drift before mutation. It requires a fresh output receipt path, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, blob identity, and generated policy digest. The old sparse/full controller remains intact.
 
-Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
+A controller that already has the reviewed metadata policies but still contains the exact retired generated `controllerWorkspace.enabled` / `controller-workspace.json` config must not be registered or refreshed as if it were canonical. Repair only that known migration seam with a reviewed, external plan and a separate apply receipt:
+
+```bash
+python3 .juno_task/scripts/metadata_controller.py --policy .juno_task/config/metadata-controller.json \
+  config-repair-plan --root /path/to/metadata-controller \
+  --branch refs/heads/juno/controller-metadata-v1 --expected-head CONTROLLER_SHA \
+  --product-ref refs/heads/main --expected-product-head PRODUCT_SHA \
+  --output /durable/config-repair-plan.json
+python3 .juno_task/scripts/metadata_controller.py --policy .juno_task/config/metadata-controller.json \
+  config-repair-apply --plan /durable/config-repair-plan.json \
+  --output /durable/config-repair-apply.json
+```
+
+The plan hash-binds the exact controller head/tree, complete retired config content and bytes, canonical replacement bytes, policy, product ref/head, Git common directory, and branch identity. Apply requires a clean attached controller, rejects stale or edited plans, commits only `.juno_task/config.json`, and reads back unchanged non-config tree entries, branch identity, and product ref. User settings and instruction evidence from the old config remain byte-exact in the parent commit and content-complete in the external plan. A lifecycle-bearing config, a different workspace pointer, or uncommitted manual work is preserved and refused for owner review.
+
+Before a separately authorized cutover, run `verify --pending`, `verify-product`, the packaged real-Git acceptance test, Kanban mutation canaries while feature worktrees remain clean, and runtime-rebind verification. Verification and registration planning both require byte-exact canonical generated `.juno_task/config.json`; a forged or stale pending receipt cannot activate the retired shape. Then create a `cutover-plan` receipt. The supported registrar remains a separate, explicit boundary:
 
 ```bash
 yy migrate registration plan \
