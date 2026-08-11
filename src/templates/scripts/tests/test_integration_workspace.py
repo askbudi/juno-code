@@ -712,6 +712,33 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertEqual(row["prior_generation_classification"],
                          "receipt_bound_historical_generation")
 
+    def test_preserved_receipt_cannot_bind_content_that_only_appears_later(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        unique = b"unique operator bytes that appear later\n"
+        unique_hash = runtime.managed_sha256(unique)
+        (receipt_root / "before-unique.json").write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh", "outcome": "completed", "target_sha": self.previous,
+            "scripts": [{"path": ".juno_task/scripts/one.py",
+                         "classification": "preserved_customization",
+                         "source_sha256": runtime.managed_sha256(b"old one\n"),
+                         "actual_sha256": unique_hash}],
+        }) + "\n")
+        self.write("juno-code/src/templates/scripts/one.py", unique.decode())
+        git(self.repo, "add", "juno-code/src/templates/scripts/one.py")
+        git(self.repo, "commit", "-m", "later coincidental content")
+        self.write(".juno_task/scripts/one.py", "final managed one\n")
+        self.write("juno-code/src/templates/scripts/one.py", "final template one\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "final generation")
+        final = git(self.repo, "rev-parse", "HEAD")
+
+        binding = runtime.managed_obsolete_generation_binding(
+            self.controller, self.repo, ".juno_task/scripts/one.py", unique, final)
+
+        self.assertIsNone(binding)
+
     def test_overlap_repair_plan_apply_preserves_prior_bytes_and_is_retry_safe(self) -> None:
         self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nlast\n")
         git(self.repo, "add", ".juno_task/scripts/one.py")
@@ -745,6 +772,45 @@ class ManagedRuntimeTests(unittest.TestCase):
         retried = runtime.managed_runtime_refresh(
             self.controller, self.repo, previous, target, task_id="repair-retry")
         self.assertEqual(retried["outcome"], "completed")
+
+    def test_overlap_repair_requires_exact_current_action_set(self) -> None:
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nlast\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "exact set base")
+        previous = git(self.repo, "rev-parse", "HEAD")
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nnew last\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "exact set target")
+        target = git(self.repo, "rev-parse", "HEAD")
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("owner first\na\nb\nc\nlast\n")
+        plan = runtime.managed_runtime_repair_plan(
+            self.controller, self.repo, previous, target, task_id="exact-set")
+        source = json.loads(Path(plan["receipt"]["path"]).read_text())
+
+        def mutated(actions: list[dict[str, object]]) -> Path:
+            value = {**source, "actions": actions}
+            data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            path = (self.controller / runtime.MANAGED_RECEIPT_ROOT /
+                    f"{runtime.managed_sha256(data)}-repair-plan.json")
+            path.write_bytes(data)
+            return path
+
+        extra = dict(source["actions"][0])
+        extra["path"] = ".juno_task/scripts/two.py"
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "action set mismatch"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, previous, target,
+                repair_receipt=mutated([source["actions"][0], extra]))
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "action set mismatch"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, previous, target, repair_receipt=mutated([]))
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "malformed managed runtime repair action"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, previous, target,
+                repair_receipt=mutated([source["actions"][0], source["actions"][0]]))
+        self.assertEqual(customized.read_text(), "owner first\na\nb\nc\nlast\n")
+        self.assertFalse((self.controller / runtime.MANAGED_BACKUP_ROOT).exists())
 
     def test_overlap_repair_conflict_stale_and_malformed_receipts_fail_closed(self) -> None:
         customized = self.controller / ".juno_task/scripts/one.py"

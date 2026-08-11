@@ -258,8 +258,12 @@ def managed_obsolete_generation_binding(controller: Path, repository: Path, rela
             historical = None
             historical_path = None
             for source_path in source_paths:
-                candidates = git_bytes(repository, "rev-list", target_sha, "--", source_path).decode().splitlines()
+                candidates = git_bytes(
+                    repository, "rev-list", receipt_target, "--", source_path).decode().splitlines()
                 for candidate in candidates:
+                    if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                                    candidate, receipt_target], repository, check=False).returncode:
+                        continue
                     try:
                         if managed_source_bytes(repository, candidate, source_path) == current:
                             historical, historical_path = candidate, source_path
@@ -476,6 +480,25 @@ def managed_three_way_merge(old: bytes, current: bytes, new: bytes) -> bytes | N
         return result.stdout if result.returncode == 0 else None
 
 
+def managed_changed_source_overlaps(controller: Path, repository: Path, previous_sha: str,
+                                    target_sha: str) -> dict[str, dict[str, Any]]:
+    previous_assets = managed_script_assets(repository, previous_sha)
+    target_assets = managed_script_assets(repository, target_sha)
+    overlaps: dict[str, dict[str, Any]] = {}
+    for relative in sorted(set(previous_assets) & set(target_assets)):
+        old = managed_source_bytes(repository, previous_sha, relative)
+        new = managed_source_bytes(repository, target_sha, relative)
+        destination = managed_safe_path(controller, relative)
+        current = destination.read_bytes() if destination.is_file() else None
+        if current is None or old == new or current in {old, new}:
+            continue
+        overlaps[relative] = {"path": relative, "old": old, "current": current, "new": new,
+                              "old_sha256": managed_sha256(old),
+                              "current_sha256": managed_sha256(current),
+                              "new_sha256": managed_sha256(new)}
+    return overlaps
+
+
 def managed_runtime_repair_plan(controller: Path, repository: Path, previous_sha: str,
                                 target_sha: str, *, task_id: str = "manual") -> dict[str, Any]:
     controller = controller.resolve(); repository = repository.resolve()
@@ -484,16 +507,10 @@ def managed_runtime_repair_plan(controller: Path, repository: Path, previous_sha
     if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor", previous_sha, target_sha],
                    repository, check=False).returncode:
         raise ManagedRuntimeError("target generation does not descend from previous generation")
-    previous_assets = managed_script_assets(repository, previous_sha)
-    target_assets = managed_script_assets(repository, target_sha)
+    overlaps = managed_changed_source_overlaps(controller, repository, previous_sha, target_sha)
     actions: list[dict[str, Any]] = []
-    for relative in sorted(set(previous_assets) & set(target_assets)):
-        old = managed_source_bytes(repository, previous_sha, relative)
-        new = managed_source_bytes(repository, target_sha, relative)
-        destination = managed_safe_path(controller, relative)
-        current = destination.read_bytes() if destination.is_file() else None
-        if current is None or old == new or current in {old, new}:
-            continue
+    for relative, identity in overlaps.items():
+        old, current, new = identity["old"], identity["current"], identity["new"]
         binding = managed_obsolete_generation_binding(controller, repository, relative, current, target_sha)
         merged = new if binding is not None else managed_three_way_merge(old, current, new)
         resolution = "supersede" if binding is not None else "preserve" if merged is not None else "conflict"
@@ -545,7 +562,7 @@ def managed_runtime_repair_load(controller: Path, repository: Path, receipt_path
             or receipt.get("controller") != str(controller.resolve())
             or receipt.get("repository") != str(repository.resolve())
             or receipt.get("previous_sha") != previous_sha or receipt.get("target_sha") != target_sha
-            or not isinstance(receipt.get("actions"), list) or not receipt["actions"]):
+            or not isinstance(receipt.get("actions"), list)):
         raise ManagedRuntimeError("malformed or mismatched managed runtime repair receipt")
     approvals: dict[str, dict[str, Any]] = {}
     for row in receipt["actions"]:
@@ -564,6 +581,18 @@ def managed_runtime_repair_load(controller: Path, repository: Path, receipt_path
         if managed_sha256(prior) != row["current_sha256"]:
             raise ManagedRuntimeError("managed runtime repair prior-byte hash mismatch")
         approvals[row["path"]] = row
+    overlaps = managed_changed_source_overlaps(
+        controller.resolve(), repository.resolve(), previous_sha, target_sha)
+    if set(approvals) != set(overlaps):
+        missing = sorted(set(overlaps) - set(approvals))
+        extra = sorted(set(approvals) - set(overlaps))
+        raise ManagedRuntimeError(
+            f"managed runtime repair action set mismatch: missing={missing} extra={extra}")
+    for relative, row in approvals.items():
+        identity = overlaps[relative]
+        for key in ("old_sha256", "current_sha256", "new_sha256"):
+            if row.get(key) != identity[key]:
+                raise ManagedRuntimeError(f"stale managed runtime repair identity: {relative}")
     return {**receipt, "receipt_sha256": receipt_hash, "receipt_path": str(path)}, approvals
 
 
@@ -579,6 +608,11 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
     backups: dict[Path, tuple[bool, bytes, int]] = {}
     reference: dict[str, str] | None = None
     try:
+        previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
+        target_sha = managed_exact_commit(repository, target_sha, "target generation")
+        if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                        previous_sha, target_sha], repository, check=False).returncode:
+            raise ManagedRuntimeError("target generation does not descend from previous generation")
         repair = None
         approvals = None
         if repair_receipt is not None:
