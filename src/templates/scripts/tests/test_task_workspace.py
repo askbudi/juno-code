@@ -401,6 +401,27 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("timeout_seconds", failed.stderr)
 
+    def test_validation_drops_forwarded_control_audit_environment(self) -> None:
+        row = {
+            "id": "audit-isolation",
+            "cwd": ".",
+            "timeout_seconds": 5,
+            "max_output_bytes": 4096,
+            "argv": [sys.executable, "-c", (
+                "import os; assert not any(key.startswith('JUNO_CONTROL_') "
+                "for key in os.environ)"
+            )],
+        }
+        with mock.patch.dict(os.environ, {
+            "JUNO_CONTROL_INVOCATION_ROOT": str(self.repository),
+            "JUNO_CONTROL_INVOCATION_ROLE": "task",
+            "JUNO_CONTROL_EFFECTIVE_ROOT": str(self.controller),
+            "JUNO_CONTROL_OPERATION": "orchestration",
+        }):
+            evidence = task_runtime.run_validation(row, self.repository)
+        self.assertEqual(evidence["exit_code"], 0, evidence)
+        self.assertFalse(evidence["timed_out"])
+
     def test_product_tree_with_controller_private_data_refuses_before_creation(self) -> None:
         private = self.repository / ".juno_task/tasks/xx/X.md"
         private.parent.mkdir(parents=True)

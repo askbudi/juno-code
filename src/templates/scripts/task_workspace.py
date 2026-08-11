@@ -230,10 +230,14 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
     limit = row["max_output_bytes"]
     stream_live = os.environ.get("JUNO_VALIDATION_STREAM") == "1"
     started = time.monotonic()
+    validation_env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("JUNO_CONTROL_")
+    }
     try:
         process = subprocess.Popen(row["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
+                                   start_new_session=True, env=validation_env)
     except OSError as exc:
         message = str(exc).encode("utf-8", errors="replace")
         tail = message[-limit:]
