@@ -3,6 +3,8 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const sourceRoot = resolve(process.cwd(), 'src/templates');
+const metadataBoundary = join(sourceRoot, 'wiki/metadata_controller_boundary.md');
+const projectAgents = resolve(process.cwd(), '..', 'AGENTS.md');
 const retired = [
   'scripts/task_lifecycle.py',
   'scripts/integration_candidate.py',
@@ -25,6 +27,22 @@ function textFiles(root: string): string[] {
   return output;
 }
 
+const retiredReference =
+  /integration_(?:candidate|owner_preflight)\.py|controller-workspace\.json/i;
+const canonicalRetiredConfigProse =
+  /exact retired generated `controllerWorkspace\.enabled` \/ `controller-workspace\.json` config must not be registered or refreshed as if it were canonical/i;
+
+function operationalRetiredReferences(file: string, text: string): string[] {
+  return text.split('\n').filter((line) => {
+    if (!retiredReference.test(line)) return false;
+    if (file === projectAgents) return !/rollback-only/i.test(line);
+    if (file === metadataBoundary && canonicalRetiredConfigProse.test(line)) {
+      return /integration_(?:candidate|owner_preflight)\.py/i.test(line);
+    }
+    return true;
+  });
+}
+
 describe('Bolt shipped hard cut', () => {
   it('does not package retired executors or configuration', () => {
     const manifest = readFileSync(join(sourceRoot, 'managed-assets.json'), 'utf8');
@@ -43,7 +61,7 @@ describe('Bolt shipped hard cut', () => {
       ...textFiles(join(sourceRoot, 'skills')),
       resolve(process.cwd(), 'README.md'),
       resolve(process.cwd(), '..', 'README.md'),
-      resolve(process.cwd(), '..', 'AGENTS.md'),
+      projectAgents,
       resolve(process.cwd(), '..', 'CLAUDE.md'),
       resolve(process.cwd(), 'docs', 'bolt-package-acceptance.md'),
     ];
@@ -52,19 +70,24 @@ describe('Bolt shipped hard cut', () => {
       expect(text, file).not.toMatch(/yy lifecycle(?:\s|`)/i);
       expect(text, file).not.toMatch(/controller[- ]sync/i);
       expect(text, file).not.toMatch(/--checkpoint-controller|--exec-command/i);
-      if (!file.endsWith('AGENTS.md')) {
-        expect(text, file).not.toMatch(/integration_(?:candidate|owner_preflight)\.py/i);
-        expect(text, file).not.toMatch(/controller-workspace\.json/i);
-      } else {
-        for (const line of text.split('\n').filter((entry) =>
-          /integration_candidate\.py|controller-workspace\.json/i.test(entry),
-        )) {
-          expect(line, file).toMatch(/rollback-only/i);
-        }
-      }
+      expect(operationalRetiredReferences(file, text), file).toEqual([]);
       expect(text, file).not.toMatch(/task_lifecycle\.py/i);
       expect(text, file).not.toMatch(/worktree_lifecycle\.py/i);
     }
+  });
+
+  it('admits canonical migration prose but rejects operational retired references', () => {
+    const canonicalProse =
+      'A controller with the exact retired generated `controllerWorkspace.enabled` / `controller-workspace.json` config must not be registered or refreshed as if it were canonical.';
+    expect(operationalRetiredReferences(metadataBoundary, canonicalProse)).toEqual([]);
+
+    const operationalProse = [
+      'Run python3 .juno_task/scripts/integration_candidate.py target-preflight.',
+      'Load .juno_task/config/controller-workspace.json before starting a task.',
+    ].join('\n');
+    expect(operationalRetiredReferences(metadataBoundary, operationalProse)).toEqual(
+      operationalProse.split('\n'),
+    );
   });
 
   it('keeps the legacy CLI command as a refusal, never a dispatcher', () => {
