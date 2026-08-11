@@ -89,6 +89,24 @@ def worktree_config(root: Path, key: str) -> str | None:
     return value or None
 
 
+def advance_owner_role_base(owner: Path, before: str | None, after: str) -> dict[str, Any]:
+    """Advance only the protected owner's exact worktree-local authority baseline."""
+    if not SHA_RE.fullmatch(after) or sha(owner, after) != after:
+        raise IntegrationError("integration owner roleBase target is not an exact commit")
+    observed = worktree_config(owner, "juno.workspace.roleBase")
+    if observed != before:
+        raise IntegrationError("integration owner roleBase changed under lock")
+    if worktree_config(owner, "juno.workspace.role") != "integration-owner":
+        raise IntegrationError("integration owner role is not registered")
+    if worktree_config(owner, "juno.workspace.roleAuthority") != AUTHORITY:
+        raise IntegrationError("integration owner does not carry protected authority")
+    git(owner, "config", "--worktree", "juno.workspace.roleBase", after)
+    if worktree_config(owner, "juno.workspace.roleBase") != after:
+        raise IntegrationError("integration owner roleBase readback failed")
+    return {"kind": "advance_role_base", "path": str(owner),
+            "before": before, "after": after}
+
+
 def owner_candidates(repository: Path) -> list[dict[str, Any]]:
     candidates = []
     for row in parse_worktrees(repository):
@@ -189,6 +207,7 @@ def status_payload(controller: Path, *, fetch: bool = False) -> dict[str, Any]:
         root = Path(candidate["path"])
         full, reasons = full_checkout(root)
         owner = {**candidate, "head": sha(root, "HEAD"),
+                 "role_base": worktree_config(root, "juno.workspace.roleBase"),
                  "detached": git(root, "symbolic-ref", "-q", "HEAD", check=False) == "",
                  "clean": git(root, "status", "--porcelain=v1", "--untracked-files=all") == "",
                  "full_checkout": full, "full_checkout_reasons": reasons,
@@ -204,6 +223,17 @@ def status_payload(controller: Path, *, fetch: bool = False) -> dict[str, Any]:
         if owner["head"] != target_sha:
             findings.append({"code": "integration_owner_stale", "severity": "warning",
                              "message": "integration owner HEAD differs from target"})
+        role_base = owner["role_base"]
+        if not role_base or not sha(repository, role_base):
+            findings.append({"code": "integration_owner_role_base_invalid", "severity": "error",
+                             "message": "integration owner roleBase is missing or invalid"})
+        elif role_base != target_sha:
+            severity = ("warning" if target_sha and run([
+                "git", "-C", str(repository), "merge-base", "--is-ancestor",
+                role_base, target_sha], repository, check=False).returncode == 0 else "error")
+            findings.append({"code": "integration_owner_role_base_stale" if severity == "warning"
+                             else "integration_owner_role_base_diverged", "severity": severity,
+                             "message": "integration owner roleBase differs from target"})
     holders = target_holders(repository, target_ref)
     if holders:
         findings.append({"code": "target_checked_out", "severity": "error",
@@ -274,6 +304,9 @@ def repair_plan(controller: Path) -> dict[str, Any]:
         if owner["head"] != target_sha:
             actions.append({"kind": "refresh_owner", "path": owner["path"],
                             "before": owner["head"], "after": target_sha})
+        if owner["role_base"] != target_sha:
+            actions.append({"kind": "advance_role_base", "path": owner["path"],
+                            "before": owner["role_base"], "after": target_sha})
         if any(row["state"] != "exact" for row in owner["submodules"]):
             actions.append({"kind": "refresh_submodules", "path": owner["path"],
                             "target": target_sha})
@@ -298,7 +331,8 @@ def repair_plan(controller: Path) -> dict[str, Any]:
             actions.append({"kind": "detach_target_holder", "path": holder,
                             "branch": row.get("branch"), "head": identity["head"],
                             "role": identity["role"], "authority": identity["authority"]})
-    ignored = {"target_checked_out", "integration_owner_stale"}
+    ignored = {"target_checked_out", "integration_owner_stale",
+               "integration_owner_role_base_stale"}
     blockers.extend(row["code"] for row in status["findings"]
                     if row["severity"] == "error" and row["code"] not in ignored)
     common = Path(git(repository, "rev-parse", "--path-format=absolute",
@@ -359,6 +393,8 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
                 elif action["kind"] == "clear_legacy_integration_registration":
                     git(Path(action["repository"]), "config", "--local", "--unset-all",
                         action["key"])
+                elif action["kind"] == "advance_role_base":
+                    advance_owner_role_base(Path(action["path"]), action["before"], action["after"])
                 result["phases"].append({**action, "status": "complete"})
                 reference = write_receipt(result_path, result)
             owner = Path(current["registered_owner"])
@@ -576,6 +612,7 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
                                       "remote_sha": sha(repository, remote_ref)})
             receipt["phase"] = "fetch"; reference = write_receipt(receipt_path, receipt)
             local = sha(repository, target_ref); remote = sha(repository, remote_ref)
+            owner_role_base = worktree_config(owner_root, "juno.workspace.roleBase")
             rel = relation(repository, local, remote)
             if not local or not remote:
                 raise IntegrationError("local target or fetched remote ref is unavailable")
@@ -593,6 +630,15 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
             git(owner_root, "switch", "--detach", current or "")
             git(owner_root, "submodule", "sync", "--recursive")
             git(owner_root, "submodule", "update", "--init", "--recursive", "--checkout")
+            if target_outcome == "fast_forwarded":
+                if owner_role_base != local:
+                    raise IntegrationError(
+                        "remote fast-forward refuses a stale integration owner roleBase"
+                    )
+                authority = advance_owner_role_base(owner_root, owner_role_base, current or "")
+                receipt["phases"].append({"phase": "authority", "status": "complete",
+                                          **authority})
+                receipt["phase"] = "authority"; reference = write_receipt(receipt_path, receipt)
             after = status_payload(controller)
             if (not after["ready"] or any(item["state"] != "exact"
                     for item in (after["integration"]["owner"] or {}).get("submodules", []))):

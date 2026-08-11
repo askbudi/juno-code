@@ -92,6 +92,33 @@ class MergeQueueTests(unittest.TestCase):
                                        "timeout_seconds": 10, "max_output_bytes": 4096},
         }) + "\n")
 
+    def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
+        owner = self.root / "integration-owner"
+        git(self.repository, "worktree", "add", "--detach", str(owner), self.base)
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(owner, "config", "--worktree", "juno.workspace.role", "integration-owner")
+        git(owner, "config", "--worktree", "juno.workspace.roleAuthority",
+            merge_runtime.INTEGRATION_OWNER_AUTHORITY)
+        git(owner, "config", "--worktree", "juno.workspace.roleBase", self.base)
+        git(self.repository, "config", merge_runtime.INTEGRATION_OWNER_CONFIG, str(owner))
+
+        candidate_worktree = self.root / "candidate"
+        git(self.repository, "worktree", "add", "-b", "candidate", str(candidate_worktree), self.base)
+        (candidate_worktree / "src/candidate.txt").write_text("candidate\n")
+        git(candidate_worktree, "add", "src/candidate.txt")
+        git(candidate_worktree, "commit", "-m", "candidate")
+        candidate = git(candidate_worktree, "rev-parse", "HEAD")
+        git(candidate_worktree, "switch", "--detach")
+        git(self.repository, "worktree", "remove", str(candidate_worktree))
+
+        authority = merge_runtime.cas_target(
+            self.repository, "refs/heads/product", candidate, self.base
+        )
+        self.assertEqual(authority["status"], "advanced")
+        self.assertEqual(git(owner, "config", "--worktree", "--get",
+                             "juno.workspace.roleBase"), candidate)
+        self.assertEqual(git(owner, "rev-parse", "HEAD"), self.base)
+
     def test_managed_review_prompt_resolves_from_bound_runtime(self) -> None:
         executable = self.root / "installed/dist/bin/juno-code.sh"
         prompt = self.root / "installed/dist/templates/prompts/review_commit_parallel_runner.md"

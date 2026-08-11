@@ -34,6 +34,8 @@ REVIEW_PROMPT_FIELDS = {
     "validation_evidence_path", "requirements_bundle", "findings_summary",
 }
 REVIEW_PLACEHOLDER_RE = re.compile(r"{{\s*([a-z_][a-z0-9_]*)\s*}}")
+INTEGRATION_OWNER_CONFIG = "juno.integration.ownerPath"
+INTEGRATION_OWNER_AUTHORITY = "protected-integration.v1"
 
 
 class MergeQueueError(RuntimeError):
@@ -104,6 +106,49 @@ def registered_worktrees(repository: Path) -> list[dict[str, Any]]:
         else:
             current[key] = value
     return rows
+
+
+def advance_registered_owner_role_base(repository: Path, expected: str,
+                                        candidate: str) -> dict[str, Any]:
+    """Persist authority only after this queue has admitted the exact CAS."""
+    raw = task_runtime.git(repository, "config", "--local", "--get",
+                           INTEGRATION_OWNER_CONFIG, check=False)
+    if not raw:
+        return {"status": "not_registered", "before": expected, "after": candidate}
+    owner = Path(raw).expanduser().resolve()
+    rows = {str(Path(row["worktree"]).resolve()): row for row in registered_worktrees(repository)
+            if isinstance(row.get("worktree"), str) and row.get("prunable") is not True}
+    if str(owner) not in rows or not owner.is_dir():
+        raise MergeQueueError("registered integration owner is not a live linked worktree")
+
+    def config(key: str) -> str | None:
+        return task_runtime.git(owner, "config", "--worktree", "--get", key,
+                                check=False) or None
+
+    if config("juno.workspace.role") != "integration-owner":
+        raise MergeQueueError("registered integration owner role is invalid")
+    if config("juno.workspace.roleAuthority") != INTEGRATION_OWNER_AUTHORITY:
+        raise MergeQueueError("registered integration owner authority is invalid")
+    head = task_runtime.ref_sha(owner, "HEAD")
+    if (head not in {expected, candidate}
+            or task_runtime.git(owner, "symbolic-ref", "-q", "HEAD", check=False)
+            or task_runtime.git(owner, "status", "--porcelain=v1", "--untracked-files=all",
+                                check=False)
+            or config("core.sparseCheckout") == "true"
+            or any(line.startswith("S ") for line in task_runtime.git(
+                owner, "ls-files", "-t", check=False).splitlines())):
+        raise MergeQueueError("registered integration owner is not clean, detached, full, and exact")
+    role_base = config("juno.workspace.roleBase")
+    if role_base == candidate:
+        return {"status": "already_advanced", "path": str(owner),
+                "before": candidate, "after": candidate}
+    if role_base != expected:
+        raise MergeQueueError("registered integration owner roleBase is stale or divergent")
+    task_runtime.git(owner, "config", "--worktree", "juno.workspace.roleBase", candidate)
+    if config("juno.workspace.roleBase") != candidate:
+        raise MergeQueueError("registered integration owner roleBase readback failed")
+    return {"status": "advanced", "path": str(owner),
+            "before": expected, "after": candidate}
 
 
 def assert_target_unchecked_out(repository: Path, target_ref: str) -> None:
@@ -708,7 +753,9 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
         return attempt
     persist_attempt(controller, attempt, state_name="MERGING")
     assert_target_unchecked_out(repository, config["target_ref"])
-    cas_target(repository, config["target_ref"], candidate_sha, expected)
+    attempt["integration_owner_authority"] = cas_target(
+        repository, config["target_ref"], candidate_sha, expected
+    )
     attempt = {**attempt, "outcome": "MERGED",
                "readback_sha": task_runtime.ref_sha(repository, config["target_ref"])}
     persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
@@ -718,7 +765,8 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
         attempt.get("candidate_token"))}
 
 
-def cas_target(repository: Path, target_ref: str, candidate_sha: str, expected_sha: str) -> None:
+def cas_target(repository: Path, target_ref: str, candidate_sha: str,
+               expected_sha: str) -> dict[str, Any]:
     result = task_runtime.run(["git", "-C", str(repository), "update-ref", target_ref,
                                candidate_sha, expected_sha], repository, check=False)
     if result.returncode:
@@ -730,6 +778,7 @@ def cas_target(repository: Path, target_ref: str, candidate_sha: str, expected_s
     actual_tree = task_runtime.git(repository, "rev-parse", f"{target_ref}^{{tree}}")
     if actual_tree != expected_tree:
         raise MergeQueueError("target tree readback mismatch")
+    return advance_registered_owner_role_base(repository, expected_sha, candidate_sha)
 
 
 def cleanup_candidate(controller: Path, repository: Path, checkout: Optional[Path],
@@ -778,7 +827,11 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
         expected_tree = task_runtime.git(repository, "rev-parse", f"{candidate}^{{tree}}")
         if expected_tree != attempt.get("candidate_tree"):
             raise MergeQueueError("MERGING recovery candidate tree mismatch")
-        attempt = {**attempt, "outcome": "MERGED", "readback_sha": current, "recovered": True}
+        authority = advance_registered_owner_role_base(
+            repository, attempt["expected_target_sha"], candidate
+        )
+        attempt = {**attempt, "outcome": "MERGED", "readback_sha": current, "recovered": True,
+                   "integration_owner_authority": authority}
         persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
         checkout_value = attempt.get("candidate_checkout")
         checkout = Path(checkout_value) if checkout_value and Path(checkout_value).is_dir() else None
@@ -902,7 +955,9 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
                     )
                 raise
             assert_target_unchecked_out(repository, config["target_ref"])
-            cas_target(repository, config["target_ref"], candidate_sha, target_sha)
+            attempt["integration_owner_authority"] = cas_target(
+                repository, config["target_ref"], candidate_sha, target_sha
+            )
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"
@@ -1053,7 +1108,10 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
                 return attempt
             persist_attempt(controller, attempt, state_name="MERGING")
             assert_target_unchecked_out(repository, config["target_ref"])
-            cas_target(repository, config["target_ref"], candidate_sha, conflict["expected_target_sha"])
+            attempt["integration_owner_authority"] = cas_target(
+                repository, config["target_ref"], candidate_sha,
+                conflict["expected_target_sha"]
+            )
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"

@@ -53,6 +53,7 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         git(self.repo, "config", "extensions.worktreeConfig", "true")
         git(self.owner, "config", "--worktree", "juno.workspace.role", "integration-owner")
         git(self.owner, "config", "--worktree", "juno.workspace.roleAuthority", runtime.AUTHORITY)
+        git(self.owner, "config", "--worktree", "juno.workspace.roleBase", self.base)
         config = self.controller / ".juno_task/config"
         config.mkdir(parents=True)
         (config / "task-workspace.json").write_text(json.dumps({
@@ -151,6 +152,8 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual(git(self.repo, "rev-parse", "product"), advanced)
         self.assertEqual(git(self.owner, "rev-parse", "HEAD"), advanced)
+        self.assertEqual(git(self.owner, "config", "--worktree", "--get",
+                             "juno.workspace.roleBase"), advanced)
         self.assertNotEqual(run(["git", "-C", str(self.owner), "symbolic-ref", "-q", "HEAD"],
                                 self.owner, False).returncode, 0)
         receipt = json.loads(Path(result["receipt"]["path"]).read_text())
@@ -165,6 +168,10 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         target_phase = next(row for row in json.loads(
             Path(result["receipt"]["path"]).read_text())["phases"] if row["phase"] == "target")
         self.assertEqual(target_phase["outcome"], "preserved_local_ahead")
+        self.assertEqual(git(self.owner, "config", "--worktree", "--get",
+                             "juno.workspace.roleBase"), self.base)
+        self.assertIn("integration_owner_role_base_stale",
+                      {row["code"] for row in result["status"]["findings"]})
 
     def test_sync_refuses_divergence_and_target_holder(self) -> None:
         self.local_advance()
@@ -272,7 +279,7 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
         self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
         self.assertEqual([row["kind"] for row in planned["actions"]],
-                         ["refresh_owner", "detach_target_holder"])
+                         ["refresh_owner", "advance_role_base", "detach_target_holder"])
         before = git(holder, "symbolic-ref", "HEAD")
         self.assertEqual(before, "refs/heads/product")
 
@@ -280,6 +287,8 @@ class IntegrationWorkspaceTests(unittest.TestCase):
             self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
         self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
         self.assertEqual(git(self.owner, "rev-parse", "HEAD"), advanced)
+        self.assertEqual(git(self.owner, "config", "--worktree", "--get",
+                             "juno.workspace.roleBase"), advanced)
         self.assertNotEqual(run(["git", "-C", str(holder), "symbolic-ref", "-q", "HEAD"],
                                 holder, False).returncode, 0)
 
