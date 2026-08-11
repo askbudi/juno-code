@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import difflib
 import hashlib
 import json
 import os
@@ -29,7 +31,10 @@ MANAGED_MANIFEST_PATH = "juno-code/src/templates/managed-assets.json"
 MANAGED_POLICY_PATH = ".juno_task/config/task-workspace.json"
 MANAGED_GENERATION_PATH = ".juno_task/runtime/managed-controller/generation.json"
 MANAGED_RECEIPT_ROOT = ".juno_task/runtime/managed-controller/receipts"
+MANAGED_BACKUP_ROOT = ".juno_task/runtime/managed-controller/backups"
+MANAGED_REPAIR_SCHEMA = "juno_managed_runtime_repair.v1"
 MANAGED_SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+MANAGED_HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class ManagedRuntimeError(RuntimeError):
@@ -211,7 +216,9 @@ def managed_obsolete_generation_binding(controller: Path, repository: Path, rela
     updating generation.json. Completed local receipt fields are eligible only
     when an exact row's bytes equal immutable Git source in the admitted target
     ancestry. This corroborates the fields; it does not authenticate or sign the
-    receipt. Preserved-customization rows are never eligible.
+    receipt. A preserved-customization row is eligible only when immutable
+    target ancestry independently proves that its exact bytes were once a
+    managed implementation; the receipt classification alone is not trusted.
     """
     receipts = managed_safe_path(controller, MANAGED_RECEIPT_ROOT)
     if not receipts.is_dir() or receipts.is_symlink():
@@ -239,21 +246,39 @@ def managed_obsolete_generation_binding(controller: Path, repository: Path, rela
             continue
         for row in receipt["scripts"]:
             if (not isinstance(row, dict) or row.get("path") != relative
-                    or row.get("classification") != "exact"
-                    or row.get("actual_sha256") != current_hash
-                    or row.get("source_sha256") != current_hash):
+                    or row.get("classification") not in {"exact", "preserved_customization"}
+                    or row.get("actual_sha256") != current_hash):
                 continue
-            try:
-                source = managed_source_bytes(repository, receipt_target, relative)
-            except ManagedRuntimeError:
+            if row.get("classification") == "exact" and row.get("source_sha256") != current_hash:
                 continue
-            if source == current:
-                return {"classification": "receipt_bound_obsolete_generation",
-                        "target_sha": receipt_target, "receipt_path": str(receipt_path.resolve())}
+            source_paths = [relative]
+            target_source = managed_script_assets(repository, target_sha).get(relative)
+            if target_source and target_source not in source_paths:
+                source_paths.append(target_source)
+            historical = None
+            historical_path = None
+            for source_path in source_paths:
+                candidates = git_bytes(repository, "rev-list", target_sha, "--", source_path).decode().splitlines()
+                for candidate in candidates:
+                    try:
+                        if managed_source_bytes(repository, candidate, source_path) == current:
+                            historical, historical_path = candidate, source_path
+                            break
+                    except ManagedRuntimeError:
+                        continue
+                if historical is not None:
+                    break
+            if historical is not None:
+                return {"classification": (
+                            "receipt_bound_obsolete_generation" if row.get("classification") == "exact"
+                            else "receipt_bound_historical_generation"),
+                        "target_sha": historical, "source_path": historical_path,
+                        "receipt_path": str(receipt_path.resolve())}
     return None
 
 
-def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, target_sha: str) -> dict[str, Any]:
+def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, target_sha: str,
+                         approved: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     controller = controller.resolve(); repository = repository.resolve()
     previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
     target_sha = managed_exact_commit(repository, target_sha, "target generation")
@@ -307,9 +332,47 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                 if prior_template == current:
                     prior_binding = {"classification": "receipt_bound_installed_template",
                                      "target_sha": previous_sha}
-            if old != new and prior_binding is None:
-                raise ManagedRuntimeError(f"customized managed runtime overlaps changed source: {relative}")
-            if prior_binding is not None:
+            target_entry = (prior_generation.get("scripts", {}).get(relative)
+                            if isinstance(prior_generation, dict)
+                            and prior_generation.get("schema_version") == MANAGED_RUNTIME_SCHEMA
+                            and prior_generation.get("target_sha") == target_sha
+                            and isinstance(prior_generation.get("scripts"), dict) else None)
+            target_bound_preserved = bool(
+                isinstance(target_entry, dict)
+                and target_entry.get("classification") == "preserved_customization"
+                and target_entry.get("source_sha256") == managed_sha256(new)
+                and target_entry.get("actual_sha256") == managed_sha256(current))
+            approval = (approved or {}).get(relative)
+            if target_bound_preserved:
+                outcome = "preserved_customization"
+                classification = "preserved_customization"
+                actual = current
+            elif approval is not None:
+                expected = {"path": relative, "old_sha256": managed_sha256(old),
+                            "current_sha256": managed_sha256(current),
+                            "new_sha256": managed_sha256(new)}
+                if any(approval.get(key) != value for key, value in expected.items()):
+                    raise ManagedRuntimeError(f"stale managed runtime repair identity: {relative}")
+                resolution = approval.get("resolution")
+                encoded = approval.get("resolved_bytes_base64")
+                if resolution not in {"supersede", "preserve"} or not isinstance(encoded, str):
+                    raise ManagedRuntimeError(f"malformed managed runtime repair action: {relative}")
+                try:
+                    resolved = base64.b64decode(encoded, validate=True)
+                except (ValueError, TypeError) as exc:
+                    raise ManagedRuntimeError(f"malformed managed runtime repair bytes: {relative}") from exc
+                if approval.get("resolved_sha256") != managed_sha256(resolved):
+                    raise ManagedRuntimeError(f"managed runtime repair result hash mismatch: {relative}")
+                if resolution == "supersede" and resolved != new:
+                    raise ManagedRuntimeError(f"managed runtime supersede result is not exact: {relative}")
+                outcome = "updated"
+                classification = "exact" if resolved == new else "preserved_customization"
+                actual = resolved
+            elif old != new and prior_binding is None:
+                raise ManagedRuntimeError(
+                    f"customized managed runtime overlaps changed source: {relative}; "
+                    "plan recovery with integration runtime-refresh --dry-run")
+            elif prior_binding is not None:
                 # Exact receipt/source history proves these are managed bytes,
                 # including an obsolete generation restored by later bootstrap.
                 outcome = "updated"
@@ -333,7 +396,7 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                             prior_binding.get("receipt_path") if prior_binding else None),
                         "before_sha256": managed_sha256(current) if current is not None else None,
                         "actual_sha256": managed_sha256(actual) if actual is not None else None,
-                        "source_sha256": managed_sha256(new) if new is not None else None, "bytes": new,
+                        "source_sha256": managed_sha256(new) if new is not None else None, "bytes": actual,
                         "outcome": outcome})
     # A retry may upgrade the original exact-only generation format, but it must
     # never reclassify drift after a terminal generation as a new customization.
@@ -389,8 +452,123 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                        "bytes": projected_bytes}}
 
 
+def managed_semantic_diff(old: bytes, current: bytes, new: bytes, resolved: bytes | None) -> dict[str, str]:
+    def diff(left: bytes, right: bytes, left_name: str, right_name: str) -> str:
+        try:
+            before = left.decode("utf-8").splitlines(keepends=True)
+            after = right.decode("utf-8").splitlines(keepends=True)
+        except UnicodeDecodeError:
+            return "binary content; hashes are authoritative\n"
+        return "".join(difflib.unified_diff(before, after, fromfile=left_name, tofile=right_name))
+    result = {"old_to_prior": diff(old, current, "old-source", "preserved-prior"),
+              "old_to_new": diff(old, new, "old-source", "new-source")}
+    if resolved is not None:
+        result["prior_to_resolved"] = diff(current, resolved, "preserved-prior", "resolved")
+    return result
+
+
+def managed_three_way_merge(old: bytes, current: bytes, new: bytes) -> bytes | None:
+    with tempfile.TemporaryDirectory(prefix="yy-managed-repair-") as temporary:
+        root = Path(temporary)
+        ours, base, theirs = root / "prior", root / "old", root / "new"
+        ours.write_bytes(current); base.write_bytes(old); theirs.write_bytes(new)
+        result = managed_run(["git", "merge-file", "-p", str(ours), str(base), str(theirs)], root, check=False)
+        return result.stdout if result.returncode == 0 else None
+
+
+def managed_runtime_repair_plan(controller: Path, repository: Path, previous_sha: str,
+                                target_sha: str, *, task_id: str = "manual") -> dict[str, Any]:
+    controller = controller.resolve(); repository = repository.resolve()
+    previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
+    target_sha = managed_exact_commit(repository, target_sha, "target generation")
+    if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor", previous_sha, target_sha],
+                   repository, check=False).returncode:
+        raise ManagedRuntimeError("target generation does not descend from previous generation")
+    previous_assets = managed_script_assets(repository, previous_sha)
+    target_assets = managed_script_assets(repository, target_sha)
+    actions: list[dict[str, Any]] = []
+    for relative in sorted(set(previous_assets) & set(target_assets)):
+        old = managed_source_bytes(repository, previous_sha, relative)
+        new = managed_source_bytes(repository, target_sha, relative)
+        destination = managed_safe_path(controller, relative)
+        current = destination.read_bytes() if destination.is_file() else None
+        if current is None or old == new or current in {old, new}:
+            continue
+        binding = managed_obsolete_generation_binding(controller, repository, relative, current, target_sha)
+        merged = new if binding is not None else managed_three_way_merge(old, current, new)
+        resolution = "supersede" if binding is not None else "preserve" if merged is not None else "conflict"
+        actions.append({"path": relative, "old_sha256": managed_sha256(old),
+                        "current_sha256": managed_sha256(current), "new_sha256": managed_sha256(new),
+                        "resolution": resolution,
+                        "historical_binding": binding,
+                        "prior_bytes_base64": base64.b64encode(current).decode(),
+                        "resolved_bytes_base64": base64.b64encode(merged).decode() if merged is not None else None,
+                        "resolved_sha256": managed_sha256(merged) if merged is not None else None,
+                        "semantic_diff": managed_semantic_diff(old, current, new, merged)})
+    if not actions:
+        raise ManagedRuntimeError("no changed-source managed customization requires repair")
+    receipt = {"schema_version": MANAGED_REPAIR_SCHEMA, "operation": "repair-plan",
+               "outcome": "conflict" if any(row["resolution"] == "conflict" for row in actions) else "planned",
+               "controller": str(controller), "repository": str(repository),
+               "previous_sha": previous_sha, "target_sha": target_sha,
+               "task_id": task_id, "actions": actions}
+    receipt_bytes = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    receipt_hash = managed_sha256(receipt_bytes)
+    path = managed_safe_path(controller, f"{MANAGED_RECEIPT_ROOT}/{receipt_hash}-repair-plan.json")
+    if path.exists() and path.read_bytes() != receipt_bytes:
+        raise ManagedRuntimeError("immutable managed runtime repair receipt collision")
+    reference = managed_receipt_write(path, receipt)
+    return {**receipt, "receipt": reference}
+
+
+def managed_runtime_repair_load(controller: Path, repository: Path, receipt_path: Path,
+                                previous_sha: str, target_sha: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    path = receipt_path.expanduser().resolve()
+    root = managed_safe_path(controller.resolve(), MANAGED_RECEIPT_ROOT)
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ManagedRuntimeError("repair receipt is outside the managed receipt root") from exc
+    try:
+        raw = path.read_bytes()
+        receipt = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManagedRuntimeError(f"managed runtime repair receipt is invalid: {exc}") from exc
+    receipt_hash = managed_sha256(raw)
+    if path.name != f"{receipt_hash}-repair-plan.json":
+        raise ManagedRuntimeError("managed runtime repair receipt immutable identity mismatch")
+    required = {"schema_version", "operation", "outcome", "controller", "repository",
+                "previous_sha", "target_sha", "task_id", "actions"}
+    if (not isinstance(receipt, dict) or set(receipt) != required
+            or receipt.get("schema_version") != MANAGED_REPAIR_SCHEMA
+            or receipt.get("operation") != "repair-plan" or receipt.get("outcome") != "planned"
+            or receipt.get("controller") != str(controller.resolve())
+            or receipt.get("repository") != str(repository.resolve())
+            or receipt.get("previous_sha") != previous_sha or receipt.get("target_sha") != target_sha
+            or not isinstance(receipt.get("actions"), list) or not receipt["actions"]):
+        raise ManagedRuntimeError("malformed or mismatched managed runtime repair receipt")
+    approvals: dict[str, dict[str, Any]] = {}
+    for row in receipt["actions"]:
+        expected = {"path", "old_sha256", "current_sha256", "new_sha256", "resolution",
+                    "historical_binding", "prior_bytes_base64", "resolved_bytes_base64",
+                    "resolved_sha256", "semantic_diff"}
+        if (not isinstance(row, dict) or set(row) != expected or row.get("resolution") not in {"supersede", "preserve"}
+                or not isinstance(row.get("path"), str) or row["path"] in approvals
+                or not all(MANAGED_HASH_RE.fullmatch(row.get(key, ""))
+                           for key in ("old_sha256", "current_sha256", "new_sha256", "resolved_sha256"))):
+            raise ManagedRuntimeError("malformed managed runtime repair action")
+        try:
+            prior = base64.b64decode(row["prior_bytes_base64"], validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ManagedRuntimeError("malformed managed runtime repair prior bytes") from exc
+        if managed_sha256(prior) != row["current_sha256"]:
+            raise ManagedRuntimeError("managed runtime repair prior-byte hash mismatch")
+        approvals[row["path"]] = row
+    return {**receipt, "receipt_sha256": receipt_hash, "receipt_path": str(path)}, approvals
+
+
 def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: str, target_sha: str,
-            *, task_id: str = "target") -> dict[str, Any]:
+            *, task_id: str = "target", repair_receipt: Path | None = None) -> dict[str, Any]:
     started = time.time(); started_mono = time.monotonic()
     log_path, log = managed_allocate_log("managed-runtime-refresh", task_id)
     print(f"yy managed-runtime-refresh log: {log_path}", file=sys.stderr, flush=True)
@@ -401,7 +579,23 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
     backups: dict[Path, tuple[bool, bytes, int]] = {}
     reference: dict[str, str] | None = None
     try:
-        operation = managed_runtime_plan(controller, repository, previous_sha, target_sha)
+        repair = None
+        approvals = None
+        if repair_receipt is not None:
+            repair, approvals = managed_runtime_repair_load(
+                controller, repository, repair_receipt, previous_sha, target_sha)
+            for row in approvals.values():
+                destination = managed_safe_path(controller, row["path"])
+                current = destination.read_bytes() if destination.is_file() else None
+                if current is None or managed_sha256(current) != row["current_sha256"]:
+                    raise ManagedRuntimeError(f"stale managed runtime repair identity: {row['path']}")
+                backup = managed_safe_path(
+                    controller, f"{MANAGED_BACKUP_ROOT}/{repair['receipt_sha256']}/{row['current_sha256']}.bin")
+                if backup.exists() and backup.read_bytes() != current:
+                    raise ManagedRuntimeError(f"managed runtime backup collision: {row['path']}")
+                if not backup.exists():
+                    managed_atomic_write(backup, current, 0o600)
+        operation = managed_runtime_plan(controller, repository, previous_sha, target_sha, approvals)
         log.write(f"source target={target_sha} package={operation['package_version']}\n"); log.flush()
         writes = [(managed_safe_path(controller, row["path"]), row["bytes"],
                    None if row["outcome"] == "removed" else 0o755)
@@ -434,6 +628,8 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
         if not doctor["healthy"]:
             raise ManagedRuntimeError("post-refresh doctor did not reach a coherent generation")
         receipt.update({"outcome": "completed", "package_version": operation["package_version"],
+                        "repair_plan": ({"path": repair["receipt_path"],
+                                         "sha256": repair["receipt_sha256"]} if repair else None),
                         "scripts": [{key: value for key, value in row.items() if key != "bytes"}
                                     for row in operation["scripts"]],
                         "policy": {key: value for key, value in operation["policy"].items() if key != "bytes"},
@@ -1236,6 +1432,11 @@ def parser() -> argparse.ArgumentParser:
     runtime_refresh = commands.add_parser("runtime-refresh", allow_abbrev=False)
     runtime_refresh.add_argument("--previous-sha", required=True)
     runtime_refresh.add_argument("--target-sha")
+    repair_mode = runtime_refresh.add_mutually_exclusive_group()
+    repair_mode.add_argument("--dry-run", action="store_true",
+                             help="persist a non-mutating changed-source overlap repair plan")
+    repair_mode.add_argument("--apply", type=Path,
+                             help="apply one exact immutable overlap repair plan")
     register_command = commands.add_parser("register", allow_abbrev=False)
     register_command.add_argument("owner", type=Path)
     register_command.add_argument("--replace", action="store_true")
@@ -1264,9 +1465,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.operation == "runtime-doctor":
                 payload = managed_runtime_inspect(controller, repository, target_sha)
                 code = 0 if payload["healthy"] else 2
+            elif args.dry_run:
+                payload = managed_runtime_repair_plan(
+                    controller, repository, args.previous_sha, target_sha, task_id="manual")
+                code = 0 if payload["outcome"] == "planned" else 2
             else:
                 payload = managed_runtime_refresh(
-                    controller, repository, args.previous_sha, target_sha, task_id="manual")
+                    controller, repository, args.previous_sha, target_sha, task_id="manual",
+                    repair_receipt=args.apply)
                 code = 0
         elif args.operation == "register":
             payload, code = register(args.controller, args.owner, replace=args.replace)

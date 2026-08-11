@@ -173,7 +173,7 @@ route_registered_product_control() {
         merge:status|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
         merge:next|merge:resolve|merge:review|merge:reopen) effective_operation=orchestration ;;
         integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
-        integration:sync|integration:register|integration:repair|integration:push) effective_operation=orchestration ;;
+        integration:sync|integration:runtime-doctor|integration:runtime-refresh|integration:register|integration:repair|integration:push) effective_operation=orchestration ;;
         *)
             echo "juno-code: control-plane routing refused unknown $operation subcommand '$PREBOOTSTRAP_SUBCOMMAND'" >&2
             return 2 ;;

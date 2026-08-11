@@ -380,6 +380,8 @@ describe('ypl wrapper', () => {
     { args: ['merge', 'reopen', 'T1'], operation: 'orchestration' },
     { args: ['integration', 'status'], operation: 'kanban' },
     { args: ['integration', 'sync'], operation: 'orchestration' },
+    { args: ['integration', 'runtime-doctor'], operation: 'orchestration' },
+    { args: ['integration', 'runtime-refresh', '--previous-sha', 'a'.repeat(40)], operation: 'orchestration' },
     { args: ['integration', 'register', '/owner'], operation: 'orchestration' },
     { args: ['integration', 'repair', '--dry-run'], operation: 'orchestration' },
     { args: ['integration', 'push', '--dry-run'], operation: 'orchestration' },

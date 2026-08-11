@@ -665,7 +665,7 @@ class ManagedRuntimeTests(unittest.TestCase):
             self.controller, self.repo, ".juno_task/scripts/one.py",
             b"old one\n", self.target))
 
-    def test_preserved_customization_receipt_row_never_authorizes_replacement(self) -> None:
+    def test_preserved_customization_receipt_row_can_bind_immutable_historical_source(self) -> None:
         receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
         receipt_root.mkdir(parents=True, exist_ok=True)
         source_hash = runtime.managed_sha256(b"old one\n")
@@ -674,12 +674,112 @@ class ManagedRuntimeTests(unittest.TestCase):
             "operation": "refresh", "outcome": "completed", "target_sha": self.previous,
             "scripts": [{"path": ".juno_task/scripts/one.py",
                          "classification": "preserved_customization",
-                         "source_sha256": source_hash, "actual_sha256": source_hash}],
+                         "source_sha256": "f" * 64, "actual_sha256": source_hash}],
         }) + "\n")
 
-        self.assertIsNone(runtime.managed_obsolete_generation_binding(
+        binding = runtime.managed_obsolete_generation_binding(
             self.controller, self.repo, ".juno_task/scripts/one.py",
-            b"old one\n", self.target))
+            b"old one\n", self.target)
+        self.assertEqual(binding["classification"], "receipt_bound_historical_generation")
+        self.assertEqual(binding["target_sha"], self.previous)
+
+    def test_preserved_receipt_recognizes_historical_template_bytes(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        current = b"installed prior one\n"
+        current_hash = runtime.managed_sha256(current)
+        (receipt_root / "template-history.json").write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh", "outcome": "completed", "target_sha": self.previous,
+            "scripts": [{"path": ".juno_task/scripts/one.py",
+                         "classification": "preserved_customization",
+                         "source_sha256": runtime.managed_sha256(b"old one\n"),
+                         "actual_sha256": current_hash}],
+        }) + "\n")
+
+        binding = runtime.managed_obsolete_generation_binding(
+            self.controller, self.repo, ".juno_task/scripts/one.py", current, self.target)
+
+        self.assertEqual(binding["classification"], "receipt_bound_historical_generation")
+        self.assertEqual(binding["source_path"], "juno-code/src/templates/scripts/one.py")
+        self.assertEqual(binding["target_sha"], self.previous)
+        installed = self.controller / ".juno_task/scripts/one.py"
+        installed.write_bytes(current)
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="historical-supersede")
+        self.assertEqual(installed.read_bytes(), b"new one\n")
+        row = next(item for item in result["scripts"] if item["path"].endswith("one.py"))
+        self.assertEqual(row["prior_generation_classification"],
+                         "receipt_bound_historical_generation")
+
+    def test_overlap_repair_plan_apply_preserves_prior_bytes_and_is_retry_safe(self) -> None:
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nlast\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "repair base")
+        previous = git(self.repo, "rev-parse", "HEAD")
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nnew last\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "repair target")
+        target = git(self.repo, "rev-parse", "HEAD")
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("owner first\na\nb\nc\nlast\n")
+        prior = customized.read_bytes()
+
+        plan = runtime.managed_runtime_repair_plan(
+            self.controller, self.repo, previous, target, task_id="repair")
+
+        self.assertEqual(plan["outcome"], "planned", plan)
+        row = next(item for item in plan["actions"] if item["path"].endswith("one.py"))
+        self.assertEqual(row["resolution"], "preserve")
+        self.assertEqual(row["current_sha256"], runtime.managed_sha256(prior))
+        self.assertIn("old-source", row["semantic_diff"]["old_to_new"])
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target, task_id="repair-apply",
+            repair_receipt=Path(plan["receipt"]["path"]))
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(result["repair_plan"]["sha256"], plan["receipt"]["sha256"])
+        self.assertIn("owner first", customized.read_text())
+        backups = list((self.controller / runtime.MANAGED_BACKUP_ROOT).rglob("*.bin"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), prior)
+        retried = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target, task_id="repair-retry")
+        self.assertEqual(retried["outcome"], "completed")
+
+    def test_overlap_repair_conflict_stale_and_malformed_receipts_fail_closed(self) -> None:
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("owner replacement\n")
+        plan = runtime.managed_runtime_repair_plan(
+            self.controller, self.repo, self.previous, self.target, task_id="conflict")
+        self.assertEqual(plan["outcome"], "conflict")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "malformed or mismatched"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, self.previous, self.target,
+                repair_receipt=Path(plan["receipt"]["path"]))
+
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nlast\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "stale repair base")
+        previous = git(self.repo, "rev-parse", "HEAD")
+        self.write(".juno_task/scripts/one.py", "first\na\nb\nc\nnew last\n")
+        git(self.repo, "add", ".juno_task/scripts/one.py")
+        git(self.repo, "commit", "-m", "stale repair target")
+        target = git(self.repo, "rev-parse", "HEAD")
+        customized.write_text("owner first\na\nb\nc\nlast\n")
+        valid = runtime.managed_runtime_repair_plan(
+            self.controller, self.repo, previous, target, task_id="stale")
+        customized.write_text("changed after approval\n")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "stale managed runtime repair identity"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, previous, target,
+                repair_receipt=Path(valid["receipt"]["path"]))
+        malformed = self.controller / runtime.MANAGED_RECEIPT_ROOT / "malformed.json"
+        malformed.write_text("{}\n")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "repair receipt"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, self.previous, self.target,
+                repair_receipt=malformed)
+        self.assertEqual(customized.read_text(), "changed after approval\n")
 
     def test_obsolete_receipt_cannot_authorize_bytes_that_do_not_match_git_source(self) -> None:
         receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT

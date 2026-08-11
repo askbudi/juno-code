@@ -36,6 +36,8 @@ export async function invokeIntegration(
     if (operation === 'runtime-refresh') {
       if (!options.previousSha) throw new Error('integration runtime-refresh requires --previous-sha');
       argv.push('--previous-sha', options.previousSha);
+      if (options.dryRun) argv.push('--dry-run');
+      else if (options.apply) argv.push('--apply', path.resolve(options.apply));
     }
     if (options.targetSha) argv.push('--target-sha', options.targetSha);
   }
@@ -90,8 +92,14 @@ export function configureIntegrationCommand(
     .description('Refresh managed runtime from an exact admitted target transition')
     .requiredOption('--previous-sha <sha>', 'Exact previously admitted target generation')
     .option('--target-sha <sha>', 'Exact target generation; defaults to the configured target ref')
-    .action((options: { previousSha: string; targetSha?: string }) =>
-      invoke('runtime-refresh', options));
+    .option('--dry-run', 'Persist a non-mutating changed-source overlap repair plan')
+    .option('--apply <receipt>', 'Apply one exact immutable overlap repair plan')
+    .action((options: { previousSha: string; targetSha?: string; dryRun?: boolean; apply?: string }) => {
+      if (options.dryRun && options.apply) {
+        throw new Error('integration runtime-refresh accepts only one of --dry-run or --apply <receipt>');
+      }
+      return invoke('runtime-refresh', options);
+    });
   integration
     .command('register')
     .description('Bind one verified protected worktree as the canonical integration owner')

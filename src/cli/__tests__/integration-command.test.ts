@@ -37,6 +37,25 @@ describe('integration workspace CLI', () => {
     expect(invoke).toHaveBeenLastCalledWith('runtime-refresh', {
       previousSha: 'a'.repeat(40), targetSha: 'b'.repeat(40),
     });
+
+    const plan = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(plan, invoke);
+    await plan.parseAsync([
+      'node', 'yy', 'integration', 'runtime-refresh', '--previous-sha', 'a'.repeat(40), '--dry-run',
+    ]);
+    expect(invoke).toHaveBeenLastCalledWith('runtime-refresh', {
+      previousSha: 'a'.repeat(40), dryRun: true,
+    });
+
+    const apply = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(apply, invoke);
+    await apply.parseAsync([
+      'node', 'yy', 'integration', 'runtime-refresh', '--previous-sha', 'a'.repeat(40),
+      '--apply', '/tmp/approved.json',
+    ]);
+    expect(invoke).toHaveBeenLastCalledWith('runtime-refresh', {
+      previousSha: 'a'.repeat(40), apply: '/tmp/approved.json',
+    });
   });
 
   it('forwards explicit canonical owner registration', async () => {
