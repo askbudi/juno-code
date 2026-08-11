@@ -98,6 +98,43 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         git(self.repo, "worktree", "remove", str(worktree))
         return value
 
+    def unpublished_submodule_fixture(self) -> tuple[Path, str, str, str]:
+        child_remote = self.root / "child.git"
+        child_source = self.root / "child-source"
+        git(self.root, "init", "--bare", str(child_remote))
+        git(self.root, "init", "-b", "main", str(child_source))
+        git(child_source, "config", "user.email", "test@example.com")
+        git(child_source, "config", "user.name", "Test")
+        (child_source / "value.txt").write_text("base\n")
+        git(child_source, "add", "value.txt")
+        git(child_source, "commit", "-m", "child base")
+        child_base = git(child_source, "rev-parse", "HEAD")
+        git(child_source, "remote", "add", "origin", str(child_remote))
+        git(child_source, "push", "-u", "origin", "main")
+        git(child_remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        (child_source / "value.txt").write_text("advanced\n")
+        git(child_source, "commit", "-am", "child advance")
+        child_advanced = git(child_source, "rev-parse", "HEAD")
+        git(child_source, "push", "origin", "main")
+
+        root_worktree = self.root / "add-push-submodule"
+        git(self.repo, "worktree", "add", str(root_worktree), "product")
+        git(root_worktree, "config", "user.email", "test@example.com")
+        git(root_worktree, "config", "user.name", "Test")
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(root_worktree),
+             "submodule", "add", str(child_remote), "vendor/child"], root_worktree)
+        git(root_worktree, "commit", "-am", "add advanced child")
+        root_target = git(root_worktree, "rev-parse", "HEAD")
+        git(root_worktree, "switch", "--detach")
+        git(self.repo, "config", "protocol.file.allow", "always")
+        runtime.register(self.controller, self.owner)
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            synced, sync_code = runtime.sync(self.controller)
+        self.assertEqual(sync_code, 0, synced)
+        self.assertEqual(git(self.owner / "vendor/child", "rev-parse", "HEAD"), child_advanced)
+        git(child_remote, "update-ref", "refs/heads/main", child_base, child_advanced)
+        return child_remote, child_base, child_advanced, root_target
+
     def test_status_is_offline_and_reports_stale_owner_as_data(self) -> None:
         remote_before = runtime.sha(self.repo, "refs/remotes/origin/product")
         self.remote_advance()
@@ -256,7 +293,7 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(apply_code, 2)
         self.assertIn("identity drifted", applied["error"])
 
-    def test_push_dry_run_is_non_mutating_and_apply_is_separately_disabled(self) -> None:
+    def test_push_dry_run_is_non_mutating_and_apply_is_idempotent(self) -> None:
         advanced = self.local_advance()
         runtime.register(self.controller, self.owner)
         synced, sync_code = runtime.sync(self.controller)
@@ -265,13 +302,73 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
         self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
         self.assertEqual(planned["actions"], [{
-            "kind": "push_root", "repository": str(self.controller.resolve()), "remote": "origin",
+            "kind": "push_root", "repository": str(self.owner.resolve()), "remote": "origin",
             "ref": "refs/heads/product", "before": self.base, "after": advanced,
         }])
         self.assertEqual(git(self.repo, "show-ref"), before_refs)
-        with self.assertRaisesRegex(runtime.IntegrationError, "separately authorized"):
-            runtime.push(self.controller, dry_run=False,
-                         apply=Path(planned["receipt"]["path"]))
+        applied, apply_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), advanced)
+        self.assertEqual([row["outcome"] for row in applied["phases"]], ["pushed"])
+
+        retried, retry_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((retry_code, retried["outcome"]), (0, "completed"), retried)
+        self.assertEqual([row["outcome"] for row in retried["phases"]],
+                         ["already_complete"])
+
+    def test_push_apply_refuses_remote_race_without_overwrite(self) -> None:
+        local = self.local_advance()
+        runtime.register(self.controller, self.owner)
+        synced, code = runtime.sync(self.controller)
+        self.assertEqual(code, 0, synced)
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual(plan_code, 0, planned)
+        remote = self.remote_advance("push-race")
+
+        applied, apply_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (2, "failed"), applied)
+        self.assertIn("remote changed", applied["error"])
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), remote)
+        self.assertNotEqual(remote, local)
+
+    def test_push_persists_child_success_root_failure_and_retries_safely(self) -> None:
+        child_remote, child_base, child_advanced, root_target = (
+            self.unpublished_submodule_fixture()
+        )
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual([row["kind"] for row in planned["actions"]],
+                         ["push_submodule", "push_root"])
+        self.assertEqual(planned["actions"][0]["before"], child_base)
+        self.assertEqual(planned["actions"][0]["after"], child_advanced)
+        self.assertEqual(planned["actions"][1]["after"], root_target)
+
+        original = runtime.run
+
+        def fail_root_push(argv: list[str], cwd: Path, *, check: bool = True):
+            if "push" in argv and "--recurse-submodules=check" in argv:
+                raise runtime.IntegrationError("injected root publication failure")
+            return original(argv, cwd, check=check)
+
+        with mock.patch.object(runtime, "run", side_effect=fail_root_push):
+            failed, failed_code = runtime.push(
+                self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((failed_code, failed["outcome"]), (2, "failed"), failed)
+        self.assertIn("injected root publication failure", failed["error"])
+        self.assertEqual(git(child_remote, "rev-parse", "refs/heads/main"), child_advanced)
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), self.base)
+        persisted = json.loads(Path(failed["receipt"]["path"]).read_text())
+        self.assertEqual([row["kind"] for row in persisted["phases"]], ["push_submodule"])
+
+        retried, retry_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((retry_code, retried["outcome"]), (0, "completed"), retried)
+        self.assertEqual([row["outcome"] for row in retried["phases"]],
+                         ["already_complete", "pushed"])
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
 
 
 if __name__ == "__main__":

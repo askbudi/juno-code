@@ -412,7 +412,7 @@ def push_plan(controller: Path) -> dict[str, Any]:
             if remote_sha and run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
                                    remote_sha, target_sha], repository, check=False).returncode:
                 blockers.append("root_remote_diverged")
-            actions.append({"kind": "push_root", "repository": str(repository),
+            actions.append({"kind": "push_root", "repository": str(owner_root),
                             "remote": policy["remote"], "ref": target_ref,
                             "before": remote_sha, "after": target_sha})
     core = {"schema_version": SCHEMA, "operation": "push", "controller": str(controller),
@@ -426,15 +426,111 @@ def push_plan(controller: Path) -> dict[str, Any]:
 
 def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
     controller = exact_root(controller, "controller")
-    policy, _, _ = load_policy(controller)
-    if not dry_run:
-        raise IntegrationError(
-            "remote publication is disabled until separately authorized; use --dry-run"
-        )
-    plan = push_plan(controller)
-    receipt = {**plan, "outcome": "planned" if not plan["blockers"] else "refused"}
-    reference = write_receipt(operation_receipt_path(controller, policy, "push-plan"), receipt)
-    return {**receipt, "receipt": reference}, 0 if not plan["blockers"] else 2
+    policy, task_policy, policy_path = load_policy(controller)
+    repository = task_workspace.product_repository(controller, task_policy)
+    if dry_run:
+        plan = push_plan(controller)
+        receipt = {**plan, "outcome": "planned" if not plan["blockers"] else "refused"}
+        reference = write_receipt(operation_receipt_path(controller, policy, "push-plan"), receipt)
+        return {**receipt, "receipt": reference}, 0 if not plan["blockers"] else 2
+    if apply is None:
+        raise IntegrationError("push apply requires a plan receipt")
+    try:
+        approved = json.loads(apply.expanduser().resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntegrationError(f"invalid push plan receipt: {exc}") from exc
+    core_keys = {"schema_version", "operation", "controller", "repository", "policy",
+                 "policy_sha256", "target_ref", "target_sha", "registered_owner",
+                 "actions", "blockers"}
+    if (not isinstance(approved, dict)
+            or set(approved) != core_keys | {"plan_sha256", "outcome"}
+            or approved.get("schema_version") != SCHEMA
+            or approved.get("operation") != "push"
+            or approved.get("outcome") != "planned"
+            or approved.get("blockers")):
+        raise IntegrationError("push plan receipt is not an eligible exact plan")
+    core = {key: approved[key] for key in core_keys}
+    if approved.get("plan_sha256") != json_digest(core):
+        raise IntegrationError("push plan receipt digest is invalid")
+    target_ref = task_policy["target_ref"]
+    target_sha = sha(repository, target_ref)
+    if (approved["controller"] != str(controller)
+            or approved["repository"] != str(repository)
+            or approved["policy"] != str(policy_path)
+            or approved["policy_sha256"] != hashlib.sha256(policy_path.read_bytes()).hexdigest()
+            or approved["target_ref"] != target_ref
+            or approved["target_sha"] != target_sha
+            or approved["registered_owner"] != registered_owner(repository)):
+        raise IntegrationError("push plan local identity drifted; generate a new dry-run receipt")
+    actions = approved["actions"]
+    if not isinstance(actions, list):
+        raise IntegrationError("push plan actions are invalid")
+    seen_root = False
+    child_paths: set[str] = set()
+    for index, action in enumerate(actions):
+        required = {"kind", "repository", "remote", "ref", "before", "after"}
+        if not isinstance(action, dict) or set(action) not in (required, required | {"path"}):
+            raise IntegrationError("push plan action shape is invalid")
+        if action["kind"] == "push_submodule":
+            if seen_root or set(action) != required | {"path"} or action["path"] in child_paths:
+                raise IntegrationError("submodule push actions must be unique and precede root")
+            child_paths.add(action["path"])
+        elif action["kind"] == "push_root":
+            if seen_root or index != len(actions) - 1 or set(action) != required:
+                raise IntegrationError("exactly one root push action must be last")
+            seen_root = True
+        else:
+            raise IntegrationError("unknown push plan action")
+        if (not isinstance(action["repository"], str)
+                or not isinstance(action["remote"], str) or not action["remote"]
+                or not isinstance(action["ref"], str) or not action["ref"].startswith("refs/heads/")
+                or action["before"] is not None and not SHA_RE.fullmatch(action["before"])
+                or not isinstance(action["after"], str) or not SHA_RE.fullmatch(action["after"])):
+            raise IntegrationError("push plan action identity is invalid")
+    if actions and not seen_root:
+        raise IntegrationError("push plan with publication actions must end in root push")
+    result_path = operation_receipt_path(controller, policy, "push-apply")
+    result = {**approved, "outcome": "running", "phases": []}
+    reference = write_receipt(result_path, result)
+    try:
+        with merge_queue.target_lock(controller, repository, target_ref):
+            status = status_payload(controller)
+            if (not status["ready"]
+                    or status["integration"]["registered_path"] != approved["registered_owner"]
+                    or status["target"]["sha"] != approved["target_sha"]):
+                raise IntegrationError("push apply integration identity is no longer ready")
+            for action in actions:
+                action_root = exact_root(Path(action["repository"]), "push action repository")
+                if sha(action_root, action["after"]) != action["after"]:
+                    raise IntegrationError(f"push action commit is unavailable: {action['after']}")
+                observed = remote_ref_sha(action_root, action["remote"], action["ref"])
+                if observed == action["after"]:
+                    outcome = "already_complete"
+                elif observed != action["before"]:
+                    raise IntegrationError(
+                        f"remote changed for {action['kind']}:{action.get('path', '')}"
+                    )
+                else:
+                    argv = ["git", "-C", str(action_root), "push", "--porcelain"]
+                    if action["kind"] == "push_root":
+                        argv.append("--recurse-submodules=check")
+                    argv.extend([action["remote"], f"{action['after']}:{action['ref']}"])
+                    run(argv, action_root)
+                    if remote_ref_sha(action_root, action["remote"], action["ref"]) != action["after"]:
+                        raise IntegrationError(
+                            f"remote readback failed for {action['kind']}:{action.get('path', '')}"
+                        )
+                    outcome = "pushed"
+                result["phases"].append({**action, "status": "complete", "outcome": outcome})
+                reference = write_receipt(result_path, result)
+            result["outcome"] = "completed"
+            reference = write_receipt(result_path, result)
+            return {**result, "receipt": reference}, 0
+    except (IntegrationError, task_workspace.TaskWorkspaceError,
+            merge_queue.MergeQueueError, OSError) as exc:
+        result.update({"outcome": "failed", "error": str(exc)})
+        reference = write_receipt(result_path, result)
+        return {**result, "receipt": reference}, 2
 
 
 def sync(controller: Path) -> tuple[dict[str, Any], int]:
