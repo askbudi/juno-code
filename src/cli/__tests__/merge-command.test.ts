@@ -1,6 +1,62 @@
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
-import { configureMergeQueueCommand } from '../commands/merge.js';
+import { execFileSync } from 'node:child_process';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  MAX_MERGE_RESULT_LINE_CHARS,
+  checkpointMergeQueueAfterFinalization,
+  configureMergeQueueCommand,
+  invokeMergeQueueAtController,
+} from '../commands/merge.js';
+
+const temporaryRoots: string[] = [];
+
+function git(root: string, ...args: string[]): string {
+  return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+}
+
+async function controllerFixture(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-checkpoint-'));
+  temporaryRoots.push(root);
+  git(root, 'init', '-b', 'controller');
+  git(root, 'config', 'user.email', 'fixture@example.invalid');
+  git(root, 'config', 'user.name', 'Fixture');
+  await fs.ensureDir(path.join(root, '.juno_task', 'scripts'));
+  for (const relative of ['tasks/T123.md', 'ledger/events.jsonl', 'state/tasks.json']) {
+    await fs.outputFile(path.join(root, '.juno_task', relative), 'initial\n');
+  }
+  await fs.writeJson(path.join(root, '.juno_task', 'config.json'), {
+    gitCheckpoint: { include: ['.juno_task/tasks', '.juno_task/ledger', '.juno_task/state'] },
+  });
+  const helper = path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py');
+  await fs.writeFile(path.join(root, '.juno_task', 'scripts', 'controller_checkpoint.py'), `#!/usr/bin/env python3
+import subprocess, sys
+raise SystemExit(subprocess.run([sys.executable, ${JSON.stringify(helper)}, *sys.argv[1:]]).returncode)
+`);
+  await fs.writeFile(path.join(root, 'product.txt'), 'product\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-m', 'initial controller');
+  return root;
+}
+
+const mergedResult = {
+  outcome: 'MERGED',
+  post_integration: { kanban_finalization: { status: 'complete' } },
+};
+
+async function writeMergeRuntime(root: string, body: string): Promise<void> {
+  await fs.writeFile(
+    path.join(root, '.juno_task', 'scripts', 'merge_queue.py'),
+    `#!/usr/bin/env python3\n${body}\n`,
+  );
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(temporaryRoots.splice(0).map((root) => fs.remove(root)));
+});
 
 describe('merge queue CLI', () => {
   it.each([
@@ -38,4 +94,104 @@ describe('merge queue CLI', () => {
     expect(next?.description()).toContain('continue paused evidence');
     expect(next?.registeredArguments[0]?.description).toContain('evidence/review');
   });
+
+  it('checkpoints only after successful terminal merge and Kanban finalization truth', async () => {
+    const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+    for (const operation of ['next', 'resolve'] as const) {
+      checkpoint.mockClear();
+      await checkpointMergeQueueAfterFinalization(operation, '/controller', 0, mergedResult, checkpoint);
+      expect(checkpoint).toHaveBeenCalledWith('/controller', 0);
+    }
+
+    for (const [operation, exitCode, result] of [
+      ['status', 0, mergedResult],
+      ['review', 0, mergedResult],
+      ['reopen', 0, mergedResult],
+      ['next', 2, mergedResult],
+      ['next', 0, { outcome: 'RISK_EVIDENCE_READY' }],
+      ['resolve', 0, { outcome: 'AWAITING_RISK' }],
+      ['next', 0, { outcome: 'MERGED', post_integration: { kanban_finalization: { status: 'failed' } } }],
+    ] as const) {
+      checkpoint.mockClear();
+      await checkpointMergeQueueAfterFinalization(operation, '/controller', exitCode, result, checkpoint);
+      expect(checkpoint).not.toHaveBeenCalled();
+    }
+  });
+
+  it('extracts noisy terminal JSON at invocation level while streaming stdout', async () => {
+    const root = await controllerFixture();
+    await writeMergeRuntime(root, [
+      'import json',
+      'print("managed runtime refresh: completed")',
+      `print(json.dumps(${JSON.stringify(mergedResult)}))`,
+    ].join('\n'));
+    const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+    const streamed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await invokeMergeQueueAtController('next', root, { ...process.env }, undefined, checkpoint);
+
+    expect(checkpoint).toHaveBeenCalledWith(root, 0);
+    expect(streamed.mock.calls.flatMap((row) => row).join('')).toContain('managed runtime refresh: completed');
+  });
+
+  it.each([
+    ['malformed terminal line', `print(${JSON.stringify(JSON.stringify(mergedResult))})\nprint("{not-json")`],
+    ['oversized terminal line', `print(${JSON.stringify(JSON.stringify(mergedResult))})\nprint("x" * ${MAX_MERGE_RESULT_LINE_CHARS + 1})`],
+    ['no terminal JSON', 'print("progress only")'],
+  ])('does not infer terminal merge success from %s', async (_name, body) => {
+    const root = await controllerFixture();
+    await writeMergeRuntime(root, body);
+    const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await invokeMergeQueueAtController('next', root, { ...process.env }, undefined, checkpoint);
+
+    expect(checkpoint).not.toHaveBeenCalled();
+  });
+
+  it('cleans real-Git Kanban finalization dirt and retries as an idempotent no-op', async () => {
+    const root = await controllerFixture();
+    for (const relative of ['tasks/T123.md', 'ledger/events.jsonl', 'state/tasks.json']) {
+      await fs.writeFile(path.join(root, '.juno_task', relative), 'durable merged truth\n');
+    }
+    expect(git(root, 'status', '--porcelain')).not.toBe('');
+    const previousTaskRoot = process.env.JUNO_TASK_ROOT;
+    process.env.JUNO_TASK_ROOT = '';
+    try {
+      await checkpointMergeQueueAfterFinalization('next', root, 0, mergedResult);
+      expect(git(root, 'status', '--porcelain')).toBe('');
+      expect(git(root, 'show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual([
+        '.juno_task/ledger/events.jsonl',
+        '.juno_task/state/tasks.json',
+        '.juno_task/tasks/T123.md',
+      ]);
+      expect(git(root, 'show', 'HEAD:product.txt')).toBe('product');
+      const checkpointHead = git(root, 'rev-parse', 'HEAD');
+      await checkpointMergeQueueAfterFinalization('next', root, 0, mergedResult);
+      expect(git(root, 'rev-parse', 'HEAD')).toBe(checkpointHead);
+    } finally {
+      if (previousTaskRoot === undefined) delete process.env.JUNO_TASK_ROOT;
+      else process.env.JUNO_TASK_ROOT = previousTaskRoot;
+    }
+  }, 30_000);
+
+  it('preserves a merged result and emits recovery when the real checkpointer fails', async () => {
+    const root = await controllerFixture();
+    await fs.writeFile(path.join(root, '.juno_task', 'tasks', 'T123.md'), 'durable merged truth\n');
+    await fs.writeFile(path.join(root, '.juno_task', 'scripts', 'controller_checkpoint.py'), '#!/usr/bin/env python3\nraise SystemExit(2)\n');
+    const before = git(root, 'rev-parse', 'HEAD');
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const previousTaskRoot = process.env.JUNO_TASK_ROOT;
+    process.env.JUNO_TASK_ROOT = '';
+    try {
+      await expect(checkpointMergeQueueAfterFinalization('next', root, 0, mergedResult)).resolves.toBeUndefined();
+    } finally {
+      if (previousTaskRoot === undefined) delete process.env.JUNO_TASK_ROOT;
+      else process.env.JUNO_TASK_ROOT = previousTaskRoot;
+    }
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(root, 'status', '--porcelain')).toContain('.juno_task/tasks/T123.md');
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('WARNING: Controller checkpoint failed after finalization'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('commit manually'));
+  }, 30_000);
 });
