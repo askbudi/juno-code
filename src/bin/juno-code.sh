@@ -169,7 +169,7 @@ route_registered_product_control() {
     export JUNO_CONTROL_INVOCATION_ROOT="$invocation"
     export JUNO_CONTROL_INVOCATION_ROLE="$role"
     export JUNO_CONTROL_EFFECTIVE_ROOT="$controller"
-    export JUNO_CONTROL_OPERATION="$operation"
+    export JUNO_CONTROL_OPERATION="$effective_operation"
     cd "$controller"
     exec "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" "$@"
 }

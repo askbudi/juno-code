@@ -321,6 +321,50 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it('forwards the effective task policy to the pinned controller runtime', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wrapper-forwarded-policy-'));
+    try {
+      const controller = path.join(tempDir, 'controller');
+      const integration = path.join(tempDir, 'integration');
+      const launcherBin = path.join(tempDir, 'launcher-bin');
+      const packagedScripts = path.join(tempDir, 'templates', 'scripts');
+      const runtimeMarker = path.join(tempDir, 'runtime-policy');
+      await fs.ensureDir(controller);
+      await fs.ensureDir(integration);
+      await fs.ensureDir(launcherBin);
+      await fs.ensureDir(packagedScripts);
+      await execa('git', ['init', '-b', 'controller'], { cwd: controller });
+      const runtime = path.join(controller, 'controller-runtime.mjs');
+      await fs.writeFile(
+        runtime,
+        `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(runtimeMarker)}, process.env.JUNO_CONTROL_OPERATION || '')\n`,
+      );
+      await execa('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: controller });
+      await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], {
+        cwd: controller,
+      });
+      await fs.writeFile(
+        path.join(packagedScripts, 'controller_resolver.py'),
+        [
+          'import json',
+          `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
+        ].join('\n'),
+      );
+      await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
+      await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
+
+      const result = await execa(path.join(launcherBin, 'yy'), ['task', 'finish', 'T1'], {
+        cwd: integration,
+        reject: false,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(await fs.readFile(runtimeMarker, 'utf8')).toBe('orchestration');
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('keeps fake-node wrapper assertions compatible with the runtime version probe', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-compatible-node-wrapper-'));
     try {
