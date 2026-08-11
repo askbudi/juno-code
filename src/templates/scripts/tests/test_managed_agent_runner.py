@@ -48,12 +48,12 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         fake = self.bin / "yy"
         fake.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, sys, time
-assert sys.argv[1:3] == ['pi','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
+assert sys.argv[1:4] == ['pi','--no-hooks','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
 assert not sys.stdin.read(1)
 if os.environ.get('PI_MODEL') or os.environ.get('JUNO_MODEL'): raise SystemExit(91)
 assert os.environ.get('JUNO_CONTROLLER_CHECKPOINT_ACTIVE')=='1'
 assert os.environ.get('JUNO_CODE_PROJECT_BOOTSTRAP_WRITES')=='0'
-config=json.loads(pathlib.Path(sys.argv[3]).read_text())
+config=json.loads(pathlib.Path(sys.argv[4]).read_text())
 launcher_config=json.loads((pathlib.Path.cwd()/'.juno_task/config.json').read_text())
 expected_launcher=dict(config)
 expected_launcher['controllerWorkspace']={'mode':'metadata-only','policy':'.juno_task/config/metadata-controller.json'}

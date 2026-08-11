@@ -589,7 +589,11 @@ def run(args: argparse.Namespace) -> int:
         "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
     atomic_json(launcher_config, launcher_payload)
     agent_root = Path(args.agent_root).resolve()
-    argv = ["yy", "pi", "--config", compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
+    # Managed workers/reviewers must not execute user-owned lifecycle hooks.
+    # Their environment, prompt, and output contract are already closed by this
+    # process owner, and sparse controllers may intentionally omit hook targets.
+    argv = ["yy", "pi", "--no-hooks", "--config", compatible_config["derived"]["path"],
+            "-w", str(agent_root), "-f", str(prompt)]
     env, env_contract = clean_environment(
         args, capture, metadata, binding, controller_before)
     prompt_evidence = evidence(prompt)
