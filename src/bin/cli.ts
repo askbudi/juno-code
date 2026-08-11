@@ -1225,20 +1225,41 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
       ]);
       if (await ScriptInstaller.isMetadataOnlyController(workingDirectory)) {
         await SkillInstaller.assertInstallAllowed(workingDirectory);
-        const [missing, outdated, agentSurfaceStale] = await Promise.all([
-          ScriptInstaller.getMissingScripts(workingDirectory),
-          ScriptInstaller.getOutdatedScripts(workingDirectory),
+        const [generation, agentSurfaceStale] = await Promise.all([
+          ScriptInstaller.inspectManagedControllerGeneration(workingDirectory),
           SkillInstaller.needsUpdate(workingDirectory),
         ]);
-        if (missing.length === 0 && outdated.length === 0 && !agentSurfaceStale) {
-          console.log(chalk.green('✓ Metadata-controller runtime scripts and agent surface are coherent'));
+        if (generation.present) {
+          if (generation.healthy && !agentSurfaceStale) {
+            console.log(chalk.green(
+              `✓ Receipt-bound controller scripts are coherent at ${generation.targetSha} ` +
+              `(package ${generation.packageVersion})`,
+            ));
+            return;
+          }
+          console.error(chalk.red('✗ Receipt-bound controller script generation is unhealthy'));
+          for (const finding of generation.findings) console.error(`  ${finding}`);
+          if (agentSurfaceStale) console.error('  incomplete or stale: ignored controller agent surface');
+          if (generation.targetSha) console.error(chalk.yellow(
+            `Recover explicitly with \`yy integration runtime-refresh --previous-sha ${generation.targetSha} ` +
+            `--target-sha ${generation.targetSha}\`.`,
+          ));
+          process.exitCode = 1;
           return;
         }
-        console.error(chalk.red('✗ Metadata-controller runtime scripts are incomplete or stale'));
+        const [missing, outdated] = await Promise.all([
+          ScriptInstaller.getMissingScripts(workingDirectory),
+          ScriptInstaller.getOutdatedScripts(workingDirectory),
+        ]);
+        if (missing.length === 0 && outdated.length === 0 && !agentSurfaceStale) {
+          console.log(chalk.green('✓ Bootstrap controller scripts and agent surface are coherent (no integration generation receipt)'));
+          return;
+        }
+        console.error(chalk.red('✗ Bootstrap controller scripts are incomplete or stale'));
         for (const entry of missing) console.error(`  missing: .juno_task/scripts/${entry}`);
         for (const entry of outdated) console.error(`  outdated: .juno_task/scripts/${entry}`);
         if (agentSurfaceStale) console.error('  incomplete or stale: ignored controller agent surface');
-        console.error(chalk.yellow('Run `yy scripts update`; the metadata-only controller installs ignored runtime scripts, instructions, and core skills only.'));
+        console.error(chalk.yellow('Run `yy scripts update` only for this unbound bootstrap state.'));
         process.exitCode = 1;
         return;
       }

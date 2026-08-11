@@ -24,12 +24,15 @@ function packagedEngine(name = 'migration_inventory.py'): string {
 export async function invokeMigration(args: string[]): Promise<void> {
   const evacuation = args[0]?.startsWith('evacuation-');
   const registration = args[0] === 'registration';
+  const runtimeRebind = args[0] === 'runtime-rebind';
   const engine = packagedEngine(
     registration
       ? 'controller_registration.py'
-      : evacuation
-        ? 'metadata_evacuation.py'
-        : 'migration_inventory.py',
+      : runtimeRebind
+        ? 'metadata_controller.py'
+        : evacuation
+          ? 'metadata_evacuation.py'
+          : 'migration_inventory.py',
   );
   const engineArgs = registration ? args.slice(1) : args;
   const exitCode = await new Promise<number>((resolve, reject) => {
@@ -72,6 +75,19 @@ export function configureMigrationCommand(
       if (options.kanbanRuntime) args.push('--kanban-runtime', options.kanbanRuntime);
       return invoke(args);
     });
+  migrate
+    .command('runtime-rebind')
+    .description('Explicitly rebind a clean metadata controller to one installed runtime executable')
+    .requiredOption('--root <path>', 'Exact metadata-controller worktree')
+    .requiredOption('--branch <ref>', 'Exact controller branch ref')
+    .requiredOption('--runtime <path>', 'Installed cli.mjs executable to bind (does not install a package)')
+    .requiredOption('--runtime-version <version>', 'Version printed by the runtime executable')
+    .requiredOption('--output <path>', 'New local receipt outside the controller worktree')
+    .action((options) => invoke([
+      'runtime-rebind', '--root', options.root, '--branch', options.branch,
+      '--runtime', options.runtime, '--runtime-version', options.runtimeVersion,
+      '--output', options.output,
+    ]));
   migrate
     .command('owner-template')
     .description('Create an unresolved owner-answer template bound to an inventory')

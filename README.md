@@ -141,6 +141,24 @@ yy integration runtime-doctor [--target-sha FULL_SHA]
 yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 ```
 
+A receipt-bound controller generation is Git-target-owned. `yy scripts update`
+from a mismatched (especially older) package refuses instead of replacing those
+ignored scripts. `yy info` and `yy doctor workspace` report the invoker and
+registered controller executable versions separately from the receipt-bound
+script package/target; `yy scripts doctor` validates the receipt hashes rather
+than comparing them to the invoking package.
+
+If only the registered executable is stale, explicitly rebind it to an already
+installed `cli.mjs`; this changes controller-local identity and writes a receipt,
+but does not install, upgrade, or mutate any user package:
+
+```bash
+yy migrate runtime-rebind \
+  --root /absolute/controller --branch refs/heads/CONTROLLER \
+  --runtime /absolute/juno-code/dist/bin/cli.mjs --runtime-version X.Y.Z \
+  --output /tmp/yy-runtime-rebind.json
+```
+
 If the installed controller launcher is itself an obsolete generation, use the
 runtime in the clean, detached, exact-target integration owner rather than editing
 ignored files directly:

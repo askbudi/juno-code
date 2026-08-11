@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { resolveController, type WorkspaceRole } from './controller-resolver.js';
@@ -65,7 +66,18 @@ export interface WorkspaceTopology {
     sha: string;
     state: 'initialized' | 'uninitialized' | 'wrong-gitlink' | 'conflict';
   }>;
-  runtime: { cliVersion: string; controllerVersion: string | null; drift: boolean };
+  runtime: {
+    cliVersion: string;
+    controllerVersion: string | null;
+    /** @deprecated Use executableDrift; retained in the v1 JSON projection. */
+    drift: boolean;
+    executableDrift: boolean;
+    managedGeneration: {
+      packageVersion: string | null;
+      targetSha: string | null;
+      healthy: boolean | null;
+    };
+  };
   postIntegration: Array<{
     taskId: string;
     candidateSha: string;
@@ -322,6 +334,47 @@ export function inspectWorkspaceTopology(
     controllerPath && existsSync(controllerPath)
       ? config(controllerPath, 'juno.controller.generation', true)
       : null;
+  let managedGeneration: WorkspaceTopology['runtime']['managedGeneration'] = {
+    packageVersion: null, targetSha: null, healthy: null,
+  };
+  if (controllerPath) {
+    try {
+      const receipt = JSON.parse(readFileSync(path.join(
+        controllerPath, '.juno_task/runtime/managed-controller/generation.json',
+      ), 'utf8')) as Record<string, unknown>;
+      const scripts = receipt.scripts;
+      const valid = receipt.schema_version === 'juno_managed_controller_runtime.v1' &&
+        typeof receipt.package_version === 'string' && typeof receipt.target_sha === 'string' &&
+        scripts !== null && typeof scripts === 'object';
+      let healthy = valid;
+      if (valid) {
+        for (const [relative, raw] of Object.entries(scripts as Record<string, unknown>)) {
+          const binding = raw as Record<string, unknown>;
+          const destination = path.resolve(controllerPath, relative);
+          const scriptRoot = path.resolve(controllerPath, '.juno_task/scripts');
+          if (!destination.startsWith(`${scriptRoot}${path.sep}`) ||
+              !['exact', 'preserved_customization'].includes(String(binding.classification)) ||
+              !/^[0-9a-f]{64}$/.test(String(binding.source_sha256)) ||
+              !/^[0-9a-f]{64}$/.test(String(binding.actual_sha256)) ||
+              (binding.classification === 'exact' && binding.actual_sha256 !== binding.source_sha256) ||
+              (binding.classification === 'preserved_customization' && binding.actual_sha256 === binding.source_sha256)) {
+            healthy = false;
+            continue;
+          }
+          const actualHash = createHash('sha256').update(readFileSync(destination)).digest('hex');
+          if (actualHash !== binding.actual_sha256) healthy = false;
+        }
+      }
+      managedGeneration = {
+        packageVersion: typeof receipt.package_version === 'string' ? receipt.package_version : null,
+        targetSha: typeof receipt.target_sha === 'string' ? receipt.target_sha : null,
+        healthy,
+      };
+    } catch {
+      const receiptPath = path.join(controllerPath, '.juno_task/runtime/managed-controller/generation.json');
+      if (existsSync(receiptPath)) managedGeneration.healthy = false;
+    }
+  }
   const postIntegration: WorkspaceTopology['postIntegration'] = [];
   if (controllerPath && targetSha) {
     try {
@@ -487,11 +540,29 @@ export function inspectWorkspaceTopology(
     );
   if (runtimeVersion && runtimeVersion !== cliVersion)
     add(
-      'runtime-version-drift',
+      'controller-executable-version-drift',
       'warning',
-      'Invoked CLI and controller runtime versions differ.',
+      'Invoker and registered controller executable versions differ; routed commands will show both and fail closed.',
       [cliVersion, runtimeVersion],
-      'yy scripts doctor',
+      'yy migrate runtime-rebind --help',
+    );
+  if (managedGeneration.healthy === false)
+    add(
+      'managed-controller-generation-drift',
+      'error',
+      'Receipt-bound ignored controller scripts are missing, changed, or have an invalid generation receipt.',
+      [managedGeneration.targetSha ?? 'unknown target', managedGeneration.packageVersion ?? 'unknown package'],
+      managedGeneration.targetSha
+        ? `yy integration runtime-refresh --previous-sha ${managedGeneration.targetSha} --target-sha ${managedGeneration.targetSha}`
+        : 'yy integration runtime-doctor',
+    );
+  if (managedGeneration.targetSha && targetSha && managedGeneration.targetSha !== targetSha)
+    add(
+      'managed-controller-target-generation-stale',
+      'error',
+      'Receipt-bound ignored controller scripts do not match the current product target.',
+      [managedGeneration.targetSha, targetSha],
+      'yy integration runtime-doctor',
     );
   const moduleState = repo ? submodules(repo) : [];
   for (const module of moduleState.filter((item) => item.state !== 'initialized'))
@@ -544,6 +615,8 @@ export function inspectWorkspaceTopology(
       cliVersion,
       controllerVersion: runtimeVersion,
       drift: Boolean(runtimeVersion && runtimeVersion !== cliVersion),
+      executableDrift: Boolean(runtimeVersion && runtimeVersion !== cliVersion),
+      managedGeneration,
     },
     postIntegration,
     findings,

@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { ScriptInstaller } from '../script-installer.js';
 import { ManagedProjectAssets } from '../managed-project-assets.js';
 
@@ -860,6 +861,38 @@ describe('ScriptInstaller', () => {
         path.join(testDir, '.juno_task/config/metadata-controller.json'),
       )).toEqual({ preserved: 'reviewed-project-policy' });
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
+    });
+
+    it('refuses an older package bootstrap without replacing a newer receipt-bound controller generation', async () => {
+      const script = '.juno_task/scripts/task_workspace.py';
+      const exactTargetBytes = '# newer exact target runtime\n';
+      const hash = createHash('sha256').update(exactTargetBytes).digest('hex');
+      await fs.ensureDir(path.join(testDir, '.juno_task/runtime/managed-controller'));
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json',
+        },
+      });
+      await fs.outputFile(path.join(testDir, script), exactTargetBytes);
+      await fs.writeJson(
+        path.join(testDir, '.juno_task/runtime/managed-controller/generation.json'),
+        {
+          schema_version: 'juno_managed_controller_runtime.v1',
+          target_sha: 'a'.repeat(40),
+          package_version: '99.0.0',
+          scripts: { [script]: {
+            classification: 'exact', source_sha256: hash, actual_sha256: hash,
+          } },
+        },
+      );
+
+      await expect(ScriptInstaller.autoUpdate(testDir, true)).rejects.toThrow(
+        /Refusing package script update.*receipt-bound.*99\.0\.0/s,
+      );
+      expect(await fs.readFile(path.join(testDir, script), 'utf8')).toBe(exactTargetBytes);
+      expect(await ScriptInstaller.inspectManagedControllerGeneration(testDir)).toMatchObject({
+        present: true, healthy: true, packageVersion: '99.0.0', targetSha: 'a'.repeat(40),
+      });
     });
 
     it('does not mix a new lifecycle script generation with customized guidance', async () => {

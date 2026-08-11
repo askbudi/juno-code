@@ -11,6 +11,20 @@ describe('migration CLI', () => {
     expect(invoke).toHaveBeenCalledWith(['inventory', '--project', '/project', '--heavy-threshold-bytes', '42', '--output', '/receipts/inventory.json', '--controller', '/controller', '--product-ref', 'refs/heads/product', '--runtime', '/bin/yy', '--kanban-runtime', '/bin/juno-kanban']);
   });
 
+  it('exposes explicit controller executable rebind without installing a package', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureMigrationCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'migrate', 'runtime-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime', '/package/dist/bin/cli.mjs', '--runtime-version', '2.1.3',
+      '--output', '/tmp/runtime-rebind.json']);
+    expect(invoke).toHaveBeenCalledWith(['runtime-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime', '/package/dist/bin/cli.mjs', '--runtime-version', '2.1.3',
+      '--output', '/tmp/runtime-rebind.json']);
+  });
+
   it('forwards only immutable inputs to policy generation', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride();

@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -122,6 +123,30 @@ describe('normalized workspace topology', () => {
       role: 'integration-owner',
       roleAuthority: 'protected-integration.v1',
     });
+  });
+
+  it('reports stale controller executable separately from a healthy receipt-bound script generation', () => {
+    const value = fixture();
+    const script = '.juno_task/scripts/task_workspace.py';
+    const bytes = Buffer.from('# exact target runtime\n');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    writeFileSync(path.join(value.controller, script), bytes);
+    mkdirSync(path.join(value.controller, '.juno_task/runtime/managed-controller'), { recursive: true });
+    writeFileSync(path.join(value.controller, '.juno_task/runtime/managed-controller/generation.json'), JSON.stringify({
+      schema_version: 'juno_managed_controller_runtime.v1',
+      package_version: '2.1.3',
+      target_sha: git(value.primary, 'rev-parse', 'target'),
+      scripts: { [script]: { classification: 'exact', source_sha256: hash, actual_sha256: hash } },
+    }));
+    git(value.controller, 'config', '--worktree', 'juno.controller.runtimeVersion', '2.1.1');
+
+    const report = inspectWorkspaceTopology(value.task, '2.1.3');
+    expect(report.runtime).toMatchObject({
+      cliVersion: '2.1.3', controllerVersion: '2.1.1', executableDrift: true,
+      managedGeneration: { packageVersion: '2.1.3', healthy: true },
+    });
+    expect(report.findings.map((item) => item.code)).toContain('controller-executable-version-drift');
+    expect(report.findings.map((item) => item.code)).not.toContain('managed-controller-generation-drift');
   });
 
   it('shows non-Git and unrelated Git invocations as unmanaged', () => {

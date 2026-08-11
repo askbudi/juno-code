@@ -35,10 +35,11 @@ function humanInfo(report: WorkspaceTopology): string {
     line('Integration clean', report.integration.owner?.clean),
     line('Tasks', report.tasks.length),
     line('Submodules', report.submodules.length),
-    line(
-      'CLI/controller',
-      `${report.runtime.cliVersion}/${report.runtime.controllerVersion ?? 'unknown'}`,
-    ),
+    line('Invoker CLI', report.runtime.cliVersion),
+    line('Controller executable', report.runtime.controllerVersion),
+    line('Managed scripts package', report.runtime.managedGeneration.packageVersion),
+    line('Managed scripts target', report.runtime.managedGeneration.targetSha),
+    line('Managed scripts healthy', report.runtime.managedGeneration.healthy),
     'Findings',
     ...findingLines,
   ].join('\n');

@@ -6,6 +6,7 @@
  * this installer manages scripts in the project's .juno_task/scripts/ directory.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +32,20 @@ const COHERENCE_BLOCKING_MANAGED_ASSETS = new Set(
   managedAssetManifest.assets
     .map((asset) => asset.destination),
 );
+const MANAGED_CONTROLLER_GENERATION = path.join(
+  '.juno_task', 'runtime', 'managed-controller', 'generation.json',
+);
+
+type ManagedControllerGeneration = {
+  schema_version: 'juno_managed_controller_runtime.v1';
+  target_sha: string;
+  package_version: string;
+  scripts: Record<string, {
+    classification: 'exact' | 'preserved_customization';
+    source_sha256: string;
+    actual_sha256: string;
+  }>;
+};
 
 export class ScriptInstaller {
   static async isMetadataOnlyController(projectDir: string): Promise<boolean> {
@@ -40,6 +55,109 @@ export class ScriptInstaller {
         && config.controllerWorkspace.policy === '.juno_task/config/metadata-controller.json';
     } catch {
       return false;
+    }
+  }
+
+  static async inspectManagedControllerGeneration(projectDir: string): Promise<{
+    present: boolean; healthy: boolean; packageVersion: string | null; targetSha: string | null;
+    findings: string[];
+  }> {
+    const generationPath = path.join(projectDir, MANAGED_CONTROLLER_GENERATION);
+    if (!(await fs.pathExists(generationPath))) {
+      return { present: false, healthy: false, packageVersion: null, targetSha: null,
+        findings: ['generation receipt is missing'] };
+    }
+    try {
+      const generation = await fs.readJson(generationPath) as ManagedControllerGeneration;
+      const findings: string[] = [];
+      if (generation.schema_version !== 'juno_managed_controller_runtime.v1' ||
+          !/^[0-9a-f]{40,64}$/.test(generation.target_sha) ||
+          typeof generation.package_version !== 'string' ||
+          !generation.scripts || typeof generation.scripts !== 'object') {
+        findings.push('generation receipt identity is invalid');
+      } else {
+        for (const [relative, binding] of Object.entries(generation.scripts)) {
+          const destination = path.resolve(projectDir, relative);
+          const scriptRoot = path.resolve(projectDir, MANAGED_SCRIPT_ROOT);
+          if (!destination.startsWith(`${scriptRoot}${path.sep}`) ||
+              !/^[0-9a-f]{64}$/.test(binding?.source_sha256 ?? '') ||
+              !/^[0-9a-f]{64}$/.test(binding?.actual_sha256 ?? '') ||
+              !['exact', 'preserved_customization'].includes(binding?.classification) ||
+              (binding.classification === 'exact' && binding.actual_sha256 !== binding.source_sha256) ||
+              (binding.classification === 'preserved_customization' && binding.actual_sha256 === binding.source_sha256)) {
+            findings.push(`${relative}: invalid binding`);
+            continue;
+          }
+          if (!(await fs.pathExists(destination))) {
+            findings.push(`${relative}: missing`);
+            continue;
+          }
+          const actual = createHash('sha256').update(await fs.readFile(destination)).digest('hex');
+          if (actual !== binding.actual_sha256) findings.push(`${relative}: drift`);
+        }
+      }
+      return { present: true, healthy: findings.length === 0,
+        packageVersion: typeof generation.package_version === 'string' ? generation.package_version : null,
+        targetSha: typeof generation.target_sha === 'string' ? generation.target_sha : null,
+        findings };
+    } catch (error) {
+      return { present: true, healthy: false, packageVersion: null, targetSha: null,
+        findings: [`generation receipt is invalid: ${String(error)}`] };
+    }
+  }
+
+  /**
+   * A post-integration generation is Git/receipt-owned, not package-owned.
+   * Generic package installation may repair it only when package source is the
+   * exact bound source and no owner customization is present. In particular an
+   * older globally installed yy must not silently roll ignored scripts back.
+   */
+  static async assertManagedControllerPackageUpdateAllowed(projectDir: string): Promise<void> {
+    if (!(await this.isMetadataOnlyController(projectDir))) return;
+    const generationPath = path.join(projectDir, MANAGED_CONTROLLER_GENERATION);
+    if (!(await fs.pathExists(generationPath))) return;
+
+    let generation: ManagedControllerGeneration;
+    try {
+      generation = await fs.readJson(generationPath) as ManagedControllerGeneration;
+    } catch (error) {
+      throw new Error(`Managed controller generation receipt is invalid: ${String(error)}`);
+    }
+    if (
+      generation.schema_version !== 'juno_managed_controller_runtime.v1' ||
+      !/^[0-9a-f]{40,64}$/.test(generation.target_sha) ||
+      typeof generation.package_version !== 'string' ||
+      !generation.scripts || typeof generation.scripts !== 'object'
+    ) {
+      throw new Error(`Managed controller generation receipt is invalid: ${generationPath}`);
+    }
+
+    const packageScriptsDir = this.getPackageScriptsDir();
+    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    const mismatches: string[] = [];
+    for (const [relative, binding] of Object.entries(generation.scripts)) {
+      const scriptName = path.relative(MANAGED_SCRIPT_ROOT, relative);
+      const sourcePath = path.join(packageScriptsDir, scriptName);
+      if (
+        scriptName.startsWith('..') || path.isAbsolute(scriptName) ||
+        binding?.classification !== 'exact' ||
+        !(await fs.pathExists(sourcePath))
+      ) {
+        mismatches.push(relative);
+        continue;
+      }
+      const packageHash = createHash('sha256').update(await fs.readFile(sourcePath)).digest('hex');
+      if (packageHash !== binding.source_sha256) mismatches.push(relative);
+    }
+    if (mismatches.length > 0) {
+      const sample = mismatches.slice(0, 3).join(', ');
+      throw new Error(
+        `Refusing package script update: controller runtime is receipt-bound to target ${generation.target_sha} ` +
+        `(package ${generation.package_version}), but the invoked package source is not that exact generation` +
+        `${sample ? `; non-package bindings: ${sample}` : ''}. ` +
+        `Preserved the exact target generation. Rebind the executable with \`yy migrate runtime-rebind\`; ` +
+        `recover scripts with \`yy integration runtime-refresh --previous-sha ${generation.target_sha} --target-sha ${generation.target_sha}\`.`,
+      );
     }
   }
 
@@ -492,6 +610,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
   static async preflightUpdate(projectDir: string, force = false): Promise<void> {
     const junoTaskDir = path.join(projectDir, '.juno_task');
     if (!(await lstatIfPresent(junoTaskDir))) return;
+    await this.assertManagedControllerPackageUpdateAllowed(projectDir);
 
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     await ManagedProjectAssets.preflight(projectDir, { force });
@@ -529,6 +648,9 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
    * @returns true if any scripts were installed or updated
    */
   static async autoUpdate(projectDir: string, silent = true, force = false): Promise<boolean> {
+    // Keep this outside the compatibility catch: generation regression is a
+    // control-plane refusal, not a best-effort installer miss.
+    await this.assertManagedControllerPackageUpdateAllowed(projectDir);
     try {
       const debug = process.env.JUNO_CODE_DEBUG === '1';
       const metadataOnlyController = await this.isMetadataOnlyController(projectDir);
