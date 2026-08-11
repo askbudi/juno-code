@@ -630,6 +630,58 @@ class MergeQueueTests(unittest.TestCase):
         self.assertNotIn("queue_attempt", reopened)
         self.assertEqual(self.counter.read_text().splitlines(), ["run", "run"])
 
+    def test_prior_findings_survive_repairs_and_legacy_nonreviewed_refresh_links(self) -> None:
+        findings_tip = self.commit_feature("X", "src/security/auth.py", "broken\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)):
+            finding = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(finding["outcome"], "REVIEW_FINDINGS")
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("fixed\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "repair findings")
+        repaired = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        repaired_tip = repaired["tip_sha"]
+        self.assertEqual(repaired["prior_findings_candidate_sha"], findings_tip)
+
+        (worktree / "src/security/auth.py").write_text("fixed again\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "queued follow-up")
+        refreshed = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(refreshed["prior_findings_candidate_sha"], findings_tip)
+        self.queue_payload("next")
+        record = self.task("status", "X")
+        plan = record["queue_attempt"]["risk"]["plan"]
+
+        summary, references = merge_runtime.prior_findings_summary(
+            self.controller.resolve(), record, plan)
+        self.assertIn(findings_tip, summary)
+        self.assertIn("SEC [high]: finding", summary)
+        self.assertIn(findings_tip, references)
+
+        legacy = dict(record)
+        legacy.pop("prior_findings_candidate_sha")
+        legacy["reopened_from_candidate_sha"] = repaired_tip
+        legacy_evidence = (self.controller / ".juno_task/runtime/merge-queue/evidence/X"
+                           / f"{repaired_tip}.attempt-1.json")
+        legacy_evidence.write_text(json.dumps({
+            "candidate": {
+                "candidate_sha": repaired_tip,
+                "base_sha": plan["candidate"]["base_sha"],
+                "target_ref": plan["candidate"]["target_ref"],
+            },
+            "created_at": "2099-01-01T00:00:00Z",
+            "reviews": [{"verdict": "pass"}],
+        }))
+        recovered, _ = merge_runtime.prior_findings_summary(
+            self.controller.resolve(), legacy, plan)
+        self.assertIn(findings_tip, recovered)
+        self.assertIn("SEC [high]: finding", recovered)
+
     def test_full_suite_receipt_fits_tails_inside_the_whole_artifact_bound(self) -> None:
         stdout = ("large output ☃\n" * 8000)
         stderr = ("warning\n" * 2000)

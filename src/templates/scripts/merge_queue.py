@@ -1083,14 +1083,53 @@ def bounded_json_reference(reference: dict[str, Any], limit: int, label: str) ->
 
 def prior_findings_summary(controller: Path, record: dict[str, Any],
                            plan: dict[str, Any]) -> tuple[str, str]:
-    prior_sha = record.get("reopened_from_candidate_sha")
-    if not isinstance(prior_sha, str):
+    evidence_root = controller / ".juno_task/runtime/merge-queue/evidence" / record["task_id"]
+    explicit_sha = record.get("prior_findings_candidate_sha")
+    if explicit_sha is not None and not isinstance(explicit_sha, str):
+        raise MergeQueueError("prior review findings candidate identity is malformed")
+    prior_sha = explicit_sha
+    paths = sorted(evidence_root.glob(f"{prior_sha}.attempt-*.json")) if prior_sha else []
+    if explicit_sha and not paths:
+        raise MergeQueueError("prior review findings evidence is missing")
+    if not paths:
+        legacy_sha = record.get("reopened_from_candidate_sha")
+        legacy_paths = (sorted(evidence_root.glob(f"{legacy_sha}.attempt-*.json"))
+                        if isinstance(legacy_sha, str) else [])
+        candidates: list[tuple[str, str, list[Path]]] = []
+        grouped: dict[str, list[Path]] = {}
+        for evidence_path in evidence_root.glob("*.attempt-*.json"):
+            grouped.setdefault(evidence_path.name.split(".attempt-", 1)[0], []).append(evidence_path)
+        limit = plan["evidence_limits"]["max_receipt_bytes"]
+        for candidate_sha, candidate_paths in grouped.items():
+            newest = ""
+            has_findings = False
+            valid = True
+            for evidence_path in sorted(candidate_paths):
+                data = evidence_path.read_bytes()
+                if not data or len(data) > limit:
+                    valid = False
+                    break
+                evidence = json.loads(data)
+                candidate = evidence.get("candidate", {})
+                if (candidate.get("candidate_sha") != candidate_sha
+                        or candidate.get("base_sha") != plan["candidate"]["base_sha"]
+                        or candidate.get("target_ref") != plan["candidate"]["target_ref"]):
+                    valid = False
+                    break
+                newest = max(newest, str(evidence.get("created_at", "")))
+                has_findings = has_findings or any(
+                    review.get("verdict") == "findings"
+                    for review in evidence.get("reviews", []) if isinstance(review, dict)
+                )
+            if valid and has_findings:
+                candidates.append((newest, candidate_sha, sorted(candidate_paths)))
+        if candidates:
+            legacy_candidates = [row for row in candidates if row[1] == legacy_sha]
+            _, prior_sha, paths = max(
+                legacy_candidates or candidates, key=lambda row: (row[0], row[1]))
+    if not prior_sha or not paths:
         return ("No prior reviewed candidate is bound to this exact queue record.",
                 "queue-state:none")
-    evidence_root = controller / ".juno_task/runtime/merge-queue/evidence" / record["task_id"]
-    paths = sorted(evidence_root.glob(f"{prior_sha}.attempt-*.json"))
-    if not paths:
-        raise MergeQueueError("prior review findings evidence is missing")
     summaries: list[str] = []
     evidence_refs: list[str] = []
     limit = plan["evidence_limits"]["max_receipt_bytes"]
@@ -1948,6 +1987,11 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                        "validation": reopen_attempt["validations"],
                        "last_validation_outcome": "PASSED",
                        "reopened_from_candidate_sha": reopen_attempt["old_candidate_sha"]})
+        prior_findings_sha = record.get("prior_findings_candidate_sha")
+        if source_state == "REVIEW_FINDINGS":
+            prior_findings_sha = reopen_attempt["old_candidate_sha"]
+        if isinstance(prior_findings_sha, str):
+            queued["prior_findings_candidate_sha"] = prior_findings_sha
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             if state["tasks"].get(task_id) != record:
