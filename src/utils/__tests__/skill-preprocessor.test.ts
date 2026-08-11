@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Import the preprocessor functions directly from the template source
 import junoSkillPreprocessor, {
+  createDirectiveArgumentNamespace,
   expandSkillInvocation,
   findSkillFile,
   parseCommandArgs,
@@ -354,6 +355,18 @@ describe('skill preprocessing integration', () => {
   });
 });
 
+describe('directive environment namespace', () => {
+  it('retries inherited and authored collisions before selecting an absent namespace', () => {
+    const tokens = ['inherited', 'authored', 'safe'];
+    const inherited = { JUNO_SKILL_ARGUMENT_inherited_0: 'sentinel' };
+    const command = 'printf %s "$JUNO_SKILL_ARGUMENT_authored_0"';
+    const namespace = createDirectiveArgumentNamespace(command, inherited, () => tokens.shift()!);
+    expect(namespace).toBe('JUNO_SKILL_ARGUMENT_safe_');
+    expect(command).not.toContain(namespace);
+    expect(Object.keys(inherited).some((key) => key.startsWith(namespace))).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Pi input-handler parity and consumption contract
 // ---------------------------------------------------------------------------
@@ -444,6 +457,29 @@ describe('Pi input handler argument preservation', () => {
     expect(expanded.endsWith('</skill>\n\ntail')).toBe(true);
   });
 
+  it('does not overwrite inherited predictable sentinels and keeps multiple placeholders distinct', () => {
+    const inheritedName = 'JUNO_SKILL_ARGUMENT_0';
+    const previous = process.env[inheritedName];
+    process.env[inheritedName] = 'inherited-sentinel';
+    skill(
+      'namespace-collision',
+      `Result: !\`printf '%s|%s|%s' "$${inheritedName}" "$1" "$2"\``,
+      true,
+    );
+    try {
+      const expanded = expandSkillInvocation(
+        '/skill:namespace-collision "first value" "second value"',
+        tmpDir,
+      )!;
+      expect(expanded).toContain('Result: inherited-sentinel|first value|second value');
+      expect(expanded.endsWith('</skill>')).toBe(true);
+      expect(process.env[inheritedName]).toBe('inherited-sentinel');
+    } finally {
+      if (previous === undefined) delete process.env[inheritedName];
+      else process.env[inheritedName] = previous;
+    }
+  });
+
   it('passes hostile values through the environment in every supported authored shell context', () => {
     const marker = path.join(tmpDir, 'shell-context-marker');
     const contexts = {
@@ -483,6 +519,30 @@ describe('Pi input handler argument preservation', () => {
     expect(expanded.endsWith('</skill>')).toBe(true);
     expect(fs.existsSync(marker)).toBe(false);
   });
+
+  it.each([
+    ['quoted', "<<'EOF'"],
+    ['escaped', '<<\\EOF'],
+  ])(
+    'fails safely before executing placeholder-bearing %s non-expanding heredocs',
+    (_kind, declaration) => {
+      const marker = path.join(tmpDir, `non-expanding-${_kind}-marker`);
+      skill(
+        `non-expanding-${_kind}`,
+        `Before: !\`touch ${marker}\`\nResult: !\`cat ${declaration}\n$1\nEOF\``,
+        true,
+      );
+      const expanded = expandSkillInvocation(
+        `/skill:non-expanding-${_kind} "safe payload"`,
+        tmpDir,
+      )!;
+      expect(expanded).toContain(
+        '[Error: argument placeholders inside quoted or escaped-delimiter heredocs are unsupported; directive was not executed]',
+      );
+      expect(expanded.match(/safe payload/g)).toHaveLength(1);
+      expect(fs.existsSync(marker)).toBe(false);
+    },
+  );
 
   it('combines authored directives with positional/all placeholders safely through the registered handler', () => {
     const marker = path.join(tmpDir, 'argument-was-executed');

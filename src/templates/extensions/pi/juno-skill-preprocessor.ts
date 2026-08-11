@@ -8,6 +8,7 @@
  */
 import type { ExtensionAPI, InputEvent } from '@mariozechner/pi-coding-agent';
 import { execSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 
@@ -207,8 +208,10 @@ function processShellDirectives(
   );
 }
 
-/** Heredoc bodies expand parameters without reparsing their values as shell source. */
-function isInHeredocBody(command: string, offset: number): boolean {
+type HeredocContext = 'expanding' | 'non-expanding' | null;
+
+/** Classify a placeholder offset in expanding/non-expanding heredoc source. */
+function heredocContextAt(command: string, offset: number): HeredocContext {
   const lines = command.split('\n');
   const queued: Array<{ delimiter: string; stripTabs: boolean; expands: boolean }> = [];
   let active: (typeof queued)[number] | undefined;
@@ -221,24 +224,26 @@ function isInHeredocBody(command: string, offset: number): boolean {
       if (comparison === active.delimiter) {
         active = queued.shift();
       } else {
-        if (offset >= lineStart && offset <= lineEnd) return active.expands;
+        if (offset >= lineStart && offset <= lineEnd) {
+          return active.expands ? 'expanding' : 'non-expanding';
+        }
         lineStart = lineEnd + 1;
         continue;
       }
     }
 
-    const declaration = /<<(-)?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&<>]+))/g;
+    const declaration = /<<(-)?\s*(?:'([^']+)'|"([^"]+)"|(\\)?([^\s;|&<>]+))/g;
     for (const match of line.matchAll(declaration)) {
       queued.push({
-        delimiter: match[2] ?? match[3] ?? match[4] ?? '',
+        delimiter: match[2] ?? match[3] ?? match[5] ?? '',
         stripTabs: match[1] === '-',
-        expands: match[2] === undefined && match[3] === undefined,
+        expands: match[2] === undefined && match[3] === undefined && match[4] === undefined,
       });
     }
     if (!active) active = queued.shift();
     lineStart = lineEnd + 1;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -246,7 +251,7 @@ function isInHeredocBody(command: string, offset: number): boolean {
  * bytes live only in the child environment and are never inserted into shell source.
  */
 function referenceShellPlaceholder(command: string, offset: number, variableName: string): string {
-  if (isInHeredocBody(command, offset)) return `\${${variableName}}`;
+  if (heredocContextAt(command, offset) === 'expanding') return `\${${variableName}}`;
 
   let inSingle = false;
   let inDouble = false;
@@ -268,6 +273,31 @@ function referenceShellPlaceholder(command: string, offset: number, variableName
   return `"\${${variableName}}"`;
 }
 
+/** Select a random per-directive namespace absent from inherited env and authored source. */
+function createDirectiveArgumentNamespace(
+  command: string,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env,
+  candidateToken: () => string = () => randomBytes(16).toString('hex'),
+): string {
+  for (let attempt = 0; attempt < 1024; attempt += 1) {
+    const namespace = `JUNO_SKILL_ARGUMENT_${candidateToken()}_`;
+    const inheritedCollision = Object.keys(inheritedEnvironment).some((key) =>
+      key.startsWith(namespace),
+    );
+    if (!inheritedCollision && !command.includes(namespace)) return namespace;
+  }
+  throw new Error('Unable to allocate a collision-free skill directive argument namespace');
+}
+
+function nonExpandingHeredocError(command: string): string | null {
+  for (const match of command.matchAll(new RegExp(ARG_PLACEHOLDER_REGEX.source, 'g'))) {
+    if (heredocContextAt(command, match.index ?? 0) === 'non-expanding') {
+      return '[Error: argument placeholders inside quoted or escaped-delimiter heredocs are unsupported; directive was not executed]';
+    }
+  }
+  return null;
+}
+
 /**
  * Substitute every body segment once, but execute only directives present in the
  * authored skill body. Values inserted by arguments can therefore never create
@@ -282,6 +312,12 @@ function processSkillBody(
 ): { text: string; consumed: Set<number>; consumesAll: boolean } {
   if (!shellEnabled) return substituteArgsWithConsumption(body, args, rawArguments);
 
+  const directiveMatches = [...body.matchAll(new RegExp(SHELL_DIRECTIVE_REGEX.source, 'g'))];
+  for (const match of directiveMatches) {
+    const error = nonExpandingHeredocError(match[1] ?? '');
+    if (error) return { text: error, consumed: new Set<number>(), consumesAll: false };
+  }
+
   const consumed = new Set<number>();
   let consumesAll = false;
   let cursor = 0;
@@ -291,7 +327,7 @@ function processSkillBody(
     consumesAll ||= substitution.consumesAll;
   };
 
-  for (const match of body.matchAll(new RegExp(SHELL_DIRECTIVE_REGEX.source, 'g'))) {
+  for (const match of directiveMatches) {
     const index = match.index ?? 0;
     const ordinary = substituteArgsWithConsumption(body.slice(cursor, index), args, rawArguments);
     merge(ordinary);
@@ -299,13 +335,14 @@ function processSkillBody(
 
     const authoredCommand = match[1] ?? '';
     const environment: Record<string, string> = {};
+    const variableNamespace = createDirectiveArgumentNamespace(authoredCommand);
     let variableIndex = 0;
     const command = substituteArgsWithConsumption(
       authoredCommand,
       args,
       rawArguments,
       (value, offset) => {
-        const variableName = `JUNO_SKILL_ARGUMENT_${variableIndex}`;
+        const variableName = `${variableNamespace}${variableIndex}`;
         variableIndex += 1;
         environment[variableName] = value;
         return referenceShellPlaceholder(authoredCommand, offset, variableName);
@@ -376,7 +413,9 @@ export default function junoSkillPreprocessor(pi: ExtensionAPI) {
 }
 
 export {
+  createDirectiveArgumentNamespace,
   expandSkillInvocation,
+  heredocContextAt,
   findSkillFile,
   parseCommandArgs,
   parseFrontmatter,
