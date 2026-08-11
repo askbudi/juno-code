@@ -1817,12 +1817,26 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             and isinstance(record.get("queue_attempt"), dict)
             and record["queue_attempt"].get("outcome") == failure_outcome
         )
-        if source_state not in {"REVIEW_FINDINGS", "REOPENING"} and not failed_queue_repair:
+        queued_tip_refresh = (
+            source_state == "QUEUED"
+            and isinstance(record.get("tip_sha"), str)
+            and not failed_queue_repair
+        )
+        if (source_state not in {"REVIEW_FINDINGS", "REOPENING"}
+                and not failed_queue_repair and not queued_tip_refresh):
             raise MergeQueueError("task has no review findings or failed queue repair to reopen")
         if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK", "QUEUED"}:
             old_attempt = record.get("queue_attempt")
             if not isinstance(old_attempt, dict):
-                raise MergeQueueError("review finding task has no frozen queue attempt")
+                if queued_tip_refresh:
+                    old_attempt = {
+                        "candidate_sha": record["tip_sha"],
+                        "candidate_checkout": None,
+                        "candidate_token": None,
+                        "outcome": "QUEUED_TIP_REFRESH",
+                    }
+                else:
+                    raise MergeQueueError("review finding task has no frozen queue attempt")
             worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
             if Path(record["repository"]).resolve() != repository:
                 raise MergeQueueError("feature repository identity drifted")
@@ -1837,7 +1851,7 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                 raise MergeQueueError("feature worktree must be clean before reopen")
             if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
                                  record["tip_sha"], new_tip], repository, check=False).returncode:
-                raise MergeQueueError("new feature tip must descend from the reviewed tip")
+                raise MergeQueueError("new feature tip must descend from the queued or reviewed tip")
             changed = sorted(set(task_runtime.git(
                 worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
             ).splitlines()))
@@ -1946,7 +1960,8 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         source_outcome = reopen_attempt.get("source_outcome")
         outcome = ({"FAILED_FULL_SUITE": "REQUEUED_AFTER_FULL_SUITE_FAILURE",
                     "REVIEW_FAILED": "REQUEUED_AFTER_REVIEW_FAILURE",
-                    "FAILED_TEST": "REQUEUED_AFTER_VALIDATION_FAILURE"}.get(
+                    "FAILED_TEST": "REQUEUED_AFTER_VALIDATION_FAILURE",
+                    "QUEUED_TIP_REFRESH": "REQUEUED_AFTER_TIP_REFRESH"}.get(
                         source_outcome, "REQUEUED_AFTER_FINDINGS"))
         return {**queued, "outcome": outcome}
 

@@ -613,6 +613,23 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_VALIDATION_FAILURE")
         self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
 
+    def test_queued_task_new_tip_refreshes_without_manufacturing_a_failure(self) -> None:
+        old_tip = self.commit_feature("X", "src/x.py", "first\n")
+        worktree = self.workspaces / "X"
+        (worktree / "src/x.py").write_text("second\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "follow-up")
+        new_tip = git(worktree, "rev-parse", "HEAD")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertNotEqual(old_tip, new_tip)
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_TIP_REFRESH")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", new_tip))
+        self.assertEqual(reopened["reopened_from_candidate_sha"], old_tip)
+        self.assertNotIn("queue_attempt", reopened)
+        self.assertEqual(self.counter.read_text().splitlines(), ["run", "run"])
+
     def test_full_suite_receipt_fits_tails_inside_the_whole_artifact_bound(self) -> None:
         stdout = ("large output ☃\n" * 8000)
         stderr = ("warning\n" * 2000)
