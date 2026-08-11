@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import integration_workspace as integration_runtime
 import task_workspace as task_runtime
 import risk_policy as risk_runtime
 
@@ -756,6 +757,8 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
     attempt["integration_owner_authority"] = cas_target(
         repository, config["target_ref"], candidate_sha, expected
     )
+    attempt["managed_runtime_refresh"] = refresh_managed_controller(
+        controller, repository, expected, candidate_sha, attempt["task_id"])
     attempt = {**attempt, "outcome": "MERGED",
                "readback_sha": task_runtime.ref_sha(repository, config["target_ref"])}
     persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
@@ -763,6 +766,16 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
     return {**attempt, "cleanup": cleanup_candidate(
         controller, repository, checkout, config["target_ref"], candidate_sha,
         attempt.get("candidate_token"))}
+
+
+def refresh_managed_controller(controller: Path, repository: Path, previous_sha: str,
+                               target_sha: str, task_id: str) -> dict[str, Any]:
+    try:
+        return integration_runtime.managed_runtime_refresh(
+            controller, repository, previous_sha, target_sha, task_id=task_id)
+    except integration_runtime.ManagedRuntimeError as exc:
+        receipt = f" receipt={exc.receipt['path']}" if exc.receipt else ""
+        raise MergeQueueError(f"post-integration managed runtime refresh failed: {exc}{receipt}") from exc
 
 
 def cas_target(repository: Path, target_ref: str, candidate_sha: str,
@@ -830,8 +843,12 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
         authority = advance_registered_owner_role_base(
             repository, attempt["expected_target_sha"], candidate
         )
+        runtime_refresh = refresh_managed_controller(
+            controller, repository, attempt["expected_target_sha"], candidate,
+            attempt["task_id"])
         attempt = {**attempt, "outcome": "MERGED", "readback_sha": current, "recovered": True,
-                   "integration_owner_authority": authority}
+                   "integration_owner_authority": authority,
+                   "managed_runtime_refresh": runtime_refresh}
         persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
         checkout_value = attempt.get("candidate_checkout")
         checkout = Path(checkout_value) if checkout_value and Path(checkout_value).is_dir() else None
@@ -958,6 +975,8 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             attempt["integration_owner_authority"] = cas_target(
                 repository, config["target_ref"], candidate_sha, target_sha
             )
+            attempt["managed_runtime_refresh"] = refresh_managed_controller(
+                controller, repository, target_sha, candidate_sha, attempt["task_id"])
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"
@@ -1112,14 +1131,22 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
                 repository, config["target_ref"], candidate_sha,
                 conflict["expected_target_sha"]
             )
+            attempt["managed_runtime_refresh"] = refresh_managed_controller(
+                controller, repository, conflict["expected_target_sha"], candidate_sha,
+                attempt["task_id"])
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"
             persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
             raise
         except MergeQueueError:
-            attempt["outcome"] = "STALE_TARGET"
-            persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
+            integrated = task_runtime.ref_sha(repository, config["target_ref"]) == candidate_sha
+            attempt["outcome"] = "MERGING_READBACK_FAILED" if integrated else "STALE_TARGET"
+            persist_attempt(
+                controller, attempt,
+                state_name="MERGING" if integrated else "CONFLICT_RESOLVED",
+                conflict=None if integrated else resolved_conflict,
+            )
             raise
         attempt["outcome"] = "MERGED"
         attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])

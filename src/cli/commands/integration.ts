@@ -4,15 +4,26 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type IntegrationOperation = 'status' | 'sync' | 'register' | 'repair' | 'push';
+export type IntegrationOperation =
+  | 'status' | 'sync' | 'runtime-doctor' | 'runtime-refresh'
+  | 'register' | 'repair' | 'push';
+export type IntegrationOptions = {
+  fetch?: boolean;
+  owner?: string;
+  replace?: boolean;
+  dryRun?: boolean;
+  apply?: string;
+  previousSha?: string;
+  targetSha?: string;
+};
 export type IntegrationInvoker = (
   operation: IntegrationOperation,
-  options: { fetch?: boolean; owner?: string; replace?: boolean; dryRun?: boolean; apply?: string },
+  options: IntegrationOptions,
 ) => Promise<void>;
 
 export async function invokeIntegration(
   operation: IntegrationOperation,
-  options: { fetch?: boolean; owner?: string; replace?: boolean; dryRun?: boolean; apply?: string } = {},
+  options: IntegrationOptions = {},
 ): Promise<void> {
   const route = routeControlPlane(process.cwd(), 'orchestration');
   const script = path.join(route.controllerRoot, '.juno_task', 'scripts', 'integration_workspace.py');
@@ -21,6 +32,13 @@ export async function invokeIntegration(
   }
   const argv = [script, '--controller', route.controllerRoot, operation];
   if (operation === 'status' && options.fetch) argv.push('--fetch');
+  if (operation === 'runtime-doctor' || operation === 'runtime-refresh') {
+    if (operation === 'runtime-refresh') {
+      if (!options.previousSha) throw new Error('integration runtime-refresh requires --previous-sha');
+      argv.push('--previous-sha', options.previousSha);
+    }
+    if (options.targetSha) argv.push('--target-sha', options.targetSha);
+  }
   if (operation === 'register') {
     if (!options.owner) throw new Error('integration register requires an owner path');
     argv.push(path.resolve(options.owner));
@@ -62,6 +80,18 @@ export function configureIntegrationCommand(
     .command('sync')
     .description('Guard, fetch, fast-forward when safe, and refresh exact submodule gitlinks')
     .action(() => invoke('sync', {}));
+  integration
+    .command('runtime-doctor')
+    .description('Verify controller runtime hashes against one exact target generation')
+    .option('--target-sha <sha>', 'Exact target generation; defaults to the configured target ref')
+    .action((options: { targetSha?: string }) => invoke('runtime-doctor', options));
+  integration
+    .command('runtime-refresh')
+    .description('Refresh managed runtime from an exact admitted target transition')
+    .requiredOption('--previous-sha <sha>', 'Exact previously admitted target generation')
+    .option('--target-sha <sha>', 'Exact target generation; defaults to the configured target ref')
+    .action((options: { previousSha: string; targetSha?: string }) =>
+      invoke('runtime-refresh', options));
   integration
     .command('register')
     .description('Bind one verified protected worktree as the canonical integration owner')

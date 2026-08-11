@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 from pathlib import Path
 
@@ -29,6 +30,18 @@ def git(root: Path, *args: str) -> str:
 
 class IntegrationWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.runtime_refresh_patcher = mock.patch.object(
+            runtime, "managed_runtime_refresh",
+            return_value={"schema_version": "juno_managed_controller_runtime.v1",
+                          "outcome": "completed"},
+        )
+        self.runtime_inspect_patcher = mock.patch.object(
+            runtime, "managed_runtime_inspect",
+            return_value={"schema_version": "juno_managed_controller_runtime.v1",
+                          "operation": "doctor", "healthy": True, "findings": []},
+        )
+        self.runtime_refresh = self.runtime_refresh_patcher.start()
+        self.runtime_inspect = self.runtime_inspect_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.remote = self.root / "remote.git"
@@ -74,6 +87,8 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         }))
 
     def tearDown(self) -> None:
+        self.runtime_refresh_patcher.stop()
+        self.runtime_inspect_patcher.stop()
         self.temporary.cleanup()
 
     def remote_advance(self, text: str = "remote") -> str:
@@ -160,6 +175,12 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         receipt = json.loads(Path(result["receipt"]["path"]).read_text())
         self.assertEqual(receipt["outcome"], "completed")
         self.assertEqual(receipt["phase"], "complete")
+        self.runtime_refresh.assert_called_once_with(
+            self.controller.resolve(), self.controller.resolve(), self.base, advanced,
+            task_id="integration-sync")
+        managed_phase = next(row for row in receipt["phases"]
+                             if row["phase"] == "managed_runtime")
+        self.assertEqual(managed_phase["result"]["outcome"], "completed")
 
     def test_sync_preserves_local_ahead_target(self) -> None:
         local = self.local_advance()
@@ -401,6 +422,138 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in retried["phases"]],
                          ["already_complete", "pushed"])
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
+
+
+class ManagedRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name) / "fixture with spaces"
+        self.root.mkdir()
+        self.repo = self.root / "repo"
+        git(self.root, "init", "-b", "product", str(self.repo))
+        git(self.repo, "config", "user.email", "test@example.com")
+        git(self.repo, "config", "user.name", "Test")
+        assets = {"schemaVersion": 1, "assets": [
+            {"source": "scripts/one.py", "destination": ".juno_task/scripts/one.py",
+             "installClass": "script", "type": "script"},
+            {"source": "scripts/two.py", "destination": ".juno_task/scripts/two.py",
+             "installClass": "script", "type": "script"},
+            {"source": "config/task-workspace.json", "destination": runtime.MANAGED_POLICY_PATH,
+             "installClass": "project", "type": "config"},
+        ]}
+        self.policy = {"schema_version": "juno_task_workspace_config.v1",
+                       "repository": ".", "workspace_root": "/tmp/default",
+                       "allowed_paths": ["src"]}
+        self.write("juno-code/src/templates/managed-assets.json", assets)
+        self.write("juno-code/package.json", {"version": "9.0.0"})
+        self.write(runtime.MANAGED_POLICY_PATH, self.policy)
+        self.write(".juno_task/scripts/one.py", "old one\n")
+        self.write(".juno_task/scripts/two.py", "old two\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "old generation")
+        self.previous = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "branch", "controller")
+        self.controller = self.root / "controller"
+        git(self.repo, "worktree", "add", str(self.controller), "controller")
+        controller_policy = dict(self.policy)
+        controller_policy["workspace_root"] = "/private/controller-tasks"
+        (self.controller / runtime.MANAGED_POLICY_PATH).write_text(json.dumps(controller_policy) + "\n")
+        git(self.controller, "commit", "-am", "controller customization")
+
+        self.write(".juno_task/scripts/one.py", "new one\n")
+        target_policy = dict(self.policy)
+        target_policy["selectable_paths"] = ["frontend"]
+        self.write(runtime.MANAGED_POLICY_PATH, target_policy)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "new generation")
+        self.target = git(self.repo, "rev-parse", "HEAD")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write(self, relative: str, value: object) -> None:
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text((json.dumps(value) + "\n") if not isinstance(value, str) else value)
+
+    def test_refresh_uses_exact_target_preserves_policy_customization_and_receipts_log(self) -> None:
+        result = runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,
+                                 task_id="UOsd11")
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual((self.controller / ".juno_task/scripts/one.py").read_text(), "new one\n")
+        self.assertEqual((self.controller / ".juno_task/scripts/two.py").read_text(), "old two\n")
+        policy = json.loads((self.controller / runtime.MANAGED_POLICY_PATH).read_text())
+        self.assertEqual(policy["workspace_root"], "/private/controller-tasks")
+        self.assertEqual(policy["selectable_paths"], ["frontend"])
+        self.assertEqual(result["policy"]["changed_fields"], ["selectable_paths"])
+        self.assertFalse(result["timed_out"])
+        log = Path(result["log"]["path"])
+        self.assertTrue(log.is_file())
+        self.assertEqual(runtime.managed_sha256(log.read_bytes()), result["log"]["sha256"])
+        receipt = Path(result["receipt"]["path"])
+        self.assertEqual(runtime.managed_sha256(receipt.read_bytes()), result["receipt"]["sha256"])
+        self.assertTrue(runtime.managed_runtime_inspect(self.controller, self.repo, self.target)["healthy"])
+        # A crash after the generation marker but before the outer terminal
+        # checkpoint can retry the exact transition despite expected policy dirt.
+        retried = runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,
+                                  task_id="UOsd11-retry")
+        self.assertEqual(retried["outcome"], "completed")
+
+    def test_refresh_refuses_customized_script_without_mutation(self) -> None:
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("owner customization\n")
+        before_policy = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "customized managed runtime") as caught:
+            runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target, task_id="custom")
+        self.assertEqual(customized.read_text(), "owner customization\n")
+        self.assertEqual((self.controller / runtime.MANAGED_POLICY_PATH).read_bytes(), before_policy)
+        self.assertIsNotNone(caught.exception.receipt)
+        persisted = json.loads(Path(caught.exception.receipt["path"]).read_text())
+        self.assertEqual(persisted["outcome"], "failed")
+        self.assertEqual(persisted["exit_code"], 2)
+
+    def test_log_allocation_is_unique_for_concurrent_runs_and_fails_closed(self) -> None:
+        def allocate(_: int) -> str:
+            path, handle = runtime.managed_allocate_log("workflow with spaces", "task id")
+            handle.close()
+            return str(path)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            paths = list(pool.map(allocate, range(8)))
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertTrue(all(path.startswith("/tmp/yy-workflow-with-spaces-task-id-")
+                            for path in paths))
+        for value in paths:
+            Path(value).unlink()
+        with mock.patch.object(Path, "open", side_effect=OSError("read-only log root")):
+            with self.assertRaisesRegex(runtime.ManagedRuntimeError, "log allocation failed"):
+                runtime.managed_allocate_log("workflow", "task")
+
+    def test_interruption_is_terminal_and_receipted(self) -> None:
+        with mock.patch.object(runtime, "managed_runtime_plan", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(runtime.ManagedRuntimeError) as caught:
+                runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,
+                                task_id="interrupt")
+        persisted = json.loads(Path(caught.exception.receipt["path"]).read_text())
+        self.assertEqual(persisted["termination"], "interrupted")
+        self.assertIsNone(persisted["signal"])
+        self.assertFalse(persisted["timed_out"])
+
+    def test_refresh_refuses_dirty_or_overlapping_tracked_policy(self) -> None:
+        policy_path = self.controller / runtime.MANAGED_POLICY_PATH
+        value = json.loads(policy_path.read_text())
+        value["workspace_root"] = "/tmp/uncommitted"
+        policy_path.write_text(json.dumps(value) + "\n")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "uncommitted dirt"):
+            runtime.managed_runtime_plan(self.controller, self.repo, self.previous, self.target)
+        git(self.controller, "checkout", "--", runtime.MANAGED_POLICY_PATH)
+        value = json.loads(policy_path.read_text())
+        value["selectable_paths"] = ["different"]
+        policy_path.write_text(json.dumps(value) + "\n")
+        git(self.controller, "add", runtime.MANAGED_POLICY_PATH)
+        git(self.controller, "commit", "-m", "overlap")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "overlapping manual change"):
+            runtime.managed_runtime_plan(self.controller, self.repo, self.previous, self.target)
 
 
 if __name__ == "__main__":

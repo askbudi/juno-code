@@ -36,6 +36,12 @@ def git(root: Path, *args: str, check: bool = True) -> str:
 
 class MergeQueueTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.runtime_refresh_patcher = mock.patch.object(
+            merge_runtime, "refresh_managed_controller",
+            return_value={"schema_version": "juno_managed_controller_runtime.v1",
+                          "outcome": "completed"},
+        )
+        self.runtime_refresh = self.runtime_refresh_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.repository = self.root / "repo"
@@ -50,6 +56,30 @@ class MergeQueueTests(unittest.TestCase):
         target_task_runtime = self.repository / ".juno_task/scripts/task_workspace.py"
         target_task_runtime.parent.mkdir(parents=True)
         target_task_runtime.write_bytes(TASK.read_bytes())
+        target_policy = self.repository / ".juno_task/config/task-workspace.json"
+        target_policy.parent.mkdir(parents=True)
+        target_policy.write_text(json.dumps({
+            "schema_version": "juno_task_workspace_config.v1",
+            "repository": ".", "target_ref": "refs/heads/product",
+            "workspace_root": str(self.workspaces), "branch_prefix": "refs/heads/task-",
+            "allowed_paths": ["src", "docs"], "selectable_paths": [],
+            "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs"],
+            "focused_validation": [{"id": "affected", "cwd": "src",
+                                    "argv": [sys.executable, "-c", f"from pathlib import Path; Path({str(self.counter)!r}).open('a').write('run\\n')"],
+                                    "timeout_seconds": 10, "max_output_bytes": 4096}],
+            "full_suite_validation": {"id": "full-suite", "cwd": "src",
+                                      "argv": [sys.executable, "-c", f"from pathlib import Path; Path({str(self.full_counter)!r}).open('a').write('run\\n')"],
+                                      "timeout_seconds": 10, "max_output_bytes": 4096},
+        }) + "\n")
+        managed_definition = self.repository / "juno-code/src/templates/managed-assets.json"
+        managed_definition.parent.mkdir(parents=True)
+        managed_definition.write_text(json.dumps({"schemaVersion": 1, "assets": [{
+            "source": "scripts/task_workspace.py",
+            "destination": ".juno_task/scripts/task_workspace.py",
+            "installClass": "script", "type": "script",
+        }]}) + "\n")
+        package = self.repository / "juno-code/package.json"
+        package.write_text(json.dumps({"version": "9.0.0"}) + "\n")
         (self.repository / "src").mkdir()
         (self.repository / "src/shared.txt").write_text("base\n")
         git(self.repository, "add", ".")
@@ -71,6 +101,7 @@ class MergeQueueTests(unittest.TestCase):
         git(self.repository, "switch", "--detach", self.base)
 
     def tearDown(self) -> None:
+        self.runtime_refresh_patcher.stop()
         self.temporary.cleanup()
 
     def write_policy(self, code: Optional[str] = None, full_code: Optional[str] = None) -> None:
@@ -92,6 +123,10 @@ class MergeQueueTests(unittest.TestCase):
                                                 f"from pathlib import Path; Path({str(self.full_counter)!r}).open('a').write('run\\n')"],
                                        "timeout_seconds": 10, "max_output_bytes": 4096},
         }) + "\n")
+        relative = str(path.relative_to(self.controller))
+        if git(self.controller, "status", "--porcelain=v1", "--", relative):
+            git(self.controller, "add", relative)
+            git(self.controller, "commit", "-m", "test validation policy")
 
     def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
         owner = self.root / "integration-owner"

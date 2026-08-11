@@ -14,7 +14,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import merge_queue
 import task_workspace
 
 SCHEMA = "juno_integration_workspace.v1"
@@ -23,6 +22,342 @@ AUTHORITY = "protected-integration.v1"
 OWNER_CONFIG = "juno.integration.ownerPath"
 LEGACY_OWNER_CONFIG = "juno.gitFlow.integrationCheckout"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+
+
+MANAGED_RUNTIME_SCHEMA = "juno_managed_controller_runtime.v1"
+MANAGED_MANIFEST_PATH = "juno-code/src/templates/managed-assets.json"
+MANAGED_POLICY_PATH = ".juno_task/config/task-workspace.json"
+MANAGED_GENERATION_PATH = ".juno_task/runtime/managed-controller/generation.json"
+MANAGED_RECEIPT_ROOT = ".juno_task/runtime/managed-controller/receipts"
+MANAGED_SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+
+
+class ManagedRuntimeError(RuntimeError):
+    def __init__(self, message: str, receipt: dict[str, str] | None = None):
+        super().__init__(message)
+        self.receipt = receipt
+
+
+def managed_run(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and result.returncode:
+        detail = (result.stderr or result.stdout).decode(errors="replace").strip()
+        raise ManagedRuntimeError(detail or f"command failed: {argv!r}")
+    return result
+
+
+def git_bytes(repository: Path, *args: str) -> bytes:
+    return managed_run(["git", "-C", str(repository), *args], repository).stdout
+
+
+def managed_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def managed_exact_commit(repository: Path, value: str, label: str) -> str:
+    if not MANAGED_SHA_RE.fullmatch(value):
+        raise ManagedRuntimeError(f"{label} is not a full commit SHA")
+    observed = git_bytes(repository, "rev-parse", "--verify", f"{value}^{{commit}}").decode().strip()
+    if observed != value:
+        raise ManagedRuntimeError(f"{label} does not resolve exactly")
+    return value
+
+
+def managed_source_bytes(repository: Path, commit: str, relative: str) -> bytes:
+    if relative.startswith("/") or ".." in Path(relative).parts or ".git" in Path(relative).parts:
+        raise ManagedRuntimeError(f"unsafe managed source path: {relative}")
+    return git_bytes(repository, "show", f"{commit}:{relative}")
+
+
+def managed_source_json(repository: Path, commit: str, relative: str) -> Any:
+    try:
+        return json.loads(managed_source_bytes(repository, commit, relative))
+    except json.JSONDecodeError as exc:
+        raise ManagedRuntimeError(f"invalid target JSON at {relative}: {exc}") from exc
+
+
+def managed_script_destinations(repository: Path, commit: str) -> list[str]:
+    manifest = managed_source_json(repository, commit, MANAGED_MANIFEST_PATH)
+    assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    if manifest.get("schemaVersion") != 1 or not isinstance(assets, list):
+        raise ManagedRuntimeError("target managed asset definition is invalid")
+    result = []
+    for asset in assets:
+        if not isinstance(asset, dict) or asset.get("installClass") not in {"project", "script"}:
+            raise ManagedRuntimeError("target managed asset entry is invalid")
+        if asset["installClass"] != "script":
+            continue
+        destination = asset.get("destination")
+        source = asset.get("source")
+        expected_source = destination.removeprefix(".juno_task/")
+        if (not isinstance(destination, str) or not destination.startswith(".juno_task/scripts/")
+                or source != expected_source):
+            raise ManagedRuntimeError("managed script source/destination mapping is ambiguous")
+        result.append(destination)
+    if not result or len(result) != len(set(result)):
+        raise ManagedRuntimeError("target managed script set is empty or duplicated")
+    return sorted(result)
+
+
+def managed_package_version(repository: Path, commit: str) -> str:
+    package = managed_source_json(repository, commit, "juno-code/package.json")
+    version = package.get("version") if isinstance(package, dict) else None
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]*", version):
+        raise ManagedRuntimeError("target package version is invalid")
+    return version
+
+
+def managed_safe_path(controller: Path, relative: str) -> Path:
+    destination = (controller / relative).resolve()
+    try:
+        destination.relative_to(controller.resolve())
+    except ValueError as exc:
+        raise ManagedRuntimeError(f"managed destination escapes controller: {relative}") from exc
+    cursor = controller.resolve()
+    for part in Path(relative).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ManagedRuntimeError(f"managed destination contains a symbolic link: {relative}")
+    return destination
+
+
+def managed_policy_projection(previous: dict[str, Any], target: dict[str, Any], current: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    if not all(isinstance(value, dict) for value in (previous, target, current)):
+        raise ManagedRuntimeError("task policy generations must be JSON objects")
+    result = dict(current)
+    changed: list[str] = []
+    missing = object()
+    for key in sorted(set(previous) | set(target)):
+        old = previous.get(key, missing)
+        new = target.get(key, missing)
+        if old == new:
+            continue
+        observed = current.get(key, missing)
+        if observed == new:
+            continue
+        if observed != old:
+            raise ManagedRuntimeError(f"tracked task policy has an overlapping manual change: {key}")
+        if new is missing:
+            result.pop(key, None)
+        else:
+            result[key] = new
+        changed.append(key)
+    return result, changed
+
+
+def managed_canonical_json(value: Any) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=False) + "\n").encode()
+
+
+def managed_atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def managed_receipt_write(path: Path, value: dict[str, Any]) -> dict[str, str]:
+    data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    managed_atomic_write(path, data, 0o600)
+    return {"path": str(path.resolve()), "sha256": managed_sha256(data)}
+
+
+def managed_allocate_log(workflow: str, task_id: str) -> tuple[Path, Any]:
+    safe_workflow = re.sub(r"[^A-Za-z0-9_.-]+", "-", workflow).strip("-") or "runtime"
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id).strip("-") or "target"
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for sequence in range(1000):
+        suffix = "" if sequence == 0 else f"-{sequence}"
+        path = Path("/tmp") / f"yy-{safe_workflow}-{safe_task}-{stamp}-{os.getpid()}{suffix}.log"
+        try:
+            handle = path.open("x", encoding="utf-8")
+            return path, handle
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise ManagedRuntimeError(f"managed runtime log allocation failed: {exc}") from exc
+    raise ManagedRuntimeError("managed runtime log namespace exhausted")
+
+
+def managed_tracked_policy_dirty(controller: Path) -> bool:
+    tracked = managed_run(["git", "-C", str(controller), "ls-files", "--error-unmatch", "--", MANAGED_POLICY_PATH],
+                  controller, check=False)
+    if tracked.returncode:
+        raise ManagedRuntimeError("tracked task policy is absent or ambiguous")
+    dirty = managed_run(["git", "-C", str(controller), "status", "--porcelain=v1", "--", MANAGED_POLICY_PATH],
+                controller).stdout
+    return bool(dirty)
+
+
+def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, target_sha: str) -> dict[str, Any]:
+    controller = controller.resolve(); repository = repository.resolve()
+    previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
+    target_sha = managed_exact_commit(repository, target_sha, "target generation")
+    if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor", previous_sha, target_sha],
+           repository, check=False).returncode:
+        raise ManagedRuntimeError("target generation does not descend from previous generation")
+    policy_dirty = managed_tracked_policy_dirty(controller)
+    scripts = set(managed_script_destinations(repository, target_sha))
+    prior_scripts = set(managed_script_destinations(repository, previous_sha))
+    actions = []
+    for relative in sorted(scripts | prior_scripts):
+        destination = managed_safe_path(controller, relative)
+        old = managed_source_bytes(repository, previous_sha, relative) if relative in prior_scripts else None
+        new = managed_source_bytes(repository, target_sha, relative) if relative in scripts else None
+        current = destination.read_bytes() if destination.exists() else None
+        if new is None:
+            if current is not None and current != old:
+                raise ManagedRuntimeError(f"customized retired managed runtime is preserved: {relative}")
+            outcome = "unchanged" if current is None else "removed"
+        else:
+            admissible = {new}
+            if old is not None:
+                admissible.add(old)
+            if current is not None and current not in admissible:
+                raise ManagedRuntimeError(f"customized managed runtime is preserved: {relative}")
+            outcome = "unchanged" if current == new else "installed" if current is None else "updated"
+        actions.append({"path": relative, "before_sha256": managed_sha256(current) if current is not None else None,
+                        "source_sha256": managed_sha256(new) if new is not None else None, "bytes": new,
+                        "outcome": outcome})
+    previous_policy = managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH)
+    target_policy = managed_source_json(repository, target_sha, MANAGED_POLICY_PATH)
+    policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
+    try:
+        current_policy_bytes = policy_path.read_bytes()
+        current_policy = json.loads(current_policy_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManagedRuntimeError(f"controller task policy is invalid: {exc}") from exc
+    projected, changed_fields = managed_policy_projection(previous_policy, target_policy, current_policy)
+    if policy_dirty:
+        generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
+        try:
+            generation = json.loads(generation_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManagedRuntimeError("tracked task policy has uncommitted dirt") from exc
+        if (not isinstance(generation, dict) or generation.get("schema_version") != MANAGED_RUNTIME_SCHEMA
+                or generation.get("target_sha") != target_sha
+                or generation.get("policy_sha256") != managed_sha256(current_policy_bytes)):
+            raise ManagedRuntimeError("tracked task policy has uncommitted dirt")
+    # A no-op target transition must not normalize owner formatting and create
+    # tracked dirt. Canonical bytes are emitted only when admitted fields change.
+    projected_bytes = managed_canonical_json(projected) if changed_fields else current_policy_bytes
+    return {"controller": str(controller), "repository": str(repository),
+            "previous_sha": previous_sha, "target_sha": target_sha,
+            "package_version": managed_package_version(repository, target_sha), "scripts": actions,
+            "policy": {"path": MANAGED_POLICY_PATH, "before_sha256": managed_sha256(current_policy_bytes),
+                       "after_sha256": managed_sha256(projected_bytes), "changed_fields": changed_fields,
+                       "bytes": projected_bytes}}
+
+
+def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: str, target_sha: str,
+            *, task_id: str = "target") -> dict[str, Any]:
+    started = time.time(); started_mono = time.monotonic()
+    log_path, log = managed_allocate_log("managed-runtime-refresh", task_id)
+    print(f"yy managed-runtime-refresh log: {log_path}", file=sys.stderr, flush=True)
+    receipt_path = managed_safe_path(controller.resolve(), f"{MANAGED_RECEIPT_ROOT}/{time.time_ns()}-{os.getpid()}.json")
+    receipt: dict[str, Any] = {"schema_version": MANAGED_RUNTIME_SCHEMA, "operation": "refresh",
+                              "outcome": "running", "previous_sha": previous_sha,
+                              "target_sha": target_sha, "task_id": task_id}
+    backups: dict[Path, tuple[bool, bytes, int]] = {}
+    reference: dict[str, str] | None = None
+    try:
+        operation = managed_runtime_plan(controller, repository, previous_sha, target_sha)
+        log.write(f"source target={target_sha} package={operation['package_version']}\n"); log.flush()
+        writes = [(managed_safe_path(controller, row["path"]), row["bytes"],
+                   None if row["outcome"] == "removed" else 0o755)
+                  for row in operation["scripts"] if row["outcome"] != "unchanged"]
+        if operation["policy"]["before_sha256"] != operation["policy"]["after_sha256"]:
+            writes.append((managed_safe_path(controller, MANAGED_POLICY_PATH), operation["policy"]["bytes"], 0o644))
+        generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
+        generation = {"schema_version": MANAGED_RUNTIME_SCHEMA, "target_sha": target_sha,
+                      "package_version": operation["package_version"],
+                      "scripts": {row["path"]: row["source_sha256"] for row in operation["scripts"]
+                                  if row["source_sha256"] is not None},
+                      "policy_sha256": operation["policy"]["after_sha256"]}
+        writes.append((generation_path, managed_canonical_json(generation), 0o600))
+        for destination, _, _ in writes:
+            backups[destination] = (destination.exists(), destination.read_bytes() if destination.exists() else b"",
+                                    destination.stat().st_mode & 0o777 if destination.exists() else 0)
+        for destination, data, mode in writes:
+            if data is None:
+                destination.unlink(missing_ok=True)
+                log.write(f"remove {destination}\n")
+            else:
+                managed_atomic_write(destination, data, mode)
+                log.write(f"write {destination} sha256={managed_sha256(data)}\n")
+            log.flush()
+        doctor = managed_runtime_inspect(controller, repository, target_sha)
+        if not doctor["healthy"]:
+            raise ManagedRuntimeError("post-refresh doctor did not reach a coherent generation")
+        receipt.update({"outcome": "completed", "package_version": operation["package_version"],
+                        "scripts": [{key: value for key, value in row.items() if key != "bytes"}
+                                    for row in operation["scripts"]],
+                        "policy": {key: value for key, value in operation["policy"].items() if key != "bytes"},
+                        "doctor": doctor})
+    except BaseException as exc:
+        for destination, (existed, data, mode) in reversed(list(backups.items())):
+            try:
+                if existed: managed_atomic_write(destination, data, mode)
+                else: destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+        receipt.update({"outcome": "failed", "error": str(exc),
+                        "termination": "interrupted" if isinstance(exc, KeyboardInterrupt)
+                        else "failure"})
+    finally:
+        finish = time.time(); duration = time.monotonic() - started_mono
+        log.write(f"finish outcome={receipt['outcome']} duration_seconds={duration:.6f}\n")
+        log.flush(); os.fsync(log.fileno()); log.close()
+        log_data = log_path.read_bytes()
+        receipt.setdefault("termination", "success")
+        receipt.update({"start_time": started, "finish_time": finish,
+                        "duration_seconds": duration, "exit_code": 0 if receipt["outcome"] == "completed" else 2,
+                        "signal": None, "timed_out": False,
+                        "log": {"path": str(log_path), "sha256": managed_sha256(log_data)}})
+        reference = managed_receipt_write(receipt_path, receipt)
+    result = {**receipt, "receipt": reference}
+    if receipt["outcome"] != "completed":
+        raise ManagedRuntimeError(receipt.get("error", "managed runtime refresh failed"), reference)
+    return result
+
+
+def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str) -> dict[str, Any]:
+    controller = controller.resolve(); repository = repository.resolve()
+    target_sha = managed_exact_commit(repository, target_sha, "doctor target generation")
+    findings = []
+    expected_scripts = {}
+    for relative in managed_script_destinations(repository, target_sha):
+        expected = managed_sha256(managed_source_bytes(repository, target_sha, relative))
+        expected_scripts[relative] = expected
+        destination = managed_safe_path(controller, relative)
+        actual = managed_sha256(destination.read_bytes()) if destination.is_file() else None
+        if actual != expected:
+            findings.append({"code": "managed_runtime_missing" if actual is None else "managed_runtime_drift",
+                             "path": relative, "expected_sha256": expected, "actual_sha256": actual})
+    generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
+    generation = None
+    try:
+        generation = json.loads(generation_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        findings.append({"code": "managed_generation_receipt_missing_or_invalid", "path": MANAGED_GENERATION_PATH})
+    policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
+    policy_hash = managed_sha256(policy_path.read_bytes()) if policy_path.is_file() else None
+    if (not isinstance(generation, dict) or generation.get("schema_version") != MANAGED_RUNTIME_SCHEMA
+            or generation.get("target_sha") != target_sha
+            or generation.get("scripts") != expected_scripts
+            or generation.get("policy_sha256") != policy_hash):
+        findings.append({"code": "managed_generation_identity_drift", "path": MANAGED_GENERATION_PATH})
+    return {"schema_version": MANAGED_RUNTIME_SCHEMA, "operation": "doctor", "target_sha": target_sha,
+            "package_version": managed_package_version(repository, target_sha),
+            "policy_sha256": policy_hash, "findings": findings, "healthy": not findings}
 
 
 class IntegrationError(RuntimeError):
@@ -347,6 +682,7 @@ def repair_plan(controller: Path) -> dict[str, Any]:
 
 
 def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
+    import merge_queue as merge_runtime
     controller = exact_root(controller, "controller")
     policy, task_policy, _ = load_policy(controller)
     repository = task_workspace.product_repository(controller, task_policy)
@@ -382,7 +718,7 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
     result = {**current, "outcome": "running", "phases": []}
     reference = write_receipt(result_path, result)
     try:
-        with merge_queue.target_lock(controller, repository, task_policy["target_ref"]):
+        with merge_runtime.target_lock(controller, repository, task_policy["target_ref"]):
             for action in current["actions"]:
                 if action["kind"] == "detach_target_holder":
                     root = Path(action["path"])
@@ -407,7 +743,7 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
             reference = write_receipt(result_path, result)
             return {**result, "receipt": reference}, 0
     except (IntegrationError, task_workspace.TaskWorkspaceError,
-            merge_queue.MergeQueueError, OSError) as exc:
+            merge_runtime.MergeQueueError, OSError) as exc:
         result.update({"outcome": "failed", "error": str(exc)})
         reference = write_receipt(result_path, result)
         return {**result, "receipt": reference}, 2
@@ -475,6 +811,7 @@ def push_plan(controller: Path) -> dict[str, Any]:
 
 
 def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
+    import merge_queue as merge_runtime
     controller = exact_root(controller, "controller")
     policy, task_policy, policy_path = load_policy(controller)
     repository = task_workspace.product_repository(controller, task_policy)
@@ -543,7 +880,7 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[s
     result = {**approved, "outcome": "running", "phases": []}
     reference = write_receipt(result_path, result)
     try:
-        with merge_queue.target_lock(controller, repository, target_ref):
+        with merge_runtime.target_lock(controller, repository, target_ref):
             status = status_payload(controller)
             if (not status["ready"]
                     or status["integration"]["registered_path"] != approved["registered_owner"]
@@ -577,13 +914,14 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[s
             reference = write_receipt(result_path, result)
             return {**result, "receipt": reference}, 0
     except (IntegrationError, task_workspace.TaskWorkspaceError,
-            merge_queue.MergeQueueError, OSError) as exc:
+            merge_runtime.MergeQueueError, OSError) as exc:
         result.update({"outcome": "failed", "error": str(exc)})
         reference = write_receipt(result_path, result)
         return {**result, "receipt": reference}, 2
 
 
 def sync(controller: Path) -> tuple[dict[str, Any], int]:
+    import merge_queue as merge_runtime
     controller = exact_root(controller, "controller")
     policy, task_policy, _ = load_policy(controller)
     repository = task_workspace.product_repository(controller, task_policy)
@@ -595,7 +933,7 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
         "repository": str(repository), "target_ref": target_ref, "phases": []}
     reference = write_receipt(receipt_path, receipt)
     try:
-        with merge_queue.target_lock(controller, repository, target_ref):
+        with merge_runtime.target_lock(controller, repository, target_ref):
             before = status_payload(controller)
             owner = before["integration"]["owner"]
             blockers = [row for row in before["findings"] if row["severity"] == "error"]
@@ -639,6 +977,18 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
                 receipt["phases"].append({"phase": "authority", "status": "complete",
                                           **authority})
                 receipt["phase"] = "authority"; reference = write_receipt(receipt_path, receipt)
+            if current != local:
+                runtime_refresh = managed_runtime_refresh(
+                    controller, repository, local, current or "", task_id="integration-sync")
+            else:
+                runtime_refresh = managed_runtime_inspect(controller, repository, current or "")
+                if not runtime_refresh["healthy"]:
+                    raise IntegrationError(
+                        "managed controller runtime doctor found drift without a new target transition"
+                    )
+            receipt["phases"].append({"phase": "managed_runtime", "status": "complete",
+                                      "result": runtime_refresh})
+            receipt["phase"] = "managed_runtime"; reference = write_receipt(receipt_path, receipt)
             after = status_payload(controller)
             if (not after["ready"] or any(item["state"] != "exact"
                     for item in (after["integration"]["owner"] or {}).get("submodules", []))):
@@ -648,15 +998,18 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
             reference = write_receipt(receipt_path, receipt)
             return {"schema_version": SCHEMA, "operation": "sync", "outcome": "completed",
                     "receipt": reference, "status": after}, 0
-    except (IntegrationError, task_workspace.TaskWorkspaceError,
-            merge_queue.MergeQueueError, OSError) as exc:
+    except (IntegrationError, ManagedRuntimeError,
+            task_workspace.TaskWorkspaceError, merge_runtime.MergeQueueError, OSError) as exc:
         receipt["outcome"] = "failed"; receipt["error"] = str(exc)
+        if isinstance(exc, ManagedRuntimeError) and exc.receipt:
+            receipt["managed_runtime_receipt"] = exc.receipt
         reference = write_receipt(receipt_path, receipt)
         return {"schema_version": SCHEMA, "operation": "sync", "outcome": "failed",
                 "error": str(exc), "receipt": reference}, 2
 
 
 def register(controller: Path, owner_path: Path, *, replace: bool = False) -> tuple[dict[str, Any], int]:
+    import merge_queue as merge_runtime
     controller = exact_root(controller, "controller")
     policy, task_policy, _ = load_policy(controller)
     repository = task_workspace.product_repository(controller, task_policy)
@@ -681,7 +1034,7 @@ def register(controller: Path, owner_path: Path, *, replace: bool = False) -> tu
                 or git(owner, "status", "--porcelain=v1", "--untracked-files=all") or not full):
             raise IntegrationError("integration owner must be clean, detached, and full: "
                                    + ", ".join(reasons))
-        with merge_queue.target_lock(controller, repository, target_ref):
+        with merge_runtime.target_lock(controller, repository, target_ref):
             previous = registered_owner(repository)
             if previous and previous != str(owner) and not replace:
                 raise IntegrationError(
@@ -696,7 +1049,7 @@ def register(controller: Path, owner_path: Path, *, replace: bool = False) -> tu
         reference = write_receipt(receipt_path, receipt)
         return {**receipt, "receipt": reference, "status": status_payload(controller)}, 0
     except (IntegrationError, task_workspace.TaskWorkspaceError,
-            merge_queue.MergeQueueError, OSError) as exc:
+            merge_runtime.MergeQueueError, OSError) as exc:
         receipt = {"schema_version": SCHEMA, "operation": "register", "outcome": "failed",
                    "owner": str(owner_path.expanduser().resolve()), "error": str(exc)}
         reference = write_receipt(receipt_path, receipt)
@@ -710,6 +1063,11 @@ def parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", allow_abbrev=False)
     status.add_argument("--fetch", action="store_true")
     commands.add_parser("sync", allow_abbrev=False)
+    runtime_doctor = commands.add_parser("runtime-doctor", allow_abbrev=False)
+    runtime_doctor.add_argument("--target-sha")
+    runtime_refresh = commands.add_parser("runtime-refresh", allow_abbrev=False)
+    runtime_refresh.add_argument("--previous-sha", required=True)
+    runtime_refresh.add_argument("--target-sha")
     register_command = commands.add_parser("register", allow_abbrev=False)
     register_command.add_argument("owner", type=Path)
     register_command.add_argument("--replace", action="store_true")
@@ -728,6 +1086,20 @@ def main(argv: list[str] | None = None) -> int:
             payload, code = status_payload(args.controller, fetch=args.fetch), 0
         elif args.operation == "sync":
             payload, code = sync(args.controller)
+        elif args.operation in {"runtime-doctor", "runtime-refresh"}:
+            controller = exact_root(args.controller, "controller")
+            _, task_policy, _ = load_policy(controller)
+            repository = task_workspace.product_repository(controller, task_policy)
+            target_sha = args.target_sha or sha(repository, task_policy["target_ref"])
+            if not target_sha:
+                raise IntegrationError("managed runtime target commit is unavailable")
+            if args.operation == "runtime-doctor":
+                payload = managed_runtime_inspect(controller, repository, target_sha)
+                code = 0 if payload["healthy"] else 2
+            else:
+                payload = managed_runtime_refresh(
+                    controller, repository, args.previous_sha, target_sha, task_id="manual")
+                code = 0
         elif args.operation == "register":
             payload, code = register(args.controller, args.owner, replace=args.replace)
         elif args.operation == "repair":
@@ -736,8 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
             payload, code = push(args.controller, dry_run=args.dry_run, apply=args.apply)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return code
-    except (IntegrationError, task_workspace.TaskWorkspaceError, OSError,
-            json.JSONDecodeError) as exc:
+    except (IntegrationError, ManagedRuntimeError,
+            task_workspace.TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:
         print(f"integration-workspace: {exc}", file=sys.stderr)
         return 2
 

@@ -16,6 +16,10 @@ describe('integration workspace managed runtime', () => {
     expect(source).toContain('def status_payload(');
     expect(source).toContain('def sync(');
     expect(source).toContain('def register(');
+    expect(source).toContain('def managed_policy_projection(');
+    expect(source).toContain('def managed_runtime_refresh(');
+    expect(source).toContain('def managed_runtime_inspect(');
+    expect(source).toContain('Path("/tmp")');
     expect(source).not.toContain('import git_flow');
     execFileSync('python3', [tests], {
       cwd: repository,

@@ -21,6 +21,24 @@ describe('integration workspace CLI', () => {
     expect(invoke).toHaveBeenCalledWith('sync', {});
   });
 
+  it('forwards managed runtime doctor and exact-generation recovery', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const doctor = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(doctor, invoke);
+    await doctor.parseAsync(['node', 'yy', 'integration', 'runtime-doctor', '--target-sha', 'b'.repeat(40)]);
+    expect(invoke).toHaveBeenLastCalledWith('runtime-doctor', { targetSha: 'b'.repeat(40) });
+
+    const refresh = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(refresh, invoke);
+    await refresh.parseAsync([
+      'node', 'yy', 'integration', 'runtime-refresh',
+      '--previous-sha', 'a'.repeat(40), '--target-sha', 'b'.repeat(40),
+    ]);
+    expect(invoke).toHaveBeenLastCalledWith('runtime-refresh', {
+      previousSha: 'a'.repeat(40), targetSha: 'b'.repeat(40),
+    });
+  });
+
   it('forwards explicit canonical owner registration', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });

@@ -117,6 +117,21 @@ yy integration sync                 guard -> fetch -> fast-forward -> submodules
              +--> dirty/diverged/ambiguous: refuse with recovery guidance
 ```
 
+Every admitted `yy merge next|resolve` target transition and every target-moving
+`yy integration sync` also refreshes the ignored controller scripts from that
+exact target commit. The tracked task-workspace policy is updated by a top-level
+three-way merge: target additions are admitted, controller-specific unchanged
+fields survive, and overlapping or uncommitted policy edits refuse. Customized
+runtime bytes are never overwritten. The operation announces a unique
+`/tmp/yy-managed-runtime-refresh-*.log`, records source/installed hashes and
+terminal timing in a hash-bound receipt, and runs its doctor before returning
+terminal evidence. Inspect or recover an interrupted generation explicitly:
+
+```bash
+yy integration runtime-doctor [--target-sha FULL_SHA]
+yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
+```
+
 Use receipt-bound operations for topology repair and publication:
 
 ```bash
