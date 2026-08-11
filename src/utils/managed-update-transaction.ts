@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { Stats } from 'node:fs';
 
 /** Every project-local root that `scripts update --force` may mutate. */
 export const MANAGED_UPDATE_ROOTS = [
@@ -22,6 +23,39 @@ export const MANAGED_UPDATE_ROOTS = [
   'CLAUDE.md',
 ] as const;
 
+/** Unlike pathExists/access, lstat observes a dangling symbolic link. */
+export async function lstatIfPresent(destination: string): Promise<Stats | undefined> {
+  try {
+    return await fs.lstat(destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+export async function assertPackageSource(
+  source: string,
+  packageRoot: string,
+  expected: 'file' | 'directory',
+): Promise<void> {
+  if (!(await lstatIfPresent(source))) {
+    throw new Error(`Package ${expected} source is missing: ${source}`);
+  }
+  let resolved: string;
+  try {
+    resolved = await fs.realpath(source);
+  } catch (error) {
+    throw new Error(`Package ${expected} source cannot be resolved: ${source}`, { cause: error });
+  }
+  const resolvedRoot = await fs.realpath(packageRoot);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Package source escapes templates root: ${source}`);
+  }
+  const resolvedEntry = await fs.stat(resolved);
+  const valid = expected === 'file' ? resolvedEntry.isFile() : resolvedEntry.isDirectory();
+  if (!valid) throw new Error(`Package source is not a ${expected}: ${source}`);
+}
+
 export async function assertSafeManagedWritePath(
   projectRoot: string,
   destination: string,
@@ -35,9 +69,32 @@ export async function assertSafeManagedWritePath(
   let cursor = root;
   for (const part of relative.split(path.sep).filter(Boolean)) {
     cursor = path.join(cursor, part);
-    if (await fs.pathExists(cursor) && (await fs.lstat(cursor)).isSymbolicLink()) {
+    const entry = await lstatIfPresent(cursor);
+    if (entry?.isSymbolicLink()) {
       throw new Error(`Refusing symbolic-link managed path component: ${path.relative(root, cursor)}`);
     }
+  }
+}
+
+function combinedFailure(
+  primary: unknown,
+  secondary: readonly unknown[],
+  phase: string,
+): unknown {
+  if (secondary.length === 0) return primary;
+  return new AggregateError(
+    [primary, ...secondary],
+    `${phase} failed and ${secondary.length} rollback/cleanup failure(s) also occurred`,
+    { cause: primary },
+  );
+}
+
+async function cleanupSnapshot(snapshotRoot: string): Promise<unknown[]> {
+  try {
+    await fs.remove(snapshotRoot);
+    return [];
+  } catch (error) {
+    return [error];
   }
 }
 
@@ -53,10 +110,11 @@ export async function withManagedUpdateRollback<T>(
   const projectRoot = path.resolve(projectDir);
   const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-managed-update-'));
   const present = new Set<string>();
+
   try {
     for (const relative of MANAGED_UPDATE_ROOTS) {
       const source = path.join(projectRoot, relative);
-      if (!(await fs.pathExists(source))) continue;
+      if (!(await lstatIfPresent(source))) continue;
       present.add(relative);
       const snapshot = path.join(snapshotRoot, relative);
       await fs.ensureDir(path.dirname(snapshot));
@@ -66,11 +124,18 @@ export async function withManagedUpdateRollback<T>(
         errorOnExist: true,
       });
     }
+  } catch (snapshotError) {
+    const cleanupErrors = await cleanupSnapshot(snapshotRoot);
+    throw combinedFailure(snapshotError, cleanupErrors, 'Managed update snapshot');
+  }
 
-    try {
-      return await operation();
-    } catch (error) {
-      for (const relative of [...MANAGED_UPDATE_ROOTS].reverse()) {
+  let result: T;
+  try {
+    result = await operation();
+  } catch (primaryError) {
+    const rollbackErrors: unknown[] = [];
+    for (const relative of [...MANAGED_UPDATE_ROOTS].reverse()) {
+      try {
         const destination = path.join(projectRoot, relative);
         await fs.remove(destination);
         if (!present.has(relative)) continue;
@@ -81,10 +146,17 @@ export async function withManagedUpdateRollback<T>(
           preserveTimestamps: true,
           errorOnExist: true,
         });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
       }
-      throw error;
     }
-  } finally {
-    await fs.remove(snapshotRoot);
+    rollbackErrors.push(...await cleanupSnapshot(snapshotRoot));
+    throw combinedFailure(primaryError, rollbackErrors, 'Managed update');
   }
+
+  const cleanupErrors = await cleanupSnapshot(snapshotRoot);
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Managed update succeeded but snapshot cleanup failed');
+  }
+  return result;
 }

@@ -10,7 +10,11 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import managedAssetManifest from '../templates/managed-assets.json';
-import { assertSafeManagedWritePath } from './managed-update-transaction.js';
+import {
+  assertPackageSource,
+  assertSafeManagedWritePath,
+  lstatIfPresent,
+} from './managed-update-transaction.js';
 
 const MANAGED_SCRIPT_ROOT = '.juno_task/scripts';
 const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
@@ -487,7 +491,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
   /** Validate config, package sources, and every possible script/requirement destination. */
   static async preflightUpdate(projectDir: string, force = false): Promise<void> {
     const junoTaskDir = path.join(projectDir, '.juno_task');
-    if (!(await fs.pathExists(junoTaskDir))) return;
+    if (!(await lstatIfPresent(junoTaskDir))) return;
 
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     await ManagedProjectAssets.preflight(projectDir, { force });
@@ -496,11 +500,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     if (!packageScriptsDir) {
       throw new Error('Juno Code package scripts are missing');
     }
+    await assertPackageSource(packageScriptsDir, packageScriptsDir, 'directory');
     for (const scriptName of this.REQUIRED_SCRIPTS) {
       const source = path.join(packageScriptsDir, scriptName);
-      if (!(await fs.pathExists(source)) || !(await fs.lstat(source)).isFile()) {
-        throw new Error(`Missing package script: ${source}`);
-      }
+      await assertPackageSource(source, packageScriptsDir, 'file');
       await assertSafeManagedWritePath(
         projectDir,
         path.join(projectDir, '.juno_task', 'scripts', scriptName),

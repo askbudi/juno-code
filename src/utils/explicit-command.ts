@@ -21,6 +21,16 @@ function allowsUnknownOptions(command: Command): boolean {
   return Boolean((command as Command & { _allowUnknownOption?: boolean })._allowUnknownOption);
 }
 
+function isRegisteredHelpOption(command: Command, token: string): boolean {
+  const internal = command as Command & {
+    _hasHelpOption?: boolean;
+    _helpShortFlag?: string;
+    _helpLongFlag?: string;
+  };
+  return internal._hasHelpOption !== false &&
+    (token === internal._helpShortFlag || token === internal._helpLongFlag);
+}
+
 function validateKnownCommand(
   argv: readonly string[],
   start: number,
@@ -32,6 +42,9 @@ function validateKnownCommand(
     if (!token || token === '--') return { kind: 'supported-command' };
 
     if (token.startsWith('-')) {
+      if (isRegisteredHelpOption(command, token) || isRegisteredHelpOption(root, token)) {
+        return { kind: 'supported-command' };
+      }
       const option = optionForToken([...command.options, ...root.options], token);
       if (!option) {
         return allowsUnknownOptions(command)
@@ -71,6 +84,7 @@ export function classifyExplicitInvocation(
     if (token === '--') return { kind: 'prompt' };
 
     if (token.startsWith('-')) {
+      if (isRegisteredHelpOption(program, token)) return { kind: 'supported-command' };
       const option = optionForToken(program.options, token);
       if (!option) return { kind: 'unknown-option', token };
       const optionName = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;

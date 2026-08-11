@@ -28,7 +28,10 @@
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeManagedWritePath } from './managed-update-transaction.js';
+import {
+  assertPackageSource,
+  assertSafeManagedWritePath,
+} from './managed-update-transaction.js';
 
 /**
  * Mapping from skill group name to the destination directory relative to project root.
@@ -414,29 +417,44 @@ export class SkillInstaller {
     const packageSkillsDir = this.getPackageSkillsDir();
     const packageExtensionsDir = this.getPackageExtensionsDir();
     if (!packageSkillsDir) throw new Error('Package skill templates are missing');
+    if (!packageExtensionsDir) throw new Error('Package extension templates are missing');
+    const skillTemplatesRoot = path.dirname(packageSkillsDir);
+    const extensionTemplatesRoot = path.dirname(packageExtensionsDir);
+    await assertPackageSource(packageSkillsDir, skillTemplatesRoot, 'directory');
+    await assertPackageSource(packageExtensionsDir, extensionTemplatesRoot, 'directory');
 
     for (const group of this.SKILL_GROUPS) {
       const sourceGroup = path.join(packageSkillsDir, group.name);
+      await assertPackageSource(sourceGroup, skillTemplatesRoot, 'directory');
       for (const relative of await this.getSkillFiles(sourceGroup)) {
+        await assertPackageSource(path.join(sourceGroup, relative), skillTemplatesRoot, 'file');
         await assertSafeManagedWritePath(projectDir, path.join(projectDir, group.destDir, relative));
       }
     }
-    if (packageExtensionsDir) {
-      for (const group of this.EXTENSION_GROUPS) {
-        const sourceGroup = path.join(packageExtensionsDir, group.name);
-        for (const relative of await this.getSkillFiles(sourceGroup)) {
-          await assertSafeManagedWritePath(projectDir, path.join(projectDir, group.destDir, relative));
-        }
+    for (const group of this.EXTENSION_GROUPS) {
+      const sourceGroup = path.join(packageExtensionsDir, group.name);
+      await assertPackageSource(sourceGroup, extensionTemplatesRoot, 'directory');
+      for (const relative of await this.getSkillFiles(sourceGroup)) {
+        await assertPackageSource(
+          path.join(sourceGroup, relative),
+          extensionTemplatesRoot,
+          'file',
+        );
+        await assertSafeManagedWritePath(projectDir, path.join(projectDir, group.destDir, relative));
       }
     }
     await assertSafeManagedWritePath(projectDir, path.join(projectDir, '.pi', 'settings.json'));
     if (await this.isMetadataOnlyController(projectDir)) {
       const controllerSource = this.getPackageControllerAgentDir();
       if (!controllerSource) throw new Error('Package controller-agent instructions are missing');
+      const controllerTemplatesRoot = path.dirname(controllerSource);
+      await assertPackageSource(controllerSource, controllerTemplatesRoot, 'directory');
       for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
-        if (!(await fs.pathExists(path.join(controllerSource, filename)))) {
-          throw new Error(`Package controller instruction is missing: ${filename}`);
-        }
+        await assertPackageSource(
+          path.join(controllerSource, filename),
+          controllerTemplatesRoot,
+          'file',
+        );
         await assertSafeManagedWritePath(projectDir, path.join(projectDir, filename));
       }
     }

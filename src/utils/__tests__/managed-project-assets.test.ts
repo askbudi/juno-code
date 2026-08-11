@@ -416,6 +416,19 @@ describe('ManagedProjectAssets', () => {
     }
   });
 
+  it('rejects a dangling managed path component before any mutation', async () => {
+    const dangling = path.join(projectDir, '.juno_task/scripts');
+    await fs.symlink('missing-runtime-directory', dangling);
+
+    await expect(ManagedProjectAssets.preflight(projectDir)).rejects.toThrow(
+      'symbolic-link managed path component: .juno_task/scripts',
+    );
+    expect((await fs.lstat(dangling)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(dangling)).toBe('missing-runtime-directory');
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/prompts'))).toBe(false);
+  });
+
   it('rejects a symlinked nested backup parent before force replacement', async () => {
     await ManagedProjectAssets.update(projectDir, { silent: true });
     const destination = '.juno_task/scripts/metadata_controller.py';

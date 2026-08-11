@@ -210,13 +210,14 @@ describe('Binary Execution Tests', () => {
       expect(result.stdout).toContain('yy pi --live');
     });
 
-    it('should display help with --help flag', async () => {
-      const result = await executeCLI(['--help']);
+    it.each(['--help', '-h'])('should display registered help with %s', async (flag) => {
+      const result = await executeCLI([flag]);
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('Usage:');
       expect(result.stdout).toContain('Options:');
       expect(result.stdout).toContain('Commands:');
+      expect(result.all).not.toContain('refusing to reinterpret it as an agent prompt');
     });
 
     it('keeps every retired lifecycle operation as an explicit refusal', async () => {

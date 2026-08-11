@@ -274,6 +274,7 @@ describe('SkillInstaller', () => {
 
   describe('nested folder support', () => {
     let mockSkillsDir: string;
+    let mockExtensionsDir: string;
 
     beforeEach(async () => {
       // Create a mock templates/skills directory with nested folder structures
@@ -304,6 +305,10 @@ describe('SkillInstaller', () => {
         'Template content',
       );
       await fs.writeFile(path.join(claudeDir, 'top-level.md'), '# Top Level Skill');
+      await fs.ensureDir(path.join(mockSkillsDir, 'pi'));
+      mockExtensionsDir = path.join(testDir, 'mock-templates', 'extensions');
+      await fs.ensureDir(path.join(mockExtensionsDir, 'pi'));
+      await fs.writeFile(path.join(mockExtensionsDir, 'pi', 'fixture.ts'), 'export {};\n');
 
       // Create project dir with .juno_task
       await fs.ensureDir(path.join(testDir, 'project', '.juno_task'));
@@ -313,10 +318,42 @@ describe('SkillInstaller', () => {
         SkillInstaller as unknown as { getPackageSkillsDir: () => string | null },
         'getPackageSkillsDir',
       ).mockReturnValue(mockSkillsDir);
+      vi.spyOn(
+        SkillInstaller as unknown as { getPackageExtensionsDir: () => string | null },
+        'getPackageExtensionsDir',
+      ).mockReturnValue(mockExtensionsDir);
     });
 
     afterEach(() => {
       vi.restoreAllMocks();
+    });
+
+    it('refuses a dangling package skill source before creating destinations', async () => {
+      const projectDir = path.join(testDir, 'project');
+      await fs.symlink(
+        'missing-package-source.md',
+        path.join(mockSkillsDir, 'codex', 'dangling.md'),
+      );
+
+      await expect(SkillInstaller.preflightInstall(projectDir)).rejects.toThrow(
+        'Package file source cannot be resolved',
+      );
+      expect(await fs.pathExists(path.join(projectDir, '.agents'))).toBe(false);
+      expect(await fs.pathExists(path.join(projectDir, '.pi'))).toBe(false);
+    });
+
+    it('refuses a dangling package extension source before creating destinations', async () => {
+      const projectDir = path.join(testDir, 'project');
+      await fs.symlink(
+        'missing-package-extension.ts',
+        path.join(mockExtensionsDir, 'pi', 'dangling.ts'),
+      );
+
+      await expect(SkillInstaller.preflightInstall(projectDir)).rejects.toThrow(
+        'Package file source cannot be resolved',
+      );
+      expect(await fs.pathExists(path.join(projectDir, '.agents'))).toBe(false);
+      expect(await fs.pathExists(path.join(projectDir, '.pi'))).toBe(false);
     });
 
     it('should install files from nested subdirectories', async () => {

@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import managedAssetManifest from '../templates/managed-assets.json';
 import { version as packageVersion } from '../version.js';
-import { assertSafeManagedWritePath } from './managed-update-transaction.js';
+import {
+  assertPackageSource,
+  assertSafeManagedWritePath,
+  lstatIfPresent,
+} from './managed-update-transaction.js';
 
 type ManagedAssetDefinition = {
   source: string;
@@ -133,7 +137,12 @@ export class ManagedProjectAssets {
     options: { force?: boolean } = {},
   ): Promise<void> {
     const junoTaskDir = path.join(projectDir, '.juno_task');
-    if (!(await fs.pathExists(junoTaskDir))) return;
+    const junoTaskEntry = await lstatIfPresent(junoTaskDir);
+    if (!junoTaskEntry) return;
+    await assertSafeManagedWritePath(projectDir, junoTaskDir);
+    if (!junoTaskEntry.isDirectory()) {
+      throw new Error(`Managed project root is not a directory: ${junoTaskDir}`);
+    }
 
     const projectConfigPath = path.join(junoTaskDir, 'config.json');
     let projectConfig: Record<string, any> = {};
@@ -168,6 +177,7 @@ export class ManagedProjectAssets {
       manifest = parsed as ManagedAssetManifest;
     }
 
+    await assertPackageSource(templatesDir, templatesDir, 'directory');
     const possiblePaths = [
       projectConfigPath,
       manifestPath,
@@ -179,9 +189,7 @@ export class ManagedProjectAssets {
     ];
     for (const asset of MANAGED_ASSET_DEFINITIONS) {
       const sourcePath = path.join(templatesDir, asset.source);
-      if (!(await fs.pathExists(sourcePath)) || !(await fs.lstat(sourcePath)).isFile()) {
-        throw new Error(`Missing managed package asset: ${sourcePath}`);
-      }
+      await assertPackageSource(sourcePath, templatesDir, 'file');
       possiblePaths.push(
         path.join(projectDir, asset.destination),
         path.join(
@@ -518,7 +526,7 @@ export class ManagedProjectAssets {
     await this.assertRetiredGenerationSafe(projectDir, manifest, force);
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
-      if (!(await fs.pathExists(destinationPath))) continue;
+      if (!(await lstatIfPresent(destinationPath))) continue;
       await assertSafeManagedWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
@@ -566,7 +574,7 @@ export class ManagedProjectAssets {
   ): Promise<void> {
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
-      if (!(await fs.pathExists(destinationPath))) continue;
+      if (!(await lstatIfPresent(destinationPath))) continue;
       await assertSafeManagedWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);

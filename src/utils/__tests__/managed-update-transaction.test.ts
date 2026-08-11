@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,6 +8,7 @@ describe('managed update transaction', () => {
   let project = '';
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (project) await fs.remove(project);
   });
 
@@ -38,5 +39,53 @@ describe('managed update transaction', () => {
     expect((await fs.stat(prompt)).mode & 0o777).toBe(0o640);
     expect(await fs.pathExists(path.join(project, '.venv_juno'))).toBe(false);
     expect(await fs.pathExists(path.join(project, '.juno_task/managed-conflicts'))).toBe(false);
+  });
+
+  it('snapshots and restores an owned dangling symbolic link exactly', async () => {
+    project = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-update-link-'));
+    const ownedLink = path.join(project, '.pi');
+    await fs.symlink('missing-owner-target', ownedLink);
+
+    await expect(withManagedUpdateRollback(project, async () => {
+      await fs.remove(ownedLink);
+      await fs.outputFile(path.join(ownedLink, 'settings.json'), 'partial settings\n');
+      throw new Error('later phase failed');
+    })).rejects.toThrow('later phase failed');
+
+    expect((await fs.lstat(ownedLink)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(ownedLink)).toBe('missing-owner-target');
+  });
+
+  it('reports both the primary update error and a snapshot cleanup error', async () => {
+    project = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-update-errors-'));
+    await fs.outputFile(path.join(project, '.juno_task/scripts/owner.sh'), 'owner\n');
+    const originalRemove = fs.remove.bind(fs);
+    let failedCleanup = '';
+    vi.spyOn(fs, 'remove').mockImplementation(async (destination: string) => {
+      if (destination.includes(`${path.sep}juno-managed-update-`)) {
+        failedCleanup = destination;
+        throw new Error('injected snapshot cleanup failure');
+      }
+      await originalRemove(destination);
+    });
+
+    let caught: unknown;
+    try {
+      await withManagedUpdateRollback(project, async () => {
+        throw new Error('primary update failure');
+      });
+    } catch (error) {
+      caught = error;
+    }
+    vi.restoreAllMocks();
+    if (failedCleanup) await originalRemove(failedCleanup);
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect(aggregate.errors.map((error) => (error as Error).message)).toEqual([
+      'primary update failure',
+      'injected snapshot cleanup failure',
+    ]);
+    expect((aggregate.cause as Error).message).toBe('primary update failure');
   });
 });

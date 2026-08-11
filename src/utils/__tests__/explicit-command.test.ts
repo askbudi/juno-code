@@ -4,6 +4,7 @@ import { classifyExplicitInvocation, formatExplicitInvocationError } from '../ex
 
 function surface(): Command {
   const program = new Command('juno-code');
+  program.helpOption('-h, --help', 'Display help information');
   program.option('-q, --quiet').option('-c, --config <path>');
   program.option('-p, --prompt [text]').option('-f, --prompt-file <path>');
   const integration = program.command('integration');
@@ -17,6 +18,10 @@ describe('explicit command preflight', () => {
   it.each([
     [['integration', 'sync'], 'supported-command'],
     [['--quiet', 'integration', 'sync'], 'supported-command'],
+    [['--help'], 'supported-command'],
+    [['-h'], 'supported-command'],
+    [['integration', '--help'], 'supported-command'],
+    [['integration', '-h'], 'supported-command'],
     [['pi', 'fix', 'tests'], 'supported-command'],
     [['a quoted free-form prompt'], 'prompt'],
     [['fix', 'tests'], 'prompt'],
