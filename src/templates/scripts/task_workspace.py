@@ -415,18 +415,35 @@ def derived_output_admission(repository: Path, target_sha: str,
     ]
 
     managed, managed_sha = target_json(repository, target_sha, MANAGED_OUTPUT_DECLARATION)
-    if managed.get("schemaVersion") != 1 or not isinstance(managed.get("assets"), list):
-        raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
-    rows = [*managed["assets"], *managed.get("admissionOutputs", [])]
-    if not isinstance(managed.get("admissionOutputs", []), list):
+    rows = managed.get("admissionOutputs")
+    if (managed.get("schemaVersion") != 1 or not isinstance(managed.get("assets"), list)
+            or not isinstance(rows, list)):
         raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
     for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("source"), str) or not isinstance(row.get("destination"), str):
+        if (not isinstance(row, dict) or set(row) != {"source", "destination"}
+                or not isinstance(row.get("source"), str)
+                or not isinstance(row.get("destination"), str)):
             raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
         managed_source = normalized_relative(
-            f"juno-code/src/templates/{row['source']}", "managed source")
-        destination = normalized_relative(row["destination"], "managed destination")
+            f"juno-code/src/templates/{row.get('source')}", "managed source")
+        destination = normalized_relative(row.get("destination"), "managed destination")
+        if managed_source == destination:
+            raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
         pairs.append((managed_source, destination, "managed", MANAGED_OUTPUT_DECLARATION))
+
+    seen_pairs: set[tuple[str, str]] = set()
+    destination_sources: dict[str, str] = {}
+    for pair_source, destination, _kind, _declaration in pairs:
+        pair = (pair_source, destination)
+        if pair in seen_pairs:
+            raise TaskWorkspaceError(
+                f"duplicate generated-output pair: {pair_source} -> {destination}")
+        prior_source = destination_sources.get(destination)
+        if prior_source is not None and prior_source != pair_source:
+            raise TaskWorkspaceError(
+                f"conflicting generated-output destination {destination}: {prior_source}, {pair_source}")
+        seen_pairs.add(pair)
+        destination_sources[destination] = pair_source
 
     declared: dict[tuple[str, str], tuple[str, str]] = {}
     for pair_source, destination, kind, declaration in pairs:
@@ -469,19 +486,38 @@ def derived_output_admission(repository: Path, target_sha: str,
 
 def verify_derived_output_parity(repository: Path, tip_sha: str,
                                  admission: Any, changed: list[str]) -> None:
+    expected_declarations = {GENERATED_OUTPUT_DECLARATION, MANAGED_OUTPUT_DECLARATION}
     if (not isinstance(admission, dict)
+            or set(admission) != {"schema_version", "declarations", "bindings"}
             or admission.get("schema_version") != "juno_task_generated_output_admission.v1"
+            or not isinstance(admission.get("declarations"), dict)
+            or set(admission["declarations"]) != expected_declarations
+            or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in admission["declarations"].values())
             or not isinstance(admission.get("bindings"), list)):
-        raise TaskWorkspaceError("task creation receipt has no frozen generated-output admission")
+        raise TaskWorkspaceError("task creation receipt has no valid frozen generated-output admission")
     changed_set = set(changed)
     drift: list[str] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    destination_sources: dict[str, str] = {}
     for binding in admission["bindings"]:
-        if not isinstance(binding, dict) or set(binding) != {
+        if (not isinstance(binding, dict) or set(binding) != {
                 "source", "destination", "kind", "declaration",
-                "base_source_sha256", "base_destination_sha256"}:
+                "base_source_sha256", "base_destination_sha256"}
+                or binding.get("kind") not in {"generator", "managed"}
+                or binding.get("declaration") not in expected_declarations
+                or any(not isinstance(binding.get(key), str)
+                       or not re.fullmatch(r"[0-9a-f]{64}", binding[key])
+                       for key in ("base_source_sha256", "base_destination_sha256"))):
             raise TaskWorkspaceError("task generated-output admission is invalid")
         source = normalized_relative(binding["source"], "frozen generated source")
         destination = normalized_relative(binding["destination"], "frozen generated destination")
+        pair = (source, destination)
+        if (pair in seen_pairs or (destination in destination_sources
+                                   and destination_sources[destination] != source)):
+            raise TaskWorkspaceError("task generated-output admission has duplicate or conflicting pairs")
+        seen_pairs.add(pair)
+        destination_sources[destination] = source
         if source not in changed_set and destination not in changed_set:
             continue
         source_bytes = target_blob(repository, tip_sha, source)

@@ -163,39 +163,58 @@ class TaskWorkspaceTests(unittest.TestCase):
             "source": generated_source, "destinations": generated_destinations,
         }) + "\n")
         manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        ordinary_source = "juno-code/src/templates/config/metadata-controller.json"
+        ordinary_destination = ".juno_task/config/metadata-controller.json"
         manifest.write_text(json.dumps({
             "schemaVersion": 1,
-            "assets": [{"source": "scripts/migration_inventory.py", "destination": managed[
-                "juno-code/src/templates/scripts/migration_inventory.py"]}],
-            "admissionOutputs": [{"source": "scripts/controller_workspace.py", "destination": managed[
-                "juno-code/src/templates/scripts/controller_workspace.py"]}],
+            "assets": [{"source": "config/metadata-controller.json",
+                        "destination": ordinary_destination, "installClass": "project", "type": "config"}],
+            "admissionOutputs": [
+                {"source": "scripts/controller_workspace.py", "destination": managed[
+                    "juno-code/src/templates/scripts/controller_workspace.py"]},
+                {"source": "scripts/migration_inventory.py", "destination": managed[
+                    "juno-code/src/templates/scripts/migration_inventory.py"]},
+            ],
         }) + "\n")
-        files = [generated_source, *generated_destinations, *managed.keys(), *managed.values()]
+        files = [generated_source, *generated_destinations, *managed.keys(), *managed.values(),
+                 ordinary_source, ordinary_destination]
         for relative in files:
             if relative == omit:
                 continue
             target = self.repository / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("contract base\n")
+            target.write_text("ordinary installed customization\n" if relative == ordinary_destination
+                              else "contract base\n")
         git(self.repository, "add", ".")
         git(self.repository, "commit", "-m", "declare generated output fixtures")
         self.base = git(self.repository, "rev-parse", "HEAD")
         policy_path = self.controller / ".juno_task/config/task-workspace.json"
         policy = json.loads(policy_path.read_text())
-        policy["allowed_paths"].append("juno-code")
+        policy["allowed_paths"].extend(["juno-code", ".juno_task/config"])
         policy_path.write_text(json.dumps(policy, indent=2) + "\n")
         return {"source": generated_source, "destinations": generated_destinations,
-                "managed_sources": list(managed), "managed_destinations": list(managed.values())}
+                "managed_sources": list(managed), "managed_destinations": list(managed.values()),
+                "ordinary_source": ordinary_source, "ordinary_destination": ordinary_destination}
 
     def test_declared_generator_and_managed_outputs_are_hash_bound_and_queue_at_byte_parity(self) -> None:
         fixtures = self.install_declared_output_fixtures()
         started = self.payload("start", "X")
         admission = started["creation_receipt"]["generated_output_admission"]
+        self.assertEqual(admission["declarations"], {
+            task_runtime.GENERATED_OUTPUT_DECLARATION: hashlib.sha256(
+                (self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION).read_bytes()).hexdigest(),
+            task_runtime.MANAGED_OUTPUT_DECLARATION: hashlib.sha256(
+                (self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION).read_bytes()).hexdigest(),
+        })
         exact_outputs = [*fixtures["destinations"], *fixtures["managed_destinations"]]
         admitted = started["creation_receipt"]["allowed_paths"]
         self.assertTrue(all(task_runtime.path_within(path, admitted) for path in exact_outputs))
         self.assertTrue(all(path in admitted for path in exact_outputs if path.startswith(".")))
         self.assertTrue(all(len(row["base_source_sha256"]) == 64 for row in admission["bindings"]))
+        binding_pairs = {(row["source"], row["destination"]) for row in admission["bindings"]}
+        self.assertTrue(all((source, destination) in binding_pairs for source, destination in zip(
+            fixtures["managed_sources"], fixtures["managed_destinations"])))
+        self.assertNotIn((fixtures["ordinary_source"], fixtures["ordinary_destination"]), binding_pairs)
         worktree = self.workspaces / "X"
         changed = [fixtures["source"], *fixtures["destinations"],
                    *fixtures["managed_sources"], *fixtures["managed_destinations"]]
@@ -206,6 +225,35 @@ class TaskWorkspaceTests(unittest.TestCase):
         queued = self.payload("finish", "X")
         self.assertEqual(queued["state"], "QUEUED")
         self.assertEqual(queued["changed_paths"], sorted(changed))
+
+    def test_divergent_ordinary_managed_asset_is_not_parity_bound(self) -> None:
+        fixtures = self.install_declared_output_fixtures()
+        started = self.payload("start", "X")
+        bindings = started["creation_receipt"]["generated_output_admission"]["bindings"]
+        self.assertNotIn(fixtures["ordinary_destination"],
+                         [row["destination"] for row in bindings])
+        worktree = self.workspaces / "X"
+        destination = fixtures["ordinary_destination"]
+        (worktree / destination).write_text("independent controller config update\n")
+        git(worktree, "add", destination)
+        git(worktree, "commit", "-m", "update controller config independently")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["changed_paths"], [destination])
+
+    def test_both_managed_script_pairs_enforce_byte_parity(self) -> None:
+        fixtures = self.install_declared_output_fixtures()
+        for task_id, source, destination in zip(
+                ("X", "Y"), fixtures["managed_sources"], fixtures["managed_destinations"]):
+            with self.subTest(destination=destination):
+                self.payload("start", task_id)
+                worktree = self.workspaces / task_id
+                (worktree / source).write_text("source changed without runtime counterpart\n")
+                git(worktree, "add", source)
+                git(worktree, "commit", "-m", "omit managed runtime counterpart")
+                failed = self.command("finish", task_id, False)
+                self.assertEqual(failed.returncode, 2)
+                self.assertIn("generated-output byte parity failed", failed.stderr)
+                self.assertIn(destination, failed.stderr)
 
     def test_changed_canonical_source_without_generated_outputs_refuses_finish(self) -> None:
         fixtures = self.install_declared_output_fixtures()
@@ -219,6 +267,45 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("generated-output byte parity failed", failed.stderr)
         self.assertIn(".agents/skills/ralph-loop/references/implement.md", failed.stderr)
+
+    def test_malformed_managed_admission_pair_refuses_start(self) -> None:
+        self.install_declared_output_fixtures()
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["admissionOutputs"][0]["unexpected"] = True
+        manifest.write_text(json.dumps(value) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "malformed admission pair")
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("invalid generated-output declaration", failed.stderr)
+
+    def test_duplicate_managed_admission_pair_refuses_start(self) -> None:
+        self.install_declared_output_fixtures()
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["admissionOutputs"].append(dict(value["admissionOutputs"][0]))
+        manifest.write_text(json.dumps(value) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "duplicate admission pair")
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("duplicate generated-output pair", failed.stderr)
+
+    def test_conflicting_managed_admission_destination_refuses_start(self) -> None:
+        self.install_declared_output_fixtures()
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["admissionOutputs"].append({
+            "source": "scripts/migration_inventory.py",
+            "destination": ".juno_task/scripts/controller_workspace.py",
+        })
+        manifest.write_text(json.dumps(value) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "conflicting admission pair")
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("conflicting generated-output destination", failed.stderr)
 
     def test_declared_output_omission_is_caught_at_start_with_exact_path(self) -> None:
         missing = ".pi/skills/ralph-loop/references/implement.md"
