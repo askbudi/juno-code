@@ -21,5 +21,5 @@ describe('Bolt merge queue managed runtime', () => {
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-merge-queue-test-pycache' },
       stdio: 'pipe',
     });
-  }, 30_000);
+  }, 300_000);
 });

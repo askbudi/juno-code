@@ -47,6 +47,9 @@ class MergeQueueTests(unittest.TestCase):
         git(self.repository, "init", "-b", "product")
         git(self.repository, "config", "user.email", "test@example.com")
         git(self.repository, "config", "user.name", "Test")
+        target_task_runtime = self.repository / ".juno_task/scripts/task_workspace.py"
+        target_task_runtime.parent.mkdir(parents=True)
+        target_task_runtime.write_bytes(TASK.read_bytes())
         (self.repository / "src").mkdir()
         (self.repository / "src/shared.txt").write_text("base\n")
         git(self.repository, "add", ".")
