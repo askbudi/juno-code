@@ -4,15 +4,15 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type IntegrationOperation = 'status' | 'sync' | 'register';
+export type IntegrationOperation = 'status' | 'sync' | 'register' | 'repair' | 'push';
 export type IntegrationInvoker = (
   operation: IntegrationOperation,
-  options: { fetch?: boolean; owner?: string; replace?: boolean },
+  options: { fetch?: boolean; owner?: string; replace?: boolean; dryRun?: boolean; apply?: string },
 ) => Promise<void>;
 
 export async function invokeIntegration(
   operation: IntegrationOperation,
-  options: { fetch?: boolean; owner?: string; replace?: boolean } = {},
+  options: { fetch?: boolean; owner?: string; replace?: boolean; dryRun?: boolean; apply?: string } = {},
 ): Promise<void> {
   const route = routeControlPlane(process.cwd(), 'orchestration');
   const script = path.join(route.controllerRoot, '.juno_task', 'scripts', 'integration_workspace.py');
@@ -25,6 +25,11 @@ export async function invokeIntegration(
     if (!options.owner) throw new Error('integration register requires an owner path');
     argv.push(path.resolve(options.owner));
     if (options.replace) argv.push('--replace');
+  }
+  if (operation === 'repair' || operation === 'push') {
+    if (options.dryRun) argv.push('--dry-run');
+    else if (options.apply) argv.push('--apply', path.resolve(options.apply));
+    else throw new Error(`integration ${operation} requires --dry-run or --apply <receipt>`);
   }
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', argv, {
@@ -64,4 +69,21 @@ export function configureIntegrationCommand(
     .option('--replace', 'Replace a different existing canonical registration')
     .action((owner: string, options: { replace?: boolean }) =>
       invoke('register', options.replace ? { owner, replace: true } : { owner }));
+  for (const operation of ['repair', 'push'] as const) {
+    integration
+      .command(operation)
+      .description(operation === 'repair'
+        ? 'Plan or apply exact, receipt-bound integration topology repair'
+        : 'Plan or apply child-first, root-last remote publication')
+      .option('--dry-run', 'Persist and print a non-mutating plan receipt')
+      .option('--apply <receipt>', 'Apply one exact previously generated plan receipt')
+      .action((options: { dryRun?: boolean; apply?: string }) => {
+        if (Boolean(options.dryRun) === Boolean(options.apply)) {
+          throw new Error(`integration ${operation} requires exactly one of --dry-run or --apply <receipt>`);
+        }
+        return invoke(operation, options.dryRun
+          ? { dryRun: true }
+          : { apply: options.apply! });
+      });
+  }
 }

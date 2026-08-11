@@ -264,6 +264,8 @@ describe('ypl wrapper', () => {
     { args: ['integration', 'status'], operation: 'kanban' },
     { args: ['integration', 'sync'], operation: 'orchestration' },
     { args: ['integration', 'register', '/owner'], operation: 'orchestration' },
+    { args: ['integration', 'repair', '--dry-run'], operation: 'orchestration' },
+    { args: ['integration', 'push', '--dry-run'], operation: 'orchestration' },
     { args: ['integration', 'mystery'], operation: null },
     { args: ['merge', 'mystery'], operation: null },
   ])('authorizes $operation before dispatching controller runtime bytes', async ({ args, operation }) => {

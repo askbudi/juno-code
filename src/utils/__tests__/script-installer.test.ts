@@ -276,13 +276,13 @@ describe('ScriptInstaller', () => {
     });
 
     it('should attempt install when .juno_task exists but scripts are missing', async () => {
-      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      const junoTaskDir = path.join(testDir, '.juno_task');
+      await fs.ensureDir(junoTaskDir);
 
-      // Call autoInstallMissing - it will try to install
       const installed = await ScriptInstaller.autoInstallMissing(testDir, true);
-      // Result depends on whether templates are accessible
-      expect(typeof installed).toBe('boolean');
-    });
+      expect(installed).toBe(true);
+      expect(await fs.pathExists(path.join(junoTaskDir, 'scripts'))).toBe(true);
+    }, 60_000);
   });
 
   describe('getScriptPath', () => {

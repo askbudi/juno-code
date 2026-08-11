@@ -225,6 +225,54 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(foreign_code, 2)
         self.assertEqual(foreign["outcome"], "failed")
 
+    def test_repair_plan_detaches_safe_target_holder_and_refreshes_stale_owner(self) -> None:
+        advanced = self.local_advance()
+        registered, code = runtime.register(self.controller, self.owner)
+        self.assertEqual((code, registered["outcome"]), (0, "completed"))
+        holder = self.root / "target-holder"
+        git(self.repo, "worktree", "add", str(holder), "product")
+
+        planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual([row["kind"] for row in planned["actions"]],
+                         ["refresh_owner", "detach_target_holder"])
+        before = git(holder, "symbolic-ref", "HEAD")
+        self.assertEqual(before, "refs/heads/product")
+
+        applied, apply_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), advanced)
+        self.assertNotEqual(run(["git", "-C", str(holder), "symbolic-ref", "-q", "HEAD"],
+                                holder, False).returncode, 0)
+
+    def test_repair_refuses_plan_identity_drift(self) -> None:
+        runtime.register(self.controller, self.owner)
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual(code, 0)
+        self.local_advance()
+        applied, apply_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual(apply_code, 2)
+        self.assertIn("identity drifted", applied["error"])
+
+    def test_push_dry_run_is_non_mutating_and_apply_is_separately_disabled(self) -> None:
+        advanced = self.local_advance()
+        runtime.register(self.controller, self.owner)
+        synced, sync_code = runtime.sync(self.controller)
+        self.assertEqual(sync_code, 0, synced)
+        before_refs = git(self.repo, "show-ref")
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual(planned["actions"], [{
+            "kind": "push_root", "repository": str(self.controller.resolve()), "remote": "origin",
+            "ref": "refs/heads/product", "before": self.base, "after": advanced,
+        }])
+        self.assertEqual(git(self.repo, "show-ref"), before_refs)
+        with self.assertRaisesRegex(runtime.IntegrationError, "separately authorized"):
+            runtime.push(self.controller, dry_run=False,
+                         apply=Path(planned["receipt"]["path"]))
+
 
 if __name__ == "__main__":
     unittest.main()
