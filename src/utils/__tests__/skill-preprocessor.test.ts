@@ -437,6 +437,54 @@ describe('Pi input handler argument preservation', () => {
     }
   });
 
+  it('substitutes positional placeholders inside opted-in authored directives before execution', () => {
+    skill('directive-position', 'Result: !`printf %s "$1"`', true);
+    const expanded = expandSkillInvocation('/skill:directive-position hello tail', tmpDir)!;
+    expect(expanded).toContain('Result: hello\n</skill>');
+    expect(expanded.endsWith('</skill>\n\ntail')).toBe(true);
+  });
+
+  it('combines authored directives with positional/all placeholders safely through the registered handler', () => {
+    const marker = path.join(tmpDir, 'argument-was-executed');
+    skill(
+      'directive-combined',
+      'Position: !`printf %s "$1"`\nRequest: !`printf %s "$ARGUMENTS"`',
+      true,
+    );
+    const raw = `"$(touch ${marker})" "two words" !\`touch ${marker}\``;
+    const invocation = `/skill:directive-combined ${raw}`;
+    const expected = expandSkillInvocation(invocation, tmpDir)!;
+    expect(expected).toContain(`Position: $(touch ${marker})`);
+    expect(expected).toContain(`Request: ${raw}`);
+    expect(expected.endsWith('</skill>')).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+
+    let handler: ((event: { text: string }) => unknown) | undefined;
+    const pi = {
+      on: vi.fn((_event: string, callback: typeof handler) => {
+        handler = callback;
+      }),
+    };
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    try {
+      junoSkillPreprocessor(pi as never);
+      expect(handler!({ text: invocation })).toEqual({ action: 'transform', text: expected });
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('never recognizes an argument-supplied directive after all-argument substitution', () => {
+    const marker = path.join(tmpDir, 'injected-directive-ran');
+    skill('directive-injection', 'Request: $ARGUMENTS', true);
+    const raw = `literal !\`touch ${marker}\` $(touch ${marker})`;
+    const expanded = expandSkillInvocation(`/skill:directive-injection ${raw}`, tmpDir)!;
+    expect(expanded).toContain(`Request: ${raw}`);
+    expect(expanded.endsWith('</skill>')).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it('keeps shell directives literal unless opted in and never executes argument text', () => {
     skill('plain-shell', 'Directive: !`printf body`');
     const literal = '$(printf argument) !`echo injected` `echo nope` $HOME \\ path';

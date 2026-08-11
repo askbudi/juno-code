@@ -114,28 +114,29 @@ function substituteArgsWithConsumption(
   content: string,
   args: string[],
   rawArguments: string,
+  encode: (value: string, offset: number) => string = (value) => value,
 ): { text: string; consumed: Set<number>; consumesAll: boolean } {
   const consumed = new Set<number>();
   let consumesAll = false;
   const text = content.replace(
     ARG_PLACEHOLDER_REGEX,
-    (placeholder, startText, lengthText, positionText) => {
+    (placeholder, startText, lengthText, positionText, offset: number) => {
       if (placeholder === '$ARGUMENTS' || placeholder === '$@') {
         consumesAll = true;
         args.forEach((_, index) => consumed.add(index));
-        return rawArguments;
+        return encode(rawArguments, offset);
       }
       if (positionText !== undefined) {
         const index = Number.parseInt(positionText, 10) - 1;
         if (index >= 0 && index < args.length) consumed.add(index);
-        return args[index] ?? '';
+        return encode(args[index] ?? '', offset);
       }
       const start = Math.max(0, Number.parseInt(startText, 10) - 1);
       const length =
         lengthText === undefined ? args.length - start : Number.parseInt(lengthText, 10);
       const selected = args.slice(start, start + length);
-      selected.forEach((_, offset) => consumed.add(start + offset));
-      return selected.join(' ');
+      selected.forEach((_, selectedOffset) => consumed.add(start + selectedOffset));
+      return encode(selected.join(' '), offset);
     },
   );
   return { text, consumed, consumesAll };
@@ -177,23 +178,96 @@ function unconsumedRawArguments(
   return runs.join(' ');
 }
 
+function executeShellDirective(command: string, cwd: string, timeout: number): string {
+  try {
+    return execSync(command, {
+      cwd,
+      timeout,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return `[Error executing: ${command}]`;
+  }
+}
+
 function processShellDirectives(
   content: string,
   cwd: string,
   timeout: number = DEFAULT_SHELL_TIMEOUT,
 ): string {
-  return content.replace(SHELL_DIRECTIVE_REGEX, (_, command: string) => {
-    try {
-      return execSync(command, {
-        cwd,
-        timeout,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
-    } catch {
-      return `[Error executing: ${command}]`;
+  return content.replace(SHELL_DIRECTIVE_REGEX, (_, command: string) =>
+    executeShellDirective(command, cwd, timeout),
+  );
+}
+
+/** Quote one placeholder value for its authored shell context. */
+function encodeShellPlaceholder(value: string, command: string, offset: number): string {
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (const char of command.slice(0, offset)) {
+    if (escaped) {
+      escaped = false;
+      continue;
     }
-  });
+    if (char === '\\' && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && !inDouble) inSingle = !inSingle;
+    else if (char === '"' && !inSingle) inDouble = !inDouble;
+  }
+  if (inSingle) return value.replace(/'/g, `'\\''`);
+  if (inDouble) return value.replace(/[\\$"`]/g, '\\$&');
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Substitute every body segment once, but execute only directives present in the
+ * authored skill body. Values inserted by arguments can therefore never create
+ * a new directive. Placeholder consumption is merged across ordinary/directive spans.
+ */
+function processSkillBody(
+  body: string,
+  args: string[],
+  rawArguments: string,
+  shellEnabled: boolean,
+  cwd: string,
+): { text: string; consumed: Set<number>; consumesAll: boolean } {
+  if (!shellEnabled) return substituteArgsWithConsumption(body, args, rawArguments);
+
+  const consumed = new Set<number>();
+  let consumesAll = false;
+  let cursor = 0;
+  let text = '';
+  const merge = (substitution: { consumed: Set<number>; consumesAll: boolean }) => {
+    substitution.consumed.forEach((index) => consumed.add(index));
+    consumesAll ||= substitution.consumesAll;
+  };
+
+  for (const match of body.matchAll(new RegExp(SHELL_DIRECTIVE_REGEX.source, 'g'))) {
+    const index = match.index ?? 0;
+    const ordinary = substituteArgsWithConsumption(body.slice(cursor, index), args, rawArguments);
+    merge(ordinary);
+    text += ordinary.text;
+
+    const authoredCommand = match[1] ?? '';
+    const command = substituteArgsWithConsumption(
+      authoredCommand,
+      args,
+      rawArguments,
+      (value, offset) => encodeShellPlaceholder(value, authoredCommand, offset),
+    );
+    merge(command);
+    text += executeShellDirective(command.text, cwd, DEFAULT_SHELL_TIMEOUT);
+    cursor = index + match[0].length;
+  }
+
+  const trailing = substituteArgsWithConsumption(body.slice(cursor), args, rawArguments);
+  merge(trailing);
+  text += trailing.text;
+  return { text, consumed, consumesAll };
 }
 
 /** Expand one registered skill invocation, or return null so Pi can handle it natively. */
@@ -211,13 +285,13 @@ function expandSkillInvocation(text: string, cwd: string): string | null {
 
   try {
     const { frontmatter, body } = parseFrontmatter(readFileSync(skillPath, 'utf-8'));
-    // Expand only directives authored by the skill. Substituting afterward prevents
-    // shell-sensitive user arguments from becoming executable directives.
-    const directiveBody =
-      frontmatter['enable-shell-directives'] === true
-        ? processShellDirectives(body.trim(), cwd)
-        : body.trim();
-    const substitution = substituteArgsWithConsumption(directiveBody, args, rawArguments);
+    const substitution = processSkillBody(
+      body.trim(),
+      args,
+      rawArguments,
+      frontmatter['enable-shell-directives'] === true,
+      cwd,
+    );
     const processedBody = substitution.text;
     const baseDir = dirname(skillPath);
     const skillBlock = [
