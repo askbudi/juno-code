@@ -863,10 +863,16 @@ describe('ScriptInstaller', () => {
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
     });
 
-    it('refuses an older package bootstrap without replacing a newer receipt-bound controller generation', async () => {
+    it('preserves newer receipt-bound bytes when package and generation versions match but hashes differ', async () => {
       const script = '.juno_task/scripts/task_workspace.py';
-      const exactTargetBytes = '# newer exact target runtime\n';
+      const exactTargetBytes = '# newer exact target runtime from integrated source\n';
       const hash = createHash('sha256').update(exactTargetBytes).digest('hex');
+      const packageRoot = path.resolve(process.cwd());
+      expect((await fs.readJson(path.join(packageRoot, 'package.json'))).version).toBe('2.1.2');
+      const packagedBytes = await fs.readFile(
+        path.join(packageRoot, 'src/templates/scripts/task_workspace.py'),
+      );
+      expect(createHash('sha256').update(packagedBytes).digest('hex')).not.toBe(hash);
       await fs.ensureDir(path.join(testDir, '.juno_task/runtime/managed-controller'));
       await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
         controllerWorkspace: {
@@ -879,7 +885,9 @@ describe('ScriptInstaller', () => {
         {
           schema_version: 'juno_managed_controller_runtime.v1',
           target_sha: 'a'.repeat(40),
-          package_version: '99.0.0',
+          // This is the observed seam: version strings alone agree even though
+          // the older installed package does not contain the integrated bytes.
+          package_version: '2.1.2',
           scripts: { [script]: {
             classification: 'exact', source_sha256: hash, actual_sha256: hash,
           } },
@@ -887,11 +895,11 @@ describe('ScriptInstaller', () => {
       );
 
       await expect(ScriptInstaller.autoUpdate(testDir, true)).rejects.toThrow(
-        /Refusing package script update.*receipt-bound.*99\.0\.0/s,
+        /Refusing package script update.*receipt-bound.*2\.1\.2.*not that exact generation/s,
       );
       expect(await fs.readFile(path.join(testDir, script), 'utf8')).toBe(exactTargetBytes);
       expect(await ScriptInstaller.inspectManagedControllerGeneration(testDir)).toMatchObject({
-        present: true, healthy: true, packageVersion: '99.0.0', targetSha: 'a'.repeat(40),
+        present: true, healthy: true, packageVersion: '2.1.2', targetSha: 'a'.repeat(40),
       });
     });
 

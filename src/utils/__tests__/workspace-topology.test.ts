@@ -142,7 +142,7 @@ describe('normalized workspace topology', () => {
 
     const report = inspectWorkspaceTopology(value.task, '2.1.3');
     expect(report.runtime).toMatchObject({
-      cliVersion: '2.1.3', controllerVersion: '2.1.1', executableDrift: true,
+      cliVersion: '2.1.3', controllerVersion: '2.1.1', drift: true, executableDrift: true,
       managedGeneration: { packageVersion: '2.1.3', healthy: true },
     });
     expect(report.findings.map((item) => item.code)).toContain('controller-executable-version-drift');

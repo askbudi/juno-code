@@ -296,6 +296,78 @@ describe('ypl wrapper', () => {
     }
   }, 30_000);
 
+  it.each(['start', 'status', 'finish'] as const)(
+    'fails task %s closed in an exact task worktree before a stale registered runtime executes',
+    async (operation) => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `juno-stale-task-${operation}-`));
+      try {
+        const controller = path.join(tempDir, 'controller');
+        const task = path.join(tempDir, 'task');
+        const launcherBin = path.join(tempDir, 'launcher-bin');
+        const packagedScripts = path.join(tempDir, 'templates', 'scripts');
+        const staleRuntimeMarker = path.join(tempDir, 'stale-runtime-ran');
+        await fs.ensureDir(path.join(controller, '.juno_task', 'scripts'));
+        await fs.copy(
+          path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
+          path.join(controller, '.juno_task/scripts/controller_resolver.py'),
+        );
+        await execa('git', ['init', '-b', 'controller'], { cwd: controller });
+        await execa('git', ['config', 'user.email', 'test@example.invalid'], { cwd: controller });
+        await execa('git', ['config', 'user.name', 'Test'], { cwd: controller });
+        await fs.writeFile(path.join(controller, 'fixture'), 'fixture\n');
+        await execa('git', ['add', '.'], { cwd: controller });
+        await execa('git', ['commit', '-m', 'fixture'], { cwd: controller });
+        await execa('git', ['worktree', 'add', '-b', 'juno/task-T1', task], { cwd: controller });
+        await execa('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: task });
+        await execa('git', ['config', 'juno.controller.path', controller], { cwd: task });
+        await execa('git', ['config', 'juno.controller.branch', 'refs/heads/controller'], { cwd: task });
+        await execa('git', ['config', '--worktree', 'juno.workspace.role', 'task'], { cwd: task });
+        await execa('git', ['config', '--worktree', 'juno.workspace.taskId', 'T1'], { cwd: task });
+        for (const key of ['manifestIdentity', 'createReceiptSha256', 'expectedPathsSha256']) {
+          await execa('git', ['config', '--worktree', `juno.workspace.${key}`, 'a'.repeat(64)], { cwd: task });
+        }
+
+        const runtime = path.join(controller, 'controller-runtime.mjs');
+        await fs.writeFile(runtime, [
+          "import { writeFileSync } from 'node:fs';",
+          `if (process.argv.includes('--version')) console.log('2.1.1');`,
+          `else writeFileSync(${JSON.stringify(staleRuntimeMarker)}, 'ran');`,
+        ].join('\n'));
+        await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], {
+          cwd: controller,
+        });
+        await fs.ensureDir(launcherBin);
+        await fs.ensureDir(packagedScripts);
+        await fs.copy(
+          path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
+          path.join(packagedScripts, 'controller_resolver.py'),
+        );
+        const launcher = path.join(launcherBin, 'yy');
+        const launcherCli = path.join(launcherBin, 'cli.mjs');
+        await fs.copy(JUNO_CODE_SOURCE, launcher);
+        await fs.chmod(launcher, 0o755);
+        await fs.writeFile(
+          launcherCli,
+          `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
+        );
+
+        const result = await execa(launcher, ['task', operation, 'T1'], {
+          cwd: task, reject: false,
+        });
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain('selected controller runtime cannot be proven');
+        expect(result.stderr).toContain(`launcher executable: ${launcherCli}`);
+        expect(result.stderr).toContain('launcher version: 2.1.2');
+        expect(result.stderr).toContain(`effective executable: ${runtime}`);
+        expect(result.stderr).toContain('effective version: 2.1.1');
+        expect(await fs.pathExists(staleRuntimeMarker)).toBe(false);
+      } finally {
+        await fs.remove(tempDir);
+      }
+    },
+    30_000,
+  );
+
   it.each([
     { args: ['kanban', 'list'], operation: 'kanban' },
     { args: ['task', 'status', 'T1'], operation: 'kanban' },
