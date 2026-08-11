@@ -220,6 +220,7 @@ describe('ScriptInstaller', () => {
       const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
       expect(newlyManaged.sort()).toEqual([
         'controller_registration.py',
+        'integration_workspace.py',
         'managed_agent_runner.py',
         'merge_queue.py',
         'metadata_evacuation.py',
@@ -228,6 +229,7 @@ describe('ScriptInstaller', () => {
         'risk_policy.py',
         'task_workspace.py',
         'tests/test_controller_registration.py',
+        'tests/test_integration_workspace.py',
         'tests/test_managed_agent_runner.py',
         'tests/test_merge_queue.py',
         'tests/test_metadata_controller.py',
@@ -339,8 +341,10 @@ describe('ScriptInstaller', () => {
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
         { name: 'task_workspace.py', installed: false },
+        { name: 'integration_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
         { name: 'tests/test_task_workspace.py', installed: false },
+        { name: 'tests/test_integration_workspace.py', installed: false },
         { name: 'tests/test_merge_queue.py', installed: false },
         { name: 'task_workflow_helper.py', installed: false },
         { name: 'workflow_run_evidence.py', installed: false },
@@ -518,6 +522,8 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(scriptsDir, 'metadata_evacuation.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'controller_registration.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'tests/test_controller_registration.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'integration_workspace.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'tests/test_integration_workspace.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(
         path.join(scriptsDir, 'tests/test_merge_queue.py'),
         '#!/usr/bin/env python3\nprint("merge queue")',
@@ -572,8 +578,10 @@ describe('ScriptInstaller', () => {
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
         { name: 'task_workspace.py', installed: true },
+        { name: 'integration_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },
         { name: 'tests/test_task_workspace.py', installed: true },
+        { name: 'tests/test_integration_workspace.py', installed: true },
         { name: 'tests/test_merge_queue.py', installed: true },
         { name: 'task_workflow_helper.py', installed: true },
         { name: 'workflow_run_evidence.py', installed: true },

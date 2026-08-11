@@ -35,6 +35,7 @@ import { createServicesCommand } from '../cli/commands/services.js';
 import { createSkillsCommand } from '../cli/commands/skills.js';
 import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
+import { configureIntegrationCommand } from '../cli/commands/integration.js';
 import { configureMergeQueueCommand } from '../cli/commands/merge.js';
 import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
@@ -1821,12 +1822,13 @@ async function main(): Promise<void> {
   const isReadOnlyVersionRequest = cliArgs.some((arg) => arg === '--version' || arg === '-V');
   const isLifecycleCommand = commandArgs[0] === 'lifecycle';
   const isTaskWorkspaceCommand = commandArgs[0] === 'task';
+  const isIntegrationCommand = commandArgs[0] === 'integration';
   const isMigrationCommand = commandArgs[0] === 'migrate';
   const isReadOnlyLifecycleStatus = isLifecycleCommand && commandArgs[1] === 'status';
   const isReadOnlyTaskStatus = isTaskWorkspaceCommand && commandArgs[1] === 'status';
   const isScriptsDoctor = commandArgs[0] === 'scripts' && commandArgs[1] === 'doctor';
   const isWorkspaceDiscovery = commandArgs[0] === 'info' || commandArgs[0] === 'where' || (commandArgs[0] === 'doctor' && commandArgs[1] === 'workspace');
-  const isControlPlaneCommand = ['kanban', 'task', 'merge'].includes(commandArgs[0] ?? '');
+  const isControlPlaneCommand = ['kanban', 'task', 'merge', 'integration'].includes(commandArgs[0] ?? '');
   const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery || isControlPlaneCommand;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =
@@ -1841,7 +1843,7 @@ async function main(): Promise<void> {
   // closed before command parsing or agent dispatch. Explicit update commands
   // retain their documented authority in every initialized workspace.
   const mayAutoUpdateProjectAssets =
-    !isReadOnlyIdentityRequest && !isLifecycleCommand && !isTaskWorkspaceCommand &&
+    !isReadOnlyIdentityRequest && !isLifecycleCommand && !isTaskWorkspaceCommand && !isIntegrationCommand &&
     (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
@@ -1990,6 +1992,7 @@ async function main(): Promise<void> {
   setupTaskLifecycleCommand(program);
   configureKanbanCommand(program);
   configureTaskWorkspaceCommand(program);
+  configureIntegrationCommand(program);
   configureMergeQueueCommand(program);
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);

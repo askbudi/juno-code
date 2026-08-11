@@ -57,7 +57,7 @@ describe('ypl wrapper', () => {
     }
   });
 
-  it.each([['kanban', 'list'], ['task', 'status', 'T1'], ['merge', 'status'], ['info'], ['where', 'controller'], ['doctor', 'workspace']])(
+  it.each([['kanban', 'list'], ['task', 'status', 'T1'], ['merge', 'status'], ['integration', 'status'], ['info'], ['where', 'controller'], ['doctor', 'workspace']])(
     'classifies %s before checkout bootstrap',
     async (...args) => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-control-wrapper-'));
@@ -261,6 +261,10 @@ describe('ypl wrapper', () => {
     { args: ['merge', 'resolve', 'T1'], operation: 'orchestration' },
     { args: ['merge', 'review', 'T1'], operation: 'orchestration' },
     { args: ['merge', 'reopen', 'T1'], operation: 'orchestration' },
+    { args: ['integration', 'status'], operation: 'kanban' },
+    { args: ['integration', 'sync'], operation: 'orchestration' },
+    { args: ['integration', 'register', '/owner'], operation: 'orchestration' },
+    { args: ['integration', 'mystery'], operation: null },
     { args: ['merge', 'mystery'], operation: null },
   ])('authorizes $operation before dispatching controller runtime bytes', async ({ args, operation }) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wrapper-operation-gate-'));
@@ -302,7 +306,9 @@ describe('ypl wrapper', () => {
       expect(result.exitCode).toBe(2);
       if (operation === null) {
         expect(await fs.pathExists(operationMarker)).toBe(false);
-        expect(result.stderr).toContain("control-plane routing refused unknown merge subcommand 'mystery'");
+        expect(result.stderr).toContain(
+          `control-plane routing refused unknown ${args[0]} subcommand 'mystery'`,
+        );
       } else {
         expect(await fs.readFile(operationMarker, 'utf8')).toBe(operation);
         expect(result.stderr).toContain('operation-specific controller policy refused dirty state');

@@ -1,0 +1,6 @@
+{
+  "schema_version": "juno_integration_workspace_policy.v1",
+  "remote": "origin",
+  "owner_role_authority": "protected-integration.v1",
+  "receipt_root": ".juno_task/runtime/integration/receipts"
+}

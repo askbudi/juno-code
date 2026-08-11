@@ -14,6 +14,12 @@
       "type": "config"
     },
     {
+      "source": "config/integration-workspace.json",
+      "destination": ".juno_task/config/integration-workspace.json",
+      "installClass": "project",
+      "type": "config"
+    },
+    {
       "source": "config/risk-policy.json",
       "destination": ".juno_task/config/risk-policy.json",
       "installClass": "project",
@@ -201,6 +207,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/integration_workspace.py",
+      "destination": ".juno_task/scripts/integration_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/merge_queue.py",
       "destination": ".juno_task/scripts/merge_queue.py",
       "installClass": "script",
@@ -209,6 +221,12 @@
     {
       "source": "scripts/tests/test_task_workspace.py",
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_integration_workspace.py",
+      "destination": ".juno_task/scripts/tests/test_integration_workspace.py",
       "installClass": "script",
       "type": "script"
     },

@@ -61,7 +61,7 @@ classify_prebootstrap_command() {
         esac
     done
     case "$PREBOOTSTRAP_COMMAND" in
-        -V|--version|info|where|kanban|task|merge) return 0 ;;
+        -V|--version|info|where|kanban|task|merge|integration) return 0 ;;
         doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
     esac
     return 1
@@ -125,7 +125,7 @@ require_compatible_node() {
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
-    case "$operation" in kanban|task|merge) ;; *) return 1 ;; esac
+    case "$operation" in kanban|task|merge|integration) ;; *) return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
         kanban:*) effective_operation=kanban ;;
@@ -133,6 +133,8 @@ route_registered_product_control() {
         task:start|task:finish) effective_operation=orchestration ;;
         merge:status|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
         merge:next|merge:resolve|merge:review|merge:reopen) effective_operation=orchestration ;;
+        integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
+        integration:sync|integration:register) effective_operation=orchestration ;;
         *)
             echo "juno-code: control-plane routing refused unknown $operation subcommand '$PREBOOTSTRAP_SUBCOMMAND'" >&2
             return 2 ;;
