@@ -67,6 +67,22 @@ classify_prebootstrap_command() {
     return 1
 }
 
+establish_node_contract() {
+    local node_dir entry normalized=""
+    local -a path_entries
+    node_dir="$(cd "$(dirname "$JUNO_CODE_NODE_EXECUTABLE")" && pwd -P)"
+    JUNO_CODE_NODE_EXECUTABLE="$node_dir/$(basename "$JUNO_CODE_NODE_EXECUTABLE")"
+    export JUNO_CODE_NODE_EXECUTABLE
+    IFS=: read -r -a path_entries <<< "$PATH"
+    for entry in "${path_entries[@]}"; do
+        [ -n "$entry" ] || continue
+        [ "$entry" = "$node_dir" ] && continue
+        normalized="${normalized:+$normalized:}$entry"
+    done
+    PATH="$node_dir${normalized:+:$normalized}"
+    export PATH
+}
+
 require_compatible_node() {
     local ambient="" ambient_version="" candidate version major minor patch
     local nvm_root="" best_path="" best_major=-1 best_minor=-1 best_patch=-1
@@ -80,6 +96,7 @@ require_compatible_node() {
             minor=$((10#${BASH_REMATCH[2]}))
             if (( major > 20 || (major == 20 && minor >= 10) )); then
                 JUNO_CODE_NODE_EXECUTABLE="$ambient"
+                establish_node_contract
                 return 0
             fi
         fi
@@ -111,14 +128,16 @@ require_compatible_node() {
     fi
     if [ -n "$best_path" ]; then
         JUNO_CODE_NODE_EXECUTABLE="$best_path"
+        establish_node_contract
         return 0
     fi
 
-    if [ -z "$ambient" ]; then
-        echo "juno-code: Node.js >=20.10 is required; no compatible executable was found in PATH or ${nvm_root:-an NVM directory}" >&2
-    else
-        echo "juno-code: refusing to run this distribution under unsupported Node ${ambient_version:-unknown}; no installed Node.js >=20.10 was found in ${nvm_root:-an NVM directory}" >&2
-    fi
+    echo "juno-code: no supported Node runtime is available; unsupported Node ${ambient_version:-not found}" >&2
+    echo "effective executable: ${ambient:-not found}" >&2
+    echo "effective version: ${ambient_version:-unknown}" >&2
+    echo "required version: Node.js >=20.10" >&2
+    echo "searched fallback: ${nvm_root:-an NVM directory}" >&2
+    echo "Install a supported Node runtime or select it before invoking yy." >&2
     return 69
 }
 

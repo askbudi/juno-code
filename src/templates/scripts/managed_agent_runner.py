@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import selectors
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -455,9 +456,76 @@ def managed_controller_binding(mark: dict[str, Any]) -> dict[str, Any] | None:
             "queue_state": mark["queue_state"]}
 
 
+def node_version(executable: str | None) -> str:
+    if not executable:
+        return "unknown"
+    try:
+        result = subprocess.run(
+            [executable, "-p", "process.versions.node"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def supported_node_version(version: str) -> bool:
+    match = __import__("re").fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", version)
+    return bool(match and (int(match.group(1)) > 20 or
+                           (int(match.group(1)) == 20 and int(match.group(2)) >= 10)))
+
+
+def managed_node_contract() -> tuple[dict[str, str], str]:
+    supplied = os.environ.get("JUNO_CODE_NODE_EXECUTABLE", "")
+    yy_executable = shutil.which("yy")
+    path_node = shutil.which("node")
+    path_version = node_version(path_node)
+    yy_sibling = str(Path(yy_executable).parent / "node") if yy_executable else ""
+    yy_sibling_version = node_version(yy_sibling)
+    source = "yy_environment"
+    if supplied:
+        supplied_path = Path(supplied)
+        canonical = str(supplied_path) if supplied_path.is_absolute() else ""
+        canonical_version = node_version(canonical)
+    elif supported_node_version(yy_sibling_version):
+        canonical, canonical_version, source = yy_sibling, yy_sibling_version, "yy_sibling"
+    elif supported_node_version(path_version):
+        canonical, canonical_version, source = path_node or "", path_version, "supported_path_fallback"
+    else:
+        canonical, canonical_version, source = "", "unknown", "unavailable"
+    if (not canonical or not Path(canonical).is_file() or not os.access(canonical, os.X_OK)
+            or not supported_node_version(canonical_version) or not yy_executable):
+        raise RunnerError(
+            "managed Node runtime contract is missing or unsupported; "
+            f"canonical executable: {canonical or supplied or 'not set'}; "
+            f"canonical version: {canonical_version}; "
+            f"PATH node executable: {path_node or 'not found'}; "
+            f"PATH node version: {path_version}; yy executable: {yy_executable or 'not found'}; "
+            f"yy sibling Node: {yy_sibling or 'not found'} ({yy_sibling_version}); "
+            "required version: Node.js >=20.10; "
+            "invoke this managed operation through a supported yy launcher")
+    node_dir = str(Path(canonical).parent)
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    normalized = [node_dir]
+    canonical_dir = Path(node_dir).resolve()
+    for entry in entries:
+        if not entry:
+            continue
+        try:
+            if Path(entry).resolve() == canonical_dir:
+                continue
+        except OSError:
+            pass
+        normalized.append(entry)
+    return ({"executable": canonical, "version": canonical_version, "source": source,
+             "yy_executable": str(Path(yy_executable).absolute()),
+             "path_node_before": path_node or "not found", "path_node_version_before": path_version,
+             "required_version": ">=20.10"}, os.pathsep.join(normalized))
+
+
 def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                       binding: dict[str, Any] | None = None,
                       controller_mark: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
+    node_contract, normalized_path = managed_node_contract()
     removed = sorted(k for k in os.environ if k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
     env = {k: v for k, v in os.environ.items() if k not in removed}
     explicit = {"JUNO_TASK_ROOT": str(Path(args.controller_root).resolve()),
@@ -465,7 +533,9 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
                 "JUNO_SUBAGENT_CAPTURE_PATH": str(capture), "JUNO_TOOL_ID": args.tool_id,
                 "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata),
-                "JUNO_CONTROLLER_CHECKPOINT_ACTIVE": "1", "PYTHONUNBUFFERED": "1"}
+                "JUNO_CONTROLLER_CHECKPOINT_ACTIVE": "1", "PYTHONUNBUFFERED": "1",
+                "JUNO_CODE_NODE_EXECUTABLE": node_contract["executable"],
+                "PATH": normalized_path}
     explicit["JUNO_CODE_PROJECT_BOOTSTRAP_WRITES"] = "0"
     if args.mode == "worker":
         explicit.update({"TASK_ROOT": str(Path(args.agent_root).resolve()), "JUNO_AGENT_TASK_ID": args.task_id,
@@ -480,7 +550,8 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
             controller_binding).decode().strip()
     env.update(explicit)
     contract = {"schema_version": "juno_managed_environment.v1", "removed_key_names": removed,
-                "explicit_key_names": sorted(explicit), "configured_defaults": True}
+                "explicit_key_names": sorted(explicit), "configured_defaults": True,
+                "node_runtime": node_contract}
     contract["sha256"] = sha(canonical(contract))
     return env, contract
 
@@ -636,10 +707,10 @@ def run(args: argparse.Namespace) -> int:
     # Managed workers/reviewers must not execute user-owned lifecycle hooks.
     # Their environment, prompt, and output contract are already closed by this
     # process owner, and sparse controllers may intentionally omit hook targets.
-    argv = ["yy", "pi", "--no-hooks", "--config", compatible_config["derived"]["path"],
-            "-w", str(agent_root), "-f", str(prompt)]
     env, env_contract = clean_environment(
         args, capture, metadata, binding, controller_before)
+    argv = [env_contract["node_runtime"]["yy_executable"], "pi", "--no-hooks", "--config",
+            compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     prompt_evidence = evidence(prompt)
     if binding is None:
         prompt_evidence["echo"] = prompt_echo

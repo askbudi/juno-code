@@ -422,7 +422,7 @@ describe('ypl wrapper', () => {
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'unused\n');
       await fs.writeFile(
         path.join(fakeBin, 'node'),
-        '#!/usr/bin/env bash\nif [ "$1" = "-p" ] && [ "$2" = "process.versions.node" ]; then echo 22.22.0; exit 0; fi\nprintf "%s\\n" "$@"\n',
+        '#!/usr/bin/env bash\nif [ "$1" = "-p" ] && [ "$2" = "process.versions.node" ]; then echo 22.22.0; exit 0; fi\n[ "$JUNO_CODE_NODE_EXECUTABLE" = "$0" ] || exit 88\n[ "${PATH%%:*}" = "$(dirname "$0")" ] || exit 89\nprintf "%s\\n" "$@"\n',
         { mode: 0o755 },
       );
       const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {

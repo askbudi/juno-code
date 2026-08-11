@@ -45,10 +45,15 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.candidate), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "candidate"], check=True, stdout=subprocess.DEVNULL)
         self.bin = self.tmp / "bin"; self.bin.mkdir()
+        self.stale_bin = self.tmp / ".venv_juno/bin"; self.stale_bin.mkdir(parents=True)
+        stale_node = self.stale_bin / "node"
+        stale_node.write_text("#!/usr/bin/env bash\nif [ \"${1:-}\" = -p ]; then echo 18.15.0; else exit 86; fi\n")
+        stale_node.chmod(0o755)
         fake = self.bin / "yy"
         fake.write_text("""#!/usr/bin/env python3
-import json, os, pathlib, sys, time
+import json, os, pathlib, shutil, sys, time
 assert sys.argv[1:4] == ['pi','--no-hooks','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
+assert pathlib.Path(shutil.which('node')).resolve()==pathlib.Path(os.environ['JUNO_CODE_NODE_EXECUTABLE']).resolve()
 assert not sys.stdin.read(1)
 if os.environ.get('PI_MODEL') or os.environ.get('JUNO_MODEL'): raise SystemExit(91)
 assert os.environ.get('JUNO_CONTROLLER_CHECKPOINT_ACTIVE')=='1'
@@ -151,7 +156,39 @@ print('out-after', flush=True)
                 "--candidate-root", str(self.candidate)]
 
     def env(self):
-        return {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"], "PI_MODEL": "forbidden", "JUNO_MODEL": "forbidden"}
+        canonical_node = shutil.which("node", path=os.environ["PATH"])
+        assert canonical_node
+        return {**os.environ,
+                "PATH": os.pathsep.join((str(self.stale_bin), str(self.bin), os.environ["PATH"])),
+                "JUNO_CODE_NODE_EXECUTABLE": canonical_node,
+                "PI_MODEL": "forbidden", "JUNO_MODEL": "forbidden"}
+
+    def test_conflicting_parent_and_venv_path_use_canonical_yy_node_runtime(self):
+        out = self.tmp / "node-contract"
+        inherited = self.env()
+        self.assertEqual("18.15.0", subprocess.check_output(
+            ["node", "-p", "process.versions.node"], env=inherited, text=True).strip())
+        result = subprocess.run(self.command(out), env=inherited, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        launch = json.loads((out / "launch.json").read_text())
+        node = launch["environment_contract"]["node_runtime"]
+        self.assertEqual(Path(inherited["JUNO_CODE_NODE_EXECUTABLE"]), Path(node["executable"]))
+        self.assertEqual("18.15.0", node["path_node_version_before"])
+        self.assertNotEqual("18.15.0", node["version"])
+        self.assertIn("PATH", launch["environment_contract"]["explicit_key_names"])
+
+    def test_unsupported_canonical_node_fails_before_managed_child_with_diagnostics(self):
+        out = self.tmp / "unsupported-node"
+        inherited = self.env()
+        inherited["JUNO_CODE_NODE_EXECUTABLE"] = str(self.stale_bin / "node")
+        result = subprocess.run(self.command(out), env=inherited, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"canonical executable: {self.stale_bin / 'node'}", result.stderr)
+        self.assertIn("canonical version: 18.15.0", result.stderr)
+        self.assertIn("PATH node executable:", result.stderr)
+        self.assertIn("required version: Node.js >=20.10", result.stderr)
+        self.assertFalse((out / "launch.json").exists())
+        self.assertFalse((out / "stdout.log").exists())
 
     def test_live_separate_and_labelled_streams_before_exit(self):
         out = self.tmp / "stream"
