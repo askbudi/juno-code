@@ -28,6 +28,9 @@ SCHEMA = "juno_metadata_controller_policy.v1"
 PLAN_SCHEMA = "juno_metadata_controller_plan.v1"
 RECEIPT_SCHEMA = "juno_metadata_controller_receipt.v1"
 CONFIG_REPAIR_SCHEMA = "juno_metadata_controller_config_repair.v1"
+AGENT_SURFACE_REPAIR_SCHEMA = "juno_metadata_controller_agent_surface_repair.v1"
+AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
+REQUIRED_ROOT_IGNORES = ("/AGENTS.md", "/CLAUDE.md", "/.agents/", "/.claude/", "/.pi/")
 CANONICAL_CONTROLLER_WORKSPACE = {
     "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
 RETIRED_CONTROLLER_WORKSPACE = {
@@ -302,6 +305,11 @@ def load_policy(path: Path) -> dict[str, Any]:
         raise BoundaryError("invalid runtime policy")
     runtime["identity_file"] = safe_relative(runtime["identity_file"])
     runtime["ignored_roots"] = sorted(safe_relative(item) for item in runtime["ignored_roots"])
+    if ".gitignore" not in value["generated_metadata"] or ".gitignore" not in value["tracked_exact"]:
+        raise BoundaryError("metadata policy must generate and track .gitignore")
+    missing_ignored = sorted(set(AGENT_SURFACE_ROOTS) - set(runtime["ignored_roots"]))
+    if missing_ignored:
+        raise BoundaryError("runtime policy must ignore the complete controller agent surface: " + ", ".join(missing_ignored))
     for item in value["copied_metadata"] + value["generated_metadata"]:
         if not policy_path_allowed(item, value, container=True):
             raise BoundaryError(f"metadata path is outside tracked roots: {item}")
@@ -626,6 +634,18 @@ def tracked_allowed(name: str, policy: dict[str, Any]) -> bool:
     return policy_path_allowed(name, policy)
 
 
+def agent_surface_path(name: str) -> bool:
+    return any(name == root or name.startswith(root + "/") for root in AGENT_SURFACE_ROOTS)
+
+
+def committed_gitignore(root: Path, head: str) -> tuple[list[str], list[str]]:
+    result = run(["git", "-C", str(root), "show", f"{head}:.gitignore"], root, False)
+    if result.returncode:
+        return [], list(REQUIRED_ROOT_IGNORES)
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return lines, [entry for entry in REQUIRED_ROOT_IGNORES if entry not in lines]
+
+
 def product_boundary(root: Path, product_ref: str, expected_head: str, policy: dict[str, Any]) -> dict[str, Any]:
     root = exact_worktree(root)
     if product_ref != policy["product_ref"]:
@@ -709,6 +729,8 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
         except (BoundaryError, KeyError, TypeError, json.JSONDecodeError):
             generated_contract_ok = False
     product_markers = [name for name in names if name == "README.md" or name.startswith(("juno-code/", "juno_kanban/", "frontend/", "scripts/", ".github/"))]
+    tracked_agent_surface = sorted(name for name in names if agent_surface_path(name))
+    gitignore_lines, missing_root_ignores = committed_gitignore(root, head)
     staged = git(root, "diff", "--cached", "--name-only", check=False).splitlines()
     role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
     runtime_version = git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion", check=False)
@@ -723,11 +745,14 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
         except (BoundaryError, OSError, json.JSONDecodeError):
             runtime_ok = False
     checks = {"branch_exact": expected_branch is None or branch == expected_branch, "single_root_ancestry": len(ancestry_roots) == 1,
-              "root_boundary": not forbidden_root,
+              "root_boundary": not [name for name in forbidden_root if not agent_surface_path(name)],
               "root_preservation": preservation_receipt_ok,
               "canonical_metadata_present": not missing_canonical,
               "required_generated_present": not missing_generated,
               "generated_contract": generated_contract_ok,
+              "gitignore_materialized": (root / ".gitignore").is_file(),
+              "root_agent_ignores": not missing_root_ignores,
+              "agent_surface_untracked": not tracked_agent_surface,
               "tracked_boundary": not forbidden, "product_absent": not product_markers,
               "regular_files_only": not unsafe_modes,
               "staged_boundary": all(tracked_allowed(name, policy) for name in staged),
@@ -740,6 +765,8 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             "unsafe_tracked_modes": unsafe_modes,
             "missing_preserved_root_paths": preservation_missing, "missing_canonical_prefixes": missing_canonical,
             "missing_required_generated": missing_generated,
+            "gitignore_entries": gitignore_lines, "missing_root_agent_ignores": missing_root_ignores,
+            "tracked_agent_surface": tracked_agent_surface,
             "checks": checks, "passed": all(checks.values())}
 
 
@@ -900,6 +927,147 @@ def config_repair_apply(args: argparse.Namespace, policy: dict[str, Any]) -> dic
     return payload
 
 
+def agent_surface_repair_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    root = exact_worktree(args.root)
+    branch = safe_ref(args.branch, "branch"); product_ref = safe_ref(args.product_ref, "product_ref")
+    if branch != policy["controller_branch"] or product_ref != policy["product_ref"]:
+        raise BoundaryError("controller/product refs do not match the reviewed metadata policy")
+    if args.disposition not in {"retire", "externalize"}:
+        raise BoundaryError("agent-surface repair requires reviewed disposition retire or externalize")
+    if git(root, "symbolic-ref", "-q", "HEAD", check=False) != branch:
+        raise BoundaryError("agent-surface repair requires the exact attached metadata controller branch")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("agent-surface repair requires a clean controller")
+    head = resolve_commit(root, branch, args.expected_head, "controller ref")
+    product_head = resolve_commit(root, product_ref, args.expected_product_head, "product target")
+    entries = [{"mode": mode, "oid": oid, "path": name} for mode, oid, name in listed_tree(root, head)
+               if agent_surface_path(name)]
+    if not entries:
+        raise BoundaryError("agent-surface repair found no tracked instruction or skill evidence")
+    if any(entry["mode"] not in {"100644", "100755"} for entry in entries):
+        raise BoundaryError("agent-surface repair refuses symlink or gitlink evidence")
+    _, missing_ignores = committed_gitignore(root, head)
+    if missing_ignores:
+        raise BoundaryError("agent-surface repair requires committed root ignore coverage: " + ", ".join(missing_ignores))
+    require_canonical_controller_config(root, head)
+    inspection = inspect(root, policy, expected_branch=branch, require_active=False)
+    allowed_failures = {"agent_surface_untracked", "tracked_boundary"}
+    invalid = [name for name, passed in inspection["checks"].items()
+               if not passed and name not in allowed_failures]
+    if invalid:
+        raise BoundaryError("agent-surface repair refuses unrelated controller defects: " + ", ".join(invalid))
+    non_agent_forbidden = [name for name in inspection["forbidden_tracked"] if not agent_surface_path(name)]
+    if non_agent_forbidden:
+        raise BoundaryError("agent-surface repair refuses unrelated tracked paths: " + ", ".join(non_agent_forbidden))
+    output = external_config_repair_receipt(args.output, root, Path(common_dir(root)))
+    core = {"schema_version": AGENT_SURFACE_REPAIR_SCHEMA, "operation": "agent-surface-repair",
+            "outcome": "planned_no_mutation", "controller": str(root), "branch": branch,
+            "head": head, "tree": git(root, "rev-parse", f"{head}^{{tree}}"),
+            "git_common_dir": common_dir(root), "product_ref": product_ref, "product_head": product_head,
+            "policy_sha256": digest(policy), "reviewed_disposition": args.disposition,
+            "evidence": {"entries": entries, "sha256": digest(entries),
+                         "preserved_in_parent_commit": True},
+            "changes": {"remove": [entry["path"] for entry in entries]},
+            "apply_authorized": False, "product_ref_mutation": False}
+    payload = {**core, "plan_sha256": digest(core)}
+    atomic_receipt(output, payload)
+    return payload
+
+
+def validate_agent_surface_repair_plan(path: Path) -> tuple[dict[str, Any], str]:
+    plan = read_json(path, "agent-surface repair plan"); plan_hash = plan.pop("plan_sha256", None)
+    entries = plan.get("evidence", {}).get("entries") if isinstance(plan.get("evidence"), dict) else None
+    removals = plan.get("changes", {}).get("remove") if isinstance(plan.get("changes"), dict) else None
+    if (plan.get("schema_version") != AGENT_SURFACE_REPAIR_SCHEMA
+            or plan.get("operation") != "agent-surface-repair" or plan.get("outcome") != "planned_no_mutation"
+            or plan.get("apply_authorized") is not False or plan.get("product_ref_mutation") is not False
+            or plan.get("reviewed_disposition") not in {"retire", "externalize"}
+            or not isinstance(entries, list) or not entries
+            or plan.get("evidence", {}).get("sha256") != digest(entries)
+            or removals != [entry.get("path") for entry in entries]
+            or any(set(entry) != {"mode", "oid", "path"} or not agent_surface_path(entry["path"])
+                   or entry["mode"] not in {"100644", "100755"} for entry in entries)
+            or plan_hash != digest(plan)):
+        raise BoundaryError("agent-surface repair requires an exact hash-bound reviewed plan")
+    return plan, plan_hash
+
+
+def agent_surface_repair_state(root: Path, plan: dict[str, Any], plan_hash: str,
+                               policy: dict[str, Any]) -> tuple[str, str]:
+    if common_dir(root) != plan["git_common_dir"] or digest(policy) != plan["policy_sha256"]:
+        raise BoundaryError("agent-surface repair repository or reviewed policy changed after planning")
+    if git(root, "symbolic-ref", "-q", "HEAD", check=False) != plan["branch"]:
+        raise BoundaryError("agent-surface repair controller branch changed after planning")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("agent-surface repair requires a clean controller")
+    resolve_commit(root, plan["product_ref"], plan["product_head"], "product target")
+    head = git(root, "rev-parse", "HEAD")
+    if head == plan["head"]:
+        actual = [{"mode": mode, "oid": oid, "path": name} for mode, oid, name in listed_tree(root, head)
+                  if agent_surface_path(name)]
+        if git(root, "rev-parse", "HEAD^{tree}") != plan["tree"] or actual != plan["evidence"]["entries"]:
+            raise BoundaryError("tracked agent-surface evidence changed after planning")
+        return "before", head
+    expected_message = f"Evacuate tracked controller agent surface\n\nJuno-Agent-Surface-Repair-Plan: {plan_hash}"
+    changed = git(root, "diff", "--name-only", plan["head"], head).splitlines()
+    if (git(root, "rev-parse", f"{head}^") == plan["head"]
+            and git(root, "show", "-s", "--format=%B", head) == expected_message
+            and changed == plan["changes"]["remove"]
+            and not any(agent_surface_path(name) for _, _, name in listed_tree(root, head))):
+        return "after", head
+    raise BoundaryError("controller is neither the frozen agent-surface state nor its exact completed repair")
+
+
+def agent_surface_repair_apply(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    if not args.authorize:
+        raise BoundaryError("agent-surface repair apply requires --authorize-agent-surface-repair")
+    plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_agent_surface_repair_plan(plan_path)
+    root = exact_worktree(Path(plan["controller"])); common = Path(plan["git_common_dir"])
+    output = external_config_repair_receipt(args.output, root, common)
+    with config_repair_lock(common):
+        state, head = agent_surface_repair_state(root, plan, plan_hash, policy)
+        if state == "before":
+            if output.exists(): raise BoundaryError("agent-surface repair receipt path must be fresh before mutation")
+            git(root, "rm", "-r", "--", *sorted({entry["path"].split("/", 1)[0] for entry in plan["evidence"]["entries"]}))
+            if git(root, "diff", "--cached", "--name-only").splitlines() != plan["changes"]["remove"]:
+                git(root, "restore", "--staged", "--worktree", "--source", plan["head"], "--", *AGENT_SURFACE_ROOTS, check=False)
+                raise BoundaryError("agent-surface repair staged paths outside the reviewed evidence")
+            commit_env = {"GIT_AUTHOR_NAME": "Juno Controller Migration", "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
+                          "GIT_COMMITTER_NAME": "Juno Controller Migration", "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
+            try:
+                run(["git", "-C", str(root), "commit", "-m", "Evacuate tracked controller agent surface",
+                     "-m", f"Juno-Agent-Surface-Repair-Plan: {plan_hash}"], root, env=commit_env)
+            except BaseException:
+                if git(root, "rev-parse", "HEAD") == plan["head"]:
+                    git(root, "restore", "--staged", "--worktree", "--source", plan["head"], "--", *AGENT_SURFACE_ROOTS, check=False)
+                raise
+            state, head = agent_surface_repair_state(root, plan, plan_hash, policy)
+        if state != "after": raise BoundaryError("agent-surface repair did not reach its exact intended state")
+    evidence = inspect(root, policy, expected_branch=plan["branch"], require_active=False)
+    if not evidence["checks"]["agent_surface_untracked"] or not evidence["checks"]["root_agent_ignores"]:
+        raise BoundaryError("agent-surface repair postcondition verification failed")
+    payload = {"schema_version": AGENT_SURFACE_REPAIR_SCHEMA, "operation": "agent-surface-repair-apply",
+               "outcome": "repaired", "plan_sha256": plan_hash, "plan_file_sha256": file_digest(plan_path),
+               "controller": str(root), "branch": plan["branch"], "old_head": plan["head"], "new_head": head,
+               "reviewed_disposition": plan["reviewed_disposition"], "removed_paths": plan["changes"]["remove"],
+               "evidence_preserved_in_parent_commit": True, "product_ref": plan["product_ref"],
+               "product_head": plan["product_head"], "product_ref_mutation": False}
+    atomic_receipt(output, payload); return payload
+
+
+def agent_surface_repair_verify(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_agent_surface_repair_plan(plan_path)
+    root = exact_worktree(Path(plan["controller"])); output = external_config_repair_receipt(args.output, root, Path(plan["git_common_dir"]))
+    state, head = agent_surface_repair_state(root, plan, plan_hash, policy)
+    evidence = inspect(root, policy, expected_branch=plan["branch"], require_active=False)
+    if state != "after" or not evidence["passed"]:
+        raise BoundaryError("agent-surface repair verification refused")
+    payload = {"schema_version": AGENT_SURFACE_REPAIR_SCHEMA, "operation": "agent-surface-repair-verify",
+               "outcome": "verified", "plan_sha256": plan_hash, "controller": str(root), "head": head,
+               "evidence_preserved_in_parent_commit": True, "checks": evidence["checks"], "passed": True}
+    atomic_receipt(output, payload); return payload
+
+
 def runtime_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     root = exact_worktree(args.root)
     expected_branch = safe_ref(args.branch, "branch")
@@ -1021,6 +1189,16 @@ def main() -> None:
     repair_apply = sub.add_parser("config-repair-apply")
     repair_apply.add_argument("--plan", type=Path, required=True); repair_apply.add_argument("--output", type=Path, required=True)
     repair_apply.add_argument("--authorize-config-repair", dest="authorize", action="store_true")
+    surface_plan = sub.add_parser("agent-surface-repair-plan")
+    surface_plan.add_argument("--root", type=Path, required=True); surface_plan.add_argument("--branch", required=True)
+    surface_plan.add_argument("--expected-head", required=True); surface_plan.add_argument("--product-ref", required=True)
+    surface_plan.add_argument("--expected-product-head", required=True); surface_plan.add_argument("--disposition", required=True)
+    surface_plan.add_argument("--output", type=Path, required=True)
+    surface_apply = sub.add_parser("agent-surface-repair-apply")
+    surface_apply.add_argument("--plan", type=Path, required=True); surface_apply.add_argument("--output", type=Path, required=True)
+    surface_apply.add_argument("--authorize-agent-surface-repair", dest="authorize", action="store_true")
+    surface_verify = sub.add_parser("agent-surface-repair-verify")
+    surface_verify.add_argument("--plan", type=Path, required=True); surface_verify.add_argument("--output", type=Path, required=True)
     rebind = sub.add_parser("runtime-rebind"); rebind.add_argument("--root", type=Path, required=True); rebind.add_argument("--branch", required=True)
     rebind.add_argument("--runtime", type=Path, required=True); rebind.add_argument("--runtime-version", required=True); rebind.add_argument("--output", type=Path, required=True)
     for name in ("cutover-plan", "rollback-plan"):
@@ -1052,6 +1230,9 @@ def main() -> None:
         if not payload["passed"]: raise BoundaryError("product tree still contains controller-private paths")
     elif args.command == "config-repair-plan": payload = config_repair_plan(args, policy)
     elif args.command == "config-repair-apply": payload = config_repair_apply(args, policy)
+    elif args.command == "agent-surface-repair-plan": payload = agent_surface_repair_plan(args, policy)
+    elif args.command == "agent-surface-repair-apply": payload = agent_surface_repair_apply(args, policy)
+    elif args.command == "agent-surface-repair-verify": payload = agent_surface_repair_verify(args, policy)
     elif args.command == "runtime-rebind": payload = runtime_rebind(args, policy)
     else: payload = transition_plan(args, policy, args.command == "rollback-plan")
     print(json.dumps({"outcome": payload.get("outcome", "verified"), "receipt": str(args.output.resolve())}, sort_keys=True))

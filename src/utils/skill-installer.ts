@@ -26,7 +26,9 @@
  */
 
 import fs from 'fs-extra';
+import { execFile } from 'node:child_process';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   assertPackageSource,
@@ -54,6 +56,8 @@ interface ExtensionGroup {
   /** Destination directory relative to project root */
   destDir: string;
 }
+
+const execFileAsync = promisify(execFile);
 
 export class SkillInstaller {
   private static readonly CONTROLLER_AGENT_IGNORES = [
@@ -87,6 +91,22 @@ export class SkillInstaller {
     if (missing.length > 0) {
       throw new Error(
         `Metadata-controller agent surface requires the reviewed ignored-runtime policy; missing .gitignore entries: ${missing.join(', ')}`,
+      );
+    }
+    let tracked = '';
+    try {
+      ({ stdout: tracked } = await execFileAsync(
+        'git',
+        ['-c', 'core.fsmonitor=false', 'ls-files', '-z', '--', 'AGENTS.md', 'CLAUDE.md', '.agents', '.claude', '.pi'],
+        { cwd: projectDir, encoding: 'utf8', timeout: 30_000 },
+      ));
+    } catch (error) {
+      throw new Error(`Metadata-controller agent surface tracking preflight failed: ${String(error)}`);
+    }
+    const trackedPaths = tracked.split('\0').filter(Boolean).sort();
+    if (trackedPaths.length > 0) {
+      throw new Error(
+        `Metadata-controller agent surface contains tracked user evidence; reviewed evacuation is required: ${trackedPaths.join(', ')}`,
       );
     }
   }

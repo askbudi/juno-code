@@ -319,6 +319,9 @@ def controller_identity(root: Path, override: Path | None) -> dict[str, Any]:
         selected = exact
         names = [item for item in git(selected, "ls-tree", "-r", "--name-only", "HEAD").splitlines() if item]
         product_paths = [name for name in names if name != ".gitignore" and not name.startswith(".juno_task/")]
+        tracked_agent_surface = [name for name in names if any(
+            name == prefix or name.startswith(prefix + "/")
+            for prefix in ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi"))]
         result.update({"head": git(selected, "rev-parse", "HEAD", check=False) or None,
                        "branch": git(selected, "symbolic-ref", "-q", "HEAD", check=False) or None,
                        "clean": not bool(git(selected, "status", "--porcelain", check=False)),
@@ -327,6 +330,8 @@ def controller_identity(root: Path, override: Path | None) -> dict[str, Any]:
                                           == str(Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()),
                        "tracked_count": len(names), "tracked_product_path_count": len(product_paths),
                        "tracked_product_roots": sorted({name.split("/", 1)[0] for name in product_paths}),
+                       "tracked_agent_surface": tracked_agent_surface,
+                       "tracked_agent_surface_count": len(tracked_agent_surface),
                        "metadata_only": not product_paths})
         result["override_disagrees_with_registration"] = bool(override and registered and Path(registered).resolve() != selected)
         actual_branch = result.get("branch")
@@ -413,6 +418,8 @@ def required_decisions(payload: dict[str, Any]) -> dict[str, Any]:
     for name in CONTROLLER_PRIVATE_DEFAULTS:
         if name not in present_private:
             add("controller_private", name, "retire", "absent_but_policy_reserved_controller_state")
+    for name in payload.get("controller", {}).get("tracked_agent_surface", []):
+        add("controller_agent_surface", name, "externalize", "committed_user_instruction_evidence")
     for row in payload["managed_assets"]:
         if row["state"] != "managed": add("managed_asset", row["path"], "keep", "customized_or_missing_managed_asset")
     for row in payload["custom_project_assets"]:
@@ -555,6 +562,10 @@ def validated_answers(receipt: dict[str, Any], answers: dict[str, Any], inventor
         value = decisions.get(row["id"])
         if value not in DISPOSITIONS:
             missing.append(f"dispositions.{row['id']}")
+        elif row.get("kind") == "controller_agent_surface" and value not in {"retire", "externalize"}:
+            raise InventoryError(
+                f"tracked controller agent evidence requires reviewed retire/externalize disposition: {row.get('path')}"
+            )
     authorities = answers.get("authorities", {})
     expected_authorities = set(required["separate_authorities"])
     if not isinstance(authorities, dict) or set(authorities) != expected_authorities or any(value not in (True, False) for value in authorities.values()):
@@ -650,7 +661,9 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
         "tracked_recursive": recursive,
         "tracked_top_level_files": top_level,
         "runtime": {"package": "juno-code", "identity_file": ".juno_task/runtime/identity.json",
-                    "ignored_roots": [".juno_task/runtime", ".juno_task/scripts", ".venv_juno", ".env.juno"]},
+                    "ignored_roots": [".agents", ".claude", ".env.juno", ".juno_task/cache",
+                                      ".juno_task/locks", ".juno_task/runtime", ".juno_task/scripts",
+                                      ".pi", ".venv_juno", "AGENTS.md", "CLAUDE.md"]},
     }
     task = {"schema_version": "juno_task_workspace_config.v1", "repository": ".", "target_ref": answers["product_ref"],
             "workspace_root": answers["task_workspace_root"], "branch_prefix": answers["branch_prefix"],

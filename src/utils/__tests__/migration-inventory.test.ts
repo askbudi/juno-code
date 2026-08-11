@@ -143,7 +143,10 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     const controller = path.join(temporary, 'controller'); await fs.ensureDir(controller);
     git(controller, 'init', '-q', '-b', 'controller'); git(controller, 'config', 'user.name', 'Test'); git(controller, 'config', 'user.email', 'test@example.com');
     await fs.writeFile(path.join(controller, 'product.txt'), 'full controller fixture\n');
-    git(controller, 'add', '.'); git(controller, 'commit', '-qm', 'full controller');
+    await fs.writeFile(path.join(controller, 'AGENTS.md'), 'committed owner instructions\n');
+    await fs.outputFile(path.join(controller, '.claude/skills/owner/SKILL.md'), 'committed owner skill\n');
+    git(controller, 'add', '.'); git(controller, 'add', '-f', 'AGENTS.md', '.claude/skills/owner/SKILL.md');
+    git(controller, 'commit', '-qm', 'full controller');
     const inside = run(project, 'inventory', '--project', project, '--controller', controller, '--output', path.join(controller, 'receipt.json'));
     expect(inside.status).toBe(2); expect(inside.stderr).toContain('outside all inspected repositories');
     const receiptPath = path.join(temporary, 'frozen.json');
@@ -153,6 +156,14 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     expect(receipt.git.selected_product_head).toBe(receipt.git.local_product_refs['refs/heads/product']);
     expect(receipt.controller.metadata_only).toBe(false);
     expect(receipt.controller.tracked_product_roots).toContain('product.txt');
+    expect(receipt.controller.tracked_agent_surface).toEqual([
+      '.claude/skills/owner/SKILL.md',
+      'AGENTS.md',
+    ]);
+    expect(receipt.required_owner_answers.dispositions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'controller_agent_surface', path: 'AGENTS.md', recommended_disposition: 'externalize' }),
+      expect.objectContaining({ kind: 'controller_agent_surface', path: '.claude/skills/owner/SKILL.md', recommended_disposition: 'externalize' }),
+    ]));
     const protectedTemplate = run(project, 'owner-template', '--inventory', receiptPath, '--output', path.join(project, 'answers.json'));
     expect(protectedTemplate.status).toBe(2); expect(protectedTemplate.stderr).toContain('outside all inventoried repositories');
   });

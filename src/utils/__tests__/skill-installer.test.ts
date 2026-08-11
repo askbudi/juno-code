@@ -14,6 +14,7 @@
  * file listing, auto-update logic, and Pi settings provisioning.
  */
 
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
 import * as path from 'node:path';
@@ -76,6 +77,7 @@ describe('SkillInstaller', () => {
 
   describe('install', () => {
     const initializeMetadataController = async (withAgentIgnores: boolean) => {
+      expect(spawnSync('git', ['init', '-q'], { cwd: testDir }).status).toBe(0);
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
         controllerWorkspace: {
@@ -100,6 +102,18 @@ describe('SkillInstaller', () => {
       expect(await fs.pathExists(path.join(testDir, '.agents'))).toBe(false);
       expect(await fs.pathExists(path.join(testDir, '.claude'))).toBe(false);
       expect(await fs.pathExists(path.join(testDir, '.pi'))).toBe(false);
+    });
+
+    it('refuses to overwrite tracked controller agent instructions as user evidence', async () => {
+      await initializeMetadataController(true);
+      await fs.writeFile(path.join(testDir, 'AGENTS.md'), 'committed owner instructions\n');
+      expect(spawnSync('git', ['add', '-f', 'AGENTS.md'], { cwd: testDir }).status).toBe(0);
+
+      await expect(SkillInstaller.install(testDir, true)).rejects.toThrow(
+        'tracked user evidence; reviewed evacuation is required: AGENTS.md',
+      );
+      expect(await fs.readFile(path.join(testDir, 'AGENTS.md'), 'utf8')).toBe('committed owner instructions\n');
+      expect(await fs.pathExists(path.join(testDir, '.agents'))).toBe(false);
     });
 
     it('installs ignored instructions and core skills in a metadata-only controller', async () => {

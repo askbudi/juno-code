@@ -175,6 +175,101 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "status", "--porcelain", cwd=product_worktree), "")
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=product_worktree), self.product_head)
 
+    def test_sparse_materialization_and_root_ignore_contract_fail_before_admission(self) -> None:
+        self.prepare()
+        command("git", "sparse-checkout", "set", "--no-cone", "/.juno_task/", cwd=self.new_controller)
+        sparse = mc.inspect(self.new_controller, self.policy,
+                            expected_branch="refs/heads/juno/controller-metadata-v1",
+                            require_active=False)
+        self.assertFalse(sparse["passed"])
+        self.assertFalse(sparse["checks"]["gitignore_materialized"])
+        command("git", "sparse-checkout", "disable", cwd=self.new_controller)
+
+        ignore = self.new_controller / ".gitignore"
+        ignore.write_text(ignore.read_text().replace("/.claude/\n", ""))
+        command("git", "add", ".gitignore", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "omit required root ignore", cwd=self.new_controller)
+        missing = mc.inspect(self.new_controller, self.policy,
+                             expected_branch="refs/heads/juno/controller-metadata-v1",
+                             require_active=False)
+        self.assertFalse(missing["passed"])
+        self.assertFalse(missing["checks"]["root_agent_ignores"])
+        self.assertEqual(missing["missing_root_agent_ignores"], ["/.claude/"])
+
+    def test_agent_surface_repair_is_reviewed_hash_bound_and_preserves_committed_evidence(self) -> None:
+        self.prepare()
+        evidence = {
+            "AGENTS.md": "owner agents evidence\n",
+            "CLAUDE.md": "owner claude evidence\n",
+            ".claude/skills/owner/SKILL.md": "owner skill evidence\n",
+        }
+        for relative, content in evidence.items():
+            write(self.new_controller / relative, content)
+        command("git", "add", "-f", *evidence, cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "retain tracked owner agent evidence", cwd=self.new_controller)
+        evidence_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
+        inspected = mc.inspect(self.new_controller, self.policy,
+                               expected_branch="refs/heads/juno/controller-metadata-v1",
+                               require_active=False)
+        self.assertFalse(inspected["passed"])
+        self.assertFalse(inspected["checks"]["agent_surface_untracked"])
+        self.assertEqual(inspected["tracked_agent_surface"], sorted(evidence))
+
+        args = argparse.Namespace(
+            root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+            expected_head=evidence_head, product_ref="refs/heads/juno-mono-002",
+            expected_product_head=self.product_head, disposition="keep",
+            output=self.temp / "invalid-agent-plan.json")
+        with self.assertRaisesRegex(mc.BoundaryError, "reviewed disposition"):
+            mc.agent_surface_repair_plan(args, self.policy)
+        args.disposition = "externalize"; args.output = self.temp / "agent-plan.json"
+        plan = mc.agent_surface_repair_plan(args, self.policy)
+        self.assertTrue(plan["evidence"]["preserved_in_parent_commit"])
+        self.assertEqual(plan["changes"]["remove"], sorted(evidence))
+
+        with self.assertRaisesRegex(mc.BoundaryError, "requires --authorize"):
+            mc.agent_surface_repair_apply(argparse.Namespace(
+                plan=args.output, output=self.temp / "noauth.json", authorize=False), self.policy)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.new_controller), evidence_head)
+
+        approved = args.output.read_bytes(); tampered = json.loads(approved)
+        tampered["reviewed_disposition"] = "retire"; args.output.write_text(json.dumps(tampered))
+        with self.assertRaisesRegex(mc.BoundaryError, "hash-bound"):
+            mc.agent_surface_repair_apply(argparse.Namespace(
+                plan=args.output, output=self.temp / "tampered.json", authorize=True), self.policy)
+        args.output.write_bytes(approved)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.new_controller), evidence_head)
+
+        write(self.new_controller / "AGENTS.md", "drift must survive refusal\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "clean controller"):
+            mc.agent_surface_repair_apply(argparse.Namespace(
+                plan=args.output, output=self.temp / "dirty.json", authorize=True), self.policy)
+        self.assertEqual((self.new_controller / "AGENTS.md").read_text(), "drift must survive refusal\n")
+        command("git", "restore", "AGENTS.md", cwd=self.new_controller)
+
+        collision = self.temp / "agent-collision.json"; collision.write_text("{}\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "fresh before mutation"):
+            mc.agent_surface_repair_apply(argparse.Namespace(
+                plan=args.output, output=collision, authorize=True), self.policy)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.new_controller), evidence_head)
+        self.assertEqual(collision.read_text(), "{}\n")
+
+        receipt = mc.agent_surface_repair_apply(argparse.Namespace(
+            plan=args.output, output=self.temp / "agent-apply.json", authorize=True), self.policy)
+        self.assertTrue(receipt["evidence_preserved_in_parent_commit"])
+        self.assertEqual(receipt["removed_paths"], sorted(evidence))
+        for relative, content in evidence.items():
+            self.assertFalse((self.new_controller / relative).exists())
+            self.assertEqual(command("git", "show", f"{evidence_head}:{relative}", cwd=self.new_controller),
+                             content.rstrip("\n"))
+        verified = mc.agent_surface_repair_verify(argparse.Namespace(
+            plan=args.output, output=self.temp / "agent-verify.json"), self.policy)
+        self.assertTrue(verified["passed"])
+        self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo),
+                         self.product_head)
+
     def test_policy_updated_controller_repairs_only_hash_bound_retired_config(self) -> None:
         self.prepare()
         config_path = self.new_controller / ".juno_task/config.json"

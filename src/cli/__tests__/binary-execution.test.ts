@@ -724,7 +724,25 @@ describe('Binary Execution Tests', () => {
 
       const doctor = await executeCLI(['scripts', 'doctor']);
       expect(doctor.exitCode).toBe(0);
-      expect(doctor.stdout).toContain('Metadata-controller runtime scripts and agent surface are coherent');
+      expect(doctor.stdout).toContain('Bootstrap controller scripts and agent surface are coherent');
+      expect(execFileSync(
+        'git',
+        ['status', '--porcelain=v2', '--untracked-files=all'],
+        { cwd: tempDir, encoding: 'utf8' },
+      )).toBe('');
+
+      const ownerInstructions = 'committed owner controller instructions\n';
+      await fs.writeFile(path.join(tempDir, 'AGENTS.md'), ownerInstructions);
+      execFileSync('git', ['add', '-f', 'AGENTS.md'], { cwd: tempDir });
+      execFileSync('git', [
+        '-c', 'user.name=Juno Test',
+        '-c', 'user.email=juno-test@example.invalid',
+        'commit', '-qm', 'track owner controller instructions',
+      ], { cwd: tempDir });
+      const refused = await executeCLI(['scripts', 'update', '--force'], { expectError: true });
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.all).toContain('tracked user evidence; reviewed evacuation is required: AGENTS.md');
+      expect(await fs.readFile(path.join(tempDir, 'AGENTS.md'), 'utf8')).toBe(ownerInstructions);
       expect(execFileSync(
         'git',
         ['status', '--porcelain=v2', '--untracked-files=all'],

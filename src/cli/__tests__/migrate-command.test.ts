@@ -25,6 +25,31 @@ describe('migration CLI', () => {
       '--output', '/tmp/runtime-rebind.json']);
   });
 
+  it('routes reviewed agent-surface repair plan, apply, and verify commands', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const planProgram = new Command().exitOverride(); configureMigrationCommand(planProgram, invoke);
+    await planProgram.parseAsync(['node', 'yy', 'migrate', 'agent-surface-repair-plan',
+      '--root', '/controller', '--branch', 'refs/heads/controller', '--expected-head', 'a'.repeat(40),
+      '--product-ref', 'refs/heads/main', '--expected-product-head', 'b'.repeat(40),
+      '--disposition', 'externalize', '--output', '/r/plan.json']);
+    expect(invoke).toHaveBeenCalledWith(['agent-surface-repair-plan',
+      '--root', '/controller', '--branch', 'refs/heads/controller', '--expected-head', 'a'.repeat(40),
+      '--product-ref', 'refs/heads/main', '--expected-product-head', 'b'.repeat(40),
+      '--disposition', 'externalize', '--output', '/r/plan.json']);
+
+    const applyProgram = new Command().exitOverride(); configureMigrationCommand(applyProgram, invoke);
+    await applyProgram.parseAsync(['node', 'yy', 'migrate', 'agent-surface-repair-apply',
+      '--plan', '/r/plan.json', '--output', '/r/apply.json', '--authorize-agent-surface-repair']);
+    expect(invoke).toHaveBeenCalledWith(['agent-surface-repair-apply', '--plan', '/r/plan.json',
+      '--output', '/r/apply.json', '--authorize-agent-surface-repair']);
+
+    const verifyProgram = new Command().exitOverride(); configureMigrationCommand(verifyProgram, invoke);
+    await verifyProgram.parseAsync(['node', 'yy', 'migrate', 'agent-surface-repair-verify',
+      '--plan', '/r/plan.json', '--output', '/r/verify.json']);
+    expect(invoke).toHaveBeenCalledWith(['agent-surface-repair-verify', '--plan', '/r/plan.json',
+      '--output', '/r/verify.json']);
+  });
+
   it('forwards only immutable inputs to policy generation', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride();

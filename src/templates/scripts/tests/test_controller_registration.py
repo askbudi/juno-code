@@ -75,7 +75,8 @@ class ProtectedRegistrationTest(unittest.TestCase):
         }))
         self.pending = self.receipts / "pending-verify.json"
         checks = {name: True for name in ("branch_exact", "single_root_ancestry", "root_boundary", "root_preservation",
-            "canonical_metadata_present", "required_generated_present", "generated_contract", "tracked_boundary",
+            "canonical_metadata_present", "required_generated_present", "generated_contract",
+            "gitignore_materialized", "root_agent_ignores", "agent_surface_untracked", "tracked_boundary",
             "product_absent", "regular_files_only", "staged_boundary", "runtime_bound", "runtime_untracked", "role", "clean")}
         self.pending.write_text(json.dumps({
             "schema_version": "juno_metadata_controller_receipt.v1", "operation": "verify", "passed": True,
@@ -161,6 +162,30 @@ class ProtectedRegistrationTest(unittest.TestCase):
                 "--output", str(self.plan), check=False)
             self.assertIn("exact canonical metadata-only workspace shape", refused.stderr)
             self.assertFalse(self.plan.exists())
+
+    def test_plan_refuses_missing_gitignore_or_tracked_agent_surface_verification(self) -> None:
+        original_path = command("git", "config", "--local", "--get", "juno.controller.path",
+                                cwd=self.product).stdout.strip()
+        for check in ("gitignore_materialized", "root_agent_ignores", "agent_surface_untracked"):
+            pending = json.loads(self.pending.read_text())
+            pending["checks"][check] = False
+            self.pending.write_text(json.dumps(pending))
+            self.plan = self.receipts / f"refused-{check}.json"
+            refused = self.invoke(
+                "plan", "--source-controller", str(self.source), "--source-ref", "refs/heads/old-controller",
+                "--expected-source-head", self.source_head, "--target-controller", str(self.target),
+                "--target-ref", "refs/heads/controller-new", "--expected-target-head", self.target_head,
+                "--product-root", str(self.product), "--product-ref", "refs/heads/main",
+                "--expected-product-head", self.product_head, "--runtime", str(self.runtime),
+                "--runtime-version", "2.1.1", "--inventory", str(self.inventory),
+                "--policy-bundle", str(self.policy), "--pending-verification", str(self.pending),
+                "--output", str(self.plan), check=False)
+            self.assertIn("pending controller verification receipt", refused.stderr)
+            self.assertFalse(self.plan.exists())
+            pending["checks"][check] = True
+            self.pending.write_text(json.dumps(pending))
+        self.assertEqual(command("git", "config", "--local", "--get", "juno.controller.path",
+                                 cwd=self.product).stdout.strip(), original_path)
 
     def test_legacy_source_role_may_be_absent_only_with_exact_registered_resolver_evidence(self) -> None:
         command("git", "config", "--worktree", "--unset-all", "juno.workspace.role", cwd=self.source)

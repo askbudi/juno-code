@@ -222,6 +222,7 @@ def pending_verification_identity(path: Path, target: Path, target_ref: str, tar
     checks = value.get("checks", {})
     required_checks = {"branch_exact", "single_root_ancestry", "root_boundary", "root_preservation",
                        "canonical_metadata_present", "required_generated_present", "generated_contract",
+                       "gitignore_materialized", "root_agent_ignores", "agent_surface_untracked",
                        "tracked_boundary", "product_absent", "regular_files_only", "staged_boundary",
                        "runtime_bound", "runtime_untracked", "role", "clean"}
     if (value.get("schema_version") != "juno_metadata_controller_receipt.v1"

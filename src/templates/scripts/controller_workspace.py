@@ -27,6 +27,8 @@ RECEIPT_SCHEMA = "juno_controller_workspace_receipt.v1"
 OWNERSHIP_SCHEMA = "juno_workspace_ownership.v1"
 PATTERN_HEADER = "# juno-controller-workspace sparse-v1"
 CLASSES = ("controller_canonical", "shared_managed_distribution", "product_canonical", "local_ignored")
+AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
+REQUIRED_ROOT_IGNORES = ("/AGENTS.md", "/CLAUDE.md", "/.agents/", "/.claude/", "/.pi/")
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 
 class WorkspaceError(RuntimeError):
@@ -118,6 +120,11 @@ def load_policy(path: Path) -> dict[str, Any]:
         raise WorkspaceError("canonical controller requires non-cone sparse checkout and index.sparse=false")
     selected = normalize(sparse["selected_paths"], "sparse_policy.selected_paths")
     required = normalize(sparse["required_paths"], "sparse_policy.required_paths")
+    if ".gitignore" not in normalized["controller_canonical"]:
+        raise WorkspaceError("metadata-controller .gitignore must be controller_canonical")
+    misplaced_agent_roots = [root for root in AGENT_SURFACE_ROOTS if root not in normalized["local_ignored"]]
+    if misplaced_agent_roots:
+        raise WorkspaceError("metadata-controller agent surface must be local_ignored: " + ", ".join(misplaced_agent_roots))
     allowed = normalized["controller_canonical"] + normalized["shared_managed_distribution"]
     for item in selected + required:
         if not any(item == prefix or item.startswith(prefix + "/") for prefix in allowed):
@@ -125,6 +132,8 @@ def load_policy(path: Path) -> dict[str, Any]:
     for required_path in required:
         if not any(required_path == item or required_path.startswith(item + "/") for item in selected):
             raise WorkspaceError(f"required path is not selected: {required_path}")
+    if ".gitignore" not in selected or ".gitignore" not in required:
+        raise WorkspaceError("metadata-controller .gitignore must be selected and required")
     generation = value["generation"]
     if (not isinstance(generation, dict) or set(generation) != {"package_name", "package_version", "managed_assets_schema"}
             or generation["package_name"] != "juno-code" or not isinstance(generation["package_version"], str)
@@ -191,8 +200,16 @@ def inspect(root: Path, policy: dict[str, Any], *, require_branch: bool = True) 
     required_missing = [item for item in policy["sparse_policy"]["required_paths"] if not (root / item).exists()]
     classifications: dict[str, int] = {name: 0 for name in CLASSES}
     unclassified: list[str] = []
+    tracked_paths = tracked(root) if actual_root == root else []
+    tracked_agent_surface = [item for item in tracked_paths if any(
+        item == prefix or item.startswith(prefix + "/") for prefix in AGENT_SURFACE_ROOTS)]
+    ignore_lines: set[str] = set()
+    if (root / ".gitignore").is_file():
+        ignore_lines = {line.strip() for line in (root / ".gitignore").read_text().splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")}
+    missing_root_ignores = [entry for entry in REQUIRED_ROOT_IGNORES if entry not in ignore_lines]
     if actual_root == root:
-        for item in tracked(root):
+        for item in tracked_paths:
             try: classifications[classify(policy, item)] += 1
             except WorkspaceError: unclassified.append(item)
     generation = git(root, "config", "--worktree", "--get", "juno.controller.generation", check=False) or None
@@ -214,7 +231,9 @@ def inspect(root: Path, policy: dict[str, Any], *, require_branch: bool = True) 
       "non_cone": bool_config(root, "core.sparseCheckoutCone", True) is False,
       "sparse_index_disabled": bool_config(root, "index.sparse", True) is False,
       "patterns_exact": actual_bytes == ("\n".join(wanted_patterns) + "\n").encode(),
-      "required_present": not required_missing, "product_absent": not product_materialized,
+      "required_present": not required_missing, "gitignore_materialized": (root / ".gitignore").is_file(),
+      "root_agent_ignores": not missing_root_ignores, "agent_surface_untracked": not tracked_agent_surface,
+      "product_absent": not product_materialized,
       "unexpected_absent": not unexpected, "tracked_classified": not unclassified,
       "role_controller": role == "controller", "generation_current": generation == policy["generation"]["package_version"],
       "policy_identity_current": persisted_identity == expected_identity["sparse_patterns_sha256"],
@@ -222,7 +241,9 @@ def inspect(root: Path, policy: dict[str, Any], *, require_branch: bool = True) 
     return {"root": str(root), "branch_ref": branch, "head": head, "git_common_dir": common,
             "policy_identity": expected_identity, "generation": generation, "workspace_role": role,
             "checks": checks, "required_missing": required_missing, "product_materialized": product_materialized,
-            "unexpected_materialized": unexpected, "unclassified_tracked": unclassified, "unsafe_untracked": unsafe_untracked,
+            "unexpected_materialized": unexpected, "unclassified_tracked": unclassified,
+            "tracked_agent_surface": tracked_agent_surface, "missing_root_agent_ignores": missing_root_ignores,
+            "unsafe_untracked": unsafe_untracked,
             "local_ignored_untracked": sorted(set(untracked) - set(unsafe_untracked)), "class_counts": classifications,
             "passed": all(checks.values())}
 

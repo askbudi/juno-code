@@ -25,10 +25,11 @@ export async function invokeMigration(args: string[]): Promise<void> {
   const evacuation = args[0]?.startsWith('evacuation-');
   const registration = args[0] === 'registration';
   const runtimeRebind = args[0] === 'runtime-rebind';
+  const metadataController = runtimeRebind || args[0]?.startsWith('agent-surface-repair-');
   const engine = packagedEngine(
     registration
       ? 'controller_registration.py'
-      : runtimeRebind
+      : metadataController
         ? 'metadata_controller.py'
         : evacuation
           ? 'metadata_evacuation.py'
@@ -87,6 +88,40 @@ export function configureMigrationCommand(
       'runtime-rebind', '--root', options.root, '--branch', options.branch,
       '--runtime', options.runtime, '--runtime-version', options.runtimeVersion,
       '--output', options.output,
+    ]));
+  migrate
+    .command('agent-surface-repair-plan')
+    .description('Plan evacuation of committed metadata-controller instructions and skills')
+    .requiredOption('--root <path>', 'Exact metadata-controller worktree')
+    .requiredOption('--branch <ref>', 'Exact controller branch ref')
+    .requiredOption('--expected-head <sha>', 'Frozen controller head')
+    .requiredOption('--product-ref <ref>', 'Protected product ref')
+    .requiredOption('--expected-product-head <sha>', 'Frozen product head')
+    .requiredOption('--disposition <value>', 'Reviewed retire or externalize disposition')
+    .requiredOption('--output <path>', 'New plan receipt outside all worktrees')
+    .action((options) => invoke([
+      'agent-surface-repair-plan', '--root', options.root, '--branch', options.branch,
+      '--expected-head', options.expectedHead, '--product-ref', options.productRef,
+      '--expected-product-head', options.expectedProductHead, '--disposition', options.disposition,
+      '--output', options.output,
+    ]));
+  migrate
+    .command('agent-surface-repair-apply')
+    .description('Apply one reviewed, hash-bound agent-surface evacuation')
+    .requiredOption('--plan <path>')
+    .requiredOption('--output <path>')
+    .requiredOption('--authorize-agent-surface-repair', 'Authorize only the reviewed local repair')
+    .action((options) => invoke([
+      'agent-surface-repair-apply', '--plan', options.plan, '--output', options.output,
+      '--authorize-agent-surface-repair',
+    ]));
+  migrate
+    .command('agent-surface-repair-verify')
+    .description('Verify the exact repaired controller and preserved parent evidence')
+    .requiredOption('--plan <path>')
+    .requiredOption('--output <path>')
+    .action((options) => invoke([
+      'agent-surface-repair-verify', '--plan', options.plan, '--output', options.output,
     ]));
   migrate
     .command('owner-template')
