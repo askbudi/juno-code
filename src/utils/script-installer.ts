@@ -10,6 +10,7 @@ import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import managedAssetManifest from '../templates/managed-assets.json';
+import { assertSafeManagedWritePath } from './managed-update-transaction.js';
 
 const MANAGED_SCRIPT_ROOT = '.juno_task/scripts';
 const MANAGED_SCRIPT_NAMES = managedAssetManifest.assets
@@ -483,6 +484,36 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     }
   }
 
+  /** Validate config, package sources, and every possible script/requirement destination. */
+  static async preflightUpdate(projectDir: string, force = false): Promise<void> {
+    const junoTaskDir = path.join(projectDir, '.juno_task');
+    if (!(await fs.pathExists(junoTaskDir))) return;
+
+    const { ManagedProjectAssets } = await import('./managed-project-assets.js');
+    await ManagedProjectAssets.preflight(projectDir, { force });
+
+    const packageScriptsDir = this.getPackageScriptsDir();
+    if (!packageScriptsDir) {
+      throw new Error('Juno Code package scripts are missing');
+    }
+    for (const scriptName of this.REQUIRED_SCRIPTS) {
+      const source = path.join(packageScriptsDir, scriptName);
+      if (!(await fs.pathExists(source)) || !(await fs.lstat(source)).isFile()) {
+        throw new Error(`Missing package script: ${source}`);
+      }
+      await assertSafeManagedWritePath(
+        projectDir,
+        path.join(projectDir, '.juno_task', 'scripts', scriptName),
+      );
+    }
+    await assertSafeManagedWritePath(projectDir, path.join(projectDir, 'scripts', 'git-flow.sh'));
+    await assertSafeManagedWritePath(projectDir, path.join(projectDir, '.venv_juno'));
+    await assertSafeManagedWritePath(
+      projectDir,
+      path.join(projectDir, '.juno_task', '.requirements-cache'),
+    );
+  }
+
   /**
    * Automatically update scripts - installs missing AND updates outdated scripts
    * Similar to ServiceInstaller.autoUpdate(), this ensures project scripts
@@ -579,6 +610,25 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     }
   }
 
+  private static async assertForcedScriptsInstalled(projectDir: string): Promise<void> {
+    const packageScriptsDir = this.getPackageScriptsDir();
+    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    for (const scriptName of this.REQUIRED_SCRIPTS) {
+      const source = path.join(packageScriptsDir, scriptName);
+      const destination = path.join(projectDir, '.juno_task', 'scripts', scriptName);
+      if (!(await fs.pathExists(destination)) ||
+          !(await fs.readFile(source)).equals(await fs.readFile(destination))) {
+        throw new Error(`Force update did not install exact package bytes: ${scriptName}`);
+      }
+      if (scriptName.endsWith('.sh') || scriptName.endsWith('.py')) {
+        const mode = (await fs.stat(destination)).mode & 0o777;
+        if (mode !== 0o755) {
+          throw new Error(`Force update installed an unsafe mode for ${scriptName}: ${mode.toString(8)}`);
+        }
+      }
+    }
+  }
+
   /**
    * Force update all scripts and run install_requirements.sh with --force-update
    * This bypasses the 24-hour cache and reinstalls all Python dependencies
@@ -590,12 +640,11 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     const debug = process.env.JUNO_CODE_DEBUG === '1';
 
     try {
-      // First, force update all scripts
+      await this.preflightUpdate(projectDir, true);
+      if (!(await fs.pathExists(path.join(projectDir, '.juno_task')))) return false;
+      // First, force update all scripts.
       const scriptsUpdated = await this.autoUpdate(projectDir, silent, true);
-
-      if (debug || !silent) {
-        console.log('✓ Force updated all scripts in .juno_task/scripts/');
-      }
+      await this.assertForcedScriptsInstalled(projectDir);
 
       // Then run install_requirements.sh with --force-update
       const scriptsDir = path.join(projectDir, '.juno_task', 'scripts');
@@ -608,10 +657,25 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
         const { execSync } = await import('child_process');
         try {
-          const output = execSync(`${installScript} --force-update`, {
+          const localVenv = path.join(projectDir, '.venv_juno');
+          const inheritedPath = process.env.PATH ?? '';
+          const output = execSync(`${JSON.stringify(installScript)} --force-update`, {
             cwd: projectDir,
             encoding: 'utf8',
             stdio: 'pipe',
+            env: {
+              ...process.env,
+              VIRTUAL_ENV: await fs.pathExists(localVenv) ? localVenv : '',
+              CONDA_DEFAULT_ENV: '',
+              PATH: await fs.pathExists(path.join(localVenv, 'bin'))
+                ? `${path.join(localVenv, 'bin')}${path.delimiter}${inheritedPath}`
+                : inheritedPath,
+              VERSION_CHECK_CACHE_DIR: path.join(
+                projectDir,
+                '.juno_task',
+                '.requirements-cache',
+              ),
+            },
           });
 
           if (output && output.trim() && (debug || !silent)) {
@@ -626,17 +690,24 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
             console.log(error.stdout);
           }
           if (error.status !== 0) {
-            console.error(`⚠️  install_requirements.sh failed: ${error.message || error.stderr}`);
+            throw new Error(
+              `install_requirements.sh failed: ${error.message || error.stderr}`,
+              { cause: error },
+            );
           }
+          throw error;
         }
       }
 
+      if (debug || !silent) {
+        console.log('✓ Force updated scripts and Python dependencies');
+      }
       return scriptsUpdated;
     } catch (error) {
       if (debug) {
         console.error('[DEBUG] ScriptInstaller: forceUpdateAll error:', error);
       }
-      return false;
+      throw error;
     }
   }
 }

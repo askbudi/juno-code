@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import managedAssetManifest from '../templates/managed-assets.json';
 import { version as packageVersion } from '../version.js';
+import { assertSafeManagedWritePath } from './managed-update-transaction.js';
 
 type ManagedAssetDefinition = {
   source: string;
@@ -95,28 +96,12 @@ function safeVersion(version: string): string {
   return version.replace(/[^A-Za-z0-9_.-]/g, '_');
 }
 
-async function assertSafeProjectWritePath(projectRoot: string, destination: string): Promise<void> {
-  const root = path.resolve(projectRoot);
-  const target = path.resolve(destination);
-  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`Managed asset path escapes project root: ${destination}`);
-  }
-  const relative = path.relative(root, target);
-  let cursor = root;
-  for (const part of relative.split(path.sep).filter(Boolean)) {
-    cursor = path.join(cursor, part);
-    if (await fs.pathExists(cursor) && (await fs.lstat(cursor)).isSymbolicLink()) {
-      throw new Error(`Refusing symbolic-link managed path component: ${path.relative(root, cursor)}`);
-    }
-  }
-}
-
 async function writeAtomic(
   destination: string,
   content: Buffer | string,
   projectRoot: string,
 ): Promise<void> {
-  await assertSafeProjectWritePath(projectRoot, destination);
+  await assertSafeManagedWritePath(projectRoot, destination);
   await fs.ensureDir(path.dirname(destination));
   const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(temporary, content);
@@ -142,10 +127,108 @@ export class ManagedProjectAssets {
     return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   }
 
+  /** Validate every source, config, manifest, and possible write path without writing. */
+  static async preflight(
+    projectDir: string,
+    options: { force?: boolean } = {},
+  ): Promise<void> {
+    const junoTaskDir = path.join(projectDir, '.juno_task');
+    if (!(await fs.pathExists(junoTaskDir))) return;
+
+    const projectConfigPath = path.join(junoTaskDir, 'config.json');
+    let projectConfig: Record<string, any> = {};
+    if (await fs.pathExists(projectConfigPath)) {
+      projectConfig = await fs.readJson(projectConfigPath);
+      const controllerWorkspace = projectConfig?.controllerWorkspace;
+      const metadataOnlyController =
+        controllerWorkspace?.mode === 'metadata-only' &&
+        controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
+      if (projectConfig?.lifecycle !== undefined ||
+          (controllerWorkspace !== undefined && !metadataOnlyController)) {
+        throw new Error(
+          'Legacy Juno 2.0 lifecycle/controllerWorkspace config requires the reviewed 2.1 ' +
+            'migration flow. Run `yy migrate inventory`, generate the owner-reviewed policy, ' +
+            'then apply and verify `yy migrate evacuation-*` in a disposable worktree before ' +
+            'updating managed assets.',
+        );
+      }
+    }
+
+    const templatesDir = this.getTemplatesDirectory();
+    if (!templatesDir) {
+      throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
+    }
+    const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
+    let manifest = emptyManifest();
+    if (await fs.pathExists(manifestPath)) {
+      const parsed = await fs.readJson(manifestPath);
+      if (parsed?.schemaVersion !== 1 || typeof parsed.assets !== 'object' || parsed.assets === null) {
+        throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
+      }
+      manifest = parsed as ManagedAssetManifest;
+    }
+
+    const possiblePaths = [
+      projectConfigPath,
+      manifestPath,
+      path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT),
+      path.join(
+        projectDir, '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+        '.juno_task/config.json.candidate',
+      ),
+    ];
+    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+      const sourcePath = path.join(templatesDir, asset.source);
+      if (!(await fs.pathExists(sourcePath)) || !(await fs.lstat(sourcePath)).isFile()) {
+        throw new Error(`Missing managed package asset: ${sourcePath}`);
+      }
+      possiblePaths.push(
+        path.join(projectDir, asset.destination),
+        path.join(
+          projectDir, '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
+          `${asset.destination}.candidate`,
+        ),
+        path.join(
+          projectDir, '.juno_task', 'managed-conflicts', `bolt-${safeVersion(packageVersion)}`,
+          `${asset.destination}.backup`,
+        ),
+      );
+    }
+    for (const destination of possiblePaths) {
+      await assertSafeManagedWritePath(projectDir, destination);
+    }
+    // Force backups may select a content-addressed collision name. Reject any
+    // pre-existing link in that package-owned archive tree now rather than
+    // discovering it after another destination was replaced.
+    const backupTree = path.join(
+      projectDir,
+      '.juno_task',
+      'managed-conflicts',
+      `bolt-${safeVersion(packageVersion)}`,
+    );
+    if (await fs.pathExists(backupTree)) {
+      const pending = [backupTree];
+      while (pending.length > 0) {
+        const current = pending.pop() as string;
+        for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+          const child = path.join(current, entry.name);
+          if (entry.isSymbolicLink()) {
+            throw new Error(
+              `Refusing symbolic-link managed backup: ${path.relative(projectDir, child)}`,
+            );
+          }
+          if (entry.isDirectory()) pending.push(child);
+        }
+      }
+    }
+    await this.assertRetiredGenerationSafe(projectDir, manifest, Boolean(options.force));
+  }
+
   static async update(
     projectDir: string,
     options: { force?: boolean; silent?: boolean } = {},
   ): Promise<ManagedAssetUpdateResult> {
+    await this.preflight(projectDir, { force: Boolean(options.force) });
     const result: ManagedAssetUpdateResult = {
       installed: [],
       updated: [],
@@ -199,22 +282,22 @@ export class ManagedProjectAssets {
     // Validate all possible install/candidate/backup parents before the first
     // generation write. A missing leaf below a symlinked directory is just as
     // unsafe as a symlinked leaf.
-    await assertSafeProjectWritePath(projectDir, projectConfigPath);
-    await assertSafeProjectWritePath(projectDir, manifestPath);
-    await assertSafeProjectWritePath(
+    await assertSafeManagedWritePath(projectDir, projectConfigPath);
+    await assertSafeManagedWritePath(projectDir, manifestPath);
+    await assertSafeManagedWritePath(
       projectDir,
       path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT),
     );
     for (const asset of MANAGED_ASSET_DEFINITIONS) {
-      await assertSafeProjectWritePath(projectDir, path.join(projectDir, asset.destination));
-      await assertSafeProjectWritePath(
+      await assertSafeManagedWritePath(projectDir, path.join(projectDir, asset.destination));
+      await assertSafeManagedWritePath(
         projectDir,
         path.join(
           projectDir, '.juno_task', 'managed-conflicts', safeVersion(packageVersion),
           `${asset.destination}.candidate`,
         ),
       );
-      await assertSafeProjectWritePath(
+      await assertSafeManagedWritePath(
         projectDir,
         path.join(
           projectDir, '.juno_task', 'managed-conflicts', `bolt-${safeVersion(packageVersion)}`,
@@ -404,7 +487,7 @@ export class ManagedProjectAssets {
             ? contentRelative
             : `${contentRelative}.${attempt - 1}`;
       const backupPath = path.join(projectDir, backupRelative);
-      await assertSafeProjectWritePath(projectDir, backupPath);
+      await assertSafeManagedWritePath(projectDir, backupPath);
       if (await fs.pathExists(backupPath)) {
         if ((await fs.lstat(backupPath)).isSymbolicLink()) {
           throw new Error(`Refusing symbolic-link managed backup: ${backupRelative}`);
@@ -436,7 +519,7 @@ export class ManagedProjectAssets {
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
       if (!(await fs.pathExists(destinationPath))) continue;
-      await assertSafeProjectWritePath(projectDir, destinationPath);
+      await assertSafeManagedWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
       }
@@ -484,7 +567,7 @@ export class ManagedProjectAssets {
     for (const destination of RETIRED_BEFORE_BOLT_2_0_32) {
       const destinationPath = path.join(projectDir, destination);
       if (!(await fs.pathExists(destinationPath))) continue;
-      await assertSafeProjectWritePath(projectDir, destinationPath);
+      await assertSafeManagedWritePath(projectDir, destinationPath);
       if ((await fs.lstat(destinationPath)).isSymbolicLink()) {
         throw new Error(`Refusing symbolic-link retired managed asset: ${destination}`);
       }

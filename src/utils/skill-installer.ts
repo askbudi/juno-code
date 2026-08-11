@@ -28,6 +28,7 @@
 import fs from 'fs-extra';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertSafeManagedWritePath } from './managed-update-transaction.js';
 
 /**
  * Mapping from skill group name to the destination directory relative to project root.
@@ -407,6 +408,40 @@ export class SkillInstaller {
     return installed;
   }
 
+  /** Validate controller policy, package sources, and every agent-surface destination. */
+  static async preflightInstall(projectDir: string): Promise<void> {
+    await this.assertInstallAllowed(projectDir);
+    const packageSkillsDir = this.getPackageSkillsDir();
+    const packageExtensionsDir = this.getPackageExtensionsDir();
+    if (!packageSkillsDir) throw new Error('Package skill templates are missing');
+
+    for (const group of this.SKILL_GROUPS) {
+      const sourceGroup = path.join(packageSkillsDir, group.name);
+      for (const relative of await this.getSkillFiles(sourceGroup)) {
+        await assertSafeManagedWritePath(projectDir, path.join(projectDir, group.destDir, relative));
+      }
+    }
+    if (packageExtensionsDir) {
+      for (const group of this.EXTENSION_GROUPS) {
+        const sourceGroup = path.join(packageExtensionsDir, group.name);
+        for (const relative of await this.getSkillFiles(sourceGroup)) {
+          await assertSafeManagedWritePath(projectDir, path.join(projectDir, group.destDir, relative));
+        }
+      }
+    }
+    await assertSafeManagedWritePath(projectDir, path.join(projectDir, '.pi', 'settings.json'));
+    if (await this.isMetadataOnlyController(projectDir)) {
+      const controllerSource = this.getPackageControllerAgentDir();
+      if (!controllerSource) throw new Error('Package controller-agent instructions are missing');
+      for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+        if (!(await fs.pathExists(path.join(controllerSource, filename)))) {
+          throw new Error(`Package controller instruction is missing: ${filename}`);
+        }
+        await assertSafeManagedWritePath(projectDir, path.join(projectDir, filename));
+      }
+    }
+  }
+
   /**
    * Install skills for all skill groups.
    * This copies skill files to the appropriate project directories while
@@ -417,8 +452,13 @@ export class SkillInstaller {
    * @param force - If true, overwrite even if content matches
    * @returns true if any skill files were installed or updated
    */
-  static async install(projectDir: string, silent = false, force = false): Promise<boolean> {
-    await this.assertInstallAllowed(projectDir);
+  static async install(
+    projectDir: string,
+    silent = false,
+    force = false,
+    strict = false,
+  ): Promise<boolean> {
+    await this.preflightInstall(projectDir);
     const debug = process.env.JUNO_CODE_DEBUG === '1';
     let totalInstalled = await this.installControllerInstructions(projectDir, silent, force);
 
@@ -427,6 +467,7 @@ export class SkillInstaller {
         const count = await this.installGroup(projectDir, group, silent, force);
         totalInstalled += count;
       } catch (error) {
+        if (strict) throw error;
         if (debug) {
           console.error(`[DEBUG] SkillInstaller: Error installing group '${group.name}':`, error);
         }
@@ -444,6 +485,7 @@ export class SkillInstaller {
         const count = await this.installExtensionGroup(projectDir, group, silent, force);
         totalInstalled += count;
       } catch (error) {
+        if (strict) throw error;
         if (debug) {
           console.error(
             `[DEBUG] SkillInstaller: Error installing extensions for '${group.name}':`,
@@ -462,6 +504,7 @@ export class SkillInstaller {
     try {
       await this.ensurePiSettings(projectDir, silent);
     } catch (error) {
+      if (strict) throw error;
       if (debug) {
         console.error('[DEBUG] SkillInstaller: Error provisioning Pi settings:', error);
       }

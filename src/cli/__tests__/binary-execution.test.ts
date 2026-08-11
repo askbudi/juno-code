@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   createSessionContinuityConfig,
   createSessionContinuityFixture,
@@ -253,6 +254,86 @@ describe('Binary Execution Tests', () => {
       expect(scriptsUpdate.exitCode).toBe(0);
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).toContain('Force updating project scripts');
       expect(`${scriptsUpdate.stdout}\n${scriptsUpdate.stderr}`).not.toContain('Executing with');
+    });
+
+    it('refuses retired controller config before changing any managed or ignored destination', async () => {
+      const target = await fs.mkdtemp(path.join(tempDir, 'scripts-update-preflight-'));
+      const requirementMarker = path.join(target, 'requirements-ran');
+      const digestTree = async (): Promise<string> => {
+        const hash = createHash('sha256');
+        const walk = async (directory: string, relative = ''): Promise<void> => {
+          const entries = await fs.readdir(directory, { withFileTypes: true });
+          entries.sort((left, right) => left.name.localeCompare(right.name));
+          for (const entry of entries) {
+            const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+            const child = path.join(directory, entry.name);
+            const stat = await fs.lstat(child);
+            hash.update(`${childRelative}\0${stat.mode & 0o7777}\0`);
+            if (entry.isSymbolicLink()) {
+              hash.update(`link:${await fs.readlink(child)}\0`);
+            } else if (entry.isDirectory()) {
+              hash.update('directory\0');
+              await walk(child, childRelative);
+            } else {
+              hash.update('file\0');
+              hash.update(await fs.readFile(child));
+            }
+          }
+        };
+        await walk(target);
+        return hash.digest('hex');
+      };
+
+      try {
+        await fs.outputJson(path.join(target, '.juno_task/config.json'), {
+          controllerWorkspace: {
+            enabled: true,
+            policy: '.juno_task/config/controller-workspace.json',
+          },
+        });
+        const fixtureFiles: Record<string, string> = {
+          '.juno_task/scripts/runtime.sh': '#!/bin/sh\necho old-runtime\n',
+          '.juno_task/scripts/install_requirements.sh':
+            `#!/bin/sh\nprintf ran > ${JSON.stringify(requirementMarker)}\n`,
+          '.juno_task/prompts/custom.md': 'owner prompt\n',
+          '.juno_task/wiki/custom.md': 'owner wiki\n',
+          '.juno_task/config/controller-workspace.json': '{"retired":true}\n',
+          '.juno_task/managed-assets.json':
+            '{"schemaVersion":1,"packageName":"juno-code","packageVersion":"old","assets":{}}\n',
+          '.juno_task/managed-conflicts/old/custom.backup': 'old backup\n',
+          '.venv_juno/bin/python': 'old requirement runtime\n',
+          '.agents/skills/custom/SKILL.md': 'owner agent skill\n',
+          '.claude/skills/custom/SKILL.md': 'owner claude skill\n',
+          '.pi/extensions/custom.ts': 'owner extension\n',
+          '.pi/settings.json': '{"owner":true}\n',
+          'scripts/git-flow.sh': '#!/bin/sh\necho owner\n',
+          'AGENTS.md': 'owner agents\n',
+          'CLAUDE.md': 'owner claude\n',
+        };
+        for (const [relative, content] of Object.entries(fixtureFiles)) {
+          const destination = path.join(target, relative);
+          await fs.ensureDir(path.dirname(destination));
+          await fs.writeFile(destination, content);
+        }
+        await fs.chmod(path.join(target, '.juno_task/scripts/runtime.sh'), 0o751);
+        await fs.chmod(path.join(target, '.juno_task/scripts/install_requirements.sh'), 0o755);
+        await fs.chmod(path.join(target, 'scripts/git-flow.sh'), 0o711);
+
+        const before = await digestTree();
+        const result = await executeCLI(
+          ['scripts', 'update', '--force', '--cwd', target],
+          { cwd: target, expectError: true },
+        );
+        const after = await digestTree();
+
+        expect(result.exitCode).not.toBe(0);
+        expect(result.all).toContain('Legacy Juno 2.0 lifecycle/controllerWorkspace config');
+        expect(result.all).not.toMatch(/✓|Force updated|dependencies force updated|Managed assets:/);
+        expect(await fs.pathExists(requirementMarker)).toBe(false);
+        expect(after).toBe(before);
+      } finally {
+        await fs.remove(target);
+      }
     });
 
     it('ships a runnable migration inventory engine with the bundled CLI', async () => {

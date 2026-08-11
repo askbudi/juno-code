@@ -1134,23 +1134,40 @@ function setupScriptManagementCommands(program: Command): void {
         : typeof argvCwd === 'string' && argvCwd.trim().length > 0
           ? argvCwd.trim()
           : process.cwd();
-    const [{ ScriptInstaller }, { ManagedProjectAssets }, { SkillInstaller }] = await Promise.all([
+    const [
+      { ScriptInstaller },
+      { ManagedProjectAssets },
+      { SkillInstaller },
+      { withManagedUpdateRollback },
+    ] = await Promise.all([
       import('../utils/script-installer.js'),
       import('../utils/managed-project-assets.js'),
       import('../utils/skill-installer.js'),
+      import('../utils/managed-update-transaction.js'),
     ]);
+
+    // This is deliberately before even an update progress claim. These probes
+    // cover every script, dependency, guidance, manifest/backup, and ignored
+    // agent-surface destination and perform no writes.
+    await ScriptInstaller.preflightUpdate(workingDirectory, Boolean(options.force));
+    await SkillInstaller.preflightInstall(workingDirectory);
     const metadataOnlyController = await ScriptInstaller.isMetadataOnlyController(workingDirectory);
 
     if (options.force) {
       console.log(chalk.blue(metadataOnlyController
         ? '🔄 Force updating ignored metadata-controller runtime scripts, agent surface, and Python dependencies...'
         : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
-      const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, false);
-      const skillsUpdated = await SkillInstaller.install(workingDirectory, true, true);
-      const assets = metadataOnlyController
-        ? { installed: [], updated: [] }
-        : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: false });
-      if (!scriptsUpdated && !skillsUpdated && assets.installed.length + assets.updated.length === 0) {
+      const outcome = await withManagedUpdateRollback(workingDirectory, async () => {
+        const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, true);
+        const skillsUpdated = await SkillInstaller.install(workingDirectory, true, true, true);
+        const assets = metadataOnlyController
+          ? { installed: [], updated: [] }
+          : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: true });
+        return { scriptsUpdated, skillsUpdated, assets };
+      });
+      console.log(chalk.green('✓ Force updated scripts, requirements, and managed project assets'));
+      if (!outcome.scriptsUpdated && !outcome.skillsUpdated &&
+          outcome.assets.installed.length + outcome.assets.updated.length === 0) {
         console.log(chalk.yellow('No project assets updated. Is this an initialized juno-code project with .juno_task/?'));
       }
       return;
@@ -1896,7 +1913,9 @@ async function main(): Promise<void> {
   // retain their documented authority in every initialized workspace.
   const mayAutoUpdateProjectAssets =
     !isReadOnlyIdentityRequest && !isLifecycleCommand && !isTaskWorkspaceCommand && !isIntegrationCommand &&
-    (isExplicitProjectAssetUpdate || resolveAutomaticProjectBootstrap(process.cwd()).allowed);
+    (isForceUpdate || (
+      !isExplicitProjectAssetUpdate && resolveAutomaticProjectBootstrap(process.cwd()).allowed
+    ));
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
   process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES =
@@ -1905,7 +1924,7 @@ async function main(): Promise<void> {
   // Auto-update service scripts if package version changed (silent operation)
   // This ensures users always have the latest service scripts after npm upgrade
   try {
-    if (!isReadOnlyIdentityRequest) {
+    if (!isReadOnlyIdentityRequest && !isExplicitProjectAssetUpdate) {
       const { ServiceInstaller } = await import('../utils/service-installer.js');
 
     if (isForceUpdate) {
