@@ -121,9 +121,12 @@ Every admitted `yy merge next|resolve` target transition and every target-moving
 `yy integration sync` also refreshes the ignored controller scripts from that
 exact target commit. The tracked task-workspace policy is updated by a top-level
 three-way merge: target additions are admitted, controller-specific unchanged
-fields survive, and overlapping or uncommitted policy edits refuse. Customized
-runtime bytes are never overwritten. The operation announces a unique
-`/tmp/yy-managed-runtime-refresh-*.log`, records source/installed hashes and
+fields survive, and overlapping or uncommitted policy edits refuse. A customized
+script is preserved when its packaged source is unchanged across the transition;
+a changed or retired customized source refuses before mutation. Generation and
+doctor receipts classify exact files separately from preserved customizations,
+bind both preserved actual and packaged-source hashes, and detect later drift.
+The operation announces a unique `/tmp/yy-managed-runtime-refresh-*.log`, records
 terminal timing in a hash-bound receipt, and runs its doctor before returning
 terminal evidence. Inspect or recover an interrupted generation explicitly:
 

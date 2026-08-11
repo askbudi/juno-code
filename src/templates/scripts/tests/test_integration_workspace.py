@@ -499,14 +499,67 @@ class ManagedRuntimeTests(unittest.TestCase):
                                   task_id="UOsd11-retry")
         self.assertEqual(retried["outcome"], "completed")
 
-    def test_refresh_refuses_customized_script_without_mutation(self) -> None:
+    def test_unchanged_source_customization_is_preserved_while_changed_runtime_refreshes(self) -> None:
+        customized = self.controller / ".juno_task/scripts/two.py"
+        customized.write_text("owner controller registration customization\n")
+        actual_hash = runtime.managed_sha256(customized.read_bytes())
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="live-shape")
+
+        self.assertEqual((self.controller / ".juno_task/scripts/one.py").read_text(), "new one\n")
+        self.assertEqual(customized.read_text(), "owner controller registration customization\n")
+        rows = {row["path"]: row for row in result["scripts"]}
+        self.assertEqual(rows[".juno_task/scripts/one.py"]["classification"], "exact")
+        self.assertEqual(rows[".juno_task/scripts/two.py"]["outcome"], "preserved_customization")
+        self.assertEqual(rows[".juno_task/scripts/two.py"]["actual_sha256"], actual_hash)
+        generation = json.loads((self.controller / runtime.MANAGED_GENERATION_PATH).read_text())
+        preserved = generation["scripts"][".juno_task/scripts/two.py"]
+        self.assertEqual(preserved["classification"], "preserved_customization")
+        self.assertEqual(preserved["actual_sha256"], actual_hash)
+        self.assertNotEqual(preserved["actual_sha256"], preserved["source_sha256"])
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, self.target)
+        self.assertTrue(doctor["healthy"], doctor)
+        self.assertEqual(doctor["scripts"][".juno_task/scripts/two.py"]["classification"],
+                         "preserved_customization")
+        # Exact-transition recovery remains idempotent and does not overwrite it.
+        retried = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="live-shape-retry")
+        self.assertEqual(retried["outcome"], "completed")
+        self.assertEqual(customized.read_text(), "owner controller registration customization\n")
+
+    def test_doctor_detects_drift_from_bound_preserved_customization(self) -> None:
+        customized = self.controller / ".juno_task/scripts/two.py"
+        customized.write_text("intentional owner customization\n")
+        runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="doctor-drift")
+        customized.write_text("later unreviewed drift\n")
+
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, self.target)
+
+        self.assertFalse(doctor["healthy"])
+        finding = next(row for row in doctor["findings"]
+                       if row["code"] == "managed_preserved_customization_drift")
+        self.assertEqual(finding["path"], ".juno_task/scripts/two.py")
+        self.assertEqual(finding["classification"], "preserved_customization")
+        self.assertNotEqual(finding["expected_sha256"], finding["actual_sha256"])
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "existing managed generation drift"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, self.previous, self.target, task_id="drift-retry")
+        self.assertEqual(customized.read_text(), "later unreviewed drift\n")
+
+    def test_refresh_refuses_changed_source_customization_and_rolls_back(self) -> None:
         customized = self.controller / ".juno_task/scripts/one.py"
         customized.write_text("owner customization\n")
+        unchanged = self.controller / ".juno_task/scripts/two.py"
+        before_unchanged = unchanged.read_bytes()
         before_policy = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
         with self.assertRaisesRegex(runtime.ManagedRuntimeError, "customized managed runtime") as caught:
             runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target, task_id="custom")
         self.assertEqual(customized.read_text(), "owner customization\n")
+        self.assertEqual(unchanged.read_bytes(), before_unchanged)
         self.assertEqual((self.controller / runtime.MANAGED_POLICY_PATH).read_bytes(), before_policy)
+        self.assertFalse((self.controller / runtime.MANAGED_GENERATION_PATH).exists())
         self.assertIsNotNone(caught.exception.receipt)
         persisted = json.loads(Path(caught.exception.receipt["path"]).read_text())
         self.assertEqual(persisted["outcome"], "failed")

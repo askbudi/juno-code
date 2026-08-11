@@ -213,20 +213,52 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
         old = managed_source_bytes(repository, previous_sha, relative) if relative in prior_scripts else None
         new = managed_source_bytes(repository, target_sha, relative) if relative in scripts else None
         current = destination.read_bytes() if destination.exists() else None
+        classification = "exact"
         if new is None:
             if current is not None and current != old:
                 raise ManagedRuntimeError(f"customized retired managed runtime is preserved: {relative}")
             outcome = "unchanged" if current is None else "removed"
+            classification = "retired"
+            actual = None
+        elif current is not None and current not in {old, new}:
+            if old != new:
+                raise ManagedRuntimeError(f"customized managed runtime overlaps changed source: {relative}")
+            # The packaged source is identical on both sides of the admitted
+            # transition, so this owner customization is unrelated to it.
+            outcome = "preserved_customization"
+            classification = "preserved_customization"
+            actual = current
         else:
-            admissible = {new}
-            if old is not None:
-                admissible.add(old)
-            if current is not None and current not in admissible:
-                raise ManagedRuntimeError(f"customized managed runtime is preserved: {relative}")
             outcome = "unchanged" if current == new else "installed" if current is None else "updated"
-        actions.append({"path": relative, "before_sha256": managed_sha256(current) if current is not None else None,
+            actual = new
+        actions.append({"path": relative, "classification": classification,
+                        "before_sha256": managed_sha256(current) if current is not None else None,
+                        "actual_sha256": managed_sha256(actual) if actual is not None else None,
                         "source_sha256": managed_sha256(new) if new is not None else None, "bytes": new,
                         "outcome": outcome})
+    # A retry may upgrade the original exact-only generation format, but it must
+    # never reclassify drift after a terminal generation as a new customization.
+    generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
+    try:
+        existing_generation = json.loads(generation_path.read_text())
+    except FileNotFoundError:
+        existing_generation = None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManagedRuntimeError(f"managed generation receipt is invalid: {exc}") from exc
+    if isinstance(existing_generation, dict) and existing_generation.get("target_sha") == target_sha:
+        existing_scripts = existing_generation.get("scripts")
+        if not isinstance(existing_scripts, dict):
+            raise ManagedRuntimeError("existing managed generation identity has drifted")
+        for row in actions:
+            if row["source_sha256"] is None:
+                continue
+            entry = existing_scripts.get(row["path"])
+            bound_actual = entry if isinstance(entry, str) else (
+                entry.get("actual_sha256") if isinstance(entry, dict)
+                and entry.get("source_sha256") == row["source_sha256"]
+                and entry.get("classification") in {"exact", "preserved_customization"} else None)
+            if bound_actual != row["before_sha256"]:
+                raise ManagedRuntimeError(f"existing managed generation drift: {row['path']}")
     previous_policy = managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH)
     target_policy = managed_source_json(repository, target_sha, MANAGED_POLICY_PATH)
     policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
@@ -273,14 +305,18 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
         log.write(f"source target={target_sha} package={operation['package_version']}\n"); log.flush()
         writes = [(managed_safe_path(controller, row["path"]), row["bytes"],
                    None if row["outcome"] == "removed" else 0o755)
-                  for row in operation["scripts"] if row["outcome"] != "unchanged"]
+                  for row in operation["scripts"]
+                  if row["outcome"] in {"installed", "updated", "removed"}]
         if operation["policy"]["before_sha256"] != operation["policy"]["after_sha256"]:
             writes.append((managed_safe_path(controller, MANAGED_POLICY_PATH), operation["policy"]["bytes"], 0o644))
         generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
         generation = {"schema_version": MANAGED_RUNTIME_SCHEMA, "target_sha": target_sha,
                       "package_version": operation["package_version"],
-                      "scripts": {row["path"]: row["source_sha256"] for row in operation["scripts"]
-                                  if row["source_sha256"] is not None},
+                      "scripts": {row["path"]: {
+                          "classification": row["classification"],
+                          "source_sha256": row["source_sha256"],
+                          "actual_sha256": row["actual_sha256"],
+                      } for row in operation["scripts"] if row["source_sha256"] is not None},
                       "policy_sha256": operation["policy"]["after_sha256"]}
         writes.append((generation_path, managed_canonical_json(generation), 0o600))
         for destination, _, _ in writes:
@@ -333,15 +369,6 @@ def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str)
     controller = controller.resolve(); repository = repository.resolve()
     target_sha = managed_exact_commit(repository, target_sha, "doctor target generation")
     findings = []
-    expected_scripts = {}
-    for relative in managed_script_destinations(repository, target_sha):
-        expected = managed_sha256(managed_source_bytes(repository, target_sha, relative))
-        expected_scripts[relative] = expected
-        destination = managed_safe_path(controller, relative)
-        actual = managed_sha256(destination.read_bytes()) if destination.is_file() else None
-        if actual != expected:
-            findings.append({"code": "managed_runtime_missing" if actual is None else "managed_runtime_drift",
-                             "path": relative, "expected_sha256": expected, "actual_sha256": actual})
     generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
     generation = None
     try:
@@ -350,14 +377,51 @@ def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str)
         findings.append({"code": "managed_generation_receipt_missing_or_invalid", "path": MANAGED_GENERATION_PATH})
     policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
     policy_hash = managed_sha256(policy_path.read_bytes()) if policy_path.is_file() else None
-    if (not isinstance(generation, dict) or generation.get("schema_version") != MANAGED_RUNTIME_SCHEMA
-            or generation.get("target_sha") != target_sha
-            or generation.get("scripts") != expected_scripts
-            or generation.get("policy_sha256") != policy_hash):
+    expected_paths = managed_script_destinations(repository, target_sha)
+    generation_scripts = generation.get("scripts") if isinstance(generation, dict) else None
+    identity_valid = (isinstance(generation, dict)
+                      and generation.get("schema_version") == MANAGED_RUNTIME_SCHEMA
+                      and generation.get("target_sha") == target_sha
+                      and generation.get("package_version") == managed_package_version(repository, target_sha)
+                      and generation.get("policy_sha256") == policy_hash
+                      and isinstance(generation_scripts, dict)
+                      and set(generation_scripts) == set(expected_paths))
+    scripts: dict[str, dict[str, Any]] = {}
+    for relative in expected_paths:
+        source_hash = managed_sha256(managed_source_bytes(repository, target_sha, relative))
+        destination = managed_safe_path(controller, relative)
+        actual_hash = managed_sha256(destination.read_bytes()) if destination.is_file() else None
+        entry = generation_scripts.get(relative) if isinstance(generation_scripts, dict) else None
+        entry_valid = (isinstance(entry, dict)
+                       and set(entry) == {"classification", "source_sha256", "actual_sha256"}
+                       and entry.get("classification") in {"exact", "preserved_customization"}
+                       and entry.get("source_sha256") == source_hash
+                       and isinstance(entry.get("actual_sha256"), str)
+                       and bool(re.fullmatch(r"[0-9a-f]{64}", entry["actual_sha256"])))
+        if entry_valid and entry["classification"] == "exact" and entry["actual_sha256"] != source_hash:
+            entry_valid = False
+        if (entry_valid and entry["classification"] == "preserved_customization"
+                and entry["actual_sha256"] == source_hash):
+            entry_valid = False
+        identity_valid = identity_valid and entry_valid
+        classification = entry["classification"] if entry_valid else "unbound"
+        bound_actual = entry["actual_sha256"] if entry_valid else source_hash
+        scripts[relative] = {"classification": classification, "source_sha256": source_hash,
+                             "actual_sha256": actual_hash, "bound_actual_sha256": bound_actual}
+        if actual_hash != bound_actual:
+            if classification == "preserved_customization":
+                code = "managed_preserved_customization_drift"
+            else:
+                code = "managed_runtime_missing" if actual_hash is None else "managed_runtime_drift"
+            findings.append({"code": code, "path": relative, "expected_sha256": bound_actual,
+                             "source_sha256": source_hash, "actual_sha256": actual_hash,
+                             "classification": classification})
+    if not identity_valid:
         findings.append({"code": "managed_generation_identity_drift", "path": MANAGED_GENERATION_PATH})
     return {"schema_version": MANAGED_RUNTIME_SCHEMA, "operation": "doctor", "target_sha": target_sha,
             "package_version": managed_package_version(repository, target_sha),
-            "policy_sha256": policy_hash, "findings": findings, "healthy": not findings}
+            "policy_sha256": policy_hash, "scripts": scripts,
+            "findings": findings, "healthy": not findings}
 
 
 class IntegrationError(RuntimeError):
