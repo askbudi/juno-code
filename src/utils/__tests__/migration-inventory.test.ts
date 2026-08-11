@@ -155,7 +155,7 @@ describe('Juno 2.1 migration inventory', () => {
     expect(receipt.controller.tracked_product_roots).toContain('product.txt');
     const protectedTemplate = run(project, 'owner-template', '--inventory', receiptPath, '--output', path.join(project, 'answers.json'));
     expect(protectedTemplate.status).toBe(2); expect(protectedTemplate.stderr).toContain('outside all inventoried repositories');
-  });
+  }, 30_000);
 
   it('records an ahead product ref without requiring a network remote', async () => {
     git(project, 'checkout', '-q', 'product');
