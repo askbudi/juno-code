@@ -21,6 +21,7 @@ SCHEMA = "juno_integration_workspace.v1"
 POLICY_SCHEMA = "juno_integration_workspace_policy.v1"
 AUTHORITY = "protected-integration.v1"
 OWNER_CONFIG = "juno.integration.ownerPath"
+LEGACY_OWNER_CONFIG = "juno.gitFlow.integrationCheckout"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 
 
@@ -277,6 +278,15 @@ def repair_plan(controller: Path) -> dict[str, Any]:
             actions.append({"kind": "refresh_submodules", "path": owner["path"],
                             "target": target_sha})
     rows = {str(row.get("worktree")): row for row in parse_worktrees(repository)}
+    legacy_owner = git(repository, "config", "--local", "--get",
+                       LEGACY_OWNER_CONFIG, check=False)
+    if legacy_owner:
+        legacy_path = str(Path(legacy_owner).expanduser().resolve())
+        legacy_row = rows.get(legacy_path)
+        if legacy_row is None or legacy_row.get("prunable") is True:
+            actions.append({"kind": "clear_legacy_integration_registration",
+                            "repository": str(repository), "key": LEGACY_OWNER_CONFIG,
+                            "before": legacy_path})
     for holder in status["target"]["holders"]:
         root = Path(holder)
         identity = worktree_identity(root)
@@ -340,11 +350,15 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
     try:
         with merge_queue.target_lock(controller, repository, task_policy["target_ref"]):
             for action in current["actions"]:
-                root = Path(action["path"])
                 if action["kind"] == "detach_target_holder":
+                    root = Path(action["path"])
                     git(root, "switch", "--detach", action["head"])
                 elif action["kind"] == "refresh_owner":
+                    root = Path(action["path"])
                     git(root, "switch", "--detach", action["after"])
+                elif action["kind"] == "clear_legacy_integration_registration":
+                    git(Path(action["repository"]), "config", "--local", "--unset-all",
+                        action["key"])
                 result["phases"].append({**action, "status": "complete"})
                 reference = write_receipt(result_path, result)
             owner = Path(current["registered_owner"])

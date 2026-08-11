@@ -70,7 +70,7 @@ function fixture(): { primary: string; controller: string; integration: string; 
   );
   git(primary, 'config', 'extensions.worktreeConfig', 'true');
   git(primary, 'config', 'juno.controller.path', controller);
-  // Deliberately short: normalized comparison must remain valid and diagnose spelling drift.
+  // Deliberately short: normalized comparison must remain valid without false drift.
   git(primary, 'config', 'juno.controller.branch', 'controller');
   git(controller, 'config', '--worktree', 'juno.workspace.role', 'controller');
   git(integration, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
@@ -100,7 +100,9 @@ describe('normalized workspace topology', () => {
     expect(report.invocation.role).toBe('task');
     expect(report.invocation.roleAuthority).toBeNull();
     expect(report.controller.valid).toBe(true);
-    expect(report.findings.map((item) => item.code)).toContain('controller-ref-spelling-drift');
+    expect(report.findings.map((item) => item.code)).not.toContain(
+      'controller-ref-spelling-drift',
+    );
     expect(report.integration.owner?.path).toBe(value.integration);
     expect(workspaceLocation(report, 'controller')).toBe(value.controller);
     expect(workspaceLocation(report, 'integration')).toBe(value.integration);

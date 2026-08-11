@@ -1,6 +1,9 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
-import { configureTaskWorkspaceCommand } from '../commands/task.js';
+import {
+  checkpointTaskWorkspaceAfterFinalization,
+  configureTaskWorkspaceCommand,
+} from '../commands/task.js';
 
 describe('task workspace CLI', () => {
   it.each(['start', 'status', 'finish'] as const)(
@@ -21,5 +24,31 @@ describe('task workspace CLI', () => {
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual(['start', 'status', 'finish']);
     expect(task?.commands.every((command) => command.registeredArguments[0]?.required)).toBe(true);
+  });
+
+  it.each(['start', 'finish'] as const)(
+    'checkpoints durable controller state after task %s without replacing its outcome',
+    async (operation) => {
+      const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+      await checkpointTaskWorkspaceAfterFinalization(operation, '/controller', 0, checkpoint);
+      expect(checkpoint).toHaveBeenCalledOnce();
+      expect(checkpoint).toHaveBeenCalledWith('/controller', 0);
+    },
+  );
+
+  it('does not checkpoint after read-only task status', async () => {
+    const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+    await checkpointTaskWorkspaceAfterFinalization('status', '/controller', 0, checkpoint);
+    expect(checkpoint).not.toHaveBeenCalled();
+  });
+
+  it('preserves a failed task outcome while the best-effort checkpointer reports recovery', async () => {
+    const checkpoint = vi.fn(async () => ({
+      attempted: true,
+      ok: false,
+      warning: 'run controller_checkpoint.py manually',
+    }));
+    await checkpointTaskWorkspaceAfterFinalization('start', '/controller', 9, checkpoint);
+    expect(checkpoint).toHaveBeenCalledWith('/controller', 9);
   });
 });

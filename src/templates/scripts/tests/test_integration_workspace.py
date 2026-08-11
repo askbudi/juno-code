@@ -293,6 +293,28 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(apply_code, 2)
         self.assertIn("identity drifted", applied["error"])
 
+    def test_repair_clears_only_a_stale_legacy_integration_registration(self) -> None:
+        runtime.register(self.controller, self.owner)
+        missing = self.root / "missing-legacy-owner"
+        git(self.repo, "config", runtime.LEGACY_OWNER_CONFIG, str(missing))
+
+        planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual(planned["actions"], [{
+            "kind": "clear_legacy_integration_registration",
+            "repository": str(self.controller.resolve()),
+            "key": runtime.LEGACY_OWNER_CONFIG,
+            "before": str(missing.resolve()),
+        }])
+        self.assertEqual(git(self.repo, "config", "--get", runtime.LEGACY_OWNER_CONFIG),
+                         str(missing))
+
+        applied, apply_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertNotEqual(run(["git", "-C", str(self.repo), "config", "--get",
+                                 runtime.LEGACY_OWNER_CONFIG], self.repo, False).returncode, 0)
+
     def test_push_dry_run_is_non_mutating_and_apply_is_idempotent(self) -> None:
         advanced = self.local_advance()
         runtime.register(self.controller, self.owner)

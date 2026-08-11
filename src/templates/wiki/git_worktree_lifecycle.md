@@ -55,3 +55,55 @@ restart, and post-deploy E2E are never implied by merge completion.
 
 Historical local-integration receipts remain readable by Workflow Runner doctor.
 Their executors are retired and must not be adapted into the Bolt path.
+
+## Checkout-aware entry points
+
+The same installed `yy` command can start in the controller, integration owner,
+task worktree, or a nested directory. Shared Git registration binds those
+checkouts to one exact controller path/ref and product target; routing happens
+before checkout-local bootstrap. The caller's checkout is never switched,
+cleaned, stashed, or made authoritative by inference.
+
+```text
+invocation directory
+  +-- controller ---------+
+  +-- integration owner --+--> controller router --> Kanban/task/merge runtime
+  +-- task worktree ------+
+  +-- nested directory ---+
+
+product bytes
+  +-- task worktree ------> edit, focused test, commit
+  +-- integration owner --> synced read/debug/server checkout
+```
+
+Use `yy info --json` for stable machine-readable topology, `yy where
+controller|integration|target|task` for one script-safe path, and `yy doctor
+workspace` for offline health/refusal guidance. Missing, stale, dirty, attached,
+or ambiguous integration ownership fails closed.
+
+## Integration owner lifecycle
+
+```text
+status [--fetch]
+       |
+       v
+sync: guard -> fetch -> verify target -> fast-forward -> exact submodules
+       |
+       +--> healthy: inspect/debug/start local server here
+       +--> refusal: repair --dry-run -> review receipt -> repair --apply RECEIPT
+
+publication: push --dry-run -> separate authorization -> push --apply RECEIPT
+             child repositories first -----------------------> root last
+```
+
+Repair never discards local work, and push never follows from sync or repair
+authority. Every apply binds the reviewed receipt to exact topology and SHAs,
+rechecks readiness under a lock, and records partial-failure truth for safe
+retry. Package publication, deployment, production mutation, and post-deploy
+E2E remain outside these commands.
+
+Agent orchestration instructions and core skills are ignored installed assets in
+the controller. Product/domain instructions and skills are tracked in product
+history and materialized in task worktrees. A controller symlink inside the
+integration owner is intentionally unnecessary and unsafe for search/staging;
+use `yy where controller` when an agent or script needs the exact path.

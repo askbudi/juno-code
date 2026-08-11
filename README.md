@@ -61,6 +61,100 @@ Juno 2.1 controller cutover uses `yy migrate registration plan|apply|verify|roll
 
 Choose the smallest lane that satisfies the work. The metadata-only linked controller tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed Juno Code release. Controller commits never merge or synchronize to product history. Every product change uses a dedicated `yy task` worktree; `yy merge` serializes only target mutation. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
 
+### Workspace routing and integration operations
+
+`yy` may be invoked from the registered controller, the integration owner, a
+task worktree, or any nested directory in those checkouts. The invocation
+checkout is never silently switched or cleaned. Before checkout-local bootstrap,
+the router resolves the shared Git registration and sends controller-owned
+operations to the exact registered controller.
+
+```text
+controller (metadata + Kanban + orchestration)
+    ^
+    | shared registration and exact controller ref
+    |
+    +--- yy from controller ------------------------------+
+    +--- yy from integration owner or nested directory ---+--> same controller
+    +--- yy from task worktree or nested directory -------+
+                              |
+                              +--> task worktree: product edits/tests/commits
+                              +--> integration owner: latest clean product read/server
+```
+
+Discover the topology without fetching or changing it:
+
+```bash
+yy info
+yy info --json
+yy where controller
+yy where integration
+yy where target
+yy where task TASK_ID
+yy doctor workspace
+```
+
+`yy info --json` is the stable script-facing report. It includes the invocation
+role, controller path/ref/HEAD, product target ref/SHA and owners, registered
+integration owner and health, task worktrees, submodules, runtime versions, and
+actionable findings. `yy where` prints exactly one resolved path and refuses
+missing or ambiguous owners. `yy doctor workspace` is read-only and exits
+non-zero when findings require attention. An unregistered checkout stays
+unmanaged; Juno never guesses a controller from a similarly named directory.
+
+The integration owner is a clean, detached, full product checkout. It is the
+right place to inspect the latest integrated source or start local servers, but
+not to edit product files or write Kanban/session state. Refresh it through the
+controller-routed command:
+
+```text
+yy integration status [--fetch]     inspect local/remote drift
+             |
+             v
+yy integration sync                 guard -> fetch -> fast-forward -> submodules
+             |
+             +--> clean exact target + exact gitlinks: ready for reads/server
+             +--> dirty/diverged/ambiguous: refuse with recovery guidance
+```
+
+Use receipt-bound operations for topology repair and publication:
+
+```bash
+yy integration repair --dry-run
+yy integration repair --apply /absolute/path/to/repair-plan.json
+
+yy integration push --dry-run
+yy integration push --apply /absolute/path/to/push-plan.json
+```
+
+Apply revalidates the plan digest, controller/owner/target identity, exact SHAs,
+and remote readiness under a lock. Repair does not stash, reset, force, rewind,
+or discard dirty work. Push publishes submodules child-first and the root last,
+records every phase, refuses a remote race, and supports idempotent retry from
+truthful partial-failure receipts. A dry-run authorizes no mutation, and repair
+authority does not authorize push. Remote branch/tag push, npm/PyPI publication,
+deployment, production mutation, and post-deploy E2E remain separately explicit.
+
+Agent guidance has two owners. The metadata controller receives ignored,
+installed `AGENTS.md`, `CLAUDE.md`, and core skills under `.agents/skills/`,
+`.claude/skills/`, and `.pi/skills/`; they guide orchestration without entering
+product history. Product/domain instructions and skills remain tracked with the
+product and become available inside each task worktree. Do not add a controller
+symlink to the integration owner: routing and `yy where controller` provide the
+link without making product search or staging cross the authority boundary.
+
+For a tiny fix, the process is intentionally short but still isolated:
+
+```text
+create/choose task -> yy task start ID -> edit + focused test + commit
+                   -> yy task finish ID -> yy merge next
+```
+
+There is no size-based exception that permits product edits in the controller or
+integration owner. The worktree is the safety boundary; small fixes simply need
+small task scope and focused validation rather than a broad workflow or repeated
+full suites.
+
 ### Bolt task and merge flow
 
 ```bash

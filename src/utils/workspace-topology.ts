@@ -349,19 +349,6 @@ export function inspectWorkspaceTopology(
       [controllerPath ?? 'missing', configuredRef ?? 'missing', controllerRef ?? 'detached'],
       'yy migrate registration plan',
     );
-  if (
-    configuredRef &&
-    controllerRef &&
-    configuredRef !== controllerRef &&
-    normalizeRef(configuredRef) === normalizeRef(controllerRef)
-  )
-    add(
-      'controller-ref-spelling-drift',
-      'warning',
-      'Controller registration uses short/full ref spelling drift.',
-      [configuredRef, controllerRef],
-      'yy migrate registration plan',
-    );
   if (integrationStatus !== 'unique')
     add(
       `integration-owner-${integrationStatus}`,

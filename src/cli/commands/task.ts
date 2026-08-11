@@ -3,9 +3,21 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
+import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
 export type TaskWorkspaceOperation = 'start' | 'status' | 'finish';
 export type TaskWorkspaceInvoker = (operation: TaskWorkspaceOperation, taskId: string) => Promise<void>;
+export type TaskWorkspaceCheckpointer = typeof checkpointControllerAfterFinalization;
+
+export async function checkpointTaskWorkspaceAfterFinalization(
+  operation: TaskWorkspaceOperation,
+  controllerRoot: string,
+  exitCode: number,
+  checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
+): Promise<void> {
+  if (operation === 'status') return;
+  await checkpoint(controllerRoot, exitCode);
+}
 
 export async function invokeTaskWorkspace(
   operation: TaskWorkspaceOperation,
@@ -33,6 +45,7 @@ export async function invokeTaskWorkspace(
       else resolve(code ?? 1);
     });
   });
+  await checkpointTaskWorkspaceAfterFinalization(operation, controllerRoot, exitCode);
   if (exitCode !== 0) process.exitCode = exitCode;
 }
 
