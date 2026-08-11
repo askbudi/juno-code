@@ -1198,6 +1198,30 @@ class MergeQueueTests(unittest.TestCase):
         status = self.queue_payload("status")
         self.assertEqual([row["state"] for row in status["tasks"]], ["MERGED", "MERGED"])
 
+    def test_composition_candidate_disables_inherited_common_sparse_checkout(self) -> None:
+        # Reproduce a migrated repository whose common config still enables
+        # sparse checkout while the controller owns worktree-local patterns.
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(self.repository, "config", "core.sparseCheckout", "true")
+        git(self.controller, "config", "--worktree", "core.sparseCheckout", "true")
+        git(self.controller, "config", "--worktree", "core.sparseCheckoutCone", "false")
+        sparse = Path(git(self.controller, "rev-parse", "--git-path", "info/sparse-checkout"))
+        sparse.parent.mkdir(parents=True, exist_ok=True)
+        sparse.write_text("/.juno_task/\n")
+        git(self.controller, "read-tree", "-mu", "HEAD")
+        self.assertFalse((self.controller / "src").exists())
+
+        self.commit_feature("X", "src/x.txt", "x\n")
+        self.commit_feature("Y", "src/y.txt", "y\n")
+        first = self.queue_payload("next")
+        second = self.queue_payload("next")
+
+        self.assertEqual(first["strategy"], "direct")
+        self.assertEqual(second["strategy"], "merge_both_parents")
+        self.assertEqual(git(self.repository, "show", "refs/heads/product:src/x.txt"), "x")
+        self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
+        self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+
     def test_real_a_b_text_conflict_is_preserved_then_resolved_without_feature_recreation(self) -> None:
         a_tip = self.commit_feature("A", "src/shared.txt", "A\n")
         b_tip = self.commit_feature("B", "src/shared.txt", "B\n")

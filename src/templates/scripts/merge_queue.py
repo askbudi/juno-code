@@ -272,6 +272,21 @@ def create_candidate_checkout(controller: Path, repository: Path, task_id: str,
                  "target_sha": target_sha, "feature_sha": feature_sha,
                  "candidate_checkout": str(checkout.resolve())}
     try:
+        # A repository migrated to worktree-local sparse configuration may
+        # still retain the legacy common core.sparseCheckout=true value. New
+        # worktrees inherit that common value until they establish their own
+        # setting, so an internal candidate created from a sparse controller
+        # can otherwise omit every product path. Candidates are product
+        # validation roots and must always be explicitly full checkouts.
+        task_runtime.run(["git", "-C", str(checkout), "sparse-checkout", "disable"], checkout)
+        sparse = task_runtime.git(
+            checkout, "config", "--worktree", "--bool", "core.sparseCheckout", check=False
+        )
+        skipped = [line for line in task_runtime.git(
+            checkout, "ls-files", "-t", check=False
+        ).splitlines() if line.startswith("S ")]
+        if sparse not in {"", "false"} or skipped:
+            raise MergeQueueError("candidate full-checkout materialization failed")
         with marker.open("x") as handle:
             handle.write(canonical(ownership) + "\n")
     except Exception:
@@ -280,6 +295,7 @@ def create_candidate_checkout(controller: Path, repository: Path, task_id: str,
         # Git itself refuses the internal rollback.
         removed = task_runtime.run(["git", "-C", str(repository), "worktree", "remove", "--force",
                                     str(checkout)], repository, check=False)
+        marker.unlink(missing_ok=True)
         if removed.returncode:
             raise MergeQueueError(f"candidate ownership creation failed and rollback failed: {checkout}")
         raise
