@@ -453,6 +453,8 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.write(runtime.MANAGED_POLICY_PATH, self.policy)
         self.write(".juno_task/scripts/one.py", "old one\n")
         self.write(".juno_task/scripts/two.py", "old two\n")
+        self.write("juno-code/src/templates/scripts/one.py", "installed prior one\n")
+        self.write("juno-code/src/templates/scripts/two.py", "old two\n")
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-m", "old generation")
         self.previous = git(self.repo, "rev-parse", "HEAD")
@@ -551,6 +553,61 @@ class ManagedRuntimeTests(unittest.TestCase):
             runtime.managed_runtime_refresh(
                 self.controller, self.repo, self.previous, self.target, task_id="drift-retry")
         self.assertEqual(customized.read_text(), "later unreviewed drift\n")
+
+    def test_receipt_bound_installed_prior_template_updates_when_admitted_source_changes(self) -> None:
+        installed = self.controller / ".juno_task/scripts/one.py"
+        installed.write_text("installed prior one\n")
+        generation = {
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "target_sha": self.previous,
+            "package_version": "9.0.0",
+            "scripts": {
+                ".juno_task/scripts/one.py": {
+                    "classification": "preserved_customization",
+                    "source_sha256": runtime.managed_sha256(b"old one\n"),
+                    "actual_sha256": runtime.managed_sha256(installed.read_bytes()),
+                },
+                ".juno_task/scripts/two.py": {
+                    "classification": "exact",
+                    "source_sha256": runtime.managed_sha256(b"old two\n"),
+                    "actual_sha256": runtime.managed_sha256(b"old two\n"),
+                },
+            },
+            "policy_sha256": runtime.managed_sha256(
+                (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()),
+        }
+        generation_path = self.controller / runtime.MANAGED_GENERATION_PATH
+        generation_path.parent.mkdir(parents=True, exist_ok=True)
+        generation_path.write_text(json.dumps(generation) + "\n")
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="bound-prior")
+
+        self.assertEqual(installed.read_text(), "new one\n")
+        row = next(item for item in result["scripts"] if item["path"].endswith("one.py"))
+        self.assertEqual(row["outcome"], "updated")
+        self.assertEqual(row["classification"], "exact")
+        self.assertEqual(row["prior_generation_classification"],
+                         "receipt_bound_installed_template")
+
+    def test_receipt_binding_never_authorizes_unrelated_customization(self) -> None:
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("genuine owner customization\n")
+        generation_path = self.controller / runtime.MANAGED_GENERATION_PATH
+        generation_path.parent.mkdir(parents=True, exist_ok=True)
+        generation_path.write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "target_sha": self.previous,
+            "scripts": {".juno_task/scripts/one.py": {
+                "classification": "preserved_customization",
+                "source_sha256": runtime.managed_sha256(b"old one\n"),
+                "actual_sha256": runtime.managed_sha256(customized.read_bytes()),
+            }},
+        }) + "\n")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "customized managed runtime"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, self.previous, self.target, task_id="genuine-custom")
+        self.assertEqual(customized.read_text(), "genuine owner customization\n")
 
     def test_refresh_refuses_changed_source_customization_and_rolls_back(self) -> None:
         customized = self.controller / ".juno_task/scripts/one.py"

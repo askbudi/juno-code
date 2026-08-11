@@ -66,6 +66,13 @@ export interface WorkspaceTopology {
     state: 'initialized' | 'uninitialized' | 'wrong-gitlink' | 'conflict';
   }>;
   runtime: { cliVersion: string; controllerVersion: string | null; drift: boolean };
+  postIntegration: Array<{
+    taskId: string;
+    candidateSha: string;
+    outcome: string | null;
+    firstIncompletePhase: string;
+    recoveryCommand: string;
+  }>;
   findings: WorkspaceFinding[];
   healthy: boolean;
 }
@@ -315,6 +322,44 @@ export function inspectWorkspaceTopology(
     controllerPath && existsSync(controllerPath)
       ? config(controllerPath, 'juno.controller.generation', true)
       : null;
+  const postIntegration: WorkspaceTopology['postIntegration'] = [];
+  if (controllerPath && targetSha) {
+    try {
+      const state = JSON.parse(
+        readFileSync(path.join(controllerPath, '.juno_task', 'state', 'tasks.json'), 'utf8'),
+      ) as { tasks?: Record<string, unknown> };
+      for (const [taskId, raw] of Object.entries(state.tasks ?? {})) {
+        if (!raw || typeof raw !== 'object') continue;
+        const task = raw as Record<string, unknown>;
+        const attempt = task.queue_attempt;
+        if (task.state !== 'MERGING' || !attempt || typeof attempt !== 'object') continue;
+        const value = attempt as Record<string, unknown>;
+        if (value.candidate_sha !== targetSha) continue;
+        const phases = value.post_integration;
+        let firstIncompletePhase = 'integration_owner';
+        if (phases && typeof phases === 'object') {
+          const rows = phases as Record<string, unknown>;
+          firstIncompletePhase =
+            ['target_advancement', 'integration_owner', 'managed_runtime_refresh', 'kanban_finalization'].find(
+              (phase) => {
+                const row = rows[phase];
+                return !row || typeof row !== 'object' || (row as Record<string, unknown>).status !== 'complete';
+              },
+            ) ?? 'terminal_checkpoint';
+        }
+        postIntegration.push({
+          taskId,
+          candidateSha: targetSha,
+          outcome: typeof value.outcome === 'string' ? value.outcome : null,
+          firstIncompletePhase,
+          recoveryCommand: 'yy merge next',
+        });
+      }
+    } catch {
+      // Missing or legacy task state is handled by its owning command. Topology
+      // remains bounded and read-only rather than guessing mutation truth.
+    }
+  }
   const findings: WorkspaceFinding[] = [];
   const add = (
     code: string,
@@ -432,6 +477,14 @@ export function inspectWorkspaceTopology(
       [task.path, task.branch!, task.role],
       'yy task status',
     );
+  for (const partial of postIntegration)
+    add(
+      'post-integration-incomplete',
+      'error',
+      `Task ${partial.taskId} advanced the target but post-integration phase ${partial.firstIncompletePhase} is incomplete.`,
+      [partial.taskId, partial.candidateSha, partial.outcome ?? 'unknown'],
+      partial.recoveryCommand,
+    );
   if (runtimeVersion && runtimeVersion !== cliVersion)
     add(
       'runtime-version-drift',
@@ -492,6 +545,7 @@ export function inspectWorkspaceTopology(
       controllerVersion: runtimeVersion,
       drift: Boolean(runtimeVersion && runtimeVersion !== cliVersion),
     },
+    postIntegration,
     findings,
     healthy: !findings.some((item) => item.severity === 'error'),
   };

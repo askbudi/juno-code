@@ -220,6 +220,51 @@ describe('normalized workspace topology', () => {
     expect(codes).toContain('legacy-integration-prunable');
   });
 
+  it('reports target-advanced post-integration truth and the safe recovery command', () => {
+    const value = fixture();
+    const candidate = git(value.primary, 'rev-parse', 'refs/heads/target');
+    mkdirSync(path.join(value.controller, '.juno_task/state'), { recursive: true });
+    writeFileSync(
+      path.join(value.controller, '.juno_task/state/tasks.json'),
+      JSON.stringify({
+        tasks: {
+          T1: {
+            state: 'MERGING',
+            queue_attempt: {
+              candidate_sha: candidate,
+              outcome: 'POST_INTEGRATION_RUNTIME_FAILED',
+              post_integration: {
+                target_advancement: { status: 'complete' },
+                integration_owner: { status: 'complete' },
+                managed_runtime_refresh: { status: 'failed' },
+                kanban_finalization: { status: 'pending' },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const report = inspectWorkspaceTopology(value.controller, '2.1.1');
+
+    expect(report.postIntegration).toEqual([
+      expect.objectContaining({
+        taskId: 'T1',
+        candidateSha: candidate,
+        firstIncompletePhase: 'managed_runtime_refresh',
+        recoveryCommand: 'yy merge next',
+      }),
+    ]);
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: 'post-integration-incomplete',
+        severity: 'error',
+        nextCommand: 'yy merge next',
+      }),
+    );
+    expect(report.healthy).toBe(false);
+  });
+
   it('exposes parseable, quiet CLI projections and doctor/where exit behavior', () => {
     const value = fixture();
     const jsonInfo = cli(['info', '--json', '--cwd', value.integration], value.integration);

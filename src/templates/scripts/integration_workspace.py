@@ -77,12 +77,12 @@ def managed_source_json(repository: Path, commit: str, relative: str) -> Any:
         raise ManagedRuntimeError(f"invalid target JSON at {relative}: {exc}") from exc
 
 
-def managed_script_destinations(repository: Path, commit: str) -> list[str]:
+def managed_script_assets(repository: Path, commit: str) -> dict[str, str]:
     manifest = managed_source_json(repository, commit, MANAGED_MANIFEST_PATH)
     assets = manifest.get("assets") if isinstance(manifest, dict) else None
-    if manifest.get("schemaVersion") != 1 or not isinstance(assets, list):
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1 or not isinstance(assets, list):
         raise ManagedRuntimeError("target managed asset definition is invalid")
-    result = []
+    result: dict[str, str] = {}
     for asset in assets:
         if not isinstance(asset, dict) or asset.get("installClass") not in {"project", "script"}:
             raise ManagedRuntimeError("target managed asset entry is invalid")
@@ -94,10 +94,16 @@ def managed_script_destinations(repository: Path, commit: str) -> list[str]:
         if (not isinstance(destination, str) or not destination.startswith(".juno_task/scripts/")
                 or source != expected_source):
             raise ManagedRuntimeError("managed script source/destination mapping is ambiguous")
-        result.append(destination)
-    if not result or len(result) != len(set(result)):
+        if destination in result:
+            raise ManagedRuntimeError("target managed script set is empty or duplicated")
+        result[destination] = f"juno-code/src/templates/{source}"
+    if not result:
         raise ManagedRuntimeError("target managed script set is empty or duplicated")
-    return sorted(result)
+    return result
+
+
+def managed_script_destinations(repository: Path, commit: str) -> list[str]:
+    return sorted(managed_script_assets(repository, commit))
 
 
 def managed_package_version(repository: Path, commit: str) -> str:
@@ -205,8 +211,22 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
            repository, check=False).returncode:
         raise ManagedRuntimeError("target generation does not descend from previous generation")
     policy_dirty = managed_tracked_policy_dirty(controller)
-    scripts = set(managed_script_destinations(repository, target_sha))
-    prior_scripts = set(managed_script_destinations(repository, previous_sha))
+    target_assets = managed_script_assets(repository, target_sha)
+    previous_assets = managed_script_assets(repository, previous_sha)
+    scripts = set(target_assets)
+    prior_scripts = set(previous_assets)
+    generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
+    try:
+        prior_generation = json.loads(generation_path.read_text())
+    except FileNotFoundError:
+        prior_generation = None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManagedRuntimeError(f"managed generation receipt is invalid: {exc}") from exc
+    prior_entries = (prior_generation.get("scripts")
+                     if isinstance(prior_generation, dict)
+                     and prior_generation.get("schema_version") == MANAGED_RUNTIME_SCHEMA
+                     and prior_generation.get("target_sha") == previous_sha
+                     and isinstance(prior_generation.get("scripts"), dict) else {})
     actions = []
     for relative in sorted(scripts | prior_scripts):
         destination = managed_safe_path(controller, relative)
@@ -214,6 +234,7 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
         new = managed_source_bytes(repository, target_sha, relative) if relative in scripts else None
         current = destination.read_bytes() if destination.exists() else None
         classification = "exact"
+        receipt_bound_prior = False
         if new is None:
             if current is not None and current != old:
                 raise ManagedRuntimeError(f"customized retired managed runtime is preserved: {relative}")
@@ -221,24 +242,45 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
             classification = "retired"
             actual = None
         elif current is not None and current not in {old, new}:
-            if old != new:
+            prior_entry = prior_entries.get(relative)
+            receipt_bound_prior = bool(
+                old is not None and old != new and isinstance(prior_entry, dict)
+                and prior_entry.get("classification") == "preserved_customization"
+                and prior_entry.get("source_sha256") == managed_sha256(old)
+                and prior_entry.get("actual_sha256") == managed_sha256(current)
+            )
+            if receipt_bound_prior:
+                prior_template = managed_source_bytes(
+                    repository, previous_sha, previous_assets[relative])
+                receipt_bound_prior = prior_template == current
+            if old != new and not receipt_bound_prior:
                 raise ManagedRuntimeError(f"customized managed runtime overlaps changed source: {relative}")
-            # The packaged source is identical on both sides of the admitted
-            # transition, so this owner customization is unrelated to it.
-            outcome = "preserved_customization"
-            classification = "preserved_customization"
-            actual = current
+            if receipt_bound_prior:
+                # The prior generation bound these exact bytes and immutable
+                # package source proves they were an installed prior template,
+                # not arbitrary owner customization. The admitted transition
+                # may therefore replace them exactly.
+                outcome = "updated"
+                classification = "exact"
+                actual = new
+            else:
+                # The packaged source is identical on both sides of the admitted
+                # transition, so this owner customization is unrelated to it.
+                outcome = "preserved_customization"
+                classification = "preserved_customization"
+                actual = current
         else:
             outcome = "unchanged" if current == new else "installed" if current is None else "updated"
             actual = new
         actions.append({"path": relative, "classification": classification,
+                        "prior_generation_classification": (
+                            "receipt_bound_installed_template" if receipt_bound_prior else None),
                         "before_sha256": managed_sha256(current) if current is not None else None,
                         "actual_sha256": managed_sha256(actual) if actual is not None else None,
                         "source_sha256": managed_sha256(new) if new is not None else None, "bytes": new,
                         "outcome": outcome})
     # A retry may upgrade the original exact-only generation format, but it must
     # never reclassify drift after a terminal generation as a new customization.
-    generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
     try:
         existing_generation = json.loads(generation_path.read_text())
     except FileNotFoundError:
