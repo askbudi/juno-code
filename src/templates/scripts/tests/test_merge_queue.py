@@ -460,6 +460,30 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
 
+    def test_review_findings_clear_stale_failure_from_an_earlier_attempt(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=merge_runtime.MergeQueueError("transport down")):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "transport down"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        failed = self.task("status", "X")["queue_attempt"]
+        self.assertEqual(failed["outcome"], "REVIEW_FAILED")
+        self.assertEqual(failed["risk_failure"], "transport down")
+
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)):
+            finding = merge_runtime.merge_review(self.controller.resolve(), "X")
+
+        self.assertEqual(finding["outcome"], "REVIEW_FINDINGS")
+        self.assertNotIn("risk_failure", finding)
+        persisted = self.task("status", "X")["queue_attempt"]
+        self.assertEqual(persisted["outcome"], "REVIEW_FINDINGS")
+        self.assertNotIn("risk_failure", persisted)
+
     def test_reviewer_a_pass_b_transport_failure_retries_only_b_in_fresh_namespace(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "auth\n")
         self.queue_payload("next")

@@ -1822,7 +1822,8 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             raise MergeQueueError(str(exc)) from exc
         outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
         risk_state = {**stored, "status": outcome, "evidence": reference}
-        updated = {**attempt, "risk": risk_state, "review": risk_state, "outcome": outcome}
+        updated = {key: value for key, value in attempt.items() if key != "risk_failure"}
+        updated.update({"risk": risk_state, "review": risk_state, "outcome": outcome})
         with target_lock(controller, repository, config["target_ref"]):
             with task_runtime.state_lock(controller):
                 current_record = task_runtime.read_state(controller)["tasks"].get(task_id)
