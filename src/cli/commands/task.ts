@@ -6,7 +6,11 @@ import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
 export type TaskWorkspaceOperation = 'start' | 'status' | 'finish';
-export type TaskWorkspaceInvoker = (operation: TaskWorkspaceOperation, taskId: string) => Promise<void>;
+export type TaskWorkspaceInvoker = (
+  operation: TaskWorkspaceOperation,
+  taskId: string,
+  requiredPaths?: string[],
+) => Promise<void>;
 export type TaskWorkspaceCheckpointer = typeof checkpointControllerAfterFinalization;
 
 export async function checkpointTaskWorkspaceAfterFinalization(
@@ -22,6 +26,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
 export async function invokeTaskWorkspace(
   operation: TaskWorkspaceOperation,
   taskId: string,
+  requiredPaths: string[] = [],
 ): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
@@ -34,7 +39,8 @@ export async function invokeTaskWorkspace(
   }
   const taskEnv = route.env;
   const exitCode = await new Promise<number>((resolve, reject) => {
-    const child = spawn('python3', [script, operation, '--task', taskId], {
+    const pathArgs = requiredPaths.flatMap((requiredPath) => ['--path', requiredPath]);
+    const child = spawn('python3', [script, operation, '--task', taskId, ...pathArgs], {
       cwd: controllerRoot,
       env: taskEnv,
       stdio: 'inherit',
@@ -56,10 +62,14 @@ export function configureTaskWorkspaceCommand(
   const task = program
     .command('task')
     .description('Create, inspect, and queue one exact-base feature worktree');
-  for (const operation of ['start', 'status', 'finish'] as const) {
-    task
-      .command(operation)
+  task
+    .command('start')
+    .argument('<task-id>', 'Canonical Kanban task ID')
+    .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
+    .action((taskId: string, options: { path: string[] }) => invoke('start', taskId, options.path));
+  for (const operation of ['status', 'finish'] as const) {
+    task.command(operation)
       .argument('<task-id>', 'Canonical Kanban task ID')
-      .action((taskId: string) => invoke(operation, taskId));
+      .action((taskId: string) => invoke(operation, taskId, []));
   }
 }

@@ -14,7 +14,7 @@ describe('task workspace CLI', () => {
       configureTaskWorkspaceCommand(program, invoke);
       await program.parseAsync(['node', 'yy', 'task', operation, 'T123']);
       expect(invoke).toHaveBeenCalledOnce();
-      expect(invoke).toHaveBeenCalledWith(operation, 'T123');
+      expect(invoke).toHaveBeenCalledWith(operation, 'T123', []);
     },
   );
 
@@ -24,6 +24,16 @@ describe('task workspace CLI', () => {
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual(['start', 'status', 'finish']);
     expect(task?.commands.every((command) => command.registeredArguments[0]?.required)).toBe(true);
+  });
+
+  it('forwards repeatable required product roots only for task start', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureTaskWorkspaceCommand(program, invoke);
+    await program.parseAsync([
+      'node', 'yy', 'task', 'start', 'T123', '--path', 'juno_kanban', '--path', 'frontend',
+    ]);
+    expect(invoke).toHaveBeenCalledWith('start', 'T123', ['juno_kanban', 'frontend']);
   });
 
   it.each(['start', 'finish'] as const)(

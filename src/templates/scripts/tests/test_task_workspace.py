@@ -46,16 +46,18 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "config", "user.name", "Test")
         (self.repository / "src").mkdir()
         (self.repository / "src/base.txt").write_text("base\n")
+        (self.repository / "optional").mkdir()
+        (self.repository / "optional/base.txt").write_text("optional\n")
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.parent.mkdir(parents=True)
         runtime.write_bytes(SCRIPT.read_bytes())
-        git(self.repository, "add", "src/base.txt", task_runtime.RUNTIME_PATH)
+        git(self.repository, "add", "src/base.txt", "optional/base.txt", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "product base")
         self.base = git(self.repository, "rev-parse", "HEAD")
         git(self.repository, "branch", "controller")
         run(["git", "-C", str(self.repository), "worktree", "add", str(self.controller), "controller"], self.repository)
         # The controller branch is metadata-only and unrelated product paths are removed.
-        git(self.controller, "rm", "-r", "src")
+        git(self.controller, "rm", "-r", "src", "optional")
         self.write_policy()
         for task_id in ("X", "Y", "Z"):
             task = self.controller / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
@@ -80,6 +82,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             "workspace_root": str(self.workspaces),
             "branch_prefix": "refs/heads/task-",
             "allowed_paths": ["src"],
+            "selectable_paths": ["optional"],
             "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs", ".juno_task/ledger"],
             "focused_validation": [{"id": "focused", "cwd": "src",
                                     "timeout_seconds": timeout_seconds, "max_output_bytes": max_output_bytes,
@@ -159,6 +162,79 @@ class TaskWorkspaceTests(unittest.TestCase):
                              for line in git(worktree, "ls-files", "-t").splitlines()))
         self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
         self.assertEqual(started["creation_receipt"]["materialization"]["mode"], "full")
+
+    def test_start_freezes_explicit_policy_admitted_paths(self) -> None:
+        started = task_runtime.start(self.controller, "X", ["optional"])
+        self.assertEqual(started["creation_receipt"]["requested_paths"], ["optional"])
+        self.assertEqual(started["creation_receipt"]["allowed_paths"], ["src", "optional"])
+        self.assertEqual(started["creation_receipt"]["selected_entries"]["optional"]["type"], "tree")
+        self.assertTrue((self.workspaces / "X" / "optional/base.txt").is_file())
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "differ from the frozen"):
+            task_runtime.start(self.controller, "X", [])
+
+    def test_unadmitted_required_path_refuses_before_creation(self) -> None:
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "not admitted by policy"):
+            task_runtime.start(self.controller, "X", ["unknown"])
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
+                                 "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+
+    def test_selected_gitlink_is_initialized_at_the_exact_target_object(self) -> None:
+        child = self.root / "child"
+        child.mkdir()
+        git(child, "init", "-b", "main")
+        git(child, "config", "user.email", "test@example.com")
+        git(child, "config", "user.name", "Test")
+        (child / "child.txt").write_text("child\n")
+        git(child, "add", "child.txt")
+        git(child, "commit", "-m", "child base")
+        child_sha = git(child, "rev-parse", "HEAD")
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(self.repository),
+             "submodule", "add", str(child), "nested"], self.repository)
+        git(self.repository, "commit", "-am", "add nested product root")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["selectable_paths"].append("nested")
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            started = task_runtime.start(self.controller, "X", ["nested"])
+        nested = self.workspaces / "X" / "nested"
+        self.assertEqual(git(nested, "rev-parse", "HEAD"), child_sha)
+        self.assertEqual(started["creation_receipt"]["selected_entries"]["nested"], {
+            "mode": "160000", "type": "commit", "object": child_sha,
+        })
+
+    def test_unavailable_selected_gitlink_leaves_no_task_artifacts(self) -> None:
+        child = self.root / "child-missing"
+        child.mkdir()
+        git(child, "init", "-b", "main")
+        git(child, "config", "user.email", "test@example.com")
+        git(child, "config", "user.name", "Test")
+        (child / "child.txt").write_text("child\n")
+        git(child, "add", "child.txt")
+        git(child, "commit", "-m", "child base")
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(self.repository),
+             "submodule", "add", str(child), "missing-nested"], self.repository)
+        unavailable = "f" * 40
+        run(["git", "-C", str(self.repository), "update-index", "--cacheinfo",
+             f"160000,{unavailable},missing-nested"], self.repository)
+        git(self.repository, "commit", "-m", "record unavailable nested object")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["selectable_paths"].append("missing-nested")
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            with self.assertRaises(task_runtime.TaskWorkspaceError):
+                task_runtime.start(self.controller, "X", ["missing-nested"])
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
+                                 "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
     def test_stale_runtime_refuses_before_creating_branch_worktree_or_state(self) -> None:
         runtime = self.repository / task_runtime.RUNTIME_PATH

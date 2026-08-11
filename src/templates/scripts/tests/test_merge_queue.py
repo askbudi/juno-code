@@ -83,6 +83,7 @@ class MergeQueueTests(unittest.TestCase):
             "repository": ".", "target_ref": "refs/heads/product",
             "workspace_root": str(self.workspaces), "branch_prefix": "refs/heads/task-",
             "allowed_paths": ["src", "docs"],
+            "selectable_paths": [],
             "controller_private_paths": [".juno_task/tasks", ".juno_task/state", ".juno_task/specs"],
             "focused_validation": [{"id": "affected", "cwd": "src", "argv": [sys.executable, "-c", code],
                                     "timeout_seconds": 10, "max_output_bytes": 4096}],

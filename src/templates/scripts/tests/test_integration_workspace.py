@@ -60,6 +60,7 @@ class IntegrationWorkspaceTests(unittest.TestCase):
             "schema_version": "juno_task_workspace_config.v1", "repository": ".",
             "target_ref": "refs/heads/product", "workspace_root": str(self.root / "tasks"),
             "branch_prefix": "refs/heads/task-", "allowed_paths": ["src"],
+            "selectable_paths": [],
             "controller_private_paths": [".juno_task/tasks"],
             "focused_validation": [{"id": "ok", "cwd": "src", "argv": ["true"],
                                     "timeout_seconds": 5, "max_output_bytes": 1024}],

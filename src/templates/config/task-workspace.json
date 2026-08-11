@@ -13,6 +13,10 @@
     "juno-code",
     "scripts"
   ],
+  "selectable_paths": [
+    "frontend",
+    "juno_kanban"
+  ],
   "controller_private_paths": [
     ".juno_task/artifacts",
     ".juno_task/ledger",

@@ -66,8 +66,10 @@ def load_config(controller: Path) -> dict[str, Any]:
     required = {"schema_version", "repository", "target_ref", "workspace_root", "branch_prefix",
                 "allowed_paths", "controller_private_paths", "focused_validation",
                 "full_suite_validation"}
-    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != CONFIG_SCHEMA:
+    if (not isinstance(value, dict) or frozenset(value) not in {frozenset(required), frozenset(required | {"selectable_paths"})}
+            or value.get("schema_version") != CONFIG_SCHEMA):
         raise TaskWorkspaceError(f"task workspace policy must contain exactly the {CONFIG_SCHEMA} fields")
+    value.setdefault("selectable_paths", [])
     repository = Path(value["repository"])
     if repository.is_absolute() or ".." in repository.parts:
         raise TaskWorkspaceError("repository must stay inside the controller Git worktree")
@@ -80,13 +82,16 @@ def load_config(controller: Path) -> dict[str, Any]:
     workspace = Path(value["workspace_root"]).expanduser()
     if not workspace.is_absolute() or workspace == Path("/"):
         raise TaskWorkspaceError("workspace_root must be an explicit absolute directory")
-    for field in ("allowed_paths", "controller_private_paths"):
+    for field in ("allowed_paths", "selectable_paths", "controller_private_paths"):
         items = value[field]
-        if not isinstance(items, list) or not items:
-            raise TaskWorkspaceError(f"{field} must be a non-empty list")
+        if not isinstance(items, list) or (field != "selectable_paths" and not items):
+            raise TaskWorkspaceError(f"{field} must be a list" + ("" if field == "selectable_paths" else " with at least one path"))
         value[field] = [normalized_relative(item, field) for item in items]
         if len(set(value[field])) != len(value[field]):
             raise TaskWorkspaceError(f"{field} contains duplicates")
+    for selected in value["selectable_paths"]:
+        if path_within(selected, value["allowed_paths"]) or path_within(selected, value["controller_private_paths"]):
+            raise TaskWorkspaceError(f"selectable path overlaps a fixed or controller-private path: {selected}")
     validations = value["focused_validation"]
     if not isinstance(validations, list) or not validations:
         raise TaskWorkspaceError("focused_validation must contain at least one command")
@@ -354,7 +359,8 @@ def assert_no_controller_data(repository: Path, sha: str, forbidden: list[str]) 
 
 
 def require_full_task_materialization(worktree: Path, target_sha: str,
-                                      allowed_paths: list[str]) -> dict[str, Any]:
+                                      allowed_paths: list[str],
+                                      selected_entries: Optional[dict[str, dict[str, str]]] = None) -> dict[str, Any]:
     """Prove that a task role received a full checkout, never controller sparsity."""
     sparse = git(worktree, "config", "--worktree", "--bool", "--get",
                  "core.sparseCheckout", check=False).lower()
@@ -372,8 +378,48 @@ def require_full_task_materialization(worktree: Path, target_sha: str,
             if not (worktree / path).exists():
                 raise TaskWorkspaceError(f"task worktree did not materialize tracked path: {path}")
             materialized.append(path)
+    for path, entry in (selected_entries or {}).items():
+        if entry["mode"] != "160000":
+            continue
+        nested = worktree / path
+        actual = git(nested, "rev-parse", "HEAD", check=False) if nested.is_dir() else ""
+        if actual != entry["object"]:
+            raise TaskWorkspaceError(
+                f"selected gitlink was not initialized at the target object: {path} ({entry['object']})"
+            )
     return {"mode": "full", "sparse_checkout": False,
             "materialized_allowed_paths": sorted(materialized)}
+
+
+def selected_task_paths(config: dict[str, Any], repository: Path, target_sha: str,
+                        requested: list[str]) -> tuple[list[str], dict[str, dict[str, str]]]:
+    normalized = [normalized_relative(item, "required task path") for item in requested]
+    if len(set(normalized)) != len(normalized):
+        raise TaskWorkspaceError("required task paths contain duplicates")
+    unknown = [item for item in normalized if item not in config["selectable_paths"]]
+    if unknown:
+        raise TaskWorkspaceError(
+            f"required task path is not admitted by policy: {', '.join(unknown)}"
+        )
+    entries: dict[str, dict[str, str]] = {}
+    for item in normalized:
+        output = git(repository, "ls-tree", target_sha, "--", item, check=False)
+        lines = [line for line in output.splitlines() if line]
+        if len(lines) != 1:
+            raise TaskWorkspaceError(f"required task path is absent or ambiguous at target: {item}")
+        metadata, actual_path = lines[0].split("\t", 1)
+        mode, kind, object_id = metadata.split()
+        if actual_path != item or mode not in {"040000", "160000"} or kind not in {"tree", "commit"}:
+            raise TaskWorkspaceError(f"required task path has an unsafe target identity: {item}")
+        entries[item] = {"mode": mode, "type": kind, "object": object_id}
+    return [*config["allowed_paths"], *normalized], entries
+
+
+def initialize_selected_gitlinks(worktree: Path, entries: dict[str, dict[str, str]]) -> None:
+    for path, entry in entries.items():
+        if entry["mode"] != "160000":
+            continue
+        run(["git", "-C", str(worktree), "submodule", "update", "--init", "--", path], worktree)
 
 
 def branch_ref(config: dict[str, Any], task_id: str) -> str:
@@ -442,14 +488,20 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) -> bool:
+def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
+                   config: dict[str, Any]) -> bool:
     worktree = Path(record["worktree"])
     branch = record["branch_ref"]
     identity = record.get("workspace_identity", {})
     creation_receipt = record.get("creation_receipt", {})
     try:
+        allowed_paths, selected_entries = selected_task_paths(
+            config, repository, target_sha, creation_receipt.get("requested_paths", [])
+        )
+        if allowed_paths != creation_receipt.get("allowed_paths"):
+            return False
         materialization = require_full_task_materialization(
-            worktree, target_sha, record.get("creation_receipt", {}).get("allowed_paths", [])
+            worktree, target_sha, allowed_paths, selected_entries
         )
     except (OSError, TaskWorkspaceError):
         return False
@@ -473,11 +525,13 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) ->
     )
 
 
-def start(controller: Path, task_id: str) -> dict[str, Any]:
+def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     repository = product_repository(controller, config)
     target_sha = ref_sha(repository, config["target_ref"])
+    requested_paths = requested_paths or []
+    allowed_paths, selected_entries = selected_task_paths(config, repository, target_sha, requested_paths)
     generation = require_current_runtime(repository, target_sha)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
@@ -486,7 +540,9 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
         state = read_state(controller)
         existing = state["tasks"].get(task_id)
         if existing:
-            if clean_identity(existing, repository, target_sha):
+            if existing.get("creation_receipt", {}).get("requested_paths", []) != requested_paths:
+                raise TaskWorkspaceError("task start required paths differ from the frozen creation receipt")
+            if clean_identity(existing, repository, target_sha, config):
                 return {**existing, "outcome": "already_started"}
             raise TaskWorkspaceError("task start identity drifted; preserve the worktree and inspect task status")
         # show-ref is intentionally quiet; its exit status is the branch-collision contract.
@@ -501,17 +557,19 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
             created = True
             run(["git", "-C", str(repository), "config", "extensions.worktreeConfig", "true"], repository)
             run(["git", "-C", str(worktree), "sparse-checkout", "disable"], worktree)
+            initialize_selected_gitlinks(worktree, selected_entries)
             materialization = require_full_task_materialization(
-                worktree, target_sha, config["allowed_paths"]
+                worktree, target_sha, allowed_paths, selected_entries
             )
             manifest_identity = hashlib.sha256(task_file(controller, task_id).read_bytes()).hexdigest()
-            expected_paths_sha256 = stable_sha256(config["allowed_paths"])
+            expected_paths_sha256 = stable_sha256(allowed_paths)
             materialization_sha256 = stable_sha256(materialization)
             routing = routing_identity(controller)
             creation_receipt = {"schema_version": "juno_task_workspace_creation.v1", "task_id": task_id,
                                 "repository": str(repository), "target_ref": config["target_ref"],
                                 "base_sha": target_sha, "branch_ref": branch, "worktree": str(worktree),
-                                "manifest_identity": manifest_identity, "allowed_paths": config["allowed_paths"],
+                                "manifest_identity": manifest_identity, "allowed_paths": allowed_paths,
+                                "requested_paths": requested_paths, "selected_entries": selected_entries,
                                 "expected_paths_sha256": expected_paths_sha256,
                                 "materialization": materialization, "routing": routing,
                                 "runtime_generation": generation}
@@ -535,12 +593,19 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
             run(["git", "-C", str(worktree), "config", "--worktree", "--unset-all",
                  "juno.workspace.roleAuthority"], worktree, check=False)
             write_state(controller, state)
-        except Exception:
+        except Exception as creation_error:
             # Creation is not admitted without durable controller truth. Keep no
             # unrecorded branch/worktree if the atomic state write itself fails.
             if created:
-                run(["git", "-C", str(repository), "worktree", "remove", str(worktree)], repository, check=False)
+                run(["git", "-C", str(worktree), "submodule", "deinit", "-f", "--all"], worktree, check=False)
+                run(["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)], repository, check=False)
                 run(["git", "-C", str(repository), "branch", "-D", branch.removeprefix("refs/heads/")], repository, check=False)
+                branch_exists = run(["git", "-C", str(repository), "show-ref", "--verify", "--quiet", branch],
+                                    repository, check=False).returncode == 0
+                if worktree.exists() or branch_exists:
+                    raise TaskWorkspaceError(
+                        "task creation failed and registered-worktree rollback was incomplete; preserve evidence and inspect Git worktrees"
+                    ) from creation_error
             raise
     return {**record, "outcome": "started"}
 
@@ -592,7 +657,10 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     if not changed:
         raise TaskWorkspaceError("task has no product diff from its exact recorded base")
     forbidden = [path for path in changed if path_within(path, config["controller_private_paths"])]
-    outside = [path for path in changed if not path_within(path, config["allowed_paths"])]
+    frozen_allowed = record.get("creation_receipt", {}).get("allowed_paths")
+    if not isinstance(frozen_allowed, list) or not frozen_allowed:
+        raise TaskWorkspaceError("task creation receipt has no frozen allowed paths")
+    outside = [path for path in changed if not path_within(path, frozen_allowed)]
     if forbidden or outside:
         raise TaskWorkspaceError(f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}")
     validations = []
@@ -668,6 +736,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=("start", "status", "finish"))
     value.add_argument("--task", required=True)
+    value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
 
@@ -676,8 +745,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         controller = exact_root(args.controller, "controller")
+        if args.operation != "start" and args.path:
+            raise TaskWorkspaceError("--path is supported only for task start")
         audit = record_control_audit(controller, "task", args.operation, args.task)
-        result = {"start": start, "status": status, "finish": finish}[args.operation](controller, args.task)
+        result = (start(controller, args.task, args.path) if args.operation == "start"
+                  else {"status": status, "finish": finish}[args.operation](controller, args.task))
         result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0

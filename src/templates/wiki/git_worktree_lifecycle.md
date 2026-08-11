@@ -26,6 +26,7 @@ metadata controller
 
 ```text
 yy task start TASK_ID
+yy task start TASK_ID --path juno_kanban  # repeat --path for policy-admitted roots
 yy task status TASK_ID
 yy task finish TASK_ID
 
@@ -34,8 +35,9 @@ yy merge next
 yy merge resolve TASK_ID
 ```
 
-Task start freezes the exact configured product target SHA and creates one
-branch/worktree. Task finish requires a clean committed tip, allowed changed
+Task start freezes the exact configured product target SHA and any explicitly
+selected policy-admitted product roots, then creates one branch/worktree. Task
+finish requires a clean committed tip, allowed changed
 paths, and focused validation before queueing. Independent features can remain
 active concurrently.
 
