@@ -321,6 +321,29 @@ def assert_no_controller_data(repository: Path, sha: str, forbidden: list[str]) 
         raise TaskWorkspaceError(f"product target contains controller-private data ({sample}); hard-cut it before task start")
 
 
+def require_full_task_materialization(worktree: Path, target_sha: str,
+                                      allowed_paths: list[str]) -> dict[str, Any]:
+    """Prove that a task role received a full checkout, never controller sparsity."""
+    sparse = git(worktree, "config", "--worktree", "--bool", "--get",
+                 "core.sparseCheckout", check=False).lower()
+    if sparse == "true":
+        raise TaskWorkspaceError("task worktree still has sparse checkout enabled")
+    skipped = [line[2:] for line in git(worktree, "ls-files", "-t").splitlines()
+               if line.startswith("S ")]
+    if skipped:
+        raise TaskWorkspaceError(
+            f"task worktree still has skip-worktree paths ({', '.join(skipped[:5])})"
+        )
+    materialized = []
+    for path in allowed_paths:
+        if git(worktree, "ls-tree", "-r", "--name-only", target_sha, "--", path):
+            if not (worktree / path).exists():
+                raise TaskWorkspaceError(f"task worktree did not materialize tracked path: {path}")
+            materialized.append(path)
+    return {"mode": "full", "sparse_checkout": False,
+            "materialized_allowed_paths": sorted(materialized)}
+
+
 def branch_ref(config: dict[str, Any], task_id: str) -> str:
     ref = f"{config['branch_prefix']}{task_id}"
     if run(["git", "check-ref-format", ref], Path.cwd(), check=False).returncode:
@@ -392,6 +415,12 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) ->
     branch = record["branch_ref"]
     identity = record.get("workspace_identity", {})
     creation_receipt = record.get("creation_receipt", {})
+    try:
+        materialization = require_full_task_materialization(
+            worktree, target_sha, record.get("creation_receipt", {}).get("allowed_paths", [])
+        )
+    except (OSError, TaskWorkspaceError):
+        return False
     return (
         record.get("state") == "WORKING"
         and stable_sha256(creation_receipt) == identity.get("create_receipt_sha256")
@@ -403,6 +432,8 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str) ->
         and git(worktree, "config", "--worktree", "--get", "juno.workspace.manifestIdentity", check=False) == identity.get("manifest_identity")
         and git(worktree, "config", "--worktree", "--get", "juno.workspace.createReceiptSha256", check=False) == identity.get("create_receipt_sha256")
         and git(worktree, "config", "--worktree", "--get", "juno.workspace.expectedPathsSha256", check=False) == identity.get("expected_paths_sha256")
+        and stable_sha256(materialization) == identity.get("materialization_sha256")
+        and git(worktree, "config", "--worktree", "--get", "juno.workspace.materializationSha256", check=False) == identity.get("materialization_sha256")
         and git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False) == ""
         and git(worktree, "rev-parse", "HEAD", check=False) == target_sha
         and git(repository, "rev-parse", branch, check=False) == target_sha
@@ -431,31 +462,41 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
         if worktree.exists():
             raise TaskWorkspaceError(f"task worktree path already exists without a task record: {worktree}")
         worktree.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "-C", str(repository), "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(worktree), target_sha], repository)
-        manifest_identity = hashlib.sha256(task_file(controller, task_id).read_bytes()).hexdigest()
-        expected_paths_sha256 = stable_sha256(config["allowed_paths"])
-        routing = routing_identity(controller)
-        creation_receipt = {"schema_version": "juno_task_workspace_creation.v1", "task_id": task_id,
-                            "repository": str(repository), "target_ref": config["target_ref"],
-                            "base_sha": target_sha, "branch_ref": branch, "worktree": str(worktree),
-                            "manifest_identity": manifest_identity,
-                            "expected_paths_sha256": expected_paths_sha256, "routing": routing}
-        create_receipt_sha256 = stable_sha256(creation_receipt)
-        identity = {"manifest_identity": manifest_identity,
-                    "create_receipt_sha256": create_receipt_sha256,
-                    "expected_paths_sha256": expected_paths_sha256}
-        record = {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "WORKING",
-                  "repository": str(repository), "target_ref": config["target_ref"], "base_sha": target_sha,
-                  "branch_ref": branch, "worktree": str(worktree), "tip_sha": target_sha,
-                  "workspace_identity": identity, "creation_receipt": creation_receipt, "routing": routing,
-                  "changed_paths": [], "validation": []}
-        state["tasks"][task_id] = record
+        created = False
         try:
+            run(["git", "-C", str(repository), "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(worktree), target_sha], repository)
+            created = True
             run(["git", "-C", str(repository), "config", "extensions.worktreeConfig", "true"], repository)
+            run(["git", "-C", str(worktree), "sparse-checkout", "disable"], worktree)
+            materialization = require_full_task_materialization(
+                worktree, target_sha, config["allowed_paths"]
+            )
+            manifest_identity = hashlib.sha256(task_file(controller, task_id).read_bytes()).hexdigest()
+            expected_paths_sha256 = stable_sha256(config["allowed_paths"])
+            materialization_sha256 = stable_sha256(materialization)
+            routing = routing_identity(controller)
+            creation_receipt = {"schema_version": "juno_task_workspace_creation.v1", "task_id": task_id,
+                                "repository": str(repository), "target_ref": config["target_ref"],
+                                "base_sha": target_sha, "branch_ref": branch, "worktree": str(worktree),
+                                "manifest_identity": manifest_identity, "allowed_paths": config["allowed_paths"],
+                                "expected_paths_sha256": expected_paths_sha256,
+                                "materialization": materialization, "routing": routing}
+            create_receipt_sha256 = stable_sha256(creation_receipt)
+            identity = {"manifest_identity": manifest_identity,
+                        "create_receipt_sha256": create_receipt_sha256,
+                        "expected_paths_sha256": expected_paths_sha256,
+                        "materialization_sha256": materialization_sha256}
+            record = {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "WORKING",
+                      "repository": str(repository), "target_ref": config["target_ref"], "base_sha": target_sha,
+                      "branch_ref": branch, "worktree": str(worktree), "tip_sha": target_sha,
+                      "workspace_identity": identity, "creation_receipt": creation_receipt, "routing": routing,
+                      "changed_paths": [], "validation": []}
+            state["tasks"][task_id] = record
             for key, value in (("role", "task"), ("roleBase", target_sha), ("taskId", task_id),
                                ("manifestIdentity", manifest_identity),
                                ("createReceiptSha256", create_receipt_sha256),
-                               ("expectedPathsSha256", expected_paths_sha256)):
+                               ("expectedPathsSha256", expected_paths_sha256),
+                               ("materializationSha256", materialization_sha256)):
                 run(["git", "-C", str(worktree), "config", "--worktree", f"juno.workspace.{key}", value], worktree)
             run(["git", "-C", str(worktree), "config", "--worktree", "--unset-all",
                  "juno.workspace.roleAuthority"], worktree, check=False)
@@ -463,8 +504,9 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
         except Exception:
             # Creation is not admitted without durable controller truth. Keep no
             # unrecorded branch/worktree if the atomic state write itself fails.
-            run(["git", "-C", str(repository), "worktree", "remove", str(worktree)], repository, check=False)
-            run(["git", "-C", str(repository), "branch", "-D", branch.removeprefix("refs/heads/")], repository, check=False)
+            if created:
+                run(["git", "-C", str(repository), "worktree", "remove", str(worktree)], repository, check=False)
+                run(["git", "-C", str(repository), "branch", "-D", branch.removeprefix("refs/heads/")], repository, check=False)
             raise
     return {**record, "outcome": "started"}
 

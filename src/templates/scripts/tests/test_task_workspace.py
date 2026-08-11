@@ -121,7 +121,8 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.role"), "task")
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.roleBase"), self.base)
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.taskId"), task_id)
-            for key in ("manifestIdentity", "createReceiptSha256", "expectedPathsSha256"):
+            for key in ("manifestIdentity", "createReceiptSha256", "expectedPathsSha256",
+                        "materializationSha256"):
                 self.assertRegex(git(worktree, "config", "--worktree", "--get", f"juno.workspace.{key}"), r"^[0-9a-f]{64}$")
             status = self.payload("status", task_id)
             self.assertEqual(status["routing"], {
@@ -132,6 +133,52 @@ class TaskWorkspaceTests(unittest.TestCase):
                                        separators=(",", ":")).encode()
             self.assertEqual(hashlib.sha256(receipt_bytes).hexdigest(),
                              status["workspace_identity"]["create_receipt_sha256"])
+            self.assertEqual(status["creation_receipt"]["materialization"], {
+                "mode": "full", "sparse_checkout": False,
+                "materialized_allowed_paths": ["src"],
+            })
+
+    def test_sparse_controller_starts_a_full_task_checkout(self) -> None:
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(self.controller, "sparse-checkout", "init", "--no-cone")
+        git(self.controller, "sparse-checkout", "set", "--no-cone", "/.juno_task/")
+        self.assertEqual(git(self.controller, "config", "--worktree", "--bool", "--get",
+                             "core.sparseCheckout"), "true")
+
+        started = self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        self.assertEqual(started["base_sha"], self.base)
+        self.assertTrue((worktree / "src/base.txt").is_file())
+        self.assertNotEqual(git(worktree, "config", "--worktree", "--bool", "--get",
+                                "core.sparseCheckout"), "true")
+        self.assertFalse(any(line.startswith("S ")
+                             for line in git(worktree, "ls-files", "-t").splitlines()))
+        self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
+        self.assertEqual(started["creation_receipt"]["materialization"]["mode"], "full")
+
+    def test_sparse_disable_and_materialization_failures_leave_no_partial_workspace(self) -> None:
+        original_run = task_runtime.run
+
+        def fail_sparse_disable(argv: list[str], cwd: Path, *, check: bool = True):
+            if argv[-2:] == ["sparse-checkout", "disable"]:
+                raise task_runtime.TaskWorkspaceError("injected sparse disable failure")
+            return original_run(argv, cwd, check=check)
+
+        with mock.patch.object(task_runtime, "run", side_effect=fail_sparse_disable):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "injected sparse"):
+                task_runtime.start(self.controller, "X")
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
+                                 "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
+
+        with mock.patch.object(task_runtime, "require_full_task_materialization",
+                               side_effect=task_runtime.TaskWorkspaceError("injected proof failure")):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "injected proof"):
+                task_runtime.start(self.controller, "X")
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
+                                 "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
     def test_routing_audit_rejects_a_forwarded_identity_for_another_controller(self) -> None:
         with mock.patch.dict(os.environ, {
