@@ -2,238 +2,260 @@
  * Juno Skill Preprocessor — Pi Extension
  *
  * Adds variable substitution ($1, $2, $ARGUMENTS, $@, ${@:N}, ${@:N:L})
- * and shell directive execution (!`command`) to Pi skill invocations.
- *
- * This extension intercepts /skill: commands via the "input" event,
- * BEFORE Pi's internal _expandSkillCommand() runs. It reads the skill
- * file, processes variables and shell directives, wraps the result in
- * <skill> tags, and returns the fully expanded text.
- *
- * Shell directives only execute when the skill's frontmatter contains:
- *   enable-shell-directives: true
- *
- * Variable substitution always runs when arguments are provided.
- *
- * Shipped via juno-code's SkillInstaller to .pi/extensions/.
+ * and opted-in shell directive execution (!`command`) to Pi skill invocations.
+ * Placeholder-consumed arguments are not appended; every other argument is
+ * appended with Pi's native `skillBlock + "\n\n" + rawArgs` semantics.
  */
-import type { ExtensionAPI, InputEvent } from "@mariozechner/pi-coding-agent";
-import { execSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import type { ExtensionAPI, InputEvent } from '@mariozechner/pi-coding-agent';
+import { execSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
 
 const SHELL_DIRECTIVE_REGEX = /!`([^`]+)`/g;
+const ARG_PLACEHOLDER_REGEX = /\$\{@:(\d+)(?::(\d+))?\}|\$ARGUMENTS|\$@|\$(\d+)/g;
 const DEFAULT_SHELL_TIMEOUT = 5000;
+const SKILL_DIRS = ['.pi/skills', '.claude/skills'];
 
-/** Directories to search for skill files, relative to project root. */
-const SKILL_DIRS = [".pi/skills", ".claude/skills"];
+interface CommandArgument {
+  value: string;
+  start: number;
+  end: number;
+}
 
-/**
- * Find a skill's SKILL.md file by name, searching known skill directories.
- * Checks both {dir}/{name}/SKILL.md and {dir}/{name}.md patterns.
- */
 function findSkillFile(skillName: string, cwd: string): string | null {
-	for (const dir of SKILL_DIRS) {
-		const candidates = [join(cwd, dir, skillName, "SKILL.md"), join(cwd, dir, `${skillName}.md`)];
-		for (const candidate of candidates) {
-			if (existsSync(candidate)) return candidate;
-		}
-	}
-	return null;
+  for (const dir of SKILL_DIRS) {
+    const candidates = [join(cwd, dir, skillName, 'SKILL.md'), join(cwd, dir, `${skillName}.md`)];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
-/**
- * Parse YAML-like frontmatter from a skill file.
- * Returns frontmatter key-value pairs and the body text after the frontmatter block.
- */
-function parseFrontmatter(content: string): { frontmatter: Record<string, string | boolean>; body: string } {
-	const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-	if (!match) return { frontmatter: {}, body: content };
+function parseFrontmatter(content: string): {
+  frontmatter: Record<string, string | boolean>;
+  body: string;
+} {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: content };
 
-	const yaml = match[1];
-	const body = match[2] ?? '';
-	const frontmatter: Record<string, string | boolean> = {};
-
-	for (const rawLine of yaml!.split("\n")) {
-		const colonIndex = rawLine.indexOf(":");
-		if (colonIndex === -1) continue;
-		const key = rawLine.slice(0, colonIndex).trim();
-		const value = rawLine.slice(colonIndex + 1).trim();
-		if (value === "true") {
-			frontmatter[key] = true;
-		} else if (value === "false") {
-			frontmatter[key] = false;
-		} else {
-			frontmatter[key] = value;
-		}
-	}
-
-	return { frontmatter, body };
+  const frontmatter: Record<string, string | boolean> = {};
+  for (const rawLine of match[1]!.split('\n')) {
+    const colonIndex = rawLine.indexOf(':');
+    if (colonIndex === -1) continue;
+    const key = rawLine.slice(0, colonIndex).trim();
+    const value = rawLine.slice(colonIndex + 1).trim();
+    frontmatter[key] = value === 'true' ? true : value === 'false' ? false : value;
+  }
+  return { frontmatter, body: match[2] ?? '' };
 }
 
-/**
- * Parse command arguments respecting single and double quotes.
- * Handles escape characters with backslash.
- *
- * Examples:
- *   'hello world'      → ["hello", "world"]
- *   '"hello world"'    → ["hello world"]
- *   "'hello' \"world\"" → ["hello", "world"]
- */
+/** Parse shell-like arguments without executing or otherwise interpreting them. */
+function parseCommandArgumentDetails(input: string): CommandArgument[] {
+  const args: CommandArgument[] = [];
+  let current = '';
+  let start = -1;
+  let inSingle = false;
+  let inDouble = false;
+  let escape = false;
+  let started = false;
+
+  const finish = (end: number) => {
+    if (started) args.push({ value: current, start, end });
+    current = '';
+    start = -1;
+    started = false;
+  };
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index]!;
+    if (!started && !/\s/.test(char)) {
+      started = true;
+      start = index;
+    }
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+    if (char === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (char === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (/\s/.test(char) && !inSingle && !inDouble) {
+      finish(index);
+      continue;
+    }
+    current += char;
+  }
+  if (escape) current += '\\';
+  finish(input.length);
+  return args;
+}
+
 function parseCommandArgs(input: string): string[] {
-	if (!input.trim()) return [];
-
-	const args: string[] = [];
-	let current = "";
-	let inSingle = false;
-	let inDouble = false;
-	let escape = false;
-
-	for (const char of input) {
-		if (escape) {
-			current += char;
-			escape = false;
-			continue;
-		}
-		if (char === "\\") {
-			escape = true;
-			continue;
-		}
-		if (char === '"' && !inSingle) {
-			inDouble = !inDouble;
-			continue;
-		}
-		if (char === "'" && !inDouble) {
-			inSingle = !inSingle;
-			continue;
-		}
-		if (char === " " && !inSingle && !inDouble) {
-			if (current) {
-				args.push(current);
-				current = "";
-			}
-			continue;
-		}
-		current += char;
-	}
-	if (current) args.push(current);
-	return args;
+  return parseCommandArgumentDetails(input).map(({ value }) => value);
 }
 
 /**
- * Substitute argument placeholders in content.
- *
- * Supports (1-indexed, aligned with bash and Pi's prompt-templates):
- *   $1, $2, ...   — positional arguments
- *   $@             — all arguments joined by space
- *   $ARGUMENTS     — all arguments joined by space (alias)
- *   ${@:N}         — arguments from Nth position onwards
- *   ${@:N:L}       — L arguments starting from position N
+ * Substitute placeholders once and report argument indexes intentionally consumed.
+ * $ARGUMENTS/$@ use the original raw request, including quoting/newlines/spacing.
+ * Positional and slice placeholders retain their established decoded values.
  */
-function substituteArgs(content: string, args: string[]): string {
-	let result = content;
-
-	// Replace $1, $2, etc. FIRST (before wildcards to prevent re-substitution)
-	result = result.replace(/\$(\d+)/g, (_, num) => {
-		const index = parseInt(num, 10) - 1;
-		return args[index] ?? "";
-	});
-
-	// Replace ${@:start} or ${@:start:length} (bash-style, 1-indexed)
-	result = result.replace(/\$\{@:(\d+)(?::(\d+))?\}/g, (_, startStr, lengthStr) => {
-		let start = parseInt(startStr, 10) - 1;
-		if (start < 0) start = 0;
-		if (lengthStr) {
-			const length = parseInt(lengthStr, 10);
-			return args.slice(start, start + length).join(" ");
-		}
-		return args.slice(start).join(" ");
-	});
-
-	const allArgs = args.join(" ");
-	result = result.replace(/\$ARGUMENTS/g, allArgs);
-	result = result.replace(/\$@/g, allArgs);
-
-	return result;
+function substituteArgsWithConsumption(
+  content: string,
+  args: string[],
+  rawArguments: string,
+): { text: string; consumed: Set<number>; consumesAll: boolean } {
+  const consumed = new Set<number>();
+  let consumesAll = false;
+  const text = content.replace(
+    ARG_PLACEHOLDER_REGEX,
+    (placeholder, startText, lengthText, positionText) => {
+      if (placeholder === '$ARGUMENTS' || placeholder === '$@') {
+        consumesAll = true;
+        args.forEach((_, index) => consumed.add(index));
+        return rawArguments;
+      }
+      if (positionText !== undefined) {
+        const index = Number.parseInt(positionText, 10) - 1;
+        if (index >= 0 && index < args.length) consumed.add(index);
+        return args[index] ?? '';
+      }
+      const start = Math.max(0, Number.parseInt(startText, 10) - 1);
+      const length =
+        lengthText === undefined ? args.length - start : Number.parseInt(lengthText, 10);
+      const selected = args.slice(start, start + length);
+      selected.forEach((_, offset) => consumed.add(start + offset));
+      return selected.join(' ');
+    },
+  );
+  return { text, consumed, consumesAll };
 }
 
-/**
- * Process shell directives (!`command`) by executing them and inlining stdout.
- * On error: replaces with [Error executing: command].
- * Timeout: DEFAULT_SHELL_TIMEOUT ms (configurable).
- */
-function processShellDirectives(content: string, cwd: string, timeout: number = DEFAULT_SHELL_TIMEOUT): string {
-	return content.replace(SHELL_DIRECTIVE_REGEX, (_, command: string) => {
-		try {
-			return execSync(command, {
-				cwd,
-				timeout,
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			}).trim();
-		} catch {
-			return `[Error executing: ${command}]`;
-		}
-	});
+function substituteArgs(
+  content: string,
+  args: string[],
+  rawArguments: string = args.join(' '),
+): string {
+  return substituteArgsWithConsumption(content, args, rawArguments).text;
 }
 
-/**
- * Juno Skill Preprocessor Extension
- *
- * Intercepts /skill: commands via the "input" event (before Pi's internal
- * _expandSkillCommand runs), applies variable substitution and shell
- * directive processing, then returns the fully expanded skill block.
- */
+/** Keep each unconsumed token byte-for-byte; preserve separators within contiguous runs. */
+function unconsumedRawArguments(
+  rawArguments: string,
+  details: CommandArgument[],
+  consumed: Set<number>,
+  consumesAll = false,
+): string {
+  if (consumesAll) return '';
+  if (consumed.size === 0) return rawArguments;
+  if (details.length === 0 || consumed.size >= details.length) return '';
+  const runs: string[] = [];
+  for (let index = 0; index < details.length; ) {
+    if (consumed.has(index)) {
+      index += 1;
+      continue;
+    }
+    const start = details[index]!.start;
+    let end = details[index]!.end;
+    index += 1;
+    while (index < details.length && !consumed.has(index)) {
+      end = details[index]!.end;
+      index += 1;
+    }
+    runs.push(rawArguments.slice(start, end));
+  }
+  return runs.join(' ');
+}
+
+function processShellDirectives(
+  content: string,
+  cwd: string,
+  timeout: number = DEFAULT_SHELL_TIMEOUT,
+): string {
+  return content.replace(SHELL_DIRECTIVE_REGEX, (_, command: string) => {
+    try {
+      return execSync(command, {
+        cwd,
+        timeout,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      return `[Error executing: ${command}]`;
+    }
+  });
+}
+
+/** Expand one registered skill invocation, or return null so Pi can handle it natively. */
+function expandSkillInvocation(text: string, cwd: string): string | null {
+  const command = text.match(/^\/skill:([^\s]+)([\s\S]*)$/);
+  if (!command) return null;
+  const skillName = command[1]!;
+  const suffix = command[2] ?? '';
+  // Remove only the command/argument delimiter. Everything after it is user payload.
+  const rawArguments = /^\s/.test(suffix) ? suffix.slice(1) : suffix;
+  const details = parseCommandArgumentDetails(rawArguments);
+  const args = details.map(({ value }) => value);
+  const skillPath = findSkillFile(skillName, cwd);
+  if (!skillPath) return null;
+
+  try {
+    const { frontmatter, body } = parseFrontmatter(readFileSync(skillPath, 'utf-8'));
+    // Expand only directives authored by the skill. Substituting afterward prevents
+    // shell-sensitive user arguments from becoming executable directives.
+    const directiveBody =
+      frontmatter['enable-shell-directives'] === true
+        ? processShellDirectives(body.trim(), cwd)
+        : body.trim();
+    const substitution = substituteArgsWithConsumption(directiveBody, args, rawArguments);
+    const processedBody = substitution.text;
+    const baseDir = dirname(skillPath);
+    const skillBlock = [
+      `<skill name="${skillName}" location="${skillPath}">`,
+      `References are relative to ${baseDir}.`,
+      '',
+      processedBody,
+      '</skill>',
+    ].join('\n');
+    const remaining = unconsumedRawArguments(
+      rawArguments,
+      details,
+      substitution.consumed,
+      substitution.consumesAll,
+    );
+    return remaining ? `${skillBlock}\n\n${remaining}` : skillBlock;
+  } catch {
+    return null;
+  }
+}
+
 export default function junoSkillPreprocessor(pi: ExtensionAPI) {
-	pi.on("input", (event: InputEvent) => {
-		const text = typeof event.text === "string" ? event.text : "";
-		if (!text.startsWith("/skill:")) return { action: "continue" };
-
-		const cwd = process.cwd();
-
-		// Parse skill name and arguments from the command
-		const spaceIndex = text.indexOf(" ");
-		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
-		const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-		const args = parseCommandArgs(argsString);
-
-		// Find the skill file on disk
-		const skillPath = findSkillFile(skillName, cwd);
-		if (!skillPath) return { action: "continue" }; // Unknown skill — let Pi handle it
-
-		try {
-			const content = readFileSync(skillPath, "utf-8");
-			const { frontmatter, body } = parseFrontmatter(content);
-			let processedBody = body.trim();
-
-			// Substitute variable placeholders with provided arguments
-			if (args.length > 0) {
-				processedBody = substituteArgs(processedBody, args);
-			}
-
-			// Execute shell directives (only when explicitly opted in via frontmatter)
-			if (frontmatter["enable-shell-directives"] === true) {
-				processedBody = processShellDirectives(processedBody, cwd);
-			}
-
-			// Build the <skill> block (matches Pi's _expandSkillCommand format)
-			const baseDir = dirname(skillPath);
-			const skillBlock = [
-				`<skill name="${skillName}" location="${skillPath}">`,
-				`References are relative to ${baseDir}.`,
-				"",
-				processedBody,
-				"</skill>",
-			].join("\n");
-
-			// Return transformed text — Pi's _expandSkillCommand will see this
-			// doesn't start with /skill: and pass it through unchanged.
-			return { action: "transform", text: skillBlock };
-		} catch {
-			// On error, let Pi's native expansion handle it
-			return { action: "continue" };
-		}
-	});
+  pi.on('input', (event: InputEvent) => {
+    const expanded = expandSkillInvocation(
+      typeof event.text === 'string' ? event.text : '',
+      process.cwd(),
+    );
+    return expanded === null ? { action: 'continue' } : { action: 'transform', text: expanded };
+  });
 }
 
-// Export internals for testing
-export { findSkillFile, parseCommandArgs, parseFrontmatter, processShellDirectives, substituteArgs };
+export {
+  expandSkillInvocation,
+  findSkillFile,
+  parseCommandArgs,
+  parseFrontmatter,
+  processShellDirectives,
+  substituteArgs,
+  substituteArgsWithConsumption,
+  unconsumedRawArguments,
+};

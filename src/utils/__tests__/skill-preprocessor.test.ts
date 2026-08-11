@@ -14,7 +14,8 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Import the preprocessor functions directly from the template source
-import {
+import junoSkillPreprocessor, {
+  expandSkillInvocation,
   findSkillFile,
   parseCommandArgs,
   parseFrontmatter,
@@ -110,6 +111,14 @@ describe('parseCommandArgs', () => {
   it('should handle multiple spaces between args', () => {
     expect(parseCommandArgs('a   b    c')).toEqual(['a', 'b', 'c']);
   });
+
+  it('treats all whitespace as boundaries while preserving quoted multiline values', () => {
+    expect(parseCommandArgs('one\n"two\nlines"\tthree')).toEqual(['one', 'two\nlines', 'three']);
+  });
+
+  it('preserves empty quoted arguments and trailing backslashes', () => {
+    expect(parseCommandArgs(`'' "" literal\\`)).toEqual(['', '', 'literal\\']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -167,10 +176,7 @@ describe('processShellDirectives', () => {
   });
 
   it('should handle failed commands gracefully', () => {
-    const result = processShellDirectives(
-      '!`nonexistent_command_xyz_12345`',
-      process.cwd(),
-    );
+    const result = processShellDirectives('!`nonexistent_command_xyz_12345`', process.cwd());
     expect(result).toBe('[Error executing: nonexistent_command_xyz_12345]');
   });
 
@@ -317,7 +323,14 @@ describe('skill preprocessing integration', () => {
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillDir, 'SKILL.md'),
-      ['---', 'name: no-shell', 'description: No shell directives', '---', '', '!`echo should-not-run`'].join('\n'),
+      [
+        '---',
+        'name: no-shell',
+        'description: No shell directives',
+        '---',
+        '',
+        '!`echo should-not-run`',
+      ].join('\n'),
     );
 
     const content = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -338,5 +351,103 @@ describe('skill preprocessing integration', () => {
     const { body } = parseFrontmatter(content);
     const processed = substituteArgs(body.trim(), []);
     expect(processed).toBe('No variables here, just text.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pi input-handler parity and consumption contract
+// ---------------------------------------------------------------------------
+describe('Pi input handler argument preservation', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'skill-handler-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function skill(name: string, body: string, shell = false): void {
+    const dir = path.join(tmpDir, '.pi', 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'SKILL.md'),
+      `---\nname: ${name}\n${shell ? 'enable-shell-directives: true\n' : ''}---\n${body}`,
+    );
+  }
+
+  it('matches Pi native expansion by appending the exact raw request for no-placeholder skills', () => {
+    skill('native', 'Native instructions');
+    const raw = `"quoted value"  ## Ab12Cd\nquestion $(touch /tmp/never) '$HOME'\n@@no_code  `;
+    const expanded = expandSkillInvocation(`/skill:native ${raw}`, tmpDir)!;
+    expect(expanded).toMatch(/<skill name="native"[\s\S]*Native instructions[\s\S]*<\/skill>\n\n/);
+    expect(expanded.slice(expanded.indexOf('</skill>') + 10)).toBe(raw);
+    expect(expanded.match(/## Ab12Cd/g)).toHaveLength(1);
+    expect(expanded.match(/@@no_code/g)).toHaveLength(1);
+  });
+
+  it.each([
+    ['$1', 'one "two words" three', 'one', '"two words" three'],
+    ['$ARGUMENTS', 'one  "two words"', 'one  "two words"', ''],
+    ['$@', `one\n@@no_code`, `one\n@@no_code`, ''],
+    ['${@:2}', 'one two three', 'two three', 'one'],
+    ['${@:2:1}', 'one "two words" three', 'two words', 'one three'],
+    ['$1 / ${@:3:1}', 'one two three four', 'one / three', 'two four'],
+  ])(
+    'substitutes %s and appends only unconsumed raw arguments',
+    (placeholder, raw, inBody, remaining) => {
+      skill('consume', `Value: ${placeholder}`);
+      const expanded = expandSkillInvocation(`/skill:consume ${raw}`, tmpDir)!;
+      expect(expanded).toContain(`Value: ${inBody}`);
+      const suffix = expanded.split('</skill>')[1] ?? '';
+      expect(suffix).toBe(remaining ? `\n\n${remaining}` : '');
+    },
+  );
+
+  it('honors intentional repeated and overlapping placeholders without a runtime append', () => {
+    skill('explicit', '$1 again $1\nComplete: $ARGUMENTS');
+    const expanded = expandSkillInvocation('/skill:explicit alpha beta', tmpDir)!;
+    expect(expanded).toContain('alpha again alpha\nComplete: alpha beta');
+    expect(expanded.endsWith('</skill>')).toBe(true);
+  });
+
+  it('preserves the multiline ypl payload after shortcut rewriting byte-for-byte', async () => {
+    skill('ralph-loop', 'Instructions only');
+    const heredoc = '## oD5g4o\nWhat is the root cause of 504\n@@no_code';
+    const rewritten = `/skill:ralph-loop ${heredoc}`;
+    expect(expandSkillInvocation(rewritten, tmpDir)!.split('</skill>\n\n')[1]).toBe(heredoc);
+
+    let handler: ((event: { text: string }) => unknown) | undefined;
+    const pi = {
+      on: vi.fn((_event: string, callback: typeof handler) => {
+        handler = callback;
+      }),
+    };
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    try {
+      junoSkillPreprocessor(pi as never);
+      expect(pi.on).toHaveBeenCalledWith('input', expect.any(Function));
+      expect(handler!({ text: rewritten })).toEqual({
+        action: 'transform',
+        text: expandSkillInvocation(rewritten, tmpDir),
+      });
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('keeps shell directives literal unless opted in and never executes argument text', () => {
+    skill('plain-shell', 'Directive: !`printf body`');
+    const literal = '$(printf argument) !`echo injected` `echo nope` $HOME \\ path';
+    const plain = expandSkillInvocation(`/skill:plain-shell ${literal}`, tmpDir)!;
+    expect(plain).toContain('Directive: !`printf body`');
+    expect(plain.split('</skill>\n\n')[1]).toBe(literal);
+
+    skill('opted-shell', 'Directive: !`printf body`', true);
+    const expanded = expandSkillInvocation(`/skill:opted-shell ${literal}`, tmpDir)!;
+    expect(expanded).toContain('Directive: body\n</skill>');
+    expect(expanded).toContain('!`echo injected`');
+    expect(expanded.endsWith(literal)).toBe(true);
   });
 });

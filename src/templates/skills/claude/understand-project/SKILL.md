@@ -14,4 +14,18 @@ enable-shell-directives: true
 5. If the user requested planning, hand the findings to `plan-kanban-tasks`. If implementation was requested, work only in the task worktree returned by `yy task start TASK_ID`.
 6. Write a durable spec only when requested or materially useful, and route it to a controller-admitted location. Do not update root instructions with transient status.
 
+## Invocation contract
+
+The structured views below intentionally alias parts of the complete request; they are not additional user arguments.
+
+### Main task
+
+$1
+
+### Constraints and context
+
+$2
+
+### Complete raw request
+
 $ARGUMENTS

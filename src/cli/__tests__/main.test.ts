@@ -517,6 +517,28 @@ describe('Main Command', () => {
         );
       });
 
+      it('should preserve a multiline heredoc payload while rewriting a Pi shortcut', async () => {
+        const payload = '## oD5g4o\nWhat is the root cause of 504\n@@no_code';
+        const options: MainCommandOptions = {
+          subagent: 'pi',
+          prompt: `%ralph-loop ${payload}`,
+          cwd: '/test',
+          maxIterations: 1,
+          interactive: false,
+          interactivePrompt: false,
+          verbose: 0,
+          quiet: false,
+          logLevel: 'info',
+        };
+
+        await mainCommandHandler([], options, mockCommand);
+
+        const { createExecutionRequest } = await import('../../core/engine.js');
+        expect(createExecutionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ instruction: `/skill:ralph-loop ${payload}` }),
+        );
+      });
+
       it('should rewrite a leading %shortcut for codex prompts', async () => {
         const options: MainCommandOptions = {
           subagent: 'codex',

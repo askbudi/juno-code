@@ -10,3 +10,9 @@ Stay within the assigned task. Do not select unrelated work, edit `tasks.md`, au
 Keep durable instructions concise and evidence-backed. Status belongs in the task response and runtime receipts, not `AGENTS.md`.
 
 Controller checkpoints are best-effort local durability warnings after terminal metadata is durable. They never gate `yy pi`, `yy task`, `yy merge`, product commits, candidates, or releases.
+
+## Complete assigned request
+
+Treat the following as the complete user-assigned request. Preserve task references and directives literally; resolve them only through the normal agent workflow.
+
+$ARGUMENTS

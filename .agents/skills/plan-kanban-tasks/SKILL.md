@@ -1,32 +1,19 @@
 ---
 name: plan-kanban-tasks
-description: Generate Product Development Requirments(PDR) and create task on kanban. Use when user explictly ask for, or ask for creating a task, planing a feature, register a task on kaban. "Generate PDR"
-argument-hint: "[Required Features] [Constraints] [Specification] [Test Criteria]"
+description: Create a concise Product Development Requirement and one or more implementation-sized Kanban tasks when the user explicitly asks to plan or register work.
+argument-hint: "[Required Features] [Constraints] [Acceptance Criteria]"
 enable-shell-directives: true
 ---
 
-Ultrathink for this task
-First task is to study @.juno_task/plan.md (it may be incorrect)
-and study what is needed to achieve the main task.
+# Plan Kanban work
 
-Second Task is to understand the task, create a spec for process to follow, plan to execute, scripts to create, virtual enviroment that we need, things that we need to be aware of, how to test the scripts and follow progress.
-Think hard and plan/create spec for every step of this task
-and for each part create a seperate .md file under @.juno_task/specs/\*
+1. Read the project instructions and relevant product code from the integration or feature worktree. Read existing task/spec metadata through the canonical controller; do not assume `.juno_task/plan.md` exists.
+2. Produce one concise PDR covering the goal, current behavior, scope, exclusions, risks, dependencies, acceptance criteria, and focused tests.
+3. Split only when pieces can be implemented and validated independently. Concurrent tasks must have explicit path ownership and dependencies.
+4. Create tasks through the controller's `.juno_task/scripts/kanban.sh`. Put durable requirements and acceptance criteria in each task body; relate follow-ups instead of reopening archived IDs.
+5. Store any durable specification through a controller-authorized metadata operation. Never create controller-private `.juno_task/specs`, tasks, ledger, state, or receipts inside a product or feature worktree.
+6. Do not start implementation, create worktrees, push, deploy, or mutate production unless the user separately asks.
 
-## Task 2
-
-Update @.juno_task/plan.md with the new specs and Requirments.
-
-## Part 3
-
-Create PDR on kanban, kanban is available in @.juno_task/scripts/kanban.sh
-In the task body, include requirments, success criteria, test scenarios and jobs to be done.
-For each chunk of the required feature create a seperate task, we want tasks, small enough to be done in one iteration, without compacting context window.
-
-### Specs
-
-Current state of specs under @.juno_task/specs/
-
-!`ls -lrt .juno_task/specs/`
+Use `--id`, not legacy `--ID`, for Kanban mutations. Return the task IDs and a short dependency/order summary.
 
 $ARGUMENTS

@@ -221,6 +221,27 @@ describe('SkillInstaller', () => {
       expect(typeof result).toBe('boolean');
     });
 
+    it('installs invocation contracts and the fixed Pi preprocessor from package sources', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      await SkillInstaller.install(testDir, true);
+
+      const ralph = await fs.readFile(path.join(testDir, '.pi/skills/ralph-loop/SKILL.md'), 'utf8');
+      const understand = await fs.readFile(
+        path.join(testDir, '.agents/skills/understand-project/SKILL.md'),
+        'utf8',
+      );
+      const extension = await fs.readFile(
+        path.join(testDir, '.pi/extensions/juno-skill-preprocessor.ts'),
+        'utf8',
+      );
+      expect(ralph.match(/\$ARGUMENTS/g)).toHaveLength(1);
+      expect(understand.match(/\$1/g)).toHaveLength(1);
+      expect(understand.match(/\$2/g)).toHaveLength(1);
+      expect(understand.match(/\$ARGUMENTS/g)).toHaveLength(1);
+      expect(extension).toContain('unconsumedRawArguments');
+      expect(extension).toContain('expandSkillInvocation');
+    });
+
     it('should preserve existing files in destination directories', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
 
