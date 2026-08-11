@@ -153,7 +153,55 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(authority["status"], "advanced")
         self.assertEqual(git(owner, "config", "--worktree", "--get",
                              "juno.workspace.roleBase"), candidate)
+        self.assertEqual(git(owner, "rev-parse", "HEAD"), candidate)
+        self.assertEqual(authority["after"]["head"], candidate)
+        self.assertTrue(authority["after"]["clean"])
+        self.assertTrue(authority["after"]["detached"])
+
+    def test_guarded_cas_reports_owner_checkout_readback_not_advanced_target_ref(self) -> None:
+        owner = self.root / "integration-owner-race"
+        git(self.repository, "worktree", "add", "--detach", str(owner), self.base)
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(owner, "config", "--worktree", "juno.workspace.role", "integration-owner")
+        git(owner, "config", "--worktree", "juno.workspace.roleAuthority",
+            merge_runtime.INTEGRATION_OWNER_AUTHORITY)
+        git(owner, "config", "--worktree", "juno.workspace.roleBase", self.base)
+        git(self.repository, "config", merge_runtime.INTEGRATION_OWNER_CONFIG, str(owner))
+
+        candidate_worktree = self.root / "candidate-race"
+        git(self.repository, "worktree", "add", "-b", "candidate-race",
+            str(candidate_worktree), self.base)
+        (candidate_worktree / "src/race.txt").write_text("candidate\n")
+        git(candidate_worktree, "add", "src/race.txt")
+        git(candidate_worktree, "commit", "-m", "candidate race")
+        candidate = git(candidate_worktree, "rev-parse", "HEAD")
+        git(candidate_worktree, "switch", "--detach")
+        git(self.repository, "worktree", "remove", str(candidate_worktree))
+
+        original_run = merge_runtime.task_runtime.run
+
+        def race_after_cas(argv: list[str], cwd: Path, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = original_run(argv, cwd, **kwargs)
+            if "update-ref" in argv and argv[-3:] == [
+                    "refs/heads/product", candidate, self.base]:
+                Path(git(owner, "rev-parse", "--git-path", "index.lock")).touch()
+            return result
+
+        with mock.patch.object(merge_runtime.task_runtime, "run", side_effect=race_after_cas):
+            authority = merge_runtime.cas_target(
+                self.repository, "refs/heads/product", candidate, self.base)
+
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), candidate)
         self.assertEqual(git(owner, "rev-parse", "HEAD"), self.base)
+        self.assertEqual(authority["status"], "partial")
+        self.assertEqual(authority["target_sha"], candidate)
+        self.assertEqual(authority["after"]["head"], self.base)
+        self.assertNotEqual(authority["after"]["head"], authority["target_sha"])
+        self.assertEqual(authority["recovery_command"], "yy integration sync")
+        with self.assertRaisesRegex(
+                merge_runtime.IntegrationOwnerAdvancementError,
+                "recover with: yy integration sync"):
+            merge_runtime.require_owner_advancement(authority)
 
     def test_managed_review_prompt_resolves_from_bound_runtime(self) -> None:
         executable = self.root / "installed/dist/bin/juno-code.sh"
@@ -471,6 +519,48 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(merged["risk"]["plan"]["tier"], "low")
         self.assertEqual(merged["risk"]["plan"]["reviewer_sequence"], [])
         dispatch.assert_not_called()
+
+    def test_merge_next_persists_truthful_partial_owner_advancement_after_cas(self) -> None:
+        owner = self.root / "merge-next-integration-owner"
+        git(self.repository, "worktree", "add", "--detach", str(owner), self.base)
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(owner, "config", "--worktree", "juno.workspace.role", "integration-owner")
+        git(owner, "config", "--worktree", "juno.workspace.roleAuthority",
+            merge_runtime.INTEGRATION_OWNER_AUTHORITY)
+        git(owner, "config", "--worktree", "juno.workspace.roleBase", self.base)
+        git(self.repository, "config", merge_runtime.INTEGRATION_OWNER_CONFIG, str(owner))
+        candidate = self.commit_feature("X", "docs/owner-race.md", "race\n")
+        original_run = merge_runtime.task_runtime.run
+
+        def race_after_cas(argv: list[str], cwd: Path, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = original_run(argv, cwd, **kwargs)
+            if "update-ref" in argv and argv[-3:] == [
+                    "refs/heads/product", candidate, self.base]:
+                Path(git(owner, "rev-parse", "--git-path", "index.lock")).touch()
+            return result
+
+        with (mock.patch.object(merge_runtime.task_runtime, "run", side_effect=race_after_cas),
+              self.assertRaisesRegex(merge_runtime.IntegrationOwnerAdvancementError,
+                                     "recover with: yy integration sync")):
+            merge_runtime.merge_next(self.controller.resolve())
+
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), candidate)
+        self.assertEqual(git(owner, "rev-parse", "HEAD"), self.base)
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        record = state["tasks"]["X"]
+        attempt = record["queue_attempt"]
+        last_attempt = next(iter(state["queues"].values()))["last_attempt"]
+        for persisted in (attempt, last_attempt):
+            self.assertEqual(persisted["outcome"], "MERGING_OWNER_ADVANCEMENT_FAILED")
+            self.assertEqual(persisted["recovery_command"], "yy integration sync")
+            authority = persisted["integration_owner_authority"]
+            self.assertEqual(authority["status"], "partial")
+            self.assertEqual(authority["target_sha"], candidate)
+            self.assertEqual(authority["after"]["head"], self.base)
+            self.assertNotEqual(authority["after"]["head"], authority["target_sha"])
+        self.assertEqual(record["state"], "MERGING")
+        self.assertEqual(record["last_queue_outcome"],
+                         "MERGING_OWNER_ADVANCEMENT_FAILED")
 
     def test_multi_commit_direct_candidate_is_planned_from_full_target_diff(self) -> None:
         self.task("start", "X")

@@ -650,6 +650,8 @@ def status_payload(controller: Path, *, fetch: bool = False) -> dict[str, Any]:
             "registered_path": registered, "candidates": candidates, "owner": owner},
             "findings": findings, "healthy": not any(row["severity"] == "error" for row in findings),
             "ready": bool(owner and owner["head"] == target_sha
+                          and owner["role_base"] == target_sha
+                          and all(row["state"] == "exact" for row in owner["submodules"])
                           and not any(row["severity"] == "error" for row in findings))}
 
 
@@ -1032,12 +1034,14 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
             git(owner_root, "switch", "--detach", current or "")
             git(owner_root, "submodule", "sync", "--recursive")
             git(owner_root, "submodule", "update", "--init", "--recursive", "--checkout")
-            if target_outcome == "fast_forwarded":
-                if owner_role_base != local:
+            if owner_role_base != current:
+                if (not owner_role_base or not current or run([
+                        "git", "-C", str(repository), "merge-base", "--is-ancestor",
+                        owner_role_base, current], repository, check=False).returncode):
                     raise IntegrationError(
-                        "remote fast-forward refuses a stale integration owner roleBase"
+                        "integration sync refuses a stale or divergent integration owner roleBase"
                     )
-                authority = advance_owner_role_base(owner_root, owner_role_base, current or "")
+                authority = advance_owner_role_base(owner_root, owner_role_base, current)
                 receipt["phases"].append({"phase": "authority", "status": "complete",
                                           **authority})
                 receipt["phase"] = "authority"; reference = write_receipt(receipt_path, receipt)

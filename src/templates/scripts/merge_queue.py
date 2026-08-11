@@ -47,6 +47,10 @@ class AdmissionStateError(MergeQueueError):
     """A persisted admission tag is unsafe to interpret or replace."""
 
 
+class IntegrationOwnerAdvancementError(MergeQueueError):
+    """The target CAS landed, but its registered owner did not become exact."""
+
+
 class MergeValidationError(MergeQueueError):
     def __init__(self, message: str, evidence: list[dict[str, Any]],
                  receipt_reference: Optional[dict[str, str]] = None) -> None:
@@ -109,47 +113,103 @@ def registered_worktrees(repository: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def advance_registered_owner_role_base(repository: Path, expected: str,
-                                        candidate: str) -> dict[str, Any]:
-    """Persist authority only after this queue has admitted the exact CAS."""
+def integration_owner_readback(owner: Path) -> dict[str, Any]:
+    """Read authority from the checkout itself; never substitute the target ref."""
+    full, reasons = integration_runtime.full_checkout(owner)
+    return {
+        "path": str(owner),
+        "head": task_runtime.ref_sha(owner, "HEAD"),
+        "role_base": integration_runtime.worktree_config(owner, "juno.workspace.roleBase"),
+        "role": integration_runtime.worktree_config(owner, "juno.workspace.role"),
+        "authority": integration_runtime.worktree_config(
+            owner, "juno.workspace.roleAuthority"),
+        "clean": not bool(task_runtime.git(
+            owner, "status", "--porcelain=v1", "--untracked-files=all", check=False)),
+        "detached": not bool(task_runtime.git(
+            owner, "symbolic-ref", "-q", "HEAD", check=False)),
+        "full_checkout": full,
+        "full_checkout_reasons": reasons,
+        "submodules": integration_runtime.submodule_state(owner),
+    }
+
+
+def registered_owner_preflight(repository: Path, expected: str,
+                               candidate: str) -> tuple[Path | None, dict[str, Any] | None]:
     raw = task_runtime.git(repository, "config", "--local", "--get",
                            INTEGRATION_OWNER_CONFIG, check=False)
     if not raw:
-        return {"status": "not_registered", "before": expected, "after": candidate}
+        return None, None
     owner = Path(raw).expanduser().resolve()
     rows = {str(Path(row["worktree"]).resolve()): row for row in registered_worktrees(repository)
             if isinstance(row.get("worktree"), str) and row.get("prunable") is not True}
     if str(owner) not in rows or not owner.is_dir():
         raise MergeQueueError("registered integration owner is not a live linked worktree")
+    observed = integration_owner_readback(owner)
+    exact = (observed["role"] == "integration-owner"
+             and observed["authority"] == INTEGRATION_OWNER_AUTHORITY
+             and observed["head"] in {expected, candidate}
+             and observed["role_base"] in {expected, candidate}
+             and observed["clean"] and observed["detached"]
+             and observed["full_checkout"]
+             and all(row["state"] == "exact" for row in observed["submodules"]))
+    if not exact:
+        raise MergeQueueError(
+            "registered integration owner is not clean, detached, full, submodule-exact, and authoritative"
+        )
+    return owner, observed
 
-    def config(key: str) -> str | None:
-        return task_runtime.git(owner, "config", "--worktree", "--get", key,
-                                check=False) or None
 
-    if config("juno.workspace.role") != "integration-owner":
-        raise MergeQueueError("registered integration owner role is invalid")
-    if config("juno.workspace.roleAuthority") != INTEGRATION_OWNER_AUTHORITY:
-        raise MergeQueueError("registered integration owner authority is invalid")
-    head = task_runtime.ref_sha(owner, "HEAD")
-    if (head not in {expected, candidate}
-            or task_runtime.git(owner, "symbolic-ref", "-q", "HEAD", check=False)
-            or task_runtime.git(owner, "status", "--porcelain=v1", "--untracked-files=all",
-                                check=False)
-            or config("core.sparseCheckout") == "true"
-            or any(line.startswith("S ") for line in task_runtime.git(
-                owner, "ls-files", "-t", check=False).splitlines())):
-        raise MergeQueueError("registered integration owner is not clean, detached, full, and exact")
-    role_base = config("juno.workspace.roleBase")
-    if role_base == candidate:
-        return {"status": "already_advanced", "path": str(owner),
-                "before": candidate, "after": candidate}
-    if role_base != expected:
-        raise MergeQueueError("registered integration owner roleBase is stale or divergent")
-    task_runtime.git(owner, "config", "--worktree", "juno.workspace.roleBase", candidate)
-    if config("juno.workspace.roleBase") != candidate:
-        raise MergeQueueError("registered integration owner roleBase readback failed")
-    return {"status": "advanced", "path": str(owner),
-            "before": expected, "after": candidate}
+def advance_registered_owner(repository: Path, expected: str, candidate: str,
+                             owner: Path | None,
+                             before: dict[str, Any] | None) -> dict[str, Any]:
+    """Move and verify the registered checkout after the admitted target CAS."""
+    if owner is None:
+        return {"status": "not_registered", "before": None, "after": None,
+                "target_sha": candidate}
+    try:
+        current = integration_owner_readback(owner)
+        if current != before:
+            raise MergeQueueError("registered integration owner changed during target CAS")
+        if current["head"] != candidate:
+            task_runtime.git(owner, "switch", "--detach", candidate)
+        task_runtime.git(owner, "submodule", "sync", "--recursive")
+        task_runtime.git(owner, "submodule", "update", "--init", "--recursive", "--checkout")
+        moved = integration_owner_readback(owner)
+        if (moved["head"] != candidate or not moved["clean"] or not moved["detached"]
+                or not moved["full_checkout"]
+                or moved["role"] != "integration-owner"
+                or moved["authority"] != INTEGRATION_OWNER_AUTHORITY
+                or any(row["state"] != "exact" for row in moved["submodules"])):
+            raise MergeQueueError("integration owner checkout advancement readback is not exact")
+        if moved["role_base"] != candidate:
+            integration_runtime.advance_owner_role_base(owner, moved["role_base"], candidate)
+        after = integration_owner_readback(owner)
+        if (after["head"] != candidate or after["role_base"] != candidate
+                or not after["clean"] or not after["detached"] or not after["full_checkout"]
+                or after["role"] != "integration-owner"
+                or after["authority"] != INTEGRATION_OWNER_AUTHORITY
+                or any(row["state"] != "exact" for row in after["submodules"])):
+            raise MergeQueueError("integration owner final authority readback is not exact")
+        return {"status": "already_advanced" if before["head"] == candidate
+                and before["role_base"] == candidate else "advanced",
+                "path": str(owner), "before": before, "after": after,
+                "target_sha": candidate}
+    except Exception as exc:
+        try:
+            after = integration_owner_readback(owner)
+        except Exception as readback_exc:
+            after = {"path": str(owner), "readback_error": str(readback_exc)}
+        return {"status": "partial", "path": str(owner), "before": before,
+                "after": after, "target_sha": candidate, "error": str(exc),
+                "recovery_command": "yy integration sync"}
+
+
+def require_owner_advancement(authority: dict[str, Any]) -> None:
+    if authority.get("status") == "partial":
+        raise IntegrationOwnerAdvancementError(
+            "target integrated but integration-owner advancement failed; "
+            f"recover with: {authority['recovery_command']}"
+        )
 
 
 def assert_target_unchecked_out(repository: Path, target_ref: str) -> None:
@@ -757,6 +817,14 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
     attempt["integration_owner_authority"] = cas_target(
         repository, config["target_ref"], candidate_sha, expected
     )
+    try:
+        require_owner_advancement(attempt["integration_owner_authority"])
+    except IntegrationOwnerAdvancementError:
+        attempt.update({"outcome": "MERGING_OWNER_ADVANCEMENT_FAILED",
+                        "readback_sha": task_runtime.ref_sha(repository, config["target_ref"]),
+                        "recovery_command": "yy integration sync"})
+        persist_attempt(controller, attempt, state_name="MERGING")
+        raise
     attempt["managed_runtime_refresh"] = refresh_managed_controller(
         controller, repository, expected, candidate_sha, attempt["task_id"])
     attempt = {**attempt, "outcome": "MERGED",
@@ -780,6 +848,7 @@ def refresh_managed_controller(controller: Path, repository: Path, previous_sha:
 
 def cas_target(repository: Path, target_ref: str, candidate_sha: str,
                expected_sha: str) -> dict[str, Any]:
+    owner, owner_before = registered_owner_preflight(repository, expected_sha, candidate_sha)
     result = task_runtime.run(["git", "-C", str(repository), "update-ref", target_ref,
                                candidate_sha, expected_sha], repository, check=False)
     if result.returncode:
@@ -791,7 +860,8 @@ def cas_target(repository: Path, target_ref: str, candidate_sha: str,
     actual_tree = task_runtime.git(repository, "rev-parse", f"{target_ref}^{{tree}}")
     if actual_tree != expected_tree:
         raise MergeQueueError("target tree readback mismatch")
-    return advance_registered_owner_role_base(repository, expected_sha, candidate_sha)
+    return advance_registered_owner(
+        repository, expected_sha, candidate_sha, owner, owner_before)
 
 
 def cleanup_candidate(controller: Path, repository: Path, checkout: Optional[Path],
@@ -840,9 +910,17 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
         expected_tree = task_runtime.git(repository, "rev-parse", f"{candidate}^{{tree}}")
         if expected_tree != attempt.get("candidate_tree"):
             raise MergeQueueError("MERGING recovery candidate tree mismatch")
-        authority = advance_registered_owner_role_base(
-            repository, attempt["expected_target_sha"], candidate
-        )
+        owner, owner_before = registered_owner_preflight(
+            repository, attempt["expected_target_sha"], candidate)
+        authority = advance_registered_owner(
+            repository, attempt["expected_target_sha"], candidate, owner, owner_before)
+        if authority.get("status") == "partial":
+            attempt = {**attempt, "outcome": "MERGING_OWNER_ADVANCEMENT_FAILED",
+                       "readback_sha": current, "recovered": True,
+                       "integration_owner_authority": authority,
+                       "recovery_command": "yy integration sync"}
+            persist_attempt(controller, attempt, state_name="MERGING")
+            require_owner_advancement(authority)
         runtime_refresh = refresh_managed_controller(
             controller, repository, attempt["expected_target_sha"], candidate,
             attempt["task_id"])
@@ -975,6 +1053,7 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             attempt["integration_owner_authority"] = cas_target(
                 repository, config["target_ref"], candidate_sha, target_sha
             )
+            require_owner_advancement(attempt["integration_owner_authority"])
             attempt["managed_runtime_refresh"] = refresh_managed_controller(
                 controller, repository, target_sha, candidate_sha, attempt["task_id"])
         except MergeValidationError as exc:
@@ -987,6 +1066,10 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             raise
         except MergeQueueError as exc:
             attempt["outcome"] = "STALE_TARGET" if "target moved" in str(exc) else "PRE_CAS_FAILED"
+            if isinstance(exc, IntegrationOwnerAdvancementError):
+                attempt["outcome"] = "MERGING_OWNER_ADVANCEMENT_FAILED"
+                attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])
+                attempt["recovery_command"] = "yy integration sync"
             # MERGING is a crash-recovery window, not long-lived admission of a
             # clean composition checkout. Any ordinary pre-CAS refusal removes
             # the exact owned internal candidate before returning task truth to
@@ -994,7 +1077,8 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             # and are intentionally never handled here.
             integrated = task_runtime.ref_sha(repository, config["target_ref"]) == candidate_sha
             if integrated:
-                attempt["outcome"] = "MERGING_READBACK_FAILED"
+                if not isinstance(exc, IntegrationOwnerAdvancementError):
+                    attempt["outcome"] = "MERGING_READBACK_FAILED"
                 persist_attempt(controller, attempt, state_name="MERGING")
                 raise
             if checkout is not None and attempt.get("candidate_token"):
@@ -1131,6 +1215,7 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
                 repository, config["target_ref"], candidate_sha,
                 conflict["expected_target_sha"]
             )
+            require_owner_advancement(attempt["integration_owner_authority"])
             attempt["managed_runtime_refresh"] = refresh_managed_controller(
                 controller, repository, conflict["expected_target_sha"], candidate_sha,
                 attempt["task_id"])
@@ -1139,9 +1224,13 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
             attempt["outcome"] = "FAILED_TEST"
             persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
             raise
-        except MergeQueueError:
+        except MergeQueueError as exc:
             integrated = task_runtime.ref_sha(repository, config["target_ref"]) == candidate_sha
             attempt["outcome"] = "MERGING_READBACK_FAILED" if integrated else "STALE_TARGET"
+            if isinstance(exc, IntegrationOwnerAdvancementError):
+                attempt["outcome"] = "MERGING_OWNER_ADVANCEMENT_FAILED"
+                attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])
+                attempt["recovery_command"] = "yy integration sync"
             persist_attempt(
                 controller, attempt,
                 state_name="MERGING" if integrated else "CONFLICT_RESOLVED",

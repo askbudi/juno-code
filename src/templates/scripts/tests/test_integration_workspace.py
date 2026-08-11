@@ -190,10 +190,14 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         target_phase = next(row for row in json.loads(
             Path(result["receipt"]["path"]).read_text())["phases"] if row["phase"] == "target")
         self.assertEqual(target_phase["outcome"], "preserved_local_ahead")
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), local)
         self.assertEqual(git(self.owner, "config", "--worktree", "--get",
-                             "juno.workspace.roleBase"), self.base)
-        self.assertIn("integration_owner_role_base_stale",
-                      {row["code"] for row in result["status"]["findings"]})
+                             "juno.workspace.roleBase"), local)
+        self.assertTrue(result["status"]["ready"])
+        authority_phase = next(row for row in json.loads(
+            Path(result["receipt"]["path"]).read_text())["phases"]
+            if row["phase"] == "authority")
+        self.assertEqual(authority_phase["after"], local)
 
     def test_sync_refuses_divergence_and_target_holder(self) -> None:
         self.local_advance()
