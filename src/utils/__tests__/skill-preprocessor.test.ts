@@ -20,6 +20,7 @@ import junoSkillPreprocessor, {
   findSkillFile,
   parseCommandArgs,
   parseFrontmatter,
+  parseHeredocDeclarations,
   processShellDirectives,
   substituteArgs,
 } from '../../templates/extensions/pi/juno-skill-preprocessor.js';
@@ -522,10 +523,18 @@ describe('Pi input handler argument preservation', () => {
 
   it.each([
     ['quoted', "<<'EOF'"],
+    ['double-quoted', '<<"EOF"'],
     ['escaped', '<<\\EOF'],
+    ['partial-escaped', '<<E\\OF'],
+    ['partial-double', '<<E"OF"'],
+    ['partial-single', "<<'E'OF"],
+    ['combined', String.raw`<<'E'\O"F"`],
   ])(
     'fails safely before executing placeholder-bearing %s non-expanding heredocs',
     (_kind, declaration) => {
+      expect(parseHeredocDeclarations(`cat ${declaration}`)).toEqual([
+        { delimiter: 'EOF', stripTabs: false, expands: false },
+      ]);
       const marker = path.join(tmpDir, `non-expanding-${_kind}-marker`);
       skill(
         `non-expanding-${_kind}`,

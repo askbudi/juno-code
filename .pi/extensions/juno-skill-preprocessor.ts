@@ -209,6 +209,84 @@ function processShellDirectives(
 }
 
 type HeredocContext = 'expanding' | 'non-expanding' | null;
+interface HeredocDeclaration {
+  delimiter: string;
+  stripTabs: boolean;
+  expands: boolean;
+}
+
+/** Parse heredoc delimiter words with shell quote removal at any position. */
+function parseHeredocDeclarations(line: string): HeredocDeclaration[] {
+  const declarations: HeredocDeclaration[] = [];
+  for (let index = 0; index < line.length - 1; index += 1) {
+    if (line[index] !== '<' || line[index + 1] !== '<' || line[index + 2] === '<') continue;
+    let cursor = index + 2;
+    const stripTabs = line[cursor] === '-';
+    if (stripTabs) cursor += 1;
+    while (cursor < line.length && /\s/.test(line[cursor]!)) cursor += 1;
+
+    let delimiter = '';
+    let quoted = false;
+    let inSingle = false;
+    let inDouble = false;
+    const wordStart = cursor;
+    while (cursor < line.length) {
+      const char = line[cursor]!;
+      if (inSingle) {
+        quoted = true;
+        if (char === "'") inSingle = false;
+        else delimiter += char;
+        cursor += 1;
+        continue;
+      }
+      if (inDouble) {
+        quoted = true;
+        if (char === '"') {
+          inDouble = false;
+          cursor += 1;
+          continue;
+        }
+        if (char === '\\' && cursor + 1 < line.length) {
+          const next = line[cursor + 1]!;
+          if ('$`"\\'.includes(next)) {
+            delimiter += next;
+            cursor += 2;
+            continue;
+          }
+        }
+        delimiter += char;
+        cursor += 1;
+        continue;
+      }
+      if (/\s/.test(char) || ';|&<>'.includes(char)) break;
+      if (char === "'") {
+        quoted = true;
+        inSingle = true;
+        cursor += 1;
+        continue;
+      }
+      if (char === '"') {
+        quoted = true;
+        inDouble = true;
+        cursor += 1;
+        continue;
+      }
+      if (char === '\\' && cursor + 1 < line.length) {
+        quoted = true;
+        delimiter += line[cursor + 1]!;
+        cursor += 2;
+        continue;
+      }
+      delimiter += char;
+      cursor += 1;
+    }
+    if (cursor > wordStart && delimiter) {
+      declarations.push({ delimiter, stripTabs, expands: !quoted });
+      index = cursor - 1;
+    }
+  }
+  return declarations;
+}
 
 /** Classify a placeholder offset in expanding/non-expanding heredoc source. */
 function heredocContextAt(command: string, offset: number): HeredocContext {
@@ -232,14 +310,7 @@ function heredocContextAt(command: string, offset: number): HeredocContext {
       }
     }
 
-    const declaration = /<<(-)?\s*(?:'([^']+)'|"([^"]+)"|(\\)?([^\s;|&<>]+))/g;
-    for (const match of line.matchAll(declaration)) {
-      queued.push({
-        delimiter: match[2] ?? match[3] ?? match[5] ?? '',
-        stripTabs: match[1] === '-',
-        expands: match[2] === undefined && match[3] === undefined && match[4] === undefined,
-      });
-    }
+    queued.push(...parseHeredocDeclarations(line));
     if (!active) active = queued.shift();
     lineStart = lineEnd + 1;
   }
@@ -419,6 +490,7 @@ export {
   findSkillFile,
   parseCommandArgs,
   parseFrontmatter,
+  parseHeredocDeclarations,
   processShellDirectives,
   substituteArgs,
   substituteArgsWithConsumption,
