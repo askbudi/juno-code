@@ -352,12 +352,53 @@ describe('ypl wrapper', () => {
       await fs.writeFile(path.join(fakeBin, 'node'), '#!/usr/bin/env bash\nif [ "$1" = "-p" ]; then echo 18.19.0; else exit 97; fi\n', { mode: 0o755 });
       const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
         cwd: tempDir,
-        env: { PATH: `${fakeBin}:${process.env.PATH}` },
+        env: { PATH: `${fakeBin}:${process.env.PATH}`, NVM_DIR: path.join(tempDir, 'missing-nvm') },
         reject: false,
       });
       expect(result.exitCode).toBe(69);
       expect(result.stderr).toContain('unsupported Node 18.19.0');
       expect(await fs.pathExists(marker)).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
+  it('selects the highest compatible installed NVM Node when ambient Node is stale', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-stale-nvm-wrapper-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      const fakeBin = path.join(tempDir, 'fake-bin');
+      const nvmDir = path.join(tempDir, 'nvm');
+      const selectedMarker = path.join(tempDir, 'selected-node');
+      await fs.ensureDir(binDir);
+      await fs.ensureDir(fakeBin);
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
+      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.writeFile(path.join(binDir, 'cli.mjs'), "console.log('selected-compatible-node')\n");
+      await fs.writeFile(
+        path.join(fakeBin, 'node'),
+        '#!/usr/bin/env bash\nif [ "$1" = "-p" ]; then echo 18.19.0; else exit 97; fi\n',
+        { mode: 0o755 },
+      );
+      for (const version of ['20.10.0', '22.22.3']) {
+        const candidate = path.join(nvmDir, 'versions', 'node', `v${version}`, 'bin', 'node');
+        await fs.ensureDir(path.dirname(candidate));
+        await fs.writeFile(
+          candidate,
+          `#!/usr/bin/env bash\nif [ "$1" = "-p" ]; then echo ${version}; exit 0; fi\nprintf '%s' ${JSON.stringify(version)} > ${JSON.stringify(selectedMarker)}\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+          { mode: 0o755 },
+        );
+      }
+
+      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+        cwd: tempDir,
+        env: { PATH: `${fakeBin}:${process.env.PATH}`, NVM_DIR: nvmDir },
+        reject: false,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('selected-compatible-node');
+      expect(await fs.readFile(selectedMarker, 'utf8')).toBe('22.22.3');
     } finally {
       await fs.remove(tempDir);
     }

@@ -68,18 +68,58 @@ classify_prebootstrap_command() {
 }
 
 require_compatible_node() {
-    local version major minor
-    if ! command -v node >/dev/null 2>&1; then
-        echo "juno-code: Node.js >=20.10 is required; no node executable was found" >&2
-        return 69
+    local ambient="" ambient_version="" candidate version major minor patch
+    local nvm_root="" best_path="" best_major=-1 best_minor=-1 best_patch=-1
+    JUNO_CODE_NODE_EXECUTABLE=""
+
+    ambient="$(command -v node 2>/dev/null || true)"
+    if [ -n "$ambient" ]; then
+        ambient_version="$("$ambient" -p 'process.versions.node' 2>/dev/null || true)"
+        if [[ "$ambient_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            major=$((10#${BASH_REMATCH[1]}))
+            minor=$((10#${BASH_REMATCH[2]}))
+            if (( major > 20 || (major == 20 && minor >= 10) )); then
+                JUNO_CODE_NODE_EXECUTABLE="$ambient"
+                return 0
+            fi
+        fi
     fi
-    version="$(node -p 'process.versions.node' 2>/dev/null || true)"
-    major="${version%%.*}"
-    minor="${version#*.}"; minor="${minor%%.*}"
-    if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || (( major < 20 || (major == 20 && minor < 10) )); then
-        echo "juno-code: refusing to run this distribution under unsupported Node ${version:-unknown}; select Node.js >=20.10 and retry" >&2
-        return 69
+
+    if [ -n "${NVM_DIR:-}" ]; then
+        nvm_root="$NVM_DIR"
+    elif [ -n "${HOME:-}" ]; then
+        nvm_root="$HOME/.nvm"
     fi
+    if [ -n "$nvm_root" ]; then
+        for candidate in "$nvm_root"/versions/node/v*/bin/node; do
+            [ -x "$candidate" ] || continue
+            version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
+            [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] || continue
+            major=$((10#${BASH_REMATCH[1]}))
+            minor=$((10#${BASH_REMATCH[2]}))
+            patch=$((10#${BASH_REMATCH[3]}))
+            (( major > 20 || (major == 20 && minor >= 10) )) || continue
+            if (( major > best_major ||
+                  (major == best_major && minor > best_minor) ||
+                  (major == best_major && minor == best_minor && patch > best_patch) )); then
+                best_path="$candidate"
+                best_major=$major
+                best_minor=$minor
+                best_patch=$patch
+            fi
+        done
+    fi
+    if [ -n "$best_path" ]; then
+        JUNO_CODE_NODE_EXECUTABLE="$best_path"
+        return 0
+    fi
+
+    if [ -z "$ambient" ]; then
+        echo "juno-code: Node.js >=20.10 is required; no compatible executable was found in PATH or ${nvm_root:-an NVM directory}" >&2
+    else
+        echo "juno-code: refusing to run this distribution under unsupported Node ${ambient_version:-unknown}; no installed Node.js >=20.10 was found in ${nvm_root:-an NVM directory}" >&2
+    fi
+    return 69
 }
 
 route_registered_product_control() {
@@ -129,7 +169,7 @@ route_registered_product_control() {
     export JUNO_CONTROL_EFFECTIVE_ROOT="$controller"
     export JUNO_CONTROL_OPERATION="$operation"
     cd "$controller"
-    exec node "$runtime" "$@"
+    exec "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" "$@"
 }
 
 # Main execution flow
@@ -143,7 +183,7 @@ main() {
             [ "$status" -eq 1 ] || return "$status"
         }
         require_compatible_node
-        exec node "$CLI_ENTRYPOINT" "$@"
+        exec "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
     fi
 
     require_compatible_node
@@ -159,11 +199,11 @@ main() {
 
         # Execute through bash instead of chmodding a tracked managed script.
         # Agent bootstrap must not alter exact task/candidate worktree bytes.
-        exec bash "$BOOTSTRAP_SCRIPT" node "$CLI_ENTRYPOINT" "$@"
+        exec bash "$BOOTSTRAP_SCRIPT" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
     else
         # Not initialized or bootstrap missing - run CLI directly
         # This allows 'juno-code init' to work without bootstrap
-        exec node "$CLI_ENTRYPOINT" "$@"
+        exec "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
     fi
 }
 
