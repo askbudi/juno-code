@@ -28,4 +28,16 @@ describe('integration workspace CLI', () => {
     await program.parseAsync(['node', 'yy', 'integration', 'register', '/integration', '--replace']);
     expect(invoke).toHaveBeenCalledWith('register', { owner: '/integration', replace: true });
   });
+
+  it.each(['repair', 'push'] as const)('requires and forwards receipt-bound %s modes', async (operation) => {
+    const invoke = vi.fn(async () => undefined);
+    const dryRunProgram = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(dryRunProgram, invoke);
+    await dryRunProgram.parseAsync(['node', 'yy', 'integration', operation, '--dry-run']);
+    expect(invoke).toHaveBeenLastCalledWith(operation, { dryRun: true });
+    const applyProgram = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(applyProgram, invoke);
+    await applyProgram.parseAsync(['node', 'yy', 'integration', operation, '--apply', '/tmp/plan.json']);
+    expect(invoke).toHaveBeenLastCalledWith(operation, { apply: '/tmp/plan.json' });
+  });
 });

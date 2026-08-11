@@ -236,6 +236,303 @@ def write_receipt(path: Path, value: dict[str, Any]) -> dict[str, str]:
     return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def json_digest(value: Any) -> str:
+    data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(data).hexdigest()
+
+
+def operation_receipt_path(controller: Path, policy: dict[str, Any], operation: str) -> Path:
+    return (controller / policy["receipt_root"] /
+            f"{time.time_ns()}-{os.getpid()}-{operation}.json").resolve()
+
+
+def worktree_identity(root: Path) -> dict[str, Any]:
+    full, reasons = full_checkout(root)
+    return {"path": str(root.resolve()), "head": sha(root, "HEAD"),
+            "clean": git(root, "status", "--porcelain=v1", "--untracked-files=all") == "",
+            "detached": git(root, "symbolic-ref", "-q", "HEAD", check=False) == "",
+            "full_checkout": full, "full_checkout_reasons": reasons,
+            "role": worktree_config(root, "juno.workspace.role"),
+            "authority": worktree_config(root, "juno.workspace.roleAuthority")}
+
+
+def repair_plan(controller: Path) -> dict[str, Any]:
+    controller = exact_root(controller, "controller")
+    policy, task_policy, policy_path = load_policy(controller)
+    repository = task_workspace.product_repository(controller, task_policy)
+    status = status_payload(controller)
+    owner = status["integration"]["owner"]
+    actions: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    target_sha = status["target"]["sha"]
+    if not owner:
+        blockers.append("canonical_integration_owner_unavailable")
+    else:
+        if not owner["clean"] or not owner["full_checkout"] or not owner["detached"]:
+            blockers.append("canonical_integration_owner_not_safe")
+        if owner["head"] != target_sha:
+            actions.append({"kind": "refresh_owner", "path": owner["path"],
+                            "before": owner["head"], "after": target_sha})
+        if any(row["state"] != "exact" for row in owner["submodules"]):
+            actions.append({"kind": "refresh_submodules", "path": owner["path"],
+                            "target": target_sha})
+    rows = {str(row.get("worktree")): row for row in parse_worktrees(repository)}
+    for holder in status["target"]["holders"]:
+        root = Path(holder)
+        identity = worktree_identity(root)
+        row = rows.get(holder, {})
+        if (not identity["clean"] or identity["head"] != target_sha
+                or identity["role"] in {"controller", "task"}):
+            blockers.append(f"unsafe_target_holder:{holder}")
+        else:
+            actions.append({"kind": "detach_target_holder", "path": holder,
+                            "branch": row.get("branch"), "head": identity["head"],
+                            "role": identity["role"], "authority": identity["authority"]})
+    ignored = {"target_checked_out", "integration_owner_stale"}
+    blockers.extend(row["code"] for row in status["findings"]
+                    if row["severity"] == "error" and row["code"] not in ignored)
+    common = Path(git(repository, "rev-parse", "--path-format=absolute",
+                      "--git-common-dir")).resolve()
+    core = {"schema_version": SCHEMA, "operation": "repair", "controller": str(controller),
+            "repository": str(repository), "git_common_dir": str(common),
+            "policy": str(policy_path), "policy_sha256": hashlib.sha256(
+                policy_path.read_bytes()).hexdigest(), "target": status["target"],
+            "registered_owner": status["integration"]["registered_path"],
+            "owner": owner, "actions": actions, "blockers": sorted(set(blockers))}
+    return {**core, "plan_sha256": json_digest(core)}
+
+
+def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
+    controller = exact_root(controller, "controller")
+    policy, task_policy, _ = load_policy(controller)
+    repository = task_workspace.product_repository(controller, task_policy)
+    if dry_run:
+        plan = repair_plan(controller)
+        receipt = {**plan, "outcome": "planned" if not plan["blockers"] else "refused"}
+        reference = write_receipt(operation_receipt_path(controller, policy, "repair-plan"), receipt)
+        return {**receipt, "receipt": reference}, 0 if not plan["blockers"] else 2
+    if apply is None:
+        raise IntegrationError("repair apply requires a plan receipt")
+    try:
+        approved = json.loads(apply.expanduser().resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntegrationError(f"invalid repair plan receipt: {exc}") from exc
+    current = repair_plan(controller)
+    if approved.get("operation") != "repair" or approved.get("blockers"):
+        error = "repair plan was not eligible"
+        failed = {"schema_version": SCHEMA, "operation": "repair",
+                  "outcome": "failed", "error": error}
+        reference = write_receipt(operation_receipt_path(
+            controller, policy, "repair-refused"), failed)
+        return {**failed, "receipt": reference}, 2
+    if approved.get("plan_sha256") != current["plan_sha256"]:
+        error = "repair plan identity drifted; generate a new dry-run receipt"
+        failed = {"schema_version": SCHEMA, "operation": "repair",
+                  "outcome": "failed", "error": error,
+                  "approved_plan_sha256": approved.get("plan_sha256"),
+                  "current_plan_sha256": current["plan_sha256"]}
+        reference = write_receipt(operation_receipt_path(
+            controller, policy, "repair-drift"), failed)
+        return {**failed, "receipt": reference}, 2
+    result_path = operation_receipt_path(controller, policy, "repair-apply")
+    result = {**current, "outcome": "running", "phases": []}
+    reference = write_receipt(result_path, result)
+    try:
+        with merge_queue.target_lock(controller, repository, task_policy["target_ref"]):
+            for action in current["actions"]:
+                root = Path(action["path"])
+                if action["kind"] == "detach_target_holder":
+                    git(root, "switch", "--detach", action["head"])
+                elif action["kind"] == "refresh_owner":
+                    git(root, "switch", "--detach", action["after"])
+                result["phases"].append({**action, "status": "complete"})
+                reference = write_receipt(result_path, result)
+            owner = Path(current["registered_owner"])
+            git(owner, "submodule", "sync", "--recursive")
+            git(owner, "submodule", "update", "--init", "--recursive", "--checkout")
+            after = status_payload(controller)
+            if not after["ready"]:
+                raise IntegrationError("repair verification did not reach ready state")
+            result.update({"outcome": "completed", "status": after})
+            reference = write_receipt(result_path, result)
+            return {**result, "receipt": reference}, 0
+    except (IntegrationError, task_workspace.TaskWorkspaceError,
+            merge_queue.MergeQueueError, OSError) as exc:
+        result.update({"outcome": "failed", "error": str(exc)})
+        reference = write_receipt(result_path, result)
+        return {**result, "receipt": reference}, 2
+
+
+def remote_ref_sha(root: Path, remote: str, ref: str) -> str | None:
+    output = run(["git", "-C", str(root), "ls-remote", "--refs", remote, ref],
+                 root, check=False).stdout.strip()
+    match = re.fullmatch(r"([0-9a-f]{40,64})\s+.+", output)
+    return match.group(1) if match else None
+
+
+def remote_default_ref(root: Path, remote: str) -> str:
+    output = run(["git", "-C", str(root), "ls-remote", "--symref", remote, "HEAD"],
+                 root, check=False).stdout
+    match = re.search(r"^ref:\s+(refs/heads/[^\s]+)\s+HEAD$", output, re.MULTILINE)
+    if not match:
+        raise IntegrationError(f"cannot resolve default branch for submodule remote {remote}")
+    return match.group(1)
+
+
+def push_plan(controller: Path) -> dict[str, Any]:
+    """Create a network-read-only publication plan. Applying it is separately authorized."""
+    controller = exact_root(controller, "controller")
+    policy, task_policy, policy_path = load_policy(controller)
+    repository = task_workspace.product_repository(controller, task_policy)
+    status = status_payload(controller)
+    blockers = [row["code"] for row in status["findings"] if row["severity"] == "error"]
+    owner = status["integration"]["owner"]
+    actions: list[dict[str, Any]] = []
+    target_ref, target_sha = status["target"]["ref"], status["target"]["sha"]
+    if not status["ready"] or not owner or not target_sha:
+        blockers.append("integration_owner_not_ready")
+    else:
+        owner_root = Path(owner["path"])
+        for item in owner["submodules"]:
+            if item["state"] != "exact" or not item["path"]:
+                blockers.append(f"submodule_not_exact:{item['path']}")
+                continue
+            child = owner_root / item["path"]
+            remote, child_ref = "origin", remote_default_ref(child, "origin")
+            remote_sha = remote_ref_sha(child, remote, child_ref)
+            if remote_sha != item["sha"]:
+                if remote_sha and run(["git", "-C", str(child), "merge-base", "--is-ancestor",
+                                       remote_sha, item["sha"]], child, check=False).returncode:
+                    blockers.append(f"submodule_remote_diverged:{item['path']}")
+                actions.append({"kind": "push_submodule", "path": item["path"],
+                                "repository": str(child), "remote": remote, "ref": child_ref,
+                                "before": remote_sha, "after": item["sha"]})
+        remote_sha = remote_ref_sha(repository, policy["remote"], target_ref)
+        if remote_sha != target_sha:
+            if remote_sha and run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                                   remote_sha, target_sha], repository, check=False).returncode:
+                blockers.append("root_remote_diverged")
+            actions.append({"kind": "push_root", "repository": str(owner_root),
+                            "remote": policy["remote"], "ref": target_ref,
+                            "before": remote_sha, "after": target_sha})
+    core = {"schema_version": SCHEMA, "operation": "push", "controller": str(controller),
+            "repository": str(repository), "policy": str(policy_path),
+            "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+            "target_ref": target_ref, "target_sha": target_sha,
+            "registered_owner": status["integration"]["registered_path"],
+            "actions": actions, "blockers": sorted(set(blockers))}
+    return {**core, "plan_sha256": json_digest(core)}
+
+
+def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
+    controller = exact_root(controller, "controller")
+    policy, task_policy, policy_path = load_policy(controller)
+    repository = task_workspace.product_repository(controller, task_policy)
+    if dry_run:
+        plan = push_plan(controller)
+        receipt = {**plan, "outcome": "planned" if not plan["blockers"] else "refused"}
+        reference = write_receipt(operation_receipt_path(controller, policy, "push-plan"), receipt)
+        return {**receipt, "receipt": reference}, 0 if not plan["blockers"] else 2
+    if apply is None:
+        raise IntegrationError("push apply requires a plan receipt")
+    try:
+        approved = json.loads(apply.expanduser().resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IntegrationError(f"invalid push plan receipt: {exc}") from exc
+    core_keys = {"schema_version", "operation", "controller", "repository", "policy",
+                 "policy_sha256", "target_ref", "target_sha", "registered_owner",
+                 "actions", "blockers"}
+    if (not isinstance(approved, dict)
+            or set(approved) != core_keys | {"plan_sha256", "outcome"}
+            or approved.get("schema_version") != SCHEMA
+            or approved.get("operation") != "push"
+            or approved.get("outcome") != "planned"
+            or approved.get("blockers")):
+        raise IntegrationError("push plan receipt is not an eligible exact plan")
+    core = {key: approved[key] for key in core_keys}
+    if approved.get("plan_sha256") != json_digest(core):
+        raise IntegrationError("push plan receipt digest is invalid")
+    target_ref = task_policy["target_ref"]
+    target_sha = sha(repository, target_ref)
+    if (approved["controller"] != str(controller)
+            or approved["repository"] != str(repository)
+            or approved["policy"] != str(policy_path)
+            or approved["policy_sha256"] != hashlib.sha256(policy_path.read_bytes()).hexdigest()
+            or approved["target_ref"] != target_ref
+            or approved["target_sha"] != target_sha
+            or approved["registered_owner"] != registered_owner(repository)):
+        raise IntegrationError("push plan local identity drifted; generate a new dry-run receipt")
+    actions = approved["actions"]
+    if not isinstance(actions, list):
+        raise IntegrationError("push plan actions are invalid")
+    seen_root = False
+    child_paths: set[str] = set()
+    for index, action in enumerate(actions):
+        required = {"kind", "repository", "remote", "ref", "before", "after"}
+        if not isinstance(action, dict) or set(action) not in (required, required | {"path"}):
+            raise IntegrationError("push plan action shape is invalid")
+        if action["kind"] == "push_submodule":
+            if seen_root or set(action) != required | {"path"} or action["path"] in child_paths:
+                raise IntegrationError("submodule push actions must be unique and precede root")
+            child_paths.add(action["path"])
+        elif action["kind"] == "push_root":
+            if seen_root or index != len(actions) - 1 or set(action) != required:
+                raise IntegrationError("exactly one root push action must be last")
+            seen_root = True
+        else:
+            raise IntegrationError("unknown push plan action")
+        if (not isinstance(action["repository"], str)
+                or not isinstance(action["remote"], str) or not action["remote"]
+                or not isinstance(action["ref"], str) or not action["ref"].startswith("refs/heads/")
+                or action["before"] is not None and not SHA_RE.fullmatch(action["before"])
+                or not isinstance(action["after"], str) or not SHA_RE.fullmatch(action["after"])):
+            raise IntegrationError("push plan action identity is invalid")
+    if actions and not seen_root:
+        raise IntegrationError("push plan with publication actions must end in root push")
+    result_path = operation_receipt_path(controller, policy, "push-apply")
+    result = {**approved, "outcome": "running", "phases": []}
+    reference = write_receipt(result_path, result)
+    try:
+        with merge_queue.target_lock(controller, repository, target_ref):
+            status = status_payload(controller)
+            if (not status["ready"]
+                    or status["integration"]["registered_path"] != approved["registered_owner"]
+                    or status["target"]["sha"] != approved["target_sha"]):
+                raise IntegrationError("push apply integration identity is no longer ready")
+            for action in actions:
+                action_root = exact_root(Path(action["repository"]), "push action repository")
+                if sha(action_root, action["after"]) != action["after"]:
+                    raise IntegrationError(f"push action commit is unavailable: {action['after']}")
+                observed = remote_ref_sha(action_root, action["remote"], action["ref"])
+                if observed == action["after"]:
+                    outcome = "already_complete"
+                elif observed != action["before"]:
+                    raise IntegrationError(
+                        f"remote changed for {action['kind']}:{action.get('path', '')}"
+                    )
+                else:
+                    argv = ["git", "-C", str(action_root), "push", "--porcelain"]
+                    if action["kind"] == "push_root":
+                        argv.append("--recurse-submodules=check")
+                    argv.extend([action["remote"], f"{action['after']}:{action['ref']}"])
+                    run(argv, action_root)
+                    if remote_ref_sha(action_root, action["remote"], action["ref"]) != action["after"]:
+                        raise IntegrationError(
+                            f"remote readback failed for {action['kind']}:{action.get('path', '')}"
+                        )
+                    outcome = "pushed"
+                result["phases"].append({**action, "status": "complete", "outcome": outcome})
+                reference = write_receipt(result_path, result)
+            result["outcome"] = "completed"
+            reference = write_receipt(result_path, result)
+            return {**result, "receipt": reference}, 0
+    except (IntegrationError, task_workspace.TaskWorkspaceError,
+            merge_queue.MergeQueueError, OSError) as exc:
+        result.update({"outcome": "failed", "error": str(exc)})
+        reference = write_receipt(result_path, result)
+        return {**result, "receipt": reference}, 2
+
+
 def sync(controller: Path) -> tuple[dict[str, Any], int]:
     controller = exact_root(controller, "controller")
     policy, task_policy, _ = load_policy(controller)
@@ -356,6 +653,11 @@ def parser() -> argparse.ArgumentParser:
     register_command = commands.add_parser("register", allow_abbrev=False)
     register_command.add_argument("owner", type=Path)
     register_command.add_argument("--replace", action="store_true")
+    for name in ("repair", "push"):
+        command = commands.add_parser(name, allow_abbrev=False)
+        mode = command.add_mutually_exclusive_group(required=True)
+        mode.add_argument("--dry-run", action="store_true")
+        mode.add_argument("--apply", type=Path)
     return root
 
 
@@ -366,8 +668,12 @@ def main(argv: list[str] | None = None) -> int:
             payload, code = status_payload(args.controller, fetch=args.fetch), 0
         elif args.operation == "sync":
             payload, code = sync(args.controller)
-        else:
+        elif args.operation == "register":
             payload, code = register(args.controller, args.owner, replace=args.replace)
+        elif args.operation == "repair":
+            payload, code = repair(args.controller, dry_run=args.dry_run, apply=args.apply)
+        else:
+            payload, code = push(args.controller, dry_run=args.dry_run, apply=args.apply)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return code
     except (IntegrationError, task_workspace.TaskWorkspaceError, OSError,

@@ -1198,6 +1198,77 @@ class MergeQueueTests(unittest.TestCase):
         status = self.queue_payload("status")
         self.assertEqual([row["state"] for row in status["tasks"]], ["MERGED", "MERGED"])
 
+    def test_composition_candidate_disables_inherited_common_sparse_checkout(self) -> None:
+        # Reproduce a migrated repository whose common config still enables
+        # sparse checkout while the controller owns worktree-local patterns.
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(self.repository, "config", "core.sparseCheckout", "true")
+        git(self.controller, "config", "--worktree", "core.sparseCheckout", "true")
+        git(self.controller, "config", "--worktree", "core.sparseCheckoutCone", "false")
+        sparse = Path(git(self.controller, "rev-parse", "--git-path", "info/sparse-checkout"))
+        sparse.parent.mkdir(parents=True, exist_ok=True)
+        sparse.write_text("/.juno_task/\n")
+        git(self.controller, "read-tree", "-mu", "HEAD")
+        self.assertFalse((self.controller / "src").exists())
+
+        self.commit_feature("X", "src/x.txt", "x\n")
+        self.commit_feature("Y", "src/y.txt", "y\n")
+        first = self.queue_payload("next")
+        second = self.queue_payload("next")
+
+        self.assertEqual(first["strategy"], "direct")
+        self.assertEqual(second["strategy"], "merge_both_parents")
+        self.assertEqual(git(self.repository, "show", "refs/heads/product:src/x.txt"), "x")
+        self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
+        self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+
+    def test_composition_candidate_uses_only_lock_compatible_feature_dependencies(self) -> None:
+        setup = self.root / "dependency-base"
+        git(self.repository, "worktree", "add", str(setup), "product")
+        (setup / "src/.gitignore").write_text("node_modules/\n")
+        (setup / "src/package-lock.json").write_text('{"lockfileVersion":3}\n')
+        git(setup, "add", "src/.gitignore", "src/package-lock.json")
+        git(setup, "commit", "-m", "add validation lock")
+        git(self.repository, "worktree", "remove", str(setup))
+        code = ("from pathlib import Path; "
+                "assert Path('node_modules/probe.txt').read_text() == 'ready\\n'; "
+                f"Path({str(self.counter)!r}).open('a').write('run\\n')")
+        self.write_policy(code)
+
+        for task_id, path in (("X", "src/x.txt"), ("Y", "src/y.txt")):
+            self.task("start", task_id)
+            worktree = self.workspaces / task_id
+            (worktree / path).write_text(f"{task_id}\n")
+            modules = worktree / "src/node_modules"
+            modules.mkdir()
+            (modules / "probe.txt").write_text("ready\n")
+            git(worktree, "add", path)
+            git(worktree, "commit", "-m", f"feature {task_id}")
+            self.task("finish", task_id)
+
+        self.assertEqual(self.queue_payload("next")["strategy"], "direct")
+        composed = self.queue_payload("next")
+        self.assertEqual(composed["strategy"], "merge_both_parents")
+        self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+
+    def test_candidate_dependency_bridge_refuses_package_lock_drift(self) -> None:
+        source = self.root / "dependency-source"
+        candidate = self.root / "dependency-candidate"
+        for root, value in ((source, "source"), (candidate, "candidate")):
+            root.mkdir()
+            git(root, "init")
+            git(root, "config", "user.email", "test@example.com")
+            git(root, "config", "user.name", "Test")
+            (root / ".gitignore").write_text("node_modules/\n")
+            (root / "package-lock.json").write_text(f'{{"name":"{value}"}}\n')
+            git(root, "add", ".")
+            git(root, "commit", "-m", value)
+        (source / "node_modules").mkdir()
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "package lock differs"):
+            with merge_runtime.validation_dependencies(candidate, candidate, source):
+                self.fail("lock drift must refuse before validation")
+        self.assertFalse((candidate / "node_modules").exists())
+
     def test_real_a_b_text_conflict_is_preserved_then_resolved_without_feature_recreation(self) -> None:
         a_tip = self.commit_feature("A", "src/shared.txt", "A\n")
         b_tip = self.commit_feature("B", "src/shared.txt", "B\n")

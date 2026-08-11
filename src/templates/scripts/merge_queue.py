@@ -272,6 +272,21 @@ def create_candidate_checkout(controller: Path, repository: Path, task_id: str,
                  "target_sha": target_sha, "feature_sha": feature_sha,
                  "candidate_checkout": str(checkout.resolve())}
     try:
+        # A repository migrated to worktree-local sparse configuration may
+        # still retain the legacy common core.sparseCheckout=true value. New
+        # worktrees inherit that common value until they establish their own
+        # setting, so an internal candidate created from a sparse controller
+        # can otherwise omit every product path. Candidates are product
+        # validation roots and must always be explicitly full checkouts.
+        task_runtime.run(["git", "-C", str(checkout), "sparse-checkout", "disable"], checkout)
+        sparse = task_runtime.git(
+            checkout, "config", "--worktree", "--bool", "core.sparseCheckout", check=False
+        )
+        skipped = [line for line in task_runtime.git(
+            checkout, "ls-files", "-t", check=False
+        ).splitlines() if line.startswith("S ")]
+        if sparse not in {"", "false"} or skipped:
+            raise MergeQueueError("candidate full-checkout materialization failed")
         with marker.open("x") as handle:
             handle.write(canonical(ownership) + "\n")
     except Exception:
@@ -280,6 +295,7 @@ def create_candidate_checkout(controller: Path, repository: Path, task_id: str,
         # Git itself refuses the internal rollback.
         removed = task_runtime.run(["git", "-C", str(repository), "worktree", "remove", "--force",
                                     str(checkout)], repository, check=False)
+        marker.unlink(missing_ok=True)
         if removed.returncode:
             raise MergeQueueError(f"candidate ownership creation failed and rollback failed: {checkout}")
         raise
@@ -340,7 +356,61 @@ def rollback_unadmitted_candidate(controller: Path, repository: Path, checkout: 
     marker.unlink()
 
 
-def validation_rows(config: dict[str, Any], candidate: Path) -> list[dict[str, Any]]:
+@contextmanager
+def validation_dependencies(candidate: Path, cwd: Path,
+                            source_root: Optional[Path]) -> Iterator[None]:
+    """Temporarily expose exact lock-compatible Node dependencies to a candidate."""
+    lock = cwd / "package-lock.json"
+    if source_root is None or not lock.is_file():
+        yield
+        return
+    relative_cwd = cwd.relative_to(candidate)
+    source_cwd = (source_root / relative_cwd).resolve()
+    try:
+        source_cwd.relative_to(source_root.resolve())
+    except ValueError as exc:
+        raise MergeQueueError("validation dependency source escaped feature worktree") from exc
+    source_lock = source_cwd / "package-lock.json"
+    source_modules = source_cwd / "node_modules"
+    candidate_modules = cwd / "node_modules"
+    if (not source_lock.is_file()
+            or hashlib.sha256(lock.read_bytes()).digest()
+            != hashlib.sha256(source_lock.read_bytes()).digest()):
+        raise MergeQueueError("candidate validation package lock differs from feature worktree")
+    if not source_modules.is_dir():
+        raise MergeQueueError("lock-compatible feature dependencies are unavailable")
+    if candidate_modules.exists() or candidate_modules.is_symlink():
+        raise MergeQueueError("candidate validation dependency path already exists")
+    relative_modules = str(candidate_modules.relative_to(candidate))
+    ignore_probe = f"{relative_modules}/.juno-validation-dependency-probe"
+    ignored = task_runtime.run(
+        ["git", "-C", str(candidate), "check-ignore", "--quiet", "--", ignore_probe],
+        candidate, check=False,
+    )
+    if ignored.returncode:
+        raise MergeQueueError("candidate validation dependency path is not Git-ignored")
+    candidate_modules.mkdir()
+    linked: list[tuple[Path, Path]] = []
+    try:
+        for source_entry in sorted(source_modules.iterdir(), key=lambda path: path.name):
+            candidate_entry = candidate_modules / source_entry.name
+            candidate_entry.symlink_to(source_entry, target_is_directory=source_entry.is_dir())
+            linked.append((candidate_entry, source_entry))
+        if task_runtime.git(candidate, "status", "--porcelain=v1", "--untracked-files=all",
+                            check=False):
+            raise MergeQueueError("candidate dependency bridge changed Git-visible state")
+        yield
+    finally:
+        for candidate_entry, source_entry in reversed(linked):
+            if (not candidate_entry.is_symlink()
+                    or candidate_entry.resolve(strict=False) != source_entry.resolve(strict=False)):
+                raise MergeQueueError("candidate dependency bridge identity changed")
+            candidate_entry.unlink()
+        candidate_modules.rmdir()
+
+
+def validation_rows(config: dict[str, Any], candidate: Path,
+                    dependency_source: Optional[Path] = None) -> list[dict[str, Any]]:
     evidence = []
     for row in config["focused_validation"]:
         cwd = (candidate / row["cwd"]).resolve()
@@ -348,7 +418,8 @@ def validation_rows(config: dict[str, Any], candidate: Path) -> list[dict[str, A
             cwd.relative_to(candidate)
         except ValueError as exc:
             raise MergeQueueError("affected validation cwd escaped candidate") from exc
-        result = task_runtime.run_validation(row, cwd)
+        with validation_dependencies(candidate, cwd, dependency_source):
+            result = task_runtime.run_validation(row, cwd)
         evidence.append(result)
         if result["timed_out"] or result["exit_code"]:
             detail = result["stderr_tail"] or result["stdout_tail"]
@@ -397,7 +468,8 @@ def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any
 
 def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[str, Any],
                           identity: dict[str, str], receipt_path: Path,
-                          claim: dict[str, Any]) -> dict[str, str]:
+                          claim: dict[str, Any],
+                          dependency_source: Optional[Path] = None) -> dict[str, str]:
     row = config["full_suite_validation"]
     cwd = (candidate / row["cwd"]).resolve()
     try:
@@ -405,7 +477,8 @@ def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[st
     except ValueError as exc:
         raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
     started_at = risk_runtime.utc_now()
-    evidence = task_runtime.run_validation(row, cwd)
+    with validation_dependencies(candidate, cwd, dependency_source):
+        evidence = task_runtime.run_validation(row, cwd)
     completed_at = risk_runtime.utc_now()
     receipt = {
         "schema_version": risk_runtime.FULL_SUITE_SCHEMA,
@@ -803,7 +876,9 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
         attempt["candidate_sha"] = candidate_sha
         attempt["candidate_tree"] = task_runtime.git(repository, "rev-parse", f"{candidate_sha}^{{tree}}")
         try:
-            attempt["validation"] = validation_rows(config, validation_root)
+            attempt["validation"] = validation_rows(
+                config, validation_root, feature_worktree if checkout is not None else None
+            )
             assert_frozen_candidate(controller, config, validation_root, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != target_sha:
                 raise MergeQueueError("target moved before compare-and-swap; no ref was changed")
@@ -957,7 +1032,10 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         # therefore retry this exact checkout/commit without a second merge.
         persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
         try:
-            attempt["validation"] = validation_rows(config, checkout)
+            attempt["validation"] = validation_rows(
+                config, checkout, task_runtime.exact_root(
+                    Path(record["worktree"]), "resolved feature worktree")
+            )
             assert_frozen_candidate(controller, config, checkout, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != conflict["expected_target_sha"]:
                 raise MergeQueueError("target moved before compare-and-swap; no ref was changed")
@@ -1700,7 +1778,9 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 receipt_path = Path(claimed["expected_receipt_path"])
                 suite_reference = full_suite_validation(
                     config, candidate_root, plan, current_validation_identity,
-                    receipt_path, claim_binding)
+                    receipt_path, claim_binding,
+                    task_runtime.exact_root(
+                        Path(record["worktree"]), "review feature worktree"))
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)

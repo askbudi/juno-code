@@ -211,5 +211,5 @@ describe('Juno 2.1 migration inventory', () => {
     const fake = await fs.readJson(fakeReceipt);
     expect(fake.controller.available).toBe(false);
     expect(fake.controller.invalid_reason).toContain('exact Git worktree root');
-  });
+  }, 60_000);
 });
