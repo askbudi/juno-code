@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
@@ -21,15 +22,56 @@ export type IntegrationInvoker = (
   options: IntegrationOptions,
 ) => Promise<void>;
 
+export function packagedIntegrationRuntimeCandidates(): string[] {
+  const directory = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(directory, '../templates/scripts/integration_workspace.py'),
+    path.resolve(directory, '../../templates/scripts/integration_workspace.py'),
+    path.resolve(directory, '../../src/templates/scripts/integration_workspace.py'),
+  ];
+}
+
+export async function selectIntegrationRuntime(
+  controllerRoot: string,
+  operation: IntegrationOperation,
+  options: IntegrationOptions,
+  packagedCandidates = packagedIntegrationRuntimeCandidates(),
+): Promise<string> {
+  const canonical = path.join(controllerRoot, '.juno_task', 'scripts', 'integration_workspace.py');
+  const bootstrapRecovery = operation === 'runtime-refresh' && Boolean(options.dryRun || options.apply);
+  if (!bootstrapRecovery) {
+    if (!(await fs.pathExists(canonical))) {
+      throw new Error('Missing managed integration runtime. Run `yy scripts update` and retry.');
+    }
+    return canonical;
+  }
+  const packaged = packagedCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!packaged) {
+    throw new Error('Packaged managed-runtime recovery engine is missing; refusing stale controller fallback.');
+  }
+  const sibling = path.join(path.dirname(packaged), 'task_workspace.py');
+  if (!(await fs.pathExists(sibling))) {
+    throw new Error('Packaged managed-runtime recovery engine is incomplete; refusing stale controller fallback.');
+  }
+  const source = await fs.readFile(packaged, 'utf8');
+  const protocol = [
+    'MANAGED_REPAIR_SCHEMA = "juno_managed_runtime_repair.v1"',
+    'def managed_runtime_repair_plan(',
+    'repair_mode.add_argument("--dry-run"',
+    'repair_mode.add_argument("--apply"',
+  ];
+  if (!protocol.every((marker) => source.includes(marker))) {
+    throw new Error('Packaged managed-runtime recovery engine is incompatible; refusing stale controller fallback.');
+  }
+  return packaged;
+}
+
 export async function invokeIntegration(
   operation: IntegrationOperation,
   options: IntegrationOptions = {},
 ): Promise<void> {
   const route = routeControlPlane(process.cwd(), 'orchestration');
-  const script = path.join(route.controllerRoot, '.juno_task', 'scripts', 'integration_workspace.py');
-  if (!(await fs.pathExists(script))) {
-    throw new Error('Missing managed integration runtime. Run `yy scripts update` and retry.');
-  }
+  const script = await selectIntegrationRuntime(route.controllerRoot, operation, options);
   const argv = [script, '--controller', route.controllerRoot, operation];
   if (operation === 'status' && options.fetch) argv.push('--fetch');
   if (operation === 'runtime-doctor' || operation === 'runtime-refresh') {
