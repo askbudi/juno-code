@@ -178,12 +178,18 @@ function unconsumedRawArguments(
   return runs.join(' ');
 }
 
-function executeShellDirective(command: string, cwd: string, timeout: number): string {
+function executeShellDirective(
+  command: string,
+  cwd: string,
+  timeout: number,
+  environment: Record<string, string> = {},
+): string {
   try {
     return execSync(command, {
       cwd,
       timeout,
       encoding: 'utf-8',
+      env: { ...process.env, ...environment },
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
   } catch {
@@ -201,8 +207,47 @@ function processShellDirectives(
   );
 }
 
-/** Quote one placeholder value for its authored shell context. */
-function encodeShellPlaceholder(value: string, command: string, offset: number): string {
+/** Heredoc bodies expand parameters without reparsing their values as shell source. */
+function isInHeredocBody(command: string, offset: number): boolean {
+  const lines = command.split('\n');
+  const queued: Array<{ delimiter: string; stripTabs: boolean; expands: boolean }> = [];
+  let active: (typeof queued)[number] | undefined;
+  let lineStart = 0;
+
+  for (const line of lines) {
+    const lineEnd = lineStart + line.length;
+    if (active) {
+      const comparison = active.stripTabs ? line.replace(/^\t+/, '') : line;
+      if (comparison === active.delimiter) {
+        active = queued.shift();
+      } else {
+        if (offset >= lineStart && offset <= lineEnd) return active.expands;
+        lineStart = lineEnd + 1;
+        continue;
+      }
+    }
+
+    const declaration = /<<(-)?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&<>]+))/g;
+    for (const match of line.matchAll(declaration)) {
+      queued.push({
+        delimiter: match[2] ?? match[3] ?? match[4] ?? '',
+        stripTabs: match[1] === '-',
+        expands: match[2] === undefined && match[3] === undefined,
+      });
+    }
+    if (!active) active = queued.shift();
+    lineStart = lineEnd + 1;
+  }
+  return false;
+}
+
+/**
+ * Return a shell parameter reference suitable for the authored context. Argument
+ * bytes live only in the child environment and are never inserted into shell source.
+ */
+function referenceShellPlaceholder(command: string, offset: number, variableName: string): string {
+  if (isInHeredocBody(command, offset)) return `\${${variableName}}`;
+
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
@@ -218,9 +263,9 @@ function encodeShellPlaceholder(value: string, command: string, offset: number):
     if (char === "'" && !inDouble) inSingle = !inSingle;
     else if (char === '"' && !inSingle) inDouble = !inDouble;
   }
-  if (inSingle) return value.replace(/'/g, `'\\''`);
-  if (inDouble) return value.replace(/[\\$"`]/g, '\\$&');
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  if (inSingle) return `'"\${${variableName}}"'`;
+  if (inDouble) return `\${${variableName}}`;
+  return `"\${${variableName}}"`;
 }
 
 /**
@@ -253,14 +298,21 @@ function processSkillBody(
     text += ordinary.text;
 
     const authoredCommand = match[1] ?? '';
+    const environment: Record<string, string> = {};
+    let variableIndex = 0;
     const command = substituteArgsWithConsumption(
       authoredCommand,
       args,
       rawArguments,
-      (value, offset) => encodeShellPlaceholder(value, authoredCommand, offset),
+      (value, offset) => {
+        const variableName = `JUNO_SKILL_ARGUMENT_${variableIndex}`;
+        variableIndex += 1;
+        environment[variableName] = value;
+        return referenceShellPlaceholder(authoredCommand, offset, variableName);
+      },
     );
     merge(command);
-    text += executeShellDirective(command.text, cwd, DEFAULT_SHELL_TIMEOUT);
+    text += executeShellDirective(command.text, cwd, DEFAULT_SHELL_TIMEOUT, environment);
     cursor = index + match[0].length;
   }
 

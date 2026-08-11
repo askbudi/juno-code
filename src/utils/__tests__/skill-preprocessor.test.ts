@@ -444,6 +444,46 @@ describe('Pi input handler argument preservation', () => {
     expect(expanded.endsWith('</skill>\n\ntail')).toBe(true);
   });
 
+  it('passes hostile values through the environment in every supported authored shell context', () => {
+    const marker = path.join(tmpDir, 'shell-context-marker');
+    const contexts = {
+      unquoted: 'Result: !`printf %s $1`',
+      single: "Result: !`printf %s '$1'`",
+      double: 'Result: !`printf %s "$1"`',
+      heredoc: 'Result: !`cat <<EOF\n$1\nEOF`',
+    };
+    const values = [
+      `$(touch ${marker})`,
+      `\`touch ${marker}\``,
+      'dollar-$HOME',
+      'back\\slash',
+      "apostrophe-'",
+      `line one\n$(touch ${marker})\nline three`,
+    ];
+
+    for (const [context, body] of Object.entries(contexts)) {
+      values.forEach((value, valueIndex) => {
+        const name = `safe-${context}-${valueIndex}`;
+        skill(name, body, true);
+        const quotedArgument = `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const expanded = expandSkillInvocation(`/skill:${name} ${quotedArgument}`, tmpDir)!;
+        expect(expanded, `${context}: ${JSON.stringify(value)}`).toContain(`Result: ${value}`);
+        expect(expanded.endsWith('</skill>')).toBe(true);
+        expect(fs.existsSync(marker)).toBe(false);
+      });
+    }
+  });
+
+  it('keeps command-substitution-looking bytes inert in the reported heredoc reproduction', () => {
+    const marker = path.join(tmpDir, 'heredoc-marker');
+    skill('heredoc-reproduction', 'Result: !`cat <<EOF\n$1\nEOF`', true);
+    const value = `before\n$(touch ${marker})\nafter`;
+    const expanded = expandSkillInvocation(`/skill:heredoc-reproduction "${value}"`, tmpDir)!;
+    expect(expanded).toContain(`Result: ${value}`);
+    expect(expanded.endsWith('</skill>')).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it('combines authored directives with positional/all placeholders safely through the registered handler', () => {
     const marker = path.join(tmpDir, 'argument-was-executed');
     skill(
