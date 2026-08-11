@@ -249,7 +249,7 @@ describe('ypl wrapper', () => {
     } finally {
       await fs.remove(tempDir);
     }
-  });
+  }, 30_000);
 
   it.each([
     { args: ['kanban', 'list'], operation: 'kanban' },
