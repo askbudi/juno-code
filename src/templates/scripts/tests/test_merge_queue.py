@@ -583,16 +583,21 @@ class MergeQueueTests(unittest.TestCase):
         self.write_policy(full_code=flaky)
         self.commit_feature("X", "src/security/auth.py", "auth\n")
         self.queue_payload("next")
+        affected_validation = self.task("status", "X")["queue_attempt"]["validation"]
         with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
             with self.assertRaises(merge_runtime.MergeValidationError):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
         dispatch.assert_not_called()
-        failed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
+        failed_attempt = self.task("status", "X")["queue_attempt"]
+        self.assertEqual(failed_attempt["validation"], affected_validation)
+        failed = failed_attempt["risk"]["review_progress"]
         self.assertEqual((failed["full_suite_admission"]["state"],
                           failed["full_suite_admission"]["attempt_number"]), ("FAILED", 1))
         with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review) as dispatch:
             ready = merge_runtime.merge_review(self.controller.resolve(), "X")
         self.assertEqual((ready["outcome"], dispatch.call_count), ("RISK_EVIDENCE_READY", 2))
+        self.assertEqual(ready["validation"], affected_validation)
+        self.assertTrue(all(row["id"] != "full-suite" for row in ready["validation"]))
         complete = ready["risk"]["review_progress"]["full_suite_admission"]
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])

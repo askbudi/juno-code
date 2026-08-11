@@ -1808,7 +1808,11 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 progress = {**progress, "full_suite_admission": failed_admission}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
-            failed = {**attempt, "validation": exc.evidence, "outcome": "FAILED_FULL_SUITE"}
+            # Full-suite failure truth lives in the immutable admission receipt.
+            # Keep the separately admitted affected-validation rows intact so a
+            # later successful retry cannot render superseded failure evidence
+            # as the current reviewer input.
+            failed = {**attempt, "outcome": "FAILED_FULL_SUITE"}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise
         except AdmissionStateError:
