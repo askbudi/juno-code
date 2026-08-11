@@ -639,11 +639,13 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": "juno_metadata_controller_policy.v1", "controller_branch": answers["controller_branch"],
         "product_ref": answers["product_ref"], "spec_copy_mode": "top_level_files_only", "copied_metadata": copied,
         "generated_metadata": [".gitignore", ".juno_task/config.json", ".juno_task/config/metadata-controller.json",
-                               ".juno_task/config/task-workspace.json", ".juno_task/config/risk-policy.json",
+                               ".juno_task/config/task-workspace.json", ".juno_task/config/integration-workspace.json",
+                               ".juno_task/config/risk-policy.json",
                                ".juno_task/receipts/controller-boundary.json", ".juno_task/state/tasks.json"],
         "product_forbidden": private,
         "tracked_exact": [".gitignore", ".juno_task/config.json", *exact_copied, ".juno_task/config/metadata-controller.json",
-                          ".juno_task/config/task-workspace.json", ".juno_task/config/risk-policy.json",
+                          ".juno_task/config/task-workspace.json", ".juno_task/config/integration-workspace.json",
+                          ".juno_task/config/risk-policy.json",
                           ".juno_task/receipts/controller-boundary.json", ".juno_task/state/tasks.json"],
         "tracked_recursive": recursive,
         "tracked_top_level_files": top_level,
@@ -654,14 +656,16 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
             "workspace_root": answers["task_workspace_root"], "branch_prefix": answers["branch_prefix"],
             "allowed_paths": answers["allowed_paths"], "controller_private_paths": private,
             "focused_validation": answers["focused_validation"], "full_suite_validation": answers["full_suite_validation"]}
-    validate_generated_policies(metadata, task, answers["risk_policy"])
+    integration = json.loads((Path(__file__).resolve().parents[1] / "config/integration-workspace.json").read_text())
+    validate_generated_policies(metadata, task, integration, answers["risk_policy"])
     return {"schema_version": POLICY_SCHEMA, "operation": "generate-policy", "outcome": "generated_from_reviewed_answers",
             "migration_authorized": False,
             "inventory_sha256": digest(args.inventory.resolve()), "owner_answers_sha256": digest(args.answers.resolve()),
             "selected_paths": {"controller": answers["controller_path"], "integration": answers["integration_path"]},
             "owners": {"rollback": answers["rollback_owner"], "cleanup": answers["cleanup_owner"]},
             "authorities": answers["authorities"], "dispositions": answers["dispositions"],
-            "policies": {"metadata_controller": metadata, "task_workspace": task, "risk": answers["risk_policy"]}}
+            "policies": {"metadata_controller": metadata, "task_workspace": task,
+                         "integration_workspace": integration, "risk": answers["risk_policy"]}}
 
 
 def owner_template(args: argparse.Namespace) -> dict[str, Any]:
@@ -690,17 +694,21 @@ def load_sibling(name: str) -> Any:
     return module
 
 
-def validate_generated_policies(metadata: dict[str, Any], task: dict[str, Any], risk: dict[str, Any]) -> None:
+def validate_generated_policies(metadata: dict[str, Any], task: dict[str, Any],
+                                integration: dict[str, Any], risk: dict[str, Any]) -> None:
     metadata_validator = load_sibling("metadata_controller.py")
     task_validator = load_sibling("task_workspace.py")
     risk_validator = load_sibling("risk_policy.py")
     with tempfile.TemporaryDirectory(prefix="juno-migration-policy-") as temporary:
         root = Path(temporary); config = root / ".juno_task/config"; config.mkdir(parents=True)
-        paths = {"metadata-controller.json": metadata, "task-workspace.json": task, "risk-policy.json": risk}
+        paths = {"metadata-controller.json": metadata, "task-workspace.json": task,
+                 "integration-workspace.json": integration, "risk-policy.json": risk}
         for name, value in paths.items():
             (config / name).write_text(json.dumps(value))
         metadata_validator.load_policy(config / "metadata-controller.json")
         task_validator.load_config(root)
+        integration_validator = load_sibling("integration_workspace.py")
+        integration_validator.load_policy(root)
         risk_validator.load_policy(config / "risk-policy.json")
 
 

@@ -67,8 +67,10 @@ class MetadataControllerTest(unittest.TestCase):
         self.policy = mc.load_policy(POLICY)
         self.plan_path = self.temp / "plan.json"
         self.task_policy = self.temp / "reviewed/task-workspace.json"
+        self.integration_policy = self.temp / "reviewed/integration-workspace.json"
         self.risk_policy = self.temp / "reviewed/risk-policy.json"
         write(self.task_policy, (POLICY.parent / "task-workspace.json").read_text())
+        write(self.integration_policy, (POLICY.parent / "integration-workspace.json").read_text())
         write(self.risk_policy, (POLICY.parent / "risk-policy.json").read_text())
 
     def tearDown(self) -> None:
@@ -88,6 +90,7 @@ class MetadataControllerTest(unittest.TestCase):
             "output": self.plan_path,
             "policy_bundle": None,
             "task_workspace_policy": self.task_policy,
+            "integration_workspace_policy": self.integration_policy,
             "risk_policy": self.risk_policy,
         }
         values.update(changes)
@@ -126,6 +129,11 @@ class MetadataControllerTest(unittest.TestCase):
             ".juno_task/config/metadata-controller.json",
         )
         self.assertTrue((self.new_controller / ".juno_task/config/metadata-controller.json").is_file())
+        integration_policy = self.new_controller / ".juno_task/config/integration-workspace.json"
+        self.assertEqual(json.loads(integration_policy.read_text()),
+                         json.loads(self.integration_policy.read_text()))
+        self.assertIn(".juno_task/config/integration-workspace.json",
+                      command("git", "ls-files", cwd=self.new_controller).splitlines())
         risk_policy = self.new_controller / ".juno_task/config/risk-policy.json"
         self.assertTrue(risk_policy.is_file())
         self.assertEqual(json.loads(risk_policy.read_text()),
@@ -207,6 +215,7 @@ class MetadataControllerTest(unittest.TestCase):
             "policies": {
                 "metadata_controller": json.loads(json.dumps(self.policy)),
                 "task_workspace": json.loads(self.task_policy.read_text()),
+                "integration_workspace": json.loads(self.integration_policy.read_text()),
                 "risk": json.loads(self.risk_policy.read_text()),
             },
         }
@@ -218,7 +227,8 @@ class MetadataControllerTest(unittest.TestCase):
         )
         write(bundle, json.dumps(bundle_value))
         planned = mc.migration_plan(self.migration_args(
-            policy_bundle=bundle, task_workspace_policy=None, risk_policy=None), self.policy)
+            policy_bundle=bundle, task_workspace_policy=None,
+            integration_workspace_policy=None, risk_policy=None), self.policy)
         self.assertEqual(planned["reviewed_policies"]["source"]["path"], str(bundle.resolve()))
         self.assertEqual(planned["reviewed_policies"]["source"]["kind"], "policy_bundle")
         self.assertEqual(mc.policy_from_plan_bundle(self.plan_path), self.policy)
@@ -226,7 +236,8 @@ class MetadataControllerTest(unittest.TestCase):
         self.plan_path = self.temp / "missing-plan.json"
         with self.assertRaisesRegex(mc.BoundaryError, "requires --policy-bundle"):
             mc.migration_plan(self.migration_args(
-                task_workspace_policy=None, risk_policy=None), self.policy)
+                task_workspace_policy=None, integration_workspace_policy=None,
+                risk_policy=None), self.policy)
 
     def test_continuing_boundary_rejects_nested_specs_and_arbitrary_state_receipts(self) -> None:
         self.prepare()
@@ -283,6 +294,7 @@ class MetadataControllerTest(unittest.TestCase):
             "git", "rm",
             ".juno_task/config/metadata-controller.json",
             ".juno_task/config/task-workspace.json",
+            ".juno_task/config/integration-workspace.json",
             ".juno_task/config/risk-policy.json",
             ".juno_task/state/tasks.json",
             cwd=self.new_controller,
@@ -301,6 +313,7 @@ class MetadataControllerTest(unittest.TestCase):
             {
                 ".juno_task/config/metadata-controller.json",
                 ".juno_task/config/task-workspace.json",
+                ".juno_task/config/integration-workspace.json",
                 ".juno_task/config/risk-policy.json",
                 ".juno_task/state/tasks.json",
             },
