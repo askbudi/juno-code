@@ -30,6 +30,7 @@ STATE_SCHEMA = "juno_task_workspace_state.v1"
 RECORD_SCHEMA = "juno_task_workspace_record.v1"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 TASK_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+RUNTIME_PATH = ".juno_task/scripts/task_workspace.py"
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -313,6 +314,33 @@ def optional_ref_sha(repository: Path, ref: str) -> Optional[str]:
     return value if result.returncode == 0 and SHA_RE.fullmatch(value) else None
 
 
+def runtime_generation(repository: Path, target_sha: str) -> dict[str, Any]:
+    """Bind the executing lifecycle bytes to the canonical target generation."""
+    running_path = Path(__file__).resolve()
+    try:
+        running = running_path.read_bytes()
+    except OSError as exc:
+        raise TaskWorkspaceError(f"cannot read executing task runtime: {exc}") from exc
+    target = run(["git", "-C", str(repository), "show",
+                  f"{target_sha}:{RUNTIME_PATH}"], repository, check=False)
+    target_bytes = target.stdout.encode("utf-8")
+    running_sha = hashlib.sha256(running).hexdigest()
+    target_sha256 = hashlib.sha256(target_bytes).hexdigest() if target.returncode == 0 else None
+    return {"runtime_path": str(running_path), "target_path": RUNTIME_PATH,
+            "running_sha256": running_sha, "target_sha256": target_sha256,
+            "current": bool(target.returncode == 0 and running_sha == target_sha256)}
+
+
+def require_current_runtime(repository: Path, target_sha: str) -> dict[str, Any]:
+    generation = runtime_generation(repository, target_sha)
+    if not generation["current"]:
+        raise TaskWorkspaceError(
+            "managed task runtime is stale or absent from the target; run `yy scripts update --force` "
+            "from a juno-code package matching the target, then retry"
+        )
+    return generation
+
+
 def assert_no_controller_data(repository: Path, sha: str, forbidden: list[str]) -> None:
     # Exact non-recursive prefix lookups avoid enumerating a potentially huge tree.
     offenders = [root for root in forbidden if git(repository, "ls-tree", "--name-only", sha, "--", root)]
@@ -446,6 +474,7 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
     require_task(controller, task_id)
     repository = product_repository(controller, config)
     target_sha = ref_sha(repository, config["target_ref"])
+    generation = require_current_runtime(repository, target_sha)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
     worktree = worktree_path(config, task_id)
@@ -480,7 +509,8 @@ def start(controller: Path, task_id: str) -> dict[str, Any]:
                                 "base_sha": target_sha, "branch_ref": branch, "worktree": str(worktree),
                                 "manifest_identity": manifest_identity, "allowed_paths": config["allowed_paths"],
                                 "expected_paths_sha256": expected_paths_sha256,
-                                "materialization": materialization, "routing": routing}
+                                "materialization": materialization, "routing": routing,
+                                "runtime_generation": generation}
             create_receipt_sha256 = stable_sha256(creation_receipt)
             identity = {"manifest_identity": manifest_identity,
                         "create_receipt_sha256": create_receipt_sha256,
@@ -525,6 +555,9 @@ def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str,
 def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
+    configured_repository = product_repository(controller, config)
+    require_current_runtime(configured_repository,
+                            ref_sha(configured_repository, config["target_ref"]))
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
@@ -604,11 +637,15 @@ def finish(controller: Path, task_id: str) -> dict[str, Any]:
 def status(controller: Path, task_id: str) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
+    configured_repository = product_repository(controller, config)
+    current_target = optional_ref_sha(configured_repository, config["target_ref"])
+    generation = runtime_generation(configured_repository, current_target) if current_target else None
     state = read_state(controller)
     record = state["tasks"].get(task_id)
     if not record:
-        return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED", "outcome": "status"}
-    result = {**record, "outcome": "status"}
+        return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED",
+                "outcome": "status", "runtime_generation": generation}
+    result = {**record, "outcome": "status", "runtime_generation": generation}
     repository = Path(record.get("repository", ""))
     if repository.is_dir():
         current = optional_ref_sha(repository, record.get("target_ref", ""))

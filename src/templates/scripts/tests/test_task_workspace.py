@@ -46,7 +46,10 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "config", "user.name", "Test")
         (self.repository / "src").mkdir()
         (self.repository / "src/base.txt").write_text("base\n")
-        git(self.repository, "add", "src/base.txt")
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.parent.mkdir(parents=True)
+        runtime.write_bytes(SCRIPT.read_bytes())
+        git(self.repository, "add", "src/base.txt", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "product base")
         self.base = git(self.repository, "rev-parse", "HEAD")
         git(self.repository, "branch", "controller")
@@ -117,7 +120,8 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(x["worktree"], y["worktree"])
         for task_id in ("X", "Y"):
             worktree = self.workspaces / task_id
-            self.assertFalse((worktree / ".juno_task").exists())
+            self.assertTrue((worktree / task_runtime.RUNTIME_PATH).is_file())
+            self.assertFalse((worktree / ".juno_task/tasks").exists())
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.role"), "task")
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.roleBase"), self.base)
             self.assertEqual(git(worktree, "config", "--worktree", "--get", "juno.workspace.taskId"), task_id)
@@ -155,6 +159,22 @@ class TaskWorkspaceTests(unittest.TestCase):
                              for line in git(worktree, "ls-files", "-t").splitlines()))
         self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
         self.assertEqual(started["creation_receipt"]["materialization"]["mode"], "full")
+
+    def test_stale_runtime_refuses_before_creating_branch_worktree_or_state(self) -> None:
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.write_text(runtime.read_text() + "\n# newer target generation\n")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "new runtime generation")
+
+        refused = self.command("start", "X", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("managed task runtime is stale", refused.stderr)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
+                                 "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+        status = self.payload("status", "X")
+        self.assertFalse(status["runtime_generation"]["current"])
 
     def test_sparse_disable_and_materialization_failures_leave_no_partial_workspace(self) -> None:
         original_run = task_runtime.run
