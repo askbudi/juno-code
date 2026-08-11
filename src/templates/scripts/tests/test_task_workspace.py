@@ -61,7 +61,27 @@ class TaskWorkspaceTests(unittest.TestCase):
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.parent.mkdir(parents=True)
         runtime.write_bytes(SCRIPT.read_bytes())
-        git(self.repository, "add", "src/base.txt", "optional/base.txt", task_runtime.RUNTIME_PATH)
+        generated_declaration = self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION
+        generated_declaration.parent.mkdir(parents=True)
+        generated_declaration.write_text(json.dumps({
+            "schema_version": task_runtime.GENERATED_OUTPUT_SCHEMA,
+            "source": "juno-code/unadmitted-canonical.txt",
+            "destinations": [".agents/unadmitted-output.txt"],
+        }) + "\n")
+        managed_declaration = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        managed_declaration.parent.mkdir(parents=True)
+        managed_declaration.write_text(json.dumps({
+            "schemaVersion": 1, "admissionOutputs": [], "assets": [],
+        }) + "\n")
+        unadmitted_source = self.repository / "juno-code/unadmitted-canonical.txt"
+        unadmitted_output = self.repository / ".agents/unadmitted-output.txt"
+        unadmitted_source.parent.mkdir(parents=True, exist_ok=True)
+        unadmitted_output.parent.mkdir(parents=True, exist_ok=True)
+        unadmitted_source.write_text("unadmitted base\n")
+        unadmitted_output.write_text("unadmitted base\n")
+        git(self.repository, "add", "src/base.txt", "optional/base.txt", task_runtime.RUNTIME_PATH,
+            task_runtime.GENERATED_OUTPUT_DECLARATION, task_runtime.MANAGED_OUTPUT_DECLARATION,
+            "juno-code/unadmitted-canonical.txt", ".agents/unadmitted-output.txt")
         git(self.repository, "commit", "-m", "product base")
         self.base = git(self.repository, "rev-parse", "HEAD")
         git(self.repository, "branch", "controller")
@@ -122,6 +142,107 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "add", "src/target.txt")
         git(self.repository, "commit", "-m", "advance target")
         return git(self.repository, "rev-parse", "HEAD")
+
+    def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
+        generated_source = "juno-code/canonical/implement.md"
+        generated_destinations = [
+            "juno-code/generated/implement.md",
+            ".agents/skills/ralph-loop/references/implement.md",
+            ".claude/skills/ralph-loop/references/implement.md",
+            ".pi/skills/ralph-loop/references/implement.md",
+        ]
+        managed = {
+            "juno-code/src/templates/scripts/migration_inventory.py":
+                ".juno_task/scripts/migration_inventory.py",
+            "juno-code/src/templates/scripts/controller_workspace.py":
+                ".juno_task/scripts/controller_workspace.py",
+        }
+        declaration = self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.GENERATED_OUTPUT_SCHEMA,
+            "source": generated_source, "destinations": generated_destinations,
+        }) + "\n")
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        manifest.write_text(json.dumps({
+            "schemaVersion": 1,
+            "assets": [{"source": "scripts/migration_inventory.py", "destination": managed[
+                "juno-code/src/templates/scripts/migration_inventory.py"]}],
+            "admissionOutputs": [{"source": "scripts/controller_workspace.py", "destination": managed[
+                "juno-code/src/templates/scripts/controller_workspace.py"]}],
+        }) + "\n")
+        files = [generated_source, *generated_destinations, *managed.keys(), *managed.values()]
+        for relative in files:
+            if relative == omit:
+                continue
+            target = self.repository / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("contract base\n")
+        git(self.repository, "add", ".")
+        git(self.repository, "commit", "-m", "declare generated output fixtures")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["allowed_paths"].append("juno-code")
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+        return {"source": generated_source, "destinations": generated_destinations,
+                "managed_sources": list(managed), "managed_destinations": list(managed.values())}
+
+    def test_declared_generator_and_managed_outputs_are_hash_bound_and_queue_at_byte_parity(self) -> None:
+        fixtures = self.install_declared_output_fixtures()
+        started = self.payload("start", "X")
+        admission = started["creation_receipt"]["generated_output_admission"]
+        exact_outputs = [*fixtures["destinations"], *fixtures["managed_destinations"]]
+        admitted = started["creation_receipt"]["allowed_paths"]
+        self.assertTrue(all(task_runtime.path_within(path, admitted) for path in exact_outputs))
+        self.assertTrue(all(path in admitted for path in exact_outputs if path.startswith(".")))
+        self.assertTrue(all(len(row["base_source_sha256"]) == 64 for row in admission["bindings"]))
+        worktree = self.workspaces / "X"
+        changed = [fixtures["source"], *fixtures["destinations"],
+                   *fixtures["managed_sources"], *fixtures["managed_destinations"]]
+        for relative in changed:
+            (worktree / relative).write_text("contract updated\n")
+        git(worktree, "add", *changed)
+        git(worktree, "commit", "-m", "update declared outputs at parity")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        self.assertEqual(queued["changed_paths"], sorted(changed))
+
+    def test_changed_canonical_source_without_generated_outputs_refuses_finish(self) -> None:
+        fixtures = self.install_declared_output_fixtures()
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        source = fixtures["source"]
+        (worktree / source).write_text("canonical changed without generation\n")
+        git(worktree, "add", source)
+        git(worktree, "commit", "-m", "omit generated outputs")
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("generated-output byte parity failed", failed.stderr)
+        self.assertIn(".agents/skills/ralph-loop/references/implement.md", failed.stderr)
+
+    def test_declared_output_omission_is_caught_at_start_with_exact_path(self) -> None:
+        missing = ".pi/skills/ralph-loop/references/implement.md"
+        self.install_declared_output_fixtures(omit=missing)
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("declared generated outputs are missing at task start", failed.stderr)
+        self.assertIn(missing, failed.stderr)
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def test_unrelated_dot_directory_change_is_not_admitted_by_declared_outputs(self) -> None:
+        self.install_declared_output_fixtures()
+        self.payload("start", "X")
+        self.commit_task("X", ".agents/skills/unrelated/SKILL.md")
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("disallowed paths: .agents/skills/unrelated/SKILL.md", failed.stderr)
+
+    def test_unchanged_generated_contracts_do_not_expand_finish_requirements(self) -> None:
+        self.install_declared_output_fixtures()
+        self.payload("start", "X")
+        self.commit_task("X")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["changed_paths"], ["src/feature.txt"])
 
     def test_concurrent_tasks_share_frozen_base_without_controller_data(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:

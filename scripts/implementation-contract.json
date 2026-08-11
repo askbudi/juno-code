@@ -1,0 +1,15 @@
+{
+  "schema_version": "juno_generated_output_contract.v1",
+  "source": "juno-code/src/templates/skills/canonical/ralph-loop/references/implement.md",
+  "destinations": [
+    "juno-code/src/templates/skills/claude/ralph-loop/references/implement.md",
+    "juno-code/src/templates/skills/codex/ralph-loop/references/implement.md",
+    "juno-code/src/templates/skills/pi/ralph-loop/references/implement.md",
+    "juno-code/.claude/skills/ralph-loop/references/implement.md",
+    "juno-code/.agents/skills/ralph-loop/references/implement.md",
+    "juno-code/.pi/skills/ralph-loop/references/implement.md",
+    ".claude/skills/ralph-loop/references/implement.md",
+    ".agents/skills/ralph-loop/references/implement.md",
+    ".pi/skills/ralph-loop/references/implement.md"
+  ]
+}

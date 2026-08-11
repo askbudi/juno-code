@@ -27,6 +27,34 @@ describe('Bolt task workspace managed runtime', () => {
     }
   });
 
+  it('declares exact generator and managed parity outputs without admitting their roots', () => {
+    const policy = JSON.parse(
+      readFileSync(resolve(repository, 'juno-code/src/templates/config/task-workspace.json'), 'utf8'),
+    ) as { allowed_paths: string[] };
+    const generated = JSON.parse(
+      readFileSync(resolve(repository, 'juno-code/scripts/implementation-contract.json'), 'utf8'),
+    ) as { source: string; destinations: string[] };
+    const managed = JSON.parse(
+      readFileSync(resolve(repository, 'juno-code/src/templates/managed-assets.json'), 'utf8'),
+    ) as { admissionOutputs: Array<{ source: string; destination: string }> };
+
+    expect(generated.source).toContain('/canonical/');
+    expect(generated.destinations).toEqual(
+      expect.arrayContaining([
+        '.agents/skills/ralph-loop/references/implement.md',
+        '.claude/skills/ralph-loop/references/implement.md',
+        '.pi/skills/ralph-loop/references/implement.md',
+      ]),
+    );
+    expect(managed.admissionOutputs).toContainEqual({
+      source: 'scripts/controller_workspace.py',
+      destination: '.juno_task/scripts/controller_workspace.py',
+    });
+    expect(policy.allowed_paths).not.toEqual(
+      expect.arrayContaining(['.agents', '.claude', '.pi', '.juno_task/scripts']),
+    );
+  });
+
   it('ships one small standalone engine with real-Git contract tests', () => {
     const runtime = resolve(repository, 'juno-code/src/templates/scripts/task_workspace.py');
     const tests = resolve(repository, 'juno-code/src/templates/scripts/tests/test_task_workspace.py');

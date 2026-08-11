@@ -45,13 +45,20 @@ function operationalRetiredReferences(file: string, text: string): string[] {
 
 describe('Bolt shipped hard cut', () => {
   it('does not package retired executors or configuration', () => {
-    const manifest = readFileSync(join(sourceRoot, 'managed-assets.json'), 'utf8');
+    const manifest = JSON.parse(readFileSync(join(sourceRoot, 'managed-assets.json'), 'utf8')) as {
+      assets: Array<{ source: string }>;
+      admissionOutputs: Array<{ source: string; destination: string }>;
+    };
     for (const relative of retired) {
       expect(existsSync(join(sourceRoot, relative)), relative).toBe(false);
-      expect(manifest, relative).not.toContain(relative);
+      expect(manifest.assets.map((asset) => asset.source), relative).not.toContain(relative);
     }
     expect(existsSync(join(sourceRoot, 'scripts/controller_workspace.py'))).toBe(true);
-    expect(manifest).not.toContain('scripts/controller_workspace.py');
+    expect(manifest.assets.map((asset) => asset.source)).not.toContain('scripts/controller_workspace.py');
+    expect(manifest.admissionOutputs).toContainEqual({
+      source: 'scripts/controller_workspace.py',
+      destination: '.juno_task/scripts/controller_workspace.py',
+    });
   });
 
   it('ships only Bolt task/merge guidance', () => {

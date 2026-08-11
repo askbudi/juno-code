@@ -32,6 +32,9 @@ RECORD_SCHEMA = "juno_task_workspace_record.v1"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 TASK_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 RUNTIME_PATH = ".juno_task/scripts/task_workspace.py"
+GENERATED_OUTPUT_DECLARATION = "juno-code/scripts/implementation-contract.json"
+MANAGED_OUTPUT_DECLARATION = "juno-code/src/templates/managed-assets.json"
+GENERATED_OUTPUT_SCHEMA = "juno_generated_output_contract.v1"
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -369,6 +372,128 @@ def path_within(path: str, roots: list[str]) -> bool:
     return any(path == root or path.startswith(root + "/") for root in roots)
 
 
+def target_blob(repository: Path, target_sha: str, path: str) -> bytes | None:
+    """Read one exact tracked blob without trusting the controller checkout."""
+    normalized_relative(path, "generated output path")
+    result = subprocess.run(
+        ["git", "-C", str(repository), "show", f"{target_sha}:{path}"],
+        cwd=repository, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def target_json(repository: Path, target_sha: str, path: str) -> tuple[dict[str, Any], str]:
+    data = target_blob(repository, target_sha, path)
+    if data is None:
+        raise TaskWorkspaceError(f"generated-output declaration is missing: {path}")
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(f"invalid generated-output declaration {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise TaskWorkspaceError(f"invalid generated-output declaration {path}: expected object")
+    return value, hashlib.sha256(data).hexdigest()
+
+
+def derived_output_admission(repository: Path, target_sha: str,
+                             admitted_paths: list[str]) -> tuple[list[str], dict[str, Any]]:
+    """Expand admitted canonical sources to exact, declared parity destinations."""
+    generated, generated_sha = target_json(repository, target_sha, GENERATED_OUTPUT_DECLARATION)
+    if (set(generated) != {"schema_version", "source", "destinations"}
+            or generated.get("schema_version") != GENERATED_OUTPUT_SCHEMA
+            or not isinstance(generated.get("destinations"), list)):
+        raise TaskWorkspaceError(f"invalid generated-output declaration {GENERATED_OUTPUT_DECLARATION}")
+    source = normalized_relative(generated.get("source"), "generated source")
+    destinations = [normalized_relative(item, "generated destination")
+                    for item in generated["destinations"]]
+    if not destinations or len(set(destinations)) != len(destinations) or source in destinations:
+        raise TaskWorkspaceError(f"invalid generated-output declaration {GENERATED_OUTPUT_DECLARATION}")
+    pairs: list[tuple[str, str, str, str]] = [
+        (source, destination, "generator", GENERATED_OUTPUT_DECLARATION)
+        for destination in destinations
+    ]
+
+    managed, managed_sha = target_json(repository, target_sha, MANAGED_OUTPUT_DECLARATION)
+    if managed.get("schemaVersion") != 1 or not isinstance(managed.get("assets"), list):
+        raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
+    rows = [*managed["assets"], *managed.get("admissionOutputs", [])]
+    if not isinstance(managed.get("admissionOutputs", []), list):
+        raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("source"), str) or not isinstance(row.get("destination"), str):
+            raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
+        managed_source = normalized_relative(
+            f"juno-code/src/templates/{row['source']}", "managed source")
+        destination = normalized_relative(row["destination"], "managed destination")
+        pairs.append((managed_source, destination, "managed", MANAGED_OUTPUT_DECLARATION))
+
+    declared: dict[tuple[str, str], tuple[str, str]] = {}
+    for pair_source, destination, kind, declaration in pairs:
+        if path_within(pair_source, admitted_paths):
+            declared[(pair_source, destination)] = (kind, declaration)
+    missing: list[str] = []
+    bindings: list[dict[str, str]] = []
+    expanded = list(admitted_paths)
+    for (pair_source, destination), (kind, declaration) in sorted(declared.items()):
+        source_bytes = target_blob(repository, target_sha, pair_source)
+        destination_bytes = target_blob(repository, target_sha, destination)
+        if source_bytes is None:
+            missing.append(pair_source)
+        if destination_bytes is None:
+            missing.append(destination)
+        if source_bytes is None or destination_bytes is None:
+            continue
+        if not path_within(destination, expanded):
+            expanded.append(destination)
+        bindings.append({
+            "source": pair_source, "destination": destination, "kind": kind,
+            "declaration": declaration,
+            "base_source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            "base_destination_sha256": hashlib.sha256(destination_bytes).hexdigest(),
+        })
+    if missing:
+        raise TaskWorkspaceError(
+            "declared generated outputs are missing at task start: " + ", ".join(sorted(set(missing)))
+        )
+    receipt = {
+        "schema_version": "juno_task_generated_output_admission.v1",
+        "declarations": {
+            GENERATED_OUTPUT_DECLARATION: generated_sha,
+            MANAGED_OUTPUT_DECLARATION: managed_sha,
+        },
+        "bindings": bindings,
+    }
+    return expanded, receipt
+
+
+def verify_derived_output_parity(repository: Path, tip_sha: str,
+                                 admission: Any, changed: list[str]) -> None:
+    if (not isinstance(admission, dict)
+            or admission.get("schema_version") != "juno_task_generated_output_admission.v1"
+            or not isinstance(admission.get("bindings"), list)):
+        raise TaskWorkspaceError("task creation receipt has no frozen generated-output admission")
+    changed_set = set(changed)
+    drift: list[str] = []
+    for binding in admission["bindings"]:
+        if not isinstance(binding, dict) or set(binding) != {
+                "source", "destination", "kind", "declaration",
+                "base_source_sha256", "base_destination_sha256"}:
+            raise TaskWorkspaceError("task generated-output admission is invalid")
+        source = normalized_relative(binding["source"], "frozen generated source")
+        destination = normalized_relative(binding["destination"], "frozen generated destination")
+        if source not in changed_set and destination not in changed_set:
+            continue
+        source_bytes = target_blob(repository, tip_sha, source)
+        destination_bytes = target_blob(repository, tip_sha, destination)
+        if source_bytes is None or destination_bytes is None or source_bytes != destination_bytes:
+            drift.append(destination)
+    if drift:
+        raise TaskWorkspaceError(
+            "generated-output byte parity failed: " + ", ".join(sorted(set(drift)))
+        )
+
+
 def product_repository(controller: Path, config: dict[str, Any]) -> Path:
     return exact_root(controller / config["repository"], "configured product repository")
 
@@ -561,7 +686,10 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
         allowed_paths, selected_entries = selected_task_paths(
             config, repository, target_sha, creation_receipt.get("requested_paths", [])
         )
-        if allowed_paths != creation_receipt.get("allowed_paths"):
+        allowed_paths, generated_output_admission = derived_output_admission(
+            repository, target_sha, allowed_paths)
+        if (allowed_paths != creation_receipt.get("allowed_paths")
+                or generated_output_admission != creation_receipt.get("generated_output_admission")):
             return False
         materialization = require_full_task_materialization(
             worktree, target_sha, allowed_paths, selected_entries
@@ -595,6 +723,8 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
     target_sha = ref_sha(repository, config["target_ref"])
     requested_paths = requested_paths or []
     allowed_paths, selected_entries = selected_task_paths(config, repository, target_sha, requested_paths)
+    allowed_paths, generated_output_admission = derived_output_admission(
+        repository, target_sha, allowed_paths)
     generation = require_current_runtime(repository, target_sha)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
@@ -635,7 +765,8 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                                 "requested_paths": requested_paths, "selected_entries": selected_entries,
                                 "expected_paths_sha256": expected_paths_sha256,
                                 "materialization": materialization, "routing": routing,
-                                "runtime_generation": generation}
+                                "runtime_generation": generation,
+                                "generated_output_admission": generated_output_admission}
             create_receipt_sha256 = stable_sha256(creation_receipt)
             identity = {"manifest_identity": manifest_identity,
                         "create_receipt_sha256": create_receipt_sha256,
@@ -720,12 +851,17 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     if not changed:
         raise TaskWorkspaceError("task has no product diff from its exact recorded base")
     forbidden = [path for path in changed if path_within(path, config["controller_private_paths"])]
-    frozen_allowed = record.get("creation_receipt", {}).get("allowed_paths")
+    creation_receipt = record.get("creation_receipt", {})
+    if stable_sha256(creation_receipt) != record.get("workspace_identity", {}).get("create_receipt_sha256"):
+        raise TaskWorkspaceError("task creation receipt identity drifted")
+    frozen_allowed = creation_receipt.get("allowed_paths")
     if not isinstance(frozen_allowed, list) or not frozen_allowed:
         raise TaskWorkspaceError("task creation receipt has no frozen allowed paths")
     outside = [path for path in changed if not path_within(path, frozen_allowed)]
     if forbidden or outside:
         raise TaskWorkspaceError(f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}")
+    verify_derived_output_parity(
+        repository, head, creation_receipt.get("generated_output_admission"), changed)
     validations = []
     for row in config["focused_validation"]:
         cwd = (worktree / row["cwd"]).resolve()
