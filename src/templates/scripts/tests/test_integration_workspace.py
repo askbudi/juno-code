@@ -590,6 +590,115 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertEqual(row["prior_generation_classification"],
                          "receipt_bound_installed_template")
 
+    def test_obsolete_exact_generation_restored_by_bootstrap_is_reactivated(self) -> None:
+        # The admitted middle generation installed "new one", but a stale
+        # bootstrap later restored bytes that an older successful receipt proves
+        # were the exact managed source at self.previous.
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        historical = {
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh",
+            "outcome": "completed",
+            "target_sha": self.previous,
+            "scripts": [{
+                "path": ".juno_task/scripts/one.py",
+                "classification": "exact",
+                "source_sha256": runtime.managed_sha256(b"old one\n"),
+                "actual_sha256": runtime.managed_sha256(b"old one\n"),
+            }],
+        }
+        (receipt_root / "100-old.json").write_text(json.dumps(historical) + "\n")
+        git(self.repo, "commit", "--allow-empty", "-m", "unchanged next generation")
+        final = git(self.repo, "rev-parse", "HEAD")
+        runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.target, final, task_id="installed-middle")
+        installed = self.controller / ".juno_task/scripts/one.py"
+        installed.write_text("old one\n")
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.target, final, task_id="obsolete-bootstrap")
+
+        self.assertEqual(installed.read_text(), "new one\n")
+        row = next(item for item in result["scripts"] if item["path"].endswith("one.py"))
+        self.assertEqual(row["outcome"], "updated")
+        self.assertEqual(row["classification"], "exact")
+        self.assertEqual(row["prior_generation_classification"],
+                         "receipt_bound_obsolete_generation")
+        self.assertEqual(row["prior_generation_target_sha"], self.previous)
+        self.assertEqual(Path(row["prior_generation_receipt"]),
+                         (receipt_root / "100-old.json").resolve())
+
+    def test_failed_or_incomplete_receipts_cannot_authorize_obsolete_generation(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        source_hash = runtime.managed_sha256(b"old one\n")
+        for outcome in ("failed", "running"):
+            with self.subTest(outcome=outcome):
+                receipt = receipt_root / f"{outcome}.json"
+                receipt.write_text(json.dumps({
+                    "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+                    "operation": "refresh", "outcome": outcome,
+                    "target_sha": self.previous,
+                    "scripts": [{"path": ".juno_task/scripts/one.py", "classification": "exact",
+                                 "source_sha256": source_hash, "actual_sha256": source_hash}],
+                }) + "\n")
+                self.assertIsNone(runtime.managed_obsolete_generation_binding(
+                    self.controller, self.repo, ".juno_task/scripts/one.py",
+                    b"old one\n", self.target))
+                receipt.unlink()
+
+    def test_receipt_target_outside_admitted_ancestry_cannot_authorize_replacement(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        tree = git(self.repo, "rev-parse", f"{self.previous}^{{tree}}")
+        unrelated = git(self.repo, "commit-tree", tree, "-m", "unrelated exact source")
+        source_hash = runtime.managed_sha256(b"old one\n")
+        (receipt_root / "unrelated.json").write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh", "outcome": "completed", "target_sha": unrelated,
+            "scripts": [{"path": ".juno_task/scripts/one.py", "classification": "exact",
+                         "source_sha256": source_hash, "actual_sha256": source_hash}],
+        }) + "\n")
+
+        self.assertIsNone(runtime.managed_obsolete_generation_binding(
+            self.controller, self.repo, ".juno_task/scripts/one.py",
+            b"old one\n", self.target))
+
+    def test_preserved_customization_receipt_row_never_authorizes_replacement(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        source_hash = runtime.managed_sha256(b"old one\n")
+        (receipt_root / "preserved.json").write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh", "outcome": "completed", "target_sha": self.previous,
+            "scripts": [{"path": ".juno_task/scripts/one.py",
+                         "classification": "preserved_customization",
+                         "source_sha256": source_hash, "actual_sha256": source_hash}],
+        }) + "\n")
+
+        self.assertIsNone(runtime.managed_obsolete_generation_binding(
+            self.controller, self.repo, ".juno_task/scripts/one.py",
+            b"old one\n", self.target))
+
+    def test_obsolete_receipt_cannot_authorize_bytes_that_do_not_match_git_source(self) -> None:
+        receipt_root = self.controller / runtime.MANAGED_RECEIPT_ROOT
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        customized = self.controller / ".juno_task/scripts/one.py"
+        customized.write_text("genuine owner customization\n")
+        forged_hash = runtime.managed_sha256(customized.read_bytes())
+        (receipt_root / "forged.json").write_text(json.dumps({
+            "schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+            "operation": "refresh", "outcome": "completed", "target_sha": self.previous,
+            "scripts": [{"path": ".juno_task/scripts/one.py", "classification": "exact",
+                         "source_sha256": forged_hash, "actual_sha256": forged_hash}],
+        }) + "\n")
+
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "customized managed runtime"):
+            runtime.managed_runtime_refresh(
+                self.controller, self.repo, self.previous, self.target, task_id="forged-history")
+        self.assertEqual(customized.read_text(), "genuine owner customization\n")
+
     def test_receipt_binding_never_authorizes_unrelated_customization(self) -> None:
         customized = self.controller / ".juno_task/scripts/one.py"
         customized.write_text("genuine owner customization\n")

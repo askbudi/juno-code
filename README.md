@@ -123,19 +123,39 @@ exact target commit. The tracked task-workspace policy is updated by a top-level
 three-way merge: target additions are admitted, controller-specific unchanged
 fields survive, and overlapping or uncommitted policy edits refuse. A customized
 script is preserved when its packaged source is unchanged across the transition;
-a changed or retired customized source refuses before mutation. Generation and
-doctor receipts classify exact files separately from preserved customizations,
-bind both preserved actual and packaged-source hashes, and detect later drift.
-The operation announces a unique `/tmp/yy-managed-runtime-refresh-*.log`, records
-terminal timing in a hash-bound receipt, and runs its doctor before returning
-terminal evidence. Inspect or recover an interrupted generation explicitly:
+a changed or retired customized source refuses before mutation. Fields from a
+completed local refresh receipt can identify a stale package/bootstrap generation
+only when an `exact` row's bytes equal immutable Git source from a commit in the
+admitted target ancestry. Failed or incomplete receipts, out-of-ancestry targets,
+and preserved-customization rows grant no replacement authority. This is local
+corroboration, not cryptographic or signature-based receipt authenticity.
+Generation and doctor receipts classify exact files separately from
+preserved customizations, bind both preserved actual and packaged-source hashes,
+and detect later drift. The operation announces a unique
+`/tmp/yy-managed-runtime-refresh-*.log`, records terminal timing in a local receipt
+and returns its content hash, then runs its doctor before returning terminal
+evidence. Inspect or recover an interrupted generation explicitly:
 
 ```bash
 yy integration runtime-doctor [--target-sha FULL_SHA]
 yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 ```
 
-Use receipt-bound operations for topology repair and publication:
+If the installed controller launcher is itself an obsolete generation, use the
+runtime in the clean, detached, exact-target integration owner rather than editing
+ignored files directly:
+
+```bash
+python3 /absolute/integration-owner/.juno_task/scripts/integration_workspace.py \
+  --controller /absolute/controller runtime-refresh \
+  --previous-sha FULL_PREVIOUS_SHA --target-sha FULL_TARGET_SHA
+```
+
+The command applies the same receipt-field/Git-source corroboration, preserves
+unmatched owner customizations, writes a terminal receipt, and doctors the
+resulting generation. Supply the full previous and target SHAs from the pending
+merge evidence and use an exact-target runtime containing this recovery
+implementation. Use receipt-bound operations for topology repair and publication:
 
 ```bash
 yy integration repair --dry-run

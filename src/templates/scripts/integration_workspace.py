@@ -203,6 +203,56 @@ def managed_tracked_policy_dirty(controller: Path) -> bool:
     return bool(dirty)
 
 
+def managed_obsolete_generation_binding(controller: Path, repository: Path, relative: str,
+                                          current: bytes, target_sha: str) -> dict[str, str] | None:
+    """Recognize bytes previously installed as an exact managed generation.
+
+    A package/bootstrap process can regress ignored controller scripts without
+    updating generation.json. Completed local receipt fields are eligible only
+    when an exact row's bytes equal immutable Git source in the admitted target
+    ancestry. This corroborates the fields; it does not authenticate or sign the
+    receipt. Preserved-customization rows are never eligible.
+    """
+    receipts = managed_safe_path(controller, MANAGED_RECEIPT_ROOT)
+    if not receipts.is_dir() or receipts.is_symlink():
+        return None
+    current_hash = managed_sha256(current)
+    for receipt_path in sorted(receipts.glob("*.json"), reverse=True):
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            continue
+        try:
+            if receipt_path.stat().st_size > 1024 * 1024:
+                continue
+            receipt = json.loads(receipt_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        receipt_target = receipt.get("target_sha")
+        if (receipt.get("schema_version") != MANAGED_RUNTIME_SCHEMA
+                or receipt.get("operation") != "refresh" or receipt.get("outcome") != "completed"
+                or not isinstance(receipt_target, str) or not MANAGED_SHA_RE.fullmatch(receipt_target)
+                or not isinstance(receipt.get("scripts"), list)):
+            continue
+        if managed_run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                        receipt_target, target_sha], repository, check=False).returncode:
+            continue
+        for row in receipt["scripts"]:
+            if (not isinstance(row, dict) or row.get("path") != relative
+                    or row.get("classification") != "exact"
+                    or row.get("actual_sha256") != current_hash
+                    or row.get("source_sha256") != current_hash):
+                continue
+            try:
+                source = managed_source_bytes(repository, receipt_target, relative)
+            except ManagedRuntimeError:
+                continue
+            if source == current:
+                return {"classification": "receipt_bound_obsolete_generation",
+                        "target_sha": receipt_target, "receipt_path": str(receipt_path.resolve())}
+    return None
+
+
 def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, target_sha: str) -> dict[str, Any]:
     controller = controller.resolve(); repository = repository.resolve()
     previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
@@ -234,7 +284,9 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
         new = managed_source_bytes(repository, target_sha, relative) if relative in scripts else None
         current = destination.read_bytes() if destination.exists() else None
         classification = "exact"
-        receipt_bound_prior = False
+        prior_binding = (managed_obsolete_generation_binding(
+            controller, repository, relative, current, target_sha)
+            if current is not None and new is not None and current != new else None)
         if new is None:
             if current is not None and current != old:
                 raise ManagedRuntimeError(f"customized retired managed runtime is preserved: {relative}")
@@ -252,14 +304,14 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
             if receipt_bound_prior:
                 prior_template = managed_source_bytes(
                     repository, previous_sha, previous_assets[relative])
-                receipt_bound_prior = prior_template == current
-            if old != new and not receipt_bound_prior:
+                if prior_template == current:
+                    prior_binding = {"classification": "receipt_bound_installed_template",
+                                     "target_sha": previous_sha}
+            if old != new and prior_binding is None:
                 raise ManagedRuntimeError(f"customized managed runtime overlaps changed source: {relative}")
-            if receipt_bound_prior:
-                # The prior generation bound these exact bytes and immutable
-                # package source proves they were an installed prior template,
-                # not arbitrary owner customization. The admitted transition
-                # may therefore replace them exactly.
+            if prior_binding is not None:
+                # Exact receipt/source history proves these are managed bytes,
+                # including an obsolete generation restored by later bootstrap.
                 outcome = "updated"
                 classification = "exact"
                 actual = new
@@ -274,7 +326,11 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
             actual = new
         actions.append({"path": relative, "classification": classification,
                         "prior_generation_classification": (
-                            "receipt_bound_installed_template" if receipt_bound_prior else None),
+                            prior_binding.get("classification") if prior_binding else None),
+                        "prior_generation_target_sha": (
+                            prior_binding.get("target_sha") if prior_binding else None),
+                        "prior_generation_receipt": (
+                            prior_binding.get("receipt_path") if prior_binding else None),
                         "before_sha256": managed_sha256(current) if current is not None else None,
                         "actual_sha256": managed_sha256(actual) if actual is not None else None,
                         "source_sha256": managed_sha256(new) if new is not None else None, "bytes": new,
@@ -299,7 +355,9 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                 entry.get("actual_sha256") if isinstance(entry, dict)
                 and entry.get("source_sha256") == row["source_sha256"]
                 and entry.get("classification") in {"exact", "preserved_customization"} else None)
-            if bound_actual != row["before_sha256"]:
+            if (bound_actual != row["before_sha256"]
+                    and row.get("prior_generation_classification")
+                    != "receipt_bound_obsolete_generation"):
                 raise ManagedRuntimeError(f"existing managed generation drift: {row['path']}")
     previous_policy = managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH)
     target_policy = managed_source_json(repository, target_sha, MANAGED_POLICY_PATH)
