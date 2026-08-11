@@ -75,7 +75,10 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain(
       'a merely compatible but older installed v2 is stale',
     );
-    for (const prompt of [dictionary.migrate_juno_code_v1_to_v2, dictionary.migrate_juno_kanban_v1_to_v2]) {
+    for (const prompt of [
+      dictionary.migrate_juno_code_v1_to_v2,
+      dictionary.migrate_juno_kanban_v1_to_v2,
+    ]) {
       expect(prompt).toContain('548d1e6763bb6c5b3f2b27a63398faf225ebbb1c');
       expect(prompt).toContain('2.0.5');
       expect(prompt).toContain('ruamel.yaml');
@@ -91,9 +94,7 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('juno_kanban-2.0.6');
     expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('ruamel.yaml');
     expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('--no-deps');
-    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain(
-      'before any canonical board access',
-    );
+    expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain('before any canonical board access');
     const reviewPrompt = await fs.readFile(
       path.join(projectDir, '.juno_task/prompts/review_commit_parallel_runner.md'),
       'utf8',
@@ -193,6 +194,138 @@ describe('ManagedProjectAssets', () => {
 
     const unchanged = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(unchanged.unchanged).toHaveLength(MANAGED_ASSETS.length);
+  });
+
+  it('distributes the canonical pre-implementation dependency hydration contract', async () => {
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const installedWiki = await fs.readFile(
+      path.join(projectDir, '.juno_task/wiki/task_dependency_hydration.md'),
+      'utf8',
+    );
+    const sourceWiki = await fs.readFile(
+      path.join(process.cwd(), 'src/templates/wiki/task_dependency_hydration.md'),
+      'utf8',
+    );
+    expect(installedWiki).toBe(sourceWiki);
+
+    for (const required of [
+      'focused_validation[].cwd',
+      'Do not assume each root is Node',
+      'Never copy or symlink a',
+      'Node 22',
+      'node_modules` is absent',
+      'identity differs from the current',
+      '["npm", "ci"]',
+      '/tmp") / f"yy-task-{task_id}-npm-ci.log"',
+      'JUNO_DEPENDENCY_TIMEOUT_SECONDS',
+      'footer(f"FAILED npm ci exit={process.returncode}")',
+      'git status --short',
+      'stop before implementation',
+      'exact command above',
+      '`cjM2Uc`',
+    ]) {
+      expect(installedWiki).toContain(required);
+    }
+
+    const taskStartPrompt = await fs.readFile(
+      path.join(projectDir, '.juno_task/prompts/new_task_workflow.md'),
+      'utf8',
+    );
+    expect(taskStartPrompt).toContain(
+      'Immediately after start and before editing or testing, follow the exact-lock, validation-cwd-aware hydration contract',
+    );
+    expect(taskStartPrompt).toContain('Stop before implementation if provisioning');
+
+    for (const relative of [
+      'src/templates/prompts/clean_worktree.md',
+      'src/templates/prompts/run_workflow.md',
+      'src/templates/prompts/migrate_juno_code_v1_to_v2.md',
+      'src/templates/controller-agent/AGENTS.md',
+      'src/templates/controller-agent/CLAUDE.md',
+      'src/templates/wiki/git_worktree_lifecycle.md',
+    ]) {
+      const instruction = await fs.readFile(path.join(process.cwd(), relative), 'utf8');
+      expect(instruction, relative).toContain('task_dependency_hydration.md');
+      expect(instruction, relative).toMatch(/before\s+(?:editing|any edit|edits)/i);
+      expect(instruction, relative).toMatch(/stop before implementation|stops on provisioning/i);
+    }
+  });
+
+  it('runs the documented Juno Code command for fresh, lock-changed, and failed installs', async () => {
+    const wiki = await fs.readFile(
+      path.join(process.cwd(), 'src/templates/wiki/task_dependency_hydration.md'),
+      'utf8',
+    );
+    const command = wiki.match(/```bash\n([\s\S]*?)\n```/)?.[1];
+    expect(command).toBeTruthy();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-hydration-command-'));
+    try {
+      const bin = path.join(root, 'bin');
+      const count = path.join(root, 'npm-count');
+      await fs.ensureDir(bin);
+      await fs.writeFile(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
+      await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\nbin/\nnpm-count\n');
+      await fs.writeFile(path.join(bin, 'node'), '#!/bin/sh\necho 22.22.3\n');
+      await fs.writeFile(
+        path.join(bin, 'npm'),
+        '#!/bin/sh\necho run >> "$FAKE_NPM_COUNT"\nmkdir -p node_modules\necho fake npm ci\nexit "${FAKE_NPM_FAIL:-0}"\n',
+      );
+      await fs.chmod(path.join(bin, 'node'), 0o755);
+      await fs.chmod(path.join(bin, 'npm'), 0o755);
+      spawnSync('git', ['init', '-q'], { cwd: root });
+      spawnSync('git', ['add', '.gitignore', 'package-lock.json'], { cwd: root });
+      spawnSync(
+        'git',
+        [
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          'commit',
+          '-qm',
+          'fixture',
+        ],
+        { cwd: root },
+      );
+      const runHydration = (extra: Record<string, string> = {}) =>
+        spawnSync('bash', ['-c', command!.replace('TASK_ID=TASK_ID', 'TASK_ID=HYDRATIONTEST')], {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            FAKE_NPM_COUNT: count,
+            ...extra,
+          },
+        });
+
+      const fresh = runHydration();
+      expect(fresh.status).toBe(0);
+      expect(fresh.stdout).toContain('[dependency-hydration] OK npm ci complete');
+      expect((await fs.readFile(count, 'utf8')).trim().split('\n')).toHaveLength(1);
+      expect(spawnSync('git', ['status', '--short'], { cwd: root, encoding: 'utf8' }).stdout).toBe(
+        '',
+      );
+
+      await fs.writeFile(
+        path.join(root, 'package-lock.json'),
+        '{"lockfileVersion":3,"changed":true}\n',
+      );
+      const changed = runHydration();
+      expect(changed.status).toBe(0);
+      expect((await fs.readFile(count, 'utf8')).trim().split('\n')).toHaveLength(2);
+
+      await fs.remove(path.join(root, 'node_modules'));
+      const failed = runHydration({ FAKE_NPM_FAIL: '17' });
+      expect(failed.status).toBe(17);
+      expect(failed.stdout).toContain('[dependency-hydration] FAILED npm ci exit=17');
+      expect(await fs.readFile('/tmp/yy-task-HYDRATIONTEST-npm-ci.log', 'utf8')).toContain(
+        'FAILED npm ci exit=17',
+      );
+    } finally {
+      await fs.remove(root);
+      await fs.remove('/tmp/yy-task-HYDRATIONTEST-npm-ci.log');
+    }
   });
 
   it('installs an operationally closed managed wiki generation', async () => {
@@ -317,9 +450,7 @@ describe('ManagedProjectAssets', () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(result.updated).toContain(destination);
     expect(result.installed).toContain('.juno_task/prompts/new_task_workflow.md');
-    expect(await fs.readFile(destinationPath, 'utf8')).toContain(
-      '# Run a workflow or Bolt task',
-    );
+    expect(await fs.readFile(destinationPath, 'utf8')).toContain('# Run a workflow or Bolt task');
   });
 
   it('preserves customized prompts and writes a package-version candidate', async () => {
@@ -361,19 +492,15 @@ describe('ManagedProjectAssets', () => {
     await fs.remove(laterManaged);
 
     const ordinary = await ManagedProjectAssets.update(projectDir, { silent: true });
-    expect(ordinary.conflicts).toContainEqual(
-      expect.objectContaining({ destination }),
-    );
+    expect(ordinary.conflicts).toContainEqual(expect.objectContaining({ destination }));
     expect(await fs.readFile(destinationPath)).toEqual(customized);
     expect(await fs.pathExists(laterManaged)).toBe(false);
     expect(await ScriptInstaller.installScript(projectDir, 'metadata_controller.py', true)).toBe(
       false,
     );
-    expect(await ScriptInstaller.updateScriptIfNewer(
-      projectDir,
-      'metadata_controller.py',
-      true,
-    )).toBe(false);
+    expect(
+      await ScriptInstaller.updateScriptIfNewer(projectDir, 'metadata_controller.py', true),
+    ).toBe(false);
     expect(await fs.readFile(destinationPath)).toEqual(customized);
     expect(await fs.pathExists(laterManaged)).toBe(false);
 
@@ -387,18 +514,24 @@ describe('ManagedProjectAssets', () => {
 
   it('rejects legacy 2.0 config shapes without changing project bytes', async () => {
     const configPath = path.join(projectDir, '.juno_task/config.json');
-    const legacy = `${JSON.stringify({
-      lifecycle: { enabled: true },
-      controllerWorkspace: { enabled: true },
-      promptMacros: { global: { owner: 'preserve' } },
-    }, null, 2)}\n`;
+    const legacy = `${JSON.stringify(
+      {
+        lifecycle: { enabled: true },
+        controllerWorkspace: { enabled: true },
+        promptMacros: { global: { owner: 'preserve' } },
+      },
+      null,
+      2,
+    )}\n`;
     await fs.writeFile(configPath, legacy);
 
     await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
       'yy migrate evacuation-*',
     );
     expect(await fs.readFile(configPath, 'utf8')).toBe(legacy);
-    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(
+      false,
+    );
     expect(await fs.pathExists(path.join(projectDir, '.juno_task/scripts'))).toBe(false);
   });
 
@@ -410,7 +543,9 @@ describe('ManagedProjectAssets', () => {
         'symbolic-link managed path component',
       );
       expect(await fs.readdir(outside)).toEqual([]);
-      expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+      expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(
+        false,
+      );
     } finally {
       await fs.remove(outside);
     }
@@ -425,7 +560,9 @@ describe('ManagedProjectAssets', () => {
     );
     expect((await fs.lstat(dangling)).isSymbolicLink()).toBe(true);
     expect(await fs.readlink(dangling)).toBe('missing-runtime-directory');
-    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+    expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(
+      false,
+    );
     expect(await fs.pathExists(path.join(projectDir, '.juno_task/prompts'))).toBe(false);
   });
 
@@ -458,16 +595,14 @@ describe('ManagedProjectAssets', () => {
   it('rejects a symlinked managed-specializations parent before receipt access', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-specialization-outside-'));
     try {
-      await fs.symlink(
-        outside,
-        path.join(projectDir, '.juno_task/managed-specializations'),
-        'dir',
-      );
+      await fs.symlink(outside, path.join(projectDir, '.juno_task/managed-specializations'), 'dir');
       await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
         'symbolic-link managed path component',
       );
       expect(await fs.readdir(outside)).toEqual([]);
-      expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(false);
+      expect(await fs.pathExists(path.join(projectDir, '.juno_task/managed-assets.json'))).toBe(
+        false,
+      );
     } finally {
       await fs.remove(outside);
     }

@@ -5,7 +5,7 @@ Choose one public interface by intent:
 `TASK_ROOT` names the canonical controller. Control-plane routing never switches or cleans the checkout where the user invoked `yy`.
 
 - Generic ordered reporting or agent work: `workflow_runner.sh --workflow PATH`.
-- Feature implementation: `yy task start TASK_ID`, then `yy task finish TASK_ID`.
+- Feature implementation: `yy task start TASK_ID`; immediately and before editing/testing hydrate exact-lock dependencies for configured validation roots using [task dependency hydration](../wiki/task_dependency_hydration.md), and stop before implementation on failure; then `yy task finish TASK_ID`.
 - Serialized delivery: `yy merge status|next|resolve`.
 
 Generic Workflow Runner remains available, including read-only doctor support

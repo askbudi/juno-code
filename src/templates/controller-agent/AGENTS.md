@@ -14,7 +14,9 @@ product code.
    registered integration-owner worktree.
 4. Start implementation with `yy task start TASK_ID`, then change directory to
    the returned feature worktree and read its `AGENTS.md`/`CLAUDE.md` and
-   project-specific skills before editing.
+   project-specific skills. Before editing or testing, follow the controller's
+   `.juno_task/wiki/task_dependency_hydration.md` exact-lock instructions for
+   every configured validation cwd; stop before implementation on failure.
 5. Finish with `yy task finish TASK_ID`. The merge owner uses
    `yy merge status|next|resolve`; feature implementation remains concurrent.
 6. Never copy product code, bulky artifacts, or project-specific skill assets

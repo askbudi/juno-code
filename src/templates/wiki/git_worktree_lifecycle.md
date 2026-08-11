@@ -36,10 +36,12 @@ yy merge resolve TASK_ID
 ```
 
 Task start freezes the exact configured product target SHA and any explicitly
-selected policy-admitted product roots, then creates one branch/worktree. Task
-finish requires a clean committed tip, allowed changed
-paths, and focused validation before queueing. Independent features can remain
-active concurrently.
+selected policy-admitted product roots, then creates one branch/worktree. Before
+editing or testing there, the worker follows [task dependency hydration](task_dependency_hydration.md)
+for each configured validation cwd and stops on provisioning or clean-tree
+failure. Task finish requires a clean committed tip, allowed changed paths, and
+focused validation before queueing. Independent features can remain active
+concurrently.
 
 The merge queue serializes only target mutation. It uses a per-target lock and
 expected-old-SHA update. If the target moved, it builds a candidate from the
