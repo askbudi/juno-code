@@ -191,6 +191,22 @@ describe('ypl wrapper', () => {
       const after = await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration });
       expect(after.stdout).toBe(before.stdout);
 
+      await execa('git', ['config', '--local', '--unset-all', 'juno.controller.path'], { cwd: integration });
+      await execa('git', ['config', '--local', '--unset-all', 'juno.controller.branch'], { cwd: integration });
+      const missingRegistration = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
+        cwd: path.join(integration, 'nested', 'directory'), reject: false,
+      });
+      expect(missingRegistration.exitCode).toBe(2);
+      expect(missingRegistration.stdout).toBe('');
+      expect(missingRegistration.stderr.trim()).toBe(
+        'controller-resolver: linked product workspace requires exactly one non-empty controller path and branch registration',
+      );
+      expect(await fs.pathExists(path.join(integration, '.venv_juno'))).toBe(false);
+      expect(await fs.pathExists(untrustedResolverMarker)).toBe(false);
+      expect((await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration })).stdout).toBe(before.stdout);
+      await execa('git', ['config', '--local', 'juno.controller.path', controller], { cwd: integration });
+      await execa('git', ['config', '--local', 'juno.controller.branch', 'refs/heads/controller'], { cwd: integration });
+
       const leadingOption = await execa(path.join(launcherBin, 'yy'), ['--quiet', 'kanban', 'list'], {
         cwd: path.join(integration, 'nested', 'directory'), reject: false,
       });

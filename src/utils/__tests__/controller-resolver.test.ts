@@ -140,6 +140,32 @@ describe('canonical controller resolver', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ path: controller, current_root: task, resolver: 'installed', source: 'registration', actual_branch: 'controller-branch', role: 'task', valid: true });
   });
 
+  it.each(['absent', 'empty'])('fails closed for %s controller registration on a persisted product role', (mode) => {
+    git(task, 'config', '--local', '--unset-all', 'juno.controller.path');
+    git(task, 'config', '--local', '--unset-all', 'juno.controller.branch');
+    if (mode === 'empty') {
+      git(task, 'config', '--local', 'juno.controller.path', '');
+      git(task, 'config', '--local', 'juno.controller.branch', '');
+    }
+    const result = run(
+      'python3',
+      [path.join(task, '.juno_task/scripts/controller_resolver.py'), '--cwd', task],
+      task,
+    );
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      current_root: task,
+      role: 'task',
+      valid: false,
+      diagnostics: [
+        'linked product workspace requires exactly one non-empty controller path and branch registration',
+      ],
+    });
+    expect(result.stderr.trim()).toBe(
+      'controller-resolver: linked product workspace requires exactly one non-empty controller path and branch registration',
+    );
+  });
+
   it.each(['juno.controller.path', 'juno.controller.branch'])(
     'rejects duplicate %s registration values',
     (key) => {

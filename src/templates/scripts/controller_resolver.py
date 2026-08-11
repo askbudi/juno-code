@@ -185,6 +185,13 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         "operation": operation, "valid": True, "diagnostics": [], "controller_workspace": None,
     }
 
+    if repo_root_text and role in {"task", "integration-owner", "controller-retired"} \
+            and not path_values and not branch_values:
+        fail(
+            "linked product workspace requires exactly one non-empty controller path and branch registration",
+            result,
+        )
+
     errors: list[str] = list(registration_errors)
     if not controller.is_dir():
         errors.append(f"configured controller path does not exist: {controller}")
