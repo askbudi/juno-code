@@ -7,6 +7,12 @@
   "allowed_paths": [
     ".juno_task/config",
     ".juno_task/prompts",
+    ".juno_task/scripts/controller_registration.py",
+    ".juno_task/scripts/metadata_controller.py",
+    ".juno_task/scripts/risk_policy.py",
+    ".juno_task/scripts/workflow_runner.sh",
+    ".juno_task/scripts/tests/test_controller_registration.py",
+    ".juno_task/scripts/tests/test_metadata_controller.py",
     ".juno_task/wiki",
     "AGENTS.md",
     "README.md",

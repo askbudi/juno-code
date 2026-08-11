@@ -22,6 +22,16 @@ sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
 
 
+RUNTIME_TEMPLATE_PARITY = (
+    (".juno_task/scripts/workflow_runner.sh", "juno-code/src/templates/scripts/workflow_runner.sh"),
+    (".juno_task/scripts/risk_policy.py", "juno-code/src/templates/scripts/risk_policy.py"),
+    (".juno_task/scripts/controller_registration.py", "juno-code/src/templates/scripts/controller_registration.py"),
+    (".juno_task/scripts/metadata_controller.py", "juno-code/src/templates/scripts/metadata_controller.py"),
+    (".juno_task/scripts/tests/test_controller_registration.py", "juno-code/src/templates/scripts/tests/test_controller_registration.py"),
+    (".juno_task/scripts/tests/test_metadata_controller.py", "juno-code/src/templates/scripts/tests/test_metadata_controller.py"),
+)
+
+
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True)
     if check and result.returncode:
@@ -171,6 +181,38 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertTrue((self.workspaces / "X" / "optional/base.txt").is_file())
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "differ from the frozen"):
             task_runtime.start(self.controller, "X", [])
+
+    def test_exact_runtime_parity_paths_queue_with_their_package_templates(self) -> None:
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        runtime_paths = [runtime for runtime, _ in RUNTIME_TEMPLATE_PARITY]
+        policy["allowed_paths"].extend([*runtime_paths, "juno-code"])
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        for runtime, template in RUNTIME_TEMPLATE_PARITY:
+            for relative in (runtime, template):
+                target = self.repository / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(f"base {relative}\n")
+        git(self.repository, "add", ".juno_task/scripts", "juno-code")
+        git(self.repository, "commit", "-m", "add guarded parity fixtures")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+
+        started = self.payload("start", "X")
+        self.assertNotIn(".juno_task/scripts", started["creation_receipt"]["allowed_paths"])
+        self.assertTrue(set(runtime_paths).issubset(started["creation_receipt"]["allowed_paths"]))
+        worktree = self.workspaces / "X"
+        changed = []
+        for runtime, template in RUNTIME_TEMPLATE_PARITY:
+            for relative in (runtime, template):
+                (worktree / relative).write_text(f"paired update {relative}\n")
+                changed.append(relative)
+        git(worktree, "add", *changed)
+        git(worktree, "commit", "-m", "update runtime template parity")
+
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        self.assertEqual(queued["changed_paths"], sorted(changed))
 
     def test_unadmitted_required_path_refuses_before_creation(self) -> None:
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "not admitted by policy"):

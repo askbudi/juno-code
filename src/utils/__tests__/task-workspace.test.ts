@@ -6,6 +6,27 @@ import { describe, expect, it } from 'vitest';
 const repository = resolve(import.meta.dirname, '../../../..');
 
 describe('Bolt task workspace managed runtime', () => {
+  it('admits exact runtime/template parity paths without opening the scripts root', () => {
+    const policies = [
+      resolve(repository, '.juno_task/config/task-workspace.json'),
+      resolve(repository, 'juno-code/src/templates/config/task-workspace.json'),
+    ];
+    const runtimePaths = [
+      '.juno_task/scripts/workflow_runner.sh',
+      '.juno_task/scripts/risk_policy.py',
+      '.juno_task/scripts/controller_registration.py',
+      '.juno_task/scripts/metadata_controller.py',
+      '.juno_task/scripts/tests/test_controller_registration.py',
+      '.juno_task/scripts/tests/test_metadata_controller.py',
+    ];
+    for (const policyPath of policies) {
+      const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as { allowed_paths: string[] };
+      expect(policy.allowed_paths).toEqual(expect.arrayContaining(runtimePaths));
+      expect(policy.allowed_paths).not.toContain('.juno_task/scripts');
+      expect(policy.allowed_paths).toContain('juno-code');
+    }
+  });
+
   it('ships one small standalone engine with real-Git contract tests', () => {
     const runtime = resolve(repository, 'juno-code/src/templates/scripts/task_workspace.py');
     const tests = resolve(repository, 'juno-code/src/templates/scripts/tests/test_task_workspace.py');
