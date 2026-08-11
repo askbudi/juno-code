@@ -420,6 +420,9 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertGreater(evidence["stderr_truncated_bytes"], 0)
         self.assertLessEqual(len(evidence["stdout_tail"].encode()), 1024)
         self.assertLessEqual(len(evidence["stderr_tail"].encode()), 1024)
+        self.assertTrue(evidence["log_path"].startswith("/tmp/yy-validation-"))
+        self.assertEqual(hashlib.sha256(Path(evidence["log_path"]).read_bytes()).hexdigest(),
+                         evidence["log_sha256"])
 
     def test_validation_can_stream_both_child_channels_without_losing_evidence(self) -> None:
         row = {
@@ -437,6 +440,38 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertIn("live-err", evidence["stderr_tail"])
         self.assertIn("live-out", streamed.getvalue())
         self.assertIn("live-err", streamed.getvalue())
+        log = Path(evidence["log_path"])
+        self.assertIn(b"live-out", log.read_bytes())
+        self.assertIn(b"live-err", log.read_bytes())
+        self.assertIn("timed_out=false", streamed.getvalue())
+
+    def test_log_allocation_is_unique_sanitized_and_fails_closed(self) -> None:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            allocated = list(pool.map(
+                lambda _: task_runtime.allocate_long_run_log("flow with spaces", "task path"),
+                range(4),
+            ))
+        paths = [path for path, _ in allocated]
+        for _, handle in allocated: handle.close()
+        self.assertEqual(len(set(paths)), 4)
+        self.assertTrue(all(str(path).startswith("/tmp/yy-flow-with-spaces-task-path-") for path in paths))
+        with mock.patch.object(task_runtime.os, "open", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "cannot allocate long-run log"):
+                task_runtime.allocate_long_run_log("validation", "failure")
+
+        failed_path = self.root / "log write failure.log"
+        failed_path.write_bytes(b"")
+        class BrokenLog:
+            def write(self, _data): raise OSError("disk full")
+            def close(self): pass
+        row = {"id": "write-failure", "argv": [sys.executable, "-c", "print('payload', flush=True)"],
+               "timeout_seconds": 5, "max_output_bytes": 1024}
+        with mock.patch.object(task_runtime, "allocate_long_run_log",
+                               return_value=(failed_path, BrokenLog())):
+            evidence = task_runtime.run_validation(row, self.repository)
+        self.assertTrue(evidence["log_write_failed"])
+        self.assertIn("disk full", evidence["log_write_error"])
+        self.assertNotEqual(evidence["exit_code"], 0)
 
     def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
         counter = self.root / "validation-counter.txt"

@@ -1732,6 +1732,24 @@ def append_live_log(path: Path | None, text: str) -> None:
         handle.flush()
 
 
+def allocate_observable_log(workflow: str, task: str) -> tuple[Path, Any]:
+    component = lambda value, fallback: (re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")[:64] or fallback)
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    base = f"yy-{component(workflow, 'workflow')}-{component(task, 'step')}-{stamp}"
+    for suffix in ("", *[f"-{number}" for number in range(1, 100)]):
+        path = Path("/tmp") / f"{base}{suffix}.log"
+        try:
+            handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
+                               "wb", buffering=0)
+            print(f"yy long run log: {path}", file=sys.stderr, flush=True)
+            return path, handle
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise WorkflowError(f"cannot allocate long-run log {path}: {exc}") from exc
+    raise WorkflowError(f"cannot allocate unique long-run log for {base}")
+
+
 def _candidate_git(candidate: Path, *args: str) -> bytes:
     completed = subprocess.run(
         ["git", "-C", str(candidate), *args],
@@ -2000,27 +2018,36 @@ def execute_rendered_command(
 ) -> subprocess.CompletedProcess[str]:
     argv: Any = [str(part) for part in command] if isinstance(command, list) else str(command)
     shell = not isinstance(command, list)
-    proc = subprocess.Popen(
-        argv,
-        shell=shell,
-        cwd=str(project_root),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        bufsize=1,
-        start_new_session=True,
-    )
+    workflow_label = env.get("JUNO_WORKFLOW_ID", "workflow")
+    task_label = env.get("JUNO_WORKFLOW_STEP_ID", "step")
+    observable_path, observable = allocate_observable_log(workflow_label, task_label)
+    producer_started = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            argv,
+            shell=shell,
+            cwd=str(project_root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            bufsize=1,
+            start_new_session=True,
+        )
+    except OSError:
+        observable.close()
+        finished = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        print("yy long run complete: "
+              f"finish_time={finished} duration_seconds={round(time.monotonic() - producer_started, 3)} "
+              f"exit_code=127 timed_out=false log_path={observable_path}", file=sys.stderr, flush=True)
+        raise
     if activity is not None and active_marker is not None:
         activity.update({"child_pid": proc.pid, "process_group_id": proc.pid})
         write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
-    if live_log_path is None:
-        stdout, stderr = proc.communicate()
-        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
-
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
     log_lock = threading.Lock()
+    relay_errors: list[Exception] = []
 
     def relay(stream: Any, label: str, chunks: list[str]) -> None:
         if stream is None:
@@ -2028,7 +2055,16 @@ def execute_rendered_command(
         for chunk in iter(stream.readline, ""):
             chunks.append(chunk)
             with log_lock:
-                append_live_log(live_log_path, f"[{label}] {chunk}")
+                encoded = chunk.encode("utf-8", errors="replace")
+                try:
+                    observable.write(encoded)
+                    sys.stderr.write(chunk); sys.stderr.flush()
+                    append_live_log(live_log_path, f"[{label}] {chunk}")
+                except OSError as exc:
+                    relay_errors.append(exc)
+                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    break
         stream.close()
 
     threads = [
@@ -2037,10 +2073,32 @@ def execute_rendered_command(
     ]
     for thread in threads:
         thread.start()
-    return_code = proc.wait()
+    timed_out = False
+    try:
+        return_code = proc.wait(timeout=float(env.get("JUNO_LONG_RUN_TIMEOUT_SECONDS", "7200")))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try: os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        return_code = proc.wait()
     for thread in threads:
         thread.join()
-    return subprocess.CompletedProcess(argv, return_code, "".join(stdout_chunks), "".join(stderr_chunks))
+    observable.close()
+    if relay_errors:
+        return_code = 74
+        stderr_chunks.append(f"long-run log write failed at {observable_path}: {relay_errors[0]}\n")
+    finished = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    duration = round(time.monotonic() - producer_started, 3)
+    print("yy long run complete: "
+          f"finish_time={finished} duration_seconds={duration} exit_code={return_code} "
+          f"timed_out={'true' if timed_out else 'false'} log_path={observable_path}",
+          file=sys.stderr, flush=True)
+    result = subprocess.CompletedProcess(argv, return_code, "".join(stdout_chunks), "".join(stderr_chunks))
+    result.live_log = {"path": str(observable_path), "sha256": file_sha256(observable_path)}
+    result.timed_out = timed_out
+    result.finished_at = finished
+    result.producer_duration_seconds = duration
+    return result
 
 
 def start_tmux_observer(out_dir: Path, workflow_id: str, run_id: str, requested_session: str | None) -> dict[str, Any]:
@@ -2975,6 +3033,8 @@ def run_workflow(args: argparse.Namespace) -> int:
         stdout = ""
         stderr = ""
         exit_code = 0
+        observable_run: dict[str, Any] | None = None
+        timed_out = False
         dispatch_root = project_root
         dispatch_root_error = ""
         if not args.dry_run:
@@ -3077,8 +3137,10 @@ def run_workflow(args: argparse.Namespace) -> int:
                 stdout = proc.stdout or ""
                 stderr = proc.stderr or ""
                 exit_code = int(proc.returncode)
-                status = "success" if exit_code == 0 else "failed"
-            except OSError as exc:
+                observable_run = getattr(proc, "live_log", None)
+                timed_out = bool(getattr(proc, "timed_out", False))
+                status = "success" if exit_code == 0 and not timed_out else "failed"
+            except (OSError, WorkflowError) as exc:
                 stderr = f"command dispatch failed: {exc}\n"
                 exit_code = 1
                 status = "failed"
@@ -3125,6 +3187,8 @@ def run_workflow(args: argparse.Namespace) -> int:
             "transport_status": status,
             "transport_exit_code": exit_code,
             "duration_seconds": duration,
+            "timed_out": timed_out,
+            "live_log": observable_run,
             "stdout": stdout,
             "stderr": stderr,
             "response": response,
@@ -3282,6 +3346,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "started_at": activity.get("started_at") if 'activity' in locals() else "",
                     "completed_at": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
                     "duration_seconds": duration,
+                    "timed_out": timed_out,
+                    "live_log": observable_run,
                     "artifacts": artifacts,
                     "receipts": produced_receipts,
                     "child_steps": child_steps,

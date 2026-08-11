@@ -537,6 +537,7 @@ def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[st
         "command": full_suite_command(config),
         "started_at": started_at, "completed_at": completed_at,
         "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
+                   "log": {"path": evidence["log_path"], "sha256": evidence["log_sha256"]},
                    "stdout": {"sha256": evidence["stdout_sha256"],
                               "tail": evidence["stdout_tail"],
                               "truncated_bytes": evidence["stdout_truncated_bytes"]},

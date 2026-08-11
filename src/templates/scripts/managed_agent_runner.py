@@ -531,15 +531,52 @@ def terminate_group(pgid: int, signum: int) -> None:
     except ProcessLookupError: pass
 
 
-def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path, combined_path: Path) -> None:
+def log_component(value: str, fallback: str) -> str:
+    cleaned = __import__("re").sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
+    return cleaned[:64] or fallback
+
+
+def allocate_live_log(workflow: str, task: str) -> tuple[Path, Any]:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    base = f"yy-{log_component(workflow, 'agent')}-{log_component(task, 'task')}-{stamp}"
+    for suffix in ("", *[f"-{number}" for number in range(1, 100)]):
+        path = Path("/tmp") / f"{base}{suffix}.log"
+        try:
+            handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
+                               "wb", buffering=0)
+            print(f"yy long run log: {path}", file=sys.stderr, flush=True)
+            return path, handle
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise RunnerError(f"cannot allocate long-run log {path}: {exc}") from exc
+    raise RunnerError(f"cannot allocate unique long-run log for {base}")
+
+
+def announce_completion(started: float, code: int, timed_out: bool, path: Path) -> tuple[str, float]:
+    finished = now(); elapsed = round(time.monotonic() - started, 3)
+    print("yy long run complete: "
+          f"finish_time={finished} duration_seconds={elapsed} exit_code={code} "
+          f"timed_out={'true' if timed_out else 'false'} log_path={path}",
+          file=sys.stderr, flush=True)
+    return finished, elapsed
+
+
+def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
+         combined_path: Path, live: Any, timeout_seconds: float) -> bool:
     selector = selectors.DefaultSelector()
     assert proc.stdout and proc.stderr
     for stream, label in ((proc.stdout, b"stdout"), (proc.stderr, b"stderr")):
         os.set_blocking(stream.fileno(), False); selector.register(stream, selectors.EVENT_READ, label)
     with stdout_path.open("wb", buffering=0) as stdout, stderr_path.open("wb", buffering=0) as stderr, combined_path.open("wb", buffering=0) as combined:
         pending = {b"stdout": b"", b"stderr": b""}
+        deadline = time.monotonic() + timeout_seconds
+        timed_out = False
         while selector.get_map():
-            for key, _ in selector.select():
+            if not timed_out and time.monotonic() >= deadline:
+                timed_out = True
+                terminate_group(proc.pid, signal.SIGKILL)
+            for key, _ in selector.select(.05):
                 chunk = os.read(key.fd, 65536)
                 label = key.data
                 if not chunk:
@@ -547,12 +584,19 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path, co
                     if pending[label]: combined.write(b"[" + label + b"] " + pending[label]); pending[label] = b""
                     continue
                 (stdout if label == b"stdout" else stderr).write(chunk)
+                try:
+                    live.write(chunk)
+                    sys.stderr.buffer.write(chunk); sys.stderr.buffer.flush()
+                except OSError as exc:
+                    terminate_group(proc.pid, signal.SIGKILL)
+                    raise RunnerError(f"long-run log write failed: {exc}") from exc
                 data = pending[label] + chunk
                 lines = data.splitlines(keepends=True)
                 if lines and not lines[-1].endswith((b"\n", b"\r")):
                     pending[label] = lines.pop()
                 else: pending[label] = b""
                 for line in lines: combined.write(b"[" + label + b"] " + line)
+        return timed_out
 
 
 def run(args: argparse.Namespace) -> int:
@@ -608,7 +652,11 @@ def run(args: argparse.Namespace) -> int:
     atomic_json(out / "launch.json", launch)
     active = {"schema_version": SCHEMA, "state": "active", "mode": args.mode, "run_root": str(out), "started_at": launch["started_at"]}
     atomic_json(out / "active.json", active)
+    live_log_path, live_log = allocate_live_log(
+        f"managed-{args.mode}", args.task_id or args.tool_id)
     proc: subprocess.Popen[bytes] | None = None; interrupted = 0
+    producer_completed = False
+    timed_out = False
     old_handlers: dict[int, Any] = {}
     def forward(signum: int, _frame: Any) -> None:
         nonlocal interrupted
@@ -622,13 +670,19 @@ def run(args: argparse.Namespace) -> int:
         proc = subprocess.Popen(argv, cwd=launcher, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         active["child_pid"] = proc.pid; active["process_group_id"] = proc.pid; atomic_json(out / "active.json", active)
-        pump(proc, stdout_path, stderr_path, combined_path)
-        code = proc.wait()
+        timed_out = pump(proc, stdout_path, stderr_path, combined_path,
+                         live_log, args.timeout_seconds)
+        code = proc.wait(); live_log.close()
+        producer_completed = True
+        producer_completed_at, producer_elapsed = announce_completion(
+            started, code, timed_out, live_log_path)
         if group_active(proc.pid):
             terminate_group(proc.pid, signal.SIGTERM)
             raise RunnerError("child process-group leaked descendants")
         if interrupted:
             raise RunnerError(f"managed child interrupted by signal {interrupted}")
+        if timed_out:
+            raise RunnerError(f"managed child timed out after {args.timeout_seconds} seconds")
         if code:
             raise RunnerError(f"managed child exited {code}")
         if prompt.read_bytes() != prompt_data:
@@ -664,6 +718,9 @@ def run(args: argparse.Namespace) -> int:
             identity["changed_paths"] = changed; identity["unexpected_paths"] = unexpected
         terminal = {"schema_version": SCHEMA, "state": "succeeded", "completed_at": now(), "exit_code": 0,
                     "elapsed_seconds": round(time.monotonic() - started, 3), "session_id": session.strip(),
+                    "producer_completed_at": producer_completed_at,
+                    "producer_elapsed_seconds": producer_elapsed, "timed_out": False,
+                    "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
                     "capture_source": capture_source,
                     "safe_next_action": "consume_receipt"}
@@ -683,8 +740,23 @@ def run(args: argparse.Namespace) -> int:
         return 0
     except Exception as exc:
         if proc is not None and group_active(proc.pid): terminate_group(proc.pid, signal.SIGKILL)
+        if proc is not None and proc.returncode is None:
+            try: proc.wait(timeout=2)
+            except subprocess.TimeoutExpired: pass
+        try: live_log.close()
+        except OSError: pass
+        exit_code = proc.returncode if proc and proc.returncode is not None else 1
+        if proc is not None and not producer_completed:
+            producer_completed_at, producer_elapsed = announce_completion(
+                started, exit_code, timed_out, live_log_path)
+        else:
+            producer_completed_at = locals().get("producer_completed_at", now())
+            producer_elapsed = locals().get("producer_elapsed", round(time.monotonic() - started, 3))
         terminal = {"schema_version": SCHEMA, "state": "interrupted" if interrupted else "failed", "completed_at": now(),
-                    "exit_code": proc.returncode if proc and proc.returncode is not None else 1,
+                    "exit_code": exit_code, "timed_out": timed_out,
+                    "producer_completed_at": producer_completed_at,
+                    "producer_elapsed_seconds": producer_elapsed,
+                    "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "elapsed_seconds": round(time.monotonic() - started, 3), "semantic_outcome": "failed",
                     "compatible_config_sha256": compatible_config["sha256"],
                     "failure_type": type(exc).__name__, "failure": str(exc)[:512],
@@ -707,6 +779,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--verify-receipt"); p.add_argument("--edit-preflight-receipt"); p.add_argument("--authority-map")
     p.add_argument("--candidate-sha"); p.add_argument("--candidate-root")
     p.add_argument("--review-binding")
+    p.add_argument("--timeout-seconds", type=float, default=7200.0)
     return top
 
 

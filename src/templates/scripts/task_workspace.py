@@ -9,6 +9,7 @@ deliberately outside this interface.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import fcntl
 import hashlib
 import json
@@ -230,11 +231,50 @@ def _append_tail(buffer: bytearray, data: bytes, limit: int) -> None:
         del buffer[:len(buffer) - limit]
 
 
+def _log_component(value: str, fallback: str) -> str:
+    cleaned = __import__("re").sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
+    return cleaned[:64] or fallback
+
+
+def allocate_long_run_log(workflow: str, task: str) -> tuple[Path, Any]:
+    """Exclusively allocate and announce one predictable, globally observable log."""
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    base = f"yy-{_log_component(workflow, 'run')}-{_log_component(task, 'task')}-{stamp}"
+    for suffix in ("", *[f"-{number}" for number in range(1, 100)]):
+        path = Path("/tmp") / f"{base}{suffix}.log"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            handle = os.fdopen(fd, "wb", buffering=0)
+            print(f"yy long run log: {path}", file=sys.stderr, flush=True)
+            return path, handle
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise TaskWorkspaceError(f"cannot allocate long-run log {path}: {exc}") from exc
+    raise TaskWorkspaceError(f"cannot allocate unique long-run log for {base}")
+
+
+def _announce_long_run_completion(started: float, exit_code: int,
+                                  timed_out: bool, log_path: Path) -> tuple[str, int]:
+    finished = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    duration_ms = int((time.monotonic() - started) * 1000)
+    print("yy long run complete: "
+          f"finish_time={finished} duration_ms={duration_ms} exit_code={exit_code} "
+          f"timed_out={'true' if timed_out else 'false'} log_path={log_path}",
+          file=sys.stderr, flush=True)
+    return finished, duration_ms
+
+
 def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
     """Run argv-only validation with stdin closed and bounded output tails."""
     limit = row["max_output_bytes"]
-    stream_live = os.environ.get("JUNO_VALIDATION_STREAM") == "1"
+    # Structured command output remains on stdout; producer bytes are always
+    # relayed on stderr so callers never need an opt-in to observe a long run.
+    stream_live = True
     started = time.monotonic()
+    started_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    task_label = os.environ.get("JUNO_TASK_ID") or cwd.name
+    log_path, log_handle = allocate_long_run_log(f"validation-{row['id']}", task_label)
     validation_env = {
         key: value for key, value in os.environ.items()
         if not key.startswith("JUNO_CONTROL_")
@@ -245,9 +285,15 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
                                    start_new_session=True, env=validation_env)
     except OSError as exc:
         message = str(exc).encode("utf-8", errors="replace")
+        log_handle.write(message); log_handle.close()
+        completed_at, duration_ms = _announce_long_run_completion(
+            started, 127, False, log_path)
         tail = message[-limit:]
         return {"id": row["id"], "argv": row["argv"], "exit_code": 127,
-                "timed_out": False, "timeout_seconds": row["timeout_seconds"], "duration_ms": 0,
+                "timed_out": False, "timeout_seconds": row["timeout_seconds"], "duration_ms": duration_ms,
+                "started_at": started_at, "completed_at": completed_at,
+                "log_path": str(log_path), "log_sha256": hashlib.sha256(message).hexdigest(),
+                "log_write_failed": False, "log_write_error": None,
                 "stdout_tail": "", "stderr_tail": tail.decode("utf-8", errors="replace"),
                 "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail),
                 "stdout_sha256": hashlib.sha256(b"").hexdigest(),
@@ -263,6 +309,7 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
             selector.register(stream, selectors.EVENT_READ)
     deadline = started + row["timeout_seconds"]
     timed_out = False
+    log_write_error: str | None = None
     while selector.get_map():
         if time.monotonic() >= deadline and not timed_out:
             timed_out = True
@@ -280,12 +327,24 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
             totals[name] += len(data)
             hashes[name].update(data)
             _append_tail(tail, data, limit)
+            if log_write_error is None:
+                try:
+                    log_handle.write(data)
+                except OSError as exc:
+                    log_write_error = str(exc)
+                    try: os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
             if stream_live:
                 # Keep stdout reserved for the command's structured result.
                 # A caller can merge stderr into tee for one observable log.
                 sys.stderr.write(data.decode("utf-8", errors="replace"))
                 sys.stderr.flush()
     exit_code = process.wait()
+    if log_write_error is not None:
+        exit_code = 74
+    log_handle.close()
+    completed_at, duration_ms = _announce_long_run_completion(
+        started, exit_code, timed_out, log_path)
     selector.close()
     if process.stdout is not None:
         process.stdout.close()
@@ -293,7 +352,11 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
         process.stderr.close()
     return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
             "timed_out": timed_out, "timeout_seconds": row["timeout_seconds"],
-            "duration_ms": int((time.monotonic() - started) * 1000),
+            "duration_ms": duration_ms, "started_at": started_at, "completed_at": completed_at,
+            "log_path": str(log_path),
+            "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),
+            "log_write_failed": log_write_error is not None,
+            "log_write_error": log_write_error,
             "stdout_tail": bytes(stdout_tail).decode("utf-8", errors="replace"),
             "stderr_tail": bytes(stderr_tail).decode("utf-8", errors="replace"),
             "stdout_truncated_bytes": totals["stdout"] - len(stdout_tail),

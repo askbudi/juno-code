@@ -165,6 +165,10 @@ print('out-after', flush=True)
         self.assertEqual((out / "stdout.log").read_bytes(), b"out-before\nout-after\n")
         combined = (out / "combined.log").read_bytes(); self.assertIn(b"[stdout] out-before\n", combined); self.assertIn(b"[stderr] err-before\n", combined)
         receipt = json.loads((out / "receipt.json").read_text()); self.assertEqual(receipt["session_id"], "session-one")
+        self.assertFalse(receipt["timed_out"])
+        live = receipt["live_log"]
+        self.assertTrue(live["path"].startswith("/tmp/yy-managed-reviewer-managed_agent_runner-"))
+        self.assertEqual(hashlib.sha256(Path(live["path"]).read_bytes()).hexdigest(), live["sha256"])
         config_contract = receipt["compatible_config"]
         derived = json.loads(Path(config_contract["derived"]["path"]).read_text())
         launch = json.loads((out / "launch.json").read_text())
@@ -183,6 +187,19 @@ print('out-after', flush=True)
         self.assertNotIn("not-for-receipts", (out / "receipt.json").read_text())
         self.assertEqual(receipt["compatible_config_sha256"], json.loads((out / "terminal.json").read_text())["compatible_config_sha256"])
         self.assertFalse((out / "active.json").exists()); self.assertEqual((out / "response.txt").read_text(), "answer")
+
+    def test_timeout_is_distinct_and_has_terminal_live_log_receipt(self):
+        prompt = self.tmp / "timeout.md"; prompt.write_text("signal-wait")
+        out = self.tmp / "timeout-out"
+        result = subprocess.run(self.command(out, prompt) + ["--timeout-seconds", "0.1"],
+                                env=self.env(), capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        terminal = json.loads((out / "terminal.json").read_text())
+        self.assertTrue(terminal["timed_out"])
+        self.assertEqual(terminal["exit_code"], -9)
+        self.assertIn("timed_out=true", result.stderr)
+        self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
+                         terminal["live_log"]["sha256"])
 
     def test_transport_and_semantic_fail_without_artificial_wait(self):
         for text in ("transport-fail", "semantic-fail", "empty"):
@@ -437,7 +454,12 @@ print('out-after', flush=True)
         proc.terminate(); self.assertNotEqual(proc.wait(timeout=3), 0)
         assert proc.stdout and proc.stderr; proc.stdout.close(); proc.stderr.close()
         terminal = json.loads((out / "terminal.json").read_text())
-        self.assertEqual(terminal["state"], "interrupted"); self.assertFalse((out / "active.json").exists())
+        self.assertEqual(terminal["state"], "interrupted")
+        self.assertFalse(terminal["timed_out"])
+        self.assertLess(terminal["exit_code"], 0)
+        self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
+                         terminal["live_log"]["sha256"])
+        self.assertFalse((out / "active.json").exists())
 
     def test_worker_admission_and_changed_path_authority(self):
         common = str((self.candidate / git(self.candidate, "rev-parse", "--git-common-dir")).resolve())

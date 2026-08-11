@@ -2091,7 +2091,7 @@ steps:
     );
   });
 
-  it('does not inject quiet mode and keeps successful agent stderr out of console output', async () => {
+  it('does not inject quiet mode and streams successful agent stderr to the announced observable log', async () => {
     const binDir = path.join(testDir, 'quiet-bin');
     await fs.ensureDir(binDir);
     const executablePath = path.join(binDir, 'yy');
@@ -2120,10 +2120,18 @@ echo FINAL_ONLY
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('FINAL_ONLY');
     expect(result.stdout).not.toContain('VERBOSE_INTERNAL_LOG');
-    expect(result.stderr).not.toContain('VERBOSE_INTERNAL_LOG');
+    expect(result.stderr).toContain('VERBOSE_INTERNAL_LOG');
+    expect(result.stderr).toMatch(/yy long run log: \/tmp\/yy-quiet-juno-agent-[^\s]+\.log/);
+    expect(result.stderr).toMatch(/timed_out=false log_path=\/tmp\/yy-quiet-juno-agent-/);
     expect(await fs.readFile(path.join(outDir, '001_agent.stderr.txt'), 'utf8')).toContain('VERBOSE_INTERNAL_LOG');
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.steps[0].command).toEqual([executablePath, 'pi', 'prompt']);
+    expect(manifest.steps[0].timed_out).toBe(false);
+    const liveLog = manifest.steps[0].live_log;
+    expect(liveLog.path).toMatch(/^\/tmp\/yy-quiet-juno-agent-/);
+    const liveBytes = await fs.readFile(liveLog.path);
+    expect(liveBytes.toString()).toContain('VERBOSE_INTERNAL_LOG');
+    expect(createHash('sha256').update(liveBytes).digest('hex')).toBe(liveLog.sha256);
   });
 
   it('marks a detected agent command failed when exit is zero but response is empty', async () => {

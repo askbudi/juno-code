@@ -405,6 +405,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             "validation_identity", "command", "started_at", "completed_at", "result"}
     command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
     result_keys = {"exit_code", "timed_out", "stdout", "stderr"}
+    observable_result_keys = result_keys | {"log"}
     stream_keys = {"sha256", "tail", "truncated_bytes"}
     identity_keys = {"task_workspace_config_sha256", "full_suite_config_sha256",
                      "task_validation_commands_sha256"}
@@ -444,10 +445,17 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             or any(not isinstance(receipt.get(key), str) or not receipt[key]
                    or len(receipt[key].encode()) > plan["evidence_limits"]["max_string_bytes"]
                    for key in ("started_at", "completed_at"))
-            or not isinstance(result, dict) or set(result) != result_keys
+            or not isinstance(result, dict) or frozenset(result) not in {frozenset(result_keys), frozenset(observable_result_keys)}
             or not isinstance(result.get("exit_code"), int) or isinstance(result.get("exit_code"), bool)
             or not isinstance(result.get("timed_out"), bool)):
         raise RiskPolicyError("full-suite receipt provenance is invalid")
+    if "log" in result:
+        log = result["log"]
+        if (not isinstance(log, dict) or set(log) != {"path", "sha256"}
+                or not isinstance(log.get("path"), str) or not log["path"].startswith("/tmp/yy-")
+                or len(log["path"].encode()) > plan["evidence_limits"]["max_string_bytes"]
+                or not isinstance(log.get("sha256"), str) or not DIGEST_RE.fullmatch(log["sha256"])):
+            raise RiskPolicyError("full-suite receipt log provenance is invalid")
     for name in ("stdout", "stderr"):
         stream = result.get(name)
         if (not isinstance(stream, dict) or set(stream) != stream_keys
