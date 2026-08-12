@@ -199,13 +199,21 @@ describe('ShellBackend structured output', () => {
     const marker = path.join(tempRoot, 'late-mutation');
     const pids = path.join(tempRoot, 'descendant-pids');
     await fs.writeFile(path.join(servicesDir, 'pi.py'), `#!/usr/bin/env python3
-import os, signal, subprocess, sys, time
-child_code = "import os,pathlib,signal,subprocess,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); g=subprocess.Popen([sys.executable,'-c',%r]); pathlib.Path(%r).write_text(str(os.getpid())+' '+str(g.pid)); time.sleep(30)" % ("import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(1.2); pathlib.Path(%r).write_text('late')" % ${JSON.stringify(marker)}, ${JSON.stringify(pids)})
+import os, pathlib, signal, subprocess, sys, time
+pids = pathlib.Path(${JSON.stringify(pids)})
+grandchild_code = "import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(4); pathlib.Path(%r).write_text('late')" % ${JSON.stringify(marker)}
+child_code = "import os,pathlib,signal,subprocess,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); g=subprocess.Popen([sys.executable,'-c',%r]); pathlib.Path(%r).write_text(str(os.getpid())+' '+str(g.pid)); time.sleep(30)" % (grandchild_code, str(pids))
 subprocess.Popen([sys.executable, '-c', child_code])
+# Synchronize fixture startup: the service does not enter its simulated tool call
+# until both adversarial descendant PIDs have been durably published.
+while not pids.exists() or len(pids.read_text().split()) != 2: time.sleep(.01)
+print('descendants-ready', flush=True)
 time.sleep(30)
 `, { mode: 0o755 });
     const backend = new ShellBackend();
-    backend.configure({ workingDirectory: tempRoot, servicesPath: servicesDir, timeout: 100 });
+    // Leave ample startup budget for loaded CI hosts. The fixture handshake above
+    // guarantees that a normally reached timeout always has two descendants to kill.
+    backend.configure({ workingDirectory: tempRoot, servicesPath: servicesDir, timeout: 3000 });
     await backend.initialize();
     await expect(backend.execute({
       toolName: 'pi_subagent', arguments: { instruction: 'wait', project_path: tempRoot },
@@ -213,7 +221,7 @@ time.sleep(30)
     })).rejects.toThrow('timed out');
     const descendantPids = (await fs.readFile(pids, 'utf8')).trim().split(/\s+/).map(Number);
     for (const pid of descendantPids) expect(() => process.kill(pid, 0)).toThrow();
-    await new Promise((done) => setTimeout(done, 1300));
+    await new Promise((done) => setTimeout(done, 4200));
     expect(await fs.pathExists(marker)).toBe(false);
   });
 
