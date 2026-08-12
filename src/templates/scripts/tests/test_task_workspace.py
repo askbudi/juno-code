@@ -442,8 +442,10 @@ class TaskWorkspaceTests(unittest.TestCase):
                                        "argv": [sys.executable, "-c", "pass"]},
         }, indent=2) + "\n")
 
-    def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return run(["python3", str(SCRIPT), operation, "--task", task_id, "--controller", str(self.controller)], self.controller, check)
+    def command(self, operation: str, task_id: str, check: bool = True,
+                extra: Optional[list[str]] = None) -> subprocess.CompletedProcess[str]:
+        return run(["python3", str(SCRIPT), operation, "--task", task_id,
+                    "--controller", str(self.controller), *(extra or [])], self.controller, check)
 
     def payload(self, operation: str, task_id: str) -> dict:
         return json.loads(self.command(operation, task_id).stdout)
@@ -462,6 +464,130 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "add", "src/target.txt")
         git(self.repository, "commit", "-m", "advance target")
         return git(self.repository, "rev-parse", "HEAD")
+
+    def umbrella_fixture(self) -> Path:
+        required = {"Y": "child/one.txt", "Z": "child/two.txt"}
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\nOrdered tracking children\n[task_id]Y Z[/task_id]\n"
+        )
+        for child_id, relative in required.items():
+            target = self.repository / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{child_id} base\n")
+            task = task_runtime.task_file(self.controller, child_id)
+            task.write_text(f"---\nid: {child_id}\nstatus: todo\n---\nExact required path: {relative}\n")
+        git(self.repository, "add", "child")
+        git(self.repository, "commit", "-m", "add umbrella child fixtures")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        declaration = self.root / "umbrella.json"
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": [
+                {"task_id": "Y", "required_paths": [required["Y"]]},
+                {"task_id": "Z", "required_paths": [required["Z"]]},
+            ],
+        }, indent=2) + "\n")
+        return declaration
+
+    def test_umbrella_start_freezes_exact_ordered_child_union_before_git_mutation(self) -> None:
+        declaration = self.umbrella_fixture()
+        started = task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        admission = started["creation_receipt"]["umbrella_admission"]
+        self.assertEqual(admission["ordered_child_ids"], ["Y", "Z"])
+        self.assertEqual([row["required_paths"] for row in admission["child_bindings"]],
+                         [["child/one.txt"], ["child/two.txt"]])
+        self.assertEqual(admission["union_paths_sha256"],
+                         task_runtime.stable_sha256(admission["union_paths"]))
+        self.assertTrue(all(path in started["creation_receipt"]["allowed_paths"]
+                            for path in ("child/one.txt", "child/two.txt")))
+        self.assertFalse((self.workspaces / "Y").exists())
+        self.assertFalse((self.workspaces / "Z").exists())
+        self.assertIsNone(task_runtime.optional_ref_sha(self.repository, "refs/heads/task-Y"))
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["umbrella_admission_status"]["authority"], "historical_creation")
+        self.assertEqual(status["umbrella_admission_status"]["child_revision_drift"], [])
+
+    def test_umbrella_start_refuses_unproven_child_path_and_owned_child_without_artifacts(self) -> None:
+        declaration = self.umbrella_fixture()
+        value = json.loads(declaration.read_text())
+        value["children"][1]["required_paths"] = ["child/unproven.txt"]
+        declaration.write_text(json.dumps(value) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "child Z path has no exact"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertIsNone(task_runtime.optional_ref_sha(self.repository, "refs/heads/task-X"))
+
+        declaration = self.umbrella_fixture_after_existing_files()
+        task_runtime.start(self.controller, "Y")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "child Y is already owned"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def umbrella_fixture_after_existing_files(self) -> Path:
+        declaration = self.root / "umbrella-owned.json"
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": [
+                {"task_id": "Y", "required_paths": ["child/one.txt"]},
+                {"task_id": "Z", "required_paths": ["child/two.txt"]},
+            ],
+        }) + "\n")
+        return declaration
+
+    def test_clean_working_umbrella_recovery_preserves_predecessor_and_is_idempotent(self) -> None:
+        declaration = self.umbrella_fixture()
+        started = task_runtime.start(self.controller, "X")
+        predecessor = started["creation_receipt"]
+        predecessor_sha = started["workspace_identity"]["create_receipt_sha256"]
+        tip = self.commit_task("X")
+        plan = task_runtime.build_umbrella_recovery_plan(
+            self.controller, "X", declaration, "owner-ticket:Et3fkc")
+        self.assertEqual(plan["current_tip"], tip)
+        self.assertEqual(plan["predecessor_receipt_sha256"], predecessor_sha)
+        self.assertEqual(plan["newly_admitted_paths"], ["child/one.txt", "child/two.txt"])
+        plan_path = self.root / "reviewed-plan.json"
+        plan_path.write_text(json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n")
+        applied = task_runtime.apply_umbrella_recovery(
+            self.controller, "X", plan_path, declaration, "owner-ticket:Et3fkc")
+        self.assertEqual(applied["outcome"], "applied")
+        self.assertEqual(applied["creation_receipt"], predecessor)
+        self.assertEqual(applied["workspace_identity"]["create_receipt_sha256"], predecessor_sha)
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
+        repeated = task_runtime.apply_umbrella_recovery(
+            self.controller, "X", plan_path, declaration, "owner-ticket:Et3fkc")
+        self.assertEqual(repeated["outcome"], "already_applied")
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["umbrella_admission_status"]["authority"], "authorized_superseding")
+        self.assertEqual(status["creation_receipt"], predecessor)
+        self.assertEqual(status["admission_supersessions"][0]["predecessor_receipt_sha256"], predecessor_sha)
+
+    def test_umbrella_recovery_refuses_dirty_stale_revision_and_unauthorized_apply(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X")
+        self.commit_task("X")
+        dirty = self.workspaces / "X/src/dirty.txt"
+        dirty.write_text("dirty\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "clean worktree"):
+            task_runtime.build_umbrella_recovery_plan(
+                self.controller, "X", declaration, "owner-ticket:Et3fkc")
+        dirty.unlink()
+        plan = task_runtime.build_umbrella_recovery_plan(
+            self.controller, "X", declaration, "owner-ticket:Et3fkc")
+        plan_path = self.root / "stale-plan.json"
+        plan_path.write_text(json.dumps(plan) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "authorization"):
+            task_runtime.apply_umbrella_recovery(
+                self.controller, "X", plan_path, declaration, "different-owner")
+        original_state = task_runtime.read_state(self.controller)
+        child = task_runtime.task_file(self.controller, "Z")
+        child.write_text(child.read_text() + "revision drift\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "stale"):
+            task_runtime.apply_umbrella_recovery(
+                self.controller, "X", plan_path, declaration, "owner-ticket:Et3fkc")
+        self.assertEqual(task_runtime.read_state(self.controller), original_state)
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), plan["current_tip"])
 
     def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
         generated_source = "juno-code/canonical/implement.md"

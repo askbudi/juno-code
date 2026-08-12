@@ -5,11 +5,12 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type TaskWorkspaceOperation = 'start' | 'status' | 'finish';
+export type TaskWorkspaceOperation = 'start' | 'status' | 'finish' | 'recovery-plan' | 'recovery-apply';
 export type TaskWorkspaceInvoker = (
   operation: TaskWorkspaceOperation,
   taskId: string,
   requiredPaths?: string[],
+  admissionArgs?: string[],
 ) => Promise<void>;
 export type TaskWorkspaceCheckpointer = typeof checkpointControllerAfterFinalization;
 
@@ -19,7 +20,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   exitCode: number,
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
 ): Promise<void> {
-  if (operation === 'status') return;
+  if (operation === 'status' || operation === 'recovery-plan') return;
   await checkpoint(controllerRoot, exitCode);
 }
 
@@ -27,6 +28,7 @@ export async function invokeTaskWorkspace(
   operation: TaskWorkspaceOperation,
   taskId: string,
   requiredPaths: string[] = [],
+  admissionArgs: string[] = [],
 ): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
@@ -40,7 +42,7 @@ export async function invokeTaskWorkspace(
   const taskEnv = route.env;
   const exitCode = await new Promise<number>((resolve, reject) => {
     const pathArgs = requiredPaths.flatMap((requiredPath) => ['--path', requiredPath]);
-    const child = spawn('python3', [script, operation, '--task', taskId, ...pathArgs], {
+    const child = spawn('python3', [script, operation, '--task', taskId, ...pathArgs, ...admissionArgs], {
       cwd: controllerRoot,
       env: taskEnv,
       stdio: 'inherit',
@@ -66,10 +68,33 @@ export function configureTaskWorkspaceCommand(
     .command('start')
     .argument('<task-id>', 'Canonical Kanban task ID')
     .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
-    .action((taskId: string, options: { path: string[] }) => invoke('start', taskId, options.path));
+    .option('--umbrella-admission <file>', 'Versioned ordered-child exact-scope input')
+    .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string }) => (
+      options.umbrellaAdmission
+        ? invoke('start', taskId, options.path, ['--umbrella-admission', options.umbrellaAdmission])
+        : invoke('start', taskId, options.path)
+    ));
   for (const operation of ['status', 'finish'] as const) {
     task.command(operation)
       .argument('<task-id>', 'Canonical Kanban task ID')
       .action((taskId: string) => invoke(operation, taskId, []));
   }
+  task.command('recovery-plan')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--output <file>', 'New exclusive recovery plan path')
+    .requiredOption('--authorization-source <source>', 'Exact owner authorization reference')
+    .action((taskId: string, options: { umbrellaAdmission: string; output: string; authorizationSource: string }) => invoke(
+      'recovery-plan', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--output', options.output, '--authorization-source', options.authorizationSource],
+    ));
+  task.command('recovery-apply')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
+    .requiredOption('--authorization-source <source>', 'Exact owner authorization reference')
+    .action((taskId: string, options: { umbrellaAdmission: string; plan: string; authorizationSource: string }) => invoke(
+      'recovery-apply', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--plan', options.plan, '--authorization-source', options.authorizationSource],
+    ));
 }
