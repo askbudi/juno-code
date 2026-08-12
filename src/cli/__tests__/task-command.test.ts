@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   checkpointTaskWorkspaceAfterFinalization,
   configureTaskWorkspaceCommand,
+  taskWorkspaceControlOperation,
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
@@ -47,19 +48,23 @@ describe('task workspace CLI', () => {
     expect(invoke).toHaveBeenLastCalledWith('start', 'U1', [],
       ['--umbrella-admission', '/tmp/umbrella.json']);
     await program.parseAsync(['node', 'yy', 'task', 'recovery-plan', 'U1',
-      '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json',
-      '--authorization-source', 'ticket:1']);
+      '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json']);
     expect(invoke).toHaveBeenLastCalledWith('recovery-plan', 'U1', [], [
       '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json',
-      '--authorization-source', 'ticket:1',
     ]);
     await program.parseAsync(['node', 'yy', 'task', 'recovery-apply', 'U1',
       '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
-      '--authorization-source', 'ticket:1']);
+      '--authorization-receipt', '/tmp/authorization.json']);
     expect(invoke).toHaveBeenLastCalledWith('recovery-apply', 'U1', [], [
       '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
-      '--authorization-source', 'ticket:1',
+      '--authorization-receipt', '/tmp/authorization.json',
     ]);
+  });
+
+  it('routes recovery planning through read-only kanban policy and apply through orchestration', () => {
+    expect(taskWorkspaceControlOperation('recovery-plan')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('status')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });
 
   it.each(['start', 'finish', 'recovery-apply'] as const)(

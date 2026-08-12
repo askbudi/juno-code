@@ -14,6 +14,10 @@ export type TaskWorkspaceInvoker = (
 ) => Promise<void>;
 export type TaskWorkspaceCheckpointer = typeof checkpointControllerAfterFinalization;
 
+export function taskWorkspaceControlOperation(operation: TaskWorkspaceOperation): 'kanban' | 'orchestration' {
+  return operation === 'status' || operation === 'recovery-plan' ? 'kanban' : 'orchestration';
+}
+
 export async function checkpointTaskWorkspaceAfterFinalization(
   operation: TaskWorkspaceOperation,
   controllerRoot: string,
@@ -32,7 +36,7 @@ export async function invokeTaskWorkspace(
 ): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
-    operation === 'status' ? 'kanban' : 'orchestration',
+    taskWorkspaceControlOperation(operation),
   );
   const controllerRoot = route.controllerRoot;
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
@@ -83,18 +87,17 @@ export function configureTaskWorkspaceCommand(
     .argument('<task-id>', 'Canonical umbrella Kanban task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
     .requiredOption('--output <file>', 'New exclusive recovery plan path')
-    .requiredOption('--authorization-source <source>', 'Exact owner authorization reference')
-    .action((taskId: string, options: { umbrellaAdmission: string; output: string; authorizationSource: string }) => invoke(
+    .action((taskId: string, options: { umbrellaAdmission: string; output: string }) => invoke(
       'recovery-plan', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
-        '--output', options.output, '--authorization-source', options.authorizationSource],
+        '--output', options.output],
     ));
   task.command('recovery-apply')
     .argument('<task-id>', 'Canonical umbrella Kanban task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
     .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
-    .requiredOption('--authorization-source <source>', 'Exact owner authorization reference')
-    .action((taskId: string, options: { umbrellaAdmission: string; plan: string; authorizationSource: string }) => invoke(
+    .requiredOption('--authorization-receipt <file>', 'Canonical immutable authorization for the exact plan')
+    .action((taskId: string, options: { umbrellaAdmission: string; plan: string; authorizationReceipt: string }) => invoke(
       'recovery-apply', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
-        '--plan', options.plan, '--authorization-source', options.authorizationSource],
+        '--plan', options.plan, '--authorization-receipt', options.authorizationReceipt],
     ));
 }
