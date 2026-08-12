@@ -45,6 +45,7 @@ UMBRELLA_RESERVATIONS_SCHEMA = "juno_task_umbrella_child_reservations.v1"
 TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
 AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
 TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
+PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -763,9 +764,17 @@ def canonical_child_scope(controller: Path, repository: Path, base_sha: str, chi
     """Read one pre-implementation, revision-bound authoritative scope declaration."""
     declaration, declaration_sha = load_task_scope(controller, child_id, body)
     lifecycle = declaration["lifecycle_status"]
-    if lifecycle in TERMINAL_TASK_STATUSES:
-        raise TaskWorkspaceError(f"umbrella child {child_id} is terminal: {lifecycle}")
+    if lifecycle not in PRESTART_TRACKING_STATUSES:
+        classification = "terminal" if lifecycle in TERMINAL_TASK_STATUSES else "active or unknown"
+        raise TaskWorkspaceError(
+            f"umbrella child {child_id} lifecycle is not an unowned pre-start tracking state "
+            f"({classification}): {lifecycle}; allowed: {', '.join(sorted(PRESTART_TRACKING_STATUSES))}"
+        )
     relation = declaration["umbrella_relations"]
+    if relation["children"]:
+        raise TaskWorkspaceError(
+            f"flat umbrella child {child_id} must not declare nested children: {', '.join(relation['children'])}"
+        )
     if relation["owner"] != expected_owner:
         raise TaskWorkspaceError(
             f"umbrella child {child_id} relation contradicts owner {expected_owner}: {relation['owner']}"

@@ -673,6 +673,42 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(owners.get("Z"), "X")
         self.assertLessEqual(len([path for path in self.workspaces.iterdir()]), 1)
 
+    def test_flat_umbrella_rejects_direct_child_with_nested_children_before_mutation(self) -> None:
+        declaration = self.umbrella_fixture()
+        nested = "W"
+        path = task_runtime.task_file(self.controller, nested); path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nid: W\nstatus: backlog\n---\nnested tracking task\n")
+        self.write_task_scope(nested, owner="Z", baseline=True, lifecycle_status="backlog")
+        self.write_task_scope("Z", owner="X", children=[nested], required=["child/two.txt"])
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "must not declare nested children: W"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+
+    def test_tracking_child_lifecycle_allows_only_backlog_and_todo(self) -> None:
+        self.umbrella_fixture()
+        child = task_runtime.task_file(self.controller, "Y")
+        for lifecycle in sorted(task_runtime.PRESTART_TRACKING_STATUSES):
+            with self.subTest(allowed=lifecycle):
+                child.write_text(f"---\nid: Y\nstatus: {lifecycle}\n---\npre-start\n")
+                self.write_task_scope("Y", owner="X", required=["child/one.txt"],
+                                      lifecycle_status=lifecycle)
+                paths, _evidence, _frozen = task_runtime.canonical_child_scope(
+                    self.controller, self.repository, self.base, "Y", child.read_bytes(),
+                    task_runtime.load_config(self.controller), "X")
+                self.assertEqual(paths, ["child/one.txt"])
+        for lifecycle in ("in_progress", "working", "queued", "review", "done", "mystery"):
+            with self.subTest(rejected=lifecycle):
+                child.write_text(f"---\nid: Y\nstatus: {lifecycle}\n---\nnot pre-start\n")
+                self.write_task_scope("Y", owner="X", required=["child/one.txt"],
+                                      lifecycle_status=lifecycle)
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "not an unowned pre-start tracking state"):
+                    task_runtime.canonical_child_scope(
+                        self.controller, self.repository, self.base, "Y", child.read_bytes(),
+                        task_runtime.load_config(self.controller), "X")
+        self.assertFalse((self.workspaces / "X").exists())
+
     def test_terminal_contradictory_and_indirect_cycle_children_refuse_before_mutation(self) -> None:
         declaration = self.umbrella_fixture()
         z = task_runtime.task_file(self.controller, "Z")
