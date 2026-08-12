@@ -88,6 +88,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('controller_checkpoint.py');
       expect(missing).toContain('task_workflow_helper.py');
       expect(missing).toContain('workflow_run_evidence.py');
+      expect(missing).toContain('watch_progress.py');
       expect(missing).toContain('wiki_lint.py');
       expect(missing).toContain('wiki_lint.sh');
     });
@@ -239,6 +240,7 @@ describe('ScriptInstaller', () => {
         'tests/test_release_gate.py',
         'tests/test_risk_policy.py',
         'tests/test_task_workspace.py',
+        'watch_progress.py',
       ]);
       for (const relative of newlyManaged) {
         const destination = path.join(scriptsDir, relative);
@@ -343,6 +345,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
+        { name: 'watch_progress.py', installed: false },
         { name: 'task_workspace.py', installed: false },
         { name: 'integration_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
@@ -465,6 +468,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("workflow evidence")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'watch_progress.py'),
+        '#!/usr/bin/env python3\nprint("watch progress")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'wiki_lint.py'),
         '#!/usr/bin/env python3\nprint("wiki lint")',
       );
@@ -580,6 +587,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
+        { name: 'watch_progress.py', installed: true },
         { name: 'task_workspace.py', installed: true },
         { name: 'integration_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },

@@ -192,6 +192,12 @@
       "type": "wiki"
     },
     {
+      "source": "wiki/watching_progress.md",
+      "destination": ".juno_task/wiki/watching_progress.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
       "source": "wiki/parallel_runner_and_spec_review.md",
       "destination": ".juno_task/wiki/parallel_runner_and_spec_review.md",
       "installClass": "project",
@@ -296,6 +302,12 @@
     {
       "source": "scripts/managed_agent_runner.py",
       "destination": ".juno_task/scripts/managed_agent_runner.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/watch_progress.py",
+      "destination": ".juno_task/scripts/watch_progress.py",
       "installClass": "script",
       "type": "script"
     },

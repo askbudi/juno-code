@@ -1335,7 +1335,8 @@ Use the shipped `@@life_cycle TASK_IDS_OR_GOAL` macro for the versioned,
 observable Bolt orchestration contract. It discovers topology, preserves the
 caller payload exactly once, requires task-ID `/tmp` log/PID/footer evidence and
 fresh independent review, and keeps finish, merge, release, push, publish, and
-deploy authorities separate. The detailed polling pattern is in
+deploy authorities separate. Reusable PID/log/footer observation is documented
+in `.juno_task/wiki/watching_progress.md`; broader lifecycle boundaries remain in
 `.juno_task/wiki/git_worktree_lifecycle.md`.
 
 Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros`:

@@ -118,12 +118,13 @@ allocate task-ID-specific files such as `/tmp/yy-T1-run.log`,
 `/tmp/yy-T1-run.pid`, and `/tmp/yy-T1-run.footer`. Capture combined stdout and
 stderr, keep the producer timeout-bounded, write its PID immediately, and write
 a terminal footer immediately after exit containing exit code and completion
-time. Poll periodically with `kill -0 "$(cat PID)"`, bounded `ps`, and bounded
-`tail` of the log. A quiet process doing real-Git or test work is active until
-PID/process evidence or the terminal footer proves completion; log silence alone
-is never a hang signal. Report the exact exit, elapsed duration, and all three
-paths. This pattern adds observation only; Workflow Runner and the managed-agent
-runner remain the execution owners.
+time. Observe those files with `.juno_task/scripts/watch_progress.py` rather than
+rewriting polling loops; its producer example and footer/PID identity contract
+are in [watching progress](watching_progress.md). A quiet process doing real-Git
+or test work is active until PID/process evidence or the terminal footer proves
+completion; log silence alone is never a hang signal. Report the exact exit,
+elapsed duration, and all three paths. This pattern adds observation only;
+Workflow Runner and the managed-agent runner remain the execution owners.
 
 Independent review is fresh and read-only against one frozen committed diff.
 Task finish, merge/CAS, integration repair/push receipts, release build/tag/global
