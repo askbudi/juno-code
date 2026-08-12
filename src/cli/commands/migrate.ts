@@ -24,7 +24,7 @@ function packagedEngine(name = 'migration_inventory.py'): string {
 export async function invokeMigration(args: string[]): Promise<void> {
   const evacuation = args[0]?.startsWith('evacuation-');
   const registration = args[0] === 'registration';
-  const runtimeRebind = args[0] === 'runtime-rebind';
+  const runtimeRebind = args[0] === 'runtime-rebind' || args[0] === 'runtime-install-rebind';
   const metadataController = runtimeRebind || args[0]?.startsWith('agent-surface-repair-');
   const engine = packagedEngine(
     registration
@@ -81,12 +81,25 @@ export function configureMigrationCommand(
     .description('Explicitly rebind a clean metadata controller to one installed runtime executable')
     .requiredOption('--root <path>', 'Exact metadata-controller worktree')
     .requiredOption('--branch <ref>', 'Exact controller branch ref')
-    .requiredOption('--runtime <path>', 'Installed cli.mjs executable to bind (does not install a package)')
+    .requiredOption('--runtime <path>', 'Installed cli.mjs executable outside every Git ancestor (does not install a package)')
     .requiredOption('--runtime-version <version>', 'Version printed by the runtime executable')
     .requiredOption('--output <path>', 'New local receipt outside the controller worktree')
     .action((options) => invoke([
       'runtime-rebind', '--root', options.root, '--branch', options.branch,
       '--runtime', options.runtime, '--runtime-version', options.runtimeVersion,
+      '--output', options.output,
+    ]));
+  migrate
+    .command('runtime-install-rebind')
+    .description('Install one exact release into a fresh non-Git prefix and rebind a clean metadata controller')
+    .requiredOption('--root <path>', 'Exact metadata-controller worktree')
+    .requiredOption('--branch <ref>', 'Exact controller branch ref')
+    .requiredOption('--runtime-version <version>', 'Exact released juno-code version to install')
+    .requiredOption('--install-prefix <path>', 'Fresh absent prefix outside every Git worktree/ancestor')
+    .requiredOption('--output <path>', 'New local receipt outside the controller worktree')
+    .action((options) => invoke([
+      'runtime-install-rebind', '--root', options.root, '--branch', options.branch,
+      '--runtime-version', options.runtimeVersion, '--install-prefix', options.installPrefix,
       '--output', options.output,
     ]));
   migrate

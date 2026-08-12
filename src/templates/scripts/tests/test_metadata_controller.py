@@ -574,6 +574,80 @@ class MetadataControllerTest(unittest.TestCase):
             mc.runtime_identity(mutable_runtime, "2.0.32", self.repo)
         self.assertFalse(execution_marker.exists())
 
+    def test_nvm_git_ancestor_uses_supported_fresh_prefix_install_and_rebind(self) -> None:
+        self.prepare()
+        nvm = self.temp / "home/.nvm"
+        nvm.mkdir(parents=True)
+        command("git", "init", cwd=nvm)
+        nvm_runtime = nvm / "versions/node/v22/lib/node_modules/juno-code/dist/bin/cli.mjs"
+        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        nvm_runtime.chmod(nvm_runtime.stat().st_mode | stat.S_IXUSR)
+        execution_marker = self.temp / "nvm-runtime-executed"
+        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33\\n'\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "runtime-install-rebind --help"):
+            mc.runtime_identity(nvm_runtime, "2.0.33", self.new_controller)
+        self.assertFalse(execution_marker.exists())
+
+        prefix = self.temp / "durable-runtimes/2.0.33"
+        receipt_path = self.temp / "nvm-install-rebind.json"
+        fake_npm = self.temp / "nvm/versions/node/v22/bin/npm"
+        write(fake_npm, "#!/bin/sh\nexit 99\n")
+        fake_npm.chmod(fake_npm.stat().st_mode | stat.S_IXUSR)
+        original_which = mc.shutil.which
+        original_run = mc.run
+
+        def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if argv and argv[0] == str(fake_npm):
+                installed = prefix / "node_modules/juno-code"
+                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33"}) + "\n")
+                executable = installed / "dist/bin/cli.mjs"
+                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+                executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+                return subprocess.CompletedProcess(argv, 0, "installed\n", "")
+            return original_run(argv, cwd, check, **kwargs)
+
+        try:
+            mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
+            mc.run = install_fixture
+            receipt = mc.runtime_install_rebind(argparse.Namespace(
+                root=self.new_controller,
+                branch="refs/heads/juno/controller-metadata-v1",
+                runtime_version="2.0.33",
+                install_prefix=prefix,
+                output=receipt_path,
+            ), self.policy)
+        finally:
+            mc.shutil.which = original_which
+            mc.run = original_run
+
+        expected_runtime = (prefix / "node_modules/juno-code/dist/bin/cli.mjs").resolve()
+        self.assertEqual(receipt["runtime"]["executable"], str(expected_runtime))
+        self.assertTrue(receipt_path.is_file())
+        self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), str(expected_runtime))
+
+    def test_runtime_install_rebind_removes_failed_fresh_prefix(self) -> None:
+        self.prepare()
+        prefix = self.temp / "failed-runtime"
+        fake_npm = self.temp / "bin/npm"
+        write(fake_npm, "#!/bin/sh\nexit 1\n")
+        fake_npm.chmod(fake_npm.stat().st_mode | stat.S_IXUSR)
+        original_which = mc.shutil.which
+        try:
+            mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
+            with self.assertRaisesRegex(mc.BoundaryError, "exact runtime installation failed"):
+                mc.runtime_install_rebind(argparse.Namespace(
+                    root=self.new_controller,
+                    branch="refs/heads/juno/controller-metadata-v1",
+                    runtime_version="2.0.33",
+                    install_prefix=prefix,
+                    output=self.temp / "failed-runtime.json",
+                ), self.policy)
+        finally:
+            mc.shutil.which = original_which
+        self.assertFalse(prefix.exists())
+        self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+
     def test_runtime_rebind_is_local_and_rollback_is_plan_only(self) -> None:
         self.prepare()
         before_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)

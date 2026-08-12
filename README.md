@@ -150,7 +150,8 @@ than comparing them to the invoking package.
 
 If only the registered executable is stale, explicitly rebind it to an already
 installed `cli.mjs`; this changes controller-local identity and writes a receipt,
-but does not install, upgrade, or mutate any user package:
+but does not install, upgrade, or mutate any user package. The executable must
+be outside **every** Git worktree and Git ancestor:
 
 ```bash
 yy migrate runtime-rebind \
@@ -158,6 +159,26 @@ yy migrate runtime-rebind \
   --runtime /absolute/juno-code/dist/bin/cli.mjs --runtime-version X.Y.Z \
   --output /tmp/yy-runtime-rebind.json
 ```
+
+NVM itself is commonly a Git checkout, so an npm-global package below `~/.nvm`
+does not satisfy that immutable-path contract even when it is a released package.
+Use the supported exact-release installer instead of packing or copying files by
+hand. The prefix must be absent, outside all Git ancestors, and durable; a
+versioned location such as `~/.local/share/juno/runtimes/X.Y.Z` is recommended:
+
+```bash
+yy migrate runtime-install-rebind \
+  --root /absolute/controller --branch refs/heads/CONTROLLER \
+  --runtime-version X.Y.Z \
+  --install-prefix "$HOME/.local/share/juno/runtimes/X.Y.Z" \
+  --output /tmp/yy-runtime-install-rebind.json
+```
+
+This runs an exact `juno-code@X.Y.Z` npm install with lifecycle scripts disabled,
+validates the installed package name/version and executable, then performs the
+same clean-controller transactional rebind. A failed install or rebind removes
+only the newly created prefix. Existing prefixes and mutable source builds are
+never accepted or modified.
 
 If the installed controller launcher is itself an obsolete generation, use the
 runtime in the clean, detached, exact-target integration owner rather than editing

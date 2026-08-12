@@ -385,7 +385,10 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
         raise BoundaryError("runtime executable must be an installed distribution outside every linked worktree and Git administration directory")
     containing_repo = git(executable.parent, "rev-parse", "--show-toplevel", check=False)
     if containing_repo:
-        raise BoundaryError("runtime executable must not come from a mutable Git worktree")
+        raise BoundaryError(
+            "runtime executable must not come from a mutable Git worktree (including an unrelated Git ancestor such as ~/.nvm); "
+            "install and rebind an exact release into a fresh non-Git prefix with `yy migrate runtime-install-rebind --help`"
+        )
     result = run([str(executable), "--version"], executable.parent, False)
     match = VERSION_RE.search(result.stdout + "\n" + result.stderr)
     if result.returncode or not match or match.group(1) != expected_version:
@@ -1068,6 +1071,59 @@ def agent_surface_repair_verify(args: argparse.Namespace, policy: dict[str, Any]
     atomic_receipt(output, payload); return payload
 
 
+def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
+    """Install one exact registry release into a fresh non-Git prefix, then bind it.
+
+    This is the supported escape from package managers (notably NVM) whose
+    otherwise immutable global package directory has an unrelated Git ancestor.
+    The destination is deliberately fresh: this command never upgrades or
+    repairs an existing installation in place.
+    """
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.runtime_version):
+        raise BoundaryError("runtime version must be an exact released semantic version")
+    prefix = args.install_prefix.expanduser().resolve()
+    root = exact_worktree(args.root)
+    output = args.output.expanduser().resolve()
+    if prefix.exists() or prefix.is_symlink():
+        raise BoundaryError(f"runtime install prefix must be fresh and absent: {prefix}")
+    for protected, label in ((root, "controller worktree"), (Path(common_dir(root)).resolve(), "controller Git administration directory")):
+        try:
+            prefix.relative_to(protected)
+        except ValueError:
+            continue
+        raise BoundaryError(f"runtime install prefix must be outside the {label}: {prefix}")
+    if output.exists() or output.is_symlink():
+        raise BoundaryError(f"immutable receipt collision: {output}")
+    npm = shutil.which("npm")
+    if not npm:
+        raise BoundaryError("npm is required to install the exact juno-code release")
+    package_spec = f"juno-code@{args.runtime_version}"
+    try:
+        result = run([
+            npm, "install", "--prefix", str(prefix), "--ignore-scripts", "--no-audit",
+            "--no-fund", "--package-lock=false", "--save=false", "--exact", package_spec,
+        ], root, False)
+        if result.returncode:
+            raise BoundaryError(
+                f"exact runtime installation failed for {package_spec}: "
+                f"{result.stderr.strip() or result.stdout.strip() or 'npm failed'}"
+            )
+        package_root = prefix / "node_modules/juno-code"
+        manifest = read_json(package_root / "package.json", "installed juno-code package")
+        if manifest.get("name") != "juno-code" or manifest.get("version") != args.runtime_version:
+            raise BoundaryError("installed package identity does not match the requested exact juno-code release")
+        executable = package_root / "dist/bin/cli.mjs"
+        return runtime_rebind(argparse.Namespace(
+            root=root, branch=args.branch, runtime=executable,
+            runtime_version=args.runtime_version, output=output,
+        ), policy)
+    except BaseException:
+        # The prefix was required absent, so removing it cannot destroy user
+        # state. A failed install/rebind must not leave a misleading runtime.
+        shutil.rmtree(prefix, ignore_errors=True)
+        raise
+
+
 def runtime_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     root = exact_worktree(args.root)
     expected_branch = safe_ref(args.branch, "branch")
@@ -1201,6 +1257,10 @@ def main() -> None:
     surface_verify.add_argument("--plan", type=Path, required=True); surface_verify.add_argument("--output", type=Path, required=True)
     rebind = sub.add_parser("runtime-rebind"); rebind.add_argument("--root", type=Path, required=True); rebind.add_argument("--branch", required=True)
     rebind.add_argument("--runtime", type=Path, required=True); rebind.add_argument("--runtime-version", required=True); rebind.add_argument("--output", type=Path, required=True)
+    install_rebind = sub.add_parser("runtime-install-rebind")
+    install_rebind.add_argument("--root", type=Path, required=True); install_rebind.add_argument("--branch", required=True)
+    install_rebind.add_argument("--runtime-version", required=True); install_rebind.add_argument("--install-prefix", type=Path, required=True)
+    install_rebind.add_argument("--output", type=Path, required=True)
     for name in ("cutover-plan", "rollback-plan"):
         item = sub.add_parser(name); item.add_argument("--plan", type=Path, required=True); item.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -1234,6 +1294,7 @@ def main() -> None:
     elif args.command == "agent-surface-repair-apply": payload = agent_surface_repair_apply(args, policy)
     elif args.command == "agent-surface-repair-verify": payload = agent_surface_repair_verify(args, policy)
     elif args.command == "runtime-rebind": payload = runtime_rebind(args, policy)
+    elif args.command == "runtime-install-rebind": payload = runtime_install_rebind(args, policy)
     else: payload = transition_plan(args, policy, args.command == "rollback-plan")
     print(json.dumps({"outcome": payload.get("outcome", "verified"), "receipt": str(args.output.resolve())}, sort_keys=True))
 

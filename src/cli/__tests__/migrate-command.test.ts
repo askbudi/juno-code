@@ -25,6 +25,20 @@ describe('migration CLI', () => {
       '--output', '/tmp/runtime-rebind.json']);
   });
 
+  it('routes exact-release installation into a fresh non-Git prefix before rebind', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureMigrationCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'migrate', 'runtime-install-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime-version', '2.1.3', '--install-prefix', '/opt/juno/runtimes/2.1.3',
+      '--output', '/tmp/runtime-install-rebind.json']);
+    expect(invoke).toHaveBeenCalledWith(['runtime-install-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime-version', '2.1.3', '--install-prefix', '/opt/juno/runtimes/2.1.3',
+      '--output', '/tmp/runtime-install-rebind.json']);
+  });
+
   it('routes reviewed agent-surface repair plan, apply, and verify commands', async () => {
     const invoke = vi.fn(async () => undefined);
     const planProgram = new Command().exitOverride(); configureMigrationCommand(planProgram, invoke);
