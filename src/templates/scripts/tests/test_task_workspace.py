@@ -1016,15 +1016,97 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(path.returncode, 2)
         self.assertIn("path already exists", path.stderr)
 
-    def test_moved_target_is_reported_and_does_not_rebase_task(self) -> None:
+    def test_status_reads_live_tip_and_exact_cumulative_paths_without_rewriting_creation_evidence(self) -> None:
+        started = self.payload("start", "X")
+        frozen_receipt = started["creation_receipt"]
+        frozen_state = (self.controller / ".juno_task/state/tasks.json").read_bytes()
+        at_a = self.payload("status", "X")
+        self.assertEqual(at_a["tip_sha"], self.base)
+        self.assertEqual(at_a["changed_paths"], [])
+
+        tip_b = self.commit_task("X", "src/one.txt")
+        at_b = self.payload("status", "X")
+        self.assertEqual(at_b["tip_sha"], tip_b)
+        self.assertEqual(at_b["changed_paths"], ["src/one.txt"])
+        self.assertEqual(at_b["base_sha"], self.base)
+        self.assertEqual(at_b["creation_receipt"], frozen_receipt)
+        self.assertEqual(at_b["creation_receipt"]["base_sha"], self.base)
+
+        tip_c = self.commit_task("X", "src/two.txt")
+        at_c = self.payload("status", "X")
+        self.assertEqual(at_c["tip_sha"], tip_c)
+        self.assertEqual(at_c["changed_paths"], ["src/one.txt", "src/two.txt"])
+        # Status is read-only: persisted WORKING truth remains the immutable A snapshot.
+        self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), frozen_state)
+
+    def test_status_and_finish_share_fail_closed_live_worktree_identity(self) -> None:
         self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "src/dirty.txt").write_text("dirty\n")
+        for operation in ("status", "finish"):
+            failed = self.command(operation, "X", False)
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("worktree is dirty", failed.stderr)
+        (worktree / "src/dirty.txt").unlink()
+
+        git(worktree, "config", "--worktree", "juno.workspace.role", "integration-owner")
+        for operation in ("status", "finish"):
+            failed = self.command(operation, "X", False)
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("role/identity drifted", failed.stderr)
+        git(worktree, "config", "--worktree", "juno.workspace.role", "task")
+
+        git(worktree, "checkout", "--detach", self.base)
+        failed = self.command("status", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("branch/worktree identity drifted", failed.stderr)
+        git(worktree, "checkout", "task-X")
+
+        git(worktree, "config", "--worktree", "juno.workspace.taskId", "reused")
+        failed = self.command("status", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("role/identity drifted", failed.stderr)
+
+    def test_status_refuses_missing_reused_and_receipt_drifted_worktrees(self) -> None:
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        git(self.repository, "worktree", "remove", str(worktree))
+        missing = self.command("status", "X", False)
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("missing or reused", missing.stderr)
+
+        worktree.mkdir()
+        git(worktree, "init")
+        git(worktree, "config", "user.email", "test@example.com")
+        git(worktree, "config", "user.name", "Test")
+        (worktree / "foreign.txt").write_text("foreign\n")
+        git(worktree, "add", "foreign.txt")
+        git(worktree, "commit", "-m", "foreign")
+        reused = self.command("status", "X", False)
+        self.assertEqual(reused.returncode, 2)
+        self.assertIn("different repository", reused.stderr)
+
+        self.payload("start", "Y")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["Y"]["creation_receipt"]["base_sha"] = "0" * 40
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        drifted = self.command("status", "Y", False)
+        self.assertEqual(drifted.returncode, 2)
+        self.assertIn("creation receipt or recorded identity drifted", drifted.stderr)
+
+    def test_moved_target_is_reported_independently_without_rebasing_live_task_tip(self) -> None:
+        self.payload("start", "X")
+        task_tip = self.commit_task("X")
         advanced = self.advance_target()
         failed = self.command("start", "X", False)
         self.assertEqual(failed.returncode, 2)
         status = self.payload("status", "X")
         self.assertTrue(status["target_moved"])
         self.assertEqual(status["current_target_sha"], advanced)
-        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), self.base)
+        self.assertEqual(status["tip_sha"], task_tip)
+        self.assertEqual(status["changed_paths"], ["src/feature.txt"])
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), task_tip)
 
     def test_finish_refuses_dirty_and_preserves_worktree(self) -> None:
         self.payload("start", "X")
@@ -1034,7 +1116,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("dirty", failed.stderr)
         self.assertTrue((self.workspaces / "X/src/untracked.txt").exists())
-        self.assertEqual(self.payload("status", "X")["state"], "WORKING")
+        self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"], "WORKING")
 
     def test_finish_refuses_disallowed_path_and_preserves_commit(self) -> None:
         self.payload("start", "X")

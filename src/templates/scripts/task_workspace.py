@@ -979,6 +979,70 @@ def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str,
         write_state(controller, state)
 
 
+def observe_working_task(record: dict[str, Any], configured_repository: Path,
+                         config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str]]:
+    """Read one admitted WORKING task from live Git identity, never its start snapshot."""
+    creation_receipt = record.get("creation_receipt", {})
+    identity = record.get("workspace_identity", {})
+    expected_worktree = worktree_path(config, task_id)
+    receipt_matches = (
+        isinstance(creation_receipt, dict)
+        and stable_sha256(creation_receipt) == identity.get("create_receipt_sha256")
+        and creation_receipt.get("task_id") == task_id
+        and creation_receipt.get("repository") == record.get("repository")
+        and creation_receipt.get("target_ref") == record.get("target_ref")
+        and creation_receipt.get("base_sha") == record.get("base_sha")
+        and creation_receipt.get("branch_ref") == record.get("branch_ref")
+        and creation_receipt.get("worktree") == record.get("worktree")
+        and creation_receipt.get("manifest_identity") == identity.get("manifest_identity")
+        and creation_receipt.get("expected_paths_sha256") == identity.get("expected_paths_sha256")
+        and stable_sha256(creation_receipt.get("allowed_paths")) == identity.get("expected_paths_sha256")
+        and stable_sha256(creation_receipt.get("materialization")) == identity.get("materialization_sha256")
+    )
+    if record.get("task_id") != task_id or record.get("state") != "WORKING" or not receipt_matches:
+        raise TaskWorkspaceError("task creation receipt or recorded identity drifted")
+    try:
+        recorded_repository = exact_root(Path(record["repository"]), "recorded task repository")
+        worktree = exact_root(Path(record["worktree"]), "recorded task worktree")
+    except (KeyError, TypeError, OSError, TaskWorkspaceError) as exc:
+        raise TaskWorkspaceError("recorded task repository/worktree is missing or reused") from exc
+    if recorded_repository != configured_repository or worktree != expected_worktree:
+        raise TaskWorkspaceError("task repository/worktree identity drifted")
+    if (Path(git(recorded_repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+            != Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()):
+        raise TaskWorkspaceError("recorded task worktree belongs to a different repository")
+    metadata = {
+        "role": "task", "roleBase": record["base_sha"], "taskId": task_id,
+        "manifestIdentity": identity.get("manifest_identity"),
+        "createReceiptSha256": identity.get("create_receipt_sha256"),
+        "expectedPathsSha256": identity.get("expected_paths_sha256"),
+        "materializationSha256": identity.get("materialization_sha256"),
+    }
+    drifted = [key for key, expected in metadata.items()
+               if not isinstance(expected, str) or not expected
+               or git(worktree, "config", "--worktree", "--get",
+                      f"juno.workspace.{key}", check=False) != expected]
+    if drifted:
+        raise TaskWorkspaceError(
+            "task worktree role/identity drifted: " + ", ".join(drifted)
+        )
+    head = git(worktree, "rev-parse", "HEAD", check=False)
+    branch = record["branch_ref"]
+    if (not SHA_RE.fullmatch(head)
+            or git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != branch
+            or git(recorded_repository, "rev-parse", branch, check=False) != head):
+        raise TaskWorkspaceError("task branch/worktree identity drifted")
+    if git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise TaskWorkspaceError("task worktree is dirty; commit or remove all changes")
+    if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
+            record["base_sha"], head], recorded_repository, check=False).returncode:
+        raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
+    changed = sorted(set(git(
+        worktree, "diff", "--name-only", f"{record['base_sha']}..{head}"
+    ).splitlines()))
+    return recorded_repository, worktree, head, changed
+
+
 def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
@@ -998,20 +1062,11 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
 
     # Validations run outside the controller state lock. Independent feature
     # finishes therefore stay concurrent; the compare below prevents stale state.
-    repository = product_repository(controller, config)
-    worktree = exact_root(Path(record["worktree"]), "recorded task worktree")
-    if repository != Path(record["repository"]).resolve() or worktree != worktree_path(config, task_id):
-        raise TaskWorkspaceError("task repository/worktree identity drifted")
-    head = git(worktree, "rev-parse", "HEAD")
-    if git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"] or git(repository, "rev-parse", record["branch_ref"], check=False) != head:
-        raise TaskWorkspaceError("task branch/worktree identity drifted")
-    if git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
-        raise TaskWorkspaceError("task worktree is dirty; commit or remove all changes before finish")
+    repository, worktree, head, changed = observe_working_task(
+        record, product_repository(controller, config), config, task_id
+    )
     if head == record["base_sha"]:
         raise TaskWorkspaceError("task has no committed changes")
-    if run(["git", "-C", str(repository), "merge-base", "--is-ancestor", record["base_sha"], head], repository, check=False).returncode:
-        raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
-    changed = sorted(set(git(worktree, "diff", "--name-only", f"{record['base_sha']}..{head}").splitlines()))
     if not changed:
         raise TaskWorkspaceError("task has no product diff from its exact recorded base")
     forbidden = [path for path in changed if path_within(path, config["controller_private_paths"])]
@@ -1081,6 +1136,11 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
         return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED",
                 "outcome": "status", "runtime_generation": generation}
     result = {**record, "outcome": "status", "runtime_generation": generation}
+    if record.get("state") == "WORKING":
+        _, _, live_tip, live_paths = observe_working_task(
+            record, configured_repository, config, task_id
+        )
+        result.update({"tip_sha": live_tip, "changed_paths": live_paths})
     repository = Path(record.get("repository", ""))
     if repository.is_dir():
         current = optional_ref_sha(repository, record.get("target_ref", ""))
