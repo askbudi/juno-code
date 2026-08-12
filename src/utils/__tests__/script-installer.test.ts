@@ -1003,7 +1003,13 @@ describe('ScriptInstaller', () => {
       expect(typeof updated).toBe('boolean');
     });
 
-    it('should preserve the assignment guard when replacing a project kanban wrapper', async () => {
+    it('should preserve the assignment guard when replacing a project kanban wrapper', {
+      // Replacing the wrapper performs a full managed-asset installation. Give
+      // this integration-style canary a bounded load budget without inflating
+      // the global fast-test timeout or multiplying timed-out I/O with retries.
+      timeout: 60_000,
+      retry: 0,
+    }, async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD"\n');
