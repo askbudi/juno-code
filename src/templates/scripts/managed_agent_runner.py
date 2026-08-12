@@ -749,6 +749,32 @@ def terminate_group(pgid: int, signum: int) -> None:
     except ProcessLookupError: pass
 
 
+def record_group_signal(events: list[dict[str, Any]], pgid: int, signum: int,
+                        reason: str, started: float) -> None:
+    events.append({"at": now(), "elapsed_seconds": round(time.monotonic() - started, 3),
+                   "process_group_id": pgid, "signal": signal.Signals(signum).name,
+                   "reason": reason})
+    terminate_group(pgid, signum)
+
+
+def terminate_group_and_wait(events: list[dict[str, Any]], pgid: int, reason: str,
+                             started: float, grace_seconds: float = .5) -> None:
+    """Terminate the owned producer group and do not return while it is live."""
+    if not group_active(pgid):
+        return
+    record_group_signal(events, pgid, signal.SIGTERM, reason, started)
+    deadline = time.monotonic() + grace_seconds
+    while group_active(pgid) and time.monotonic() < deadline:
+        time.sleep(.02)
+    if group_active(pgid):
+        record_group_signal(events, pgid, signal.SIGKILL, reason + "_escalation", started)
+        deadline = time.monotonic() + 2
+        while group_active(pgid) and time.monotonic() < deadline:
+            time.sleep(.02)
+    if group_active(pgid):
+        raise RunnerError(f"managed process group {pgid} remains active after SIGKILL")
+
+
 def log_component(value: str, fallback: str) -> str:
     cleaned = __import__("re").sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
     return cleaned[:64] or fallback
@@ -773,15 +799,21 @@ def allocate_live_log(workflow: str, task: str) -> tuple[Path, Any]:
 
 def announce_completion(started: float, code: int, timed_out: bool, path: Path) -> tuple[str, float]:
     finished = now(); elapsed = round(time.monotonic() - started, 3)
-    print("yy long run complete: "
-          f"finish_time={finished} duration_seconds={elapsed} exit_code={code} "
-          f"timed_out={'true' if timed_out else 'false'} log_path={path}",
-          file=sys.stderr, flush=True)
+    exit_signal = signal.Signals(-code).name if code < 0 and -code in signal.valid_signals() else "none"
+    try:
+        print("yy long run complete: "
+              f"finish_time={finished} duration_seconds={elapsed} exit_code={code} "
+              f"exit_signal={exit_signal} timed_out={'true' if timed_out else 'false'} log_path={path}",
+              file=sys.stderr, flush=True)
+    except OSError:
+        # Parent/observer pipe loss cannot prevent durable terminal evidence.
+        pass
     return finished, elapsed
 
 
 def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
-         combined_path: Path, live: Any, timeout_seconds: float) -> bool:
+         combined_path: Path, live: Any, timeout_seconds: float,
+         interrupted: Any, termination_events: list[dict[str, Any]], started: float) -> bool:
     selector = selectors.DefaultSelector()
     assert proc.stdout and proc.stderr
     for stream, label in ((proc.stdout, b"stdout"), (proc.stderr, b"stderr")):
@@ -790,10 +822,18 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
         pending = {b"stdout": b"", b"stderr": b""}
         deadline = time.monotonic() + timeout_seconds
         timed_out = False
+        cancellation_deadline: float | None = None
         while selector.get_map():
+            if interrupted() and cancellation_deadline is None:
+                cancellation_deadline = time.monotonic() + .5
+            if cancellation_deadline is not None and time.monotonic() >= cancellation_deadline and group_active(proc.pid):
+                record_group_signal(termination_events, proc.pid, signal.SIGKILL,
+                                    "wrapper_signal_escalation", started)
+                cancellation_deadline = float("inf")
             if not timed_out and time.monotonic() >= deadline:
                 timed_out = True
-                terminate_group(proc.pid, signal.SIGKILL)
+                record_group_signal(termination_events, proc.pid, signal.SIGTERM, "timeout", started)
+                cancellation_deadline = time.monotonic() + .5
             for key, _ in selector.select(.05):
                 chunk = os.read(key.fd, 65536)
                 label = key.data
@@ -806,7 +846,8 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
                     live.write(chunk)
                     sys.stderr.buffer.write(chunk); sys.stderr.buffer.flush()
                 except OSError as exc:
-                    terminate_group(proc.pid, signal.SIGKILL)
+                    record_group_signal(termination_events, proc.pid, signal.SIGKILL,
+                                        "output_pipe_or_log_loss", started)
                     raise RunnerError(f"long-run log write failed: {exc}") from exc
                 data = pending[label] + chunk
                 lines = data.splitlines(keepends=True)
@@ -875,28 +916,34 @@ def run(args: argparse.Namespace) -> int:
     proc: subprocess.Popen[bytes] | None = None; interrupted = 0
     producer_completed = False
     timed_out = False
+    termination_events: list[dict[str, Any]] = []
     old_handlers: dict[int, Any] = {}
+    started = time.monotonic()
     def forward(signum: int, _frame: Any) -> None:
         nonlocal interrupted
         interrupted = interrupted or signum
-        if proc is not None: terminate_group(proc.pid, signum)
+        if proc is not None:
+            record_group_signal(termination_events, proc.pid, signum,
+                                "wrapper_signal", started)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         old_handlers[sig] = signal.signal(sig, forward)
-    started = time.monotonic()
     started_ns = time.time_ns()
     try:
         proc = subprocess.Popen(argv, cwd=launcher, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        active["child_pid"] = proc.pid; active["process_group_id"] = proc.pid; atomic_json(out / "active.json", active)
+        active["child_pid"] = proc.pid; active["process_group_id"] = proc.pid
+        active["owner_pid"] = os.getpid(); atomic_json(out / "active.json", active)
         timed_out = pump(proc, stdout_path, stderr_path, combined_path,
-                         live_log, args.timeout_seconds)
-        code = proc.wait(); live_log.close()
+                         live_log, args.timeout_seconds, lambda: interrupted,
+                         termination_events, started)
+        code = proc.wait()
+        if group_active(proc.pid):
+            terminate_group_and_wait(termination_events, proc.pid,
+                                     "producer_exit_with_live_descendants", started)
+        live_log.close()
         producer_completed = True
         producer_completed_at, producer_elapsed = announce_completion(
             started, code, timed_out, live_log_path)
-        if group_active(proc.pid):
-            terminate_group(proc.pid, signal.SIGTERM)
-            raise RunnerError("child process-group leaked descendants")
         if interrupted:
             raise RunnerError(f"managed child interrupted by signal {interrupted}")
         if timed_out:
@@ -938,6 +985,9 @@ def run(args: argparse.Namespace) -> int:
                     "elapsed_seconds": round(time.monotonic() - started, 3), "session_id": session.strip(),
                     "producer_completed_at": producer_completed_at,
                     "producer_elapsed_seconds": producer_elapsed, "timed_out": False,
+                    "child_pid": proc.pid, "process_group_id": proc.pid,
+                    "exit_signal": signal.Signals(-code).name if code < 0 else None,
+                    "termination_events": termination_events,
                     "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
                     "capture_source": capture_source,
@@ -957,10 +1007,13 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"receipt": str((out / "receipt.json").resolve()), "session_id": session.strip(), "response": response}))
         return 0
     except Exception as exc:
-        if proc is not None and group_active(proc.pid): terminate_group(proc.pid, signal.SIGKILL)
+        cleanup_error: Exception | None = None
+        if proc is not None and group_active(proc.pid):
+            try: terminate_group_and_wait(termination_events, proc.pid, "runner_failure", started)
+            except Exception as group_exc: cleanup_error = group_exc
         if proc is not None and proc.returncode is None:
             try: proc.wait(timeout=2)
-            except subprocess.TimeoutExpired: pass
+            except subprocess.TimeoutExpired: cleanup_error = cleanup_error or RunnerError("managed producer did not reap")
         try: live_log.close()
         except OSError: pass
         exit_code = proc.returncode if proc and proc.returncode is not None else 1
@@ -972,12 +1025,18 @@ def run(args: argparse.Namespace) -> int:
             producer_elapsed = locals().get("producer_elapsed", round(time.monotonic() - started, 3))
         terminal = {"schema_version": SCHEMA, "state": "interrupted" if interrupted else "failed", "completed_at": now(),
                     "exit_code": exit_code, "timed_out": timed_out,
+                    "child_pid": proc.pid if proc else None,
+                    "process_group_id": proc.pid if proc else None,
+                    "exit_signal": signal.Signals(-exit_code).name if exit_code < 0 else None,
+                    "interrupted_signal": signal.Signals(interrupted).name if interrupted else None,
+                    "termination_events": termination_events,
                     "producer_completed_at": producer_completed_at,
                     "producer_elapsed_seconds": producer_elapsed,
                     "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "elapsed_seconds": round(time.monotonic() - started, 3), "semantic_outcome": "failed",
                     "compatible_config_sha256": compatible_config["sha256"],
-                    "failure_type": type(exc).__name__, "failure": str(exc)[:512],
+                    "failure_type": type(cleanup_error or exc).__name__,
+                    "failure": str(cleanup_error or exc)[:512],
                     "safe_next_action": "inspect_terminal_and_start_fresh_output_directory"}
         atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "tool_id": args.tool_id, "review_binding": binding, "launch": evidence(out / "launch.json")})
         (out / "active.json").unlink(missing_ok=True)

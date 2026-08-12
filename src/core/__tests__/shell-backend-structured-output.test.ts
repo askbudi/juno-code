@@ -191,6 +191,32 @@ afterEach(async () => {
 });
 
 describe('ShellBackend structured output', () => {
+  it('waits for timeout escalation to kill Pi child and grandchild before rejecting', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-shell-process-group-'));
+    tempRoots.push(tempRoot);
+    const servicesDir = path.join(tempRoot, 'services');
+    await fs.ensureDir(servicesDir);
+    const marker = path.join(tempRoot, 'late-mutation');
+    const pids = path.join(tempRoot, 'descendant-pids');
+    await fs.writeFile(path.join(servicesDir, 'pi.py'), `#!/usr/bin/env python3
+import os, signal, subprocess, sys, time
+child_code = "import os,pathlib,signal,subprocess,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); g=subprocess.Popen([sys.executable,'-c',%r]); pathlib.Path(%r).write_text(str(os.getpid())+' '+str(g.pid)); time.sleep(30)" % ("import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(1.2); pathlib.Path(%r).write_text('late')" % ${JSON.stringify(marker)}, ${JSON.stringify(pids)})
+subprocess.Popen([sys.executable, '-c', child_code])
+time.sleep(30)
+`, { mode: 0o755 });
+    const backend = new ShellBackend();
+    backend.configure({ workingDirectory: tempRoot, servicesPath: servicesDir, timeout: 100 });
+    await backend.initialize();
+    await expect(backend.execute({
+      toolName: 'pi_subagent', arguments: { instruction: 'wait', project_path: tempRoot },
+      timeout: 1000, priority: 'normal', metadata: { sessionId: 'cancel-test', iterationNumber: 1 },
+    })).rejects.toThrow('timed out');
+    const descendantPids = (await fs.readFile(pids, 'utf8')).trim().split(/\s+/).map(Number);
+    for (const pid of descendantPids) expect(() => process.kill(pid, 0)).toThrow();
+    await new Promise((done) => setTimeout(done, 1300));
+    expect(await fs.pathExists(marker)).toBe(false);
+  });
+
   it('emits JSON-parsable stdout even when capture file is absent', async () => {
     const { servicesDir, workingDir } = await createStubClaudeService();
 
