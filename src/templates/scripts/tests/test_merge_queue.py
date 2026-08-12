@@ -511,6 +511,18 @@ raise SystemExit(2)
                          ("CONFLICT_RESOLVED", "FAILED_TEST"))
         return checkout, merge_runtime.owner_marker(self.controller.resolve(), checkout), old_feature
 
+    def prepare_legacy_stale_resolved_candidate(self) -> tuple[Path, Path, str, dict]:
+        checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        attempt = state["tasks"]["B"]["queue_attempt"]
+        attempt["outcome"] = "STALE_TARGET"
+        attempt.pop("dependency_lock_refusal", None)
+        state["tasks"]["B"]["last_queue_outcome"] = "STALE_TARGET"
+        historical_attempt = json.loads(json.dumps(attempt))
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        return checkout, marker, old_feature, historical_attempt
+
     def commit_resolved_repair(self, text: str = "repaired\n") -> str:
         worktree = self.workspaces / "B"
         (worktree / "src/shared.txt").write_text(text)
@@ -1503,6 +1515,70 @@ raise SystemExit(2)
         self.assertFalse(checkout.exists())
         merged = merge_runtime.merge_next(self.controller.resolve())
         self.assertEqual((merged["outcome"], merged["candidate_sha"]), ("MERGED", repaired_tip))
+
+    def test_legacy_stale_resolved_candidate_requeues_then_descendant_reopens(self) -> None:
+        checkout, marker, old_feature, historical_attempt = \
+            self.prepare_legacy_stale_resolved_candidate()
+        old_candidate = git(checkout, "rev-parse", "HEAD")
+        repaired_tip = self.commit_resolved_repair()
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, current)
+
+        stale = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((stale["state"], stale["outcome"], stale["tip_sha"]),
+                         ("QUEUED", "RISK_TARGET_MOVED", old_feature))
+        self.assertEqual(stale["observed_target_sha"], moved)
+        failure = stale["prior_queue_failure"]
+        self.assertEqual((failure["outcome"], failure["candidate_sha"]),
+                         ("STALE_TARGET", old_candidate))
+        self.assertEqual(failure["legacy_queue_attempt"], historical_attempt)
+        self.assertNotIn("dependency_lock_refusal", failure)
+        self.assertNotIn("dependency_lock_refusal", failure["legacy_queue_attempt"])
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((reopened["state"], reopened["tip_sha"], reopened["outcome"]),
+                         ("QUEUED", repaired_tip, "REQUEUED_AFTER_TIP_REFRESH"))
+        self.assertEqual(reopened["prior_queue_failure"]["legacy_queue_attempt"],
+                         historical_attempt)
+        conflict = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
+
+    def test_legacy_stale_resolved_candidate_refuses_exact_ownership_mismatch(self) -> None:
+        checkout, marker, _, _ = self.prepare_legacy_stale_resolved_candidate()
+        self.commit_resolved_repair()
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, current)
+        owner = json.loads(marker.read_text())
+        owner["token"] = "0" * 48
+        marker.write_text(json.dumps(owner, sort_keys=True, separators=(",", ":")) + "\n")
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "ownership mismatched"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        status = self.task("status", "B")
+        self.assertEqual((status["state"], status["last_queue_outcome"]),
+                         ("CONFLICT_RESOLVED", "STALE_TARGET"))
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_legacy_stale_resolved_candidate_refuses_same_target_ambiguity(self) -> None:
+        checkout, marker, _, historical_attempt = self.prepare_legacy_stale_resolved_candidate()
+        self.commit_resolved_repair()
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "ambiguous while target has not moved"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        status = self.task("status", "B")
+        self.assertEqual((status["state"], status["queue_attempt"]),
+                         ("CONFLICT_RESOLVED", historical_attempt))
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
 
     def test_stale_failed_resolved_candidate_requeues_then_descendant_reopens(self) -> None:
         checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
