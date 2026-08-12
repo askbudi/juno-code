@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
 /** One lock shared by continuity state, runtime liveness markers, migration, and retention. */
 export const SESSION_CONTINUITY_SHARED_LOCK_NAME = 'session_continuity.v2.json';
+const PROJECT_STATE_KIND_PATTERN = /^[a-z][a-z0-9_]*$/;
 const LOCK_RETRY_MS = 25;
 const LOCK_TIMEOUT_MS = 5_000;
 
@@ -32,6 +33,46 @@ function gitCommonDirectory(workingDirectory: string): string | null {
   }
 }
 
+export interface JunoProjectStateLocation {
+  directory: string;
+  durabilityAnchor: string;
+}
+
+/** Resolve a volatile project-state kind using Git-common identity or a stable non-Git path hash. */
+export function resolveJunoProjectStateLocation(
+  workingDirectory: string,
+  stateKind: string,
+  env: NodeJS.ProcessEnv = process.env,
+): JunoProjectStateLocation {
+  if (!PROJECT_STATE_KIND_PATTERN.test(stateKind)) {
+    throw new Error(`Invalid Juno project-state kind: ${stateKind}`);
+  }
+
+  const canonicalWorkingDirectory = canonicalPath(workingDirectory);
+  const commonDirectory = gitCommonDirectory(canonicalWorkingDirectory);
+  if (commonDirectory) {
+    return {
+      directory: path.join(commonDirectory, 'juno', stateKind),
+      durabilityAnchor: commonDirectory,
+    };
+  }
+
+  const identity = createHash('sha256').update(canonicalWorkingDirectory).digest('hex').slice(0, 16);
+  const stateHome = path.resolve(env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), '.local', 'state'));
+  return {
+    directory: path.join(stateHome, 'juno-code', stateKind, identity),
+    durabilityAnchor: stateHome,
+  };
+}
+
+export function getJunoProjectStateDirectory(
+  workingDirectory: string,
+  stateKind: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return resolveJunoProjectStateLocation(workingDirectory, stateKind, env).directory;
+}
+
 /** Resolve every volatile session producer to one untracked repository-local state root. */
 export function getSessionMetadataDirectory(
   workingDirectory: string,
@@ -41,16 +82,7 @@ export function getSessionMetadataDirectory(
   if (override) {
     return path.resolve(workingDirectory, override);
   }
-
-  const canonicalWorkingDirectory = canonicalPath(workingDirectory);
-  const commonDirectory = gitCommonDirectory(canonicalWorkingDirectory);
-  if (commonDirectory) {
-    return path.join(commonDirectory, 'juno', 'session_metadata');
-  }
-
-  const identity = createHash('sha256').update(canonicalWorkingDirectory).digest('hex').slice(0, 16);
-  const stateHome = env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), '.local', 'state');
-  return path.join(stateHome, 'juno-code', 'session_metadata', identity);
+  return getJunoProjectStateDirectory(workingDirectory, 'session_metadata', env);
 }
 
 function processAlive(pid: number): boolean {
