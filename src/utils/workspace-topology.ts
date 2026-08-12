@@ -53,7 +53,8 @@ export interface WorkspaceTopology {
   };
   target: { ref: string | null; sha: string | null; owners: string[] };
   integration: {
-    status: 'unique' | 'missing' | 'multiple';
+    status: 'registered' | 'unique' | 'missing' | 'multiple';
+    registeredPath: string | null;
     owner: WorktreeState | null;
     candidates: string[];
     legacyRegistration: { path: string | null; prunable: boolean };
@@ -311,9 +312,20 @@ export function inspectWorkspaceTopology(
   const integrationCandidates = worktrees.filter(
     (item) => item.role === 'integration-owner' && !item.prunable,
   );
-  const integrationOwner = integrationCandidates.length === 1 ? integrationCandidates[0]! : null;
-  const integrationStatus =
-    integrationCandidates.length === 0
+  const registeredIntegrationPath = repo
+    ? config(repo, 'juno.integration.ownerPath')
+    : null;
+  const resolvedRegisteredIntegrationPath = registeredIntegrationPath
+    ? path.resolve(registeredIntegrationPath)
+    : null;
+  const registeredIntegrationOwner = resolvedRegisteredIntegrationPath
+    ? integrationCandidates.find((item) => item.path === resolvedRegisteredIntegrationPath) ?? null
+    : null;
+  const integrationOwner = registeredIntegrationOwner ??
+    (integrationCandidates.length === 1 ? integrationCandidates[0]! : null);
+  const integrationStatus = registeredIntegrationOwner
+    ? 'registered'
+    : integrationCandidates.length === 0
       ? 'missing'
       : integrationCandidates.length === 1
         ? 'unique'
@@ -447,13 +459,21 @@ export function inspectWorkspaceTopology(
       [controllerPath ?? 'missing', configuredRef ?? 'missing', controllerRef ?? 'detached'],
       'yy migrate registration plan',
     );
-  if (integrationStatus !== 'unique')
+  if (!integrationOwner)
     add(
       `integration-owner-${integrationStatus}`,
       'error',
       `Integration owner registration is ${integrationStatus}.`,
       integrationCandidates.map((item) => item.path),
       'yy integration repair --dry-run',
+    );
+  if (resolvedRegisteredIntegrationPath && !registeredIntegrationOwner)
+    add(
+      'integration-owner-registration-invalid',
+      'error',
+      'The canonical integration owner registration does not identify a protected live owner.',
+      [resolvedRegisteredIntegrationPath],
+      'yy integration register /absolute/integration-owner',
     );
   for (const candidate of integrationCandidates) {
     if (candidate.clean === false)
@@ -600,6 +620,7 @@ export function inspectWorkspaceTopology(
     target: { ref: targetRef, sha: targetSha, owners: targetOwners },
     integration: {
       status: integrationStatus,
+      registeredPath: resolvedRegisteredIntegrationPath,
       owner: integrationOwner,
       candidates: integrationCandidates.map((item) => item.path),
       legacyRegistration: {
@@ -632,7 +653,10 @@ export function workspaceLocation(
   let matches: string[] = [];
   if (kind === 'controller' && topology.controller.valid && topology.controller.path)
     matches = [topology.controller.path];
-  if (kind === 'integration') matches = topology.integration.candidates;
+  if (kind === 'integration')
+    matches = topology.integration.owner
+      ? [topology.integration.owner.path]
+      : topology.integration.candidates;
   if (kind === 'target') matches = topology.target.owners;
   if (kind === 'task')
     matches = topology.tasks

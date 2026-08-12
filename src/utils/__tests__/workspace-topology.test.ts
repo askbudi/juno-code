@@ -210,6 +210,24 @@ describe('normalized workspace topology', () => {
     expect(() => workspaceLocation(report, 'integration')).toThrow(/found 2/);
   });
 
+  it('uses the registered canonical owner when extra protected owners exist', () => {
+    const value = fixture();
+    const extra = path.join(path.dirname(value.primary), 'extra-integration');
+    git(value.primary, 'worktree', 'add', '-q', '--detach', extra, 'target');
+    git(extra, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(extra, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    git(value.primary, 'config', 'juno.integration.ownerPath', value.integration);
+
+    const report = inspectWorkspaceTopology(value.controller, '2.1.1');
+    expect(report.integration).toMatchObject({
+      status: 'registered',
+      registeredPath: value.integration,
+      owner: { path: value.integration },
+    });
+    expect(workspaceLocation(report, 'integration')).toBe(value.integration);
+    expect(report.findings.map((item) => item.code)).not.toContain('integration-owner-multiple');
+  });
+
   it('detects stale owners, wrong-role target holders, and task-role mismatch', () => {
     const value = fixture();
     git(value.primary, 'checkout', 'target');
