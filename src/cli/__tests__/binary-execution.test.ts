@@ -19,6 +19,8 @@ import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { expandSkillInvocation, findSkillFile } from '../../templates/extensions/pi/juno-skill-preprocessor.js';
 import {
   createSessionContinuityConfig,
   createSessionContinuityFixture,
@@ -195,6 +197,208 @@ describe('Binary Execution Tests', () => {
         }
       }
     }
+  });
+
+  describe('Build-required Pi skill boundaries', () => {
+  it('matches the provenance-bound installed Pi native expansion for a no-placeholder skill', async () => {
+    const nativeSkillDir = path.join(tempDir, '.pi', 'skills', 'native');
+    await fs.ensureDir(nativeSkillDir);
+    await fs.writeFile(
+      path.join(nativeSkillDir, 'SKILL.md'),
+      '---\nname: native\n---\nNative instructions',
+    );
+    const raw = `"quoted value" ## Ab12Cd\nquestion $(touch /tmp/never) '$HOME'\n@@no_code`;
+    const invocation = `/skill:native ${raw}`;
+
+    const piExecutable = execFileSync('sh', ['-c', 'command -v pi'], { encoding: 'utf8' }).trim();
+    const piCli = fs.realpathSync(piExecutable);
+    const piPackageRoot = path.dirname(path.dirname(piCli));
+    const piPackage = JSON.parse(
+      fs.readFileSync(path.join(piPackageRoot, 'package.json'), 'utf8'),
+    ) as { name: string; version: string };
+    const nativeSourcePath = path.join(piPackageRoot, 'dist/core/agent-session.js');
+    const nativeSource = fs.readFileSync(nativeSourcePath, 'utf8');
+    const nativeSourceSha256 = createHash('sha256').update(nativeSource).digest('hex');
+
+    expect({
+      executable: path.basename(piExecutable),
+      package: piPackage.name,
+      version: piPackage.version,
+      nativeSource: path.relative(piPackageRoot, nativeSourcePath),
+      nativeSourceSha256,
+    }).toEqual({
+      executable: 'pi',
+      package: '@earendil-works/pi-coding-agent',
+      version: '0.83.0',
+      nativeSource: 'dist/core/agent-session.js',
+      nativeSourceSha256: '9720d2a160540d9515ceb1ac4c4b4e73f4a215d703870c15b3c1863a2e37ff76',
+    });
+    expect(nativeSource).toContain('return args ? `${skillBlock}\\n\\n${args}` : skillBlock;');
+
+    const installedPi = (await import(pathToFileURL(path.join(piPackageRoot, 'dist/index.js')).href)) as {
+      AgentSession: { prototype: { _expandSkillCommand(text: string): string } };
+    };
+    const nativeSession = {
+      resourceLoader: {
+        getSkills: () => ({
+          skills: [{ name: 'native', filePath: findSkillFile('native', tempDir)!, baseDir: path.dirname(findSkillFile('native', tempDir)!) }],
+        }),
+      },
+      _extensionRunner: { emitError: vi.fn() },
+    };
+    const nativeOutput = installedPi.AgentSession.prototype._expandSkillCommand.call(
+      nativeSession,
+      invocation,
+    );
+    const junoOutput = expandSkillInvocation(invocation, tempDir);
+
+    expect(junoOutput).toBe(nativeOutput);
+    expect(junoOutput).toBe(
+      `<skill name="native" location="${findSkillFile('native', tempDir)}">\n` +
+        `References are relative to ${path.dirname(findSkillFile('native', tempDir)!)}.\n\n` +
+        `Native instructions\n</skill>\n\n${raw}`,
+    );
+  });
+
+  it('passes a real multiline heredoc through built ypl, CLI rewriting, and the installed Pi preprocessor', async () => {
+    try {
+      const builtYpl = path.join(PROJECT_ROOT, 'dist/bin/ypl.sh');
+      const builtPiExtension = path.join(
+        PROJECT_ROOT,
+        'dist/templates/extensions/pi/juno-skill-preprocessor.ts',
+      );
+      const builtRalphSkill = path.join(
+        PROJECT_ROOT,
+        'dist/templates/skills/pi/ralph-loop/SKILL.md',
+      );
+      const homeDir = path.join(tempDir, 'home');
+      const projectDir = path.join(tempDir, 'project');
+      const builtPackageRoot = path.join(tempDir, 'built-package');
+      const builtPackageDir = path.join(builtPackageRoot, 'dist');
+      const fixtureYpl = path.join(builtPackageDir, 'bin/ypl.sh');
+      const fixturePiExtension = path.join(
+        builtPackageDir,
+        'templates/extensions/pi/juno-skill-preprocessor.ts',
+      );
+      const fixtureRalphSkill = path.join(
+        builtPackageDir,
+        'templates/skills/pi/ralph-loop/SKILL.md',
+      );
+      const fakeBin = path.join(tempDir, 'fake-bin');
+      const servicesDir = path.join(homeDir, '.juno_code', 'services');
+      const installedExtension = path.join(projectDir, '.pi/extensions/juno-skill-preprocessor.ts');
+      const compiledExtension = path.join(projectDir, '.pi/extensions/juno-skill-preprocessor.mjs');
+      const installedSkill = path.join(projectDir, '.pi/skills/ralph-loop/SKILL.md');
+      const harnessPath = path.join(tempDir, 'invoke-installed-preprocessor.mjs');
+      const observedPromptPath = path.join(tempDir, 'prompt-before-preprocessor.txt');
+      const kanbanCallsPath = path.join(tempDir, 'kanban-read-calls.txt');
+      await Promise.all([
+        fs.ensureDir(path.dirname(installedExtension)),
+        fs.ensureDir(path.dirname(installedSkill)),
+        fs.ensureDir(fakeBin),
+        fs.ensureDir(servicesDir),
+      ]);
+      expect(await fs.pathExists(builtYpl)).toBe(true);
+      expect(await fs.pathExists(builtPiExtension)).toBe(true);
+      expect(await fs.pathExists(builtRalphSkill)).toBe(true);
+      await fs.copy(path.join(PROJECT_ROOT, 'dist'), builtPackageDir);
+      await fs.copy(path.join(PROJECT_ROOT, 'package.json'), path.join(builtPackageRoot, 'package.json'));
+      await fs.symlink(path.join(PROJECT_ROOT, 'node_modules'), path.join(builtPackageRoot, 'node_modules'));
+      await fs.copy(fixturePiExtension, installedExtension);
+      await fs.copy(fixtureRalphSkill, installedSkill);
+      await execa(path.join(PROJECT_ROOT, 'node_modules/.bin/esbuild'), [
+        installedExtension,
+        '--bundle',
+        '--platform=node',
+        '--format=esm',
+        `--outfile=${compiledExtension}`,
+      ]);
+      await fs.writeFile(
+        harnessPath,
+        [
+          "import { readFileSync } from 'node:fs';",
+          "import { pathToFileURL } from 'node:url';",
+          'const extension = (await import(pathToFileURL(process.argv[2]).href)).default;',
+          "const prompt = readFileSync(0, 'utf8');",
+          'let inputHandler;',
+          "extension({ on(event, handler) { if (event === 'input') inputHandler = handler; } });",
+          "if (!inputHandler) throw new Error('installed Pi extension did not register input');",
+          'const result = await inputHandler({ text: prompt });',
+          "if (result.action !== 'transform') throw new Error(`unexpected extension action: ${result.action}`);",
+          'process.stdout.write(result.text);',
+        ].join('\n'),
+      );
+      await fs.writeFile(
+        path.join(builtPackageDir, 'templates/services/pi.py'),
+        `#!/usr/bin/env python3
+import json, pathlib, subprocess, sys
+argv = sys.argv[1:]
+prompt = None
+if '-p' in argv:
+    prompt = argv[argv.index('-p') + 1]
+elif '--prompt-file' in argv:
+    prompt = pathlib.Path(argv[argv.index('--prompt-file') + 1]).read_text()
+if prompt is None:
+    raise SystemExit('fixture Pi service received no prompt')
+pathlib.Path(${JSON.stringify(observedPromptPath)}).write_text(prompt)
+completed = subprocess.run([${JSON.stringify(process.execPath)}, ${JSON.stringify(harnessPath)}, ${JSON.stringify(compiledExtension)}], input=prompt, text=True, capture_output=True, cwd=${JSON.stringify(projectDir)}, check=True)
+print(json.dumps({'type': 'result', 'result': completed.stdout, 'content': completed.stdout, 'session_id': 'fixture-no-provider'}))
+`,
+        { mode: 0o755 },
+      );
+      await fs.writeFile(
+        path.join(fakeBin, 'juno-kanban'),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(kanbanCallsPath)}
+printf 'Task(s) not found: oD5g4o\\n' >&2
+exit 1
+`,
+        { mode: 0o755 },
+      );
+
+      const noCodeDirective = `${String.fromCharCode(64, 64)}no_code`;
+      const payload = [
+        '%ralph-loop ## oD5g4o',
+        'What is the root cause of 504',
+        noCodeDirective,
+      ].join('\n');
+      const result = await execa(
+        'bash',
+        ['-c', '"$1" <<\'JUNO_YPL_PAYLOAD\'\n' + payload + '\nJUNO_YPL_PAYLOAD\n', '_', fixtureYpl],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            PATH: `${fakeBin}:${process.env.PATH}`,
+            JUNO_CODE_HEADLESS: '1',
+            NO_COLOR: '1',
+          },
+          reject: false,
+        },
+      );
+
+      expect(result.exitCode, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
+      const rewritten = await fs.readFile(observedPromptPath, 'utf8');
+      expect(rewritten).toBe(payload.replace('%ralph-loop', '/skill:ralph-loop'));
+      expect(rewritten.split(noCodeDirective)).toHaveLength(2);
+      expect(await fs.readFile(kanbanCallsPath, 'utf8')).toContain('get oD5g4o');
+      for (const exact of [
+        '## oD5g4o',
+        'What is the root cause of 504',
+        noCodeDirective,
+      ]) {
+        expect(result.stdout.split(exact)).toHaveLength(2);
+      }
+      expect(result.stdout).toContain(
+        `<skill name="ralph-loop" location="${await fs.realpath(installedSkill)}">`,
+      );
+      expect(`${result.stdout}\n${result.stderr}`).toContain('fixture-no-provider');
+      expect(await fs.pathExists(path.join(projectDir, '.juno_task', 'tasks'))).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  }, 30_000);
   });
 
   describe('Basic CLI Functionality', () => {
