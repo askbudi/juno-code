@@ -63,6 +63,14 @@ class MergeValidationError(MergeQueueError):
         self.receipt_reference = receipt_reference
 
 
+class DependencyLockMismatchError(MergeQueueError):
+    """An exact candidate/feature lock mismatch that a feature refresh may repair."""
+
+    def __init__(self, evidence: dict[str, str]) -> None:
+        super().__init__("candidate validation package lock differs from feature worktree")
+        self.evidence = evidence
+
+
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -318,6 +326,16 @@ def file_digest(path: Path) -> Optional[str]:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def git_blob_digest(repository: Path, blob_sha: str) -> Optional[str]:
+    if not re.fullmatch(r"[0-9a-f]{40,64}", blob_sha):
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(repository), "cat-file", "blob", blob_sha],
+        cwd=repository, stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else None
+
+
 def guard_snapshot(root: Path, paths: list[str]) -> dict[str, Any]:
     return {path: {
         "worktree_sha256": file_digest(root / path),
@@ -488,7 +506,26 @@ def validation_dependencies(candidate: Path, cwd: Path,
     lock_digest = hashlib.sha256(lock.read_bytes()).digest()
     source_lock_digest = hashlib.sha256(source_lock.read_bytes()).digest()
     if lock_digest != source_lock_digest:
-        raise MergeQueueError("candidate validation package lock differs from feature worktree")
+        lock_path = lock.relative_to(candidate).as_posix()
+        source_lock_path = source_lock.relative_to(source_root.resolve()).as_posix()
+        candidate_blob = task_runtime.git(candidate, "rev-parse", f"HEAD:{lock_path}", check=False)
+        source_blob = task_runtime.git(source_root, "rev-parse", f"HEAD:{source_lock_path}", check=False)
+        candidate_head = task_runtime.git(candidate, "rev-parse", "HEAD", check=False)
+        source_head = task_runtime.git(source_root, "rev-parse", "HEAD", check=False)
+        identities = (candidate_blob, source_blob, candidate_head, source_head)
+        if (lock_path != source_lock_path
+                or any(not re.fullmatch(r"[0-9a-f]{40,64}", value) for value in identities)):
+            raise MergeQueueError("candidate validation package lock differs from feature worktree")
+        raise DependencyLockMismatchError({
+            "schema_version": "juno_merge_queue_dependency_lock_refusal.v1",
+            "lock_path": lock_path,
+            "candidate_head": candidate_head,
+            "candidate_blob": candidate_blob,
+            "candidate_sha256": lock_digest.hex(),
+            "source_head": source_head,
+            "source_blob": source_blob,
+            "source_sha256": source_lock_digest.hex(),
+        })
     if not source_modules.is_dir():
         raise MergeQueueError("lock-compatible feature dependencies are unavailable")
     relative_modules = str(candidate_modules.relative_to(candidate))
@@ -714,9 +751,12 @@ def requeue_stale_candidate(controller: Path, config: dict[str, Any], repository
         checkout_value = attempt.get("candidate_checkout")
         owner = read_candidate_owner(controller, Path(checkout_value)) if checkout_value else None
         source_failure = None
+        resolved_outcome = record.get("last_queue_outcome")
         resolved_source = (record.get("state") == "CONFLICT_RESOLVED"
-                           and record.get("last_queue_outcome") == "FAILED_TEST"
-                           and attempt.get("outcome") == "FAILED_TEST")
+                           and resolved_outcome in {"FAILED_TEST", "STALE_TARGET"}
+                           and attempt.get("outcome") == resolved_outcome
+                           and (resolved_outcome == "FAILED_TEST"
+                                or isinstance(attempt.get("dependency_lock_refusal"), dict)))
         if resolved_source:
             if not checkout_value or not attempt.get("candidate_token"):
                 raise MergeQueueError("stale resolved candidate ownership is incomplete")
@@ -738,10 +778,40 @@ def requeue_stale_candidate(controller: Path, config: dict[str, Any], repository
             verify_candidate_owner(controller, repository, checkout, attempt["candidate_token"])
             source_failure = {
                 "schema_version": "juno_merge_queue_prior_failure.v1",
-                "outcome": "FAILED_TEST", "candidate_sha": attempt["candidate_sha"],
+                "outcome": resolved_outcome, "candidate_sha": attempt["candidate_sha"],
                 "expected_target_sha": attempt.get("expected_target_sha"),
                 "validation": attempt.get("validation", []),
             }
+            if resolved_outcome == "STALE_TARGET":
+                refusal = attempt["dependency_lock_refusal"]
+                lock_path = refusal.get("lock_path")
+                if (not isinstance(lock_path, str) or Path(lock_path).is_absolute()
+                        or ".." in Path(lock_path).parts):
+                    raise MergeQueueError("stale dependency-lock refusal identity mismatched")
+                candidate_blob = (task_runtime.git(
+                    checkout, "rev-parse", f"HEAD:{lock_path}", check=False)
+                    if isinstance(lock_path, str) else "")
+                source_blob = (task_runtime.git(
+                    repository, "rev-parse", f"{record.get('tip_sha')}:{lock_path}", check=False)
+                    if isinstance(lock_path, str) else "")
+                expected_refusal = {
+                    "schema_version": "juno_merge_queue_dependency_lock_refusal.v1",
+                    "lock_path": lock_path,
+                    "candidate_head": attempt.get("candidate_sha"),
+                    "candidate_blob": candidate_blob,
+                    "candidate_sha256": (file_digest(checkout / lock_path)
+                                         if isinstance(lock_path, str) else None),
+                    "source_head": record.get("tip_sha"),
+                    "source_blob": source_blob,
+                    "source_sha256": git_blob_digest(repository, source_blob),
+                }
+                if (refusal != expected_refusal
+                        or len(canonical(refusal).encode()) > 4096
+                        or refusal.get("candidate_sha256") == refusal.get("source_sha256")
+                        or not isinstance(lock_path, str)
+                        or Path(lock_path).is_absolute() or ".." in Path(lock_path).parts):
+                    raise MergeQueueError("stale dependency-lock refusal identity mismatched")
+                source_failure["dependency_lock_refusal"] = refusal
         stale = {"schema_version": "juno_merge_queue_stale_requeue.v2",
                  "task_id": record["task_id"], "old_candidate_sha": attempt["candidate_sha"],
                  "old_candidate_checkout": checkout_value,
@@ -1440,6 +1510,11 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         except MergeValidationError as exc:
             attempt["validation"] = exc.evidence
             attempt["outcome"] = "FAILED_TEST"
+            persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
+            raise
+        except DependencyLockMismatchError as exc:
+            attempt["outcome"] = "STALE_TARGET"
+            attempt["dependency_lock_refusal"] = exc.evidence
             persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
             raise
         except PostIntegrationError:
@@ -2338,9 +2413,11 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             return requeue_stale_candidate(controller, config, repository, record, observed)
         resolved_validation_repair = (
             source_state == "CONFLICT_RESOLVED"
-            and failure_outcome == "FAILED_TEST"
+            and failure_outcome in {"FAILED_TEST", "STALE_TARGET"}
             and isinstance(record.get("queue_attempt"), dict)
-            and record["queue_attempt"].get("outcome") == "FAILED_TEST"
+            and record["queue_attempt"].get("outcome") == failure_outcome
+            and (failure_outcome == "FAILED_TEST"
+                 or isinstance(record["queue_attempt"].get("dependency_lock_refusal"), dict))
             and isinstance(conflict, dict)
             and conflict.get("resolution_state") == "RESOLVED"
         )
@@ -2402,6 +2479,39 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
                                  record["tip_sha"], new_tip], repository, check=False).returncode:
                 raise MergeQueueError("new feature tip must descend from the queued or reviewed tip")
+            prior_failure = record.get("prior_queue_failure")
+            if (queued_tip_refresh and isinstance(prior_failure, dict)
+                    and prior_failure.get("outcome") == "STALE_TARGET"):
+                refusal = prior_failure.get("dependency_lock_refusal")
+                lock_path = refusal.get("lock_path") if isinstance(refusal, dict) else None
+                if (not isinstance(lock_path, str) or Path(lock_path).is_absolute()
+                        or ".." in Path(lock_path).parts):
+                    raise MergeQueueError("dependency-lock refusal identity drifted before tip refresh")
+                candidate_blob = refusal.get("candidate_blob", "") if isinstance(refusal, dict) else ""
+                source_blob = (task_runtime.git(
+                    repository, "rev-parse", f"{record.get('tip_sha')}:{lock_path}", check=False)
+                    if isinstance(lock_path, str) else "")
+                expected_refusal = {
+                    "schema_version": "juno_merge_queue_dependency_lock_refusal.v1",
+                    "lock_path": lock_path,
+                    "candidate_head": prior_failure.get("candidate_sha"),
+                    "candidate_blob": candidate_blob,
+                    "candidate_sha256": git_blob_digest(repository, candidate_blob),
+                    "source_head": record.get("tip_sha"),
+                    "source_blob": source_blob,
+                    "source_sha256": git_blob_digest(repository, source_blob),
+                }
+                new_lock = worktree / lock_path if isinstance(lock_path, str) else worktree
+                new_blob = (task_runtime.git(worktree, "rev-parse", f"HEAD:{lock_path}", check=False)
+                            if isinstance(lock_path, str) else "")
+                if (refusal != expected_refusal
+                        or len(canonical(refusal).encode()) > 4096
+                        or refusal.get("candidate_sha256") == refusal.get("source_sha256")
+                        or not isinstance(lock_path, str)
+                        or Path(lock_path).is_absolute() or ".." in Path(lock_path).parts
+                        or file_digest(new_lock) != refusal.get("candidate_sha256")
+                        or new_blob != candidate_blob):
+                    raise MergeQueueError("dependency-lock refusal identity drifted before tip refresh")
             changed = sorted(set(task_runtime.git(
                 worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
             ).splitlines()))
@@ -2425,6 +2535,39 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                         or task_runtime.git(checkout, "status", "--porcelain=v1", "--untracked-files=all",
                                             check=False)):
                     raise MergeQueueError("resolved candidate identity drifted before reopen")
+                if failure_outcome == "STALE_TARGET":
+                    refusal = old_attempt.get("dependency_lock_refusal")
+                    lock_path = refusal.get("lock_path") if isinstance(refusal, dict) else None
+                    if (not isinstance(lock_path, str) or Path(lock_path).is_absolute()
+                            or ".." in Path(lock_path).parts):
+                        raise MergeQueueError("dependency-lock refusal identity drifted before reopen")
+                    expected_refusal = {
+                        "schema_version": "juno_merge_queue_dependency_lock_refusal.v1",
+                        "lock_path": lock_path,
+                        "candidate_head": old_attempt.get("candidate_sha"),
+                        "candidate_blob": (task_runtime.git(
+                            checkout, "rev-parse", f"HEAD:{lock_path}", check=False)
+                            if isinstance(lock_path, str) else ""),
+                        "candidate_sha256": (file_digest(checkout / lock_path)
+                                             if isinstance(lock_path, str) else None),
+                        "source_head": record.get("tip_sha"),
+                        "source_blob": (task_runtime.git(
+                            repository, "rev-parse", f"{record.get('tip_sha')}:{lock_path}", check=False)
+                            if isinstance(lock_path, str) else ""),
+                        "source_sha256": (git_blob_digest(repository, refusal.get("source_blob", ""))
+                                          if isinstance(refusal, dict) else None),
+                    }
+                    new_lock = worktree / lock_path if isinstance(lock_path, str) else worktree
+                    new_blob = (task_runtime.git(worktree, "rev-parse", f"HEAD:{lock_path}", check=False)
+                                if isinstance(lock_path, str) else "")
+                    if (refusal != expected_refusal
+                            or len(canonical(refusal).encode()) > 4096
+                            or refusal.get("candidate_sha256") == refusal.get("source_sha256")
+                            or not isinstance(lock_path, str)
+                            or Path(lock_path).is_absolute() or ".." in Path(lock_path).parts
+                            or file_digest(new_lock) != refusal.get("candidate_sha256")
+                            or new_blob != refusal.get("candidate_blob")):
+                        raise MergeQueueError("dependency-lock refusal identity drifted before reopen")
                 expected_owner = {
                     "task_id": task_id, "token": token,
                     "repository_identity": repository_identity(repository),
@@ -2440,11 +2583,13 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             if resolved_validation_repair:
                 failure_evidence = {
                     "schema_version": "juno_merge_queue_prior_failure.v1",
-                    "outcome": "FAILED_TEST",
+                    "outcome": failure_outcome,
                     "candidate_sha": old_attempt["candidate_sha"],
                     "expected_target_sha": expected_target_sha,
                     "validation": old_attempt.get("validation", []),
                 }
+                if failure_outcome == "STALE_TARGET":
+                    failure_evidence["dependency_lock_refusal"] = old_attempt["dependency_lock_refusal"]
             reopen_attempt = {
                 "schema_version": "juno_merge_queue_reopen.v1",
                 "task_id": task_id,
@@ -2579,6 +2724,7 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                     "FAILED_TEST": ("REQUEUED_AFTER_RESOLVED_VALIDATION_FAILURE"
                                     if reopen_attempt.get("source_state") == "CONFLICT_RESOLVED"
                                     else "REQUEUED_AFTER_VALIDATION_FAILURE"),
+                    "STALE_TARGET": "REQUEUED_AFTER_DEPENDENCY_LOCK_REFRESH",
                     "QUEUED_TIP_REFRESH": "REQUEUED_AFTER_TIP_REFRESH"}.get(
                         source_outcome, "REQUEUED_AFTER_FINDINGS"))
         return {**queued, "outcome": outcome}
