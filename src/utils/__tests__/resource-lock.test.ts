@@ -231,13 +231,20 @@ m._release_resource_lock(lock,token)
       () => { successorSettled = true; },
       () => { successorSettled = true; },
     );
-    await Promise.race([
-      blocked,
-      new Promise<never>((_, reject) => setTimeout(
-        () => reject(new Error('Node successor never observed the Python owner')),
-        5_000,
-      )),
-    ]);
+    let blockedTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        blocked,
+        new Promise<never>((_, reject) => {
+          blockedTimeout = setTimeout(
+            () => reject(new Error('Node successor never observed the Python owner')),
+            5_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (blockedTimeout) clearTimeout(blockedTimeout);
+    }
 
     // Ownership publication and the still-pending successor are durable proof
     // of serialization; a transient diagnostic can be superseded during CAS.
