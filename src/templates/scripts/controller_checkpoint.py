@@ -836,8 +836,21 @@ def release_admission(root: Path, requested_paths: list[str], *, require_changes
         raise CheckpointError(f"release-commit refuses non-release dirt: {blocked}")
     if require_changes and not dirty_paths:
         raise CheckpointError("release-commit requires release metadata changes")
-    for path in dirty_paths:
+    # Protected release identity is a fixed authority boundary, not merely a
+    # dirty-path filter. Inspect every requested endpoint even when the tree is
+    # clean so a committed symlink, missing endpoint, directory, or untracked
+    # replacement cannot inherit release authority.
+    for path in paths:
         inspect_boundary(root, path)
+        candidate = root / path
+        try:
+            mode = candidate.lstat().st_mode
+        except FileNotFoundError as exc:
+            raise CheckpointError(f"release-commit protected path is missing: {path}") from exc
+        if not stat.S_ISREG(mode):
+            raise CheckpointError(f"release-commit protected path is not a regular file: {path}")
+        if not git(root, "ls-files", "--error-unmatch", "--", path, check=False).strip():
+            raise CheckpointError(f"release-commit protected path is not tracked: {path}")
     return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_preflight", "passed": True,
             "role": "integration-owner", "head": git(root, "rev-parse", "HEAD").strip(),
             "paths": list(RELEASE_PATHS), "dirty_paths": dirty_paths}
