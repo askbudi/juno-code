@@ -3,7 +3,10 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { buildChildProcessEnvironment } from '../child-process-environment.js';
+import {
+  buildChildProcessEnvironment,
+  isContinuityEnvironmentKey,
+} from '../child-process-environment.js';
 import {
   clearContinueScopeRunning,
   markContinueScopeRunning,
@@ -196,7 +199,12 @@ describe('automatic session continuity retention', () => {
   it('bounds a 2,500-scope persisted fixture and keeps child continuity overhead at zero', async () => {
     const root = await fixture();
     const scopes: Record<string, SessionContinuityScope> = {};
-    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH };
+    const ambientPath = process.env.PATH ?? '/usr/bin';
+    const env: NodeJS.ProcessEnv = {
+      PATH: ambientPath,
+      JUNO_CODE_LAST_SESSION_ID: 'HIDDEN_LEGACY_SESSION',
+      JUNO_CODE_LAST_EXECUTION_SETTINGS: 'HIDDEN_LEGACY_SETTINGS',
+    };
     for (let index = 1; index <= 2_500; index += 1) {
       scopes[hash(index)] = scope(new Date(NOW.getTime() - index * 1_000));
       env[`JUNO_CODE_LAST_SESSION_ID_${hash(index)}`] = 'HIDDEN';
@@ -212,9 +220,20 @@ describe('automatic session continuity retention', () => {
     });
     const retained = await loadSessionContinuityDocument(root);
     const child = buildChildProcessEnvironment(env);
+    const sourceContinuityNames = Object.keys(env).filter(isContinuityEnvironmentKey).sort();
+    const childContinuityNames = Object.keys(child).filter(isContinuityEnvironmentKey).sort();
+    const childContinuitySerializedBytes = Buffer.byteLength(
+      childContinuityNames.map((name) => `${name}=${child[name] ?? ''}\0`).join(''),
+      'utf8',
+    );
 
     expect(Object.keys(retained.scopes)).toHaveLength(CONTINUITY_INACTIVE_SCOPE_LIMIT + 1);
-    expect(Object.keys(child).filter((name) => name.startsWith('JUNO_CODE_LAST_'))).toEqual([]);
-    expect(JSON.stringify(child).length).toBeLessThan(2_000);
+    expect(sourceContinuityNames).toHaveLength(2_500 * 2 + 2);
+    expect(sourceContinuityNames).toContain('JUNO_CODE_LAST_SESSION_ID');
+    expect(sourceContinuityNames).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS');
+    expect(childContinuityNames).toEqual([]);
+    expect(childContinuityNames).toHaveLength(0);
+    expect(childContinuitySerializedBytes).toBe(0);
+    expect(child.PATH).toBe(ambientPath);
   });
 });
