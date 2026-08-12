@@ -426,6 +426,82 @@ function analyzeHeredocs(command: string): {
   };
 }
 
+/** Locate shell arithmetic expansions so placeholders can be rejected before substitution. */
+function arithmeticExpansionRanges(command: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let inComment = false;
+  let arithmeticStart = -1;
+  let arithmeticDepth = 0;
+  let arithmeticInSingle = false;
+  let arithmeticInDouble = false;
+  let arithmeticEscaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (arithmeticDepth > 0) {
+      if (arithmeticEscaped) arithmeticEscaped = false;
+      else if (char === '\\' && !arithmeticInSingle) arithmeticEscaped = true;
+      else if (char === "'" && !arithmeticInDouble) arithmeticInSingle = !arithmeticInSingle;
+      else if (char === '"' && !arithmeticInSingle) arithmeticInDouble = !arithmeticInDouble;
+      else if (!arithmeticInSingle && !arithmeticInDouble) {
+        if (char === '(') arithmeticDepth += 1;
+        else if (char === ')') {
+          arithmeticDepth -= 1;
+          if (arithmeticDepth === 0) ranges.push({ start: arithmeticStart, end: index });
+        }
+      }
+      if (char === '\n') arithmeticEscaped = false;
+      continue;
+    }
+    if (inComment) {
+      if (char === '\n') inComment = false;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inSingle) {
+      if (char === "'") inSingle = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (char === "'" && !inDouble) {
+      inSingle = true;
+      continue;
+    }
+    if (!inDouble && commentStarts(command, index)) {
+      inComment = true;
+      continue;
+    }
+    if (char === '$' && command[index + 1] === '(' && command[index + 2] === '(') {
+      arithmeticStart = index;
+      arithmeticDepth = 2;
+      arithmeticInSingle = false;
+      arithmeticInDouble = false;
+      arithmeticEscaped = false;
+      index += 2;
+    }
+  }
+  return ranges;
+}
+
+function arithmeticContextAt(command: string, offset: number): boolean {
+  return arithmeticExpansionRanges(command).some(
+    ({ start, end }) => offset > start && offset < end,
+  );
+}
+
 /** Classify a placeholder offset in expanding/non-expanding heredoc source. */
 function heredocContextAt(command: string, offset: number): HeredocContext {
   const range = analyzeHeredocs(command).ranges.find(
@@ -483,8 +559,12 @@ function nonExpandingHeredocError(command: string): string | null {
     return '[Error: malformed or unterminated shell quoting/heredoc; directive was not executed]';
   }
   for (const match of command.matchAll(new RegExp(ARG_PLACEHOLDER_REGEX.source, 'g'))) {
-    if (heredocContextAt(command, match.index ?? 0) === 'non-expanding') {
+    const offset = match.index ?? 0;
+    if (heredocContextAt(command, offset) === 'non-expanding') {
       return '[Error: argument placeholders inside quoted or escaped-delimiter heredocs are unsupported; directive was not executed]';
+    }
+    if (arithmeticContextAt(command, offset)) {
+      return '[Error: argument placeholders inside shell arithmetic expansions are unsupported; directive was not executed]';
     }
   }
   return null;
@@ -605,6 +685,7 @@ export default function junoSkillPreprocessor(pi: ExtensionAPI) {
 }
 
 export {
+  arithmeticContextAt,
   createDirectiveArgumentNamespace,
   expandSkillInvocation,
   heredocContextAt,

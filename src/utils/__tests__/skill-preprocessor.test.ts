@@ -567,6 +567,44 @@ describe('Pi input handler argument preservation', () => {
     expect(expanded).not.toContain('[Error:');
   });
 
+  it('executes placeholder-free arithmetic and preserves raw arguments exactly once', () => {
+    skill('arithmetic-no-placeholder', `Result: !\`printf '%s' $((1 << 2))\``, true);
+    const expanded = expandSkillInvocation('/skill:arithmetic-no-placeholder hello', tmpDir)!;
+    expect(expanded).toContain('Result: 4');
+    expect(expanded.match(/hello/g)).toHaveLength(1);
+    expect(expanded.endsWith('</skill>\n\nhello')).toBe(true);
+    expect(expanded).not.toContain('[Error:');
+  });
+
+  it.each([
+    ['benign', '7319', `$(( $1 << 2 ))`],
+    ['hostile', '$(touch ARITHMETIC_HOSTILE_MARKER)', `"$(( $1 << 2 ))"`],
+  ])(
+    'refuses %s placeholders inside arithmetic before any directive executes',
+    (_kind, value, expression) => {
+      const preflightMarker = path.join(tmpDir, `arithmetic-${_kind}-preflight-marker`);
+      const hostileMarker = path.join(tmpDir, 'arithmetic-hostile-marker');
+      const raw = value.replace('ARITHMETIC_HOSTILE_MARKER', hostileMarker);
+      skill(
+        `arithmetic-placeholder-${_kind}`,
+        `Before: !\`touch ${preflightMarker}\`\nResult: !\`printf '%s' ${expression}\``,
+        true,
+      );
+      const expanded = expandSkillInvocation(
+        `/skill:arithmetic-placeholder-${_kind} "${raw}"`,
+        tmpDir,
+      )!;
+      expect(expanded).toContain(
+        '[Error: argument placeholders inside shell arithmetic expansions are unsupported; directive was not executed]',
+      );
+      expect(
+        expanded.match(new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')),
+      ).toHaveLength(1);
+      expect(fs.existsSync(preflightMarker)).toBe(false);
+      expect(fs.existsSync(hostileMarker)).toBe(false);
+    },
+  );
+
   it.each([
     ['single-quoted', `printf '%s' 'lookalike <<E"OF": $1'`, 'lookalike <<E"OF": payload'],
     ['double-quoted', `printf '%s' "lookalike <<'EOF': $1"`, "lookalike <<'EOF': payload"],
