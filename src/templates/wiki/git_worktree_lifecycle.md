@@ -106,6 +106,29 @@ rechecks readiness under a lock, and records partial-failure truth for safe
 retry. Package publication, deployment, production mutation, and post-deploy
 E2E remain outside these commands.
 
+## Observable nonblocking execution
+
+Use `@@life_cycle TASK_IDS_OR_GOAL` to load the versioned orchestration contract.
+For example, `yy pi -p '@@life_cycle T1 then T2; stop before release'` preserves
+the caller payload once while directing work through canonical `yy` lifecycle
+commands.
+
+For every long-running agent, finish, merge, or authorized release command,
+allocate task-ID-specific files such as `/tmp/yy-T1-run.log`,
+`/tmp/yy-T1-run.pid`, and `/tmp/yy-T1-run.footer`. Capture combined stdout and
+stderr, keep the producer timeout-bounded, write its PID immediately, and write
+a terminal footer immediately after exit containing exit code and completion
+time. Poll periodically with `kill -0 "$(cat PID)"`, bounded `ps`, and bounded
+`tail` of the log. A quiet process doing real-Git or test work is active until
+PID/process evidence or the terminal footer proves completion; log silence alone
+is never a hang signal. Report the exact exit, elapsed duration, and all three
+paths. This pattern adds observation only; Workflow Runner and the managed-agent
+runner remain the execution owners.
+
+Independent review is fresh and read-only against one frozen committed diff.
+Task finish, merge/CAS, integration repair/push receipts, release build/tag/global
+verification, and push/publish/deploy authorities remain separate boundaries.
+
 Agent orchestration instructions and core skills are ignored installed assets in
 the controller. Product/domain instructions and skills are tracked in product
 history and materialized in task worktrees. A controller symlink inside the

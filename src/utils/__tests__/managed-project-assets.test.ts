@@ -55,6 +55,10 @@ describe('ManagedProjectAssets', () => {
     const freshLoader = new ConfigLoader(projectDir);
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
+    expect(dictionary.life_cycle).toContain('juno.life_cycle.v1');
+    expect(dictionary.life_cycle).toContain('task-ID `/tmp` log');
+    expect(dictionary.life_cycle).toContain('fresh read-only independent `yy pi` review');
+    expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
     expect(dictionary.clean_worktree).toContain('Low risk needs no semantic review');

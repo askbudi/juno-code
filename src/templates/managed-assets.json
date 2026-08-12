@@ -124,6 +124,13 @@
       "type": "wiki"
     },
     {
+      "source": "prompts/life_cycle.md",
+      "destination": ".juno_task/prompts/life_cycle.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "life_cycle"
+    },
+    {
       "source": "prompts/clean_worktree.md",
       "destination": ".juno_task/prompts/clean_worktree.md",
       "installClass": "project",
