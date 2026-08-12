@@ -252,6 +252,18 @@ describe('ScriptInstaller', () => {
   });
 
   describe('installScript', () => {
+    it('installs the strict watcher byte-identically and executable', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      expect(await ScriptInstaller.installScript(testDir, 'watch_progress.py', true)).toBe(true);
+      const installed = path.join(testDir, '.juno_task/scripts/watch_progress.py');
+      expect(await fs.readFile(installed)).toEqual(
+        await fs.readFile(path.join(process.cwd(), 'src/templates/scripts/watch_progress.py')),
+      );
+      expect((await fs.stat(installed)).mode & 0o111).not.toBe(0);
+      expect(await fs.readFile(installed, 'utf8')).toContain('juno.watch-footer.v1');
+      expect(await fs.readFile(installed, 'utf8')).toContain('juno.watch-event.v1');
+    });
+
     it('should not install if project not initialized', async () => {
       // Note: This will fail because getPackageScriptsDir may not find scripts in test env
       // The test verifies the flow doesn't throw

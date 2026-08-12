@@ -324,10 +324,17 @@ describe('normalized workspace topology', () => {
     expect(humanInfo.stdout).toContain('Juno workspace (juno.workspace-topology.v1)');
     expect(humanInfo.stdout).toContain('Role authority');
 
-    const where = cli(['where', 'controller', '--cwd', value.task], value.task);
-    expect(where.status, where.stderr).toBe(0);
-    expect(where.stderr).toBe('');
-    expect(where.stdout.trim()).toBe(value.controller);
+    const nestedTask = path.join(value.task, 'nested', 'surface');
+    mkdirSync(nestedTask, { recursive: true });
+    for (const surface of [value.controller, value.task, value.integration, nestedTask]) {
+      const where = cli(['where', 'controller', '--cwd', surface], surface);
+      expect(where.status, `${surface}: ${where.stderr}`).toBe(0);
+      expect(where.stderr).toBe('');
+      expect(where.stdout.trim()).toBe(value.controller);
+      expect(path.join(where.stdout.trim(), '.juno_task/scripts/watch_progress.py')).toBe(
+        path.join(value.controller, '.juno_task/scripts/watch_progress.py'),
+      );
+    }
 
     git(value.primary, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
     git(

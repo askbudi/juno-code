@@ -1,7 +1,7 @@
 ---
 juno_prompt_schema: juno.life_cycle.v1
 public_macro: "@@life_cycle"
-revision: 2
+revision: 3
 ---
 
 # Observable Juno task lifecycle
@@ -29,12 +29,16 @@ Use the installed Juno control plane; do not create another workflow engine.
    controller metadata and product bytes on their declared surfaces.
 4. **Make execution observable.** For each actual `yy pi`, task finish, merge, or
    separately authorized release command, use a bounded timeout and capture
-   combined stdout/stderr in a task-ID `/tmp` log. Keep separate atomic PID and
-   terminal footer files, then invoke `.juno_task/scripts/watch_progress.py` with
-   those three paths; do not embed an ad hoc polling loop. Quiet real-Git or test
-   work remains active until process/footer evidence says otherwise. Record exact
-   exit, completion time, duration, session, and log path. Follow the producer
-   contract and examples in `.juno_task/wiki/watching_progress.md`.
+   combined stdout/stderr inside a private task-ID `mktemp -d` run directory.
+   Atomically publish separate PID and strict versioned terminal footer files.
+   Resolve `controller_root=$(yy where controller)` and invoke the absolute
+   `$controller_root/.juno_task/scripts/watch_progress.py` path with those three
+   files; never select a watcher relative to a task, integration, or nested
+   checkout and never embed an ad hoc polling loop. Quiet real-Git or test work
+   remains active until process/footer evidence says otherwise. Record exact
+   exit, completion time, duration, session, and run-directory/log path. Follow
+   the footer schema, JSONL/payload framing, and atomic producer examples at
+   `$controller_root/.juno_task/wiki/watching_progress.md`.
 5. **Implement narrowly.** Give the agent bounded task requirements, exclusions,
    exact paths, and proportional focused tests. Commit one logical task at a
    time. Before shared heavy real-Git suites, inspect active workloads and avoid
@@ -60,7 +64,7 @@ Use the installed Juno control plane; do not create another workflow engine.
 
 ## Evolution
 
-This is schema `juno.life_cycle.v1`, revision 2. Change the canonical source in
+This is schema `juno.life_cycle.v1`, revision 3. Change the canonical source in
 `juno-code/src/templates/prompts/life_cycle.md`, update this revision and release
 notes when behavior changes, and validate source/dist/tarball plus managed-install
 parity. Project customizations are user-owned: managed update must preserve or
