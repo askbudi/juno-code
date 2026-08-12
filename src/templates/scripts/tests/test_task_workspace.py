@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import stat
 import tempfile
 import time
 import unittest
@@ -163,24 +164,65 @@ def _protocol_guard_path(lock_path: Path) -> Path:
 
 
 @contextlib.contextmanager
-def _protocol_guard(lock_path: Path):
+def _protocol_guard(lock_path: Path, opened_hook=None):
     import fcntl
     _assert_safe_path(lock_path)
     guard = _protocol_guard_path(lock_path)
-    _assert_safe_path(guard)
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(guard, flags, 0o600)
+
+    descriptor: Optional[int] = None
+    while descriptor is None:
+        _assert_safe_path(guard)
+        candidate = os.open(guard, flags, 0o600)
+        try:
+            opened = os.fstat(candidate)
+            named = guard.lstat()
+            if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(named.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+                raise RuntimeError("[test-resource-lock] protocol guard identity changed before lock")
+            if opened_hook is not None:
+                opened_hook()
+            fcntl.flock(candidate, fcntl.LOCK_EX)
+            # A waiter may have opened the old inode before another process
+            # atomically replaced the pathname. Revalidate immediately after
+            # LOCK_EX and enter the CAS domain only when the locked descriptor
+            # is still the exact regular, non-symlink pathname target.
+            try:
+                locked = os.fstat(candidate)
+                current = guard.lstat()
+            except FileNotFoundError:
+                current = None
+            if (current is None or not stat.S_ISREG(locked.st_mode)
+                    or not stat.S_ISREG(current.st_mode)
+                    or (locked.st_dev, locked.st_ino) != (current.st_dev, current.st_ino)):
+                fcntl.flock(candidate, fcntl.LOCK_UN)
+                os.close(candidate)
+                continue
+            descriptor = candidate
+        except Exception:
+            if descriptor is None:
+                try: os.close(candidate)
+                except OSError: pass
+            raise
     try:
-        opened = os.fstat(descriptor)
-        named = guard.lstat()
-        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) or guard.is_symlink():
-            raise RuntimeError("[test-resource-lock] protocol guard identity changed")
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _protocol_guard_probe(lock_path: Path, opened: Path, entered: Path, release: Path) -> None:
+    def announce_opened() -> None:
+        opened.write_text("opened\n")
+    with _protocol_guard(lock_path, announce_opened):
+        entered.write_text("entered\n")
+        deadline = time.monotonic() + 10
+        while not release.exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("[test-resource-lock] guard probe release timed out")
+            time.sleep(0.01)
 
 
 def _publish_owner_under_guard(lock_path: Path, owner: dict) -> None:
@@ -1097,7 +1139,12 @@ class TaskWorkspaceTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--resource-lock-birth":
+    if len(sys.argv) >= 6 and sys.argv[1] == "--resource-lock-guard-probe":
+        _protocol_guard_probe(
+            _configured_lock_path(sys.argv[2]),
+            Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]),
+        )
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--resource-lock-birth":
         print(json.dumps(_process_birth_identity(int(sys.argv[2]))))
     elif len(sys.argv) >= 5 and sys.argv[1] == "--resource-lock-op":
         operation, lock_argument, payload_argument = sys.argv[2:5]

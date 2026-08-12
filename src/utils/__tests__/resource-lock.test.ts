@@ -33,6 +33,13 @@ async function waitFor(pathname: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+async function waitForExit(child: ChildProcess): Promise<number | null> {
+  if (child.exitCode !== null) return child.exitCode;
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', resolve);
+  });
+}
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill('SIGKILL');
   for (const root of fixtures.splice(0)) await fs.remove(root);
@@ -78,6 +85,44 @@ describe('cross-language heavy test resource lock', () => {
     expect((await fs.readJson(lockPath)).token).toBe(third.owner.token);
     await third.release();
     expect((await fs.readdir(root)).filter((name) => name.includes('stale-') || name.includes('release-'))).toEqual([]);
+  });
+
+  it('retries after flock when a regular guard replacement creates a new lock domain', async () => {
+    const { root, lockPath } = await fixture();
+    const guard = path.join(root, '.shared.lock.protocol');
+    const marker = (name: string) => path.join(root, name);
+    const probe = (name: string) => {
+      const child = spawn('python3', [
+        pythonModule, '--resource-lock-guard-probe', lockPath,
+        marker(`${name}-opened`), marker(`${name}-entered`), marker(`${name}-release`),
+      ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      children.push(child);
+      return child;
+    };
+
+    const oldHolder = probe('old-holder');
+    await waitFor(marker('old-holder-entered'));
+    const oldWaiter = probe('old-waiter');
+    await waitFor(marker('old-waiter-opened'));
+
+    // Replace the regular guard pathname while the waiter is blocked on the
+    // old inode, then prove a holder can enter the new pathname domain.
+    const replacement = `${guard}.replacement`;
+    await fs.writeFile(replacement, '');
+    await fs.rename(replacement, guard);
+    const newHolder = probe('new-holder');
+    await waitFor(marker('new-holder-entered'));
+
+    await fs.writeFile(marker('old-holder-release'), 'release');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The old waiter acquired the unlinked old inode, detected the post-flock
+    // identity change, and retried; it must not overlap the new holder.
+    expect(await fs.pathExists(marker('old-waiter-entered'))).toBe(false);
+
+    await fs.writeFile(marker('new-holder-release'), 'release');
+    await waitFor(marker('old-waiter-entered'));
+    await fs.writeFile(marker('old-waiter-release'), 'release');
+    expect(await Promise.all([oldHolder, oldWaiter, newHolder].map(waitForExit))).toEqual([0, 0, 0]);
   });
 
   it('never removes a successor when an obsolete token/inode releases', async () => {
