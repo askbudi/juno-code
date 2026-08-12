@@ -120,6 +120,17 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                        check=True, stdout=subprocess.DEVNULL)
         return config_path, policy_path
 
+    def legacy_policy_bytes(self):
+        policy = json.loads((RUNNER.parents[1] / "config/metadata-controller.json").read_text())
+        policy["controller_branch"] = runner.LEGACY_METADATA_CONTROLLER_BRANCH
+        policy["product_ref"] = runner.LEGACY_METADATA_PRODUCT_REF
+        policy["runtime"]["ignored_roots"] = [
+            ".juno_task/runtime", ".juno_task/scripts", ".venv_juno", ".env.juno"]
+        data = (json.dumps(policy, indent=2, ensure_ascii=False) + "\n").encode()
+        self.assertEqual(data, runner.LEGACY_METADATA_POLICY)
+        self.assertEqual(hashlib.sha256(data).hexdigest(), runner.LEGACY_METADATA_POLICY_SHA256)
+        return data
+
     def test_controller_identity_binds_only_queue_owned_dirty_state(self):
         state = self.controller / runner.QUEUE_STATE_PATH
         state.write_text('{"state":"reviewing"}\n')
@@ -177,6 +188,68 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual([item["path"] for item in receipt["controller_before"]["queue_state"]],
                          [runner.QUEUE_RECEIPT_ROOT + "T1/candidate/attempt-1/receipt.json",
                           runner.QUEUE_STATE_PATH])
+
+    def test_exact_legacy_metadata_controller_generation_launches(self):
+        config_path, policy_path = self.install_metadata_controller_contract()
+        policy_path.write_bytes(self.legacy_policy_bytes())
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "legacy policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.controller), "branch", "-m",
+                        "juno/controller-metadata-2.1"], check=True)
+        self.assertEqual(json.loads(config_path.read_text())["controllerWorkspace"],
+                         runner.CANONICAL_METADATA_WORKSPACE)
+        out = self.tmp / "legacy-metadata-launch"
+        result = subprocess.run(self.command(out), env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = json.loads((out / "receipt.json").read_text())[
+            "controller_before"]["resolver"]["policy_identity"]
+        self.assertEqual(identity, {
+            "schema_version": "juno_metadata_controller_policy.v1",
+            "policy_sha256": runner.LEGACY_METADATA_POLICY_SHA256,
+            "controller_branch": runner.LEGACY_METADATA_CONTROLLER_BRANCH,
+        })
+
+    def test_legacy_metadata_controller_accepts_only_exact_bytes_and_identity(self):
+        root = self.tmp / "legacy-policy-cases"
+        policy_path = root / runner.CANONICAL_METADATA_WORKSPACE["policy"]
+        policy_path.parent.mkdir(parents=True)
+        exact = self.legacy_policy_bytes()
+        policy_path.write_bytes(exact)
+        identity = runner.metadata_controller_policy_identity(
+            root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+        self.assertEqual(identity["policy_sha256"], runner.LEGACY_METADATA_POLICY_SHA256)
+
+        original = json.loads(exact)
+        near_misses = []
+        for mutate in (
+            lambda value: value["runtime"]["ignored_roots"].append(".agents"),
+            lambda value: value.update({"extra": True}),
+            lambda value: value.pop("product_ref"),
+            lambda value: value.update({"product_ref": "refs/heads/not-the-product"}),
+            lambda value: value.update({"controller_branch": "refs/heads/controller"}),
+        ):
+            value = json.loads(json.dumps(original))
+            mutate(value)
+            near_misses.append((json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode())
+        near_misses.extend((runner.canonical(original), exact.rstrip(b"\n"), b"{malformed\n"))
+        for data in near_misses:
+            policy_path.write_bytes(data)
+            with self.assertRaisesRegex(runner.RunnerError, "missing or malformed"):
+                runner.metadata_controller_policy_identity(
+                    root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+
+        policy_path.unlink()
+        target = root / "legacy-target.json"; target.write_bytes(exact)
+        policy_path.symlink_to(target)
+        with self.assertRaisesRegex(runner.RunnerError, "missing or malformed"):
+            runner.metadata_controller_policy_identity(
+                root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+
+        policy_path.unlink(); policy_path.write_bytes(exact)
+        with self.assertRaisesRegex(runner.RunnerError, "branch mismatch"):
+            runner.metadata_controller_policy_identity(root, "refs/heads/controller")
 
     def test_metadata_controller_malformed_mismatched_and_sparse_contracts_refuse(self):
         config_path, policy_path = self.install_metadata_controller_contract()
@@ -249,8 +322,9 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         }])
 
     def command(self, out: Path, prompt: Path | None = None):
+        branch_ref = git(self.controller, "symbolic-ref", "HEAD")
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
-                "--controller-branch", "refs/heads/controller", "--agent-root", str(out / "agent-root"),
+                "--controller-branch", branch_ref, "--agent-root", str(out / "agent-root"),
                 "--prompt-file", str(prompt or self.prompt), "--out-dir", str(out), "--candidate-sha", git(self.candidate, "rev-parse", "HEAD"),
                 "--candidate-root", str(self.candidate)]
 

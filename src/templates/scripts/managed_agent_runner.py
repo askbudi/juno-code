@@ -30,6 +30,78 @@ CANONICAL_METADATA_WORKSPACE = {
     "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
 CANONICAL_SPARSE_WORKSPACE = {
     "enabled": True, "policy": ".juno_task/config/controller-workspace.json"}
+# Exact committed policy bytes for the one pre-agent-surface migration
+# generation. Current policies remain admitted by the general validator below;
+# this immutable exception exists only to let that controller review its update.
+LEGACY_METADATA_POLICY = b'''{
+  "schema_version": "juno_metadata_controller_policy.v1",
+  "controller_branch": "refs/heads/juno/controller-metadata-2.1",
+  "product_ref": "refs/heads/juno-mono-002",
+  "spec_copy_mode": "top_level_files_only",
+  "copied_metadata": [
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/specs",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md"
+  ],
+  "generated_metadata": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
+    ".juno_task/config/integration-workspace.json",
+    ".juno_task/config/risk-policy.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/tasks.json"
+  ],
+  "product_forbidden": [
+    ".juno_task/artifacts",
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/logs",
+    ".juno_task/receipts",
+    ".juno_task/specs",
+    ".juno_task/state",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md",
+    ".juno_task/workflows"
+  ],
+  "tracked_exact": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/cutover.json",
+    ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
+    ".juno_task/config/integration-workspace.json",
+    ".juno_task/config/risk-policy.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/tasks.json",
+    ".juno_task/tasks.md"
+  ],
+  "tracked_recursive": [
+    ".juno_task/ledger",
+    ".juno_task/tasks"
+  ],
+  "tracked_top_level_files": [
+    ".juno_task/receipts",
+    ".juno_task/specs"
+  ],
+  "runtime": {
+    "package": "juno-code",
+    "identity_file": ".juno_task/runtime/identity.json",
+    "ignored_roots": [
+      ".juno_task/runtime",
+      ".juno_task/scripts",
+      ".venv_juno",
+      ".env.juno"
+    ]
+  }
+}
+'''
+LEGACY_METADATA_POLICY_SHA256 = "124e00a92edeec889cacbbb6cd7f308be8be164be68d81df170235b4843aeea6"
+LEGACY_METADATA_CONTROLLER_BRANCH = "refs/heads/juno/controller-metadata-2.1"
+LEGACY_METADATA_PRODUCT_REF = "refs/heads/juno-mono-002"
 
 
 class RunnerError(RuntimeError):
@@ -239,10 +311,26 @@ def resolver_policy_passes(result: subprocess.CompletedProcess[str], resolved: A
             and workspace.get("passed") is False and failed == ["clean"])
 
 
+def legacy_metadata_controller_policy(data: bytes) -> dict[str, Any]:
+    """Recognize the one receipt-bound policy that predates agent-surface roots."""
+    try:
+        value = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("legacy policy is not JSON") from exc
+    if (not isinstance(value, dict) or data != LEGACY_METADATA_POLICY
+            or value.get("schema_version") != "juno_metadata_controller_policy.v1"
+            or value.get("controller_branch") != LEGACY_METADATA_CONTROLLER_BRANCH
+            or value.get("product_ref") != LEGACY_METADATA_PRODUCT_REF):
+        raise ValueError("policy is not the exact supported legacy generation")
+    return value
+
+
 def metadata_controller_policy_identity(root: Path, branch_ref: str) -> dict[str, str]:
     policy_path = root / CANONICAL_METADATA_WORKSPACE["policy"]
     try:
         import importlib.util
+        if policy_path.is_symlink() or not policy_path.is_file():
+            raise OSError("policy must be one regular non-symlink file")
         validator_path = Path(__file__).resolve().with_name("metadata_controller.py")
         spec = importlib.util.spec_from_file_location(
             "juno_managed_metadata_controller_validator", validator_path)
@@ -253,13 +341,20 @@ def metadata_controller_policy_identity(root: Path, branch_ref: str) -> dict[str
         policy_bytes = policy_path.read_bytes()
         if not policy_bytes or len(policy_bytes) > CAPTURE_LIMIT:
             raise ValueError("policy bytes are empty or unbounded")
-        policy = validator.load_policy(policy_path)
-        if policy_bytes != canonical(policy):
-            raise ValueError("policy bytes are not canonical")
+        try:
+            policy = validator.load_policy(policy_path)
+        except Exception as exc:
+            # Only the trusted validator's boundary refusal may enter the exact
+            # legacy recognizer. Import/runtime failures remain terminal.
+            if type(exc).__name__ != "BoundaryError":
+                raise
+            policy = legacy_metadata_controller_policy(policy_bytes)
+        else:
+            if policy_bytes != canonical(policy):
+                raise ValueError("policy bytes are not canonical")
     except (ImportError, OSError, UnicodeError, ValueError) as exc:
         raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
     except Exception as exc:
-        # BoundaryError is defined by the dynamically loaded trusted validator.
         if type(exc).__name__ != "BoundaryError":
             raise
         raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
