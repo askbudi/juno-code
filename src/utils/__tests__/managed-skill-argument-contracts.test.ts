@@ -21,21 +21,18 @@ describe('managed skill argument contracts', () => {
     ).not.toThrow();
   });
 
-  it('keeps source and checked-in installed surfaces byte-identical', async () => {
+  it('keeps canonical templates and package-installed surfaces byte-identical', async () => {
     const contract = (await fs.readJson(path.join(sourceRoot, 'argument-contracts.json'))) as {
       surfaces: Array<keyof typeof destinations>;
       skills: Record<string, unknown>;
     };
-    const repository = path.dirname(project);
     for (const surface of contract.surfaces) {
       for (const skill of Object.keys(contract.skills)) {
         const source = await fs.readFile(path.join(sourceRoot, surface, skill, 'SKILL.md'));
-        for (const runtimeRoot of [project, repository]) {
-          const installed = await fs.readFile(
-            path.join(runtimeRoot, destinations[surface], skill, 'SKILL.md'),
-          );
-          expect(installed, `${runtimeRoot}/${destinations[surface]}/${skill}`).toEqual(source);
-        }
+        const installed = await fs.readFile(
+          path.join(project, destinations[surface], skill, 'SKILL.md'),
+        );
+        expect(installed, `${project}/${destinations[surface]}/${skill}`).toEqual(source);
       }
     }
   });
