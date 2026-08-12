@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { execFileSync } from 'node:child_process';
 import fs from 'fs-extra';
 import { execa } from 'execa';
 import {
@@ -64,6 +65,57 @@ describe('hooks', () => {
 
     // Reset all mocks
     vi.clearAllMocks();
+  });
+
+  it('runs sparse-controller hooks from the registered product surface', async () => {
+    const repository = join(testDir, 'repository');
+    const controller = join(testDir, 'controller');
+    const owner = join(testDir, 'integration owner');
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args]);
+    await fs.ensureDir(repository);
+    git(repository, 'init', '-q', '-b', 'product');
+    git(repository, 'config', 'user.name', 'Test');
+    git(repository, 'config', 'user.email', 'test@example.invalid');
+    await fs.writeFile(join(repository, 'README.md'), 'product\n');
+    git(repository, 'add', '.'); git(repository, 'commit', '-qm', 'base');
+    git(repository, 'branch', 'controller');
+    git(repository, 'worktree', 'add', '-q', controller, 'controller');
+    git(repository, 'switch', '-q', '--detach');
+    git(repository, 'worktree', 'add', '-q', '--detach', owner, 'product');
+    git(repository, 'config', 'extensions.worktreeConfig', 'true');
+    git(controller, 'config', '--worktree', 'juno.workspace.role', 'controller');
+    git(owner, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(owner, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    git(repository, 'config', 'juno.integration.ownerPath', owner);
+    await fs.outputFile(join(owner, '.juno_task/scripts/cleanup_feedback.sh'), '#!/bin/sh\n');
+    mockedExeca.mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' } as never);
+
+    const result = await executeHook('START_ITERATION', {
+      START_ITERATION: { commands: ['./.juno_task/scripts/cleanup_feedback.sh'] },
+    }, { workingDirectory: controller });
+
+    expect(result.success).toBe(true);
+    expect(mockedExeca).toHaveBeenCalledWith('./.juno_task/scripts/cleanup_feedback.sh',
+      expect.objectContaining({ cwd: await fs.realpath(owner), shell: true, input: '' }));
+  });
+
+  it('explicitly skips controller hooks when no canonical product surface exists', async () => {
+    const controller = join(testDir, 'controller-only');
+    await fs.ensureDir(controller);
+    const git = (...args: string[]) => execFileSync('git', ['-C', controller, ...args]);
+    git('init', '-q');
+    git('config', 'extensions.worktreeConfig', 'true');
+    git('config', '--worktree', 'juno.workspace.role', 'controller');
+
+    const result = await executeHook('START_RUN', {
+      START_RUN: { commands: ['./product-owned-hook.sh'] },
+    }, { workingDirectory: controller });
+
+    expect(result).toMatchObject({ success: true, commandsExecuted: 0 });
+    expect(mockedExeca).not.toHaveBeenCalled();
+    expect(mockContextLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('sparse controller has no canonical product surface'),
+    );
   });
 
   afterEach(async () => {

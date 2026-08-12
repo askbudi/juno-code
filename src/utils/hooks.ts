@@ -7,6 +7,9 @@
  * @module utils/hooks
  */
 
+import { execFileSync } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import path from 'node:path';
 import { execa } from 'execa';
 import { logger, LogContext } from '../cli/utils/advanced-logger.js';
 import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
@@ -123,6 +126,62 @@ function appendHookOutputSection(lines: string[], label: string, value: string |
 
   lines.push(`${label}:`);
   lines.push(truncateForHookLog(value.trimEnd()));
+}
+
+export interface HookWorkingDirectoryResolution {
+  directory: string | null;
+  diagnostic: string | null;
+  surface: 'invocation' | 'integration-owner' | 'unavailable';
+}
+
+function gitConfig(root: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve project-owned hook commands away from a sparse metadata controller. */
+export function resolveHookWorkingDirectory(requested: string): HookWorkingDirectoryResolution {
+  const root = path.resolve(requested);
+  const role = gitConfig(root, ['config', '--worktree', '--get', 'juno.workspace.role']);
+  if (role !== 'controller')
+    return { directory: root, diagnostic: null, surface: 'invocation' };
+  const registered = gitConfig(root, ['config', '--get', 'juno.integration.ownerPath']);
+  if (!registered) {
+    return {
+      directory: null,
+      surface: 'unavailable',
+      diagnostic: 'configured project hook skipped: sparse controller has no canonical product surface; run `yy integration register /absolute/integration-owner`',
+    };
+  }
+  const candidate = path.resolve(registered);
+  const exact = existsSync(candidate) && gitConfig(candidate, ['rev-parse', '--show-toplevel']);
+  const candidateRole = exact ? gitConfig(candidate, ['config', '--worktree', '--get', 'juno.workspace.role']) : null;
+  const authority = exact ? gitConfig(candidate, ['config', '--worktree', '--get', 'juno.workspace.roleAuthority']) : null;
+  let canonical: string | null = null;
+  try {
+    canonical = exact ? realpathSync(exact) : null;
+  } catch {
+    canonical = null;
+  }
+  let registeredCanonical: string | null = null;
+  try {
+    registeredCanonical = realpathSync(candidate);
+  } catch {
+    registeredCanonical = null;
+  }
+  if (canonical !== registeredCanonical || candidateRole !== 'integration-owner' || authority !== 'protected-integration.v1') {
+    return {
+      directory: null,
+      surface: 'unavailable',
+      diagnostic: `configured project hook skipped: canonical product surface is missing or invalid: ${candidate}; run \`yy integration status\``,
+    };
+  }
+  return { directory: registeredCanonical, diagnostic: null, surface: 'integration-owner' };
 }
 
 function formatFailedHookCommandMessage(params: {
@@ -242,6 +301,26 @@ export async function executeHook(
 
   contextLogger.debug(`Executing ${hook.commands.length} commands for hook ${hookType}`);
 
+  const workingDirectory = resolveHookWorkingDirectory(
+    context.workingDirectory || process.cwd(),
+  );
+  if (!workingDirectory.directory) {
+    contextLogger.warn(workingDirectory.diagnostic ?? 'configured project hook skipped: product surface unavailable');
+    return {
+      hookType,
+      totalDuration: Date.now() - startTime,
+      commandResults: [],
+      success: true,
+      commandsExecuted: 0,
+      commandsFailed: 0,
+    };
+  }
+  if (workingDirectory.surface === 'integration-owner') {
+    contextLogger.debug('Resolved configured project hook against canonical product surface', {
+      workingDirectory: workingDirectory.directory,
+    });
+  }
+
   const commandResults: CommandExecutionResult[] = [];
   let commandsFailed = 0;
 
@@ -299,7 +378,7 @@ export async function executeHook(
       const result = await execa(command, {
         shell: true,
         timeout: commandTimeout,
-        cwd: context.workingDirectory || process.cwd(),
+        cwd: workingDirectory.directory,
         env: execEnv,
         // Capture both stdout and stderr
         all: true,
