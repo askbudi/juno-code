@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type TaskWorkspaceOperation = 'start' | 'status' | 'finish' | 'recovery-plan' | 'recovery-apply';
+export type TaskWorkspaceOperation = 'start' | 'status' | 'finish' | 'recovery-plan' | 'recovery-authorize' | 'recovery-apply';
 export type TaskWorkspaceInvoker = (
   operation: TaskWorkspaceOperation,
   taskId: string,
@@ -90,6 +90,14 @@ export function configureTaskWorkspaceCommand(
     .action((taskId: string, options: { umbrellaAdmission: string; output: string }) => invoke(
       'recovery-plan', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
         '--output', options.output],
+    ));
+  task.command('recovery-authorize')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
+    .action((taskId: string, options: { umbrellaAdmission: string; plan: string }) => invoke(
+      'recovery-authorize', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--plan', options.plan],
     ));
   task.command('recovery-apply')
     .argument('<task-id>', 'Canonical umbrella Kanban task ID')

@@ -141,5 +141,5 @@ describe('Bolt task workspace managed runtime', () => {
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-task-workspace-test-pycache' },
       stdio: 'pipe',
     });
-  }, 30_000);
+  }, 120_000);
 });

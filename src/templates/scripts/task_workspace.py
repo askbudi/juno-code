@@ -42,6 +42,9 @@ UMBRELLA_SUPERSESSION_SCHEMA = "juno_task_umbrella_admission_supersession.v1"
 UMBRELLA_AUTHORIZATION_SCHEMA = "juno_task_umbrella_recovery_authorization.v1"
 UMBRELLA_EXECUTION_MODE = "umbrella_owned_sequential"
 UMBRELLA_RESERVATIONS_SCHEMA = "juno_task_umbrella_child_reservations.v1"
+TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
+AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
+TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -193,6 +196,69 @@ def load_umbrella_input(path: Path) -> tuple[dict[str, Any], str]:
     if len(set(value["children"])) != len(value["children"]):
         raise TaskWorkspaceError("umbrella child set is duplicated or cyclic")
     return value, source_sha
+
+
+def task_status(body: bytes, task_id: str) -> str:
+    match = re.search(r"(?m)^status:\s*([A-Za-z_]+)\s*$", body[:4096].decode("utf-8", errors="replace"))
+    if not match:
+        raise TaskWorkspaceError(f"canonical child {task_id} has no unambiguous lifecycle status")
+    return match.group(1).lower()
+
+
+def task_scope_path(controller: Path, task_id: str) -> Path:
+    return controller / ".juno_task/task-scopes" / task_id[:2].lower() / f"{task_id}.json"
+
+
+def load_task_scope(controller: Path, task_id: str, body: bytes) -> tuple[dict[str, Any], str]:
+    value, file_sha = read_json_object(task_scope_path(controller, task_id), f"canonical child scope {task_id}")
+    keys = {"schema_version", "task_id", "task_revision_sha256", "lifecycle_status",
+            "umbrella_relations", "scope"}
+    relation_keys = {"owner", "children"}; scope_keys = {
+        "baseline", "selectable_paths", "required_paths", "generated_paths"}
+    if (set(value) != keys or value.get("schema_version") != TASK_SCOPE_SCHEMA
+            or value.get("task_id") != task_id
+            or value.get("task_revision_sha256") != hashlib.sha256(body).hexdigest()
+            or value.get("lifecycle_status") != task_status(body, task_id)
+            or not isinstance(value.get("umbrella_relations"), dict)
+            or set(value["umbrella_relations"]) != relation_keys
+            or value["umbrella_relations"].get("owner") is not None
+               and not TASK_RE.fullmatch(str(value["umbrella_relations"].get("owner")))
+            or not isinstance(value["umbrella_relations"].get("children"), list)
+            or not all(isinstance(item, str) and TASK_RE.fullmatch(item)
+                       for item in value["umbrella_relations"]["children"])
+            or not isinstance(value.get("scope"), dict) or set(value["scope"]) != scope_keys
+            or not isinstance(value["scope"].get("baseline"), bool)):
+        raise TaskWorkspaceError(f"canonical child scope {task_id} is absent, ambiguous, stale, or malformed")
+    for field in ("selectable_paths", "required_paths", "generated_paths"):
+        rows = value["scope"].get(field)
+        if not isinstance(rows, list):
+            raise TaskWorkspaceError(f"canonical child scope {task_id}.{field} must be a list")
+        normalized = [normalized_relative(item, f"canonical child scope {task_id}.{field}") for item in rows]
+        if normalized != sorted(set(normalized)):
+            raise TaskWorkspaceError(f"canonical child scope {task_id}.{field} must be sorted and unique")
+    if len(set(value["umbrella_relations"]["children"])) != len(value["umbrella_relations"]["children"]):
+        raise TaskWorkspaceError(f"canonical child scope {task_id} has duplicate relations")
+    return value, file_sha
+
+
+def validate_umbrella_graph(controller: Path, umbrella_id: str, child_ids: list[str],
+                            umbrella_body: bytes) -> tuple[dict[str, Any], str]:
+    umbrella_scope, umbrella_scope_sha = load_task_scope(controller, umbrella_id, umbrella_body)
+    if umbrella_scope["umbrella_relations"]["children"] != child_ids:
+        raise TaskWorkspaceError("umbrella ordered children contradict canonical scope relations")
+    if umbrella_scope["umbrella_relations"]["owner"] is not None:
+        raise TaskWorkspaceError("nested/owned umbrella execution is contradictory")
+    visited: set[str] = set(); active: set[str] = set()
+    def walk(task_id: str) -> None:
+        if task_id in active: raise TaskWorkspaceError(f"indirect umbrella cycle detected at {task_id}")
+        if task_id in visited: return
+        active.add(task_id)
+        _path, body = task_manifest(controller, task_id)
+        scope, _sha = load_task_scope(controller, task_id, body)
+        for nested in scope["umbrella_relations"]["children"]: walk(nested)
+        active.remove(task_id); visited.add(task_id)
+    walk(umbrella_id)
+    return umbrella_scope, umbrella_scope_sha
 
 
 def child_reservations(state: dict[str, Any]) -> dict[str, str]:
@@ -692,53 +758,53 @@ def selected_task_paths(config: dict[str, Any], repository: Path, target_sha: st
     return [*config["allowed_paths"], *normalized], entries
 
 
-def canonical_child_scope(repository: Path, base_sha: str, child_id: str,
-                          body: bytes) -> tuple[list[str], list[dict[str, str]]]:
-    """Resolve every exact tracked file named by canonical task prose; never trust caller scope."""
-    text = body.decode("utf-8", errors="replace")
-    # Path-like lexical tokens are merely candidates. Git's exact tree identity
-    # is authority, and all matching tracked blobs are admitted. Directory
-    # candidates are rejected rather than widened.
-    candidates = sorted(set(
-        token.strip("`'\"()[]{}<>,:;!?")
-        for token in re.findall(
-            r"(?:(?:\.?[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+)", text)
-    ))
+def canonical_child_scope(controller: Path, repository: Path, base_sha: str, child_id: str,
+                          body: bytes, config: dict[str, Any], expected_owner: str) -> tuple[list[str], list[dict[str, str]], dict[str, Any]]:
+    """Read one pre-implementation, revision-bound authoritative scope declaration."""
+    declaration, declaration_sha = load_task_scope(controller, child_id, body)
+    lifecycle = declaration["lifecycle_status"]
+    if lifecycle in TERMINAL_TASK_STATUSES:
+        raise TaskWorkspaceError(f"umbrella child {child_id} is terminal: {lifecycle}")
+    relation = declaration["umbrella_relations"]
+    if relation["owner"] != expected_owner:
+        raise TaskWorkspaceError(
+            f"umbrella child {child_id} relation contradicts owner {expected_owner}: {relation['owner']}"
+        )
+    scope = declaration["scope"]
+    selectable = scope["selectable_paths"]
+    unknown = [path for path in selectable if path not in config["selectable_paths"]]
+    if unknown:
+        raise TaskWorkspaceError(f"umbrella child {child_id} has unadmitted selectable scope: {', '.join(unknown)}")
+    selected_task_paths(config, repository, base_sha, selectable)
+    exact = [*scope["required_paths"], *scope["generated_paths"]]
     evidence: list[dict[str, str]] = []
-    for candidate in candidates:
-        try:
-            normalized_relative(candidate, f"canonical child {child_id} scope candidate")
-        except TaskWorkspaceError:
-            continue
+    for candidate in exact:
         output = git(repository, "ls-tree", base_sha, "--", candidate, check=False)
         lines = [line for line in output.splitlines() if line]
         if len(lines) != 1:
-            continue
-        metadata, actual = lines[0].split("\t", 1)
-        mode, kind, object_id = metadata.split()
-        if actual == candidate and kind == "blob" and mode.startswith("100"):
-            evidence.append({"path": candidate, "mode": mode, "object": object_id})
-    if not evidence:
-        raise TaskWorkspaceError(
-            f"umbrella child {child_id} has no canonically derivable exact tracked-file scope"
-        )
-    return [row["path"] for row in evidence], evidence
+            raise TaskWorkspaceError(f"umbrella child {child_id} exact scope is absent or ambiguous: {candidate}")
+        metadata, actual = lines[0].split("\t", 1); mode, kind, object_id = metadata.split()
+        if actual != candidate or kind != "blob" or not mode.startswith("100"):
+            raise TaskWorkspaceError(f"umbrella child {child_id} scope is not one exact tracked file: {candidate}")
+        evidence.append({"path": candidate, "mode": mode, "object": object_id})
+    if not scope["baseline"] and not selectable and not exact:
+        raise TaskWorkspaceError(f"umbrella child {child_id} authoritative scope is empty")
+    paths = [*selectable, *exact]
+    frozen = {"declaration_path": str(task_scope_path(controller, child_id).resolve()),
+              "declaration_sha256": declaration_sha, "declaration": declaration,
+              "baseline": scope["baseline"]}
+    return paths, evidence, frozen
 
 
 def derive_umbrella_admission(controller: Path, umbrella_id: str, repository: Path,
                               target_ref: str, base_sha: str, input_path: Path,
-                              baseline_paths: list[str], state: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+                              baseline_paths: list[str], state: dict[str, Any],
+                              config: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
     declaration, source_sha = load_umbrella_input(input_path)
     child_ids = declaration["children"]
     _umbrella_path, umbrella_body = task_manifest(controller, umbrella_id)
-    umbrella_text = umbrella_body.decode("utf-8", errors="replace")
-    declared_orders = [re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", match)
-                       for match in re.findall(r"\[task_id\](.*?)\[/task_id\]", umbrella_text,
-                                               flags=re.DOTALL)]
-    if child_ids not in declared_orders:
-        raise TaskWorkspaceError(
-            "umbrella ordered child set has no exact durable [task_id] evidence: " + " ".join(child_ids)
-        )
+    umbrella_scope, umbrella_scope_sha = validate_umbrella_graph(
+        controller, umbrella_id, child_ids, umbrella_body)
     if umbrella_id in child_ids:
         raise TaskWorkspaceError(f"umbrella child is self-referential or cyclic: {umbrella_id}")
     reservations = child_reservations(state)
@@ -751,7 +817,8 @@ def derive_umbrella_admission(controller: Path, umbrella_id: str, repository: Pa
             identity = reserved or (owner.get("task_id", child_id) if isinstance(owner, dict) else child_id)
             raise TaskWorkspaceError(f"umbrella child {child_id} is already owned by {identity}")
         _path, body = task_manifest(controller, child_id)
-        exact_paths, evidence = canonical_child_scope(repository, base_sha, child_id, body)
+        exact_paths, evidence, frozen_scope = canonical_child_scope(
+            controller, repository, base_sha, child_id, body, config, umbrella_id)
         for required in exact_paths:
             if not path_within(required, union):
                 union.append(required)
@@ -760,13 +827,14 @@ def derive_umbrella_admission(controller: Path, umbrella_id: str, repository: Pa
             "task_revision_sha256": hashlib.sha256(body).hexdigest(),
             "scope_evidence": evidence,
             "scope_evidence_sha256": stable_sha256(evidence),
-            "required_paths": exact_paths,
+            "required_paths": exact_paths, "canonical_scope": frozen_scope,
             "target_ref": target_ref, "base_sha": base_sha,
         })
     admission = {
         "schema_version": UMBRELLA_ADMISSION_SCHEMA,
         "execution_mode": UMBRELLA_EXECUTION_MODE,
         "input_path": str(input_path.resolve()), "input_sha256": source_sha,
+        "umbrella_scope_sha256": umbrella_scope_sha, "umbrella_scope": umbrella_scope,
         "ordered_child_ids": child_ids,
         "child_bindings": bindings,
         "union_paths": sorted(union),
@@ -802,7 +870,8 @@ def finalize_umbrella_admission(repository: Path, base_sha: str, union: list[str
 
 def umbrella_drift(controller: Path, repository: Path, admission: Any,
                    generated: Any, state: dict[str, Any], umbrella_id: str) -> list[dict[str, str]]:
-    expected_keys = {"schema_version", "execution_mode", "input_path", "input_sha256", "ordered_child_ids",
+    expected_keys = {"schema_version", "execution_mode", "input_path", "input_sha256",
+                     "umbrella_scope_sha256", "umbrella_scope", "ordered_child_ids",
                      "child_bindings", "union_paths", "union_paths_sha256", "generated_output_bindings"}
     if (not isinstance(admission, dict) or set(admission) != expected_keys
             or admission.get("schema_version") != UMBRELLA_ADMISSION_SCHEMA
@@ -821,6 +890,14 @@ def umbrella_drift(controller: Path, repository: Path, admission: Any,
             or stable_sha256(admission.get("union_paths")) != admission.get("union_paths_sha256")):
         drift.append({"reason": "order_or_union_hash_drift"})
     reservations = child_reservations(state)
+    try:
+        _umbrella_path, umbrella_body = task_manifest(controller, umbrella_id)
+        current_umbrella_scope, current_umbrella_sha = load_task_scope(controller, umbrella_id, umbrella_body)
+        if (current_umbrella_scope != admission["umbrella_scope"]
+                or current_umbrella_sha != admission["umbrella_scope_sha256"]):
+            drift.append({"reason": "umbrella_scope_drift"})
+    except TaskWorkspaceError:
+        drift.append({"reason": "umbrella_scope_unavailable"})
     generated_pairs = {(row.get("source"), row.get("destination"), row.get("kind"))
                        for row in generated.get("bindings", [])} if isinstance(generated, dict) else set()
     bound_targets = {(row.get("target_ref"), row.get("base_sha"))
@@ -830,17 +907,21 @@ def umbrella_drift(controller: Path, repository: Path, admission: Any,
     for binding in admission["child_bindings"]:
         child_id = binding.get("task_id", "unknown") if isinstance(binding, dict) else "unknown"
         if (not isinstance(binding, dict) or set(binding) != {"task_id", "task_revision_sha256",
-                "scope_evidence", "scope_evidence_sha256", "required_paths", "target_ref", "base_sha"}):
+                "scope_evidence", "scope_evidence_sha256", "required_paths", "canonical_scope",
+                "target_ref", "base_sha"}):
             drift.append({"task_id": child_id, "reason": "malformed_child_binding"}); continue
         try:
             _path, body = task_manifest(controller, child_id)
-            paths, evidence = canonical_child_scope(repository, binding.get("base_sha", ""), child_id, body)
+            config = load_config(controller)
+            paths, evidence, frozen_scope = canonical_child_scope(
+                controller, repository, binding.get("base_sha", ""), child_id, body, config, umbrella_id)
         except TaskWorkspaceError:
             drift.append({"task_id": child_id, "reason": "canonical_child_unavailable"}); continue
         if (hashlib.sha256(body).hexdigest() != binding.get("task_revision_sha256")
                 or paths != binding.get("required_paths")
                 or evidence != binding.get("scope_evidence")
-                or stable_sha256(evidence) != binding.get("scope_evidence_sha256")):
+                or stable_sha256(evidence) != binding.get("scope_evidence_sha256")
+                or frozen_scope != binding.get("canonical_scope")):
             drift.append({"task_id": child_id, "reason": "revision_or_scope_drift"})
         if reservations.get(child_id) != umbrella_id:
             drift.append({"task_id": child_id, "reason": "child_reservation_drift"})
@@ -916,7 +997,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
     expected_policy = ("kanban" if operation in {"status", "recovery-plan"} else "orchestration")
-    if surface == "task" and operation not in {"start", "status", "finish", "recovery-plan", "recovery-apply"}:
+    if surface == "task" and operation not in {"start", "status", "finish", "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
@@ -997,7 +1078,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
     if umbrella_input is not None:
         allowed_paths, umbrella_admission = derive_umbrella_admission(
             controller, task_id, repository, config["target_ref"], target_sha,
-            umbrella_input.resolve(), allowed_paths, provisional_state)
+            umbrella_input.resolve(), allowed_paths, provisional_state, config)
         allowed_paths, umbrella_admission, generated_output_admission = finalize_umbrella_admission(
             repository, target_sha, allowed_paths, umbrella_admission)
     else:
@@ -1018,7 +1099,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                 config, repository, target_sha, requested_paths)
             locked_union, locked_umbrella = derive_umbrella_admission(
                 controller, task_id, repository, config["target_ref"], target_sha,
-                umbrella_input.resolve(), locked_baseline, state)
+                umbrella_input.resolve(), locked_baseline, state, config)
             locked_union, locked_umbrella, locked_generated = finalize_umbrella_admission(
                 repository, target_sha, locked_union, locked_umbrella)
             if ((locked_union, locked_entries, locked_umbrella, locked_generated)
@@ -1140,15 +1221,22 @@ def _recovery_plan_locked(controller: Path, task_id: str, input_path: Path,
     baseline, _selected = selected_task_paths(config, repository, record["base_sha"], receipt.get("requested_paths", []))
     union, admission = derive_umbrella_admission(
         controller, task_id, repository, record["target_ref"], record["base_sha"],
-        input_path.resolve(), baseline, state)
+        input_path.resolve(), baseline, state, config)
     union, admission, generated = finalize_umbrella_admission(repository, record["base_sha"], union, admission)
     original_allowed = receipt.get("allowed_paths", [])
-    commits = git(worktree, "rev-list", "--reverse", f"{record['base_sha']}..{head}").splitlines()
+    commits = git(worktree, "rev-list", "--reverse", "--parents", f"{record['base_sha']}..{head}").splitlines()
     history: list[dict[str, Any]] = []; escaped: list[str] = []
-    for commit in commits:
-        paths = sorted(set(git(worktree, "diff-tree", "--no-commit-id", "--name-only", "-r", commit).splitlines()))
-        history.append({"commit": commit, "paths": paths, "paths_sha256": stable_sha256(paths)})
-        escaped.extend(path for path in paths if not path_within(path, original_allowed))
+    for row in commits:
+        commit, *parents = row.split()
+        edges: list[dict[str, Any]] = []
+        # Every parent edge is authority. In particular, merge commits are not
+        # reduced to first-parent combined diff semantics.
+        for parent in parents:
+            paths = sorted(set(git(worktree, "diff", "--name-only", parent, commit).splitlines()))
+            edges.append({"parent": parent, "paths": paths, "paths_sha256": stable_sha256(paths)})
+            escaped.extend(path for path in paths if not path_within(path, original_allowed))
+        history.append({"commit": commit, "parent_edges": edges,
+                        "parent_edges_sha256": stable_sha256(edges)})
     if escaped:
         raise TaskWorkspaceError("prior umbrella commit history escaped the historical admission: " + ", ".join(sorted(set(escaped))))
     changed = sorted(set(git(worktree, "diff", "--name-only", f"{record['base_sha']}..{head}").splitlines()))
@@ -1170,6 +1258,54 @@ def build_umbrella_recovery_plan(controller: Path, task_id: str, input_path: Pat
     repository = product_repository(controller, config)
     with state_lock(controller):
         return _recovery_plan_locked(controller, task_id, input_path, config, repository, read_state(controller))
+
+
+def authorization_ledger(state: dict[str, Any]) -> dict[str, Any]:
+    value = state["queues"].setdefault("umbrella_authorization_ledger", {
+        "schema_version": AUTHORIZATION_LEDGER_SCHEMA, "issued": {},
+    })
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "issued"}
+            or value.get("schema_version") != AUTHORIZATION_LEDGER_SCHEMA
+            or not isinstance(value.get("issued"), dict)):
+        raise TaskWorkspaceError("umbrella authorization ledger is invalid")
+    return value["issued"]
+
+
+def issue_umbrella_recovery_authorization(controller: Path, task_id: str,
+                                           plan_path: Path, input_path: Path) -> dict[str, Any]:
+    plan, plan_file_sha = read_json_object(plan_path, "umbrella recovery plan")
+    plan_sha = stable_sha256(plan)
+    config = load_config(controller); repository = product_repository(controller, config)
+    with state_lock(controller):
+        state = read_state(controller)
+        expected = _recovery_plan_locked(controller, task_id, input_path, config, repository, state)
+        if plan != expected:
+            raise TaskWorkspaceError("only the exact current reviewed recovery plan can be authorized")
+        issued = authorization_ledger(state)
+        for authorization_id, row in issued.items():
+            if row.get("plan_sha256") == plan_sha and row.get("plan_file_sha256") == plan_file_sha:
+                return {**row, "authorization_id": authorization_id, "outcome": "already_issued"}
+        authorization_id = secrets.token_hex(24)
+        root = controller / ".juno_task/receipts/task-admission-authorizations"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{task_id}-{authorization_id}.json"
+        receipt = {"schema_version": UMBRELLA_AUTHORIZATION_SCHEMA,
+                   "authorization_id": authorization_id, "task_id": task_id,
+                   "action": "supersede_umbrella_admission", "plan_sha256": plan_sha,
+                   "plan_file_sha256": plan_file_sha,
+                   "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"]}
+        data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        row = {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
+               "plan_sha256": plan_sha, "plan_file_sha256": plan_file_sha,
+               "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"]}
+        issued[authorization_id] = row
+        try: write_state(controller, state)
+        except Exception:
+            path.unlink(missing_ok=True); raise
+    return {**row, "authorization_id": authorization_id, "outcome": "issued"}
 
 
 def apply_umbrella_recovery(controller: Path, task_id: str, plan_path: Path,
@@ -1197,6 +1333,13 @@ def apply_umbrella_recovery(controller: Path, task_id: str, plan_path: Path,
     with state_lock(controller):
         state = read_state(controller); record = state["tasks"].get(task_id)
         if not isinstance(record, dict): raise TaskWorkspaceError("umbrella disappeared before recovery apply")
+        ledger_row = authorization_ledger(state).get(authorization.get("authorization_id"))
+        if (not isinstance(ledger_row, dict)
+                or ledger_row.get("path") != str(authorization_path)
+                or ledger_row.get("sha256") != authorization_file_sha
+                or ledger_row.get("plan_sha256") != plan_sha
+                or ledger_row.get("plan_file_sha256") != plan_file_sha):
+            raise TaskWorkspaceError("authorization receipt was not issued by trusted controller ledger")
         existing = record.get("admission_supersessions", [])
         if (existing and existing[-1].get("reviewed_plan_sha256") == plan_sha
                 and existing[-1].get("authorization_receipt", {}).get("sha256") == authorization_file_sha):
@@ -1395,7 +1538,7 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
-    value.add_argument("operation", choices=("start", "status", "finish", "recovery-plan", "recovery-apply"))
+    value.add_argument("operation", choices=("start", "status", "finish", "recovery-plan", "recovery-authorize", "recovery-apply"))
     value.add_argument("--task", required=True)
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--umbrella-admission", type=Path,
@@ -1431,6 +1574,11 @@ def main(argv: list[str] | None = None) -> int:
             result = {"schema_version": UMBRELLA_RECOVERY_PLAN_SCHEMA, "task_id": args.task,
                       "outcome": "planned", "plan_path": str(args.output.resolve()),
                       "plan_sha256": stable_sha256(plan), "plan_file_sha256": hashlib.sha256(data).hexdigest()}
+        elif args.operation == "recovery-authorize":
+            if not args.umbrella_admission or not args.plan or args.authorization_receipt or args.output:
+                raise TaskWorkspaceError("recovery-authorize requires --umbrella-admission and --plan")
+            result = issue_umbrella_recovery_authorization(
+                controller, args.task, args.plan, args.umbrella_admission)
         elif args.operation == "recovery-apply":
             if not args.umbrella_admission or not args.plan or not args.authorization_receipt or args.output:
                 raise TaskWorkspaceError("recovery-apply requires --umbrella-admission, --plan, and --authorization-receipt")

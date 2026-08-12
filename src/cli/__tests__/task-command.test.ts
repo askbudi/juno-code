@@ -24,7 +24,7 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'start', 'status', 'finish', 'recovery-plan', 'recovery-apply',
+      'start', 'status', 'finish', 'recovery-plan', 'recovery-authorize', 'recovery-apply',
     ]);
     expect(task?.commands.every((command) => command.registeredArguments[0]?.required)).toBe(true);
   });
@@ -52,6 +52,11 @@ describe('task workspace CLI', () => {
     expect(invoke).toHaveBeenLastCalledWith('recovery-plan', 'U1', [], [
       '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json',
     ]);
+    await program.parseAsync(['node', 'yy', 'task', 'recovery-authorize', 'U1',
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json']);
+    expect(invoke).toHaveBeenLastCalledWith('recovery-authorize', 'U1', [], [
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
+    ]);
     await program.parseAsync(['node', 'yy', 'task', 'recovery-apply', 'U1',
       '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
       '--authorization-receipt', '/tmp/authorization.json']);
@@ -64,10 +69,11 @@ describe('task workspace CLI', () => {
   it('routes recovery planning through read-only kanban policy and apply through orchestration', () => {
     expect(taskWorkspaceControlOperation('recovery-plan')).toBe('kanban');
     expect(taskWorkspaceControlOperation('status')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });
 
-  it.each(['start', 'finish', 'recovery-apply'] as const)(
+  it.each(['start', 'finish', 'recovery-authorize', 'recovery-apply'] as const)(
     'checkpoints durable controller state after task %s without replacing its outcome',
     async (operation) => {
       const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
