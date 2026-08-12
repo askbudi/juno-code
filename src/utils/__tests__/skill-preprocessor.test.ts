@@ -556,6 +556,18 @@ describe('Pi input handler argument preservation', () => {
   );
 
   it.each([
+    ['left-shift', `printf '%s' $((1 << 2))-$1`, '4-hello'],
+    ['nested', `printf '%s' $(((1 << 2) + (8 >> 1)))-$1`, '8-hello'],
+    ['double-quoted', `printf '%s' "$((2 << 3))-$1"`, '16-hello'],
+  ])('ignores arithmetic shift operators in %s arithmetic expansion', (_kind, command, output) => {
+    skill(`arithmetic-${_kind}`, `Result: !\`${command}\``, true);
+    const expanded = expandSkillInvocation(`/skill:arithmetic-${_kind} hello`, tmpDir)!;
+    expect(expanded).toContain(`Result: ${output}`);
+    expect(expanded.endsWith('</skill>')).toBe(true);
+    expect(expanded).not.toContain('[Error:');
+  });
+
+  it.each([
     ['single-quoted', `printf '%s' 'lookalike <<E"OF": $1'`, 'lookalike <<E"OF": payload'],
     ['double-quoted', `printf '%s' "lookalike <<'EOF': $1"`, "lookalike <<'EOF': payload"],
     ['escaped', `printf '%s' \\<\\<EOF; printf '%s' "$1"`, '<<EOFpayload'],

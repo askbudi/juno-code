@@ -218,6 +218,10 @@ interface ShellLexicalState {
   inSingle: boolean;
   inDouble: boolean;
   escaped: boolean;
+  arithmeticDepth: number;
+  arithmeticInSingle: boolean;
+  arithmeticInDouble: boolean;
+  arithmeticEscaped: boolean;
 }
 
 function commentStarts(line: string, index: number): boolean {
@@ -229,12 +233,35 @@ function commentStarts(line: string, index: number): boolean {
 /** Scan one shell source line; heredoc operators count only in lexical command state. */
 function scanHeredocDeclarations(
   line: string,
-  initial: ShellLexicalState = { inSingle: false, inDouble: false, escaped: false },
+  initial: ShellLexicalState = {
+    inSingle: false,
+    inDouble: false,
+    escaped: false,
+    arithmeticDepth: 0,
+    arithmeticInSingle: false,
+    arithmeticInDouble: false,
+    arithmeticEscaped: false,
+  },
 ): { declarations: HeredocDeclaration[]; state: ShellLexicalState } {
   const declarations: HeredocDeclaration[] = [];
   const state = { ...initial };
   for (let index = 0; index < line.length; index += 1) {
     const char = line[index]!;
+    if (state.arithmeticDepth > 0) {
+      if (state.arithmeticEscaped) {
+        state.arithmeticEscaped = false;
+      } else if (char === '\\' && !state.arithmeticInSingle) {
+        state.arithmeticEscaped = true;
+      } else if (char === "'" && !state.arithmeticInDouble) {
+        state.arithmeticInSingle = !state.arithmeticInSingle;
+      } else if (char === '"' && !state.arithmeticInSingle) {
+        state.arithmeticInDouble = !state.arithmeticInDouble;
+      } else if (!state.arithmeticInSingle && !state.arithmeticInDouble) {
+        if (char === '(') state.arithmeticDepth += 1;
+        else if (char === ')') state.arithmeticDepth -= 1;
+      }
+      continue;
+    }
     if (state.escaped) {
       state.escaped = false;
       continue;
@@ -261,6 +288,14 @@ function scanHeredocDeclarations(
     }
     if (char === '"') {
       state.inDouble = true;
+      continue;
+    }
+    if (char === '$' && line[index + 1] === '(' && line[index + 2] === '(') {
+      state.arithmeticDepth = 2;
+      state.arithmeticInSingle = false;
+      state.arithmeticInDouble = false;
+      state.arithmeticEscaped = false;
+      index += 2;
       continue;
     }
     if (char !== '<' || line[index + 1] !== '<' || line[index + 2] === '<') continue;
@@ -344,7 +379,15 @@ function analyzeHeredocs(command: string): {
   const queued: HeredocDeclaration[] = [];
   const ranges: Array<{ start: number; end: number; expands: boolean }> = [];
   let active: HeredocDeclaration | undefined;
-  let state: ShellLexicalState = { inSingle: false, inDouble: false, escaped: false };
+  let state: ShellLexicalState = {
+    inSingle: false,
+    inDouble: false,
+    escaped: false,
+    arithmeticDepth: 0,
+    arithmeticInSingle: false,
+    arithmeticInDouble: false,
+    arithmeticEscaped: false,
+  };
   let lineStart = 0;
 
   for (const line of lines) {
@@ -365,12 +408,21 @@ function analyzeHeredocs(command: string): {
     state = scanned.state;
     // A terminal backslash escapes the newline, not the first byte of the next line.
     state.escaped = false;
+    state.arithmeticEscaped = false;
     if (!active) active = queued.shift();
     lineStart = lineEnd + 1;
   }
   return {
     ranges,
-    malformed: state.inSingle || state.inDouble || state.escaped || active !== undefined,
+    malformed:
+      state.inSingle ||
+      state.inDouble ||
+      state.escaped ||
+      state.arithmeticDepth !== 0 ||
+      state.arithmeticInSingle ||
+      state.arithmeticInDouble ||
+      state.arithmeticEscaped ||
+      active !== undefined,
   };
 }
 
