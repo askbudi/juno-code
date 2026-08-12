@@ -483,14 +483,14 @@ def validation_dependencies(candidate: Path, cwd: Path,
     source_lock = source_cwd / "package-lock.json"
     source_modules = source_cwd / "node_modules"
     candidate_modules = cwd / "node_modules"
-    if (not source_lock.is_file()
-            or hashlib.sha256(lock.read_bytes()).digest()
-            != hashlib.sha256(source_lock.read_bytes()).digest()):
+    if not source_lock.is_file():
+        raise MergeQueueError("candidate validation package lock differs from feature worktree")
+    lock_digest = hashlib.sha256(lock.read_bytes()).digest()
+    source_lock_digest = hashlib.sha256(source_lock.read_bytes()).digest()
+    if lock_digest != source_lock_digest:
         raise MergeQueueError("candidate validation package lock differs from feature worktree")
     if not source_modules.is_dir():
         raise MergeQueueError("lock-compatible feature dependencies are unavailable")
-    if candidate_modules.exists() or candidate_modules.is_symlink():
-        raise MergeQueueError("candidate validation dependency path already exists")
     relative_modules = str(candidate_modules.relative_to(candidate))
     ignore_probe = f"{relative_modules}/.juno-validation-dependency-probe"
     ignored = task_runtime.run(
@@ -499,6 +499,41 @@ def validation_dependencies(candidate: Path, cwd: Path,
     )
     if ignored.returncode:
         raise MergeQueueError("candidate validation dependency path is not Git-ignored")
+
+    def assert_clean() -> None:
+        if task_runtime.git(candidate, "status", "--porcelain=v1", "--untracked-files=all",
+                            check=False):
+            raise MergeQueueError("candidate dependency bridge changed Git-visible state")
+
+    def assert_locks_unchanged() -> None:
+        if (not lock.is_file() or not source_lock.is_file()
+                or hashlib.sha256(lock.read_bytes()).digest() != lock_digest
+                or hashlib.sha256(source_lock.read_bytes()).digest() != source_lock_digest):
+            raise MergeQueueError("candidate validation package lock identity changed")
+
+    source_canonical = source_modules.resolve(strict=True)
+    candidate_canonical = candidate_modules.resolve(strict=False)
+    if source_canonical == candidate_canonical:
+        # A direct-descendant candidate is the feature worktree itself. Its
+        # hydrated dependencies are already the exact lock-compatible source;
+        # do not manufacture a bridge over the directory that supplies them.
+        provenance = source_modules.stat()
+        assert_clean()
+        try:
+            yield
+        finally:
+            if (not candidate_modules.is_dir()
+                    or candidate_modules.resolve(strict=False) != source_canonical):
+                raise MergeQueueError("candidate validation dependency identity changed")
+            current = candidate_modules.stat()
+            if (current.st_dev, current.st_ino) != (provenance.st_dev, provenance.st_ino):
+                raise MergeQueueError("candidate validation dependency identity changed")
+            assert_locks_unchanged()
+            assert_clean()
+        return
+
+    if candidate_modules.exists() or candidate_modules.is_symlink():
+        raise MergeQueueError("candidate validation dependency path already exists")
     candidate_modules.mkdir()
     linked: list[tuple[Path, Path]] = []
     try:
@@ -506,9 +541,7 @@ def validation_dependencies(candidate: Path, cwd: Path,
             candidate_entry = candidate_modules / source_entry.name
             candidate_entry.symlink_to(source_entry, target_is_directory=source_entry.is_dir())
             linked.append((candidate_entry, source_entry))
-        if task_runtime.git(candidate, "status", "--porcelain=v1", "--untracked-files=all",
-                            check=False):
-            raise MergeQueueError("candidate dependency bridge changed Git-visible state")
+        assert_clean()
         yield
     finally:
         for candidate_entry, source_entry in reversed(linked):
@@ -517,6 +550,8 @@ def validation_dependencies(candidate: Path, cwd: Path,
                 raise MergeQueueError("candidate dependency bridge identity changed")
             candidate_entry.unlink()
         candidate_modules.rmdir()
+        assert_locks_unchanged()
+        assert_clean()
 
 
 def validation_rows(config: dict[str, Any], candidate: Path,
