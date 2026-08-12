@@ -46,18 +46,20 @@ describe('Bolt task workspace managed runtime', () => {
         '.pi/skills/ralph-loop/references/implement.md',
       ]),
     );
-    expect(managed.admissionOutputs).toEqual(
-      expect.arrayContaining([
-        {
-          source: 'scripts/controller_workspace.py',
-          destination: '.juno_task/scripts/controller_workspace.py',
-        },
-        {
-          source: 'scripts/migration_inventory.py',
-          destination: '.juno_task/scripts/migration_inventory.py',
-        },
-      ]),
-    );
+    expect(managed.admissionOutputs).toEqual([
+      {
+        source: 'scripts/controller_workspace.py',
+        destination: '.juno_task/scripts/controller_workspace.py',
+      },
+      {
+        source: 'scripts/migration_inventory.py',
+        destination: '.juno_task/scripts/migration_inventory.py',
+      },
+      {
+        source: 'scripts/controller_checkpoint.py',
+        destination: '.juno_task/scripts/controller_checkpoint.py',
+      },
+    ]);
     expect(policy.allowed_paths).not.toEqual(
       expect.arrayContaining(['.agents', '.claude', '.pi', '.juno_task/scripts']),
     );

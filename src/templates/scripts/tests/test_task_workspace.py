@@ -476,6 +476,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                 ".juno_task/scripts/migration_inventory.py",
             "juno-code/src/templates/scripts/controller_workspace.py":
                 ".juno_task/scripts/controller_workspace.py",
+            "juno-code/src/templates/scripts/controller_checkpoint.py":
+                ".juno_task/scripts/controller_checkpoint.py",
         }
         declaration = self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION
         declaration.write_text(json.dumps({
@@ -494,6 +496,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                     "juno-code/src/templates/scripts/controller_workspace.py"]},
                 {"source": "scripts/migration_inventory.py", "destination": managed[
                     "juno-code/src/templates/scripts/migration_inventory.py"]},
+                {"source": "scripts/controller_checkpoint.py", "destination": managed[
+                    "juno-code/src/templates/scripts/controller_checkpoint.py"]},
             ],
         }) + "\n")
         files = [generated_source, *generated_destinations, *managed.keys(), *managed.values(),
@@ -560,10 +564,29 @@ class TaskWorkspaceTests(unittest.TestCase):
         queued = self.payload("finish", "X")
         self.assertEqual(queued["changed_paths"], [destination])
 
-    def test_both_managed_script_pairs_enforce_byte_parity(self) -> None:
+    def test_controller_checkpoint_is_exactly_bound_without_admitting_scripts_root(self) -> None:
+        fixtures = self.install_declared_output_fixtures()
+        started = self.payload("start", "X")
+        checkpoint_source = "juno-code/src/templates/scripts/controller_checkpoint.py"
+        checkpoint_destination = ".juno_task/scripts/controller_checkpoint.py"
+        admitted = started["creation_receipt"]["allowed_paths"]
+        bindings = started["creation_receipt"]["generated_output_admission"]["bindings"]
+        self.assertIn(checkpoint_destination, admitted)
+        self.assertNotIn(".juno_task/scripts", admitted)
+        self.assertIn((checkpoint_source, checkpoint_destination), {
+            (row["source"], row["destination"]) for row in bindings
+        })
+        undeclared = ".juno_task/scripts/controller_checkpoint_extra.py"
+        self.assertFalse(task_runtime.path_within(undeclared, admitted))
+        self.commit_task("X", undeclared)
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn(f"disallowed paths: {undeclared}", failed.stderr)
+
+    def test_all_managed_script_pairs_enforce_byte_parity(self) -> None:
         fixtures = self.install_declared_output_fixtures()
         for task_id, source, destination in zip(
-                ("X", "Y"), fixtures["managed_sources"], fixtures["managed_destinations"]):
+                ("X", "Y", "Z"), fixtures["managed_sources"], fixtures["managed_destinations"]):
             with self.subTest(destination=destination):
                 self.payload("start", task_id)
                 worktree = self.workspaces / task_id
