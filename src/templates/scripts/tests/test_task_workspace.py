@@ -520,6 +520,34 @@ class TaskWorkspaceTests(unittest.TestCase):
                 "managed_sources": list(managed), "managed_destinations": list(managed.values()),
                 "ordinary_source": ordinary_source, "ordinary_destination": ordinary_destination}
 
+    def test_non_juno_product_without_declaration_surface_starts_and_finishes(self) -> None:
+        git(self.repository, "rm", task_runtime.GENERATED_OUTPUT_DECLARATION,
+            task_runtime.MANAGED_OUTPUT_DECLARATION,
+            "juno-code/unadmitted-canonical.txt", ".agents/unadmitted-output.txt")
+        git(self.repository, "commit", "-m", "non-Juno product surface")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+
+        started = self.payload("start", "X")
+        self.assertEqual(started["creation_receipt"]["generated_output_admission"], {
+            "schema_version": "juno_task_generated_output_admission.v2",
+            "declarations": {}, "bindings": [],
+            "scope": "product_has_no_juno_generated_output_surface",
+        })
+        worktree = self.workspaces / "X"
+        (worktree / "src/base.txt").write_text("non-Juno change\n")
+        git(worktree, "add", "src/base.txt")
+        git(worktree, "commit", "-m", "ordinary product change")
+        self.assertEqual(self.payload("finish", "X")["state"], "QUEUED")
+
+    def test_partial_generated_declaration_surface_refuses_before_worktree(self) -> None:
+        git(self.repository, "rm", task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "partial Juno declaration surface")
+        failed = self.command("start", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("generated-output declaration surface is partial", failed.stderr)
+        self.assertIn(task_runtime.MANAGED_OUTPUT_DECLARATION, failed.stderr)
+        self.assertFalse((self.workspaces / "X").exists())
+
     def test_declared_generator_and_managed_outputs_are_hash_bound_and_queue_at_byte_parity(self) -> None:
         fixtures = self.install_declared_output_fixtures()
         started = self.payload("start", "X")

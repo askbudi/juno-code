@@ -400,6 +400,19 @@ def target_json(repository: Path, target_sha: str, path: str) -> tuple[dict[str,
 def derived_output_admission(repository: Path, target_sha: str,
                              admitted_paths: list[str]) -> tuple[list[str], dict[str, Any]]:
     """Expand admitted canonical sources to exact, declared parity destinations."""
+    generated_bytes = target_blob(repository, target_sha, GENERATED_OUTPUT_DECLARATION)
+    managed_bytes = target_blob(repository, target_sha, MANAGED_OUTPUT_DECLARATION)
+    if generated_bytes is None and managed_bytes is None:
+        return list(admitted_paths), {
+            "schema_version": "juno_task_generated_output_admission.v2",
+            "declarations": {}, "bindings": [],
+            "scope": "product_has_no_juno_generated_output_surface",
+        }
+    if generated_bytes is None or managed_bytes is None:
+        missing = (GENERATED_OUTPUT_DECLARATION if generated_bytes is None
+                   else MANAGED_OUTPUT_DECLARATION)
+        raise TaskWorkspaceError(
+            f"generated-output declaration surface is partial; missing: {missing}")
     generated, generated_sha = target_json(repository, target_sha, GENERATED_OUTPUT_DECLARATION)
     if (set(generated) != {"schema_version", "source", "destinations"}
             or generated.get("schema_version") != GENERATED_OUTPUT_SCHEMA
@@ -488,6 +501,13 @@ def derived_output_admission(repository: Path, target_sha: str,
 def verify_derived_output_parity(repository: Path, tip_sha: str,
                                  admission: Any, changed: list[str]) -> None:
     expected_declarations = {GENERATED_OUTPUT_DECLARATION, MANAGED_OUTPUT_DECLARATION}
+    if (isinstance(admission, dict)
+            and admission == {
+                "schema_version": "juno_task_generated_output_admission.v2",
+                "declarations": {}, "bindings": [],
+                "scope": "product_has_no_juno_generated_output_surface",
+            }):
+        return
     if (not isinstance(admission, dict)
             or set(admission) != {"schema_version", "declarations", "bindings"}
             or admission.get("schema_version") != "juno_task_generated_output_admission.v1"
