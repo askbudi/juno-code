@@ -871,17 +871,41 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
             raise CheckpointError("release-commit HEAD changed after admission")
         if any(fingerprint(root, path) != frozen[path] for path in dirty_paths):
             raise CheckpointError("release-commit content changed after staging")
+        staged_tree = git(root, "write-tree").strip()
+        exact_message = validate_message(message)
         # The ordinary integration-owner classifier remains a hard deny. This
         # exact helper owns the commit and intentionally bypasses hook dispatch,
         # as controller checkpoint commits do, after verifying any managed hook.
-        git(root, "commit", "--no-verify", "-m", validate_message(message), "--", *RELEASE_PATHS)
+        git(root, "commit", "--no-verify", "-m", exact_message, "--", *RELEASE_PATHS)
+
+        # HEAD is mutable even while this process owns the Juno authority lock:
+        # unrelated Git can advance the ref immediately after `git commit`.
+        # Recover the commit created by this admission from the reflog and bind
+        # it to the frozen parent, staged tree, exact message, and changed paths.
+        reflog = git(root, "reflog", "--all", "--format=%H", check=False).splitlines()
+        candidates: list[str] = []
+        for candidate in dict.fromkeys(row.strip() for row in reflog if row.strip()):
+            parent_row = git(root, "rev-list", "--parents", "-n", "1", candidate, check=False).split()
+            if parent_row != [candidate, before]:
+                continue
+            if git(root, "show", "-s", "--format=%T", candidate).strip() != staged_tree:
+                continue
+            if git(root, "show", "-s", "--format=%B", candidate).rstrip("\n") != exact_message:
+                continue
+            changed = sorted(git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", candidate).splitlines())
+            if changed != staged or any(path not in RELEASE_PATHS for path in changed):
+                continue
+            candidates.append(candidate)
+        if len(candidates) != 1:
+            raise CheckpointError(f"release-commit could not uniquely bind created commit: candidates={candidates}")
+        created = candidates[0]
     except BaseException:
         git(root, "restore", "--staged", "--", *RELEASE_PATHS, check=False)
         raise
-    head = git(root, "rev-parse", "HEAD").strip()
-    git(root, "config", "--worktree", "juno.workspace.roleBase", head)
+    git(root, "config", "--worktree", "juno.workspace.roleBase", created)
     return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_commit", "passed": True,
-            "role": "integration-owner", "before": before, "head": head, "paths": staged}
+            "role": "integration-owner", "before": before, "head": created, "tree": staged_tree,
+            "message": exact_message, "paths": staged}
 
 
 def emit(payload: dict[str, Any], as_json: bool) -> None:
