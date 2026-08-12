@@ -6,13 +6,11 @@ describe('prompt-macro-resolver', () => {
     const payload = '## T1\n@@no_code\n"quotes" `ticks` $ARGUMENTS $1 $2 $@ $(echo no)';
     const lifecycle = '# lifecycle contract\n';
     const result = resolvePromptMacros(`@@life_cycle ${payload}`, {
-      dictionary: { life_cycle: lifecycle }, maxDepth: 8,
+      dictionary: { life_cycle: lifecycle, no_code: 'MUST NOT EXPAND' }, maxDepth: 8,
     });
     expect(result.resolvedPrompt).toBe(`${lifecycle} ${payload}`);
     expect(result.resolvedPrompt.indexOf(payload)).toBe(result.resolvedPrompt.lastIndexOf(payload));
-    expect(result.warnings).toEqual([
-      expect.objectContaining({ code: 'unresolved', key: 'no_code' }),
-    ]);
+    expect(result.warnings).toEqual([]);
   });
   it('expands exact case-sensitive keys with local/global dictionary values', () => {
     const result = resolvePromptMacros('Do @@ship now', {

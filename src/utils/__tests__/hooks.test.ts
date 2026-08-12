@@ -99,6 +99,30 @@ describe('hooks', () => {
       expect.objectContaining({ cwd: await fs.realpath(owner), shell: true, input: '' }));
   });
 
+  it('explicitly skips a registered hook surface from an unrelated repository', async () => {
+    const controller = join(testDir, 'controller-repository');
+    const unrelated = join(testDir, 'unrelated-owner');
+    for (const repository of [controller, unrelated]) {
+      await fs.ensureDir(repository);
+      execFileSync('git', ['-C', repository, 'init', '-q']);
+      execFileSync('git', ['-C', repository, 'config', 'extensions.worktreeConfig', 'true']);
+    }
+    execFileSync('git', ['-C', controller, 'config', '--worktree', 'juno.workspace.role', 'controller']);
+    execFileSync('git', ['-C', controller, 'config', 'juno.integration.ownerPath', unrelated]);
+    execFileSync('git', ['-C', unrelated, 'config', '--worktree', 'juno.workspace.role', 'integration-owner']);
+    execFileSync('git', ['-C', unrelated, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1']);
+
+    const result = await executeHook('START_RUN', {
+      START_RUN: { commands: ['./product-owned-hook.sh'] },
+    }, { workingDirectory: controller });
+
+    expect(result).toMatchObject({ success: true, commandsExecuted: 0 });
+    expect(mockedExeca).not.toHaveBeenCalled();
+    expect(mockContextLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('canonical product surface is missing or invalid'),
+    );
+  });
+
   it('explicitly skips controller hooks when no canonical product surface exists', async () => {
     const controller = join(testDir, 'controller-only');
     await fs.ensureDir(controller);

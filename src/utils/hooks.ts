@@ -162,6 +162,10 @@ export function resolveHookWorkingDirectory(requested: string): HookWorkingDirec
   const exact = existsSync(candidate) && gitConfig(candidate, ['rev-parse', '--show-toplevel']);
   const candidateRole = exact ? gitConfig(candidate, ['config', '--worktree', '--get', 'juno.workspace.role']) : null;
   const authority = exact ? gitConfig(candidate, ['config', '--worktree', '--get', 'juno.workspace.roleAuthority']) : null;
+  const controllerCommon = gitConfig(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const candidateCommon = exact
+    ? gitConfig(candidate, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    : null;
   let canonical: string | null = null;
   try {
     canonical = exact ? realpathSync(exact) : null;
@@ -174,7 +178,10 @@ export function resolveHookWorkingDirectory(requested: string): HookWorkingDirec
   } catch {
     registeredCanonical = null;
   }
-  if (canonical !== registeredCanonical || candidateRole !== 'integration-owner' || authority !== 'protected-integration.v1') {
+  const sameRepository = Boolean(controllerCommon && candidateCommon &&
+    path.resolve(root, controllerCommon) === path.resolve(candidate, candidateCommon));
+  if (canonical !== registeredCanonical || !sameRepository ||
+      candidateRole !== 'integration-owner' || authority !== 'protected-integration.v1') {
     return {
       directory: null,
       surface: 'unavailable',

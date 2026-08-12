@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import selectors
@@ -695,6 +696,12 @@ def _resolved_submodule_url(parent_url: str | None, child_url: str) -> str:
         return str((Path(parent_url).parent / child_url).resolve())
     if "://" in parent_url:
         return urllib.parse.urljoin(parent_url.rstrip("/") + "/", child_url)
+    scp = re.fullmatch(r"([^/:\s]+@[^:\s]+):(.+)", parent_url)
+    if scp:
+        resolved = posixpath.normpath(posixpath.join(scp.group(2), child_url))
+        if resolved == ".." or resolved.startswith("../"):
+            raise TaskWorkspaceError(f"relative submodule URL escapes SSH remote namespace: {child_url}")
+        return f"{scp.group(1)}:{resolved}"
     raise TaskWorkspaceError(f"cannot resolve relative submodule URL safely: {child_url}")
 
 

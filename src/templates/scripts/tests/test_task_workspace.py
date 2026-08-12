@@ -520,6 +520,16 @@ class TaskWorkspaceTests(unittest.TestCase):
                 "managed_sources": list(managed), "managed_destinations": list(managed.values()),
                 "ordinary_source": ordinary_source, "ordinary_destination": ordinary_destination}
 
+    def test_resolves_relative_submodule_urls_for_scp_style_ssh_remotes(self) -> None:
+        self.assertEqual(task_runtime._resolved_submodule_url(
+            "git@github.com:org/root.git", "../child.git"),
+            "git@github.com:org/child.git")
+        self.assertEqual(task_runtime._resolved_submodule_url(
+            "git@github.com:org/root.git", "./nested.git"),
+            "git@github.com:org/root.git/nested.git")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "escapes SSH remote namespace"):
+            task_runtime._resolved_submodule_url("git@github.com:root.git", "../../child.git")
+
     def test_non_juno_product_without_declaration_surface_starts_and_finishes(self) -> None:
         git(self.repository, "rm", task_runtime.GENERATED_OUTPUT_DECLARATION,
             task_runtime.MANAGED_OUTPUT_DECLARATION,
