@@ -27,11 +27,14 @@ function runWorkflowScript(scriptPath: string, args: string[], input?: string, e
     timeout: WORKFLOW_CHILD_TIMEOUT_MS,
     env: {
       ...process.env,
+      ...env,
+      // Test-specific command settings may inherit routing from the ambient
+      // repository, but this subprocess belongs to the synthetic controller.
       JUNO_TASK_ROOT: workflowFixtureController,
+      JUNO_CONTROLLER_BRANCH: 'fixture-controller',
       JUNO_WORKSPACE_ROLE: 'controller',
       JUNO_WORKSPACE_ENFORCEMENT: 'strict',
       JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController, '.test-metadata'),
-      ...env,
     },
   });
 }
@@ -331,6 +334,32 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
 
   it('rechecks persisted task authority before every generated write dispatch', async () => {
     const controller = await fs.realpath(workflowFixtureController!);
+    const ambientController = path.join(testDir, 'ambient-controller');
+    await fs.ensureDir(path.join(ambientController, '.juno_task'));
+    expect(spawnSync('git', ['init', '-b', 'ambient-controller'], {
+      cwd: ambientController, encoding: 'utf8',
+    }).status).toBe(0);
+    spawnSync('git', ['config', '--local', 'juno.controller.path', ambientController], { cwd: ambientController });
+    spawnSync('git', ['config', '--local', 'juno.controller.branch', 'ambient-controller'], { cwd: ambientController });
+    const ambientResolution = spawnSync('python3', [
+      path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
+      '--cwd', ambientController, '--operation', 'orchestration',
+    ], {
+      cwd: ambientController,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUNO_TASK_ROOT: ambientController,
+        JUNO_CONTROLLER_BRANCH: 'ambient-controller',
+        JUNO_WORKSPACE_ROLE: 'controller',
+        JUNO_WORKSPACE_ENFORCEMENT: 'strict',
+      },
+    });
+    expect(ambientResolution.status, ambientResolution.stderr).toBe(0);
+    expect(JSON.parse(ambientResolution.stdout)).toMatchObject({
+      path: await fs.realpath(ambientController), source: 'registration', valid: true,
+    });
+
     await fs.writeFile(path.join(controller, 'tracked.txt'), 'base\n');
     spawnSync('git', ['add', 'tracked.txt'], { cwd: controller });
     spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], { cwd: controller });
@@ -401,10 +430,14 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
       ],
     });
     const workflowPath = path.join(testDir, 'generated-edit.json');
-    const runCase = async (name: string, document: object) => {
+    const runCase = async (name: string, document: object, env?: NodeJS.ProcessEnv) => {
       await fs.remove(markerPath);
       await fs.writeJson(workflowPath, document);
-      return runWorkflow(['--workflow', workflowPath, '--out-dir', path.join(testDir, name), '--print-output', 'none']);
+      return runWorkflow(
+        ['--workflow', workflowPath, '--out-dir', path.join(testDir, name), '--print-output', 'none'],
+        undefined,
+        env,
+      );
     };
 
     for (const writeContract of ['review_fix', 'product_edit']) {
@@ -412,7 +445,14 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
       rejectedReview.steps[1].generated_task_contract = {
         role: 'review', write_contract: writeContract, task_root_receipt: 'edit',
       };
-      const rejected = await runCase(`review-${writeContract}`, rejectedReview);
+      const rejected = await runCase(`review-${writeContract}`, rejectedReview, {
+        // Model a test process launched through another repository's valid
+        // registered controller route. Fixture identity must win so the
+        // write-contract domain guard remains the observable refusal.
+        JUNO_TASK_ROOT: ambientController,
+        JUNO_CONTROLLER_BRANCH: 'refs/heads/ambient-controller',
+        JUNO_WORKSPACE_ROLE: 'controller',
+      });
       expect(rejected.status).not.toBe(0);
       expect(rejected.stderr + rejected.stdout).toContain(
         'generated review step edit must use write_contract read_only',
