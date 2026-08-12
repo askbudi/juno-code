@@ -105,6 +105,29 @@ class WatchProgressTests(unittest.TestCase):
         runtime = Path(__file__).parents[2] / ".juno_task/scripts/watch_progress.py"
         self.assertEqual(SCRIPT.read_bytes(), runtime.read_bytes())
 
+    def test_every_timing_argument_requires_a_finite_positive_value(self):
+        flags = ("--poll-interval", "--snapshot-interval", "--footer-grace")
+        invalid_values = ("nan", "inf", "-inf", "0")
+        (self.root / "pid").write_text("999999\n")
+        (self.root / "footer").write_bytes(VALID_FOOTER)
+
+        for flag in flags:
+            for value in invalid_values:
+                with self.subTest(flag=flag, value=value):
+                    result = self.invoke(f"{flag}={value}")
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    errors = [event for event in self.events(result.stdout) if event["event"] == "error"]
+                    self.assertEqual(len(errors), 1, self.events(result.stdout))
+                    self.assertEqual(
+                        errors[0]["message"],
+                        f"{flag} must be finite and greater than zero",
+                    )
+
+            with self.subTest(flag=flag, value="ordinary positive"):
+                result = self.invoke(f"{flag}=0.125")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("footer_valid", [event["event"] for event in self.events(result.stdout)])
+
     def test_valid_existing_footer_is_terminal_truth_after_process_exit(self):
         (self.root / "pid").write_text("999999\n")
         (self.root / "footer").write_bytes(VALID_FOOTER)

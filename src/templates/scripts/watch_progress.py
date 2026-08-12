@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -205,8 +206,9 @@ def validate_args(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     if len({str(path.absolute()) for path in paths}) != 3:
         raise WatchError("--pid-file, --log-file, and --footer-file must be distinct paths")
     for name in ("poll_interval", "snapshot_interval", "footer_grace"):
-        if getattr(args, name) <= 0:
-            raise WatchError(f"--{name.replace('_', '-')} must be greater than zero")
+        value = getattr(args, name)
+        if not (math.isfinite(value) and value > 0):
+            raise WatchError(f"--{name.replace('_', '-')} must be finite and greater than zero")
     if args.tail_lines <= 0:
         raise WatchError("--tail-lines must be greater than zero")
     for label, path in (("--log-file", paths[1]), ("--footer-file", paths[2])):
