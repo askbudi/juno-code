@@ -968,6 +968,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "release-preflight":
         payload = release_admission(root, args.path, require_changes=False); emit(payload, args.json); return 0
     if args.command == "release-commit":
+        # This dispatch guard must precede acquire_lease/acquire_target_channel:
+        # alternate-index refusal is not allowed to create writer/channel state.
+        # release_admission repeats the check as defense in depth for callers.
+        if os.environ.get("GIT_INDEX_FILE"):
+            raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for release admission")
         lease = acquire_lease(root); channel = None
         try:
             channel = acquire_target_channel(root)
