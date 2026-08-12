@@ -19,6 +19,7 @@ import re
 import secrets
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,36 @@ def run(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.Complet
 
 def git(root: Path, *args: str, check: bool = True) -> str:
     return run(["git", "-C", str(root), *args], root, check=check).stdout.strip()
+
+
+def git_pathnames(root: Path, *args: str) -> list[str]:
+    """Read Git pathnames without display quoting or line-based ambiguity."""
+    result = subprocess.run(
+        ["git", "-C", str(root), *args], cwd=root, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+        raise TaskWorkspaceError(detail or f"Git pathname command failed: {args!r}")
+    raw = result.stdout
+    if raw and not raw.endswith(b"\0"):
+        raise TaskWorkspaceError("Git produced malformed NUL-delimited changed paths")
+    paths: list[str] = []
+    for item in raw.split(b"\0")[:-1] if raw else []:
+        if not item:
+            raise TaskWorkspaceError("Git produced an empty changed path")
+        try:
+            value = item.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise TaskWorkspaceError(
+                "Git changed path is not valid UTF-8 and cannot be represented in canonical JSON"
+            ) from exc
+        path = PurePosixPath(value)
+        if (path.is_absolute() or path.as_posix() != value or value == "."
+                or ".." in path.parts or ".git" in path.parts):
+            raise TaskWorkspaceError("Git produced an unsafe changed path")
+        paths.append(value)
+    return sorted(set(paths))
 
 
 def normalized_relative(value: Any, label: str) -> str:
@@ -129,12 +160,37 @@ def load_config(controller: Path) -> dict[str, Any]:
     return value
 
 
-def exact_root(path: Path, label: str) -> Path:
-    path = path.expanduser().resolve()
-    actual = git(path, "rev-parse", "--show-toplevel", check=False)
-    if not actual or Path(actual).resolve() != path:
-        raise TaskWorkspaceError(f"{label} is not an exact Git worktree: {path}")
-    return path
+def lexical_absolute(path: Path) -> Path:
+    """Normalize spelling without following a filesystem object."""
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
+def reject_symlink_components(path: Path, label: str) -> None:
+    """Refuse an exact identity path if any existing component is a symlink."""
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise TaskWorkspaceError(f"{label} contains a symlink component: {current}")
+        except FileNotFoundError:
+            # The exact-root check supplies the stable missing/reused diagnosis.
+            return
+
+
+def exact_root(path: Path, label: str, *, physical_identity: bool = True) -> Path:
+    lexical = lexical_absolute(path)
+    if physical_identity:
+        reject_symlink_components(lexical, label)
+        candidate = lexical
+    else:
+        candidate = lexical.resolve()
+    actual = git(candidate, "rev-parse", "--show-toplevel", check=False)
+    actual_path = lexical_absolute(Path(actual)) if physical_identity and actual else (
+        Path(actual).resolve() if actual else None)
+    if not actual or actual_path != candidate:
+        raise TaskWorkspaceError(f"{label} is not an exact Git worktree: {candidate}")
+    return candidate
 
 
 def task_file(controller: Path, task_id: str) -> Path:
@@ -782,7 +838,7 @@ def branch_ref(config: dict[str, Any], task_id: str) -> str:
 
 
 def worktree_path(config: dict[str, Any], task_id: str) -> Path:
-    return (Path(config["workspace_root"]) / task_id).resolve()
+    return lexical_absolute(Path(config["workspace_root"]) / task_id)
 
 
 def routing_identity(controller: Path) -> dict[str, str]:
@@ -1002,8 +1058,10 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
     if record.get("task_id") != task_id or record.get("state") != "WORKING" or not receipt_matches:
         raise TaskWorkspaceError("task creation receipt or recorded identity drifted")
     try:
-        recorded_repository = exact_root(Path(record["repository"]), "recorded task repository")
-        worktree = exact_root(Path(record["worktree"]), "recorded task worktree")
+        recorded_repository = exact_root(
+            Path(record["repository"]), "recorded task repository", physical_identity=True)
+        worktree = exact_root(
+            Path(record["worktree"]), "recorded task worktree", physical_identity=True)
     except (KeyError, TypeError, OSError, TaskWorkspaceError) as exc:
         raise TaskWorkspaceError("recorded task repository/worktree is missing or reused") from exc
     if recorded_repository != configured_repository or worktree != expected_worktree:
@@ -1037,9 +1095,10 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
     if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
             record["base_sha"], head], recorded_repository, check=False).returncode:
         raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
-    changed = sorted(set(git(
-        worktree, "diff", "--name-only", f"{record['base_sha']}..{head}"
-    ).splitlines()))
+    changed = git_pathnames(
+        worktree, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
+        "-z", f"{record['base_sha']}..{head}"
+    )
     return recorded_repository, worktree, head, changed
 
 
@@ -1063,7 +1122,7 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     # Validations run outside the controller state lock. Independent feature
     # finishes therefore stay concurrent; the compare below prevents stale state.
     repository, worktree, head, changed = observe_working_task(
-        record, product_repository(controller, config), config, task_id
+        record, configured_repository, config, task_id
     )
     if head == record["base_sha"]:
         raise TaskWorkspaceError("task has no committed changes")
@@ -1098,7 +1157,14 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
             raise TaskWorkspaceError(f"focused validation failed ({row['id']}, exit {evidence['exit_code']}): {detail}")
     if load_config(controller) != config:
         raise TaskWorkspaceError("task workspace policy changed during focused validation")
-    if git(worktree, "rev-parse", "HEAD") != head or git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+    try:
+        post_repository, post_worktree, post_head, post_changed = observe_working_task(
+            record, configured_repository, config, task_id
+        )
+    except TaskWorkspaceError as exc:
+        raise TaskWorkspaceError("task tip or worktree changed during focused validation") from exc
+    if ((post_repository, post_worktree, post_head, post_changed)
+            != (repository, worktree, head, changed)):
         raise TaskWorkspaceError("task tip or worktree changed during focused validation")
     queued = {**record, "state": "QUEUED", "tip_sha": head, "changed_paths": changed,
               "validation": validations, "last_validation_outcome": "PASSED"}
@@ -1167,7 +1233,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        controller = exact_root(args.controller, "controller")
+        controller = exact_root(args.controller, "controller", physical_identity=False)
         if args.operation != "start" and args.path:
             raise TaskWorkspaceError("--path is supported only for task start")
         audit = record_control_audit(controller, "task", args.operation, args.task)

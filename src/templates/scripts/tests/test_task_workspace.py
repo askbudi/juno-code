@@ -366,7 +366,9 @@ def git(root: Path, *args: str) -> str:
 class TaskWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        # Use the physical temp root so exact-path tests are not aliases through
+        # macOS's ordinary /var -> /private/var compatibility symlink.
+        self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repo"
         self.controller = self.root / "controller"
         self.workspaces = self.root / "workspaces"
@@ -1038,6 +1040,89 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(at_c["changed_paths"], ["src/one.txt", "src/two.txt"])
         # Status is read-only: persisted WORKING truth remains the immutable A snapshot.
         self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), frozen_state)
+
+    def test_status_and_finish_refuse_moved_worktree_symlink_substitution(self) -> None:
+        self.payload("start", "X")
+        admitted = self.workspaces / "X"
+        moved = self.root / "moved-X"
+        admitted.rename(moved)
+        admitted.symlink_to(moved, target_is_directory=True)
+        for operation in ("status", "finish"):
+            failed = self.command(operation, "X", False)
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("missing or reused", failed.stderr)
+            self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"], "WORKING")
+
+    def test_status_and_finish_refuse_symlinked_parent_component(self) -> None:
+        self.payload("start", "X")
+        moved_root = self.root / "moved-workspaces"
+        self.workspaces.rename(moved_root)
+        self.workspaces.symlink_to(moved_root, target_is_directory=True)
+        for operation in ("status", "finish"):
+            failed = self.command(operation, "X", False)
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("missing or reused", failed.stderr)
+
+    def test_finish_rechecks_exact_path_after_validation(self) -> None:
+        self.payload("start", "X")
+        self.commit_task("X")
+        code = (
+            "from pathlib import Path; "
+            "worktree=Path.cwd().parent; moved=worktree.parent/'moved-during-validation'; "
+            "worktree.rename(moved); worktree.symlink_to(moved, target_is_directory=True)"
+        )
+        self.write_policy(validation_code=code)
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("changed during focused validation", failed.stderr)
+        self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"], "WORKING")
+
+    def test_status_and_finish_share_exact_nul_delimited_git_pathnames(self) -> None:
+        for relative in ("src/rename-source.txt", "src/delete-me.txt"):
+            (self.repository / relative).write_text("base\n")
+        git(self.repository, "add", "src/rename-source.txt", "src/delete-me.txt")
+        git(self.repository, "commit", "-m", "unusual pathname base")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        names = [
+            "src/line\nbreak.txt", "src/tab\tname.txt", 'src/double\"quote.txt',
+            "src/back\\slash.txt", "src/unicode-雪.txt",
+        ]
+        for relative in names:
+            (worktree / relative).write_text(relative, encoding="utf-8")
+        renamed = 'src/renamed-\"tab\t.txt'
+        (worktree / "src/rename-source.txt").rename(worktree / renamed)
+        (worktree / "src/delete-me.txt").unlink()
+        git(worktree, "add", "-A")
+        # A gitlink is a pathname-bearing tree entry too. Materialize a real
+        # nested repository so the outer worktree remains clean after commit.
+        nested = worktree / "src/gitlink"
+        nested.mkdir()
+        git(nested, "init")
+        git(nested, "config", "user.email", "test@example.com")
+        git(nested, "config", "user.name", "Test")
+        (nested / "nested.txt").write_text("nested\n")
+        git(nested, "add", "nested.txt")
+        git(nested, "commit", "-m", "nested")
+        gitlink_sha = git(nested, "rev-parse", "HEAD")
+        git(worktree, "update-index", "--add", "--cacheinfo", "160000", gitlink_sha, "src/gitlink")
+        git(worktree, "commit", "-m", "exact unusual pathnames")
+        expected = sorted({
+            *names, "src/rename-source.txt", renamed, "src/delete-me.txt", "src/gitlink",
+        })
+        self.assertEqual(self.payload("status", "X")["changed_paths"], expected)
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["changed_paths"], expected)
+        self.assertEqual(queued["state"], "QUEUED")
+
+    def test_changed_path_parser_fails_closed_for_non_utf8_json_name(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=b"src/non-utf8-\xff.txt\0", stderr=b"")
+        reason = "Git changed path is not valid UTF-8 and cannot be represented in canonical JSON"
+        with mock.patch.object(task_runtime.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, reason):
+                task_runtime.git_pathnames(self.repository, "diff", "--name-only", "-z", "A..B")
 
     def test_status_and_finish_share_fail_closed_live_worktree_identity(self) -> None:
         self.payload("start", "X")
