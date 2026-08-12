@@ -101,6 +101,32 @@ def handle_scope_command():
     return True
 `;
 
+function canonicalJson(value: unknown): string {
+  const sort = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(sort);
+    if (item !== null && typeof item === 'object') {
+      return Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, sort(child)]));
+    }
+    return item;
+  };
+  return `${JSON.stringify(sort(value))}\n`;
+}
+
+async function installCanonicalMetadataControllerContract(controller: string) {
+  const scripts = path.join(controller, '.juno_task', 'scripts');
+  await fs.copyFile(path.resolve(process.cwd(), 'src/templates/scripts/metadata_controller.py'), path.join(scripts, 'metadata_controller.py'));
+  const policy = await fs.readJson(path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'));
+  policy.controller_branch = 'refs/heads/fixture-controller';
+  for (const field of ['copied_metadata', 'generated_metadata', 'product_forbidden', 'tracked_exact',
+    'tracked_recursive', 'tracked_top_level_files']) {
+    policy[field].sort();
+  }
+  policy.runtime.ignored_roots.sort();
+  await fs.ensureDir(path.join(controller, '.juno_task', 'config'));
+  await fs.writeFile(path.join(controller, '.juno_task', 'config', 'metadata-controller.json'), canonicalJson(policy));
+}
+
 async function installFakeJunoExecutable(dir: string, name = 'yy') {
   const binDir = path.join(dir, 'bin');
   await fs.ensureDir(binDir);
@@ -279,10 +305,12 @@ describe('workflow_runner.sh template script', () => {
     const controller = await fs.realpath(workflowFixtureController!);
     const scripts = path.join(controller, '.juno_task', 'scripts');
     await fs.copyFile(path.resolve(process.cwd(), 'src/templates/scripts/managed_agent_runner.py'), path.join(scripts, 'managed_agent_runner.py'));
-    await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {});
+    await fs.writeFile(path.join(controller, '.juno_task', 'config.json'), canonicalJson({
+      controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
+    }));
     await fs.writeFile(path.join(controller, '.gitignore'), '.venv_juno/\n.test-metadata/\n__pycache__/\n*.pyc\n');
     spawnSync('git', ['add', '.'], { cwd: controller });
-    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'controller'], { cwd: controller });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'incomplete controller'], { cwd: controller });
     const candidate = path.join(testDir, 'candidate');
     await fs.ensureDir(candidate); spawnSync('git', ['init', '-b', 'candidate'], { cwd: candidate });
     await fs.writeFile(path.join(candidate, 'tracked.txt'), 'candidate\n'); spawnSync('git', ['add', '.'], { cwd: candidate });
@@ -311,6 +339,14 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
         { PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}` });
       return { result, runDir, workflowPath };
     };
+    const incomplete = await execute('incomplete-controller', 'review');
+    expect(incomplete.result.status).not.toBe(0);
+    expect(incomplete.result.stderr).toContain('canonical metadata controller policy is missing or malformed');
+
+    await installCanonicalMetadataControllerContract(controller);
+    spawnSync('git', ['add', '.juno_task'], { cwd: controller });
+    spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'canonical controller'], { cwd: controller });
+
     const success = await execute('success', 'review');
     expect(success.result.status, success.result.stderr).toBe(0);
     const receipt = await fs.readJson(path.join(success.runDir, 'managed', 'receipt.json'));
