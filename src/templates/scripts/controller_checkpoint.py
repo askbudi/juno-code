@@ -814,6 +814,8 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
 
 def release_admission(root: Path, requested_paths: list[str], *, require_changes: bool) -> dict[str, Any]:
     """Read-only admission shared by release preflight and guarded commit."""
+    if os.environ.get("GIT_INDEX_FILE"):
+        raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for release admission")
     resolution = resolve_role(root)
     if resolution.get("role") != "integration-owner":
         raise CheckpointError("release-commit requires persisted integration-owner authority")
