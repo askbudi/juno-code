@@ -522,23 +522,25 @@ describe('Pi input handler argument preservation', () => {
   });
 
   it.each([
-    ['quoted', "<<'EOF'"],
-    ['double-quoted', '<<"EOF"'],
-    ['escaped', '<<\\EOF'],
-    ['partial-escaped', '<<E\\OF'],
-    ['partial-double', '<<E"OF"'],
-    ['partial-single', "<<'E'OF"],
-    ['combined', String.raw`<<'E'\O"F"`],
+    ['quoted', "<<'EOF'", 'EOF'],
+    ['double-quoted', '<<"EOF"', 'EOF'],
+    ['escaped', '<<\\EOF', 'EOF'],
+    ['partial-escaped', '<<E\\OF', 'EOF'],
+    ['partial-double', '<<E"OF"', 'EOF'],
+    ['partial-single', "<<'E'OF", 'EOF'],
+    ['combined', String.raw`<<'E'\O"F"`, 'EOF'],
+    ['empty-single', "<<''", ''],
+    ['empty-double', '<<""', ''],
   ])(
     'fails safely before executing placeholder-bearing %s non-expanding heredocs',
-    (_kind, declaration) => {
+    (_kind, declaration, terminator) => {
       expect(parseHeredocDeclarations(`cat ${declaration}`)).toEqual([
-        { delimiter: 'EOF', stripTabs: false, expands: false },
+        { delimiter: terminator, stripTabs: false, expands: false },
       ]);
       const marker = path.join(tmpDir, `non-expanding-${_kind}-marker`);
       skill(
         `non-expanding-${_kind}`,
-        `Before: !\`touch ${marker}\`\nResult: !\`cat ${declaration}\n$1\nEOF\``,
+        `Before: !\`touch ${marker}\`\nResult: !\`cat ${declaration}\n$1\n${terminator}\``,
         true,
       );
       const expanded = expandSkillInvocation(
@@ -552,6 +554,33 @@ describe('Pi input handler argument preservation', () => {
       expect(fs.existsSync(marker)).toBe(false);
     },
   );
+
+  it.each([
+    ['single-quoted', `printf '%s' 'lookalike <<E"OF": $1'`, 'lookalike <<E"OF": payload'],
+    ['double-quoted', `printf '%s' "lookalike <<'EOF': $1"`, "lookalike <<'EOF': payload"],
+    ['escaped', `printf '%s' \\<\\<EOF; printf '%s' "$1"`, '<<EOFpayload'],
+    ['comment', `printf '%s' "$1" # <<E\\OF`, 'payload'],
+  ])('ignores %s heredoc operator lookalikes', (_kind, command, output) => {
+    skill(`lookalike-${_kind}`, `Result: !\`${command}\``, true);
+    const expanded = expandSkillInvocation(`/skill:lookalike-${_kind} payload`, tmpDir)!;
+    expect(expanded).toContain(`Result: ${output}`);
+    expect(expanded).not.toContain('[Error:');
+  });
+
+  it.each([
+    ['single-quote', `printf '%s' '$1`],
+    ['double-quote', `printf '%s' "$1`],
+    ['unterminated-heredoc', `cat <<EOF\n$1`],
+  ])('refuses malformed %s source before any directive executes', (_kind, command) => {
+    const marker = path.join(tmpDir, `malformed-${_kind}-marker`);
+    skill(`malformed-${_kind}`, `Before: !\`touch ${marker}\`\nResult: !\`${command}\``, true);
+    const expanded = expandSkillInvocation(`/skill:malformed-${_kind} "safe payload"`, tmpDir)!;
+    expect(expanded).toContain(
+      '[Error: malformed or unterminated shell quoting/heredoc; directive was not executed]',
+    );
+    expect(expanded.match(/safe payload/g)).toHaveLength(1);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
 
   it('combines authored directives with positional/all placeholders safely through the registered handler', () => {
     const marker = path.join(tmpDir, 'argument-was-executed');

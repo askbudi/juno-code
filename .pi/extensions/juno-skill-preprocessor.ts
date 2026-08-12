@@ -214,39 +214,85 @@ interface HeredocDeclaration {
   stripTabs: boolean;
   expands: boolean;
 }
+interface ShellLexicalState {
+  inSingle: boolean;
+  inDouble: boolean;
+  escaped: boolean;
+}
 
-/** Parse heredoc delimiter words with shell quote removal at any position. */
-function parseHeredocDeclarations(line: string): HeredocDeclaration[] {
+function commentStarts(line: string, index: number): boolean {
+  if (line[index] !== '#') return false;
+  if (index === 0) return true;
+  return /\s/.test(line[index - 1]!) || ';|&()'.includes(line[index - 1]!);
+}
+
+/** Scan one shell source line; heredoc operators count only in lexical command state. */
+function scanHeredocDeclarations(
+  line: string,
+  initial: ShellLexicalState = { inSingle: false, inDouble: false, escaped: false },
+): { declarations: HeredocDeclaration[]; state: ShellLexicalState } {
   const declarations: HeredocDeclaration[] = [];
-  for (let index = 0; index < line.length - 1; index += 1) {
-    if (line[index] !== '<' || line[index + 1] !== '<' || line[index + 2] === '<') continue;
+  const state = { ...initial };
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (state.escaped) {
+      state.escaped = false;
+      continue;
+    }
+    if (state.inSingle) {
+      if (char === "'") state.inSingle = false;
+      continue;
+    }
+    if (state.inDouble) {
+      if (char === '"') state.inDouble = false;
+      else if (char === '\\' && index + 1 < line.length && '$`"\\'.includes(line[index + 1]!)) {
+        index += 1;
+      }
+      continue;
+    }
+    if (commentStarts(line, index)) break;
+    if (char === '\\') {
+      state.escaped = true;
+      continue;
+    }
+    if (char === "'") {
+      state.inSingle = true;
+      continue;
+    }
+    if (char === '"') {
+      state.inDouble = true;
+      continue;
+    }
+    if (char !== '<' || line[index + 1] !== '<' || line[index + 2] === '<') continue;
+
     let cursor = index + 2;
     const stripTabs = line[cursor] === '-';
     if (stripTabs) cursor += 1;
     while (cursor < line.length && /\s/.test(line[cursor]!)) cursor += 1;
-
     let delimiter = '';
     let quoted = false;
-    let inSingle = false;
-    let inDouble = false;
-    const wordStart = cursor;
+    let wordSingle = false;
+    let wordDouble = false;
+    let authoredWord = false;
     while (cursor < line.length) {
-      const char = line[cursor]!;
-      if (inSingle) {
+      const wordChar = line[cursor]!;
+      if (wordSingle) {
+        authoredWord = true;
         quoted = true;
-        if (char === "'") inSingle = false;
-        else delimiter += char;
+        if (wordChar === "'") wordSingle = false;
+        else delimiter += wordChar;
         cursor += 1;
         continue;
       }
-      if (inDouble) {
+      if (wordDouble) {
+        authoredWord = true;
         quoted = true;
-        if (char === '"') {
-          inDouble = false;
+        if (wordChar === '"') {
+          wordDouble = false;
           cursor += 1;
           continue;
         }
-        if (char === '\\' && cursor + 1 < line.length) {
+        if (wordChar === '\\' && cursor + 1 < line.length) {
           const next = line[cursor + 1]!;
           if ('$`"\\'.includes(next)) {
             delimiter += next;
@@ -254,45 +300,51 @@ function parseHeredocDeclarations(line: string): HeredocDeclaration[] {
             continue;
           }
         }
-        delimiter += char;
+        delimiter += wordChar;
         cursor += 1;
         continue;
       }
-      if (/\s/.test(char) || ';|&<>'.includes(char)) break;
-      if (char === "'") {
+      if (/\s/.test(wordChar) || ';|&<>'.includes(wordChar)) break;
+      authoredWord = true;
+      if (wordChar === "'") {
         quoted = true;
-        inSingle = true;
+        wordSingle = true;
         cursor += 1;
-        continue;
-      }
-      if (char === '"') {
+      } else if (wordChar === '"') {
         quoted = true;
-        inDouble = true;
+        wordDouble = true;
         cursor += 1;
-        continue;
-      }
-      if (char === '\\' && cursor + 1 < line.length) {
+      } else if (wordChar === '\\' && cursor + 1 < line.length) {
         quoted = true;
         delimiter += line[cursor + 1]!;
         cursor += 2;
-        continue;
+      } else {
+        delimiter += wordChar;
+        cursor += 1;
       }
-      delimiter += char;
-      cursor += 1;
     }
-    if (cursor > wordStart && delimiter) {
-      declarations.push({ delimiter, stripTabs, expands: !quoted });
-      index = cursor - 1;
-    }
+    if (authoredWord) declarations.push({ delimiter, stripTabs, expands: !quoted });
+    // Unclosed quotes in a delimiter word are also malformed shell lexical state.
+    state.inSingle = wordSingle;
+    state.inDouble = wordDouble;
+    index = Math.max(index, cursor - 1);
   }
-  return declarations;
+  return { declarations, state };
 }
 
-/** Classify a placeholder offset in expanding/non-expanding heredoc source. */
-function heredocContextAt(command: string, offset: number): HeredocContext {
+function parseHeredocDeclarations(line: string): HeredocDeclaration[] {
+  return scanHeredocDeclarations(line).declarations;
+}
+
+function analyzeHeredocs(command: string): {
+  ranges: Array<{ start: number; end: number; expands: boolean }>;
+  malformed: boolean;
+} {
   const lines = command.split('\n');
-  const queued: Array<{ delimiter: string; stripTabs: boolean; expands: boolean }> = [];
-  let active: (typeof queued)[number] | undefined;
+  const queued: HeredocDeclaration[] = [];
+  const ranges: Array<{ start: number; end: number; expands: boolean }> = [];
+  let active: HeredocDeclaration | undefined;
+  let state: ShellLexicalState = { inSingle: false, inDouble: false, escaped: false };
   let lineStart = 0;
 
   for (const line of lines) {
@@ -301,20 +353,34 @@ function heredocContextAt(command: string, offset: number): HeredocContext {
       const comparison = active.stripTabs ? line.replace(/^\t+/, '') : line;
       if (comparison === active.delimiter) {
         active = queued.shift();
-      } else {
-        if (offset >= lineStart && offset <= lineEnd) {
-          return active.expands ? 'expanding' : 'non-expanding';
-        }
         lineStart = lineEnd + 1;
         continue;
       }
+      ranges.push({ start: lineStart, end: lineEnd, expands: active.expands });
+      lineStart = lineEnd + 1;
+      continue;
     }
-
-    queued.push(...parseHeredocDeclarations(line));
+    const scanned = scanHeredocDeclarations(line, state);
+    queued.push(...scanned.declarations);
+    state = scanned.state;
+    // A terminal backslash escapes the newline, not the first byte of the next line.
+    state.escaped = false;
     if (!active) active = queued.shift();
     lineStart = lineEnd + 1;
   }
-  return null;
+  return {
+    ranges,
+    malformed: state.inSingle || state.inDouble || state.escaped || active !== undefined,
+  };
+}
+
+/** Classify a placeholder offset in expanding/non-expanding heredoc source. */
+function heredocContextAt(command: string, offset: number): HeredocContext {
+  const range = analyzeHeredocs(command).ranges.find(
+    ({ start, end }) => offset >= start && offset <= end,
+  );
+  if (!range) return null;
+  return range.expands ? 'expanding' : 'non-expanding';
 }
 
 /**
@@ -361,6 +427,9 @@ function createDirectiveArgumentNamespace(
 }
 
 function nonExpandingHeredocError(command: string): string | null {
+  if (analyzeHeredocs(command).malformed) {
+    return '[Error: malformed or unterminated shell quoting/heredoc; directive was not executed]';
+  }
   for (const match of command.matchAll(new RegExp(ARG_PLACEHOLDER_REGEX.source, 'g'))) {
     if (heredocContextAt(command, match.index ?? 0) === 'non-expanding') {
       return '[Error: argument placeholders inside quoted or escaped-delimiter heredocs are unsupported; directive was not executed]';
