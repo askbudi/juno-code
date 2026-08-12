@@ -1446,6 +1446,64 @@ raise SystemExit(2)
         conflict = merge_runtime.merge_next(self.controller.resolve())
         self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
 
+    def test_resolved_lock_refusal_feature_target_refresh_reopens_and_composes(self) -> None:
+        self.add_validation_dependency_base()
+        self.task("start", "A"); self.task("start", "B")
+        a = self.workspaces / "A"
+        b = self.workspaces / "B"
+        (a / "src/shared.txt").write_text("A\n")
+        (a / "src/package-lock.json").write_text('{"lockfileVersion":3,"target":"A"}\n')
+        git(a, "add", "src/shared.txt", "src/package-lock.json")
+        git(a, "commit", "-m", "feature A with refreshed lock")
+        (b / "src/shared.txt").write_text("B\n")
+        git(b, "add", "src/shared.txt")
+        git(b, "commit", "-m", "feature B")
+        for worktree in (a, b):
+            modules = worktree / "src/node_modules"
+            modules.mkdir()
+            (modules / "probe.txt").write_text("ready\n")
+        self.task("finish", "A"); self.task("finish", "B")
+        waiting = self.queue_payload("next")
+        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
+        with mock.patch.object(
+            merge_runtime, "dispatch_reviewer",
+            side_effect=lambda *args, **kwargs: self.fake_review(*args, **kwargs),
+        ):
+            self.assertEqual(merge_runtime.merge_review(
+                self.controller.resolve(), "A")["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.queue_payload("next", "A")["outcome"], "MERGED")
+        self.assertEqual(self.task("status", "B")["state"], "QUEUED")
+        conflict = self.queue_payload("next")
+        checkout = Path(conflict["candidate_checkout"])
+        (checkout / "src/shared.txt").write_text("A+B\n")
+        git(checkout, "add", "src/shared.txt")
+
+        with self.assertRaisesRegex(merge_runtime.DependencyLockMismatchError,
+                                    "package lock differs"):
+            merge_runtime.merge_resolve(self.controller.resolve(), "B")
+
+        refused = self.task("status", "B")
+        self.assertEqual((refused["state"], refused["last_queue_outcome"]),
+                         ("CONFLICT_RESOLVED", "STALE_TARGET"))
+        refusal = refused["queue_attempt"]["dependency_lock_refusal"]
+        self.assertNotEqual(refusal["candidate_sha256"], refusal["source_sha256"])
+        merge = run(["git", "-C", str(b), "merge", "--no-edit", "refs/heads/product"],
+                    b, check=False)
+        self.assertNotEqual(merge.returncode, 0)
+        (b / "src/shared.txt").write_text("A+B repaired\n")
+        git(b, "add", "src/shared.txt", "src/package-lock.json")
+        git(b, "commit", "--no-edit")
+        repaired_tip = git(b, "rev-parse", "HEAD")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((reopened["state"], reopened["tip_sha"], reopened["outcome"]),
+                         ("QUEUED", repaired_tip, "REQUEUED_AFTER_DEPENDENCY_LOCK_REFRESH"))
+        self.assertEqual(reopened["prior_queue_failure"]["dependency_lock_refusal"], refusal)
+        self.assertFalse(checkout.exists())
+        merged = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual((merged["outcome"], merged["candidate_sha"]), ("MERGED", repaired_tip))
+
     def test_stale_failed_resolved_candidate_requeues_then_descendant_reopens(self) -> None:
         checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
         old_candidate = git(checkout, "rev-parse", "HEAD")
@@ -1811,9 +1869,15 @@ raise SystemExit(2)
             git(root, "add", ".")
             git(root, "commit", "-m", value)
         (source / "node_modules").mkdir()
-        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "package lock differs"):
+        with self.assertRaisesRegex(
+            merge_runtime.DependencyLockMismatchError, "package lock differs"
+        ) as raised:
             with merge_runtime.validation_dependencies(candidate, candidate, source):
                 self.fail("lock drift must refuse before validation")
+        evidence = raised.exception.evidence
+        self.assertEqual((evidence["schema_version"], evidence["lock_path"]),
+                         ("juno_merge_queue_dependency_lock_refusal.v1", "package-lock.json"))
+        self.assertNotEqual(evidence["candidate_sha256"], evidence["source_sha256"])
         self.assertFalse((candidate / "node_modules").exists())
 
     def test_real_a_b_text_conflict_is_preserved_then_resolved_without_feature_recreation(self) -> None:
