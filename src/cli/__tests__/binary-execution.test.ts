@@ -670,10 +670,21 @@ describe('Binary Execution Tests', () => {
           policy: '.juno_task/config/metadata-controller.json',
         },
       }, null, 2)}\n`;
-      const policyBytes = '{"preserved":"reviewed-project-policy"}\n';
+      const metadataPolicy = await fs.readJson(
+        path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'),
+      );
+      metadataPolicy.controller_branch = 'refs/heads/customer/controller';
+      metadataPolicy.product_ref = 'refs/heads/customer/release';
+      const policyBytes = `${JSON.stringify(metadataPolicy, null, 2)}\n`;
       await fs.ensureDir(policyDir);
       await fs.writeFile(configPath, configBytes);
       await fs.writeFile(policyPath, policyBytes);
+      for (const name of ['task-workspace.json', 'integration-workspace.json', 'risk-policy.json']) {
+        await fs.copyFile(
+          path.resolve(process.cwd(), 'src/templates/config', name),
+          path.join(policyDir, name),
+        );
+      }
       await fs.writeFile(path.join(tempDir, '.gitignore'), [
         '.juno_task/scripts/',
         '.venv_juno/',

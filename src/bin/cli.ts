@@ -1158,11 +1158,17 @@ function setupScriptManagementCommands(program: Command): void {
         ? '🔄 Force updating ignored metadata-controller runtime scripts, agent surface, and Python dependencies...'
         : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
       const outcome = await withManagedUpdateRollback(workingDirectory, async () => {
+        const assets = metadataOnlyController
+          ? await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory, true)
+          : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: true });
         const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, true);
         const skillsUpdated = await SkillInstaller.install(workingDirectory, true, true, true);
-        const assets = metadataOnlyController
-          ? { installed: [], updated: [] }
-          : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: true });
+        if (metadataOnlyController) {
+          await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
+          if (await SkillInstaller.needsUpdate(workingDirectory)) {
+            throw new Error('Metadata-controller agent surface remains incomplete after update');
+          }
+        }
         return { scriptsUpdated, skillsUpdated, assets };
       });
       console.log(chalk.green('✓ Force updated scripts, requirements, and managed project assets'));
@@ -1176,11 +1182,23 @@ function setupScriptManagementCommands(program: Command): void {
     console.log(chalk.blue(metadataOnlyController
       ? '🔄 Updating ignored metadata-controller runtime scripts and agent surface...'
       : '🔄 Updating project scripts and checksum-managed prompts/wiki/macros...'));
-    const scriptsUpdated = await ScriptInstaller.autoUpdate(workingDirectory, false);
-    const skillsUpdated = await SkillInstaller.install(workingDirectory, true);
-    const assets = metadataOnlyController
-      ? { installed: [], updated: [], conflicts: [] }
-      : await ManagedProjectAssets.update(workingDirectory, { silent: false });
+    const update = async () => {
+      const assets = metadataOnlyController
+        ? { ...await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory), conflicts: [] }
+        : await ManagedProjectAssets.update(workingDirectory, { silent: false });
+      const scriptsUpdated = await ScriptInstaller.autoUpdate(workingDirectory, false);
+      const skillsUpdated = await SkillInstaller.install(workingDirectory, true);
+      if (metadataOnlyController) {
+        await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
+        if (await SkillInstaller.needsUpdate(workingDirectory)) {
+          throw new Error('Metadata-controller agent surface remains incomplete after update');
+        }
+      }
+      return { scriptsUpdated, skillsUpdated, assets };
+    };
+    const { scriptsUpdated, skillsUpdated, assets } = metadataOnlyController
+      ? await withManagedUpdateRollback(workingDirectory, update)
+      : await update();
     if (!scriptsUpdated && !skillsUpdated && assets.installed.length + assets.updated.length === 0 && assets.conflicts.length === 0) {
       console.log(chalk.green(metadataOnlyController
         ? '✓ Metadata-controller runtime scripts and agent surface are already up to date'
@@ -1225,6 +1243,7 @@ ${chalk.gray('This updates scripts from the currently installed juno-code packag
       ]);
       if (await ScriptInstaller.isMetadataOnlyController(workingDirectory)) {
         await SkillInstaller.assertInstallAllowed(workingDirectory);
+        await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
         const [generation, agentSurfaceStale] = await Promise.all([
           ScriptInstaller.inspectManagedControllerGeneration(workingDirectory),
           SkillInstaller.needsUpdate(workingDirectory),
