@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Optional
@@ -637,6 +638,106 @@ def selected_task_paths(config: dict[str, Any], repository: Path, target_sha: st
             raise TaskWorkspaceError(f"required task path has an unsafe target identity: {item}")
         entries[item] = {"mode": mode, "type": kind, "object": object_id}
     return [*config["allowed_paths"], *normalized], entries
+
+
+def _declared_submodule_urls(repository: Path, commit: str) -> dict[str, str]:
+    raw = run(["git", "-C", str(repository), "show", f"{commit}:.gitmodules"],
+              repository, check=False)
+    if raw.returncode:
+        return {}
+    with tempfile.TemporaryDirectory(prefix="juno-gitmodules-") as temporary:
+        config = Path(temporary) / ".gitmodules"
+        config.write_text(raw.stdout)
+        paths = run(["git", "config", "-f", str(config), "--get-regexp",
+                     r"^submodule\..*\.path$"], repository, check=False).stdout.splitlines()
+        result: dict[str, str] = {}
+        for row in paths:
+            key, _, path = row.partition(" ")
+            name = key.removeprefix("submodule.").removesuffix(".path")
+            url = run(["git", "config", "-f", str(config), "--get",
+                       f"submodule.{name}.url"], repository, check=False).stdout.strip()
+            if path and url:
+                result[path] = url
+        return result
+
+
+def _resolved_submodule_url(parent_url: str | None, child_url: str) -> str:
+    if (child_url.startswith("/") or child_url.startswith("file://")
+            or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", child_url)
+            or re.match(r"^[^/]+@[^:]+:", child_url)
+            or not child_url.startswith(("./", "../"))):
+        return child_url
+    if not parent_url:
+        raise TaskWorkspaceError(f"relative submodule URL has no authoritative parent remote: {child_url}")
+    if parent_url.startswith("file://"):
+        return "file://" + str((Path(parent_url.removeprefix("file://")).parent / child_url).resolve())
+    if parent_url.startswith("/"):
+        return str((Path(parent_url).parent / child_url).resolve())
+    if "://" in parent_url:
+        return urllib.parse.urljoin(parent_url.rstrip("/") + "/", child_url)
+    raise TaskWorkspaceError(f"cannot resolve relative submodule URL safely: {child_url}")
+
+
+def nested_gitlink_remote_closure(repository: Path, commit: str,
+                                  parent_remote_url: str | None = None,
+                                  prefix: str = "") -> dict[str, Any]:
+    """Prove gitlinks recursively from isolated fetches of declared remotes.
+
+    The probe repositories have no alternates and never borrow objects from a
+    product worktree, so accidental local availability cannot become
+    publication truth. Callers may safely run this before allocating or moving
+    a worktree.
+    """
+    commit = ref_sha(repository, commit)
+    tree = git(repository, "ls-tree", "-r", commit, check=False)
+    gitlinks: list[tuple[str, str]] = []
+    for line in tree.splitlines():
+        metadata, separator, path = line.partition("\t")
+        fields = metadata.split()
+        if separator and len(fields) == 3 and fields[0] == "160000" and fields[1] == "commit":
+            gitlinks.append((path, fields[2]))
+    urls = _declared_submodule_urls(repository, commit)
+    evidence: list[dict[str, Any]] = []
+    available = True
+    for path, child_sha in gitlinks:
+        full_path = f"{prefix}/{path}" if prefix else path
+        declared = urls.get(path)
+        if not declared:
+            evidence.append({"path": full_path, "sha": child_sha, "remote": None,
+                             "available": False, "failed_check": "declared_remote_missing"})
+            available = False
+            continue
+        try:
+            remote = _resolved_submodule_url(parent_remote_url, declared)
+        except TaskWorkspaceError as exc:
+            evidence.append({"path": full_path, "sha": child_sha, "remote": declared,
+                             "available": False, "failed_check": "remote_resolution",
+                             "detail": str(exc)})
+            available = False
+            continue
+        with tempfile.TemporaryDirectory(prefix="juno-gitlink-closure-") as temporary:
+            probe = Path(temporary) / "probe.git"
+            run(["git", "init", "--bare", str(probe)], repository)
+            fetched = run(["git", "-C", str(probe), "-c", "protocol.file.allow=always",
+                           "fetch", "--no-tags", "--depth=1", remote, child_sha], probe,
+                          check=False)
+            row: dict[str, Any] = {"path": full_path, "sha": child_sha,
+                                   "remote": remote, "available": fetched.returncode == 0,
+                                   "failed_check": None if fetched.returncode == 0 else "fetch_exact"}
+            if fetched.returncode:
+                row["detail"] = (fetched.stderr or fetched.stdout).strip()[-2000:]
+                available = False
+            else:
+                nested = nested_gitlink_remote_closure(
+                    probe, child_sha, remote, full_path)
+                row["nested"] = nested["gitlinks"]
+                if not nested["available"]:
+                    row["available"] = False
+                    row["failed_check"] = "nested_gitlink_unavailable"
+                    available = False
+            evidence.append(row)
+    return {"root_sha": commit, "available": available, "gitlinks": evidence,
+            "source": "isolated_declared_remote_fetch"}
 
 
 def initialize_selected_gitlinks(worktree: Path, entries: dict[str, dict[str, str]]) -> None:

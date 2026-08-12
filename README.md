@@ -111,11 +111,18 @@ controller-routed command:
 yy integration status [--fetch]     inspect local/remote drift
              |
              v
-yy integration sync                 guard -> fetch -> fast-forward -> submodules
+yy integration sync                 guard -> fetch -> remote gitlink closure -> fast-forward -> submodules
              |
-             +--> clean exact target + exact gitlinks: ready for reads/server
-             +--> dirty/diverged/ambiguous: refuse with recovery guidance
+             +--> clean exact target + exact remotely fetchable gitlinks: ready for reads/server
+             +--> dirty/diverged/ambiguous/unpublished child: refuse with recovery guidance
 ```
+
+Before moving the target or integration owner, sync recursively fetches each
+required gitlink SHA into isolated temporary repositories using only the remotes
+declared by committed `.gitmodules`. An object that exists only in another local
+worktree therefore fails as `nested_gitlink_unavailable`; the phased receipt
+records path, SHA, remote, failed check, and the child-first publication/retry
+instruction while the owner remains clean and unchanged.
 
 Every admitted `yy merge next|resolve` target transition and every target-moving
 `yy integration sync` also refreshes the ignored controller scripts from that

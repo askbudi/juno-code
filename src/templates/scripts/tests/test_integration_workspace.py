@@ -256,6 +256,64 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(refused_code, 2)
         self.assertIn("integration_owner_dirty", refused["error"])
 
+    def test_sync_preflights_unpublished_gitlink_before_owner_mutation_and_retries(self) -> None:
+        child_remote = self.root / "closure-child.git"
+        child_source = self.root / "closure-child-source"
+        git(self.root, "init", "--bare", str(child_remote))
+        git(self.root, "init", "-b", "main", str(child_source))
+        git(child_source, "config", "user.email", "test@example.com")
+        git(child_source, "config", "user.name", "Test")
+        (child_source / "value.txt").write_text("base\n")
+        git(child_source, "add", "value.txt")
+        git(child_source, "commit", "-m", "child base")
+        git(child_source, "remote", "add", "origin", str(child_remote))
+        git(child_source, "push", "-u", "origin", "main")
+        git(child_remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        (child_source / "value.txt").write_text("unpublished\n")
+        git(child_source, "commit", "-am", "unpublished child")
+        unpublished = git(child_source, "rev-parse", "HEAD")
+
+        target_worktree = self.root / "unpublished-root-source"
+        git(self.repo, "worktree", "add", "--detach", str(target_worktree), self.base)
+        git(target_worktree, "config", "user.email", "test@example.com")
+        git(target_worktree, "config", "user.name", "Test")
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(target_worktree),
+             "submodule", "add", str(child_remote), "vendor/child"], target_worktree)
+        git(target_worktree / "vendor/child", "fetch", str(child_source), unpublished)
+        git(target_worktree / "vendor/child", "checkout", "--detach", unpublished)
+        git(target_worktree, "add", ".gitmodules", "vendor/child")
+        git(target_worktree, "commit", "-m", "root references unpublished child")
+        target = git(target_worktree, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/heads/product", target, self.base)
+        before_owner = git(self.owner, "rev-parse", "HEAD")
+
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            refused, refused_code = runtime.sync(self.controller)
+        self.assertEqual((refused_code, refused["outcome"]), (2, "failed"), refused)
+        self.assertIn("nested_gitlink_unavailable", refused["error"])
+        self.assertIn(unpublished, refused["error"])
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), before_owner)
+        self.assertEqual(git(self.owner, "status", "--porcelain"), "")
+        self.assertEqual(git(self.repo, "rev-parse", "refs/heads/product"), target)
+        receipt = json.loads(Path(refused["receipt"]["path"]).read_text())
+        closure = next(row for row in receipt["phases"]
+                       if row["phase"] == "nested_gitlink_closure")
+        self.assertFalse(closure["result"]["available"])
+        self.assertEqual(receipt["recovery"]["retry"], "yy integration sync")
+        self.assertTrue(receipt["recovery"]["owner_unchanged"])
+
+        # Simulate the separately authorized child integration/publication. The
+        # supported retry now hydrates the owner without raw object transfer.
+        git(child_source, "push", "origin", "main")
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            retried, retry_code = runtime.sync(self.controller)
+        self.assertEqual((retry_code, retried["outcome"]), (0, "completed"), retried)
+        self.assertTrue(retried["status"]["ready"])
+        self.assertEqual(git(self.owner / "vendor/child", "rev-parse", "HEAD"), unpublished)
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual([row["kind"] for row in planned["actions"]], ["push_root"])
+
     def test_failed_fetch_persists_the_last_completed_phase(self) -> None:
         original = runtime.run
 
