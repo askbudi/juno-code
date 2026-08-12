@@ -605,6 +605,26 @@ describe('Pi input handler argument preservation', () => {
     },
   );
 
+  it('refuses an unterminated arithmetic placeholder before any directive executes', () => {
+    const preflightMarker = path.join(tmpDir, 'open-arithmetic-preflight-marker');
+    const hostileMarker = path.join(tmpDir, 'open-arithmetic-hostile-marker');
+    const raw = `$(touch ${hostileMarker})`;
+    skill(
+      'open-arithmetic-placeholder',
+      `Before: !\`touch ${preflightMarker}\`\nResult: !\`printf '%s' "$(( $1 << 2)"\``,
+      true,
+    );
+    const expanded = expandSkillInvocation(`/skill:open-arithmetic-placeholder "${raw}"`, tmpDir)!;
+    expect(expanded).toContain(
+      '[Error: argument placeholders inside shell arithmetic expansions are unsupported; directive was not executed]',
+    );
+    expect(
+      expanded.match(new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')),
+    ).toHaveLength(1);
+    expect(fs.existsSync(preflightMarker)).toBe(false);
+    expect(fs.existsSync(hostileMarker)).toBe(false);
+  });
+
   it.each([
     ['single-quoted', `printf '%s' 'lookalike <<E"OF": $1'`, 'lookalike <<E"OF": payload'],
     ['double-quoted', `printf '%s' "lookalike <<'EOF': $1"`, "lookalike <<'EOF': payload"],

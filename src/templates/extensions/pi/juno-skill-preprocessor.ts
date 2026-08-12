@@ -493,6 +493,7 @@ function arithmeticExpansionRanges(command: string): Array<{ start: number; end:
       index += 2;
     }
   }
+  if (arithmeticDepth > 0) ranges.push({ start: arithmeticStart, end: command.length });
   return ranges;
 }
 
