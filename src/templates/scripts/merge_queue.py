@@ -707,24 +707,88 @@ def requeue_stale_candidate(controller: Path, config: dict[str, Any], repository
     if record.get("state") != "REQUEUING_STALE":
         if not isinstance(attempt, dict):
             raise MergeQueueError("stale awaiting task has no candidate attempt")
+        if (record.get("task_id") is None
+                or Path(record.get("repository", "")).resolve() != repository
+                or record.get("target_ref") != config["target_ref"]):
+            raise MergeQueueError("stale task repository/target identity drifted")
         checkout_value = attempt.get("candidate_checkout")
         owner = read_candidate_owner(controller, Path(checkout_value)) if checkout_value else None
-        stale = {"schema_version": "juno_merge_queue_stale_requeue.v1",
+        source_failure = None
+        resolved_source = (record.get("state") == "CONFLICT_RESOLVED"
+                           and record.get("last_queue_outcome") == "FAILED_TEST"
+                           and attempt.get("outcome") == "FAILED_TEST")
+        if resolved_source:
+            if not checkout_value or not attempt.get("candidate_token"):
+                raise MergeQueueError("stale resolved candidate ownership is incomplete")
+            checkout = task_runtime.exact_root(Path(checkout_value), "stale resolved candidate")
+            expected_owner = {
+                "task_id": record["task_id"], "token": attempt["candidate_token"],
+                "repository_identity": repository_identity(repository),
+                "target_ref": config["target_ref"],
+                "target_sha": attempt.get("expected_target_sha"),
+                "feature_sha": record.get("tip_sha"),
+                "candidate_checkout": str(checkout.resolve()),
+            }
+            if (any(owner.get(key) != value for key, value in expected_owner.items())
+                    or task_runtime.git(checkout, "rev-parse", "HEAD", check=False)
+                        != attempt.get("candidate_sha")
+                    or task_runtime.git(checkout, "status", "--porcelain=v1",
+                                        "--untracked-files=all", check=False)):
+                raise MergeQueueError("stale resolved candidate ownership mismatched")
+            verify_candidate_owner(controller, repository, checkout, attempt["candidate_token"])
+            source_failure = {
+                "schema_version": "juno_merge_queue_prior_failure.v1",
+                "outcome": "FAILED_TEST", "candidate_sha": attempt["candidate_sha"],
+                "expected_target_sha": attempt.get("expected_target_sha"),
+                "validation": attempt.get("validation", []),
+            }
+        stale = {"schema_version": "juno_merge_queue_stale_requeue.v2",
                  "task_id": record["task_id"], "old_candidate_sha": attempt["candidate_sha"],
                  "old_candidate_checkout": checkout_value,
                  "old_candidate_token": attempt.get("candidate_token"),
-                 "old_candidate_owner": owner, "observed_target_sha": observed_target_sha}
-        reopening = {**record, "state": "REQUEUING_STALE", "stale_requeue": stale}
+                 "old_candidate_owner": owner, "observed_target_sha": observed_target_sha,
+                 "repository_identity": repository_identity(repository),
+                 "target_ref": config["target_ref"], "source_state": record.get("state"),
+                 "source_failure_evidence": source_failure, "bound_conflict": None}
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             if state["tasks"].get(record["task_id"]) != record:
                 raise MergeQueueError("task changed before stale-candidate admission")
+            if resolved_source:
+                conflict = target_entry(
+                    state, repository, config["target_ref"])["conflicts"].get(record["task_id"])
+                if (not isinstance(conflict, dict)
+                        or conflict.get("resolution_state") != "RESOLVED"
+                        or conflict.get("repository_identity") != repository_identity(repository)
+                        or conflict.get("target_ref") != config["target_ref"]
+                        or conflict.get("task_id") != record["task_id"]
+                        or conflict.get("feature_sha") != record.get("tip_sha")
+                        or conflict.get("resolved_candidate_sha") != attempt.get("candidate_sha")
+                        or conflict.get("expected_target_sha") != attempt.get("expected_target_sha")):
+                    raise MergeQueueError("stale resolved conflict ownership mismatched")
+                stale["bound_conflict"] = conflict
+            reopening = {**record, "state": "REQUEUING_STALE", "stale_requeue": stale}
             state["tasks"][record["task_id"]] = reopening
             task_runtime.write_state(controller, state)
         record = reopening
     stale = record.get("stale_requeue")
-    if not isinstance(stale, dict) or stale.get("schema_version") != "juno_merge_queue_stale_requeue.v1":
+    if (not isinstance(stale, dict)
+            or stale.get("schema_version") not in {"juno_merge_queue_stale_requeue.v1",
+                                                   "juno_merge_queue_stale_requeue.v2"}):
         raise MergeQueueError("REQUEUING_STALE recovery identity is invalid")
+    if stale.get("schema_version") == "juno_merge_queue_stale_requeue.v2":
+        if (stale.get("task_id") != record.get("task_id")
+                or stale.get("repository_identity") != repository_identity(repository)
+                or stale.get("target_ref") != config["target_ref"]):
+            raise MergeQueueError("REQUEUING_STALE repository/target identity drifted")
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            if state["tasks"].get(record["task_id"]) != record:
+                raise MergeQueueError("task changed during stale-candidate recovery")
+            if (stale.get("source_state") == "CONFLICT_RESOLVED"
+                    and target_entry(state, repository, config["target_ref"])["conflicts"].get(
+                        record["task_id"]) != stale.get("bound_conflict")):
+                raise MergeQueueError("stale resolved conflict ownership drifted")
     checkout_value, token = stale.get("old_candidate_checkout"), stale.get("old_candidate_token")
     if checkout_value:
         checkout = Path(checkout_value)
@@ -751,14 +815,21 @@ def requeue_stale_candidate(controller: Path, config: dict[str, Any], repository
     queued = {key: value for key, value in record.items()
               if key not in {"queue_attempt", "last_queue_outcome", "stale_requeue"}}
     queued.update({"state": "QUEUED", "last_queue_outcome": "RISK_TARGET_MOVED",
-                   "observed_target_sha": observed_target_sha})
+                   "observed_target_sha": stale.get("observed_target_sha", observed_target_sha)})
+    failure_evidence = stale.get("source_failure_evidence")
+    if isinstance(failure_evidence, dict):
+        queued["prior_queue_failure"] = failure_evidence
     with task_runtime.state_lock(controller):
         state = task_runtime.read_state(controller)
         if state["tasks"].get(record["task_id"]) != record:
             raise MergeQueueError("task changed during stale-candidate cleanup")
+        entry = target_entry(state, repository, config["target_ref"])
+        if (stale.get("source_state") == "CONFLICT_RESOLVED"
+                and entry["conflicts"].get(record["task_id"]) != stale.get("bound_conflict")):
+            raise MergeQueueError("stale resolved conflict ownership drifted")
         queued["enqueue_sequence"] = task_runtime.assign_enqueue_sequence(state)
         state["tasks"][record["task_id"]] = queued
-        target_entry(state, repository, config["target_ref"])["conflicts"].pop(record["task_id"], None)
+        entry["conflicts"].pop(record["task_id"], None)
         task_runtime.write_state(controller, state)
     return {**queued, "outcome": "RISK_TARGET_MOVED"}
 
@@ -2258,6 +2329,13 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             conflict = target_entry(state, repository, config["target_ref"])["conflicts"].get(task_id)
         source_state = record.get("state") if isinstance(record, dict) else None
         failure_outcome = record.get("last_queue_outcome") if isinstance(record, dict) else None
+        if source_state == "REQUEUING_STALE":
+            if record.get("task_id") != task_id:
+                raise MergeQueueError("REQUEUING_STALE task identity drifted")
+            stale = record.get("stale_requeue")
+            observed = (stale.get("observed_target_sha") if isinstance(stale, dict)
+                        else task_runtime.ref_sha(repository, config["target_ref"]))
+            return requeue_stale_candidate(controller, config, repository, record, observed)
         resolved_validation_repair = (
             source_state == "CONFLICT_RESOLVED"
             and failure_outcome == "FAILED_TEST"
@@ -2308,8 +2386,10 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                         or conflict.get("resolved_candidate_sha") != old_attempt.get("candidate_sha")
                         or expected_target_sha != conflict.get("expected_target_sha")):
                     raise MergeQueueError("resolved conflict repair identity drifted")
-                if task_runtime.ref_sha(repository, config["target_ref"]) != expected_target_sha:
-                    raise MergeQueueError("target moved since resolved validation failure; preserve candidate")
+                current_target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+                if current_target_sha != expected_target_sha:
+                    return requeue_stale_candidate(
+                        controller, config, repository, record, current_target_sha)
             if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
                 raise MergeQueueError("feature worktree branch identity drifted")
             new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")

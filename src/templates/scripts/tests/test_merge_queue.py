@@ -1446,19 +1446,83 @@ raise SystemExit(2)
         conflict = merge_runtime.merge_next(self.controller.resolve())
         self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
 
-    def test_failed_resolved_repair_refuses_stale_target_and_preserves_candidate(self) -> None:
+    def test_stale_failed_resolved_candidate_requeues_then_descendant_reopens(self) -> None:
+        checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
+        old_candidate = git(checkout, "rev-parse", "HEAD")
+        repaired_tip = self.commit_resolved_repair()
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, current)
+
+        stale = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((stale["state"], stale["outcome"], stale["tip_sha"]),
+                         ("QUEUED", "RISK_TARGET_MOVED", old_feature))
+        self.assertEqual(stale["observed_target_sha"], moved)
+        self.assertEqual((stale["prior_queue_failure"]["outcome"],
+                          stale["prior_queue_failure"]["candidate_sha"]),
+                         ("FAILED_TEST", old_candidate))
+        self.assertEqual(stale["prior_queue_failure"]["validation"][0]["exit_code"], 13)
+        self.assertEqual(git(self.workspaces / "B", "rev-parse", "HEAD"), repaired_tip)
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        queue = next(value for value in state["queues"].values()
+                     if isinstance(value, dict) and "conflicts" in value)
+        self.assertNotIn("B", queue["conflicts"])
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((reopened["state"], reopened["tip_sha"], reopened["outcome"]),
+                         ("QUEUED", repaired_tip, "REQUEUED_AFTER_TIP_REFRESH"))
+        self.assertEqual(reopened["prior_queue_failure"]["candidate_sha"], old_candidate)
+        conflict = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
+
+    def test_stale_failed_resolved_candidate_refuses_ownership_mismatch(self) -> None:
         checkout, marker, _ = self.prepare_failed_resolved_candidate()
         self.commit_resolved_repair()
         current = git(self.repository, "rev-parse", "refs/heads/product")
         tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
         moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
         git(self.repository, "update-ref", "refs/heads/product", moved, current)
+        owner = json.loads(marker.read_text())
+        owner["task_id"] = "attacker"
+        marker.write_text(json.dumps(owner, sort_keys=True, separators=(",", ":")) + "\n")
 
-        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "target moved"):
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "ownership mismatched"):
             merge_runtime.merge_reopen(self.controller.resolve(), "B")
 
         self.assertEqual(self.task("status", "B")["state"], "CONFLICT_RESOLVED")
         self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_stale_failed_resolved_requeue_interruption_recovers_idempotently(self) -> None:
+        checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
+        repaired_tip = self.commit_resolved_repair()
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, current)
+        original = merge_runtime.task_runtime.write_state
+        writes = 0
+        def fail_final(controller: Path, state: dict) -> None:
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("interrupted after stale cleanup")
+            original(controller, state)
+        with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=fail_final):
+            with self.assertRaisesRegex(OSError, "interrupted after stale cleanup"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertEqual(self.task("status", "B")["state"], "REQUEUING_STALE")
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+
+        recovered = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((recovered["state"], recovered["tip_sha"]), ("QUEUED", old_feature))
+        self.assertEqual(recovered["observed_target_sha"], moved)
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
 
     def test_failed_resolved_repair_refuses_dirty_tip(self) -> None:
         checkout, marker, _ = self.prepare_failed_resolved_candidate()
