@@ -27,7 +27,7 @@ describe('Bolt task workspace managed runtime', () => {
     }
   });
 
-  it('declares exact generator and managed parity outputs without admitting their roots', () => {
+  it('declares unique generator and managed parity destinations without admitting their roots', () => {
     const policy = JSON.parse(
       readFileSync(resolve(repository, 'juno-code/src/templates/config/task-workspace.json'), 'utf8'),
     ) as { allowed_paths: string[] };
@@ -46,12 +46,35 @@ describe('Bolt task workspace managed runtime', () => {
         '.pi/skills/ralph-loop/references/implement.md',
       ]),
     );
+    const canonicalRootDestinations = [
+      '.agents/skills/ralph-loop/references/implement.md',
+      '.claude/skills/ralph-loop/references/implement.md',
+      '.pi/skills/ralph-loop/references/implement.md',
+    ];
+    const declaredDestinationOwners = [
+      ...generated.destinations.map((destination) => ({
+        source: generated.source,
+        destination,
+      })),
+      ...managed.admissionOutputs.map(({ source, destination }) => ({
+        source: `juno-code/src/templates/${source}`,
+        destination,
+      })),
+    ];
+    expect(new Set(declaredDestinationOwners.map(({ destination }) => destination)).size).toBe(
+      declaredDestinationOwners.length,
+    );
+    for (const destination of canonicalRootDestinations) {
+      expect(declaredDestinationOwners.filter((row) => row.destination === destination)).toEqual([
+        { source: generated.source, destination },
+      ]);
+    }
+
     const skillFiles = [
       'kanban-workflow/SKILL.md',
       'plan-kanban-tasks/SKILL.md',
       'ralph-loop/SKILL.md',
       'ralph-loop/references/first_check.md',
-      'ralph-loop/references/implement.md',
       'understand-project/SKILL.md',
     ];
     const skillOutputs = [

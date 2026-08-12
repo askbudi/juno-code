@@ -30,10 +30,6 @@
       "destination": ".agents/skills/ralph-loop/references/first_check.md"
     },
     {
-      "source": "skills/codex/ralph-loop/references/implement.md",
-      "destination": ".agents/skills/ralph-loop/references/implement.md"
-    },
-    {
       "source": "scripts/kanban.sh",
       "destination": ".agents/skills/ralph-loop/scripts/kanban.sh"
     },
@@ -58,10 +54,6 @@
       "destination": ".claude/skills/ralph-loop/references/first_check.md"
     },
     {
-      "source": "skills/claude/ralph-loop/references/implement.md",
-      "destination": ".claude/skills/ralph-loop/references/implement.md"
-    },
-    {
       "source": "scripts/kanban.sh",
       "destination": ".claude/skills/ralph-loop/scripts/kanban.sh"
     },
@@ -84,10 +76,6 @@
     {
       "source": "skills/pi/ralph-loop/references/first_check.md",
       "destination": ".pi/skills/ralph-loop/references/first_check.md"
-    },
-    {
-      "source": "skills/pi/ralph-loop/references/implement.md",
-      "destination": ".pi/skills/ralph-loop/references/implement.md"
     },
     {
       "source": "skills/pi/understand-project/SKILL.md",
