@@ -2255,14 +2255,24 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             record = state["tasks"].get(task_id)
+            conflict = target_entry(state, repository, config["target_ref"])["conflicts"].get(task_id)
         source_state = record.get("state") if isinstance(record, dict) else None
         failure_outcome = record.get("last_queue_outcome") if isinstance(record, dict) else None
-        failed_queue_repair = (
-            ((source_state == "AWAITING_RISK"
-              and failure_outcome in {"FAILED_FULL_SUITE", "REVIEW_FAILED"})
-             or (source_state == "QUEUED" and failure_outcome == "FAILED_TEST"))
+        resolved_validation_repair = (
+            source_state == "CONFLICT_RESOLVED"
+            and failure_outcome == "FAILED_TEST"
             and isinstance(record.get("queue_attempt"), dict)
-            and record["queue_attempt"].get("outcome") == failure_outcome
+            and record["queue_attempt"].get("outcome") == "FAILED_TEST"
+            and isinstance(conflict, dict)
+            and conflict.get("resolution_state") == "RESOLVED"
+        )
+        failed_queue_repair = (
+            (((source_state == "AWAITING_RISK"
+               and failure_outcome in {"FAILED_FULL_SUITE", "REVIEW_FAILED"})
+              or (source_state == "QUEUED" and failure_outcome == "FAILED_TEST"))
+             and isinstance(record.get("queue_attempt"), dict)
+             and record["queue_attempt"].get("outcome") == failure_outcome)
+            or resolved_validation_repair
         )
         queued_tip_refresh = (
             source_state == "QUEUED"
@@ -2272,7 +2282,7 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         if (source_state not in {"REVIEW_FINDINGS", "REOPENING"}
                 and not failed_queue_repair and not queued_tip_refresh):
             raise MergeQueueError("task has no review findings or failed queue repair to reopen")
-        if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK", "QUEUED"}:
+        if source_state in {"REVIEW_FINDINGS", "AWAITING_RISK", "QUEUED", "CONFLICT_RESOLVED"}:
             old_attempt = record.get("queue_attempt")
             if not isinstance(old_attempt, dict):
                 if queued_tip_refresh:
@@ -2285,8 +2295,21 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                 else:
                     raise MergeQueueError("review finding task has no frozen queue attempt")
             worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
-            if Path(record["repository"]).resolve() != repository:
-                raise MergeQueueError("feature repository identity drifted")
+            if (record.get("task_id") != task_id
+                    or record.get("target_ref") != config["target_ref"]
+                    or Path(record["repository"]).resolve() != repository):
+                raise MergeQueueError("feature task/repository/target identity drifted")
+            expected_target_sha = old_attempt.get("expected_target_sha")
+            if resolved_validation_repair:
+                if (conflict.get("repository_identity") != repository_identity(repository)
+                        or conflict.get("target_ref") != config["target_ref"]
+                        or conflict.get("task_id") != task_id
+                        or conflict.get("feature_sha") != record.get("tip_sha")
+                        or conflict.get("resolved_candidate_sha") != old_attempt.get("candidate_sha")
+                        or expected_target_sha != conflict.get("expected_target_sha")):
+                    raise MergeQueueError("resolved conflict repair identity drifted")
+                if task_runtime.ref_sha(repository, config["target_ref"]) != expected_target_sha:
+                    raise MergeQueueError("target moved since resolved validation failure; preserve candidate")
             if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
                 raise MergeQueueError("feature worktree branch identity drifted")
             new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
@@ -2315,7 +2338,33 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             checkout_value, token = old_attempt.get("candidate_checkout"), old_attempt.get("candidate_token")
             owner = (read_candidate_owner(controller, Path(checkout_value))
                      if checkout_value else None)
+            if resolved_validation_repair:
+                checkout = task_runtime.exact_root(Path(str(checkout_value)), "resolved candidate checkout")
+                if (not token or task_runtime.git(checkout, "rev-parse", "HEAD", check=False)
+                        != old_attempt.get("candidate_sha")
+                        or task_runtime.git(checkout, "status", "--porcelain=v1", "--untracked-files=all",
+                                            check=False)):
+                    raise MergeQueueError("resolved candidate identity drifted before reopen")
+                expected_owner = {
+                    "task_id": task_id, "token": token,
+                    "repository_identity": repository_identity(repository),
+                    "target_ref": config["target_ref"], "target_sha": expected_target_sha,
+                    "feature_sha": record["tip_sha"],
+                    "candidate_checkout": str(checkout.resolve()),
+                }
+                if any(owner.get(key) != value for key, value in expected_owner.items()):
+                    raise MergeQueueError("resolved candidate ownership mismatched")
+                verify_candidate_owner(controller, repository, checkout, token)
             policy_bytes = (controller / ".juno_task/config/task-workspace.json").read_bytes()
+            failure_evidence = None
+            if resolved_validation_repair:
+                failure_evidence = {
+                    "schema_version": "juno_merge_queue_prior_failure.v1",
+                    "outcome": "FAILED_TEST",
+                    "candidate_sha": old_attempt["candidate_sha"],
+                    "expected_target_sha": expected_target_sha,
+                    "validation": old_attempt.get("validation", []),
+                }
             reopen_attempt = {
                 "schema_version": "juno_merge_queue_reopen.v1",
                 "task_id": task_id,
@@ -2323,7 +2372,15 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                 "old_candidate_checkout": checkout_value,
                 "old_candidate_token": token,
                 "old_candidate_owner": owner,
+                "source_state": source_state,
                 "source_outcome": old_attempt.get("outcome"),
+                "source_failure_evidence": failure_evidence,
+                "repository_identity": repository_identity(repository),
+                "repository": str(repository),
+                "target_ref": config["target_ref"],
+                "expected_target_sha": expected_target_sha,
+                "worktree": str(worktree),
+                "branch_ref": record["branch_ref"],
                 "new_feature_tip": new_tip,
                 "changed_paths": changed,
                 "validations": validations,
@@ -2347,10 +2404,28 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             raise MergeQueueError("REOPENING task has invalid recovery identity")
         worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
         new_tip = reopen_attempt["new_feature_tip"]
-        if (task_runtime.git(worktree, "rev-parse", "HEAD", check=False) != new_tip
+        policy_bytes = (controller / ".juno_task/config/task-workspace.json").read_bytes()
+        expected_validation_identity = digest({
+            "new_feature_tip": new_tip, "changed_paths": reopen_attempt["changed_paths"],
+            "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+            "focused_validation": config["focused_validation"],
+        })
+        if (reopen_attempt.get("repository_identity") != repository_identity(repository)
+                or reopen_attempt.get("repository") != str(repository)
+                or reopen_attempt.get("target_ref") != config["target_ref"]
+                or reopen_attempt.get("worktree") != str(worktree)
+                or reopen_attempt.get("branch_ref") != record.get("branch_ref")
+                or reopen_attempt.get("validation_identity") != expected_validation_identity
+                or task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False)
+                    != record.get("branch_ref")
+                or task_runtime.git(worktree, "rev-parse", "HEAD", check=False) != new_tip
                 or task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip
                 or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
             raise MergeQueueError("REOPENING feature identity drifted")
+        if (reopen_attempt.get("source_state") == "CONFLICT_RESOLVED"
+                and task_runtime.ref_sha(repository, config["target_ref"])
+                    != reopen_attempt.get("expected_target_sha")):
+            raise MergeQueueError("target moved during resolved candidate reopen")
         checkout_value = reopen_attempt.get("old_candidate_checkout")
         token = reopen_attempt.get("old_candidate_token")
         if checkout_value:
@@ -2360,6 +2435,12 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             if checkout.exists():
                 if read_candidate_owner(controller, checkout) != reopen_attempt.get("old_candidate_owner"):
                     raise MergeQueueError("old candidate ownership drifted during reopen")
+                if (reopen_attempt.get("source_state") == "CONFLICT_RESOLVED"
+                        and (task_runtime.git(checkout, "rev-parse", "HEAD", check=False)
+                             != reopen_attempt.get("old_candidate_sha")
+                             or task_runtime.git(checkout, "status", "--porcelain=v1",
+                                                 "--untracked-files=all", check=False))):
+                    raise MergeQueueError("old resolved candidate drifted during reopen")
                 rollback_unadmitted_candidate(controller, repository, checkout, token)
             else:
                 marker = owner_marker(controller, checkout)
@@ -2396,10 +2477,13 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                        "last_validation_outcome": "PASSED",
                        "reopened_from_candidate_sha": reopen_attempt["old_candidate_sha"]})
         prior_findings_sha = record.get("prior_findings_candidate_sha")
-        if source_state == "REVIEW_FINDINGS":
+        if reopen_attempt.get("source_state") == "REVIEW_FINDINGS":
             prior_findings_sha = reopen_attempt["old_candidate_sha"]
         if isinstance(prior_findings_sha, str):
             queued["prior_findings_candidate_sha"] = prior_findings_sha
+        failure_evidence = reopen_attempt.get("source_failure_evidence")
+        if isinstance(failure_evidence, dict):
+            queued["prior_queue_failure"] = failure_evidence
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             if state["tasks"].get(task_id) != record:
@@ -2412,7 +2496,9 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
         source_outcome = reopen_attempt.get("source_outcome")
         outcome = ({"FAILED_FULL_SUITE": "REQUEUED_AFTER_FULL_SUITE_FAILURE",
                     "REVIEW_FAILED": "REQUEUED_AFTER_REVIEW_FAILURE",
-                    "FAILED_TEST": "REQUEUED_AFTER_VALIDATION_FAILURE",
+                    "FAILED_TEST": ("REQUEUED_AFTER_RESOLVED_VALIDATION_FAILURE"
+                                    if reopen_attempt.get("source_state") == "CONFLICT_RESOLVED"
+                                    else "REQUEUED_AFTER_VALIDATION_FAILURE"),
                     "QUEUED_TIP_REFRESH": "REQUEUED_AFTER_TIP_REFRESH"}.get(
                         source_outcome, "REQUEUED_AFTER_FINDINGS"))
         return {**queued, "outcome": outcome}

@@ -495,6 +495,30 @@ raise SystemExit(2)
                 "receipt": {"receipt_path": str(receipt_path),
                             "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}}
 
+    def prepare_failed_resolved_candidate(self) -> tuple[Path, Path, str]:
+        self.commit_feature("A", "src/shared.txt", "A\n")
+        old_feature = self.commit_feature("B", "src/shared.txt", "B\n")
+        self.queue_payload("next")
+        conflict = self.queue_payload("next")
+        checkout = Path(conflict["candidate_checkout"])
+        (checkout / "src/shared.txt").write_text("A+B\n")
+        git(checkout, "add", "src/shared.txt")
+        self.write_policy("raise SystemExit(13)")
+        with self.assertRaises(merge_runtime.MergeValidationError):
+            merge_runtime.merge_resolve(self.controller.resolve(), "B")
+        status = self.task("status", "B")
+        self.assertEqual((status["state"], status["last_queue_outcome"]),
+                         ("CONFLICT_RESOLVED", "FAILED_TEST"))
+        return checkout, merge_runtime.owner_marker(self.controller.resolve(), checkout), old_feature
+
+    def commit_resolved_repair(self, text: str = "repaired\n") -> str:
+        worktree = self.workspaces / "B"
+        (worktree / "src/shared.txt").write_text(text)
+        git(worktree, "add", "src/shared.txt")
+        git(worktree, "commit", "-m", "repair resolved candidate validation")
+        self.write_policy()
+        return git(worktree, "rev-parse", "HEAD")
+
     def prepare_moved_finding_reopen(self) -> tuple[Path, Path]:
         self.commit_feature("X", "src/x.py", "x\n")
         self.commit_feature("Y", "src/security/auth.py", "bad\n")
@@ -1391,6 +1415,110 @@ raise SystemExit(2)
         again = self.queue_payload("next")
         self.assertEqual(again["outcome"], "AWAITING_RISK")
         self.assertNotEqual(again["candidate_sha"], old_candidate)
+
+    def test_failed_resolved_validation_descendant_repair_reopens_and_requeues(self) -> None:
+        checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
+        old_candidate = git(checkout, "rev-parse", "HEAD")
+        repaired_tip = self.commit_resolved_repair()
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["B"]["prior_findings_candidate_sha"] = "f" * 40
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual(reopened["outcome"],
+                         "REQUEUED_AFTER_RESOLVED_VALIDATION_FAILURE")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", repaired_tip))
+        self.assertTrue(merge_runtime.task_runtime.run([
+            "git", "-C", str(self.repository), "merge-base", "--is-ancestor",
+            old_feature, repaired_tip], self.repository, check=False).returncode == 0)
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+        self.assertEqual(reopened["prior_findings_candidate_sha"], "f" * 40)
+        failure = reopened["prior_queue_failure"]
+        self.assertEqual((failure["outcome"], failure["candidate_sha"]),
+                         ("FAILED_TEST", old_candidate))
+        self.assertEqual(failure["validation"][0]["exit_code"], 13)
+        state = json.loads(state_path.read_text())
+        queue = next(value for value in state["queues"].values()
+                     if isinstance(value, dict) and "conflicts" in value)
+        self.assertNotIn("B", queue["conflicts"])
+        conflict = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
+
+    def test_failed_resolved_repair_refuses_stale_target_and_preserves_candidate(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        self.commit_resolved_repair()
+        current = git(self.repository, "rev-parse", "refs/heads/product")
+        tree = git(self.repository, "rev-parse", "refs/heads/product^{tree}")
+        moved = git(self.repository, "commit-tree", tree, "-p", current, "-m", "external")
+        git(self.repository, "update-ref", "refs/heads/product", moved, current)
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "target moved"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual(self.task("status", "B")["state"], "CONFLICT_RESOLVED")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_failed_resolved_repair_refuses_dirty_tip(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        worktree = self.workspaces / "B"
+        (worktree / "src/shared.txt").write_text("committed repair\n")
+        git(worktree, "add", "src/shared.txt")
+        git(worktree, "commit", "-m", "repair then drift")
+        (worktree / "src/shared.txt").write_text("dirty repair\n")
+        self.write_policy()
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "must be clean"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_failed_resolved_repair_refuses_non_descendant_tip(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        worktree = self.workspaces / "B"
+        git(worktree, "reset", "--hard", self.base)
+        (worktree / "src/shared.txt").write_text("replacement\n")
+        git(worktree, "add", "src/shared.txt")
+        git(worktree, "commit", "-m", "non descendant repair")
+        self.write_policy()
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "must descend"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_failed_resolved_repair_refuses_candidate_ownership_mismatch(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        self.commit_resolved_repair()
+        owner = json.loads(marker.read_text())
+        owner["task_id"] = "attacker"
+        marker.write_text(json.dumps(owner, sort_keys=True, separators=(",", ":")) + "\n")
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "ownership mismatched"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual(self.task("status", "B")["state"], "CONFLICT_RESOLVED")
+        self.assertTrue(checkout.exists()); self.assertTrue(marker.exists())
+
+    def test_failed_resolved_repair_interrupted_cleanup_retry_is_idempotent(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        repaired_tip = self.commit_resolved_repair()
+        original = merge_runtime.task_runtime.write_state
+        writes = 0
+        def fail_final(controller: Path, state: dict) -> None:
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("interrupted after cleanup")
+            original(controller, state)
+        with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=fail_final):
+            with self.assertRaisesRegex(OSError, "interrupted after cleanup"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertEqual(self.task("status", "B")["state"], "REOPENING")
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+
+        recovered = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+
+        self.assertEqual((recovered["state"], recovered["tip_sha"]),
+                         ("QUEUED", repaired_tip))
+        self.assertEqual(recovered["prior_queue_failure"]["outcome"], "FAILED_TEST")
 
     def test_reopen_first_state_write_failure_keeps_findings_and_owned_candidate(self) -> None:
         checkout, marker = self.prepare_moved_finding_reopen()
