@@ -667,6 +667,52 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("disallowed paths: .agents/skills/unrelated/SKILL.md", failed.stderr)
 
+    def test_new_declaration_only_admits_fresh_tasks_and_keeps_old_receipt_frozen(self) -> None:
+        self.install_declared_output_fixtures()
+        started = self.payload("start", "X")
+        frozen_receipt = started["creation_receipt"]
+        frozen_digest = started["workspace_identity"]["create_receipt_sha256"]
+
+        source = "juno-code/src/templates/extensions/pi/new-extension.ts"
+        destination = ".pi/extensions/new-extension.ts"
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["admissionOutputs"].append({
+            "source": "extensions/pi/new-extension.ts", "destination": destination,
+        })
+        manifest.write_text(json.dumps(value) + "\n")
+        for relative in (source, destination):
+            target = self.repository / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("new extension\n")
+        git(self.repository, "add", task_runtime.MANAGED_OUTPUT_DECLARATION, source, destination)
+        git(self.repository, "commit", "-m", "declare a later generated output")
+
+        old_status = self.payload("status", "X")
+        self.assertEqual(old_status["creation_receipt"], frozen_receipt)
+        self.assertEqual(old_status["workspace_identity"]["create_receipt_sha256"], frozen_digest)
+        self.assertFalse(task_runtime.path_within(
+            destination, old_status["creation_receipt"]["allowed_paths"]))
+
+        fresh = self.payload("start", "Y")
+        self.assertTrue(task_runtime.path_within(
+            destination, fresh["creation_receipt"]["allowed_paths"]))
+        self.assertIn((source, destination), {
+            (row["source"], row["destination"])
+            for row in fresh["creation_receipt"]["generated_output_admission"]["bindings"]
+        })
+        self.assertNotEqual(
+            fresh["creation_receipt"]["generated_output_admission"]["declarations"]
+                [task_runtime.MANAGED_OUTPUT_DECLARATION],
+            frozen_receipt["generated_output_admission"]["declarations"]
+                [task_runtime.MANAGED_OUTPUT_DECLARATION],
+        )
+
+        self.commit_task("X", destination)
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn(f"disallowed paths: {destination}", failed.stderr)
+
     def test_unchanged_generated_contracts_do_not_expand_finish_requirements(self) -> None:
         self.install_declared_output_fixtures()
         self.payload("start", "X")

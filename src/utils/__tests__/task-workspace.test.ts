@@ -46,20 +46,58 @@ describe('Bolt task workspace managed runtime', () => {
         '.pi/skills/ralph-loop/references/implement.md',
       ]),
     );
-    expect(managed.admissionOutputs).toEqual([
+    const skillFiles = [
+      'kanban-workflow/SKILL.md',
+      'plan-kanban-tasks/SKILL.md',
+      'ralph-loop/SKILL.md',
+      'ralph-loop/references/first_check.md',
+      'ralph-loop/references/implement.md',
+      'understand-project/SKILL.md',
+    ];
+    const skillOutputs = [
+      ...skillFiles.map((file) => ({
+        source: `skills/codex/${file}`,
+        destination: `.agents/skills/${file}`,
+      })),
       {
-        source: 'scripts/controller_workspace.py',
-        destination: '.juno_task/scripts/controller_workspace.py',
+        source: 'scripts/kanban.sh',
+        destination: '.agents/skills/ralph-loop/scripts/kanban.sh',
       },
+      ...skillFiles.map((file) => ({
+        source: `skills/claude/${file}`,
+        destination: `.claude/skills/${file}`,
+      })),
       {
-        source: 'scripts/migration_inventory.py',
-        destination: '.juno_task/scripts/migration_inventory.py',
+        source: 'scripts/kanban.sh',
+        destination: '.claude/skills/ralph-loop/scripts/kanban.sh',
       },
+      ...skillFiles.map((file) => ({
+        source: `skills/pi/${file}`,
+        destination: `.pi/skills/${file}`,
+      })),
       {
-        source: 'scripts/controller_checkpoint.py',
-        destination: '.juno_task/scripts/controller_checkpoint.py',
+        source: 'extensions/pi/juno-skill-preprocessor.ts',
+        destination: '.pi/extensions/juno-skill-preprocessor.ts',
       },
-    ]);
+    ];
+    expect(managed.admissionOutputs).toEqual(
+      expect.arrayContaining([
+        {
+          source: 'scripts/controller_workspace.py',
+          destination: '.juno_task/scripts/controller_workspace.py',
+        },
+        {
+          source: 'scripts/migration_inventory.py',
+          destination: '.juno_task/scripts/migration_inventory.py',
+        },
+        {
+          source: 'scripts/controller_checkpoint.py',
+          destination: '.juno_task/scripts/controller_checkpoint.py',
+        },
+        ...skillOutputs,
+      ]),
+    );
+    expect(managed.admissionOutputs).toHaveLength(3 + skillOutputs.length);
     expect(policy.allowed_paths).not.toEqual(
       expect.arrayContaining(['.agents', '.claude', '.pi', '.juno_task/scripts']),
     );
