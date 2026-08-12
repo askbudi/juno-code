@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'bin/cli': 'src/bin/cli.ts',
+    'bin/invocation-boundary': 'src/bin/invocation-boundary.ts',
     'bin/feedback-collector': 'src/bin/feedback-collector.ts'
   },
   format: ['esm', 'cjs'],

@@ -89,6 +89,8 @@ describe('invocation telemetry schema', () => {
     }
     expect(() => parseInvocationTelemetryEvent(finished({ status: 'success', exit_code: 1 }))).toThrow();
     expect(() => parseInvocationTelemetryEvent(finished({ status: 'failure', exit_code: null }))).toThrow();
+    expect(parseInvocationTelemetryEvent(finished({ status: 'interrupted', exit_code: 0 })))
+      .toMatchObject({ status: 'interrupted', exit_code: 0 });
     expect(() => parseInvocationTelemetryEvent(started({ request_id: 'x'.repeat(257) }))).toThrow();
     expect(() => parseInvocationTelemetryEvent(started({ event_id: '../escape' }))).toThrow();
     expect(() => parseInvocationTelemetryEvent(started({ started_monotonic_ms: Number.POSITIVE_INFINITY }))).toThrow();

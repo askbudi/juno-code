@@ -48,7 +48,7 @@ describe('ypl wrapper', () => {
         reject: false,
       });
 
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(['--version']);
       expect(await fs.pathExists(bootstrapMarker)).toBe(false);
     } finally {
@@ -183,7 +183,7 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--worktree', 'juno.workspace.role', 'integration-owner'], { cwd: integration });
       await execa('git', ['config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1'], { cwd: integration });
       const runtime = path.join(controller, 'controller-runtime.mjs');
-      await fs.writeFile(runtime, `console.log(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),env:{invocation:process.env.JUNO_CONTROL_INVOCATION_ROOT,role:process.env.JUNO_CONTROL_INVOCATION_ROLE,effective:process.env.JUNO_CONTROL_EFFECTIVE_ROOT,asserted:process.env.JUNO_WORKSPACE_ROLE,enforcement:process.env.JUNO_WORKSPACE_ENFORCEMENT}}))\n`);
+      await fs.writeFile(runtime, `console.log(JSON.stringify({argv0:process.argv0,args:process.argv.slice(2),cwd:process.cwd(),env:{invocation:process.env.JUNO_CONTROL_INVOCATION_ROOT,role:process.env.JUNO_CONTROL_INVOCATION_ROLE,effective:process.env.JUNO_CONTROL_EFFECTIVE_ROOT,asserted:process.env.JUNO_WORKSPACE_ROLE,enforcement:process.env.JUNO_WORKSPACE_ENFORCEMENT}}))\n`);
       await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], { cwd: controller });
       await fs.ensureDir(launcherBin);
       await fs.ensureDir(packagedScripts);
@@ -206,7 +206,7 @@ describe('ypl wrapper', () => {
       });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
-        args: ['task', 'preflight', 'T1'], cwd: await fs.realpath(controller),
+        argv0: 'yy', args: ['task', 'preflight', 'T1'], cwd: await fs.realpath(controller),
         env: { invocation: await fs.realpath(integration), role: 'integration-owner',
           effective: await fs.realpath(controller), asserted: 'controller', enforcement: 'strict' },
       });
@@ -579,6 +579,30 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it.each([
+    ['yy', 'yy'],
+    ['juno-code', 'juno-code'],
+  ])('preserves the %s launch identity through the common wrapper', async (fileName, launchSurface) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-launch-surface-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      await fs.ensureDir(binDir);
+      const wrapper = path.join(binDir, fileName);
+      await fs.copy(JUNO_CODE_SOURCE, wrapper);
+      await fs.chmod(wrapper, 0o755);
+      await fs.writeFile(path.join(binDir, 'cli.mjs'), "console.log(process.argv0)\n");
+      const result = await execa(wrapper, ['--version'], {
+        cwd: tempDir,
+        reject: false,
+        env: { JUNO_CODE_LAUNCH_SURFACE: 'ypl' },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(launchSurface);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('executes the juno-code wrapper with pi --live before forwarded args', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-ypl-wrapper-'));
     try {
@@ -590,17 +614,21 @@ describe('ypl wrapper', () => {
       await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
-        'console.log(JSON.stringify(process.argv.slice(2)))\n',
+        "console.log(JSON.stringify({ args: process.argv.slice(2), launchSurface: process.argv0 }))\n",
         'utf8',
       );
 
       const result = await execa(path.join(binDir, 'ypl.sh'), ['hello world', '--model', 'sonnet'], {
         cwd: tempDir,
         reject: false,
+        env: { JUNO_CODE_LAUNCH_SURFACE: 'yy' },
       });
 
       expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual(['pi', '--live', 'hello world', '--model', 'sonnet']);
+      expect(JSON.parse(result.stdout)).toEqual({
+        args: ['pi', '--live', 'hello world', '--model', 'sonnet'],
+        launchSurface: 'ypl',
+      });
     } finally {
       await fs.remove(tempDir);
     }

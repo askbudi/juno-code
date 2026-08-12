@@ -1840,15 +1840,21 @@ export async function mainCommandHandler(
     // Normalize verbose early; root CLI path can pass booleans/strings from Commander optional args.
     const effectiveVerbose = normalizeVerboseLevel(options.verbose, options.quiet);
 
+    // Resolve --cwd to one absolute project route before configuration and
+    // telemetry. Relative paths are relative to the invocation directory.
+    const requestedWorkingDirectory = options.cwd
+      ? path.resolve(process.cwd(), options.cwd)
+      : process.cwd();
+
     // Load configuration first so we can resolve defaults from config.json
     const config = await loadConfig({
-      baseDir: options.cwd || process.cwd(),
+      baseDir: requestedWorkingDirectory,
       ...(options.config !== undefined ? { configFile: options.config } : {}),
       cliConfig: {
         verbose: effectiveVerbose,
         quiet: options.quiet || false,
         logLevel: options.logLevel || 'info',
-        workingDirectory: options.cwd || process.cwd(),
+        workingDirectory: requestedWorkingDirectory,
         // Pass through onHourlyLimit if specified via CLI flag
         ...(options.onHourlyLimit
           ? { onHourlyLimit: options.onHourlyLimit as 'wait' | 'raise' }
@@ -1919,6 +1925,17 @@ export async function mainCommandHandler(
       ]);
     }
 
+    // Commander and project config are the authoritative request observations.
+    // Attach only these allowlisted values; never infer them from raw argv or
+    // prompt text. Immutable IDs, origin routing, and start timing stay fixed.
+    const configuredModel = getConfiguredDefaultModelForSubagent(config, options.subagent);
+    const requestedModel = options.model || configuredModel || null;
+    const { startActiveInvocation } = await import('../../core/invocation-lifecycle.js');
+    if (!await startActiveInvocation({
+      service: options.subagent,
+      requestedModel,
+    })) return;
+
     // Process prompt
     const promptProcessor = new PromptProcessor(options);
     const rawInstruction = await promptProcessor.processPrompt();
@@ -1940,6 +1957,7 @@ export async function mainCommandHandler(
         ),
       );
       process.exit(1);
+      return;
     }
 
     // Validate maxIterations - check for NaN (e.g., from parseInt('invalid'))
@@ -1952,12 +1970,8 @@ export async function mainCommandHandler(
       ]);
     }
 
-    // Determine model priority:
-    // 1) explicit CLI --model
-    // 2) configured model for this subagent (supports per-subagent map + legacy defaultModel)
-    // 3) built-in subagent default
-    const configuredModel = getConfiguredDefaultModelForSubagent(config, options.subagent);
-    const resolvedModel = options.model || configuredModel || getDefaultModelForSubagent(options.subagent);
+    // Provider execution still resolves configured/built-in defaults normally.
+    const resolvedModel = requestedModel || getDefaultModelForSubagent(options.subagent);
 
     const liveInteractiveSession =
       options.continueFromLatest === true &&
@@ -2016,8 +2030,13 @@ export async function mainCommandHandler(
       await syncSessionBranchExecutionResult(result, config, options, sessionIds[sessionIds.length - 1]);
       await persistContinueContext(result, config, effectiveVerbose, options);
 
-      // Set exit code based on result
+      // Set exit code based on result. Timeout remains non-zero while the
+      // invocation lifecycle separately preserves its semantic classification.
       exitCode = result.status === ExecutionStatus.COMPLETED ? 0 : 1;
+      if (result.status === ExecutionStatus.TIMEOUT) {
+        const { markActiveInvocationTimeout } = await import('../../core/invocation-lifecycle.js');
+        markActiveInvocationTimeout();
+      }
     } catch (error) {
       executionError = error;
       exitCode = 1;

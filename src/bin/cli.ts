@@ -18,9 +18,56 @@ import type { SubagentType } from '../types/index.js';
 import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
 import { classifyLeadingCommand } from '../utils/control-plane-router.js';
 import {
+  InvocationLifecycle,
+  joinActiveInvocation,
+  runWithInvocationLifecycle,
+  startActiveInvocation,
+  type InvocationContinuation,
+  WRAPPER_LIFECYCLE_ENV,
+  WRAPPER_OBSERVATION_ENV,
+} from '../core/invocation-lifecycle.js';
+import {
   classifyExplicitInvocation,
   formatExplicitInvocationError,
 } from '../utils/explicit-command.js';
+
+const executableLaunchSurface = (() => {
+  const executable = basename(process.argv0);
+  return executable === 'yy' || executable === 'ypl' ? executable : 'juno-code';
+})();
+
+function observeCommanderRequest(program: Command) {
+  const argv = process.argv.slice(2);
+  const classification = classifyExplicitInvocation(argv, program);
+  if (classification.kind === 'unknown-command' || classification.kind === 'unknown-option' ||
+    argv.includes('--version') || argv.includes('-V') || argv.includes('--help') || argv.includes('-h')) return {};
+  const leading = classifyLeadingCommand(argv);
+  const command = leading.command
+    ? program.commands.find((candidate) =>
+      candidate.name() === leading.command || candidate.aliases().includes(leading.command!))
+    : undefined;
+  try {
+    program.parseOptions(command ? argv.slice(0, leading.index) : argv);
+    if (command) command.parseOptions(argv.slice(leading.index + 1));
+  } catch {
+    // Commander owns the eventual diagnostic. A malformed request must not be
+    // guessed into telemetry while preserving its already-recorded attempt.
+  }
+  const options = { ...program.opts(), ...(command?.opts() ?? {}) } as Record<string, unknown>;
+  const cwd = typeof options.cwd === 'string' && options.cwd.length > 0
+    ? resolvePath(process.cwd(), options.cwd)
+    : process.cwd();
+  const aliasService = command && ['claude', 'cursor', 'codex', 'gemini', 'pi'].includes(command.name())
+    ? command.name()
+    : undefined;
+  return {
+    workingDirectory: cwd,
+    ...(typeof options.subagent === 'string'
+      ? { service: options.subagent }
+      : aliasService ? { service: aliasService } : {}),
+    ...(typeof options.model === 'string' ? { requestedModel: options.model } : {}),
+  };
+}
 
 // Session ID getter — set when main.js is loaded, used by SIGINT handler
 let _getActiveSessionId: (() => string | null) | null = null;
@@ -50,13 +97,43 @@ import CompletionCommand from '../cli/commands/completion.js';
 // Import version from package.json
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve as resolvePath } from 'node:path';
+import { closeSync, fstatSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const packageJson = require(join(__dirname, '../../package.json'));
 const VERSION = packageJson.version;
+
+// Continue only a bounded, version-matched state carried by the wrapper's open
+// descriptor. Ambient paths and arbitrary regular descriptors are not enough
+// to suppress the direct CLI's own start event.
+const wrapperLifecycleFd = Number(process.env[WRAPPER_LIFECYCLE_ENV]);
+const wrapperContinuation = Number.isInteger(wrapperLifecycleFd) && wrapperLifecycleFd >= 3 && (() => {
+  try {
+    const descriptorStat = fstatSync(wrapperLifecycleFd);
+    if (!descriptorStat.isFile()) return null;
+    const raw = readFileSync(wrapperLifecycleFd, 'utf8');
+    if (raw.length > 16_384) return null;
+    const value = JSON.parse(raw) as InvocationContinuation;
+    const identity = value?.identity;
+    if (!(typeof value?.stateFile === 'string' && typeof value.workingDirectory === 'string' &&
+      typeof value.startedAt === 'string' && Number.isFinite(value.startedMonotonicMs) &&
+      identity?.schema_version === 1 && identity.juno_code_version === VERSION &&
+      ['juno-code', 'yy', 'ypl'].includes(identity.launch_surface) &&
+      [identity.request_id, identity.trace_id, identity.span_id].every((item) => typeof item === 'string') &&
+      identity.parent_span_id === null && identity.task_id === null && identity.workflow_run_id === null &&
+      identity.workflow_step_id === null)) return null;
+    const pathStat = statSync(value.stateFile);
+    if (descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) return null;
+    unlinkSync(value.stateFile);
+    closeSync(wrapperLifecycleFd);
+    return value;
+  } catch { return null; }
+})();
+delete process.env[WRAPPER_LIFECYCLE_ENV];
+delete process.env[WRAPPER_OBSERVATION_ENV];
 
 /**
  * Normalize verbose flag value to numeric level.
@@ -129,6 +206,7 @@ function handleCLIError(error: unknown, verbose: number = 0): void {
     console.error(chalk.yellow("   • Run ypl 'init' or juno-code pi 'init' first to create the main branch"));
     console.error(chalk.yellow('   • Inspect branches with: juno-code branches'));
     process.exit(1);
+    return;
   }
 
   if (isCLIError(error)) {
@@ -153,6 +231,7 @@ function handleCLIError(error: unknown, verbose: number = 0): void {
       : EXIT_CODES.UNEXPECTED_ERROR;
 
     process.exit(exitCode);
+    return;
   }
 
   // Handle unexpected errors
@@ -256,9 +335,11 @@ function setupGlobalOptions(program: Command): void {
   program.exitOverride((err) => {
     if (err.code === 'commander.helpDisplayed') {
       process.exit(0);
+      return;
     }
     if (err.code === 'commander.version') {
       process.exit(0);
+      return;
     }
     handleCLIError(err, 0);
   });
@@ -354,6 +435,23 @@ async function runUntilCompletionScriptIfRequested(
 
   const scriptPath = path.join(invocationCwd, '.juno_task', 'scripts', 'run_until_completion.sh');
 
+  // Until-completion does not enter mainCommandHandler, so resolve its request
+  // observation here from Commander's options and the same project config.
+  const [{ loadConfig }, { getConfiguredDefaultModelForSubagent }] = await Promise.all([
+    import('../core/config.js'),
+    import('../core/subagent-models.js'),
+  ]);
+  const config = await loadConfig({ baseDir: invocationCwd });
+  const service = typeof options.subagent === 'string'
+    ? options.subagent
+    : typeof config.defaultSubagent === 'string' ? config.defaultSubagent : 'claude';
+  const explicitModel = typeof options.model === 'string' ? options.model : undefined;
+  const configuredModel = getConfiguredDefaultModelForSubagent(config, service as SubagentType);
+  if (!await startActiveInvocation({
+    service,
+    requestedModel: explicitModel || configuredModel || null,
+  })) return true;
+
   // Check if script exists
   if (!(await fs.pathExists(scriptPath))) {
     console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
@@ -376,50 +474,44 @@ async function runUntilCompletionScriptIfRequested(
   // Forward all juno-code arguments except completion flags and pre-run-hook values
   scriptArgs.push(...getForwardedUntilCompletionArgs());
 
-  // Execute run_until_completion.sh
+  // Execute and join the producer. The outer invocation must not report a
+  // terminal event while this child is still running.
   const child = spawn(scriptPath, scriptArgs, {
     stdio: 'inherit',
     cwd: invocationCwd,
   });
 
-  // Forward SIGINT and SIGTERM to child process for proper Ctrl+C handling
-  // Remove global signal handlers first to prevent conflicts
-  process.removeAllListeners('SIGINT');
-  process.removeAllListeners('SIGTERM');
-
   let childExited = false;
+  const childResult = new Promise<number>((resolve) => {
+    child.once('exit', (code) => {
+      childExited = true;
+      resolve(code ?? 0);
+    });
+    child.once('error', (error) => {
+      childExited = true;
+      console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
+      console.error(chalk.red(`   ${error.message}`));
+      resolve(1);
+    });
+  });
+  joinActiveInvocation(childResult);
+
   const signalHandler = (signal: NodeJS.Signals) => {
     if (!childExited && child.pid) {
-      // Forward signal to child process
       try {
         process.kill(child.pid, signal);
       } catch {
-        // Child might have already exited, ignore errors
+        // Child might have already exited.
       }
     }
   };
-
   process.on('SIGINT', signalHandler);
   process.on('SIGTERM', signalHandler);
 
-  child.on('exit', (code) => {
-    childExited = true;
-    // Clean up signal handlers
-    process.removeListener('SIGINT', signalHandler);
-    process.removeListener('SIGTERM', signalHandler);
-    process.exit(code || 0);
-  });
-
-  child.on('error', (error) => {
-    childExited = true;
-    // Clean up signal handlers
-    process.removeListener('SIGINT', signalHandler);
-    process.removeListener('SIGTERM', signalHandler);
-    console.error(chalk.red.bold('\n❌ Error executing run_until_completion.sh'));
-    console.error(chalk.red(`   ${error.message}`));
-    process.exit(1);
-  });
-
+  const exitCode = await childResult;
+  process.removeListener('SIGINT', signalHandler);
+  process.removeListener('SIGTERM', signalHandler);
+  process.exit(exitCode);
   return true;
 }
 
@@ -2304,10 +2396,26 @@ process.on('SIGHUP', () => {
 // Export for testing
 export { main, handleCLIError };
 
-// Always run main() when this file is executed as a CLI
-// The shebang ensures this is only executed when run as a command
-main().catch((error) => {
+// Always run main() when this file is executed as a CLI. Wrapper preflight is
+// deliberately excluded: it is an internal read-only classifier preceding the
+// one user-visible invocation, not a second command lifecycle.
+const reportFatalError = (error: unknown) => {
   console.error(chalk.red.bold('\n💥 Fatal Error'));
   console.error(chalk.red(`   ${error instanceof Error ? error.message : String(error)}`));
   process.exit(EXIT_CODES.UNEXPECTED_ERROR);
-});
+};
+
+if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' || process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
+  void main().catch(reportFatalError);
+} else {
+  const observationProgram = new Command();
+  configureCommandSurface(observationProgram);
+  const requestObservation = observeCommanderRequest(observationProgram);
+  const invocationLifecycle = new InvocationLifecycle({
+    workingDirectory: process.cwd(),
+    junoCodeVersion: VERSION,
+    launchSurface: executableLaunchSurface ?? 'juno-code',
+    ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
+  });
+  void runWithInvocationLifecycle(invocationLifecycle, main, requestObservation).catch(reportFatalError);
+}

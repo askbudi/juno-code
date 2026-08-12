@@ -29,4 +29,8 @@ if [ ! -x "$JUNO_CODE_WRAPPER" ]; then
     exit 127
 fi
 
-exec "$JUNO_CODE_WRAPPER" pi --live "$@"
+# Source the common wrapper so its executable-boundary $0 remains ypl. The
+# wrapper replaces this process and carries identity via node argv[0].
+set -- pi --live "$@"
+# shellcheck source=/dev/null
+source "$JUNO_CODE_WRAPPER"

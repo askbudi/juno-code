@@ -53,7 +53,10 @@ export const invocationFinishedEventSchema = invocationFinishedEventBaseSchema.s
   if (event.status === 'success' && event.exit_code !== 0) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['exit_code'], message: 'success requires exit code 0' });
   }
-  if (event.status !== 'success' && event.exit_code === 0) {
+  // Graceful SIGINT/SIGTERM intentionally preserve the CLI's historical exit-0
+  // contract. The interrupted status carries semantic truth while exit_code
+  // records the actual process code rather than inventing a failure code.
+  if ((event.status === 'failure' || event.status === 'timeout') && event.exit_code === 0) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['exit_code'], message: `${event.status} requires a non-zero exit code` });
   }
 });

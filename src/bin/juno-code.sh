@@ -17,6 +17,16 @@
 
 set -euo pipefail
 
+# Derive identity only from the executable boundary. ypl sources this wrapper,
+# preserving its own $0; yy is an npm symlink to this file. exec -a carries the
+# derived identity in kernel-owned argv[0] without adding a marker argument or
+# requiring independently pinned runtimes to understand a new option.
+case "$(basename "$0")" in
+    yy) JUNO_CODE_LAUNCH_SURFACE_VALUE=yy ;;
+    ypl|ypl.sh) JUNO_CODE_LAUNCH_SURFACE_VALUE=ypl ;;
+    *) JUNO_CODE_LAUNCH_SURFACE_VALUE=juno-code ;;
+esac
+
 # Get the directory where this script is located
 # IMPORTANT: Resolve symlinks first (npm creates symlinks in /usr/local/bin or /opt/homebrew/bin)
 # We need the real path to find cli.mjs in the same directory
@@ -34,6 +44,7 @@ fi
 
 # Path to the actual CLI entrypoint (Node.js)
 CLI_ENTRYPOINT="${SCRIPT_DIR}/cli.mjs"
+INVOCATION_BOUNDARY="${SCRIPT_DIR}/invocation-boundary.mjs"
 
 # Routing must never execute resolver bytes from a mutable product/task
 # checkout. Source and packaged layouts both place templates beside bin/utils.
@@ -141,6 +152,23 @@ require_compatible_node() {
     return 69
 }
 
+start_invocation_boundary() {
+    JUNO_CODE_INVOCATION_STATE=""
+    [ -f "$INVOCATION_BOUNDARY" ] || return 0
+    require_compatible_node || return 0
+    JUNO_CODE_INVOCATION_STATE="$(mktemp "${TMPDIR:-/tmp}/juno-code-invocation.XXXXXX")" || return 0
+    if ! (exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$JUNO_CODE_NODE_EXECUTABLE" \
+        "$INVOCATION_BOUNDARY" start "$PWD" "$JUNO_CODE_INVOCATION_STATE"); then
+        rm -f "$JUNO_CODE_INVOCATION_STATE"
+        JUNO_CODE_INVOCATION_STATE=""
+        return 0
+    fi
+    # The current runtime validates and continues this bounded private state.
+    # Separately pinned runtimes ignore it and are finalized by this wrapper.
+    exec 9<"$JUNO_CODE_INVOCATION_STATE"
+    export JUNO_CODE_WRAPPER_LIFECYCLE=9
+}
+
 preflight_command_shaped_invocation() {
     [ "$#" -gt 0 ] || return 0
     # Older/mock entrypoints do not implement the side-effect-free protocol.
@@ -157,7 +185,7 @@ preflight_command_shaped_invocation() {
 
 read_runtime_version() {
     local runtime="$1" output
-    output="$(JUNO_CODE_PREFLIGHT_ONLY= "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" --version 2>/dev/null)" || return 1
+    output="$(JUNO_CODE_PREFLIGHT_ONLY= JUNO_CODE_RUNTIME_PROBE=1 "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" --version 2>/dev/null)" || return 1
     printf '%s\n' "$output" | tail -n 1 | sed -E 's/^juno-code[[:space:]]+//; s/^v//'
 }
 
@@ -224,28 +252,92 @@ route_registered_product_control() {
     export JUNO_CONTROL_EFFECTIVE_ROOT="$controller"
     export JUNO_CONTROL_OPERATION="$effective_operation"
     cd "$controller"
-    exec "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" "$@"
+    run_owned_command "$JUNO_CODE_NODE_EXECUTABLE" "$runtime" "$@"
+    ROUTED_COMMAND_STATUS=$?
+    return 0
 }
 
 # Main execution flow
+finish_wrapper_invocation() {
+    local code="$1" status="${2:-}"
+    [ -n "${JUNO_CODE_INVOCATION_STATE:-}" ] || return 0
+    "$JUNO_CODE_NODE_EXECUTABLE" "$INVOCATION_BOUNDARY" finish "$code" \
+        "$JUNO_CODE_INVOCATION_STATE" "$status" >/dev/null || true
+    rm -f "$JUNO_CODE_INVOCATION_STATE"
+    JUNO_CODE_INVOCATION_STATE=""
+    exec 9<&- 2>/dev/null || true
+}
+
+run_owned_command() {
+    local status=0
+    # Foreground execution preserves stdin and TTY semantics for separately
+    # pinned runtimes that cannot continue the current lifecycle protocol.
+    (exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$@") || status=$?
+    finish_wrapper_invocation "$status"
+    return "$status"
+}
+
+current_runtime_supports_lifecycle() {
+    grep -q 'JUNO_CODE_WRAPPER_LIFECYCLE' "$CLI_ENTRYPOINT" 2>/dev/null
+}
+
+exec_current_runtime() {
+    exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+}
+
+finalize_bootstrap_failure() {
+    local status=$?
+    trap - EXIT
+    finish_wrapper_invocation "$status"
+    exit "$status"
+}
+
 main() {
+    # Record the user-visible attempt before preflight, runtime routing, or
+    # bootstrap. Current runtimes continue it in the same process; this wrapper
+    # finalizes preflight/bootstrap failures and capability-unknown runtimes.
+    start_invocation_boundary || return $?
+
     # Unknown command-shaped input is checked by the compiled command surface
     # before bootstrap, hooks, providers, config, skills, or installers run.
-    preflight_command_shaped_invocation "$@" || return $?
+    preflight_command_shaped_invocation "$@" || {
+        local status=$?
+        finish_wrapper_invocation "$status"
+        return "$status"
+    }
 
     # Classify discovery and control-plane commands before touching checkout
     # bootstrap. Registered product worktrees dispatch through the controller's
     # pinned runtime; controller calls retain the current packaged CLI.
     if classify_prebootstrap_command "$@"; then
+        ROUTED_COMMAND_STATUS=""
         route_registered_product_control "$PREBOOTSTRAP_COMMAND" "$@" || {
             local status=$?
-            [ "$status" -eq 1 ] || return "$status"
+            if [ "$status" -ne 1 ]; then
+                finish_wrapper_invocation "$status"
+                return "$status"
+            fi
         }
-        require_compatible_node
-        exec "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+        if [ -n "$ROUTED_COMMAND_STATUS" ]; then
+            return "$ROUTED_COMMAND_STATUS"
+        fi
+        require_compatible_node || {
+            local status=$?
+            finish_wrapper_invocation "$status"
+            return "$status"
+        }
+        if current_runtime_supports_lifecycle; then
+            exec_current_runtime "$@"
+        fi
+        run_owned_command "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+        return $?
     fi
 
-    require_compatible_node
+    require_compatible_node || {
+        local status=$?
+        finish_wrapper_invocation "$status"
+        return "$status"
+    }
 
     # Check if we're in an initialized juno-code project
     if [ -d ".juno_task" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
@@ -256,13 +348,24 @@ main() {
         # 3. Activate venv if needed
         # 4. Execute the command we pass to it
 
-        # Execute through bash instead of chmodding a tracked managed script.
-        # Agent bootstrap must not alter exact task/candidate worktree bytes.
-        exec bash "$BOOTSTRAP_SCRIPT" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+        if current_runtime_supports_lifecycle; then
+            # Source bootstrap under an EXIT finalizer. A bootstrap refusal is
+            # terminalized here; bootstrap's final exec preserves the invocation
+            # PID and hands lifecycle ownership to the current CLI.
+            trap finalize_bootstrap_failure EXIT
+            # shellcheck source=/dev/null
+            source "$BOOTSTRAP_SCRIPT" bash -c 'exec -a "$1" "$2" "${@:3}"' _ \
+                "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+        fi
+        run_owned_command bash "$BOOTSTRAP_SCRIPT" bash -c 'exec -a "$1" "$2" "${@:3}"' _ \
+            "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
     else
-        # Not initialized or bootstrap missing - run CLI directly
-        # This allows 'juno-code init' to work without bootstrap
-        exec "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+        # Not initialized or bootstrap missing - run CLI directly. Current
+        # runtimes preserve stdin/TTY and the historical producer PID contract.
+        if current_runtime_supports_lifecycle; then
+            exec_current_runtime "$@"
+        fi
+        run_owned_command "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
     fi
 }
 
