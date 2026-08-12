@@ -82,7 +82,14 @@ class MergeQueueTests(unittest.TestCase):
             "source": "scripts/task_workspace.py",
             "destination": ".juno_task/scripts/task_workspace.py",
             "installClass": "script", "type": "script",
-        }]}) + "\n")
+        }], "admissionOutputs": []}) + "\n")
+        implementation_contract = self.repository / "juno-code/scripts/implementation-contract.json"
+        implementation_contract.parent.mkdir(parents=True)
+        implementation_contract.write_text(json.dumps({
+            "schema_version": "juno_generated_output_contract.v1",
+            "source": "fixtures/canonical.txt",
+            "destinations": ["fixtures/generated.txt"],
+        }) + "\n")
         package = self.repository / "juno-code/package.json"
         package.write_text(json.dumps({"version": "9.0.0"}) + "\n")
         (self.repository / "src").mkdir()
@@ -161,6 +168,15 @@ raise SystemExit(2)
         if git(self.controller, "status", "--porcelain=v1", "--", relative):
             git(self.controller, "add", relative)
             git(self.controller, "commit", "-m", "test validation policy")
+
+    def add_validation_dependency_base(self) -> None:
+        setup = self.root / "dependency-base"
+        git(self.repository, "worktree", "add", str(setup), "product")
+        (setup / "src/.gitignore").write_text("node_modules/\n")
+        (setup / "src/package-lock.json").write_text('{"lockfileVersion":3}\n')
+        git(setup, "add", "src/.gitignore", "src/package-lock.json")
+        git(setup, "commit", "-m", "add validation lock")
+        git(self.repository, "worktree", "remove", str(setup))
 
     def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
         owner = self.root / "integration-owner"
@@ -1496,14 +1512,71 @@ raise SystemExit(2)
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
         self.assertEqual(len(self.counter.read_text().splitlines()), 4)
 
+    def test_direct_hydrated_review_reuses_dependencies_and_retries_prior_failed_claim(self) -> None:
+        self.add_validation_dependency_base()
+        full_code = ("from pathlib import Path; "
+                     "assert Path('node_modules/probe.txt').read_text() == 'ready\\n'; "
+                     f"Path({str(self.full_counter)!r}).open('a').write('run\\n')")
+        self.write_policy(full_code=full_code)
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        security = worktree / "src/security/auth.py"
+        security.parent.mkdir(parents=True)
+        security.write_text("auth\n")
+        modules = worktree / "src/node_modules"
+        modules.mkdir()
+        (modules / "probe.txt").write_text("ready\n")
+        provenance = (modules.resolve(), modules.stat().st_dev, modules.stat().st_ino)
+        git(worktree, "add", "src/security/auth.py")
+        git(worktree, "commit", "-m", "high risk feature")
+        self.task("finish", "X")
+        self.assertEqual(self.queue_payload("next")["outcome"], "AWAITING_RISK")
+
+        with mock.patch.object(
+                merge_runtime, "validation_dependencies",
+                side_effect=merge_runtime.MergeQueueError(
+                    "candidate validation dependency path already exists")):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "dependency path already exists"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        failed = self.task("status", "X")["queue_attempt"]
+        claim = failed["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((failed["outcome"], claim["state"], claim["attempt_number"]),
+                         ("REVIEW_FAILED", "CLAIMED", 1))
+
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        admission = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((ready["outcome"], admission["state"], admission["attempt_number"]),
+                         ("RISK_EVIDENCE_READY", "COMPLETE", 1))
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        self.assertEqual((modules.resolve(), modules.stat().st_dev, modules.stat().st_ino),
+                         provenance)
+        self.assertFalse(modules.is_symlink())
+        self.assertEqual((modules / "probe.txt").read_text(), "ready\n")
+        self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
+
+    def test_direct_unhydrated_review_refuses_without_creating_dependencies(self) -> None:
+        self.add_validation_dependency_base()
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        security = worktree / "src/security/auth.py"
+        security.parent.mkdir(parents=True)
+        security.write_text("auth\n")
+        git(worktree, "add", "src/security/auth.py")
+        git(worktree, "commit", "-m", "unhydrated high risk feature")
+        self.task("finish", "X")
+        self.assertEqual(self.queue_payload("next")["outcome"], "AWAITING_RISK")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "dependencies are unavailable"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        dispatch.assert_not_called()
+        self.assertFalse((worktree / "src/node_modules").exists())
+        self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
+
     def test_composition_candidate_uses_only_lock_compatible_feature_dependencies(self) -> None:
-        setup = self.root / "dependency-base"
-        git(self.repository, "worktree", "add", str(setup), "product")
-        (setup / "src/.gitignore").write_text("node_modules/\n")
-        (setup / "src/package-lock.json").write_text('{"lockfileVersion":3}\n')
-        git(setup, "add", "src/.gitignore", "src/package-lock.json")
-        git(setup, "commit", "-m", "add validation lock")
-        git(self.repository, "worktree", "remove", str(setup))
+        self.add_validation_dependency_base()
         code = ("from pathlib import Path; "
                 "assert Path('node_modules/probe.txt').read_text() == 'ready\\n'; "
                 f"Path({str(self.counter)!r}).open('a').write('run\\n')")
@@ -1524,6 +1597,14 @@ raise SystemExit(2)
         composed = self.queue_payload("next")
         self.assertEqual(composed["strategy"], "merge_both_parents")
         self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+        self.assertEqual(self.registered_candidate_paths(), [])
+        for task_id in ("X", "Y"):
+            modules = self.workspaces / task_id / "src/node_modules"
+            self.assertTrue(modules.is_dir())
+            self.assertFalse(modules.is_symlink())
+            self.assertEqual((modules / "probe.txt").read_text(), "ready\n")
+            self.assertEqual(git(self.workspaces / task_id, "status", "--porcelain=v1",
+                                 "--untracked-files=all"), "")
 
     def test_candidate_dependency_bridge_refuses_package_lock_drift(self) -> None:
         source = self.root / "dependency-source"
