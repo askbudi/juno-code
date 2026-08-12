@@ -92,6 +92,34 @@ print('out-after', flush=True)
 
     def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def install_metadata_controller_contract(self):
+        config_path = self.controller / ".juno_task/config.json"
+        config = json.loads(config_path.read_text())
+        config["controllerWorkspace"] = dict(runner.CANONICAL_METADATA_WORKSPACE)
+        config_path.write_bytes(runner.canonical(config))
+        policy = json.loads((RUNNER.parents[1] / "config/metadata-controller.json").read_text())
+        policy["controller_branch"] = "refs/heads/controller"
+        for field in ("copied_metadata", "generated_metadata", "product_forbidden", "tracked_exact",
+                      "tracked_recursive", "tracked_top_level_files"):
+            policy[field] = sorted(policy[field])
+        policy["runtime"]["ignored_roots"] = sorted(policy["runtime"]["ignored_roots"])
+        policy_path = self.controller / ".juno_task/config/metadata-controller.json"
+        policy_path.parent.mkdir(exist_ok=True)
+        policy_path.write_bytes(runner.canonical(policy))
+        scripts = self.controller / ".juno_task/scripts"; scripts.mkdir(exist_ok=True)
+        resolver = scripts / "controller_resolver.py"
+        resolver.write_text("""#!/usr/bin/env python3
+import json, pathlib
+print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
+ 'source':'fixture','valid':True,'diagnostics':[],'controller_workspace':None}))
+""")
+        resolver.chmod(0o755)
+        subprocess.run(["git", "-C", str(self.controller), "add", ".juno_task"], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "metadata controller"],
+                       check=True, stdout=subprocess.DEVNULL)
+        return config_path, policy_path
+
     def test_controller_identity_binds_only_queue_owned_dirty_state(self):
         state = self.controller / runner.QUEUE_STATE_PATH
         state.write_text('{"state":"reviewing"}\n')
@@ -126,6 +154,77 @@ print('out-after', flush=True)
         self.assertFalse(runner.resolver_policy_passes(result, resolved, wrong, True))
         other = subprocess.CompletedProcess([], 2, "", "controller-resolver: another failure\n")
         self.assertFalse(runner.resolver_policy_passes(other, resolved, workspace, True))
+
+    def test_canonical_metadata_controller_launches_with_null_sparse_evidence(self):
+        _, policy_path = self.install_metadata_controller_contract()
+        (self.controller / runner.QUEUE_STATE_PATH).write_text('{"state":"reviewing"}\n')
+        queue_receipt = (self.controller / runner.QUEUE_RECEIPT_ROOT
+                         / "T1/candidate/attempt-1/receipt.json")
+        queue_receipt.parent.mkdir(parents=True)
+        queue_receipt.write_text('{"outcome":"passed"}\n')
+        out = self.tmp / "metadata-launch"
+        result = subprocess.run(self.command(out), env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((out / "receipt.json").read_text())
+        resolver = receipt["controller_before"]["resolver"]
+        self.assertEqual(resolver["policy_identity"], {
+            "schema_version": "juno_metadata_controller_policy.v1",
+            "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+            "controller_branch": "refs/heads/controller",
+        })
+        self.assertTrue(resolver["passed"])
+        self.assertTrue(resolver["queue_state_bound"])
+        self.assertEqual([item["path"] for item in receipt["controller_before"]["queue_state"]],
+                         [runner.QUEUE_RECEIPT_ROOT + "T1/candidate/attempt-1/receipt.json",
+                          runner.QUEUE_STATE_PATH])
+
+    def test_metadata_controller_malformed_mismatched_and_sparse_contracts_refuse(self):
+        config_path, policy_path = self.install_metadata_controller_contract()
+        policy = json.loads(policy_path.read_text())
+        policy["controller_branch"] = "refs/heads/not-controller"
+        policy_path.write_bytes(runner.canonical(policy))
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "mismatched policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        self.assertEqual(json.loads(config_path.read_text())["controllerWorkspace"],
+                         runner.CANONICAL_METADATA_WORKSPACE)
+        resolver_result = subprocess.run(
+            [sys.executable, str(self.controller / ".juno_task/scripts/controller_resolver.py")],
+            cwd=self.controller, capture_output=True, text=True)
+        self.assertEqual(resolver_result.returncode, 0, resolver_result.stderr)
+        self.assertIsNone(json.loads(resolver_result.stdout)["controller_workspace"])
+        with self.assertRaisesRegex(runner.RunnerError, "policy branch mismatch"):
+            runner.controller_identity(self.controller.resolve())
+
+        policy_path.write_text("{malformed\n")
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "malformed policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "policy is missing or malformed"):
+            runner.controller_identity(self.controller.resolve())
+
+        config = json.loads(config_path.read_text())
+        config["controllerWorkspace"]["policy"] = ".juno_task/config/not-metadata.json"
+        config_path.write_bytes(runner.canonical(config))
+        subprocess.run(["git", "-C", str(self.controller), "add", str(config_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "mismatched pointer"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "resolver/policy refused"):
+            runner.controller_identity(self.controller.resolve())
+
+        config["controllerWorkspace"] = dict(runner.CANONICAL_SPARSE_WORKSPACE)
+        config_path.write_bytes(runner.canonical(config))
+        sparse = self.controller / ".juno_task/config/controller-workspace.json"
+        sparse.write_text("{}\n")
+        subprocess.run(["git", "-C", str(self.controller), "add", str(config_path), str(sparse)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "sparse null evidence"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "resolver/policy refused"):
+            runner.controller_identity(self.controller.resolve())
 
     def test_derived_child_config_translates_canonical_sparse_controller_contract(self):
         config_path = self.controller / ".juno_task/config.json"

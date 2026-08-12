@@ -26,6 +26,10 @@ QUEUE_RECEIPT_ROOT = ".juno_task/state/merge-queue/"
 CAPTURE_LIMIT = 4 * 1024 * 1024
 TASK_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,64}\Z")
 SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
+CANONICAL_METADATA_WORKSPACE = {
+    "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
+CANONICAL_SPARSE_WORKSPACE = {
+    "enabled": True, "policy": ".juno_task/config/controller-workspace.json"}
 
 
 class RunnerError(RuntimeError):
@@ -235,6 +239,37 @@ def resolver_policy_passes(result: subprocess.CompletedProcess[str], resolved: A
             and workspace.get("passed") is False and failed == ["clean"])
 
 
+def metadata_controller_policy_identity(root: Path, branch_ref: str) -> dict[str, str]:
+    policy_path = root / CANONICAL_METADATA_WORKSPACE["policy"]
+    try:
+        import importlib.util
+        validator_path = Path(__file__).resolve().with_name("metadata_controller.py")
+        spec = importlib.util.spec_from_file_location(
+            "juno_managed_metadata_controller_validator", validator_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("validator loader is unavailable")
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        policy_bytes = policy_path.read_bytes()
+        if not policy_bytes or len(policy_bytes) > CAPTURE_LIMIT:
+            raise ValueError("policy bytes are empty or unbounded")
+        policy = validator.load_policy(policy_path)
+        if policy_bytes != canonical(policy):
+            raise ValueError("policy bytes are not canonical")
+    except (ImportError, OSError, UnicodeError, ValueError) as exc:
+        raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
+    except Exception as exc:
+        # BoundaryError is defined by the dynamically loaded trusted validator.
+        if type(exc).__name__ != "BoundaryError":
+            raise
+        raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
+    if policy.get("controller_branch") != branch_ref:
+        raise RunnerError("canonical metadata controller policy branch mismatch")
+    return {"schema_version": str(policy["schema_version"]),
+            "policy_sha256": sha(policy_bytes),
+            "controller_branch": str(policy["controller_branch"])}
+
+
 def controller_identity(root: Path) -> dict[str, Any]:
     mark: dict[str, Any] = fingerprint(root)
     config = root / ".juno_task/config.json"
@@ -261,8 +296,9 @@ def controller_identity(root: Path) -> dict[str, Any]:
         ]
     mark["config_sha256"] = sha(config.read_bytes())
     resolver = root / ".juno_task/scripts/controller_resolver.py"
-    workspace_policy = root / ".juno_task/config/controller-workspace.json"
-    if resolver.is_file() and workspace_policy.is_file():
+    if resolver.is_file():
+        controller_config = load_object(config, "controller config")
+        configured_workspace = controller_config.get("controllerWorkspace")
         resolver_env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_", "JUNO_")) and k != "TASK_ROOT"}
         resolver_env.update({"JUNO_TASK_ROOT": str(root), "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict"})
         result = subprocess.run([sys.executable, str(resolver), "--cwd", str(root), "--operation", "orchestration"],
@@ -271,13 +307,29 @@ def controller_identity(root: Path) -> dict[str, Any]:
         except json.JSONDecodeError: resolved = {}
         workspace = resolved.get("controller_workspace") if isinstance(resolved, dict) else None
         queue_state_bound = bool(mark.get("queue_state"))
-        if (Path(str(resolved.get("path"))).resolve() != root
-                or resolved.get("role") != "controller"
-                or not resolver_policy_passes(
-                    result, resolved, workspace, queue_state_bound)):
+        resolver_base_passes = (
+            isinstance(resolved, dict)
+            and Path(str(resolved.get("path"))).resolve() == root
+            and resolved.get("role") == "controller")
+        if configured_workspace == CANONICAL_METADATA_WORKSPACE:
+            accepted = (resolver_base_passes and result.returncode == 0
+                        and resolved.get("valid") is True
+                        and resolved.get("diagnostics") == [] and workspace is None)
+            policy_identity = (metadata_controller_policy_identity(root, mark["branch_ref"])
+                               if accepted else None)
+        elif configured_workspace == CANONICAL_SPARSE_WORKSPACE:
+            accepted = (resolver_base_passes
+                        and (root / CANONICAL_SPARSE_WORKSPACE["policy"]).is_file()
+                        and resolver_policy_passes(
+                            result, resolved, workspace, queue_state_bound))
+            policy_identity = workspace.get("policy_identity") if accepted else None
+        else:
+            accepted = False
+            policy_identity = None
+        if not accepted or not isinstance(policy_identity, dict) or not policy_identity:
             raise RunnerError("canonical controller resolver/policy refused launch")
         mark["resolver"] = {"source": resolved.get("source"), "role": resolved.get("role"),
-                            "policy_identity": workspace.get("policy_identity"),
+                            "policy_identity": policy_identity,
                             "passed": True, "queue_state_bound": queue_state_bound}
     return mark
 
