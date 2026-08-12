@@ -9,8 +9,10 @@
  * shell directive execution — breaking write-once, deploy-everywhere skills.
  */
 import { execSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Import the preprocessor functions directly from the template source
@@ -391,14 +393,59 @@ describe('Pi input handler argument preservation', () => {
     );
   }
 
-  it('matches Pi native expansion by appending the exact raw request for no-placeholder skills', () => {
+  it('matches the provenance-bound installed Pi native expansion for a no-placeholder skill', async () => {
     skill('native', 'Native instructions');
-    const raw = `"quoted value"  ## Ab12Cd\nquestion $(touch /tmp/never) '$HOME'\n@@no_code  `;
-    const expanded = expandSkillInvocation(`/skill:native ${raw}`, tmpDir)!;
-    expect(expanded).toMatch(/<skill name="native"[\s\S]*Native instructions[\s\S]*<\/skill>\n\n/);
-    expect(expanded.slice(expanded.indexOf('</skill>') + 10)).toBe(raw);
-    expect(expanded.match(/## Ab12Cd/g)).toHaveLength(1);
-    expect(expanded.match(/@@no_code/g)).toHaveLength(1);
+    const raw = `"quoted value" ## Ab12Cd\nquestion $(touch /tmp/never) '$HOME'\n@@no_code`;
+    const invocation = `/skill:native ${raw}`;
+
+    const piExecutable = execSync('command -v pi', { encoding: 'utf8' }).trim();
+    const piCli = fs.realpathSync(piExecutable);
+    const piPackageRoot = path.dirname(path.dirname(piCli));
+    const piPackage = JSON.parse(
+      fs.readFileSync(path.join(piPackageRoot, 'package.json'), 'utf8'),
+    ) as { name: string; version: string };
+    const nativeSourcePath = path.join(piPackageRoot, 'dist/core/agent-session.js');
+    const nativeSource = fs.readFileSync(nativeSourcePath, 'utf8');
+    const nativeSourceSha256 = createHash('sha256').update(nativeSource).digest('hex');
+
+    expect({
+      executable: path.basename(piExecutable),
+      package: piPackage.name,
+      version: piPackage.version,
+      nativeSource: path.relative(piPackageRoot, nativeSourcePath),
+      nativeSourceSha256,
+    }).toEqual({
+      executable: 'pi',
+      package: '@earendil-works/pi-coding-agent',
+      version: '0.83.0',
+      nativeSource: 'dist/core/agent-session.js',
+      nativeSourceSha256: '9720d2a160540d9515ceb1ac4c4b4e73f4a215d703870c15b3c1863a2e37ff76',
+    });
+    expect(nativeSource).toContain('return args ? `${skillBlock}\\n\\n${args}` : skillBlock;');
+
+    const installedPi = (await import(pathToFileURL(path.join(piPackageRoot, 'dist/index.js')).href)) as {
+      AgentSession: { prototype: { _expandSkillCommand(text: string): string } };
+    };
+    const nativeSession = {
+      resourceLoader: {
+        getSkills: () => ({
+          skills: [{ name: 'native', filePath: findSkillFile('native', tmpDir)!, baseDir: path.dirname(findSkillFile('native', tmpDir)!) }],
+        }),
+      },
+      _extensionRunner: { emitError: vi.fn() },
+    };
+    const nativeOutput = installedPi.AgentSession.prototype._expandSkillCommand.call(
+      nativeSession,
+      invocation,
+    );
+    const junoOutput = expandSkillInvocation(invocation, tmpDir);
+
+    expect(junoOutput).toBe(nativeOutput);
+    expect(junoOutput).toBe(
+      `<skill name="native" location="${findSkillFile('native', tmpDir)}">\n` +
+        `References are relative to ${path.dirname(findSkillFile('native', tmpDir)!)}.\n\n` +
+        `Native instructions\n</skill>\n\n${raw}`,
+    );
   });
 
   it.each([
