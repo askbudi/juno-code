@@ -941,7 +941,12 @@ describe('ScriptInstaller', () => {
       ).toBe(true);
     });
 
-    it('force-updates lifecycle guidance before replacing lifecycle scripts', async () => {
+    it('force-updates lifecycle guidance before replacing lifecycle scripts', {
+      // This integration-style canary performs a full managed-asset installation.
+      // Keep its load budget bounded and avoid multiplying timed-out I/O.
+      timeout: 60_000,
+      retry: 0,
+    }, async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await ManagedProjectAssets.update(testDir, { silent: true });
       const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
