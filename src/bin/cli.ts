@@ -2263,13 +2263,21 @@ process.on('SIGINT', () => {
     console.log(''); // blank line before cancellation message
   }
   console.log(chalk.yellow('⚠️  Execution cancelled by user'));
-  process.exit(EXIT_CODES.SUCCESS);
+  // ShellBackend's prepended owner forwards cancellation to its complete Pi/tool
+  // process group and escalates before this bounded wrapper exit.
+  setTimeout(() => process.exit(130), 400);
 });
 
 // Handle SIGTERM gracefully
 process.on('SIGTERM', () => {
   console.log(chalk.yellow('\n\n⚠️  Execution terminated'));
-  process.exit(EXIT_CODES.SUCCESS);
+  setTimeout(() => process.exit(143), 400);
+});
+
+// Parent terminal/pipe owners commonly use SIGHUP for cancellation.
+process.on('SIGHUP', () => {
+  console.log(chalk.yellow('\n\n⚠️  Execution parent disconnected'));
+  setTimeout(() => process.exit(129), 400);
 });
 
 // Export for testing

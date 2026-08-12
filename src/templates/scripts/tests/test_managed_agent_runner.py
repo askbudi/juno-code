@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib, importlib.util, json, os
 from pathlib import Path
-import shutil, subprocess, sys, tempfile, time, unittest
+import shutil, signal, subprocess, sys, tempfile, time, unittest
 
 RUNNER = Path(__file__).resolve().parents[1] / "managed_agent_runner.py"
 RUNNER_SPEC = importlib.util.spec_from_file_location("managed_agent_runner_for_test", RUNNER)
@@ -51,7 +51,7 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         stale_node.chmod(0o755)
         fake = self.bin / "yy"
         fake.write_text("""#!/usr/bin/env python3
-import json, os, pathlib, shutil, sys, time
+import json, os, pathlib, shutil, subprocess, sys, time
 assert sys.argv[1:4] == ['pi','--no-hooks','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
 assert pathlib.Path(shutil.which('node')).resolve()==pathlib.Path(os.environ['JUNO_CODE_NODE_EXECUTABLE']).resolve()
 assert not sys.stdin.read(1)
@@ -69,7 +69,18 @@ macro=pathlib.Path(config['promptMacros']['global']['reflect']['path'])
 assert macro.is_absolute() and macro.read_text()=='controller reflect\\n'
 prompt=pathlib.Path(sys.argv[sys.argv.index('-f')+1]).read_text()
 print('out-before', flush=True); print('err-before', file=sys.stderr, flush=True)
-time.sleep(10 if 'signal-wait' in prompt else .35)
+if 'orphan-wait:' in prompt:
+ marker=pathlib.Path(prompt.split('orphan-wait:',1)[1].splitlines()[0].strip())
+ grand_code=("import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+             "time.sleep(1.2); pathlib.Path(%r).write_text('late mutation')" % str(marker))
+ child_code=("import os,pathlib,signal,subprocess,sys,time; "
+  "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+  "g=subprocess.Popen([sys.executable,'-c',%r],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+  "pathlib.Path(%r).write_text(str(os.getpid())+' '+str(g.pid)); time.sleep(30)" % (grand_code,str(marker)+'.pids'))
+ subprocess.Popen([sys.executable,'-c',child_code],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+if 'orphan-wait:' in prompt:
+ for _ in range(200): print('tool-heartbeat', file=sys.stderr, flush=True); time.sleep(.05)
+else: time.sleep(10 if 'signal-wait' in prompt else .35)
 if 'transport-fail' in prompt: raise SystemExit(7)
 tool_id=os.environ.get('JUNO_TOOL_ID','managed_agent_runner')
 binding=json.loads(os.environ['JUNO_REVIEW_BINDING_JSON']) if os.environ.get('JUNO_REVIEW_BINDING_JSON') else None
@@ -406,8 +417,10 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertNotEqual(result.returncode, 0)
         terminal = json.loads((out / "terminal.json").read_text())
         self.assertTrue(terminal["timed_out"])
-        self.assertEqual(terminal["exit_code"], -9)
-        self.assertIn("timed_out=true", result.stderr)
+        self.assertEqual(terminal["exit_code"], -15)
+        self.assertEqual(terminal["exit_signal"], "SIGTERM")
+        self.assertEqual(terminal["termination_events"][0]["reason"], "timeout")
+        self.assertIn("exit_signal=SIGTERM timed_out=true", result.stderr)
         self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
                          terminal["live_log"]["sha256"])
 
@@ -661,15 +674,64 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                 if json.loads((out / "active.json").read_text()).get("process_group_id"): break
             except (OSError, json.JSONDecodeError): pass
             time.sleep(.01)
-        proc.terminate(); self.assertNotEqual(proc.wait(timeout=3), 0)
+        proc.send_signal(signal.SIGINT); self.assertNotEqual(proc.wait(timeout=3), 0)
         assert proc.stdout and proc.stderr; proc.stdout.close(); proc.stderr.close()
         terminal = json.loads((out / "terminal.json").read_text())
         self.assertEqual(terminal["state"], "interrupted")
+        self.assertEqual(terminal["interrupted_signal"], "SIGINT")
         self.assertFalse(terminal["timed_out"])
         self.assertLess(terminal["exit_code"], 0)
         self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
                          terminal["live_log"]["sha256"])
         self.assertFalse((out / "active.json").exists())
+
+    def test_signal_escalates_across_child_and_grandchild_before_terminal_receipt(self):
+        marker = self.candidate / "cancelled-agent-late-mutation"
+        prompt = self.tmp / "orphan.md"; prompt.write_text(f"orphan-wait:{marker}\n")
+        out = self.tmp / "orphan-out"
+        proc = subprocess.Popen(self.command(out, prompt), env=self.env(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pids_path = Path(str(marker) + ".pids")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not pids_path.exists(): time.sleep(.01)
+        self.assertTrue(pids_path.exists(), "adversarial descendants did not launch")
+        descendant_pids = [int(value) for value in pids_path.read_text().split()]
+        proc.terminate(); self.assertNotEqual(proc.wait(timeout=4), 0)
+        assert proc.stdout and proc.stderr; proc.stdout.close(); proc.stderr.close()
+        terminal = json.loads((out / "terminal.json").read_text())
+        self.assertEqual(terminal["state"], "interrupted")
+        self.assertEqual(terminal["interrupted_signal"], "SIGTERM")
+        self.assertEqual(terminal["child_pid"], terminal["process_group_id"])
+        self.assertTrue(any(event["signal"] == "SIGKILL" for event in terminal["termination_events"]))
+        for child_pid in descendant_pids:
+            with self.assertRaises(ProcessLookupError): os.kill(child_pid, 0)
+        # Simulate a subsequent finish/merge gate. The cancelled producer's delayed
+        # grandchild must be dead before this gate starts and cannot collide later.
+        gate_started = time.monotonic(); time.sleep(1.35)
+        self.assertFalse(marker.exists())
+        self.assertLess(terminal["producer_elapsed_seconds"], time.monotonic() - gate_started + 4)
+        footer = (out / "receipt.json").read_text()
+        self.assertIn('"process_group_id":', footer)
+        self.assertIn('"termination_events":', footer)
+
+    def test_parent_output_pipe_loss_kills_owned_group_before_return(self):
+        marker = self.candidate / "pipe-loss-late-mutation"
+        prompt = self.tmp / "pipe-loss.md"; prompt.write_text(f"orphan-wait:{marker}\n")
+        out = self.tmp / "pipe-loss-out"
+        proc = subprocess.Popen(self.command(out, prompt), env=self.env(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pids_path = Path(str(marker) + ".pids")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not pids_path.exists(): time.sleep(.01)
+        self.assertTrue(pids_path.exists())
+        assert proc.stderr and proc.stdout
+        proc.stderr.close()
+        self.assertNotEqual(proc.wait(timeout=4), 0); proc.stdout.close()
+        terminal = json.loads((out / "terminal.json").read_text())
+        self.assertTrue(any(event["reason"] == "output_pipe_or_log_loss"
+                            for event in terminal["termination_events"]))
+        time.sleep(1.35)
+        self.assertFalse(marker.exists())
 
     def test_worker_admission_and_changed_path_authority(self):
         common = str((self.candidate / git(self.candidate, "rev-parse", "--git-common-dir")).resolve())
