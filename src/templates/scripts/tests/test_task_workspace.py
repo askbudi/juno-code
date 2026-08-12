@@ -23,41 +23,93 @@ sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
 
 
-RESOURCE_LOCK_PATH = Path(os.environ.get(
-    "JUNO_TEST_RESOURCE_LOCK_PATH",
-    Path(tempfile.gettempdir()) / "juno-code-real-git-managed-install.lock",
-))
+DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "juno-code-real-git-managed-install.lock"
 _RESOURCE_LOCK_TOKEN: Optional[str] = None
 _RESOURCE_LOCK_WORKLOAD = f"Python real-Git task workspace suite: {Path(__file__).resolve()}"
 
 
-def _read_lock_owner() -> Optional[dict]:
+def _configured_lock_path(value: Optional[str] = None) -> Path:
+    candidate = (value if value is not None else os.environ.get("JUNO_TEST_RESOURCE_LOCK_PATH", "")).strip()
+    if not candidate:
+        return DEFAULT_RESOURCE_LOCK_PATH
+    # Validate the lexical spelling before Path can silently collapse trailing
+    # separators or dot segments; this matches Node path.normalize exactly.
+    if not os.path.isabs(candidate) or os.path.normpath(candidate) != candidate:
+        raise RuntimeError(
+            f"[test-resource-lock] lock path must be one normalized absolute path: {candidate!r}"
+        )
+    return Path(candidate)
+
+
+RESOURCE_LOCK_PATH = _configured_lock_path()
+
+
+def _assert_safe_lock_path(lock_path: Path) -> None:
+    parts = lock_path.parts
+    cursor = Path(parts[0])
+    for index, part in enumerate(parts[1:], 1):
+        cursor /= part
+        try:
+            stat = cursor.lstat()
+        except FileNotFoundError:
+            if index != len(parts) - 1:
+                raise RuntimeError(f"[test-resource-lock] lock path parent must already exist: {cursor}")
+            continue
+        if cursor.is_symlink():
+            raise RuntimeError(f"[test-resource-lock] symlinked lock path component is forbidden: {cursor}")
+        if index < len(parts) - 1 and not cursor.is_dir():
+            raise RuntimeError(f"[test-resource-lock] lock path parent is not a directory: {cursor}")
+        if index == len(parts) - 1 and not cursor.is_file():
+            raise RuntimeError(f"[test-resource-lock] lock path must be an owner file: {cursor}")
+
+
+def _process_birth_identity(pid: object) -> Optional[str]:
+    if not isinstance(pid, int) or pid <= 0:
+        return None
     try:
-        value = json.loads((RESOURCE_LOCK_PATH / "owner.json").read_text())
-        return value if isinstance(value, dict) else None
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], text=True,
+            capture_output=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = " ".join(result.stdout.split())
+    return value or None
+
+
+def _read_lock_owner(lock_path: Path = RESOURCE_LOCK_PATH) -> Optional[dict]:
+    try:
+        stat = lock_path.lstat()
+        if lock_path.is_symlink() or not lock_path.is_file():
+            return None
+        value = json.loads(lock_path.read_text())
+        return value if isinstance(value, dict) and isinstance(value.get("token"), str) else None
     except (OSError, ValueError):
         return None
 
 
-def _process_is_alive(pid: object) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
+def _owner_is_live(owner: dict) -> bool:
+    observed = _process_birth_identity(owner.get("pid"))
+    if observed is not None:
+        return observed == owner.get("processBirthId")
+    # A provably absent PID is stale. Any permission/tool ambiguity is live,
+    # so platforms without a usable birth lookup fail closed.
     try:
-        os.kill(pid, 0)
-        return True
-    except PermissionError:
+        os.kill(owner.get("pid"), 0)
         return True
     except ProcessLookupError:
         return False
+    except (PermissionError, OSError, TypeError):
+        return True
 
 
 def _owner_diagnostics(owner: Optional[dict]) -> str:
     if not owner:
-        return "owner=<unavailable>"
+        return "owner=<invalid-or-unavailable>"
     return (
-        f"owner_pid={owner.get('pid')} owner_workload={owner.get('workload')!r} "
-        f"owner_process={owner.get('process')!r} owner_cwd={owner.get('cwd')!r} "
-        f"owner_started_at={owner.get('startedAt')}"
+        f"owner_pid={owner.get('pid')} owner_birth={owner.get('processBirthId')!r} "
+        f"owner_workload={owner.get('workload')!r} owner_process={owner.get('process')!r} "
+        f"owner_cwd={owner.get('cwd')!r} owner_started_at={owner.get('startedAt')}"
     )
 
 
@@ -69,94 +121,118 @@ def _load_diagnostics() -> str:
     return f"waiter_pid={os.getpid()} loadavg={load} cpus={os.cpu_count()}"
 
 
-def _recover_stale_lock(owner: Optional[dict], token: str) -> bool:
-    if owner and _process_is_alive(owner.get("pid")):
-        return False
-    if not owner:
-        try:
-            if time.time() - RESOURCE_LOCK_PATH.stat().st_mtime < 5:
-                return False
-        except OSError:
-            return False
-    quarantine = RESOURCE_LOCK_PATH.with_name(
-        f"{RESOURCE_LOCK_PATH.name}.stale-{os.getpid()}-{token}"
-    )
+def _publish_owner_atomically(lock_path: Path, owner: dict) -> bool:
+    temporary = lock_path.parent / f".{lock_path.name}.owner-{os.getpid()}-{owner['token']}"
+    descriptor: Optional[int] = None
     try:
-        RESOURCE_LOCK_PATH.rename(quarantine)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        payload = (json.dumps(owner, indent=2) + "\n").encode()
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _assert_safe_lock_path(lock_path)
+        try:
+            os.link(temporary, lock_path)
+            return True
+        except FileExistsError:
+            return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _remove_if_token_matches(lock_path: Path, expected_token: str, purpose: str) -> bool:
+    quarantine = lock_path.parent / f".{lock_path.name}.{purpose}-{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        lock_path.rename(quarantine)
     except FileNotFoundError:
         return True
     except OSError:
         return False
-    import shutil
-    shutil.rmtree(quarantine, ignore_errors=True)
-    return True
+    moved = _read_lock_owner(quarantine)
+    if moved and moved.get("token") == expected_token:
+        quarantine.unlink()
+        return True
+    try:
+        os.link(quarantine, lock_path)
+        quarantine.unlink()
+    except OSError:
+        # Preserve unexpected successor state rather than deleting it.
+        pass
+    return False
 
 
-def setUpModule() -> None:
-    global _RESOURCE_LOCK_TOKEN
+def _recover_stale_lock(lock_path: Path, owner: Optional[dict]) -> bool:
+    if not owner or _owner_is_live(owner):
+        return False
+    return _remove_if_token_matches(lock_path, owner["token"], "stale")
+
+
+def _acquire_resource_lock(
+    workload: str, lock_path: Optional[Path] = None, timeout_seconds: float = 300,
+    poll_seconds: float = 0.05,
+) -> tuple[str, int]:
+    target = _configured_lock_path(str(lock_path) if lock_path is not None else None)
+    _assert_safe_lock_path(target)
     token = uuid.uuid4().hex
-    started = time.monotonic()
-    next_diagnostic = 1.0
-    RESOURCE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    birth = _process_birth_identity(os.getpid())
+    if not birth:
+        raise RuntimeError("[test-resource-lock] cannot establish process birth identity; refusing unsafe acquisition")
     owner = {
-        "pid": os.getpid(), "token": token, "workload": _RESOURCE_LOCK_WORKLOAD,
+        "pid": os.getpid(), "processBirthId": birth, "token": token, "workload": workload,
         "process": " ".join(sys.argv), "cwd": os.getcwd(),
         "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    started = time.monotonic()
+    next_diagnostic = min(1.0, 5.0)
     while True:
-        try:
-            RESOURCE_LOCK_PATH.mkdir()
-            (RESOURCE_LOCK_PATH / "owner.json").write_text(json.dumps(owner, indent=2) + "\n")
-            _RESOURCE_LOCK_TOKEN = token
-            waited = time.monotonic() - started
-            if waited >= 0.05:
+        if _publish_owner_atomically(target, owner):
+            waited_ms = int((time.monotonic() - started) * 1000)
+            if waited_ms > 0:
                 print(
-                    f"[test-resource-lock] acquired workload={_RESOURCE_LOCK_WORKLOAD!r} "
-                    f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} {_load_diagnostics()}",
-                    file=sys.stderr,
+                    f"[test-resource-lock] acquired workload={workload!r} waited_ms={waited_ms} "
+                    f"lock={target} {_load_diagnostics()}", file=sys.stderr,
                 )
-            return
-        except FileExistsError:
-            pass
-        current = _read_lock_owner()
-        if _recover_stale_lock(current, token):
+            return token, waited_ms
+        current = _read_lock_owner(target)
+        if _recover_stale_lock(target, current):
             print(
-                f"[test-resource-lock] recovered stale lock={RESOURCE_LOCK_PATH} "
+                f"[test-resource-lock] recovered stale lock={target} "
                 f"{_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr,
             )
             continue
         waited = time.monotonic() - started
-        if waited >= 300:
+        if waited >= timeout_seconds:
             raise RuntimeError(
-                f"[test-resource-lock] acquisition timed out workload={_RESOURCE_LOCK_WORKLOAD!r} "
-                f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} "
+                f"[test-resource-lock] acquisition timed out workload={workload!r} "
+                f"waited_ms={int(waited * 1000)} lock={target} "
                 f"{_owner_diagnostics(current)} {_load_diagnostics()}"
             )
         if waited >= next_diagnostic:
             print(
-                f"[test-resource-lock] waiting workload={_RESOURCE_LOCK_WORKLOAD!r} "
-                f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} "
-                f"{_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr,
+                f"[test-resource-lock] waiting workload={workload!r} waited_ms={int(waited * 1000)} "
+                f"lock={target} {_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr,
             )
             next_diagnostic += 5
-        time.sleep(0.05)
+        time.sleep(poll_seconds)
+
+
+def setUpModule() -> None:
+    global _RESOURCE_LOCK_TOKEN
+    _RESOURCE_LOCK_TOKEN, _ = _acquire_resource_lock(_RESOURCE_LOCK_WORKLOAD, RESOURCE_LOCK_PATH)
 
 
 def tearDownModule() -> None:
     global _RESOURCE_LOCK_TOKEN
-    owner = _read_lock_owner()
-    if not _RESOURCE_LOCK_TOKEN or owner is None or owner.get("token") != _RESOURCE_LOCK_TOKEN:
-        return
-    quarantine = RESOURCE_LOCK_PATH.with_name(
-        f"{RESOURCE_LOCK_PATH.name}.release-{os.getpid()}-{_RESOURCE_LOCK_TOKEN}"
-    )
-    try:
-        RESOURCE_LOCK_PATH.rename(quarantine)
-    except FileNotFoundError:
-        return
-    import shutil
-    shutil.rmtree(quarantine, ignore_errors=True)
-    _RESOURCE_LOCK_TOKEN = None
+    if _RESOURCE_LOCK_TOKEN:
+        _remove_if_token_matches(RESOURCE_LOCK_PATH, _RESOURCE_LOCK_TOKEN, "release")
+        _RESOURCE_LOCK_TOKEN = None
 
 
 def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
