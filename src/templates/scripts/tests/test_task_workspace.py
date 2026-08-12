@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +21,150 @@ from typing import Optional
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
+
+
+RESOURCE_LOCK_PATH = Path(os.environ.get(
+    "JUNO_TEST_RESOURCE_LOCK_PATH",
+    Path(tempfile.gettempdir()) / "juno-code-real-git-managed-install.lock",
+))
+_RESOURCE_LOCK_TOKEN: Optional[str] = None
+_RESOURCE_LOCK_WORKLOAD = f"Python real-Git task workspace suite: {Path(__file__).resolve()}"
+
+
+def _read_lock_owner() -> Optional[dict]:
+    try:
+        value = json.loads((RESOURCE_LOCK_PATH / "owner.json").read_text())
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _process_is_alive(pid: object) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def _owner_diagnostics(owner: Optional[dict]) -> str:
+    if not owner:
+        return "owner=<unavailable>"
+    return (
+        f"owner_pid={owner.get('pid')} owner_workload={owner.get('workload')!r} "
+        f"owner_process={owner.get('process')!r} owner_cwd={owner.get('cwd')!r} "
+        f"owner_started_at={owner.get('startedAt')}"
+    )
+
+
+def _load_diagnostics() -> str:
+    try:
+        load = ",".join(f"{value:.2f}" for value in os.getloadavg())
+    except (AttributeError, OSError):
+        load = "unavailable"
+    return f"waiter_pid={os.getpid()} loadavg={load} cpus={os.cpu_count()}"
+
+
+def _recover_stale_lock(owner: Optional[dict], token: str) -> bool:
+    if owner and _process_is_alive(owner.get("pid")):
+        return False
+    if not owner:
+        try:
+            if time.time() - RESOURCE_LOCK_PATH.stat().st_mtime < 5:
+                return False
+        except OSError:
+            return False
+    quarantine = RESOURCE_LOCK_PATH.with_name(
+        f"{RESOURCE_LOCK_PATH.name}.stale-{os.getpid()}-{token}"
+    )
+    try:
+        RESOURCE_LOCK_PATH.rename(quarantine)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    import shutil
+    shutil.rmtree(quarantine, ignore_errors=True)
+    return True
+
+
+def setUpModule() -> None:
+    global _RESOURCE_LOCK_TOKEN
+    token = uuid.uuid4().hex
+    started = time.monotonic()
+    next_diagnostic = 1.0
+    RESOURCE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    owner = {
+        "pid": os.getpid(), "token": token, "workload": _RESOURCE_LOCK_WORKLOAD,
+        "process": " ".join(sys.argv), "cwd": os.getcwd(),
+        "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    while True:
+        try:
+            RESOURCE_LOCK_PATH.mkdir()
+            (RESOURCE_LOCK_PATH / "owner.json").write_text(json.dumps(owner, indent=2) + "\n")
+            _RESOURCE_LOCK_TOKEN = token
+            waited = time.monotonic() - started
+            if waited >= 0.05:
+                print(
+                    f"[test-resource-lock] acquired workload={_RESOURCE_LOCK_WORKLOAD!r} "
+                    f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} {_load_diagnostics()}",
+                    file=sys.stderr,
+                )
+            return
+        except FileExistsError:
+            pass
+        current = _read_lock_owner()
+        if _recover_stale_lock(current, token):
+            print(
+                f"[test-resource-lock] recovered stale lock={RESOURCE_LOCK_PATH} "
+                f"{_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr,
+            )
+            continue
+        waited = time.monotonic() - started
+        if waited >= 300:
+            raise RuntimeError(
+                f"[test-resource-lock] acquisition timed out workload={_RESOURCE_LOCK_WORKLOAD!r} "
+                f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} "
+                f"{_owner_diagnostics(current)} {_load_diagnostics()}"
+            )
+        if waited >= next_diagnostic:
+            print(
+                f"[test-resource-lock] waiting workload={_RESOURCE_LOCK_WORKLOAD!r} "
+                f"waited_ms={int(waited * 1000)} lock={RESOURCE_LOCK_PATH} "
+                f"{_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr,
+            )
+            next_diagnostic += 5
+        time.sleep(0.05)
+
+
+def tearDownModule() -> None:
+    global _RESOURCE_LOCK_TOKEN
+    owner = _read_lock_owner()
+    if not _RESOURCE_LOCK_TOKEN or owner is None or owner.get("token") != _RESOURCE_LOCK_TOKEN:
+        return
+    quarantine = RESOURCE_LOCK_PATH.with_name(
+        f"{RESOURCE_LOCK_PATH.name}.release-{os.getpid()}-{_RESOURCE_LOCK_TOKEN}"
+    )
+    try:
+        RESOURCE_LOCK_PATH.rename(quarantine)
+    except FileNotFoundError:
+        return
+    import shutil
+    shutil.rmtree(quarantine, ignore_errors=True)
+    _RESOURCE_LOCK_TOKEN = None
+
+
+def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
+    return (
+        f"product concurrency timing failed elapsed_seconds={elapsed:.3f} "
+        f"contract_seconds={contract_seconds:.3f} lock={RESOURCE_LOCK_PATH} "
+        f"{_owner_diagnostics(_read_lock_owner())} {_load_diagnostics()}"
+    )
 
 
 RUNTIME_TEMPLATE_PARITY = (
@@ -735,7 +880,8 @@ class TaskWorkspaceTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             x, y = [future.result() for future in
                     [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]]
-        self.assertLess(time.monotonic() - started, 1.5)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.5, _timing_diagnostics(elapsed, 1.5))
         self.assertEqual({x["outcome"], y["outcome"]}, {"queued"})
         self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
 
