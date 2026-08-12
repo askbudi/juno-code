@@ -812,8 +812,8 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
     return payload
 
 
-def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
-    """Create the one explicit package-release commit without weakening the hook."""
+def release_admission(root: Path, requested_paths: list[str], *, require_changes: bool) -> dict[str, Any]:
+    """Read-only admission shared by release preflight and guarded commit."""
     resolution = resolve_role(root)
     if resolution.get("role") != "integration-owner":
         raise CheckpointError("release-commit requires persisted integration-owner authority")
@@ -834,11 +834,20 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
     blocked = [path for path in dirty_paths if path not in RELEASE_PATHS]
     if blocked:
         raise CheckpointError(f"release-commit refuses non-release dirt: {blocked}")
-    if not dirty_paths:
+    if require_changes and not dirty_paths:
         raise CheckpointError("release-commit requires release metadata changes")
     for path in dirty_paths:
         inspect_boundary(root, path)
-    before = git(root, "rev-parse", "HEAD").strip()
+    return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_preflight", "passed": True,
+            "role": "integration-owner", "head": git(root, "rev-parse", "HEAD").strip(),
+            "paths": list(RELEASE_PATHS), "dirty_paths": dirty_paths}
+
+
+def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
+    """Create the one explicit package-release commit without weakening the hook."""
+    admission = release_admission(root, requested_paths, require_changes=True)
+    dirty_paths = admission["dirty_paths"]
+    before = admission["head"]
     frozen = {path: fingerprint(root, path) for path in dirty_paths}
     git(root, "add", "--", *RELEASE_PATHS)
     try:
@@ -896,6 +905,8 @@ def main(argv: list[str] | None = None) -> int:
     staged.add_argument("--json", action="store_true")
     committed = sub.add_parser("committed-check", help="Independent committed-tree check for hook bypass")
     committed.add_argument("--base"); committed.add_argument("--json", action="store_true")
+    preflight = sub.add_parser("release-preflight", help="Read-only exact release-commit eligibility check")
+    preflight.add_argument("--path", action="append", required=True); preflight.add_argument("--json", action="store_true")
     release = sub.add_parser("release-commit", help="Create an exact guarded package release commit")
     release.add_argument("--message", required=True); release.add_argument("--path", action="append", required=True); release.add_argument("--json", action="store_true")
     hook = sub.add_parser("hook", help="Explicit managed pre-commit adoption")
@@ -915,6 +926,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
     if args.command == "committed-check":
         payload = committed_admission(root, args.base, prefer_persisted=args.base is None); emit(payload, args.json); return 0
+    if args.command == "release-preflight":
+        payload = release_admission(root, args.path, require_changes=False); emit(payload, args.json); return 0
     if args.command == "release-commit":
         lease = acquire_lease(root); channel = None
         try:
