@@ -11,8 +11,10 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { ScriptInstaller } from '../script-installer.js';
 import { ManagedProjectAssets } from '../managed-project-assets.js';
+import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
 
 describe('ScriptInstaller', () => {
+  useSharedHeavyWorkloadLock('Vitest ScriptInstaller managed script installation suite');
   let testDir: string;
   let fixtureController: string;
 

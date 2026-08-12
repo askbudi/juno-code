@@ -11,10 +11,12 @@ import {
   MANAGED_PROMPT_MACROS,
   ManagedProjectAssets,
 } from '../managed-project-assets.js';
+import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
 describe('ManagedProjectAssets', () => {
+  useSharedHeavyWorkloadLock('Vitest ManagedProjectAssets installation and installed-runtime suite');
   let projectDir: string;
 
   beforeEach(async () => {
