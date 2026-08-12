@@ -669,10 +669,11 @@ exit 1
         { mode: 0o755 },
       );
 
+      const noCodeDirective = `${String.fromCharCode(64, 64)}no_code`;
       const payload = [
         '%ralph-loop ## oD5g4o',
         'What is the root cause of 504',
-        'PLANNING MODE, NO CODING YET. when it comes to important decision, interview me.',
+        noCodeDirective,
       ].join('\n');
       const result = await execa(
         'bash',
@@ -693,11 +694,12 @@ exit 1
       expect(result.exitCode, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
       const rewritten = await fs.readFile(observedPromptPath, 'utf8');
       expect(rewritten).toBe(payload.replace('%ralph-loop', '/skill:ralph-loop'));
+      expect(rewritten.split(noCodeDirective)).toHaveLength(2);
       expect(await fs.readFile(kanbanCallsPath, 'utf8')).toContain('get oD5g4o');
       for (const exact of [
         '## oD5g4o',
         'What is the root cause of 504',
-        'PLANNING MODE, NO CODING YET. when it comes to important decision, interview me.',
+        noCodeDirective,
       ]) {
         expect(result.stdout.split(exact)).toHaveLength(2);
       }
