@@ -805,7 +805,15 @@ describe('ScriptInstaller', () => {
       expect(updated).toBe(false);
     });
 
-    it('should install missing scripts when project is initialized', async () => {
+    it('should install missing scripts when project is initialized', {
+      // This is a full managed-asset installation, not a unit-speed probe. The
+      // suite-level resource-lock beforeAll has its own 310s budget, so lock
+      // waiting and its owner/load diagnostics finish before this 60s budget
+      // starts. Do not retry a known timeout: timed-out installs keep doing I/O
+      // while a retry starts and multiplied the observed 10s failure threefold.
+      timeout: 60_000,
+      retry: 0,
+    }, async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
 
       const updated = await ScriptInstaller.autoUpdate(testDir, true);
