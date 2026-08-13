@@ -60,17 +60,11 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.life_cycle).toContain('juno.life_cycle.v1');
     expect(dictionary.life_cycle).toContain('private task-ID `mktemp -d` run directory');
     expect(dictionary.life_cycle).toContain('controller_root=$(yy where controller)');
-    expect(dictionary.life_cycle).toContain(
-      '$controller_root/.juno_task/scripts/watch_progress.py',
-    );
-    expect(dictionary.life_cycle).toContain('Implementation workers never');
-    expect(dictionary.life_cycle).toContain(
-      'managed merge queue is the sole lifecycle-semantic review owner',
-    );
-    expect(dictionary.life_cycle).toContain('Reviewer A then Reviewer B');
-    expect(dictionary.life_cycle).toContain('at most one repair candidate');
+    expect(dictionary.life_cycle).toContain('$controller_root/.juno_task/scripts/watch_progress.py');
+    expect(dictionary.life_cycle).toContain('yy task preflight TASK_ID');
+    expect(dictionary.life_cycle).toContain('sole owner');
     expect(dictionary.life_cycle).toContain('REVIEW_FINDINGS_EXHAUSTED');
-    expect(dictionary.life_cycle).not.toContain('launch a fresh read-only independent');
+    expect(dictionary.life_cycle).not.toContain('launch a fresh read-only independent `yy pi` review');
     expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
@@ -86,6 +80,7 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.new_task_workflow).toContain('one task branch and one product worktree');
     expect(dictionary.new_task_workflow).toContain('exact frozen base');
     expect(dictionary.new_task_workflow).toContain('yy task start TASK_ID');
+    expect(dictionary.new_task_workflow).toContain('yy task preflight TASK_ID');
     expect(dictionary.new_task_workflow).toContain('yy task finish TASK_ID');
     expect(dictionary.new_task_workflow).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.new_task_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
@@ -170,6 +165,15 @@ describe('ManagedProjectAssets', () => {
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
     ).toContain('yy task finish TASK_ID');
+    for (const relative of ['AGENTS.md', 'CLAUDE.md']) {
+      const controllerInstruction = await fs.readFile(
+        path.join(process.cwd(), 'src/templates/controller-agent', relative),
+        'utf8',
+      );
+      expect(controllerInstruction, relative).toContain('yy task preflight TASK_ID');
+      expect(controllerInstruction, relative).toContain('sole review owner');
+      expect(controllerInstruction, relative).toContain('REVIEW_FINDINGS_EXHAUSTED');
+    }
     const installedWatcher = await fs.readFile(
       path.join(projectDir, '.juno_task/scripts/watch_progress.py'),
     );

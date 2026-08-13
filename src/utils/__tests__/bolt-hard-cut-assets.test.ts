@@ -83,6 +83,32 @@ describe('Bolt shipped hard cut', () => {
     }
   });
 
+  it('keeps public and controller instructions on the bounded one-pass flow', () => {
+    const surfaces = [
+      projectAgents,
+      resolve(process.cwd(), '..', 'README.md'),
+      resolve(process.cwd(), 'README.md'),
+      join(sourceRoot, 'controller-agent/AGENTS.md'),
+      join(sourceRoot, 'controller-agent/CLAUDE.md'),
+      join(sourceRoot, 'prompts/life_cycle.md'),
+      join(sourceRoot, 'prompts/new_task_workflow.md'),
+    ];
+    for (const file of surfaces) {
+      const text = readFileSync(file, 'utf8');
+      expect(text, file).toContain('yy task preflight TASK_ID');
+      expect(text, file).toContain('REVIEW_FINDINGS_EXHAUSTED');
+      expect(text, file).not.toContain('launch a fresh read-only independent `yy pi` review');
+    }
+
+    const skillFiles = textFiles(join(sourceRoot, 'skills')).filter((file) =>
+      file.endsWith('SKILL.md'),
+    );
+    for (const file of skillFiles) {
+      const text = readFileSync(file, 'utf8');
+      if (text.includes('argument-hint:')) expect(text, file).toContain('$ARGUMENTS');
+    }
+  });
+
   it('admits canonical migration prose but rejects operational retired references', () => {
     const canonicalProse =
       'A controller with the exact retired generated `controllerWorkspace.enabled` / `controller-workspace.json` config must not be registered or refreshed as if it were canonical.';

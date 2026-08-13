@@ -43,17 +43,16 @@ Use the installed Juno control plane; do not create another workflow engine.
    exact paths, and proportional focused tests. Commit one logical task at a
    time. Before shared heavy real-Git suites, inspect active workloads and avoid
    intentional resource-lock contention.
-6. **Leave lifecycle review to the merge queue.** Implementation workers never
-   launch lifecycle-semantic reviewers. After focused validation, commit a clean
-   tip and run `yy task preflight TASK_ID`; then finish once.
-   The managed merge queue is the sole lifecycle-semantic review owner. Low risk
-   gets zero reviewers,
-   normal risk gets at most one, and high risk gets Reviewer A then Reviewer B
-   against one frozen candidate. It permits at most one repair candidate; a
-   second material finding terminalizes as `REVIEW_FINDINGS_EXHAUSTED`. Never
-   launch a third autonomous review or silently create another repair task.
-7. **Use managed lifecycle boundaries.** Only after implementation gates, run
-   separately authorized `yy task finish TASK_ID`. Observe the queue with
+6. **Keep semantic review queue-owned and bounded.** Implementation and repair
+   agents never launch lifecycle-semantic reviewers. The managed merge queue is
+   the sole owner: low risk uses zero reviewers, normal at most one, and high
+   exactly two sequential predecessor-bound v1 reviewers against one frozen tip.
+   It permits one repair candidate and one delta review group; further material
+   findings stop as `REVIEW_FINDINGS_EXHAUSTED`, never an autonomous review loop.
+7. **Use managed lifecycle boundaries.** After a clean committed implementation,
+   run read-only `yy task preflight TASK_ID` and repair any reported closure
+   defect while the task is still `WORKING`. Then run separately authorized
+   `yy task finish TASK_ID`. Observe the queue with
    `yy merge status`; integration uses `yy merge next|resolve` and expected-SHA
    CAS. For integration-owner drift use `yy integration status`, then receipt-
    bound `repair --dry-run/--apply`; publication planning remains child-first via

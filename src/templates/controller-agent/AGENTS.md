@@ -17,9 +17,16 @@ product code.
    project-specific skills. Before editing or testing, follow the controller's
    `.juno_task/wiki/task_dependency_hydration.md` exact-lock instructions for
    every configured validation cwd; stop before implementation on failure.
-5. Finish with `yy task finish TASK_ID`. The merge owner uses
-   `yy merge status|next|resolve`; feature implementation remains concurrent.
-6. Never copy product code, bulky artifacts, or project-specific skill assets
+5. After a clean task commit, run the read-only `yy task preflight TASK_ID`,
+   repair any reported closure defect while the task is still `WORKING`, then
+   finish with `yy task finish TASK_ID`.
+6. Do not launch lifecycle-semantic reviewers from implementation or repair.
+   The merge queue is the sole review owner: low risk uses zero reviewers,
+   normal at most one, and high exactly two sequential predecessor-bound v1
+   reviewers on one frozen tip. It permits one repair candidate and one delta
+   review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`.
+7. The merge owner uses `yy merge status|next|resolve`; feature implementation
+   remains concurrent. Never copy product code, bulky artifacts, or project-specific skill assets
    into this controller. Root instructions and core skills here are ignored
    local runtime files refreshed from the bound immutable Juno package.
 
