@@ -2647,7 +2647,7 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
         counter = self.root / "validation-counter.txt"
-        code = f"from pathlib import Path; import time; time.sleep(.8); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
+        code = f"from pathlib import Path; import time; time.sleep(1.5); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
         self.write_policy(validation_code=code, timeout_seconds=5)
         self.payload("start", "X")
         self.payload("start", "Y")
@@ -2658,7 +2658,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             x, y = [future.result() for future in
                     [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]]
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 1.5, _timing_diagnostics(elapsed, 1.5))
+        self.assertLess(elapsed, 2.5, _timing_diagnostics(elapsed, 2.5))
         self.assertEqual({x["outcome"], y["outcome"]}, {"queued"})
         self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
 
