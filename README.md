@@ -168,9 +168,10 @@ identity and immutable target source agree. Apply refuses moved refs, dirty
 worktrees, receipt tampering/completed replay, package mismatch, and customization;
 otherwise it creates a one-path reviewed commit in an isolated clean worktree
 and durably records its apply intent. Before mutation it discovers exact target-ref
-holders under a repository lock. With no holder it advances by expected-SHA CAS;
-with one exact clean unlocked holder it synchronizes that checked-out branch, index,
-and files together. Dirty, locked, moved, or multiple holders refuse with explicit
+holders under the merge queue's repository/target-ref lock. Every advancement uses
+expected-SHA CAS; with one exact clean unlocked holder, a ref-preserving operation
+then synchronizes its index and files without an unconditional branch reset. Dirty,
+locked, moved, or multiple holders refuse with explicit
 recovery guidance before mutation. If holder synchronization or completion
 recording is interrupted, rerun the same receipt to recover the existing durable
 intent without creating another commit or advancing an unrelated ref. `yy info` and `yy doctor workspace` report the invoker and

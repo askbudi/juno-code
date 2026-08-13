@@ -23,5 +23,5 @@ export async function cleanTemplateBytecode(root) {
   }
 }
 
-const root = path.resolve(process.argv[2] ?? 'dist/templates/scripts');
+const root = path.resolve(process.argv[2] ?? 'dist/templates');
 await cleanTemplateBytecode(root);

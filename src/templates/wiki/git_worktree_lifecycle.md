@@ -58,10 +58,11 @@ receipt, then apply that exact receipt. This command is restricted to the exact
 registered, sparse metadata-controller class and refuses synthetic/product/task
 worktrees. Apply uses a clean isolated target worktree, creates a one-path
 reviewed commit and durably records its apply intent. Before mutation it discovers
-all exact target-ref holders under the repository writer lock. No holder uses an
-expected-SHA CAS; one exact clean unlocked holder is synchronized with Git's
-checked-out-branch reset so its ref, index, and files finish together. Dirty,
-locked, moved, or multiple holders refuse before mutation with a supported clean,
+all exact target-ref holders under the merge queue's repository/target-ref lock.
+Every advancement uses expected-SHA CAS. With one exact clean unlocked holder,
+CAS is followed by a ref-preserving index/worktree synchronization; it never uses
+an unconditional branch reset. Dirty, locked, moved, or multiple holders refuse
+before mutation with a supported clean,
 unlock, or reviewed extra-worktree removal action. Interrupted holder synchronization
 or completion recording is recovered by rerunning the same receipt; the durable
 intent prevents another commit or unrelated ref mutation. Modified or completed

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -1603,11 +1604,22 @@ def _target_ref_holders(repository: Path, target_ref: str) -> list[dict[str, Any
 
 
 @contextmanager
-def _target_mutation_lock(repository: Path) -> Iterator[None]:
+def _target_mutation_lock(repository: Path, target_ref: str) -> Iterator[None]:
+    # Contend on the merge queue's repository/ref lock inode. Runtime recovery
+    # and queue delivery must never mutate the same target concurrently.
     common = Path(git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
-    path = common / "juno-task-runtime-bootstrap.lock"
+    key = hashlib.sha256(f"{common}\0{target_ref}".encode()).hexdigest()
+    path = common / "juno-locks/merge-queue" / f"{key}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise TaskWorkspaceError(
+                    "another worker owns this repository/target-ref queue; refusing runtime bootstrap"
+                ) from exc
+            raise
         yield
 
 
@@ -1695,7 +1707,11 @@ def _synchronize_target_holder(holder: Path, target_ref: str,
         raise TaskWorkspaceError("target-ref holder moved outside the durable apply intent")
     if not recovering_interruption and status:
         raise TaskWorkspaceError("target-ref holder became dirty before synchronization")
-    result = run(["git", "-C", str(holder), "reset", "--hard", commit_sha], holder, check=False)
+    # The ref is advanced separately by expected-old-SHA CAS. Update only the
+    # holder's index/worktree here so this recovery path can never overwrite a
+    # concurrent ref move through an unconditional reset.
+    result = run(["git", "-C", str(holder), "read-tree", "--reset", "-u", commit_sha],
+                 holder, check=False)
     if result.returncode:
         raise TaskWorkspaceError(
             "target-holder synchronization was interrupted; rerun the same --apply receipt")
@@ -1798,7 +1814,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                      str(temporary)], repository, check=False)
             elif temporary.exists():
                 temporary.rmdir()
-        with _target_mutation_lock(repository):
+        with _target_mutation_lock(repository, config["target_ref"]):
             if ref_sha(repository, config["target_ref"]) != current_sha:
                 raise TaskWorkspaceError("task-runtime bootstrap target ref raced before durable intent")
             target_holder = _admit_target_holder(repository, config["target_ref"], current_sha)
@@ -1809,25 +1825,28 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                       "target_holder": target_holder}
             _write_runtime_bootstrap_record(intent_path, intent)
 
-    with _target_mutation_lock(repository):
+    with _target_mutation_lock(repository, config["target_ref"]):
         holder = _validate_intent_holder(
             repository, intent["target_holder"], config["target_ref"])
         current_sha = ref_sha(repository, config["target_ref"])
-        if holder is not None:
-            if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
+        if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
+            raise TaskWorkspaceError(
+                "task-runtime bootstrap target ref moved outside the durable apply intent")
+        if holder is not None and current_sha == intent["previous_sha"]:
+            index_lock = Path(git(holder, "rev-parse", "--path-format=absolute",
+                                  "--git-path", "index.lock"))
+            if index_lock.exists():
                 raise TaskWorkspaceError(
-                    "task-runtime bootstrap target ref moved outside the durable apply intent")
-            _synchronize_target_holder(holder, config["target_ref"],
-                                       intent["previous_sha"], intent["commit_sha"],
-                                       plan["prior"], proposed)
-        elif current_sha == intent["previous_sha"]:
+                    "target-holder index is locked; refusing before target CAS advancement")
+        if current_sha == intent["previous_sha"]:
             cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
                        intent["commit_sha"], intent["previous_sha"]], repository, check=False)
             if cas.returncode:
                 raise TaskWorkspaceError("task-runtime bootstrap target ref CAS advancement failed")
-        elif current_sha != intent["commit_sha"]:
-            raise TaskWorkspaceError(
-                "task-runtime bootstrap target ref moved outside the durable apply intent")
+        if holder is not None:
+            _synchronize_target_holder(holder, config["target_ref"],
+                                       intent["previous_sha"], intent["commit_sha"],
+                                       plan["prior"], proposed)
     result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
               "outcome": "completed", "plan_sha256": digest,
               "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],

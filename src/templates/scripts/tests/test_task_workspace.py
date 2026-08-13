@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -1134,20 +1135,17 @@ class TaskWorkspaceTests(unittest.TestCase):
         original_run = task_runtime.run
         injected = {"failed": False}
 
-        def interrupt_after_reset(argv: list[str], cwd: Path, *, check: bool = True):
-            if (len(argv) >= 5 and argv[-3:-1] == ["reset", "--hard"]
+        def interrupt_after_cas(argv: list[str], cwd: Path, *, check: bool = True):
+            if (len(argv) >= 7 and argv[-4:-1] == ["read-tree", "--reset", "-u"]
                     and not injected["failed"]):
-                # Reproduce interruption after the branch ref advanced but
-                # before its holder index/files synchronized.
-                old = git(self.repository, "rev-parse", "HEAD")
-                original_run(["git", "-C", str(self.repository), "update-ref",
-                              "refs/heads/product", argv[-1], old], self.repository)
+                # Reproduce interruption after expected-old-SHA CAS but before
+                # the holder index/files synchronize to the advanced ref.
                 injected["failed"] = True
                 return subprocess.CompletedProcess(argv, 75, "",
                                                    "injected post-CAS holder interruption")
             return original_run(argv, cwd, check=check)
 
-        with mock.patch.object(task_runtime, "run", side_effect=interrupt_after_reset):
+        with mock.patch.object(task_runtime, "run", side_effect=interrupt_after_cas):
             with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
                                         "synchronization was interrupted"):
                 task_runtime.runtime_bootstrap(
@@ -1174,7 +1172,7 @@ class TaskWorkspaceTests(unittest.TestCase):
                               "--git-path", "index.lock"))
         index_lock.write_text("held\n")
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "synchronization was interrupted"):
+                                    "index is locked.*before target CAS"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
@@ -1182,6 +1180,27 @@ class TaskWorkspaceTests(unittest.TestCase):
         recovered = task_runtime.runtime_bootstrap(
             self.controller, "2.1.3", package_hash, receipt)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_contends_on_merge_queue_target_lock(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        before = git(self.repository, "rev-parse", "HEAD")
+        common = Path(git(self.repository, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir")).resolve()
+        key = hashlib.sha256(f"{common}\0refs/heads/product".encode()).hexdigest()
+        lock_path = common / "juno-locks/merge-queue" / f"{key}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "another worker owns.*target-ref queue"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
     def test_runtime_bootstrap_refuses_dirty_or_multiple_target_holders_without_mutation(self) -> None:
