@@ -107,6 +107,7 @@ beforeAll(async () => {
   });
   await fs.writeFile(path.join(bin, 'cli.mjs'), `
 // JUNO_CODE_PREFLIGHT_ONLY capability fixture
+if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' && process.env[['JUNO', 'CODE', 'WRAPPER', 'LIFECYCLE'].join('_')]) process.exit(70);
 if (process.argv.includes('--version')) console.log('juno-code ${packageJson.version}');
 else if (process.argv.includes('--definitely-invalid')) process.exit(2);
 else process.exit(0);

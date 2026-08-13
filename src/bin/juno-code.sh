@@ -180,7 +180,11 @@ preflight_command_shaped_invocation() {
     # input before bootstrap can touch project state.
     if [ "$#" -lt 2 ] && [[ "${1:-}" != -* ]]; then return 0; fi
     require_compatible_node || return $?
-    JUNO_CODE_PREFLIGHT_ONLY=1 "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
+    # Preflight is not the user-visible runtime and must not consume/unlink the
+    # open wrapper lifecycle state intended for either wrapper finalization or
+    # the eventual runtime continuation.
+    JUNO_CODE_PREFLIGHT_ONLY=1 JUNO_CODE_WRAPPER_LIFECYCLE= \
+        "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
 }
 
 read_runtime_version() {

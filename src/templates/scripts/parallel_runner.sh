@@ -144,6 +144,12 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+# SourceFileLoader-based tooling does not automatically add this script's
+# directory to sys.path. Resolve the managed sibling helper explicitly so the
+# executable and import-based lint/probe surfaces use the same contract.
+_SCRIPT_DIRECTORY = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIRECTORY not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIRECTORY)
 from invocation_correlation import child_invocation_environment
 
 
