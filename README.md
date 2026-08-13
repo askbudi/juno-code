@@ -150,7 +150,44 @@ yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 
 A receipt-bound controller generation is Git-target-owned. `yy scripts update`
 from a mismatched (especially older) package refuses instead of replacing those
-ignored scripts. `yy info` and `yy doctor workspace` report the invoker and
+ignored scripts. It also refreshes only controller-local managed bytes; it does
+not repair a missing or stale target-tracked task runtime. For an ordinary
+consumer target (one containing neither the `juno-code` package nor template source), use
+the explicit package-bound recovery instead:
+
+```bash
+yy task runtime-bootstrap --dry-run
+# review the printed immutable receipt
+yy task runtime-bootstrap --apply RECEIPT
+```
+
+The command is restricted to the exact registered migrated sparse metadata
+controller. The plan binds controller class/identity, package version/runtime
+hash, full target ref and commit/tree, and the exact path's prior/proposed bytes.
+An absent consumer runtime is recoverable. Existing consumer bytes are
+replaceable only when their exact hash, prior package version, and template
+version agree in the committed managed inventory and that prior SemVer is older
+than the recovery package. The reviewed commit replaces the runtime and updates that inventory entry's
+template version and hashes together; it preserves the inventory-wide package
+version and every validated unrelated entry, retaining provenance for later upgrades.
+A Juno source repository is never repaired through this command: use a
+controller package/runtime matching a coherent newer target, or update an older
+source package, template, tracked runtime, and managed inventory atomically.
+Apply refuses moved refs, dirty
+worktrees, receipt tampering/completed replay, package mismatch, and customization;
+otherwise it creates a runtime recovery commit in an isolated clean worktree
+and durably records its apply intent. Before mutation it discovers exact target-ref
+holders under the merge queue's repository/target-ref lock. Every advancement uses
+expected-SHA CAS; with one exact clean unlocked holder, its planned-path index and
+files are prepared by a non-destructive Git merge and revalidated before CAS.
+Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. With
+no holder, a package-owned clean guard checkout holds the branch until immediately
+before durable completion. Dirty, locked, moved, or multiple holders refuse with explicit
+recovery guidance before mutation. If synchronization stops in an exact package-created partial state, the refusal
+prints a bounded `git restore --source=EXPECTED_SHA --staged --worktree` command
+for only the planned runtime/inventory paths; review and run it, then rerun the
+same receipt. A fully prepared holder or interrupted completion recovers directly
+from the same durable intent without another commit or unrelated ref advancement. `yy info` and `yy doctor workspace` report the invoker and
 registered controller executable versions separately from the receipt-bound
 script package/target; `yy scripts doctor` validates the receipt hashes rather
 than comparing them to the invoking package.
@@ -245,6 +282,11 @@ full suites.
 yy task start TASK_ID
 # implement, run focused tests, and commit in the returned worktree
 yy task finish TASK_ID
+
+# only when start reports a stale/absent consumer target runtime:
+yy task runtime-bootstrap --dry-run
+yy task runtime-bootstrap --apply RECEIPT
+# source targets use a matching controller runtime, or update source identities atomically
 
 yy merge status
 yy merge next

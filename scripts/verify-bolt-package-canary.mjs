@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -15,11 +16,11 @@ await mkdir(packDirectory);
 const outputIndex = process.argv.indexOf('--output');
 const output = outputIndex >= 0 ? path.resolve(process.argv[outputIndex + 1] ?? '') : null;
 
-const run = (command, args, cwd) =>
+const run = (command, args, cwd, extraEnv = {}) =>
   execFileSync(command, args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-bolt-canary-pycache' },
+    env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-bolt-canary-pycache', ...extraEnv },
     stdio: 'pipe',
   });
 
@@ -33,6 +34,18 @@ try {
   const installed = path.join(packDirectory, 'package');
   const scripts = path.join(installed, 'dist/templates/scripts');
   const inventory = new Set(packed.files.map((entry) => entry.path));
+  const packageJson = JSON.parse(readFileSync(path.join(installed, 'package.json'), 'utf8'));
+  const executable = path.join(installed, 'dist/bin/cli.mjs');
+  const runtimeDirectory = path.join(installed, '.juno_task/runtime');
+  await mkdir(runtimeDirectory, { recursive: true });
+  await writeFile(path.join(installed, '.juno_task/managed-assets.json'), JSON.stringify({
+    schemaVersion: 1, packageName: 'juno-code', packageVersion: packageJson.version, assets: {},
+  }));
+  await writeFile(path.join(runtimeDirectory, 'identity.json'), JSON.stringify({
+    package: 'juno-code', version: packageJson.version, executable,
+    executable_sha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+    source: 'installed-release', tracked: false,
+  }));
 
   for (const retired of [
     'dist/templates/scripts/task_lifecycle.py',
@@ -65,7 +78,8 @@ try {
     ],
   };
   for (const [suite, tests] of Object.entries(selections)) {
-    run('python3', [path.join(scripts, `tests/test_${suite}.py`), ...tests], installed);
+    run('python3', [path.join(scripts, `tests/test_${suite}.py`), ...tests], installed,
+      { JUNO_TASK_ROOT: installed });
   }
 
   const dependencies = path.resolve('node_modules');

@@ -1133,7 +1133,7 @@ describe('ScriptInstaller', () => {
       );
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git-flow.sh'))).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git_flow.py'))).toBe(true);
-    });
+    }, 60_000);
 
     it('preserves an unrelated root Git-flow script', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));

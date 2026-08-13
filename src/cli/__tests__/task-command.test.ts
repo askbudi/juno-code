@@ -18,12 +18,28 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it('exposes only start, status, and finish below task', () => {
+  it('exposes lifecycle plus the explicit guarded runtime bootstrap below task', () => {
     const program = new Command();
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
-    expect(task?.commands.map((command) => command.name())).toEqual(['start', 'status', 'finish']);
-    expect(task?.commands.every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands.map((command) => command.name())).toEqual([
+      'start', 'status', 'finish', 'runtime-bootstrap',
+    ]);
+    expect(task?.commands.slice(0, 3).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[3]?.registeredArguments).toHaveLength(0);
+  });
+
+  it.each([
+    { argv: ['--dry-run'], expected: { dryRun: true } },
+    { argv: ['--apply', '/tmp/plan.json'], expected: { apply: '/tmp/plan.json' } },
+  ])('forwards guarded task runtime bootstrap $argv', async ({ argv, expected }) => {
+    const invoke = vi.fn(async () => undefined);
+    const bootstrap = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureTaskWorkspaceCommand(program, invoke, bootstrap);
+    await program.parseAsync(['node', 'yy', 'task', 'runtime-bootstrap', ...argv]);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(bootstrap).toHaveBeenCalledWith(expected);
   });
 
   it('forwards repeatable required product roots only for task start', async () => {

@@ -382,6 +382,7 @@ describe('ypl wrapper', () => {
     { args: ['integration', 'sync'], operation: 'orchestration' },
     { args: ['integration', 'runtime-doctor'], operation: 'orchestration' },
     { args: ['integration', 'runtime-refresh', '--previous-sha', 'a'.repeat(40)], operation: 'orchestration' },
+    { args: ['task', 'runtime-bootstrap', '--dry-run'], operation: 'orchestration' },
     { args: ['integration', 'register', '/owner'], operation: 'orchestration' },
     { args: ['integration', 'repair', '--dry-run'], operation: 'orchestration' },
     { args: ['integration', 'push', '--dry-run'], operation: 'orchestration' },

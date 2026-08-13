@@ -15,6 +15,13 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "integration_workspace.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import integration_workspace as runtime  # noqa: E402
+try:
+    _fixture = runtime.task_workspace.load_package_bound_test_fixture(
+        __file__, "real_git_fixture.py")
+except runtime.task_workspace.TaskWorkspaceError as exc:
+    print(f"integration workspace test setup: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+install_juno_admission_fixture = _fixture.install_juno_admission_fixture
 
 
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -54,7 +61,9 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         git(self.repo, "config", "user.name", "Test")
         (self.repo / "src").mkdir()
         (self.repo / "src/base.txt").write_text("base\n")
-        git(self.repo, "add", "src/base.txt")
+        task_runtime = SCRIPT.parent / "task_workspace.py"
+        install_juno_admission_fixture(self.repo, task_runtime.read_bytes())
+        git(self.repo, "add", ".")
         git(self.repo, "commit", "-m", "base")
         self.base = git(self.repo, "rev-parse", "HEAD")
         git(self.repo, "remote", "add", "origin", str(self.remote))
