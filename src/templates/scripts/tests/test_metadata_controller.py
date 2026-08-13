@@ -892,10 +892,18 @@ class MetadataControllerTest(unittest.TestCase):
         receipt_path.unlink()
         index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
         index_lock = Path(str(index) + ".lock")
-        index_lock.write_bytes(index.read_bytes())
+        # Reproduce interruption after atomic exchange but before displaced-index
+        # cleanup: prepared bytes are at index and the exact old index is at lock.
+        index_lock.write_bytes(b"exact displaced pre-migration index bytes")
         common = Path(command("git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root))
-        ownership = mc.persist_index_lock_ownership(
-            common, plan["plan_sha256"], index_lock, command("git", "rev-parse", "HEAD^{tree}", cwd=root))
+        ownership = mc.index_lock_ownership_path(common, plan["plan_sha256"])
+        mc.atomic_receipt(ownership, {
+            "schema_version": "juno_metadata_policy_index_ownership.v2",
+            "plan_sha256": plan["plan_sha256"],
+            "expected_tree": command("git", "rev-parse", "HEAD^{tree}", cwd=root),
+            "index_lock": mc.index_lock_identity(index),
+            "displaced_index": mc.index_lock_identity(index_lock),
+        })
         stale = mc.migration_temporary_endpoints(root, plan["plan_sha256"])[0]
         stale.write_bytes(plan["policy_result_utf8"].encode())
         recovered = mc.policy_migration_apply(argparse.Namespace(
@@ -906,6 +914,25 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
         self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
+
+    def test_metadata_policy_index_exchange_refuses_in_place_byte_race(self) -> None:
+        directory = self.temp / "index-byte-race"
+        directory.mkdir()
+        index = directory / "index"
+        index_lock = directory / "index.lock"
+        index.write_bytes(b"reviewed-real-index")
+        index_lock.write_bytes(b"prepared-index")
+        reviewed = mc.index_lock_identity(index)
+        self.assertIsNotNone(reviewed)
+        # Preserve the inode while changing bytes after the reviewed snapshot.
+        with index.open("r+b") as stream:
+            stream.seek(0)
+            stream.write(b"raced!!!")
+            stream.truncate()
+        with self.assertRaisesRegex(mc.BoundaryError, "bytes or identity raced"):
+            mc.atomic_index_publish(index_lock, index, reviewed)
+        self.assertEqual(index.read_bytes(), b"raced!!!")
+        self.assertEqual(index_lock.read_bytes(), b"prepared-index")
 
     def test_metadata_policy_recovery_refuses_unowned_index_lock(self) -> None:
         root, _ = self.legacy_policy_controller()

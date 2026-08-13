@@ -1396,7 +1396,7 @@ def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
 
 
 def atomic_index_publish(index_lock: Path, index_path: Path,
-                         expected_identity: list[int]) -> None:
+                         expected_identity: dict[str, Any]) -> None:
     if index_lock.parent != index_path.parent:
         raise BoundaryError("metadata-policy prepared and real index are not co-located")
     directory_fd = os.open(index_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -1418,12 +1418,13 @@ def atomic_index_publish(index_lock: Path, index_path: Path,
         if operation(directory_fd, temporary, directory_fd, target, flag) != 0:
             error = ctypes.get_errno()
             raise BoundaryError(f"metadata-policy index atomic exchange failed: {os.strerror(error)}")
-        displaced = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
-        if [displaced.st_dev, displaced.st_ino, displaced.st_mode] != expected_identity:
+        displaced_path = index_lock.parent / temporary_name
+        displaced_identity = index_lock_identity(displaced_path)
+        if not identity_matches(displaced_identity, expected_identity, relocated=True):
             if operation(directory_fd, temporary, directory_fd, target, flag) != 0:
                 error = ctypes.get_errno()
                 raise BoundaryError(f"metadata-policy index raced and restoration failed: {os.strerror(error)}")
-            raise BoundaryError("metadata-policy real index identity raced before atomic publication")
+            raise BoundaryError("metadata-policy real index bytes or identity raced before atomic publication")
         os.unlink(temporary_name, dir_fd=directory_fd)
         os.fsync(directory_fd)
     finally: os.close(directory_fd)
@@ -1435,23 +1436,37 @@ def index_lock_ownership_path(common: Path, plan_hash: str) -> Path:
 
 def index_lock_identity(path: Path) -> dict[str, Any] | None:
     if path.is_symlink() or not path.is_file(): return None
-    stat = path.stat()
-    return {"path": str(path), "device": stat.st_dev, "inode": stat.st_ino,
-            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
-            "sha256": file_digest(path)}
+    before = path.stat()
+    digest = file_digest(path)
+    after = path.stat()
+    fields_before = (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns)
+    fields_after = (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns)
+    if fields_before != fields_after or path.is_symlink() or not path.is_file(): return None
+    return {"path": str(path), "device": after.st_dev, "inode": after.st_ino,
+            "mode": after.st_mode, "size": after.st_size, "mtime_ns": after.st_mtime_ns,
+            "sha256": digest}
+
+
+def identity_matches(actual: dict[str, Any] | None, expected: Any, *, relocated: bool = False) -> bool:
+    if not isinstance(actual, dict) or not isinstance(expected, dict): return False
+    if relocated:
+        actual = {key: value for key, value in actual.items() if key != "path"}
+        expected = {key: value for key, value in expected.items() if key != "path"}
+    return actual == expected
 
 
 def persist_index_lock_ownership(common: Path, plan_hash: str, index_path: Path,
-                                 expected_tree: str) -> Path:
+                                 expected_tree: str, displaced_index: Path | None = None) -> Path:
     marker = index_lock_ownership_path(common, plan_hash)
     if marker.exists() or marker.is_symlink():
         raise BoundaryError(f"metadata-policy migration index ownership collision: {marker}")
     identity = index_lock_identity(index_path)
-    if identity is None:
-        raise BoundaryError("metadata-policy migration cannot bind an unsafe prepared index lock")
-    atomic_receipt(marker, {"schema_version": "juno_metadata_policy_index_ownership.v1",
+    displaced_identity = index_lock_identity(displaced_index) if displaced_index is not None else identity
+    if identity is None or displaced_identity is None:
+        raise BoundaryError("metadata-policy migration cannot bind unsafe prepared or displaced index bytes")
+    atomic_receipt(marker, {"schema_version": "juno_metadata_policy_index_ownership.v2",
                             "plan_sha256": plan_hash, "expected_tree": expected_tree,
-                            "index_lock": identity})
+                            "index_lock": identity, "displaced_index": displaced_identity})
     return marker
 
 
@@ -1462,17 +1477,40 @@ def durable_unlink(path: Path) -> None:
     finally: os.close(directory_fd)
 
 
+def index_has_exact_tree(root: Path, index_path: Path, identity: dict[str, Any],
+                         expected_tree: str) -> bool:
+    # Git's write-tree attempts to create `<GIT_INDEX_FILE>.lock`; when checking
+    # the published real index during crash recovery that pathname is precisely
+    # the displaced index we must preserve. Verify a byte-exact private copy.
+    with tempfile.TemporaryDirectory(prefix="juno-policy-index-verify-") as temporary:
+        copy = Path(temporary) / "index"
+        copy.write_bytes(index_path.read_bytes())
+        if not identity_matches(index_lock_identity(index_path), identity): return False
+        return git(root, "write-tree", check=False,
+                   env={"GIT_INDEX_FILE": str(copy)}) == expected_tree
+
+
 def exact_prepared_index(root: Path, index_path: Path, ownership_path: Path,
                          plan_hash: str, expected_tree: str) -> bool:
     identity = index_lock_identity(index_path)
     if identity is None or ownership_path.is_symlink() or not ownership_path.is_file(): return False
     try: ownership = read_json(ownership_path, "metadata-policy index ownership")
     except BoundaryError: return False
-    return (ownership == {"schema_version": "juno_metadata_policy_index_ownership.v1",
-                          "plan_sha256": plan_hash, "expected_tree": expected_tree,
-                          "index_lock": identity}
-            and git(root, "write-tree", check=False,
-                    env={"GIT_INDEX_FILE": str(index_path)}) == expected_tree)
+    return (ownership.get("schema_version") == "juno_metadata_policy_index_ownership.v2"
+            and ownership.get("plan_sha256") == plan_hash
+            and ownership.get("expected_tree") == expected_tree
+            and identity_matches(identity, ownership.get("index_lock"),
+                                 relocated=str(index_path) != ownership.get("index_lock", {}).get("path"))
+            and index_has_exact_tree(root, index_path, identity, expected_tree))
+
+
+def exact_displaced_index(index_lock: Path, ownership_path: Path) -> bool:
+    if ownership_path.is_symlink() or not ownership_path.is_file(): return False
+    try: ownership = read_json(ownership_path, "metadata-policy index ownership")
+    except BoundaryError: return False
+    return (ownership.get("schema_version") == "juno_metadata_policy_index_ownership.v2"
+            and identity_matches(index_lock_identity(index_lock), ownership.get("displaced_index"),
+                                 relocated=True))
 
 
 def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
@@ -1553,9 +1591,14 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             # written with this plan's prepared index. Tree equality alone cannot
             # distinguish an active ordinary Git process.
             completed_probe = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
-            if (completed_probe is None
-                    or not exact_prepared_index(root, recovery_lock, ownership_path,
-                                                plan_hash, completed_probe[1])):
+            prepared_still_locked = (completed_probe is not None
+                    and exact_prepared_index(root, recovery_lock, ownership_path,
+                                             plan_hash, completed_probe[1]))
+            published_with_displaced_lock = (completed_probe is not None
+                    and exact_prepared_index(root, expected_index, ownership_path,
+                                             plan_hash, completed_probe[1])
+                    and exact_displaced_index(recovery_lock, ownership_path))
+            if not (prepared_still_locked or published_with_displaced_lock):
                 raise BoundaryError(f"metadata-policy migration index serialization is busy or unowned: {recovery_lock}")
             durable_unlink(recovery_lock); durable_unlink(ownership_path)
         completed = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
@@ -1595,8 +1638,6 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             if changed != plan["changed_paths"]:
                 raise BoundaryError("metadata-policy migration result tree escaped declared paths")
             index_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
-            real_index_stat = index_path.stat()
-            expected_real_index_identity = [real_index_stat.st_dev, real_index_stat.st_ino, real_index_stat.st_mode]
             index_lock = Path(str(index_path) + ".lock")
             try:
                 with index_lock.open("xb") as stream:
@@ -1604,8 +1645,11 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             except FileExistsError as exc:
                 raise BoundaryError(f"metadata-policy migration index serialization is busy: {index_lock}") from exc
             try:
+                expected_real_index_identity = index_lock_identity(index_path)
+                if expected_real_index_identity is None:
+                    raise BoundaryError("metadata-policy migration cannot bind the real index bytes")
                 ownership_path = persist_index_lock_ownership(
-                    common, plan_hash, index_lock, result_tree)
+                    common, plan_hash, index_lock, result_tree, index_path)
             except BaseException:
                 durable_unlink(index_lock)
                 raise
