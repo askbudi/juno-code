@@ -1720,10 +1720,26 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
             assert_static_plan(controller, task_id, "next", expected_plan_id)
             return resume_awaiting(controller, config, repository, record)
         record = select_next(controller, config)
-        assert_static_plan(controller, record["task_id"], "next", expected_plan_id)
         feature_worktree = validate_record(config, repository, record)
         target_sha = task_runtime.ref_sha(repository, config["target_ref"])
         feature_sha = record["tip_sha"]
+        feature_already_integrated = task_runtime.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+             feature_sha, target_sha], repository, check=False).returncode == 0
+        if feature_already_integrated:
+            attempt = {
+                "schema_version": ATTEMPT_SCHEMA, "task_id": record["task_id"],
+                "target_ref": config["target_ref"], "expected_target_sha": target_sha,
+                "feature_sha": feature_sha, "strategy": "already_in_target",
+                "candidate_sha": target_sha,
+                "candidate_tree": task_runtime.git(repository, "rev-parse", f"{target_sha}^{{tree}}"),
+                "candidate_checkout": None, "candidate_token": None,
+                "validation": [], "review": None, "outcome": "ALREADY_IN_TARGET",
+                "observed_target_sha": target_sha,
+            }
+            persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
+            return attempt
+        assert_static_plan(controller, record["task_id"], "next", expected_plan_id)
         attempt = {"schema_version": ATTEMPT_SCHEMA, "task_id": record["task_id"],
                    "target_ref": config["target_ref"], "expected_target_sha": target_sha,
                    "feature_sha": feature_sha, "strategy": None, "candidate_sha": None,

@@ -466,6 +466,25 @@ raise SystemExit(2)
         self.assertEqual((reference["source_tip"], reference["target_sha"]), (old_tip, target))
         self.assertTrue(Path(reference["receipt_path"]).is_file())
 
+    def test_next_reconciles_fifo_tip_already_integrated_in_target_without_validation(self) -> None:
+        tip = self.commit_feature("X", "docs/feature.txt", "feature\n")
+        checkout = self.root / "external-integration"
+        git(self.repository, "worktree", "add", str(checkout), "product")
+        git(checkout, "merge", "--no-ff", "--no-edit", tip)
+        target = git(checkout, "rev-parse", "HEAD")
+        git(self.repository, "worktree", "remove", str(checkout))
+        validation_before = self.counter.read_bytes()
+
+        reconciled = merge_runtime.merge_next(self.controller.resolve())
+
+        self.assertEqual(reconciled["outcome"], "ALREADY_IN_TARGET")
+        self.assertEqual(reconciled["strategy"], "already_in_target")
+        self.assertEqual((reconciled["feature_sha"], reconciled["candidate_sha"]),
+                         (tip, target))
+        self.assertEqual(reconciled["validation"], [])
+        self.assertEqual(self.task("status", "X")["state"], "MERGED")
+        self.assertEqual(self.counter.read_bytes(), validation_before)
+
     def test_target_refresh_composed_authored_repair_and_retry_are_idempotent(self) -> None:
         self.install_merge_planner_runtime()
         self.commit_feature("X", "docs/feature.txt", "v1\n")
