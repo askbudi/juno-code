@@ -1550,9 +1550,9 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
         return False
 
 
-def _legacy_cli_version_output_valid(result: subprocess.CompletedProcess[str],
-                                     version: str, cwd: Path) -> bool:
-    """Accept only the exact release or canonical historical --version contract."""
+def cli_version_output_valid(result: subprocess.CompletedProcess[str],
+                             version: str, cwd: Path) -> bool:
+    """Accept only the prefixed machine or canonical human --version contract."""
     if result.stdout == f"juno-code {version}\n" and result.stderr == "":
         return True
     if result.stdout != f"{version}\n":
@@ -1634,7 +1634,7 @@ def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: 
             "consumer target task runtime does not match the registered installed template")
     version_result = run([str(executable), "--version"], executable.parent, check=False)
     if (version_result.returncode != 0
-            or not _legacy_cli_version_output_valid(
+            or not cli_version_output_valid(
                 version_result, identity["version"], executable.parent)
             or hashlib.sha256(executable.read_bytes()).hexdigest() != executable_sha256):
         raise TaskWorkspaceError("consumer target installed runtime version output mismatched")

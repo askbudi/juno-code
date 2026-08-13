@@ -563,6 +563,53 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(mc.ref_exists(self.repo, "refs/heads/juno/controller-metadata-v1"))
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
 
+    def set_runtime_version_output(self, stdout: str, stderr: str) -> None:
+        write(
+            self.runtime,
+            "#!/usr/bin/env python3\nimport sys\n"
+            f"sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n",
+        )
+        self.runtime.chmod(self.runtime.stat().st_mode | stat.S_IXUSR)
+
+    def canonical_runtime_banner(self, version: str) -> str:
+        return (
+            f"\n🎯 Juno Code v{version} - TypeScript CLI\n"
+            "   Node.js v22.22.3 on darwin\n"
+            f"   Working directory: {self.runtime.parent.resolve()}\n\n"
+        )
+
+    def test_runtime_identity_accepts_canonical_human_and_prefixed_machine_output(self) -> None:
+        version = "2.1.3-rc.0.11"
+        accepted = {
+            "canonical human": (f"{version}\n", self.canonical_runtime_banner(version)),
+            "prefixed machine": (f"juno-code {version}\n", ""),
+        }
+        for label, (stdout, stderr) in accepted.items():
+            with self.subTest(label=label):
+                self.set_runtime_version_output(stdout, stderr)
+                identity = mc.runtime_identity(self.runtime, version, self.repo)
+                self.assertEqual(identity["version"], version)
+                self.assertEqual(identity["executable"], str(self.runtime.resolve()))
+
+    def test_runtime_identity_rejects_noncanonical_version_output(self) -> None:
+        version = "2.1.3-rc.0.11"
+        banner = self.canonical_runtime_banner(version)
+        cases = {
+            "wrong version": (
+                "2.1.3-rc.0.10\n",
+                self.canonical_runtime_banner("2.1.3-rc.0.10"),
+            ),
+            "malformed banner": (f"{version}\n", banner.replace("Node.js", "Node")),
+            "ambiguous stdout": (f"{version}\njuno-code {version}\n", banner),
+            "missing banner": (f"{version}\n", ""),
+            "unexpected stderr": (f"{version}\n", banner + "unexpected\n"),
+        }
+        for label, (stdout, stderr) in cases.items():
+            with self.subTest(label=label):
+                self.set_runtime_version_output(stdout, stderr)
+                with self.assertRaisesRegex(mc.BoundaryError, "runtime identity mismatch"):
+                    mc.runtime_identity(self.runtime, version, self.repo)
+
     def test_runtime_inside_any_linked_worktree_is_rejected(self) -> None:
         linked = self.temp / "linked-product"
         command("git", "worktree", "add", "--detach", str(linked), self.product_head, cwd=self.repo)

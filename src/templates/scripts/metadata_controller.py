@@ -412,8 +412,9 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
             "install and rebind an exact release into a fresh non-Git prefix with `yy migrate runtime-install-rebind --help`"
         )
     result = run([str(executable), "--version"], executable.parent, False)
-    if (result.returncode or result.stdout.strip() != f"juno-code {expected_version}"
-            or result.stderr.strip()):
+    if (result.returncode
+            or not load_sibling("task_workspace.py").cli_version_output_valid(
+                result, expected_version, executable.parent)):
         raise BoundaryError(f"runtime identity mismatch: expected juno-code {expected_version}")
     return {"package": "juno-code", "version": expected_version, "executable": str(executable),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
