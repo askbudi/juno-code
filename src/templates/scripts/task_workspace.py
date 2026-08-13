@@ -1435,9 +1435,20 @@ def _bootstrap_target_status(repository: Path) -> str:
                f":(exclude){RUNTIME_BOOTSTRAP_ROOT}")
 
 
-def _runtime_prior_state(repository: Path, target_sha: str) -> dict[str, Any]:
+def _runtime_prior_state(repository: Path, target_sha: str,
+                         proposed: bytes) -> dict[str, Any]:
     prior = target_blob(repository, target_sha, RUNTIME_PATH)
     if prior is None:
+        package_bytes = target_blob(repository, target_sha, "juno-code/package.json")
+        source = target_blob(repository, target_sha,
+                             "juno-code/src/templates/scripts/task_workspace.py")
+        try:
+            package = json.loads(package_bytes) if package_bytes is not None else None
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError("target package identity is invalid; refusing bootstrap") from exc
+        if isinstance(package, dict) and package.get("name") == "juno-code" and source != proposed:
+            raise TaskWorkspaceError(
+                "Juno source target runtime template does not match exact package bytes")
         return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
                 "classification": "missing"}
     tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
@@ -1498,7 +1509,7 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
     target_ref = config["target_ref"]
     target_sha = ref_sha(repository, target_ref)
     target_tree = git(repository, "rev-parse", f"{target_sha}^{{tree}}")
-    prior = _runtime_prior_state(repository, target_sha)
+    prior = _runtime_prior_state(repository, target_sha, running)
     if prior["sha256"] == running_sha:
         raise TaskWorkspaceError("target task runtime already matches the package")
     plan = {
@@ -1812,7 +1823,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
         if (current_sha != target.get("sha")
                 or git(repository, "rev-parse", f"{current_sha}^{{tree}}") != target.get("tree")):
             raise TaskWorkspaceError("task-runtime bootstrap target ref moved after planning")
-        if _runtime_prior_state(repository, current_sha) != plan.get("prior"):
+        if _runtime_prior_state(repository, current_sha, proposed) != plan.get("prior"):
             raise TaskWorkspaceError("task-runtime bootstrap prior path state changed")
         workspace_root = Path(config["workspace_root"])
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -1868,7 +1879,9 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                             "a non-guard target-ref holder appeared after durable apply intent")
                     holder = exact_root(expected_guard, "durable package-owned target guard")
                     if (git(holder, "symbolic-ref", "-q", "HEAD", check=False)
-                            != config["target_ref"]):
+                            != config["target_ref"]
+                            or git(holder, "config", "--worktree", "--get",
+                                   "juno.bootstrap.guardDigest", check=False) != digest):
                         raise TaskWorkspaceError("durable package-owned target guard identity changed")
                     guard_holder = holder
                 else:
@@ -1898,6 +1911,8 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                 if added.returncode:
                     raise TaskWorkspaceError(
                         "target-ref holder appeared before guarded CAS; refusing target mutation")
+                run(["git", "-C", str(guard_holder), "config", "--worktree",
+                     "juno.bootstrap.guardDigest", digest], guard_holder)
                 holder = guard_holder
             if current_sha == intent["previous_sha"]:
                 index_lock = Path(git(holder, "rev-parse", "--path-format=absolute",
@@ -1931,6 +1946,19 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                       "commit_sha": intent["commit_sha"], "tree": intent["tree"],
                       "path": RUNTIME_PATH, "package": plan["package"],
                       "target_holder": intent["target_holder"]}
+            if guard_holder is not None:
+                if (git(guard_holder, "config", "--worktree", "--get",
+                        "juno.bootstrap.guardDigest", check=False) != digest
+                        or git(guard_holder, "status", "--porcelain=v1",
+                               "--untracked-files=all", check=False)):
+                    raise TaskWorkspaceError(
+                        "package-owned target guard changed; refusing cleanup and completion")
+                removed = run(["git", "-C", str(repository), "worktree", "remove",
+                               str(guard_holder)], repository, check=False)
+                if removed.returncode:
+                    raise TaskWorkspaceError(
+                        "package-owned target guard cleanup failed; rerun the same --apply receipt")
+                guard_holder = None
             try:
                 raw = _write_runtime_bootstrap_record(applied_path, result)
                 completion = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
@@ -1943,9 +1971,9 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                     "target CAS completed but durable completion recording failed; "
                     "rerun the same --apply receipt") from exc
     finally:
-        if guard_holder is not None:
-            run(["git", "-C", str(repository), "worktree", "remove", "--force",
-                 str(guard_holder)], repository, check=False)
+        # Never force-remove a guard: process interruption leaves its exact Git
+        # registration and digest for safe same-receipt recovery.
+        pass
     return {**result, "receipt": {"path": str(applied_path),
                                    "sha256": hashlib.sha256(raw).hexdigest()},
             "completion_durable": {"path": str(durable_path)}}

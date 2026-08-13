@@ -1184,6 +1184,17 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
+    def test_runtime_bootstrap_refuses_missing_runtime_with_divergent_juno_source(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        source.write_text("# divergent source customization\n")
+        git(self.repository, "add", str(source.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "missing runtime with divergent source")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "template does not match exact package bytes"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
     def test_runtime_bootstrap_does_not_classify_staged_deletion_as_interruption(self) -> None:
         prior = (self.repository / task_runtime.RUNTIME_PATH).read_bytes()
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
@@ -1203,7 +1214,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         def strand_guard(argv: list[str], cwd: Path, *, check: bool = True):
             if len(argv) >= 7 and argv[-4] == "update-ref":
                 return subprocess.CompletedProcess(argv, 75, "", "injected CAS interruption")
-            if len(argv) >= 6 and argv[-3:-1] == ["remove", "--force"]:
+            if len(argv) >= 6 and argv[-2] == "remove":
                 return subprocess.CompletedProcess(argv, 75, "", "injected process-death residue")
             return original_run(argv, cwd, check=check)
 
