@@ -1471,6 +1471,21 @@ def _bootstrap_target_status(repository: Path) -> str:
                f":(exclude){RUNTIME_BOOTSTRAP_ROOT}")
 
 
+def _managed_inventory_entries_valid(assets: Any) -> bool:
+    try:
+        return isinstance(assets, dict) and all(
+            isinstance(path, str) and normalized_relative(path, "managed inventory path") == path
+            and isinstance(record, dict)
+            and set(record) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
+            and isinstance(record.get("type"), str) and bool(record["type"])
+            and is_valid_semver(record.get("templateVersion"))
+            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("sourceSha256", ""))) is not None
+            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("installedSha256", ""))) is not None
+            for path, record in assets.items())
+    except TaskWorkspaceError:
+        return False
+
+
 def _runtime_prior_state(repository: Path, target_sha: str,
                          proposed: bytes, recovery_package_version: str) -> dict[str, Any]:
     prior = target_blob(repository, target_sha, RUNTIME_PATH)
@@ -1515,18 +1530,20 @@ def _runtime_prior_state(repository: Path, target_sha: str,
         prior_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
         assets = inventory.get("assets") if isinstance(inventory, dict) else None
         entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
+        all_entries_valid = _managed_inventory_entries_valid(assets)
+        runtime_version = entry.get("templateVersion") if isinstance(entry, dict) else None
         entry_valid = entry is None or (
             isinstance(entry, dict)
-            and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
             and entry.get("type") == "script"
-            and entry.get("templateVersion") == prior_version
-            and re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sourceSha256", "")))
-            and entry.get("installedSha256") == entry.get("sourceSha256"))
+            and entry.get("installedSha256") == entry.get("sourceSha256")
+            and is_valid_semver(runtime_version)
+            and (runtime_version == recovery_package_version
+                 or semver_precedes(runtime_version, recovery_package_version)))
         if (not isinstance(inventory, dict) or set(inventory) != {
                 "schemaVersion", "packageName", "packageVersion", "assets"}
                 or inventory.get("schemaVersion") != 1
                 or inventory.get("packageName") != "juno-code"
-                or not is_valid_semver(prior_version) or not isinstance(assets, dict)
+                or not is_valid_semver(prior_version) or not all_entries_valid
                 or not entry_valid
                 or (prior_version != recovery_package_version
                     and not semver_precedes(prior_version, recovery_package_version))):
@@ -1561,18 +1578,7 @@ def _runtime_prior_state(repository: Path, target_sha: str,
     assets = inventory.get("assets") if isinstance(inventory, dict) else None
     entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
     runtime_package_version = entry.get("templateVersion") if isinstance(entry, dict) else None
-    try:
-        all_entries_valid = isinstance(assets, dict) and all(
-            isinstance(path, str) and normalized_relative(path, "managed inventory path") == path
-            and isinstance(record, dict)
-            and set(record) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
-            and isinstance(record.get("type"), str) and bool(record["type"])
-            and is_valid_semver(record.get("templateVersion"))
-            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("sourceSha256", ""))) is not None
-            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("installedSha256", ""))) is not None
-            for path, record in assets.items())
-    except TaskWorkspaceError:
-        all_entries_valid = False
+    all_entries_valid = _managed_inventory_entries_valid(assets)
     inventory_valid = (
         isinstance(inventory, dict) and set(inventory) == {
             "schemaVersion", "packageName", "packageVersion", "assets"}

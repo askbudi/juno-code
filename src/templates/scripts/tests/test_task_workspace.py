@@ -1086,6 +1086,57 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(git(self.workspaces / "X", "config", "--worktree", "--bool",
                                 "--get", "core.sparseCheckout"), "true")
 
+    def test_absent_runtime_bootstrap_preserves_valid_unrelated_inventory_entries(self) -> None:
+        self.remove_runtime_for_consumer()
+        stale_hash = hashlib.sha256(b"prior runtime\n").hexdigest()
+        unrelated = {
+            "type": "config", "templateVersion": "2.1.1",
+            "sourceSha256": "a" * 64, "installedSha256": "b" * 64,
+        }
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "assets": {
+                task_runtime.RUNTIME_PATH: {
+                    "type": "script", "templateVersion": "2.1.2",
+                    "sourceSha256": stale_hash, "installedSha256": stale_hash,
+                },
+                ".juno_task/config/unrelated.json": unrelated,
+            },
+        }) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "absent runtime with valid managed inventory")
+
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        applied = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, Path(plan["receipt"]["path"]))
+
+        recovered = json.loads((self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), applied["commit_sha"])
+        self.assertEqual(recovered["packageVersion"], "2.1.2")
+        self.assertEqual(recovered["assets"][".juno_task/config/unrelated.json"], unrelated)
+        self.assertEqual(
+            recovered["assets"][task_runtime.RUNTIME_PATH]["templateVersion"], "2.1.3")
+
+    def test_absent_runtime_bootstrap_refuses_malformed_unrelated_inventory_entry(self) -> None:
+        self.remove_runtime_for_consumer()
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "assets": {"unrelated": {"type": "script"}},
+        }) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "absent runtime with malformed managed entry")
+
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "missing runtime lacks an exact non-newer managed-inventory"):
+            task_runtime.runtime_bootstrap(
+                self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
+
     def test_runtime_bootstrap_replaces_provenance_valid_stale_consumer_runtime(self) -> None:
         stale = self.install_stale_consumer_runtime()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
@@ -1126,6 +1177,29 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(next_prior["sha256"], package_hash)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
         self.assertEqual(self.payload("start", "X")["outcome"], "started")
+
+    def test_stale_then_absent_runtime_allows_later_recovery(self) -> None:
+        self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        first_plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, Path(first_plan["receipt"]["path"]))
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "delete previously recovered runtime")
+
+        second_plan = task_runtime.runtime_bootstrap(self.controller, "2.1.4", package_hash, None)
+        self.assertEqual(second_plan["prior"]["state"], "absent")
+        second = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.4", package_hash, Path(second_plan["receipt"]["path"]))
+
+        inventory = json.loads(
+            (self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), second["commit_sha"])
+        self.assertEqual(inventory["packageVersion"], "2.1.2")
+        self.assertEqual(
+            inventory["assets"][task_runtime.RUNTIME_PATH]["templateVersion"], "2.1.4")
+        self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
+                         SCRIPT.read_bytes())
 
     def test_runtime_bootstrap_refuses_malformed_unrelated_inventory_entry(self) -> None:
         self.install_stale_consumer_runtime()
