@@ -1510,7 +1510,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     except BaseException as failure_receipt_error: receipt_error = failure_receipt_error
                     detail = f"; failure receipt emission also failed: {receipt_error}" if receipt_error else f"; receipt: {output}"
                     raise BoundaryError(
-                        f"metadata-policy migration commit {committed} is durable but post-commit readback failed{detail}"
+                        f"metadata-policy migration commit {committed} is durable but post-commit readback failed: {exc}{detail}"
                     ) from exc
             finally:
                 if committed is None and not index_published:
