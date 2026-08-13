@@ -281,6 +281,7 @@ full suites.
 ```bash
 yy task start TASK_ID
 # implement, run focused tests, and commit in the returned worktree
+yy task preflight TASK_ID
 yy task finish TASK_ID
 
 # only when start reports a stale/absent consumer target runtime:
@@ -522,13 +523,14 @@ Product mutation uses the Bolt task and merge interfaces rather than Workflow Ru
 ```bash
 yy task start TASK_ID
 yy task status TASK_ID
+yy task preflight TASK_ID
 yy task finish TASK_ID
 yy merge status
 yy merge next
 yy merge resolve TASK_ID
 ```
 
-The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Task start freezes the target SHA; task finish queues a clean committed tip. The merge queue owns moved-target composition, conflict preservation, affected validation, risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. Release remains outside this reusable flow.
+The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Task start freezes the target SHA; read-only task preflight reports closure defects before expensive final gates; task finish queues a clean committed tip. Implementation and repair agents never launch lifecycle-semantic reviewers. The merge queue solely owns moved-target composition, conflict preservation, affected validation, bounded risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. It permits one repair candidate and one delta review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`. Release remains outside this reusable flow.
 
 Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only reviewer. High risk runs Reviewer A then Reviewer B sequentially on the same frozen tip. A replacement tip invalidates prior evidence. Byte-identical post-CAS delivery does not trigger another semantic review.
 

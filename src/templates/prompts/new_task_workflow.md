@@ -12,12 +12,23 @@ The project-owned task-workspace policy supplies the full product target ref, al
 
 Implement and commit only inside the returned product worktree. Immediately after start and before editing or testing, follow the exact-lock, validation-cwd-aware hydration contract in [task dependency hydration](../wiki/task_dependency_hydration.md). Stop before implementation if provisioning or its clean-tree check fails. The controller keeps Kanban and task artifacts; those files are never copied into product worktrees. Other tasks may start from the same target in their own worktrees while this task is active.
 
-When implementation is committed, run:
+When implementation is clean and committed, run the read-only closure check:
+
+```text
+yy task preflight TASK_ID
+```
+
+Repair any reported admission, generated-output, runtime, or closure defect while
+the task is still `WORKING`. Then run:
 
 ```text
 yy task finish TASK_ID
 ```
 
-Finish checks the exact task identity, clean committed tip, allowed paths, and configured focused validation, then records the task as `QUEUED`. It does not review, merge, release, push, deploy, clean up, or synchronize controller and product branches. Use `yy task status TASK_ID` for bounded read-only observation.
+Finish repeats the preflighted closure, validates the exact task identity and
+committed tip, runs configured focused validation, and records the task as
+`QUEUED`. It does not launch review, merge, release, push, deploy, clean up, or
+synchronize controller and product branches. Use `yy task status TASK_ID` for
+bounded read-only observation.
 
-The target owner first stops shared integration servers, verifies the integration checkout is clean, and detaches it so the full target ref is unowned. Advance queued work with `yy merge next`. If it reports `CONFLICT`, edit and stage only the listed paths in the preserved candidate checkout, then run `yy merge resolve TASK_ID`. A failed resolved-candidate test is retried with the same command and same preserved commit. Use `yy merge status` to observe queued, conflicted, and merged tasks. After the queue is drained or paused, attach the integration owner to the exact target for shared tests, servers, release, or deploy; detach it again before the next queue mutation. The merge queue serializes only the short target mutation window; feature implementation remains concurrent.
+The target owner first stops shared integration servers, verifies the integration checkout is clean, and detaches it so the full target ref is unowned. Advance queued work with `yy merge next`. The merge queue is the sole lifecycle-semantic review owner: low risk uses zero reviewers, normal at most one, and high exactly two sequential predecessor-bound v1 reviewers against one frozen tip. Implementation and repair agents never launch those reviewers. The queue permits one repair candidate and one delta review group; further material findings stop as `REVIEW_FINDINGS_EXHAUSTED` instead of starting an autonomous loop. If merge reports `CONFLICT`, edit and stage only the listed paths in the preserved candidate checkout, then run `yy merge resolve TASK_ID`. A failed resolved-candidate test is retried with the same command and same preserved commit. Use `yy merge status` to observe queued, conflicted, and merged tasks. After the queue is drained or paused, attach the integration owner to the exact target for shared tests, servers, release, or deploy; detach it again before the next queue mutation. The merge queue serializes only the short target mutation window; feature implementation remains concurrent.

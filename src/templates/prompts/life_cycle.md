@@ -1,7 +1,7 @@
 ---
 juno_prompt_schema: juno.life_cycle.v1
 public_macro: "@@life_cycle"
-revision: 3
+revision: 4
 ---
 
 # Observable Juno task lifecycle
@@ -43,12 +43,16 @@ Use the installed Juno control plane; do not create another workflow engine.
    exact paths, and proportional focused tests. Commit one logical task at a
    time. Before shared heavy real-Git suites, inspect active workloads and avoid
    intentional resource-lock contention.
-6. **Review once, independently.** After focused validation and a clean committed
-   tip, launch a fresh read-only independent `yy pi` review over the frozen diff.
-   Deduplicate/file proven defects, repair material findings, and rerun focused
-   checks. Do not start an unbounded review loop.
-7. **Use managed lifecycle boundaries.** Only after implementation/review gates,
-   run separately authorized `yy task finish TASK_ID`. Observe the queue with
+6. **Keep semantic review queue-owned and bounded.** Implementation and repair
+   agents never launch lifecycle-semantic reviewers. The managed merge queue is
+   the sole owner: low risk uses zero reviewers, normal at most one, and high
+   exactly two sequential predecessor-bound v1 reviewers against one frozen tip.
+   It permits one repair candidate and one delta review group; further material
+   findings stop as `REVIEW_FINDINGS_EXHAUSTED`, never an autonomous review loop.
+7. **Use managed lifecycle boundaries.** After a clean committed implementation,
+   run read-only `yy task preflight TASK_ID` and repair any reported closure
+   defect while the task is still `WORKING`. Then run separately authorized
+   `yy task finish TASK_ID`. Observe the queue with
    `yy merge status`; integration uses `yy merge next|resolve` and expected-SHA
    CAS. For integration-owner drift use `yy integration status`, then receipt-
    bound `repair --dry-run/--apply`; publication planning remains child-first via
@@ -64,7 +68,7 @@ Use the installed Juno control plane; do not create another workflow engine.
 
 ## Evolution
 
-This is schema `juno.life_cycle.v1`, revision 3. Change the canonical source in
+This is schema `juno.life_cycle.v1`, revision 4. Change the canonical source in
 `juno-code/src/templates/prompts/life_cycle.md`, update this revision and release
 notes when behavior changes, and validate source/dist/tarball plus managed-install
 parity. Project customizations are user-owned: managed update must preserve or
